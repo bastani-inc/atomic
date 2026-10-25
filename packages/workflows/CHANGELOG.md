@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow whose stages send many Intercom messages to stage patterns (for example `workflow:<rootRunId>/child-*/**`) no longer saturates the workflow host. The host matched every queued pattern message against every stage on each change; it now indexes the patterns and each stage's paths once. In a 150-child fan-out test, delivered sends went from 566 of 900 to 900 of 900 and host event-loop lag p99 from about 1 s to under 200 ms ([#3931](https://github.com/bastani-inc/atomic/issues/3931))
+
 ## [0.9.44-alpha.2] - 2026-10-24
 
 ### Fixed

@@ -7,10 +7,10 @@ import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "..
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-stage-route-readiness.js";
 import {
+	createWorkflowBoundaryHopsResolver,
 	createWorkflowBoundarySegmentsResolver,
 	stageMatchesPathPattern,
 	type WorkflowBoundarySegmentsResolver,
-	workflowBoundaryHops,
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
 import { type StickyStageDeliveryStatus, stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
@@ -454,9 +454,15 @@ function possibleStageRows(
 	const stickyQueued = (rootRun.pendingStageMessages ?? []).filter(
 		(entry) => entry.sticky === true && entry.status === "queued",
 	);
+	// Parse each distinct sticky target once per publication, not once per row and entry.
+	const segmentsByTarget = new Map<string, readonly string[] | undefined>();
 	const stickySegments = (entry: PendingStageMessage): readonly string[] | undefined => {
-		const parsed = parseWorkflowStageTarget(entry.targetPath ?? entry.stageKey);
-		return parsed?.rootRunId === rootRunId ? parsed.segments : undefined;
+		const target = entry.targetPath ?? entry.stageKey;
+		if (segmentsByTarget.has(target)) return segmentsByTarget.get(target);
+		const parsed = parseWorkflowStageTarget(target);
+		const segments = parsed?.rootRunId === rootRunId ? parsed.segments : undefined;
+		segmentsByTarget.set(target, segments);
+		return segments;
 	};
 	// The run-wide broadcast bucket (`workflow:<root>/**`) is its own target (D6): its
 	// entries are counted on the broadcast row only, never on the scan rows below — a
@@ -465,6 +471,7 @@ function possibleStageRows(
 		const segments = stickySegments(entry);
 		return !(segments !== undefined && segments.length === 1 && segments[0] === "**");
 	});
+	const liveStageMatches = materializedStageMatcher(runs, rootRunId);
 	const rows: {
 		readonly target: string;
 		readonly queuedCount: number;
@@ -474,10 +481,7 @@ function possibleStageRows(
 	for (const scanEntry of rootRun.possibleStages ?? []) {
 		const rowSegments = splitStagePathSegments(scanEntry);
 		if (rowSegments.length === 0 || rowSegments.some((segment) => segment.length === 0)) continue;
-		if (
-			!rowSegments.some((segment) => segment.includes("*")) &&
-			materializedStageMatches(runs, rootRunId, rowSegments)
-		) {
+		if (!rowSegments.some((segment) => segment.includes("*")) && liveStageMatches(rowSegments)) {
 			continue;
 		}
 		rows.push({
@@ -497,31 +501,49 @@ function possibleStageRows(
 		}).length,
 	});
 	const statuses = stickyStageDeliveryStatuses(runs, rootRunId, backend);
-	for (const target of new Set(statuses.map((status) => status.target))) {
-		if (rows.some((row) => row.target === target)) continue;
-		rows.push({
-			target,
-			queuedCount: stickyQueued.filter((entry) => (entry.targetPath ?? entry.stageKey) === target).length,
-			deliveryOnly: true,
-		});
+	const statusesByTarget = new Map<string, StickyStageDeliveryStatus[]>();
+	for (const status of statuses) {
+		const forTarget = statusesByTarget.get(status.target);
+		if (forTarget === undefined) statusesByTarget.set(status.target, [status]);
+		else forTarget.push(status);
+	}
+	const queuedByTarget = new Map<string, number>();
+	for (const entry of stickyQueued) {
+		const target = entry.targetPath ?? entry.stageKey;
+		queuedByTarget.set(target, (queuedByTarget.get(target) ?? 0) + 1);
+	}
+	const rowTargets = new Set(rows.map((row) => row.target));
+	for (const target of statusesByTarget.keys()) {
+		if (rowTargets.has(target)) continue;
+		rowTargets.add(target);
+		rows.push({ target, queuedCount: queuedByTarget.get(target) ?? 0, deliveryOnly: true });
 	}
 	for (let index = 0; index < rows.length; index++) {
 		const row = rows[index]!;
-		const deliveryStates = statuses.filter((status) => status.target === row.target);
-		if (deliveryStates.length > 0) rows[index] = { ...row, deliveryStates };
+		const deliveryStates = statusesByTarget.get(row.target);
+		if (deliveryStates !== undefined) rows[index] = { ...row, deliveryStates };
 	}
 	return rows;
 }
 
-/** True when a glob-free scan entry names a route-eligible materialized stage of the invocation. */
-function materializedStageMatches(
+/** Whether a glob-free scan entry names a route-eligible materialized stage of the invocation. */
+function materializedStageMatcher(
 	runs: ReturnType<Store["runs"]>,
 	rootRunId: string,
+): (entrySegments: readonly string[]) => boolean {
+	const runById = new Map(runs.map((run) => [run.id, run]));
+	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
+	const invocationRuns = runs.filter((run) => reciprocalWorkflowRootRunId(runById, run.id) === rootRunId);
+	return (entrySegments) => materializedStageMatches(invocationRuns, hopsFor, entrySegments);
+}
+
+function materializedStageMatches(
+	invocationRuns: ReturnType<Store["runs"]>,
+	hopsFor: ReturnType<typeof createWorkflowBoundaryHopsResolver>,
 	entrySegments: readonly string[],
 ): boolean {
-	for (const run of runs) {
-		if (durableRootRunIdForRun(runs, run.id) !== rootRunId) continue;
-		const hops = workflowBoundaryHops(runs, run.id);
+	for (const run of invocationRuns) {
+		const hops = hopsFor(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			if (stage.pendingStageDeliveryAvailable !== true) continue;
@@ -967,9 +989,11 @@ function matchingLiveStages(
 		readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
 		readonly target: string;
 	}[] = [];
+	const runById = new Map(runs.map((run) => [run.id, run]));
+	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
 	for (const run of runs) {
-		if (durableRootRunIdForRun(runs, run.id) !== rootRunId) continue;
-		const hops = workflowBoundaryHops(runs, run.id);
+		if (reciprocalWorkflowRootRunId(runById, run.id) !== rootRunId) continue;
+		const hops = hopsFor(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;

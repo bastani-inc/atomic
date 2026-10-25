@@ -25,9 +25,10 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import net from "node:net";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterAll, test } from "vitest";
 import { IntercomWireProxy } from "../helpers/intercom-wire-proxy.js";
@@ -57,6 +58,26 @@ const PEER_NAME = "fanout-peer";
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const WORKER_STARTUP_TIMEOUT_MS = 120_000;
 const FANOUT_TEST_TIMEOUT_MS = 600_000;
+
+/** Pattern fan-out (#3931): every stage sends this many times to a sibling pattern target, or every 20th to `/**`. */
+const PATTERN_CHILDREN = 150;
+const PATTERN_SENDS_PER_STAGE = 6;
+const PATTERN_BROADCAST_EVERY = 20;
+/** Mean interval between one stage's sends (jittered 0.5x to 1.5x). */
+const PATTERN_SEND_INTERVAL_MS = 1_000;
+/**
+ * Root host bounds while the pattern fan-out runs (#3931). Before the fix the host matched every
+ * sticky entry against every stage on each change: 550 to 584 of 900 sends succeeded and lag was
+ * p99 0.8 to 1.3 s, max 5.7 to 9.1 s. After it, all sends succeed and lag is p99 150 to 175 ms,
+ * max 0.3 to 1.4 s. Unlike production, this process also runs the 150 stage Intercom sessions
+ * and the broker proxy, which parse every multi-megabyte `list` reply and roster frame (the
+ * delivery states of each stage and sticky entry); production runs stages in pool workers. The
+ * bounds allow for that extra load; the unfixed lag still exceeds them several times over.
+ */
+const PATTERN_LAG_P99_BOUND_MS = 250;
+const PATTERN_LAG_MAX_BOUND_MS = 2_500;
+/** At least 99% of sends (891 of 900) must succeed. */
+const PATTERN_SEND_SUCCESS_RATIO = 0.99;
 
 // The Intercom client resolves its broker socket when it loads, so the isolated agent
 // directory is in place before anything that reaches it is imported. Clients use the
@@ -260,6 +281,53 @@ async function runStage(stage: PooledStage, group = ROOT_GROUP): Promise<StageOu
 		await host.shutdown().catch(() => {});
 	}
 	return { runId: stage.runId, failures, delivered };
+}
+
+interface PatternSendOutcome {
+	readonly sends: number;
+	readonly failures: string[];
+}
+
+/** Starts one pooled stage and sends to sibling pattern targets, as a stage of a chatty fan-out does. */
+async function runPatternStage(
+	stage: PooledStage,
+	targets: readonly string[],
+	group: string,
+): Promise<PatternSendOutcome> {
+	const failures: string[] = [];
+	const host = hostSession(stage.sessionId, {
+		intercomGroup: group,
+		kind: "workflow-stage",
+		workflowRunId: stage.runId,
+		workflowStageId: stage.stageId,
+		workflowStageName: stage.stageName,
+		pendingStageDelivery: {
+			routeCapability: stage.capability,
+			async ready() {},
+			async deliverPending() {},
+			fail(reason) {
+				failures.push(`stage warm-up: ${reason.message}`);
+			},
+		},
+	});
+	intercom(host.pi as never);
+	let sends = 0;
+	try {
+		await host.start();
+		for (const to of targets) {
+			await sleep(PATTERN_SEND_INTERVAL_MS * (0.5 + Math.random()));
+			sends++;
+			try {
+				const result = await host.intercom({ action: "send", to, message: `hello from ${stage.runId}` });
+				if (result.isError) failures.push(`send ${to}: ${result.content.map((part) => part.text).join("\n")}`);
+			} catch (error) {
+				failures.push(`send ${to}: ${(error as Error).message}`);
+			}
+		}
+	} finally {
+		await host.shutdown().catch(() => {});
+	}
+	return { sends, failures };
 }
 
 /** A broker in its own directory, reached only through a proxy on the clients' broker socket. */
@@ -602,6 +670,158 @@ test.skipIf(process.platform === "win32")(
 			disposeBridge();
 			await root.shutdown().catch(() => {});
 			await peer.disconnect().catch(() => {});
+			await new Promise<void>((resolve) => stages.close(() => resolve()));
+			await broker.stop();
+		}
+	},
+	FANOUT_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"pooled children sending to sibling pattern targets keep the root host responsive and their sends succeed (#3931)",
+	async () => {
+		const rootRunId = testRunId("pool-intercom-pattern-root");
+		const rootGroup = `workflow:${rootRunId}`;
+		const rootSessionId = testRunId("pool-intercom-pattern-root-session");
+		const testDirectory = join(directory, "pattern");
+		mkdirSync(testDirectory, { recursive: true });
+		const broker = await startProxiedBroker(join(directory, "pattern-broker"));
+		const path = join(testDirectory, "journal.sqlite");
+		const stageSocket = join(testDirectory, "stages.sock");
+		const failureLog = join(testDirectory, "stub-failures.log");
+		writeTextSync(
+			join(testDirectory, "fanout-config.json"),
+			JSON.stringify({ stageSocket, failureLog, heartbeatMs: WORKER_HEARTBEAT_MS }),
+		);
+
+		const outcomes: PatternSendOutcome[] = [];
+		const stageRuns = new Set<Promise<void>>();
+		let stagesStarted = 0;
+		const stages = net.createServer((socket) => {
+			let buffer = "";
+			socket.setEncoding("utf8");
+			socket.on("data", (chunk: string) => {
+				buffer += chunk;
+				const end = buffer.indexOf("\n");
+				if (end < 0) return;
+				const stage = JSON.parse(buffer.slice(0, end)) as PooledStage;
+				buffer = "";
+				const index = stagesStarted++;
+				const target =
+					index % PATTERN_BROADCAST_EVERY === 0
+						? `${rootGroup}/**`
+						: `${rootGroup}/child-c${String((index + 1) % PATTERN_CHILDREN).padStart(3, "0")}/**`;
+				const stageRun = runPatternStage(stage, Array(PATTERN_SENDS_PER_STAGE).fill(target), rootGroup)
+					.catch(
+						(error: unknown): PatternSendOutcome => ({
+							sends: 0,
+							failures: [
+								`stage ${stage.sessionId} start: ${error instanceof Error ? error.message : String(error)}`,
+							],
+						}),
+					)
+					.then((outcome) => {
+						outcomes.push(outcome);
+						socket.end(`${JSON.stringify({ done: true })}\n`);
+					});
+				stageRuns.add(stageRun);
+			});
+		});
+		await new Promise<void>((resolve) => stages.listen(stageSocket, resolve));
+
+		const store = createStore();
+		const root = hostSession(rootSessionId, { intercomGroup: "default" });
+		intercom(root.pi as never);
+		const disposeBridge = registerPendingStageIntercomBridge({ events: root.pi.events }, store);
+		await root.start();
+
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const childPath = fileURLToPath(new URL("../fixtures/pool-intercom-fanout-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "child",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: PATTERN_CHILDREN,
+			definitions: [{ definition: child, path: childPath, exportName: "child" }],
+			startupTimeoutMs: WORKER_STARTUP_TIMEOUT_MS,
+			workerEntry: fileURLToPath(new URL("../fixtures/pool-intercom-stub-worker.mjs", import.meta.url)),
+		});
+		const parent = workflow({
+			name: "pool-intercom-pattern-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await Promise.all(
+					Array.from({ length: PATTERN_CHILDREN }, (_, index) => ctx.workflow(child, { inputs: { index } })),
+				);
+				return {};
+			},
+		});
+		// This process is the workflow host: its main thread runs the root, the pool coordinator and the routes.
+		// Unlike production, it also runs every stage's Intercom session, so its lag and CPU overstate the host's.
+		const lag = monitorEventLoopDelay({ resolution: 5 });
+		lag.enable();
+		const cpuBefore = process.cpuUsage();
+		const startedAt = performance.now();
+		try {
+			const outcome = await run(
+				parent,
+				{},
+				{ runId: rootRunId, cwd: testDirectory, store, durableBackend: backend },
+			).then(
+				(result) => ({ status: result.status, error: result.error }),
+				(error: Error) => ({ status: "rejected", error: error.message }),
+			);
+			await Promise.all(stageRuns);
+			lag.disable();
+			const elapsedMs = performance.now() - startedAt;
+			const cpu = process.cpuUsage(cpuBefore);
+			const sends = outcomes.reduce((sum, entry) => sum + entry.sends, 0);
+			const failures = outcomes.flatMap((entry) => entry.failures);
+			const succeeded = sends - failures.length;
+			const lagMs = (nanoseconds: number) => Math.round(Math.max(0, nanoseconds / 1e6 - 5));
+			const report = {
+				children: PATTERN_CHILDREN,
+				stagesStarted,
+				sends,
+				succeeded,
+				elapsedMs: Math.round(elapsedMs),
+				hostCpuShare: Math.round(((cpu.user + cpu.system) / 1e3 / elapsedMs) * 100) / 100,
+				mainThreadLag: {
+					p50Ms: lagMs(lag.percentile(50)),
+					p99Ms: lagMs(lag.percentile(99)),
+					maxMs: lagMs(lag.max),
+				},
+				journalBytes: statSync(path).size,
+				run: outcome,
+				sampleFailures: failures.slice(0, 5),
+			};
+			console.log(`[pool-intercom-pattern #3931] ${JSON.stringify(report, null, 2)}`);
+			assert.deepEqual(outcome, { status: "completed", error: undefined });
+			assert.equal(stagesStarted, PATTERN_CHILDREN);
+			assert.ok(
+				succeeded >= sends * PATTERN_SEND_SUCCESS_RATIO && sends === PATTERN_CHILDREN * PATTERN_SENDS_PER_STAGE,
+				`${succeeded} of ${sends} pattern sends succeeded; samples: ${failures.slice(0, 5).join("\n")}`,
+			);
+			assert.ok(
+				report.mainThreadLag.p99Ms < PATTERN_LAG_P99_BOUND_MS,
+				`root host main-thread lag p99 ${report.mainThreadLag.p99Ms} ms exceeds ${PATTERN_LAG_P99_BOUND_MS} ms (max ${report.mainThreadLag.maxMs} ms)`,
+			);
+			assert.ok(
+				report.mainThreadLag.maxMs < PATTERN_LAG_MAX_BOUND_MS,
+				`root host main-thread lag max ${report.mainThreadLag.maxMs} ms exceeds ${PATTERN_LAG_MAX_BOUND_MS} ms`,
+			);
+		} finally {
+			lag.disable();
+			await pool.close();
+			await backend.close();
+			disposeBridge();
+			await root.shutdown().catch(() => {});
 			await new Promise<void>((resolve) => stages.close(() => resolve()));
 			await broker.stop();
 		}

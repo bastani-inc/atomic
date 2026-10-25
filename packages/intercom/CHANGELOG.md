@@ -4,6 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Intercom `send` and `ask` to a workflow-stage target (`workflow:<rootRunId>/...`, including patterns) no longer fetch the whole session list before sending. The broker resolves those targets itself, so the extra request only added load, and when many stages sent at once some sends failed with `List sessions timeout` ([#3931](https://github.com/bastani-inc/atomic/issues/3931))
+- Receiving a large Intercom message (for example a big workflow roster) no longer copies its data again for every chunk that arrives, which made large frames cost quadratic time ([#3931](https://github.com/bastani-inc/atomic/issues/3931))
+
 ## [0.9.44-alpha.2] - 2026-10-24
 
 ### Changed
