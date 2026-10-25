@@ -47,14 +47,14 @@ export function boundPossibleStageDeliveryStates(
  * child; run order and every other field leave it unchanged.
  */
 export class WorkflowTopologyIndex {
-	private lineage: unknown[] = [];
+	private lineage: LineageValue[] = [];
 	private runById = new Map<string, RunSnapshot>();
 	private readonly roots = new Map<string, string | undefined>();
 	private readonly hops = new Map<string, readonly WorkflowBoundaryHop[] | undefined>();
 
 	refresh(runs: readonly RunSnapshot[]): void {
 		const runById = new Map(runs.map((run) => [run.id, run]));
-		const lineage: unknown[] = [];
+		const lineage: LineageValue[] = [];
 		for (const run of runs) {
 			lineage.push(run.id, run.rootRunId, run.parentRunId, run.parentStageId);
 			if (run.parentRunId === undefined) continue;
@@ -100,7 +100,10 @@ function boundaryHops(
 	return current === undefined ? undefined : hops;
 }
 
-function sameValues(left: readonly unknown[], right: readonly unknown[]): boolean {
+/** One field of a run's lineage: an id, or whether its parent run exists. */
+type LineageValue = string | boolean | undefined;
+
+function sameValues<Value>(left: readonly Value[], right: readonly Value[]): boolean {
 	if (left.length !== right.length) return false;
 	for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
 	return true;

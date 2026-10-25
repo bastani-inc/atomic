@@ -1088,6 +1088,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		this.foldedAt.delete(runId);
 		this.summarized.delete(runId);
 		this.prompts.delete(runId);
+		this.reconciledPendingStages.delete(runId);
 		void this.projection.deleteWorkflow(runId);
 	}
 	async deleteWorkflow(runId: string): Promise<void> {

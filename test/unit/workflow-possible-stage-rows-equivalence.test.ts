@@ -18,6 +18,7 @@ import {
 	PossibleStageRowsIndex,
 	WorkflowTopologyIndex,
 } from "../../packages/workflows/src/shared/possible-stage-rows.js";
+import { STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT } from "../../packages/workflows/src/shared/sticky-delivery-state-bound.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	PendingStageMessage,
@@ -421,4 +422,106 @@ test("the bridge announces the root exactly when its route or possible-stage row
 	}
 	// Both decisions must occur: unchanged roots are skipped, changed roots are announced.
 	assert.ok(announced > 100 && skipped > 100, `announced ${announced}, skipped ${skipped}`);
+});
+
+test("a change to an omitted delivery state does not re-announce the root (#3951)", async () => {
+	const children = STICKY_DELIVERY_STATE_EXEMPLAR_LIMIT + 2;
+	const childId = (index: number) => testRunId(`possible-stage-rows-omitted-child-${index}`);
+	const store = createStore();
+	store.recordRunStart({
+		id: ROOT_RUN_ID,
+		name: "pool",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: Array.from({ length: children }, (_, index) => ({
+			id: `child-c${index}`,
+			name: `child-c${index}`,
+			status: "running",
+			parentIds: [],
+			toolEvents: [],
+			workflowChildRun: { runId: childId(index), alias: "child", workflow: "child" },
+		})),
+		startedAt: 1,
+		pendingStageMessages: [
+			{
+				id: "broadcast",
+				runId: ROOT_RUN_ID,
+				stageKey: `workflow:${ROOT_RUN_ID}/**`,
+				targetPath: `workflow:${ROOT_RUN_ID}/**`,
+				from: { id: "planner", name: "planner" },
+				message: { id: "broadcast", timestamp: 1, content: { text: "scope" } },
+				queuedAt: "2026-10-25T00:00:00.000Z",
+				admissionOrder: 1,
+				status: "queued",
+				sticky: true,
+				deliveries: [],
+				deliveryCount: 0,
+			},
+		],
+	} as RunSnapshot);
+	for (let index = 0; index < children; index++) {
+		store.recordRunStart({
+			id: childId(index),
+			name: `child-c${index}`,
+			inputs: {},
+			status: "running",
+			parentRunId: ROOT_RUN_ID,
+			parentStageId: `child-c${index}`,
+			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
+			stages: [
+				{
+					id: "worker",
+					name: "worker",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 2,
+		} as RunSnapshot);
+	}
+	const backend = await createMemoryTestBackend();
+	await backend.commitWorkflowRegistration({
+		workflowId: ROOT_RUN_ID,
+		name: "pool",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	bindStoreDurableBackend(store, backend);
+	const roots: Record<string, unknown>[] = [];
+	const bridge = registerPendingStageIntercomBridge(
+		{
+			events: {
+				emit(event: string, payload: Record<string, unknown>) {
+					if (event !== "atomic:workflow-pending-stage-route") return;
+					payload.completion = Promise.resolve();
+					if (payload.runId === ROOT_RUN_ID) roots.push(payload);
+				},
+				on: () => () => {},
+			},
+		},
+		store,
+	);
+	try {
+		const rows = roots.at(-1)?.possibleStages as PossibleStageRow[];
+		const broadcast = rows.find((row) => row.target === `workflow:${ROOT_RUN_ID}/**`);
+		assert.equal(broadcast?.omittedDeliveryStates, 2);
+		const announced = roots.length;
+		// The last child's worker is outside the exemplars: attaching its session changes only an omitted state.
+		const worker = store.runs().find((run) => run.id === childId(children - 1))!.stages[0]!;
+		Object.assign(worker, { sessionId: "late-session" });
+		bridge.refresh();
+		assert.equal(roots.length, announced, "the root was announced again for an omitted state");
+		// A change to a listed state is announced.
+		const first = store.runs().find((run) => run.id === childId(0))!.stages[0]!;
+		Object.assign(first, { sessionId: "first-session" });
+		bridge.refresh();
+		assert.equal(roots.length, announced + 1);
+	} finally {
+		bridge();
+	}
 });

@@ -6,6 +6,8 @@
  * tests check the folded list against reconciling the whole persisted list, live and after replay.
  */
 import assert from "node:assert/strict";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -139,4 +141,65 @@ test("folded sticky entries carry their archived delivery counts, live and after
 	}
 	// Archived counts must actually raise entries, or the comparison proves little.
 	assert.ok(raised > SEEDS * 5, `only ${raised} receipts raised a count`);
+});
+
+/** A full garbage collection, available in any worker without `--expose-gc` on the command line. */
+function collectGarbage(): () => void {
+	setFlagsFromString("--expose-gc");
+	return runInNewContext("gc") as () => void;
+}
+
+/** A weak reference to the run's folded pending list, so the test itself does not keep the list alive. */
+async function foldedListReference(
+	backend: JournalDurableBackend<MemoryRunJournal>,
+	runId: string,
+): Promise<WeakRef<readonly PendingStageMessage[]>> {
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "fold",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	const id = `release-${runId}`;
+	assert.equal(
+		await backend.persistPendingStageMessages(runId, [
+			{
+				id,
+				runId,
+				stageKey: `workflow:${runId}/**`,
+				from: { id: "planner", name: "planner" },
+				message: { id, timestamp: 1, content: { text: id } },
+				queuedAt: "2026-10-25T00:00:00.000Z",
+				admissionOrder: 1,
+				status: "queued",
+				sticky: true,
+				deliveries: [],
+				deliveryCount: 0,
+			} as PendingStageMessage,
+		]),
+		true,
+	);
+	await backend.archivePendingStageDeliveryReceipt(
+		runId,
+		id,
+		{ runId, stageId: "worker", deliveredAt: "2026-10-25T00:00:01.000Z" },
+		{ messageRunId: runId, deliveryCount: 2 },
+	);
+	const list = backend.getWorkflow(runId)?.pendingStageMessages;
+	assert.equal(list?.[0]?.deliveryCount, 2);
+	return new WeakRef(list!);
+}
+
+test("deleting a run and resetting the journal release its folded pending list", async () => {
+	const gc = collectGarbage();
+	const backend = await open(new MemoryRunJournal());
+	const deleted = await foldedListReference(backend, testRunId("journal-fold-release-deleted"));
+	await backend.deleteWorkflow(testRunId("journal-fold-release-deleted"));
+	const reset = await foldedListReference(backend, testRunId("journal-fold-release-reset"));
+	await backend.commitReset();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	gc();
+	assert.equal(deleted.deref(), undefined, "a deleted run's folded list stays reachable");
+	assert.equal(reset.deref(), undefined, "a reset run's folded list stays reachable");
 });
