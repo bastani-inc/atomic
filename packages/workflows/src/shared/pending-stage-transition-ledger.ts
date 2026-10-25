@@ -194,6 +194,8 @@ function isEndedStageStatus(status: string | undefined): boolean {
 /**
  * Archive and drop one entry's delivery receipts that no longer gate delivery. A receipt is archived
  * with every receipt before it, so the durable count always covers a prefix of the entry's deliveries.
+ * A prefix receipt kept in the list is already durable after its first archive, so it is not written
+ * again when a later receipt is archived: each delivery is archived once.
  */
 async function compactEntryDeliveries(
 	backend: CompactingBackend,
@@ -217,11 +219,13 @@ async function compactEntryDeliveries(
 		) {
 			while (archivedThrough < index) {
 				const prefixIndex = archivedThrough + 1;
-				await backend.archivePendingStageDeliveryReceipt(runId, entry.id, entry.deliveries[prefixIndex]!, {
-					messageRunId: entry.runId,
-					deliveryCount:
-						(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
-				});
+				const receipt = entry.deliveries[prefixIndex]!;
+				if (!(await backend.hasPendingStageDeliveryReceipt(runId, entry.id, receipt, entry.runId)))
+					await backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, {
+						messageRunId: entry.runId,
+						deliveryCount:
+							(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
+					});
 				archivedThrough = prefixIndex;
 			}
 		} else {

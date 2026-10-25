@@ -3,7 +3,9 @@ import { afterEach, describe, test } from "vitest";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { RUN_EVENT_TYPES, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
@@ -24,6 +26,7 @@ import {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	PendingStageMessage,
+	PendingStageMessageDelivery,
 	PendingStageMessageInput,
 	RunStatus,
 	StageStatus,
@@ -2226,4 +2229,110 @@ test("live message validation works without a global durable backend (#3467)", a
 		}),
 		{ outcome: "forward" },
 	);
+});
+
+test("archives each sticky delivery receipt once as later stages finish first", async () => {
+	const journal = new MemoryRunJournal();
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	try {
+		const stages = ["a", "b", "c"].map((name) =>
+			baseStage({ id: `${name}-id`, name, status: "running", sessionId: `${name}-session` }),
+		);
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages,
+			startedAt: 1,
+		});
+		await backend.commitWorkflowRegistration({
+			workflowId: ROOT_RUN_ID,
+			name: "flow",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		bindStoreDurableBackend(store, backend);
+		await store.queueStickyStageMessage(
+			stickyInput("broadcast", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		const notice = stages.map((stage) => ({
+			runId: ROOT_RUN_ID,
+			stageId: stage.id,
+			stageName: stage.name,
+			sessionId: stage.sessionId,
+			admission: "transport" as const,
+		}));
+		await store.recordPendingStageMessageDeliveries(
+			ROOT_RUN_ID,
+			"broadcast",
+			notice,
+			"2026-09-01T00:00:01.000Z",
+			backend,
+		);
+		// Stages end last-delivered first while new stages keep receiving the message, as pooled children do,
+		// and the original notice keeps arriving.
+		for (const stage of [...stages].reverse()) {
+			store.recordStageEnd(ROOT_RUN_ID, { ...stage, status: "completed" });
+			const late = baseStage({
+				id: `late-${stage.name}-id`,
+				name: `late-${stage.name}`,
+				status: "running",
+				sessionId: `late-${stage.name}-session`,
+			});
+			store.recordStageStart(ROOT_RUN_ID, late);
+			await store.recordPendingStageMessageDeliveries(
+				ROOT_RUN_ID,
+				"broadcast",
+				[
+					...notice,
+					{
+						runId: ROOT_RUN_ID,
+						stageId: late.id,
+						stageName: late.name,
+						sessionId: late.sessionId,
+						admission: "transport" as const,
+					},
+				],
+				"2026-09-01T00:00:02.000Z",
+				backend,
+			);
+		}
+		const receipts: { stageId: string; deliveredAt: string; deliveryCount: number | undefined }[] = [];
+		for await (const entry of journal.read(ROOT_RUN_ID)) {
+			if (entry.event.type !== RUN_EVENT_TYPES.messageDelivered) continue;
+			const payload = entry.event.payload as unknown as {
+				delivery: PendingStageMessageDelivery;
+				accounting?: { deliveryCount: number };
+			};
+			receipts.push({
+				stageId: payload.delivery.stageId,
+				deliveredAt: payload.delivery.deliveredAt,
+				deliveryCount: payload.accounting?.deliveryCount,
+			});
+		}
+		assert.deepEqual(
+			receipts.map(({ stageId }) => stageId).sort(),
+			["a-id", "b-id", "c-id"],
+			"each delivery is archived exactly once",
+		);
+		assert.ok(receipts.every(({ deliveredAt }) => deliveredAt === "2026-09-01T00:00:01.000Z"));
+		assert.deepEqual(receipts.map(({ deliveryCount }) => deliveryCount).sort(), [1, 2, 3]);
+		const entry = store.runs()[0]?.pendingStageMessages?.find((candidate) => candidate.id === "broadcast");
+		assert.equal(entry?.deliveryCount, 6);
+		assert.deepEqual(
+			entry?.deliveries?.map(({ stageId }) => stageId),
+			["late-c-id", "late-b-id", "late-a-id"],
+		);
+		assert.equal(backend.getPendingStageMessageDeliveryCount(ROOT_RUN_ID, "broadcast"), 3);
+	} finally {
+		await backend.close();
+		await journal.close();
+	}
 });
