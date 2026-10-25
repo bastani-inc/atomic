@@ -1,4 +1,8 @@
-import { type DurableWorkflowBackend, durableHash } from "../durable/backend.js";
+import {
+	type DurableWorkflowBackend,
+	durableHash,
+	STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX,
+} from "../durable/backend.js";
 import { DurableNestedTopologyError } from "../durable/boundary-topology.js";
 import { durableCompletedNestedRunSubtree } from "../durable/completed-subtree.js";
 import {
@@ -188,7 +192,7 @@ export function createDurableCachedStageRecorder(input: {
 					: input.backend.commitCheckpoint({
 							kind: "stage",
 							workflowId: input.run.id,
-							checkpointId: `stage-replay-meta:${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
+							checkpointId: `${STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX}${durableHash({ replayKey, stageId: stage.id, parentIds: stage.parentIds })}`,
 							name,
 							replayKey,
 							completedAt: Date.now(),
