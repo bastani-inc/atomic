@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.5] - 2026-10-25
+
+Large workflow fan-outs keep their Intercom routes and journal writes responsive under load.
+
+- **A workflow host that keeps up:** route announcements are batched instead of rebuilt for every run on every store change, so heavy fan-outs no longer saturate the workflow host and time out Intercom sends ([#3939](https://github.com/bastani-inc/atomic/pull/3939))
+- **Stages that start under journal contention:** a busy workflow journal no longer fails pooled stages with `Storage unavailable`; writers wait for the lock without blocking their event loop, and the SQLite reason stays in the error ([#3940](https://github.com/bastani-inc/atomic/pull/3940))
+
 ### Fixed
 
 - A local SQLite store (`node-sqlite`, including the workflow journal) now waits for another process's write lock instead of failing after the 5 second busy timeout. When the lock is busy, it retries the start of the write transaction for up to 30 seconds without blocking the event loop. Single statements outside a transaction still use the configured busy timeout. Other failures, and a lock still held at that point, fail at once. `Storage unavailable` errors now include the SQLite reason, such as `database is locked (SQLite code 5)`, so the reason survives when local workers pass an error to another process
