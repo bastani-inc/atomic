@@ -14,8 +14,14 @@ export class StorageUnavailableError extends StorageError {
 	readonly adapter: string;
 	readonly location: string;
 	declare readonly cause: StorageFailureCause;
-	constructor(descriptor: StorageDescriptor, cause: StorageFailureCause) {
-		super(`Storage unavailable: ${descriptor.adapter} at ${descriptor.location}`, { cause });
+	/**
+	 * `detail` names the driver failure in the message: a worker or coordinator that relays only `message` across
+	 * a process boundary keeps the reason. Adapters pass it only for causes that cannot carry credentials.
+	 */
+	constructor(descriptor: StorageDescriptor, cause: StorageFailureCause, detail?: string) {
+		super(`Storage unavailable: ${descriptor.adapter} at ${descriptor.location}${detail ? `: ${detail}` : ""}`, {
+			cause,
+		});
 		this.adapter = descriptor.adapter;
 		this.location = descriptor.location;
 	}

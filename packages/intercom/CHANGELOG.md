@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- A pooled workflow stage whose Intercom extension delivers queued messages at startup no longer fails with `Extension startup failed: …intercom…: Storage unavailable: node-sqlite at <journal>` while other processes are writing heavily to the workflow journal. The journal write now waits for the lock, and any remaining failure states its SQLite cause
+
 ## [0.9.44-alpha.3] - 2026-10-25
 
 ### Fixed

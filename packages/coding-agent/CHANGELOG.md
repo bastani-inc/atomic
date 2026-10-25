@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A local SQLite store (`node-sqlite`, including the workflow journal) now waits for another process's write lock instead of failing after the 5 second busy timeout. When the lock is busy, it retries the start of the write transaction for up to 30 seconds without blocking the event loop. Single statements outside a transaction still use the configured busy timeout. Other failures, and a lock still held at that point, fail at once. `Storage unavailable` errors now include the SQLite reason, such as `database is locked (SQLite code 5)`, so the reason survives when local workers pass an error to another process
+
 ## [0.9.44-alpha.4] - 2026-10-25
 
 Workflow journals stay small even when many stages write to the same run at once.
