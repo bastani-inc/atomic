@@ -84,10 +84,16 @@ export function createWorkflowPendingStageDelivery(
 	let drainError: Error | undefined;
 	let terminalError: WorkflowPendingStageDeliveryFailedError | undefined;
 	let drainPromise: Promise<void> | undefined;
+	// The session the last drain completed for. Intercom's startup replay drains again once the session holds its
+	// live route, and readiness is asked only after that replay, so a sticky entry still undelivered was queued
+	// after the drain and reaches the session as live traffic: it must not hold the stage before its first turn.
+	let drainedSessionId: string | undefined;
 	let currentRecipient: WorkflowPendingStageRecipient;
-	const hasUndelivered = (sessionId?: string): boolean =>
+	const hasUndeliveredExact = (): boolean =>
 		activeStore.pendingStageMessagesFor(runId, stageId).length > 0 ||
-		(stageId !== stageName && activeStore.pendingStageMessagesFor(runId, stageName).length > 0) ||
+		(stageId !== stageName && activeStore.pendingStageMessagesFor(runId, stageName).length > 0);
+	const hasUndelivered = (sessionId?: string): boolean =>
+		hasUndeliveredExact() ||
 		stickyPendingStageEntriesForStage(
 			activeStore,
 			runId,
@@ -126,6 +132,7 @@ export function createWorkflowPendingStageDelivery(
 			);
 			const drain = attempt.then(
 				() => {
+					drainedSessionId = recipient?.sessionId;
 					resolveReady?.();
 					readyPromise = undefined;
 					resolveReady = undefined;
@@ -153,6 +160,14 @@ export function createWorkflowPendingStageDelivery(
 			}
 			if (terminalError !== undefined) return Promise.reject(terminalError);
 			if (drainError !== undefined) return Promise.reject(drainError);
+			// Nothing replays this stage's queue again, so parking here would hold the stage forever.
+			if (
+				drainPromise === undefined &&
+				sessionId !== undefined &&
+				drainedSessionId === sessionId &&
+				!hasUndeliveredExact()
+			)
+				return undefined;
 			const ready = pendingReady();
 			if (
 				sessionId !== undefined &&

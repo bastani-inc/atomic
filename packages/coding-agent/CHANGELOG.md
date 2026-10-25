@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow stage no longer waits forever before its first turn when an Intercom message to a pattern target such as `workflow:<run>/child-a/**` is queued just after the stage's queued messages were delivered at startup. The stage now starts once that startup delivery has finished, and later messages reach it as ordinary live messages. Before, the stage waited for a second delivery that never ran, so its prompt was never sent and its pooled work stayed leased with its lease still renewed. In a 640-child pooled load test this left 7 children (about 1%) stuck for 20–45 minutes.
+
 ## [0.9.44-alpha.6] - 2026-10-25
 
 Large workflow fan-outs stay fast for the whole run and recover cleanly from a crash, even with hundreds of pooled child workflows messaging each other.
