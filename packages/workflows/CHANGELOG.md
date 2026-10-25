@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Large workflow fan-outs no longer saturate the local worker pool's coordinator. Every pool commit, including each batch of session transcript entries, was checked for JSON-serializability with a recursive schema whose `$ref` evaluation cost far more than the write itself, so with 160 workers the coordinator spent about 90% of its time validating and stages stopped starting. Plain JSON values now pass a direct structural check; anything unusual still goes through the schema, with the same errors.
+
 ## [0.9.44-alpha.5] - 2026-10-25
 
 ### Fixed
