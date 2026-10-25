@@ -466,9 +466,10 @@ export class SqlRunJournal implements RunJournal {
 
 	/**
 	 * Append several events to one run in one transaction, checking the lease once and assigning consecutive
-	 * sequences in order. Each append keeps the pool append guard of the context that issued it and runs in its
-	 * own savepoint, so one append's guard or payload failure is reported for it alone and the rest still
-	 * commit. A lease or storage failure rejects the whole batch, with nothing written.
+	 * sequences in order. Each append is checked by the pool append guard of the context that issued it, or by none
+	 * when that context had none, whatever guard the batch itself runs under. Each runs in its own savepoint, so
+	 * one append's guard or payload failure is reported for it alone and the rest still commit. A lease or storage
+	 * failure rejects the whole batch, with nothing written.
 	 */
 	private async appendMany(
 		lease: Lease,
@@ -480,8 +481,12 @@ export class SqlRunJournal implements RunJournal {
 		const owned = { ...lease };
 		const prepared = appends.map((append) => {
 			try {
-				const guard = append.context?.(() => this.appendGuard.getStore()) ?? this.appendGuard.getStore();
-				return this.prepare(append.event, append.key, guard);
+				// Exactly the guard the append's own caller had, none included: never the batch's ambient guard.
+				return this.prepare(
+					append.event,
+					append.key,
+					append.context(() => this.appendGuard.getStore()),
+				);
 			} catch (error) {
 				return error as Error;
 			}

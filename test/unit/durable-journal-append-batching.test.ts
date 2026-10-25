@@ -246,6 +246,59 @@ test("a pool append guard failure rejects only its own receipt in a batch", asyn
 	assert.equal(backend.hasCachedPendingStageDeliveryReceipt("run", sticky.id, delivery(3)), true);
 });
 
+test("a stale worker's guarded receipt opening a batch does not reject the unguarded receipt and settlement after it", async () => {
+	const { path, journal, transactions } = await countingJournal();
+	const backend = await openBackend(journal);
+	await register(backend);
+	const sticky = message("sticky");
+	const settled = message("settled", 2);
+	assert.equal(await backend.persistPendingStageMessages("run", [sticky, settled]), true);
+	const storage = sqlPoolStorage(journal)!;
+	const before = (await journalEntries(journal)).length;
+	const started = transactions();
+	const stale = new Error("Stale work lease");
+	const results = await Promise.allSettled([
+		storage.withAppendGuard(
+			async () => {
+				throw stale;
+			},
+			() => receiptBurst(backend, sticky.id, 1)[0]!,
+		),
+		receiptBurst(backend, sticky.id, 1, 1)[0]!,
+		backend.archivePendingStageMessage("run", settled),
+	]);
+	assert.deepEqual(
+		results.map((result) => result.status),
+		["rejected", "fulfilled", "fulfilled"],
+	);
+	assert.equal((results[0] as PromiseRejectedResult).reason, stale);
+	assert.equal(transactions() - started, 1);
+	const written = (await journalEntries(journal)).slice(before);
+	assert.deepEqual(
+		written.map((entry) => [entry.seq, entry.event.type]),
+		[
+			[before + 1, RUN_EVENT_TYPES.messageDelivered],
+			[before + 2, RUN_EVENT_TYPES.messageSettled],
+		],
+	);
+	const ids = [sticky.id, settled.id];
+	const live = {
+		...projectionState(backend, ids, 2),
+		settled: await backend.readSettledPendingStageMessage("run", settled.id),
+	};
+	assert.deepEqual(live.receipts, [false, true]);
+	assert.deepEqual(live.settled, settled);
+	await backend.close();
+	const reopened = await openBackend((await countingJournal(path)).journal);
+	assert.deepEqual(
+		{
+			...projectionState(reopened, ids, 2),
+			settled: await reopened.readSettledPendingStageMessage("run", settled.id),
+		},
+		live,
+	);
+});
+
 test("a batch whose lease was taken over writes nothing and rejects every receipt with the ownership loss", async () => {
 	const { path, journal } = await countingJournal();
 	const backend = await openBackend(journal);

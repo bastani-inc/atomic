@@ -57,11 +57,14 @@ export function runJournalVersions(journal: RunJournal): RunJournalVersions | un
 	return versionReaders.get(journal);
 }
 
-/** One append of a batch. `context` runs a function in the async context the append was issued from. */
+/**
+ * One append of a batch. `context` runs a function in the async context the append was issued from; that context,
+ * not the batch's, decides the append's pool append guard.
+ */
 export interface JournalBatchAppend {
 	readonly event: RunEvent;
 	readonly key?: string;
-	readonly context?: <R>(action: () => R) => R;
+	readonly context: <R>(action: () => R) => R;
 }
 
 /** Appends to one run in one transaction; each append is settled on its own. Kept off the public journal shape. */
