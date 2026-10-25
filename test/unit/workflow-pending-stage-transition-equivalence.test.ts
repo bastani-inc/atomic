@@ -143,11 +143,17 @@ async function referencePersistTransition(
 					) {
 						while (archivedThrough < index) {
 							const prefixIndex = archivedThrough + 1;
-							await backend.archivePendingStageDeliveryReceipt(runId, entry.id, entry.deliveries[prefixIndex]!, {
-								messageRunId: entry.runId,
-								deliveryCount:
-									(entry.deliveryCount ?? entry.deliveries.length) - entry.deliveries.length + prefixIndex + 1,
-							});
+							// A prefix receipt already archived by an earlier transition is not archived again.
+							const receipt = entry.deliveries[prefixIndex]!;
+							if (!(await backend.hasPendingStageDeliveryReceipt(runId, entry.id, receipt, entry.runId)))
+								await backend.archivePendingStageDeliveryReceipt(runId, entry.id, receipt, {
+									messageRunId: entry.runId,
+									deliveryCount:
+										(entry.deliveryCount ?? entry.deliveries.length) -
+										entry.deliveries.length +
+										prefixIndex +
+										1,
+								});
 							archivedThrough = prefixIndex;
 						}
 					} else {

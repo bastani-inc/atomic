@@ -6,11 +6,10 @@ import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/sto
 import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { CheckpointCatalogIndex } from "./completed-catalog-index.js";
 import {
-	boundaryOwner,
 	childRunIdFromDraft,
 	childRunStatus,
-	childScopedEvidenceExists,
 	compareDraftSourceOrder,
 	isPendingChildBoundary,
 	isSyntheticExitedChild,
@@ -42,19 +41,15 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 	);
 }
 
-import {
-	directChildTopologyError,
-	groupByDurableStageKey,
-	immutableStageGroupError,
-} from "./stage-topology-validation.js";
+import { directChildTopologyErrorFromRecords, immutableStageGroupError } from "./stage-topology-validation.js";
 import { workflowToolOutcomeFromValue } from "./tool-outcome.js";
 import {
 	DURABLE_STAGE_TOPOLOGY_VERSION,
 	type DurableCheckpoint,
-	type DurableStageCheckpoint,
 	type DurableToolCheckpoint,
 	type ResumableWorkflowEntry,
 } from "./types.js";
+import { parseWorkflowChildResult } from "./workflow-child-result.js";
 
 export type CompletedWorkflowResolution =
 	| { readonly kind: "found"; readonly entry: ResumableWorkflowEntry; readonly snapshot: RunSnapshot }
@@ -239,15 +234,123 @@ export function durableNestedRunSnapshots(
 	backend: DurableWorkflowBackend,
 	rootWorkflowId: string,
 ): readonly RunSnapshot[] {
+	return durableNestedRunCatalog(backend, rootWorkflowId).runs.map(cloneRunSnapshot);
+}
+
+/**
+ * Nested runs of one root plus the lookups cached-boundary replay needs. The
+ * catalog is shared between calls: read it, and clone any run that leaves it.
+ */
+export interface DurableNestedRunCatalog {
+	readonly runs: readonly RunSnapshot[];
+	/** Positions in `runs` of each run id. */
+	readonly positionsById: ReadonlyMap<string, readonly number[]>;
+	/** Ids of runs whose `parentRunId` is each key. */
+	readonly childIdsByParent: ReadonlyMap<string, readonly string[]>;
+	/** Status of every child whose boundary checkpoint records an intentional exit. */
+	readonly intentionalExitStatuses: ReadonlyMap<string, RunSnapshot["status"]>;
+}
+
+interface CachedNestedRunCatalog {
+	readonly version: number;
+	readonly name: string;
+	/** Set only when the catalog read the root's `updatedAt`, which every checkpoint advances. */
+	readonly updatedAt: number | undefined;
+	readonly catalog: DurableNestedRunCatalog;
+}
+
+const MAX_CACHED_ROOTS_PER_BACKEND = 8;
+const nestedRunCatalogs = new WeakMap<DurableWorkflowBackend, Map<string, CachedNestedRunCatalog>>();
+const EMPTY_NESTED_RUN_CATALOG: DurableNestedRunCatalog = {
+	runs: [],
+	positionsById: new Map(),
+	childIdsByParent: new Map(),
+	intentionalExitStatuses: new Map(),
+};
+
+/**
+ * Cached {@link DurableNestedRunCatalog}. Replay looks a catalog up once per
+ * cached child boundary, so rebuilding it every time made resume quadratic in
+ * workflow size. The cache key is the backend's nested snapshot version, which
+ * changes whenever a recorded checkpoint can change the rebuilt runs.
+ */
+export function durableNestedRunCatalog(
+	backend: DurableWorkflowBackend,
+	rootWorkflowId: string,
+): DurableNestedRunCatalog {
 	const handle = backend.getWorkflow(rootWorkflowId);
-	if (handle === undefined) return [];
-	return runSnapshotsFromCheckpoints(
-		backend.listCheckpoints(rootWorkflowId),
+	if (handle === undefined) return EMPTY_NESTED_RUN_CATALOG;
+	const version = backend.nestedSnapshotVersion?.(rootWorkflowId);
+	const cached = version === undefined ? undefined : nestedRunCatalogs.get(backend)?.get(rootWorkflowId);
+	if (
+		cached !== undefined &&
+		cached.version === version &&
+		cached.name === handle.name &&
+		(cached.updatedAt === undefined || cached.updatedAt === handle.updatedAt)
+	) {
+		return cached.catalog;
+	}
+	const checkpoints = backend.listCheckpoints(rootWorkflowId);
+	const runs = runSnapshotsFromCheckpoints(
+		checkpoints,
 		rootWorkflowId,
 		handle.name,
 		handle.updatedAt,
 		ACTIVE_INSPECTION_RECONSTRUCTION,
 	).filter((run) => run.id !== rootWorkflowId);
+	const catalog = nestedRunCatalog(runs, checkpoints);
+	if (version !== undefined) {
+		const byRoot = nestedRunCatalogs.get(backend) ?? new Map<string, CachedNestedRunCatalog>();
+		nestedRunCatalogs.set(backend, byRoot);
+		byRoot.delete(rootWorkflowId);
+		byRoot.set(rootWorkflowId, {
+			version,
+			name: handle.name,
+			updatedAt: runs.some(readsFallbackCompletedAt) ? handle.updatedAt : undefined,
+			catalog,
+		});
+		if (byRoot.size > MAX_CACHED_ROOTS_PER_BACKEND) byRoot.delete(byRoot.keys().next().value!);
+	}
+	return catalog;
+}
+
+function nestedRunCatalog(
+	runs: readonly RunSnapshot[],
+	checkpoints: readonly DurableCheckpoint[],
+): DurableNestedRunCatalog {
+	const positionsById = new Map<string, number[]>();
+	const childIdsByParent = new Map<string, string[]>();
+	runs.forEach((run, position) => {
+		const positions = positionsById.get(run.id);
+		if (positions === undefined) positionsById.set(run.id, [position]);
+		else positions.push(position);
+		if (run.parentRunId === undefined) return;
+		const children = childIdsByParent.get(run.parentRunId);
+		if (children === undefined) childIdsByParent.set(run.parentRunId, [run.id]);
+		else children.push(run.id);
+	});
+	const intentionalExitStatuses = new Map<string, RunSnapshot["status"]>();
+	for (const checkpoint of checkpoints) {
+		if (checkpoint.kind !== "stage") continue;
+		const child = parseWorkflowChildResult(checkpoint.output);
+		if (child?.exited === true) intentionalExitStatuses.set(child.runId, child.status);
+	}
+	return { runs, positionsById, childIdsByParent, intentionalExitStatuses };
+}
+
+/**
+ * Whether a nested run's snapshot used the root's `updatedAt` as a stand-in end
+ * time: only a terminal run with a stage that has no end time does.
+ */
+function readsFallbackCompletedAt(run: RunSnapshot): boolean {
+	return run.endedAt !== undefined && run.stages.some((stage) => stage.endedAt === undefined);
+}
+
+/** Deep copy of a cached run, keeping tool parent ids frozen as reconstruction emits them. */
+export function cloneRunSnapshot(run: RunSnapshot): RunSnapshot {
+	const copy = structuredClone(run);
+	for (const tool of copy.toolNodes) Object.freeze(tool.parentIds);
+	return copy;
 }
 
 async function validatedStageTranscript(stage: StageSnapshot, store: SessionStore): Promise<StageSnapshot> {
@@ -279,15 +382,12 @@ function checkpointDrafts(checkpoints: readonly DurableCheckpoint[]): Reconstruc
 	};
 }
 
+/** Tool nodes for one run's owned tool checkpoints. */
 function completedToolNodes(
-	checkpoints: readonly DurableToolCheckpoint[],
-	runId: string,
-	rootRunId: string,
+	ownedCheckpoints: readonly DurableToolCheckpoint[],
 	sourceIds: ReadonlyMap<string, string>,
 ): ToolNodeSnapshot[] {
-	return checkpoints.flatMap((checkpoint) => {
-		const topologyRunId = checkpoint.topology?.run?.runId ?? rootRunId;
-		if (topologyRunId !== runId) return [];
+	return ownedCheckpoints.flatMap((checkpoint) => {
 		const topology = checkpoint.topology;
 		if (topology === undefined) return [];
 		const outcome =
@@ -366,10 +466,9 @@ function runSnapshotsFromCheckpoints(
 	fallbackCompletedAt: number,
 	policy: ReconstructionPolicy = COMPLETED_RECONSTRUCTION,
 ): RunSnapshot[] {
-	if (!validBoundaryRecordSet(checkpoints, policy.requireTerminal)) return [];
-	const stageRecords = checkpoints.filter(
-		(checkpoint): checkpoint is DurableStageCheckpoint => checkpoint.kind === "stage",
-	);
+	const index = new CheckpointCatalogIndex(checkpoints);
+	if (!validBoundaryRecordSet(index, policy.requireTerminal)) return [];
+	const stageRecords = index.stages;
 	const identityRecords = stageRecords.filter(
 		(stage) =>
 			stage.topology?.sourceOrder !== undefined ||
@@ -378,9 +477,8 @@ function runSnapshotsFromCheckpoints(
 			stage.topology?.boundary !== undefined,
 	);
 	if (immutableStageGroupError(identityRecords) !== undefined) return [];
-	const recordsByGroup = groupByDurableStageKey(stageRecords);
-	const candidates = [...recordsByGroup.values()]
-		.map((records) => mergeStageGroup(records, stageRecords, checkpoints))
+	const candidates = [...index.stageGroups()]
+		.map((records) => mergeStageGroup(records, index))
 		.filter(
 			(draft) =>
 				policy.retainActive ||
@@ -392,6 +490,20 @@ function runSnapshotsFromCheckpoints(
 	const drafts = checkpointDrafts(checkpoints);
 	const toolCheckpoints = drafts.tools;
 	if (toolCheckpoints.some((checkpoint) => checkpoint.topology === undefined)) return [];
+	const toolNodeIdsByClaimedRun = new Map<string, Set<string>>();
+	const toolsByRun = new Map<string, DurableToolCheckpoint[]>();
+	for (const checkpoint of toolCheckpoints) {
+		const claimedRunId = checkpoint.topology?.run?.runId;
+		if (claimedRunId !== undefined) {
+			const ids = toolNodeIdsByClaimedRun.get(claimedRunId) ?? new Set<string>();
+			ids.add(checkpoint.topology!.nodeId);
+			toolNodeIdsByClaimedRun.set(claimedRunId, ids);
+		}
+		const ownerRunId = claimedRunId ?? rootRunId;
+		const owned = toolsByRun.get(ownerRunId);
+		if (owned === undefined) toolsByRun.set(ownerRunId, [checkpoint]);
+		else owned.push(checkpoint);
+	}
 	for (const draft of candidates) {
 		const boundary = draft.topology?.boundary;
 		if (boundary === undefined || childRunIdFromDraft(draft) === undefined) continue;
@@ -403,12 +515,15 @@ function runSnapshotsFromCheckpoints(
 			parentStageId: boundary.child.parentStageId,
 			rootRunId: boundary.child.rootRunId,
 		};
-		const childToolIds = new Set(
-			toolCheckpoints.flatMap((checkpoint) =>
-				checkpoint.topology?.run?.runId === expectedChildRun.runId ? [checkpoint.topology.nodeId] : [],
-			),
-		);
-		if (directChildTopologyError(stageRecords, boundary.replayScope, expectedChildRun, childToolIds) !== undefined)
+		const childToolIds = toolNodeIdsByClaimedRun.get(expectedChildRun.runId) ?? new Set<string>();
+		if (
+			directChildTopologyErrorFromRecords(
+				index.directChildRecords(expectedChildRun.runId),
+				boundary.replayScope,
+				expectedChildRun,
+				childToolIds,
+			) !== undefined
+		)
 			return [];
 	}
 	if (candidates.length === 0 && toolCheckpoints.length === 0) {
@@ -439,7 +554,7 @@ function runSnapshotsFromCheckpoints(
 	// Groups under a failed or skipped boundary are pruned like a finished root does; any other dropped group
 	// means an active graph is incomplete.
 	if (!retainReachableRunGroups(grouped, rootRunId) && policy.failOnUnreachable) return [];
-	if (!validateRunGroups(grouped, rootRunId, toolCheckpoints, checkpoints, policy.retainActive)) return [];
+	if (!validateRunGroups(grouped, rootRunId, toolsByRun, index, policy.retainActive)) return [];
 	const syntheticChildren: Array<{
 		readonly parentRunId: string;
 		readonly owner: StageDraft;
@@ -462,7 +577,7 @@ function runSnapshotsFromCheckpoints(
 			if (child?.exited !== true || grouped.has(child.runId)) continue;
 			if (
 				!isSyntheticExitedChild(draft, parentRunId, child.runId, rootRunId) ||
-				childScopedEvidenceExists(checkpoints, draft.replayKey, child.runId)
+				index.childScopedEvidenceExists(draft.replayKey, child.runId)
 			) {
 				return [];
 			}
@@ -472,9 +587,7 @@ function runSnapshotsFromCheckpoints(
 
 	const idMaps = new Map<string, Map<string, string>>();
 	for (const [runId, runDrafts] of grouped) {
-		const ownedTools = toolCheckpoints.filter(
-			(checkpoint) => (checkpoint.topology?.run?.runId ?? rootRunId) === runId,
-		);
+		const ownedTools = toolsByRun.get(runId) ?? [];
 		if (!validStageGroup(runDrafts, runId, rootRunId, ownedTools)) return [];
 		const ids = new Map<string, string>();
 		let hasIdentityConflict = false;
@@ -488,21 +601,31 @@ function runSnapshotsFromCheckpoints(
 			}
 		});
 		if (hasIdentityConflict) return [];
-		for (const checkpoint of toolCheckpoints) {
-			const ownerRunId = checkpoint.topology?.run?.runId ?? rootRunId;
+		for (const checkpoint of ownedTools) {
 			const sourceId = checkpoint.topology?.nodeId ?? checkpoint.checkpointId;
-			if (ownerRunId === runId) ids.set(sourceId, sourceId);
+			ids.set(sourceId, sourceId);
 		}
 		idMaps.set(runId, ids);
 	}
 
+	// The first draft in group order that names each child run, per parent and overall.
+	const boundaryOwners = new Map<string, StageDraft>();
+	const boundarySourcesByParent = new Map<string, Map<string, StageDraft>>();
+	for (const [parentRunId, runDrafts] of grouped) {
+		const sources = new Map<string, StageDraft>();
+		for (const draft of runDrafts) {
+			const childRunId = childRunIdFromDraft(draft);
+			if (childRunId === undefined) continue;
+			if (!boundaryOwners.has(childRunId)) boundaryOwners.set(childRunId, draft);
+			if (!sources.has(childRunId)) sources.set(childRunId, draft);
+		}
+		boundarySourcesByParent.set(parentRunId, sources);
+	}
 	const runs: RunSnapshot[] = [];
 	const emittedRunIds = new Set<string>();
 	for (const [runId, runDrafts] of grouped) {
 		const ids = idMaps.get(runId)!;
-		const ownedTools = toolCheckpoints.filter(
-			(checkpoint) => (checkpoint.topology?.run?.runId ?? rootRunId) === runId,
-		);
+		const ownedTools = toolsByRun.get(runId) ?? [];
 		const hasUnknownParents =
 			runDrafts.some((draft) => draft.topology!.parentIds.some((parentId) => !ids.has(parentId))) ||
 			ownedTools.some(
@@ -516,7 +639,7 @@ function runSnapshotsFromCheckpoints(
 				draft.topology!.parentIds.map((parentId) => ids.get(parentId)!),
 			),
 		);
-		const toolNodes = completedToolNodes(toolCheckpoints, runId, rootRunId, ids);
+		const toolNodes = completedToolNodes(ownedTools, ids);
 		const run = runTopologyFor(runDrafts, ownedTools);
 		const startedAt = Math.min(
 			...stages.map((stage) => stage.startedAt ?? fallbackCompletedAt),
@@ -526,12 +649,11 @@ function runSnapshotsFromCheckpoints(
 			...stages.map((stage) => stage.endedAt ?? fallbackCompletedAt),
 			...toolNodes.map((tool) => tool.endedAt ?? fallbackCompletedAt),
 		);
-		const owner = runId === rootRunId ? undefined : boundaryOwner(grouped, runId);
+		const owner = runId === rootRunId ? undefined : boundaryOwners.get(runId);
 		const status = owner === undefined ? "completed" : childRunStatus(owner);
 		const terminal = status !== "running" && status !== "pending" && status !== "paused" && status !== "blocked";
 		const parentRunId = run?.parentRunId ?? rootRunId;
-		const boundarySourceId = grouped.get(parentRunId)?.find((draft) => childRunIdFromDraft(draft) === runId)
-			?.topology?.stageId;
+		const boundarySourceId = boundarySourcesByParent.get(parentRunId)?.get(runId)?.topology?.stageId;
 		const declaredParentStageId =
 			run?.parentStageId === undefined ? undefined : idMaps.get(parentRunId)?.get(run.parentStageId);
 		const parentStageId =

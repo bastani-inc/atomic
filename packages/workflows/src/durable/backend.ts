@@ -3,13 +3,9 @@ import { closeSync, openSync, readSync } from "node:fs";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import {
-	type PendingStageReceiptChanges,
-	type PendingStageReceiptCursor,
-	PendingStageReceiptIndex,
-} from "./pending-stage-receipts.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
@@ -22,6 +18,7 @@ import type {
 	ResumableWorkflowEntry,
 } from "./types.js";
 import { DURABLE_STAGE_TOPOLOGY_VERSION } from "./types.js";
+import { parseWorkflowChildResult } from "./workflow-child-result.js";
 
 const SESSION_HEADER_READ_LIMIT_BYTES = 64 * 1024;
 
@@ -100,6 +97,161 @@ export function pendingStageMessagesForDurableRun(
 	return (backend.getWorkflow(rootWorkflowId)?.pendingStageMessages ?? []).filter(
 		(entry) => entry.runId === logicalRunId,
 	);
+}
+
+/** A position in one workflow's receipt change log; a reset workflow starts a new log. */
+export interface PendingStageReceiptCursor {
+	readonly log: object;
+	readonly length: number;
+}
+
+/** Messages whose delivery receipts changed since a cursor; `undefined` when any message may have changed. */
+export interface PendingStageReceiptChanges {
+	readonly cursor: PendingStageReceiptCursor;
+	readonly messageIds: readonly string[] | undefined;
+}
+
+type Admissions = Set<string | undefined>;
+
+/**
+ * One stage's receipts for one message. A receipt is keyed by its logical run (`undefined` for receipts
+ * recorded without accounting), its session and its admission, each possibly absent. A context admission
+ * with a session also records a receipt that matches any session of the stage.
+ */
+class StageReceipts {
+	private readonly exact = new Map<string | undefined, Map<string | undefined, Admissions>>();
+	private readonly anySession = new Map<string | undefined, Admissions>();
+
+	has(logicalRunId: string | undefined, sessionId: string | undefined, admission: string | undefined): boolean {
+		return this.exact.get(logicalRunId)?.get(sessionId)?.has(admission) ?? false;
+	}
+
+	hasAnySession(logicalRunId: string | undefined, admission: string | undefined): boolean {
+		return this.anySession.get(logicalRunId)?.has(admission) ?? false;
+	}
+
+	/** Add a receipt; returns whether it was new. */
+	add(logicalRunId: string | undefined, sessionId: string | undefined, admission: string | undefined): boolean {
+		let bySession = this.exact.get(logicalRunId);
+		if (bySession === undefined) {
+			bySession = new Map();
+			this.exact.set(logicalRunId, bySession);
+		}
+		let admissions = bySession.get(sessionId);
+		if (admissions === undefined) {
+			admissions = new Set();
+			bySession.set(sessionId, admissions);
+		}
+		if (admissions.has(admission)) return false;
+		admissions.add(admission);
+		return true;
+	}
+
+	addAnySession(logicalRunId: string | undefined, admission: string | undefined): boolean {
+		let admissions = this.anySession.get(logicalRunId);
+		if (admissions === undefined) {
+			admissions = new Set();
+			this.anySession.set(logicalRunId, admissions);
+		}
+		if (admissions.has(admission)) return false;
+		admissions.add(admission);
+		return true;
+	}
+}
+
+interface WorkflowReceipts {
+	/** message → delivery run → stage → receipts */
+	readonly byMessage: Map<string, Map<string, Map<string, StageReceipts>>>;
+	/** Message ids in the order their receipts changed. */
+	readonly log: string[];
+}
+
+/** Archived sticky delivery receipts per durable workflow, looked up through nested maps without key building. */
+class PendingStageReceiptIndex {
+	private readonly workflows = new Map<string, WorkflowReceipts>();
+
+	/**
+	 * Record one archived delivery. Returns whether the exact receipt was new, which decides whether its
+	 * accounting may raise the delivery count.
+	 */
+	add(workflowId: string, messageId: string, delivery: PendingStageMessageDelivery, logicalRunId?: string): boolean {
+		let workflow = this.workflows.get(workflowId);
+		if (workflow === undefined) {
+			workflow = { byMessage: new Map(), log: [] };
+			this.workflows.set(workflowId, workflow);
+		}
+		let byRun = workflow.byMessage.get(messageId);
+		if (byRun === undefined) {
+			byRun = new Map();
+			workflow.byMessage.set(messageId, byRun);
+		}
+		let byStage = byRun.get(delivery.runId);
+		if (byStage === undefined) {
+			byStage = new Map();
+			byRun.set(delivery.runId, byStage);
+		}
+		let receipts = byStage.get(delivery.stageId);
+		if (receipts === undefined) {
+			receipts = new StageReceipts();
+			byStage.set(delivery.stageId, receipts);
+		}
+		const added = receipts.add(logicalRunId, delivery.sessionId, delivery.admission);
+		let changed = added;
+		if (receipts.add(logicalRunId, undefined, undefined)) changed = true;
+		if (
+			delivery.admission === "context" &&
+			delivery.sessionId !== undefined &&
+			receipts.addAnySession(logicalRunId, "context")
+		)
+			changed = true;
+		if (changed) workflow.log.push(messageId);
+		return added;
+	}
+
+	/** Whether a receipt exists for the delivery, counted under `logicalRunId` or recorded without accounting. */
+	has(
+		workflowId: string,
+		messageId: string,
+		delivery: Omit<PendingStageMessageDelivery, "deliveredAt">,
+		logicalRunId: string,
+		anySession = false,
+	): boolean {
+		const receipts = this.workflows
+			.get(workflowId)
+			?.byMessage.get(messageId)
+			?.get(delivery.runId)
+			?.get(delivery.stageId);
+		if (receipts === undefined) return false;
+		if (anySession && delivery.admission === "context")
+			return (
+				receipts.hasAnySession(logicalRunId, delivery.admission) ||
+				receipts.hasAnySession(undefined, delivery.admission)
+			);
+		return (
+			receipts.has(logicalRunId, delivery.sessionId, delivery.admission) ||
+			receipts.has(undefined, delivery.sessionId, delivery.admission)
+		);
+	}
+
+	changesSince(workflowId: string, cursor: PendingStageReceiptCursor | undefined): PendingStageReceiptChanges {
+		let workflow = this.workflows.get(workflowId);
+		if (workflow === undefined) {
+			workflow = { byMessage: new Map(), log: [] };
+			this.workflows.set(workflowId, workflow);
+		}
+		const next = { log: workflow.log, length: workflow.log.length };
+		if (cursor === undefined || cursor.log !== workflow.log || cursor.length > workflow.log.length)
+			return { cursor: next, messageIds: undefined };
+		return { cursor: next, messageIds: workflow.log.slice(cursor.length) };
+	}
+
+	delete(workflowId: string): void {
+		this.workflows.delete(workflowId);
+	}
+
+	clear(): void {
+		this.workflows.clear();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +372,14 @@ export interface DurableWorkflowBackend {
 	/** List all checkpoints for a workflow (in completion order). */
 	listCheckpoints(workflowId: string): readonly DurableCheckpoint[];
 
+	/**
+	 * Version of a root's checkpoint list for nested run reconstruction, or
+	 * `undefined` when this backend cannot provide one. It changes whenever a
+	 * recorded checkpoint can change the nested runs rebuilt from the list; see
+	 * `NestedSnapshotVersion` for the one class of record that leaves it alone.
+	 */
+	nestedSnapshotVersion?(workflowId: string): number | undefined;
+
 	/** Get the top-level workflow handle, or `undefined` if not registered. */
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 	/**
@@ -294,6 +454,149 @@ export interface DurableWorkflowBackend {
 	releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void | Promise<void>;
 }
 
+// Nested snapshot version
+// ---------------------------------------------------------------------------
+
+/** Checkpoint id prefix of the metadata record replay writes after hydrating a cached root stage. */
+export const STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX = "stage-replay-meta:";
+
+let lastVersion = 0;
+
+/** Every tracker draws from one counter, so a recreated root never repeats a version. */
+function nextVersion(): number {
+	lastVersion += 1;
+	return lastVersion;
+}
+
+interface ReplayGroupSummary {
+	readonly name: string;
+	readonly identity: string;
+	consistent: boolean;
+	hasOutput: boolean;
+	hasExitedChildOutput: boolean;
+}
+
+/**
+ * Version of one root's checkpoint list as nested run reconstruction sees it.
+ *
+ * Every recorded checkpoint bumps the version except one narrow, documented
+ * class that cannot change the nested runs rebuilt from the list: replaying a
+ * cached root stage writes one `stage-replay-meta:` record, so without this
+ * exemption resuming N cached child boundaries would rebuild every nested run
+ * N times. A record is exempt only when all of these hold:
+ *
+ * - It is a root-owned stage record with the replay-metadata id prefix and no
+ *   output, boundary event, or prompt occurrence key.
+ * - It sorts after every recorded checkpoint, so existing sequences do not move.
+ * - Its replay key already holds stage records that all share its name and
+ *   immutable identity (topology version, stage id, parents, source order,
+ *   and therefore its root run), and include an output that is not an exited
+ *   child.
+ *   The record therefore joins an existing root stage group without changing
+ *   identity validation, and can change only that root stage's timing and
+ *   status. Nested runs read a root stage's timing only to synthesize an
+ *   exited child or a pending child, and both are excluded.
+ * - No boundary replay key scopes its checkpoint id, so it cannot become raw
+ *   evidence against a zero-stage child.
+ *
+ * Anything else, including any record this rule cannot classify, bumps the
+ * version.
+ */
+export class NestedSnapshotVersion {
+	private current = nextVersion();
+	private latestCompletedAt = Number.NEGATIVE_INFINITY;
+	private readonly replayGroups = new Map<string, ReplayGroupSummary>();
+	private readonly boundaryReplayKeys = new Set<string>();
+
+	constructor(private readonly rootWorkflowId: string) {}
+
+	get version(): number {
+		return this.current;
+	}
+
+	/** Account for one newly recorded checkpoint, in record order. */
+	record(checkpoint: DurableCheckpoint): void {
+		if (!this.isInert(checkpoint)) this.current = nextVersion();
+		this.latestCompletedAt = Math.max(this.latestCompletedAt, checkpoint.completedAt);
+		if (checkpoint.kind !== "stage") return;
+		if (checkpoint.topology?.boundary !== undefined) this.boundaryReplayKeys.add(checkpoint.replayKey);
+		if (checkpoint.topology?.occurrenceKey !== undefined) return;
+		const identity = stageIdentity(checkpoint);
+		const exited = parseWorkflowChildResult(checkpoint.output)?.exited === true;
+		const summary = this.replayGroups.get(checkpoint.replayKey);
+		if (summary === undefined) {
+			this.replayGroups.set(checkpoint.replayKey, {
+				name: checkpoint.name,
+				identity,
+				consistent: true,
+				hasOutput: checkpoint.output !== undefined,
+				hasExitedChildOutput: exited,
+			});
+			return;
+		}
+		summary.consistent &&= summary.name === checkpoint.name && summary.identity === identity;
+		summary.hasOutput ||= checkpoint.output !== undefined;
+		summary.hasExitedChildOutput ||= exited;
+	}
+
+	private isInert(checkpoint: DurableCheckpoint): boolean {
+		if (
+			checkpoint.kind !== "stage" ||
+			!checkpoint.checkpointId.startsWith(STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX) ||
+			checkpoint.output !== undefined ||
+			checkpoint.topology === undefined ||
+			checkpoint.topology.boundary !== undefined ||
+			checkpoint.topology.occurrenceKey !== undefined ||
+			!this.isRootOwned(checkpoint) ||
+			checkpoint.completedAt < this.latestCompletedAt
+		) {
+			return false;
+		}
+		const summary = this.replayGroups.get(checkpoint.replayKey);
+		if (
+			summary === undefined ||
+			!summary.consistent ||
+			!summary.hasOutput ||
+			summary.hasExitedChildOutput ||
+			summary.name !== checkpoint.name ||
+			summary.identity !== stageIdentity(checkpoint)
+		) {
+			return false;
+		}
+		const id = checkpoint.checkpointId;
+		for (let colon = id.indexOf(":"); colon >= 0; colon = id.indexOf(":", colon + 1)) {
+			if (this.boundaryReplayKeys.has(id.slice(0, colon))) return false;
+		}
+		return true;
+	}
+
+	private isRootOwned(checkpoint: DurableStageCheckpoint): boolean {
+		const runId = checkpoint.topology?.run?.runId;
+		return runId === undefined || runId === this.rootWorkflowId;
+	}
+}
+
+/** Fields `immutableStageGroupError` requires every record in one group to share. */
+function stageIdentity(checkpoint: DurableStageCheckpoint): string {
+	const topology = checkpoint.topology;
+	return JSON.stringify([
+		durableStageGroupKey(checkpoint),
+		topology?.version,
+		topology?.stageId,
+		topology?.parentIds,
+		topology?.sourceOrder,
+		topology?.run === undefined
+			? undefined
+			: [
+					topology.run.runId,
+					topology.run.runName,
+					topology.run.parentRunId,
+					topology.run.parentStageId,
+					topology.run.rootRunId,
+				],
+	]);
+}
+
 // Journal projection
 // ---------------------------------------------------------------------------
 
@@ -304,6 +607,7 @@ interface JournalWorkflowRecord {
 	uiByHash: Map<string, DurableUiCheckpoint>;
 	stageOutputByReplayKey: Map<string, DurableStageCheckpoint>;
 	stageSessionByReplayKey: Map<string, DurableStageCheckpoint>;
+	nestedSnapshotVersion: NestedSnapshotVersion;
 }
 
 function checkpointKey(c: DurableCheckpoint): string {
@@ -401,6 +705,7 @@ class JournalProjection {
 				uiByHash: new Map(),
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
+				nestedSnapshotVersion: new NestedSnapshotVersion(handle.workflowId),
 			});
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
@@ -513,6 +818,7 @@ class JournalProjection {
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return;
 		rec.checkpoints.set(key, currentCheckpoint);
+		rec.nestedSnapshotVersion.record(currentCheckpoint);
 		if (currentCheckpoint.kind === "tool") {
 			const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
 			if (
@@ -588,6 +894,10 @@ class JournalProjection {
 
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.workflows.get(workflowId)?.handle;
+	}
+
+	nestedSnapshotVersion(workflowId: string): number | undefined {
+		return this.workflows.get(workflowId)?.nestedSnapshotVersion.version;
 	}
 	getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.getWorkflow(workflowId);

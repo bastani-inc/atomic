@@ -25,9 +25,10 @@ import type {
 	DurableInactiveDeleteResult,
 	DurableWorkflowBackend,
 	DurableWorkflowCatalogEntries,
+	PendingStageReceiptChanges,
+	PendingStageReceiptCursor,
 	WorkflowRegistrationInput,
 } from "./backend.js";
-import type { PendingStageReceiptChanges, PendingStageReceiptCursor } from "./pending-stage-receipts.js";
 import {
 	claimDurablePromptToken,
 	durablePromptScope,

@@ -1,5 +1,4 @@
-import type { DurableWorkflowBackend } from "../durable/backend.js";
-import type { PendingStageReceiptCursor } from "../durable/pending-stage-receipts.js";
+import type { DurableWorkflowBackend, PendingStageReceiptCursor } from "../durable/backend.js";
 import { availableRunDurableBackend, durableBackendForRun } from "../durable/run-owner-backend.js";
 import {
 	createStagePathPatternIndex,
