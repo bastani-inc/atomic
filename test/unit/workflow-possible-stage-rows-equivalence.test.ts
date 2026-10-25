@@ -7,6 +7,8 @@
  * the bridge's announcements against verbatim copies of the code that recomputed everything.
  */
 import assert from "node:assert/strict";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, test } from "vitest";
 import { createJournalProjection, type DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -521,6 +523,60 @@ test("a change to an omitted delivery state does not re-announce the root (#3951
 		Object.assign(first, { sessionId: "first-session" });
 		bridge.refresh();
 		assert.equal(roots.length, announced + 1);
+	} finally {
+		bridge();
+	}
+});
+
+test("a terminal root releases its cached possible-stage rows and rebuilds them if it runs again (#3951)", async () => {
+	setFlagsFromString("--expose-gc");
+	const gc = runInNewContext("gc") as () => void;
+	const history = new History(7);
+	const store = createStore();
+	for (const run of history.runs) store.recordRunStart(run);
+	for (let step = 0; step < 20; step++) history.queueSticky();
+	const backend = await createMemoryTestBackend();
+	await backend.commitWorkflowRegistration({
+		workflowId: ROOT_RUN_ID,
+		name: "pool",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	bindStoreDurableBackend(store, backend);
+	let latest: PossibleStageRow[] | undefined;
+	const bridge = registerPendingStageIntercomBridge(
+		{
+			events: {
+				emit(event: string, payload: Record<string, unknown>) {
+					if (event !== "atomic:workflow-pending-stage-route") return;
+					payload.completion = Promise.resolve();
+					if (payload.runId === ROOT_RUN_ID) latest = payload.possibleStages as PossibleStageRow[];
+				},
+				on: () => () => {},
+			},
+		},
+		store,
+	);
+	try {
+		bridge.refresh();
+		const cached = (() => {
+			const row = latest?.find((candidate) => candidate.deliveryStates !== undefined);
+			assert.ok(row?.deliveryStates !== undefined, "no row carried delivery states");
+			return new WeakRef(row.deliveryStates);
+		})();
+		// Terminal settlement publishes an empty roster for the root.
+		history.root.status = "completed";
+		bridge.refresh();
+		assert.deepEqual(latest, []);
+		latest = undefined;
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		gc();
+		assert.equal(cached.deref(), undefined, "a terminal root's cached delivery states stay reachable");
+		// A resumed root rebuilds its rows from scratch.
+		history.root.status = "running";
+		bridge.refresh();
+		assert.deepEqual(latest, bounded(possibleStageRows(store.runs(), ROOT_RUN_ID, history.root, backend)));
 	} finally {
 		bridge();
 	}

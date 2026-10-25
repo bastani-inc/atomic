@@ -199,10 +199,19 @@ export function registerPendingStageIntercomBridge(
 								(key) => resolveIndexedChildRun(childrenByBoundary, parentRun, key)?.id === run.id,
 							),
 						};
-			const possibleStages =
-				run.id === rootRunId
-					? possibleStageRowsIndex(rootRunId).rows(runs, run, availableStoreDurableBackend(activeStore, rootRunId))
-					: undefined;
+			let possibleStages: readonly PossibleStageRow[] | undefined;
+			if (run.id === rootRunId && isTerminalRunStatus(run.status)) {
+				// A terminal root publishes no rows; its cached rows and statuses are released, and a resumed
+				// root rebuilds them on its next announcement.
+				possibleStageRowIndexes.delete(rootRunId);
+				possibleStages = [];
+			} else if (run.id === rootRunId) {
+				possibleStages = possibleStageRowsIndex(rootRunId).rows(
+					runs,
+					run,
+					availableStoreDurableBackend(activeStore, rootRunId),
+				);
+			}
 			const announcement: PendingStageRouteEvent = {
 				runId: run.id,
 				group: workflowInvocationIntercomGroup(rootRunId),
