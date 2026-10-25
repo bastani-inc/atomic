@@ -1,8 +1,24 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
 import { isTerminalRunStatus } from "./store-internal.js";
-import type { RunSnapshot, RunStatus, StageSnapshot } from "./store-types.js";
+import type { RunSnapshot, RunStatus, StageSnapshot, StageStatus } from "./store-types.js";
 import { matchStagePathSegments } from "./workflow-stage-path-matching.js";
 import { formatWorkflowStageTarget } from "./workflow-stage-target.js";
+
+const ADDRESSABLE_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set([
+	"pending",
+	"running",
+	"awaiting_input",
+	"paused",
+	"blocked",
+]);
+
+/**
+ * Stage statuses Intercom can address. The route roster advertises such a stage as reachable,
+ * and a direct send to one that has no session yet is queued for that stage.
+ */
+export function isAddressableStageStatus(status: StageStatus): boolean {
+	return ADDRESSABLE_STAGE_STATUSES.has(status);
+}
 
 /** Actionable identity and pre-start delivery state for one materialized pending stage. */
 export interface PendingWorkflowStageStatus {

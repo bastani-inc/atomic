@@ -20,6 +20,7 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { createWorkflowPendingStageDelivery } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { workflowPendingStageRouteReady } from "../../packages/workflows/src/shared/pending-stage-route-readiness.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
+import type { StageStatus } from "../../packages/workflows/src/shared/store-types.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -288,6 +289,56 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 0);
 		dispose();
+	});
+
+	test("a direct send to a paused stage reaches the stage its replacement worker re-materializes, exactly once (#3869)", async () => {
+		const { store, request, dispose } = await harness();
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		const paused = { ...run.stages[0]!, status: "paused" as const, replayKey: "flow:reviewer" };
+		store.recordRunStart({ ...run, stages: [paused] });
+		assert.deepEqual((await request("1", GROUP, "reviewer-id")).result, { outcome: "queued", position: 1 });
+		const queued = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		store.recordRunStart({
+			...queued,
+			stages: [{ ...paused, id: "reviewer-replacement-id", status: "running" }],
+		});
+		const delivered: string[] = [];
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-replacement-id", "reviewer");
+		const recipient = { sessionId: "replacement-session", receivedMessageIds: [] };
+		await delivery.deliverPending((_from, received) => {
+			delivered.push(received.id);
+		}, recipient);
+		await delivery.deliverPending((_from, received) => {
+			delivered.push(received.id);
+		}, recipient);
+		assert.deepEqual(delivered, ["1"]);
+		dispose();
+	});
+
+	test("a session-less stage the route roster advertises as reachable is exactly the one a direct send queues for", async () => {
+		const statuses: Record<StageStatus, true> = {
+			pending: true,
+			running: true,
+			awaiting_input: true,
+			paused: true,
+			blocked: true,
+			completed: true,
+			failed: true,
+			skipped: true,
+		};
+		for (const status of Object.keys(statuses) as StageStatus[]) {
+			const { store, emitted, request, dispose } = await harness();
+			const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+			store.recordRunStart({ ...run, stages: [{ ...run.stages[0]!, status }] });
+			dispose.refresh();
+			const roster = emitted.findLast(({ event }) => event === "atomic:workflow-pending-stage-route");
+			assert.ok(roster, "the bridge announces the run's route roster");
+			const advertised = (roster.payload.stages as { readonly routeEligible: boolean }[])[0]!.routeEligible;
+			await request("1", GROUP, "reviewer-id");
+			const queuedForStage = store.pendingStageMessagesFor(RUN_ID, "reviewer-id").length === 1;
+			assert.equal(queuedForStage, advertised, `stage status ${status}`);
+			dispose();
+		}
 	});
 
 	test("announces discoverable pending workflow stages with canonical targets", async () => {

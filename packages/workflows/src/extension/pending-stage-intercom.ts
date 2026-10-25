@@ -9,6 +9,7 @@ import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-st
 import {
 	createWorkflowBoundaryHopsResolver,
 	createWorkflowBoundarySegmentsResolver,
+	isAddressableStageStatus,
 	stageMatchesPathPattern,
 	type WorkflowBoundarySegmentsResolver,
 	workflowBoundarySegments,
@@ -235,12 +236,7 @@ export function registerPendingStageIntercomBridge(
 								stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
 							// Keep agent identity for alias reactivation even after discovery eligibility ends.
 							routeEligible:
-								stage.pendingStageDeliveryAvailable === true &&
-								(stage.status === "pending" ||
-									stage.status === "running" ||
-									stage.status === "awaiting_input" ||
-									stage.status === "paused" ||
-									stage.status === "blocked"),
+								stage.pendingStageDeliveryAvailable === true && isAddressableStageStatus(stage.status),
 							group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
 						})),
 					// Known ctx.ui/ctx.tool identities must not become speculative agents.
@@ -974,9 +970,7 @@ function knownUninitializedStage(
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
 	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
-	return (stage.status === "pending" || stage.status === "running") &&
-		stage.sessionId === undefined &&
-		stage.sessionFile === undefined
+	return isAddressableStageStatus(stage.status) && stage.sessionId === undefined && stage.sessionFile === undefined
 		? stage
 		: undefined;
 }
