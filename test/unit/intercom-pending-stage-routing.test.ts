@@ -290,6 +290,30 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		dispose();
 	});
 
+	test("a direct send to a paused stage reaches the stage its replacement worker re-materializes, exactly once (#3869)", async () => {
+		const { store, request, dispose } = await harness();
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		const paused = { ...run.stages[0]!, status: "paused" as const, replayKey: "flow:reviewer" };
+		store.recordRunStart({ ...run, stages: [paused] });
+		assert.deepEqual((await request("1", GROUP, "reviewer-id")).result, { outcome: "queued", position: 1 });
+		const queued = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		store.recordRunStart({
+			...queued,
+			stages: [{ ...paused, id: "reviewer-replacement-id", status: "running" }],
+		});
+		const delivered: string[] = [];
+		const delivery = createWorkflowPendingStageDelivery(store, RUN_ID, "reviewer-replacement-id", "reviewer");
+		const recipient = { sessionId: "replacement-session", receivedMessageIds: [] };
+		await delivery.deliverPending((_from, received) => {
+			delivered.push(received.id);
+		}, recipient);
+		await delivery.deliverPending((_from, received) => {
+			delivered.push(received.id);
+		}, recipient);
+		assert.deepEqual(delivered, ["1"]);
+		dispose();
+	});
+
 	test("announces discoverable pending workflow stages with canonical targets", async () => {
 		const { emitted, dispose } = await harness();
 		const route = emitted.find(({ event }) => event === "atomic:workflow-pending-stage-route");

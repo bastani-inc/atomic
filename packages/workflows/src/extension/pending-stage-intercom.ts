@@ -974,7 +974,7 @@ function knownUninitializedStage(
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
 	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
-	return (stage.status === "pending" || stage.status === "running") &&
+	return (stage.status === "pending" || stage.status === "running" || stage.status === "paused") &&
 		stage.sessionId === undefined &&
 		stage.sessionFile === undefined
 		? stage
