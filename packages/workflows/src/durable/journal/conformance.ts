@@ -490,6 +490,93 @@ export function registerRunJournalConformance(
 			assert.deepEqual(await entries(journal), []);
 		});
 	}
+	check("optional appendMany settles each append in order and fences a stale lease", async (journal) => {
+		if (journal.appendMany === undefined) return;
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const context = <R>(action: () => R): R => action();
+		const results = await journal.appendMany(held, [
+			{ event: { type: "RunStarted", payload: null }, key: "start", context },
+			{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context },
+			{ event: { type: "RunFinished", payload: null }, key: "start", context },
+		]);
+		assert.deepEqual(
+			results.map((result) => (result.status === "fulfilled" ? [result.value.status, result.value.entry.seq] : [])),
+			[
+				["appended", 1],
+				["appended", 2],
+				["exists", 1],
+			],
+		);
+		assert.deepEqual(
+			(await entries(journal)).map((entry) => entry.event.type),
+			["RunStarted", "StatusChanged"],
+		);
+		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+		assert.equal((await journal.takeover(header.runId, "next", held.holderId)).status, "acquired");
+		await assert.rejects(
+			journal.appendMany(held, [{ event: { type: "RunFinished", payload: null }, context }]),
+			StaleLeaseError,
+		);
+		assert.equal((await entries(journal)).length, 2);
+	});
+	check("optional appendMany isolates a failed append from its valid neighbours", async (journal) => {
+		if (journal.appendMany === undefined) return;
+		await journal.createRun(header);
+		const held = await lease(journal);
+		const context = <R>(action: () => R): R => action();
+		const results = await journal.appendMany(held, [
+			{ event: { type: "RunStarted", payload: null }, context },
+			{ event: { type: "StatusChanged", payload: { status: "bad\u0000status" } }, context },
+			{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context },
+		]);
+		assert.deepEqual(
+			results.map((result) => result.status),
+			["fulfilled", "rejected", "fulfilled"],
+		);
+		const [started, invalid, waiting] = results;
+		assert.ok(invalid?.status === "rejected" && invalid.reason instanceof JournalInvalidTextError);
+		assert.deepEqual(
+			[started, waiting].map((result) => (result?.status === "fulfilled" ? result.value.entry.seq : undefined)),
+			[1, 2],
+		);
+		assert.deepEqual(
+			(await entries(journal)).map((entry) => entry.event.type),
+			["RunStarted", "StatusChanged"],
+		);
+		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+	});
+	check("optional change tracking reports run versions and snapshot tails", async (journal) => {
+		const members = [journal.changeToken, journal.runVersions, journal.snapshotTail];
+		if (members.every((member) => member === undefined)) return;
+		const { changeToken, runVersions, snapshotTail } = journal;
+		if (changeToken === undefined || runVersions === undefined || snapshotTail === undefined)
+			return assert.fail("changeToken, runVersions and snapshotTail must be implemented together");
+		const empty = await changeToken.call(journal);
+		assert.equal(await changeToken.call(journal), empty);
+		await journal.createRun(header);
+		const created = await changeToken.call(journal);
+		assert.notEqual(created, empty);
+		assert.deepEqual(await runVersions.call(journal), new Map([[header.runId, { seq: 0, at: 0 }]]));
+		assert.equal(await snapshotTail.call(journal, header.runId), undefined);
+		const held = await lease(journal);
+		const started = await journal.append(held, { type: "RunStarted", payload: null });
+		await journal.append(held, { type: "CheckpointRecorded", payload: { kind: "tool", completedAt: 5 } });
+		const checkpoint = await journal.append(held, {
+			type: "CheckpointRecorded",
+			payload: { kind: "tool", completedAt: 7 },
+		});
+		assert.notEqual(await changeToken.call(journal), created);
+		const latest = { seq: checkpoint.entry.seq, at: checkpoint.entry.at };
+		assert.deepEqual(await runVersions.call(journal), new Map([[header.runId, latest]]));
+		assert.deepEqual(await snapshotTail.call(journal, header.runId), {
+			version: latest,
+			snapshot: started.entry,
+			laterCheckpoints: 2,
+			lastCheckpointAt: 7,
+		});
+		assert.equal(await snapshotTail.call(journal, "absent"), undefined);
+	});
 	check("closed journals reject operations and started reads while close remains idempotent", async (journal) => {
 		await journal.createRun(header);
 		const held = await lease(journal);

@@ -1520,6 +1520,13 @@ interface RunJournal {
 
 Custom journals need only the async contract; no synchronous journal methods are required. Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with `restore()` and `reset()` methods, so the suite can verify lazy reads without consuming the whole history.
 
+A custom journal can also implement two optional speed-ups that `SqlRunJournal` already provides. Atomic uses them whenever they are present on the journal object, including journals returned by a storage adapter's `openRunJournal`:
+
+- `changeToken()`, `runVersions()` and `snapshotTail(runId)`, implemented together, let `/workflow status` and resume skip runs that have not changed and summarize the others from their latest snapshot instead of reading every event. `changeToken()` must return a different string after any commit to the store, from any connection. `runVersions()` returns each listed run's latest `{ seq, at }`, or `{ seq: 0, at: 0 }` for a run with no events. `snapshotTail(runId)` returns the run's latest event that is not `CheckpointRecorded`, `MessageSettled` or `MessageDelivered`, the latest version, the number of checkpoints after that event and the last one's `completedAt`, or `undefined` when there is no such event.
+- `appendMany(lease, appends)` writes a burst of delivery receipts and settlements to one run in one transaction. Check the lease once for the batch and reject the whole call with `StaleLeaseError` if it is stale. Otherwise settle each append on its own, in order, with the same results `append` would give; one append's failure must not undo the others.
+
+The types `RunVersion`, `RunSnapshotTail` and `RunJournalBatchAppend` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
+
 Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default `~/.atomic/workflows/journal.sqlite`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Keep the same journal and working directory when resuming stored runs.
 
 ```ts

@@ -69,13 +69,15 @@ const leaseLookup: Promise<LeaseState | undefined> = journal.leaseState("run");
 const takeover: ReturnType<RunJournal["acquire"]> = journal.takeoverExpired("run", "holder", 100);
 type Equal<Left, Right> =
 	(<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2 ? true : false;
-const memoryShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
+type OptionalJournalMembers = "changeToken" | "runVersions" | "snapshotTail" | "appendMany";
+const memoryShape: Equal<keyof MemoryRunJournal, Exclude<keyof RunJournal, OptionalJournalMembers>> = true;
 const sqliteShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
+const sqliteOptionalMembers: Equal<Extract<keyof SqlRunJournal, OptionalJournalMembers>, OptionalJournalMembers> = true;
 const descriptorShape: Equal<SqlRunJournal["descriptor"], StorageDescriptor> = true;
 declare const database: SqliteDatabase;
 const opened: Promise<SqlRunJournal> = SqlRunJournal.open(database, { prefix: "example_" });
 const leaseShape: Equal<LeaseState, Lease & { readonly renewedAt: number; readonly ageMs: number }> = true;
-void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, leaseShape, descriptorShape, opened];
+void [runLookup, leaseLookup, takeover, memoryShape, sqliteShape, sqliteOptionalMembers, leaseShape, descriptorShape, opened];
 const journalOptions: readonly RunOpts[] = [
 	{ journal }, { journal: { memory: true } }, { journal: { path: "runs.sqlite" } },
 ];

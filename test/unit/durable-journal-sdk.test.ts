@@ -48,7 +48,8 @@ const optionIdentity: Equal<
 	| { adapter: string; options?: AdapterOptions; secrets?: Readonly<Record<string, SecretRef>>; prefix?: string }
 	| RunJournal
 > = true;
-const memoryPublicShape: Equal<keyof MemoryRunJournal, keyof RunJournal> = true;
+type OptionalRunJournalMember = "changeToken" | "runVersions" | "snapshotTail" | "appendMany";
+const memoryPublicShape: Equal<keyof MemoryRunJournal, Exclude<keyof RunJournal, OptionalRunJournalMember>> = true;
 const sqlitePublicShape: Equal<Exclude<keyof SqlRunJournal, "path" | "descriptor">, keyof RunJournal> = true;
 const runLookupIdentity: Equal<ReturnType<RunJournal["getRun"]>, Promise<RunSummary | undefined>> = true;
 const leaseLookupIdentity: Equal<ReturnType<RunJournal["leaseState"]>, Promise<LeaseState | undefined>> = true;
@@ -101,7 +102,7 @@ for (const runtime of ["node", "bun"] as const) {
 				assert.equal(result.exitCode, 0, result.stderr.toString() + result.stdout.toString());
 				assert.deepEqual(JSON.parse(result.stdout.toString()), {
 					runtime,
-					publicConformance: 22,
+					publicConformance: 25,
 					status: "passed",
 				});
 			} finally {
