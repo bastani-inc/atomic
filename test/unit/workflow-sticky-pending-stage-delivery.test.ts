@@ -5,7 +5,11 @@ import type { DurableWorkflowBackend } from "../../packages/workflows/src/durabl
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import { RUN_EVENT_TYPES, StorageUnavailableError } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	type JournalEntry,
+	RUN_EVENT_TYPES,
+	StorageUnavailableError,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableWorkflowMetadata } from "../../packages/workflows/src/durable/types.js";
@@ -26,7 +30,6 @@ import {
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type {
 	PendingStageMessage,
-	PendingStageMessageDelivery,
 	PendingStageMessageInput,
 	RunStatus,
 	StageStatus,
@@ -2231,6 +2234,31 @@ test("live message validation works without a global durable backend (#3467)", a
 	);
 });
 
+type JournalValue = JournalEntry["event"]["payload"];
+type JournalObject = Extract<JournalValue, { readonly [key: string]: JournalValue | undefined }>;
+
+function isJournalObject(value: JournalValue | undefined): value is JournalObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The stage, delivery time and accounted count of one journaled `MessageDelivered` payload. */
+function deliveryReceipt(payload: JournalValue): {
+	readonly stageId: string;
+	readonly deliveredAt: string;
+	readonly deliveryCount: number | undefined;
+} {
+	assert.ok(isJournalObject(payload), "receipt payload is an object");
+	const { delivery, accounting } = payload;
+	assert.ok(isJournalObject(delivery), "receipt delivery is an object");
+	const { stageId, deliveredAt } = delivery;
+	assert.ok(typeof stageId === "string" && typeof deliveredAt === "string", "receipt names its stage and time");
+	if (accounting === undefined) return { stageId, deliveredAt, deliveryCount: undefined };
+	assert.ok(isJournalObject(accounting), "receipt accounting is an object");
+	const { deliveryCount } = accounting;
+	assert.ok(typeof deliveryCount === "number", "receipt accounting has a count");
+	return { stageId, deliveredAt, deliveryCount };
+}
+
 test("archives each sticky delivery receipt once as later stages finish first", async () => {
 	const journal = new MemoryRunJournal();
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
@@ -2304,18 +2332,9 @@ test("archives each sticky delivery receipt once as later stages finish first", 
 				backend,
 			);
 		}
-		const receipts: { stageId: string; deliveredAt: string; deliveryCount: number | undefined }[] = [];
+		const receipts: ReturnType<typeof deliveryReceipt>[] = [];
 		for await (const entry of journal.read(ROOT_RUN_ID)) {
-			if (entry.event.type !== RUN_EVENT_TYPES.messageDelivered) continue;
-			const payload = entry.event.payload as unknown as {
-				delivery: PendingStageMessageDelivery;
-				accounting?: { deliveryCount: number };
-			};
-			receipts.push({
-				stageId: payload.delivery.stageId,
-				deliveredAt: payload.delivery.deliveredAt,
-				deliveryCount: payload.accounting?.deliveryCount,
-			});
+			if (entry.event.type === RUN_EVENT_TYPES.messageDelivered) receipts.push(deliveryReceipt(entry.event.payload));
 		}
 		assert.deepEqual(
 			receipts.map(({ stageId }) => stageId).sort(),
