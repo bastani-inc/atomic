@@ -49,6 +49,7 @@ import {
 } from "./types.js";
 
 const PROCESS_HOLDER_ID = randomUUID();
+const CHANGE_APPEND_ATTEMPTS = 4;
 const processExitCleanups = new Set<() => void>();
 
 function runProcessExitCleanups(): void {
@@ -435,8 +436,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	/**
 	 * Append an event. An event carrying the run's handle writes its pending-stage entries as a change to the
-	 * entries folded at the run's current sequence, pinned to that sequence; on a conflict the full entries are
-	 * written instead, unless the caller pinned the sequence itself (#3929).
+	 * entries folded at the run's current sequence, pinned to that sequence. When another writer appends first,
+	 * the change is rebuilt on the entries folded at the new sequence, a bounded number of times, before the full
+	 * entries are written instead. A caller that pinned the sequence itself gets the conflict (#3929).
 	 */
 	private *append(
 		runId: string,
@@ -444,18 +446,20 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		options?: { readonly key?: string; readonly expectSeq?: number },
 	): Operation<void> {
 		const lease = yield* this.ownership(runId);
-		const base = this.sequences.get(runId);
 		const pinned = options?.expectSeq;
-		const encoded =
-			base !== undefined && (pinned === undefined || pinned === base) && event.type !== E.runStarted
-				? encodeHandleEvent(event, this.projection.getWorkflow(runId)?.pendingStageMessages)
-				: undefined;
-		if (encoded !== undefined) {
+		for (let attempt = 0; attempt < CHANGE_APPEND_ATTEMPTS; attempt++) {
+			const base = this.sequences.get(runId);
+			const encoded =
+				base !== undefined && (pinned === undefined || pinned === base) && event.type !== E.runStarted
+					? encodeHandleEvent(event, this.projection.getWorkflow(runId)?.pendingStageMessages)
+					: undefined;
+			if (encoded === undefined) break;
 			try {
 				return yield* this.write(runId, lease, encoded, { ...options, expectSeq: base });
 			} catch (error) {
 				if (!(error instanceof JournalCasConflictError) || pinned !== undefined) throw error;
 			}
+			for (const entry of yield* this.entries(runId, (this.sequences.get(runId) ?? 0) + 1)) this.fold(entry);
 		}
 		yield* this.write(runId, lease, event, options);
 	}

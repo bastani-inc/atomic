@@ -814,6 +814,58 @@ test("pending entries that drop optional fields write unset patches that replay 
 	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
 });
 
+test("a pending-list write that loses a sequence race to another writer still appends only its change (#3929)", async () => {
+	const path = database();
+	const backend = await open(path);
+	await register(backend);
+	const journal = backend.journal;
+	const append = journal.append.bind(journal);
+	let pinnedWrites = 0;
+	journal.append = async (lease, event, options) => {
+		if (
+			options?.expectSeq !== undefined &&
+			event.type === RUN_EVENT_TYPES.messageQueued &&
+			pinnedWrites++ % 2 === 0
+		) {
+			await append(lease, {
+				type: RUN_EVENT_TYPES.messageDelivered,
+				payload: { messageId: "foreign", delivery: { sessionId: "foreign", deliveredAt: 1 } },
+			});
+		}
+		return await append(lease, event, options);
+	};
+	const sticky = (index: number): PendingStageMessage => ({
+		id: `message-${index}`,
+		runId: "run",
+		stageKey: `workflow:run/child-c${index}/**`,
+		targetPath: `workflow:run/child-c${index}/**`,
+		notInKnownSet: true,
+		from: { id: `sender-${index}`, name: `subagent-chat-${index}`, cwd: "/repo", groups: ["workflow:run"] },
+		message: { id: `message-${index}`, timestamp: index, content: { text: `hello from child ${index}` } },
+		queuedAt: "2026-10-24T23:26:06.916Z",
+		admissionOrder: 1,
+		status: "queued",
+		sticky: true,
+		deliveryCount: 0,
+	});
+	let messages: PendingStageMessage[] = [];
+	for (let send = 0; send < 40; send++) {
+		messages = [...messages, sticky(send)];
+		assert.equal(await backend.persistPendingStageMessages("run", messages), true);
+	}
+	const [first, ...later] = (await entries(journal)).filter(
+		(entry) => entry.event.type === RUN_EVENT_TYPES.messageQueued,
+	);
+	assert.ok("pendingStageMessages" in (first!.event.payload as object), "the run's first pending list has no base");
+	const rewrites = later.filter((entry) => "pendingStageMessages" in (entry.event.payload as object));
+	assert.equal(rewrites.length, 0, `${rewrites.length} of ${later.length} later queued events rewrote the whole list`);
+	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
+	await backend.close();
+	const resumed = await open(path);
+	await resumed.hydrateWorkflow("run");
+	assert.deepEqual(resumed.getWorkflow("run")?.pendingStageMessages, messages);
+});
+
 test("additive checkpoints propagate typed counter violations instead of hiding them", async () => {
 	const journal = await openSqlRunJournal(database());
 	let fail = false;
