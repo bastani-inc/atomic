@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
+import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type {
@@ -102,13 +103,12 @@ test(
 		cleanups.push(() => removeTempDirectory(dir));
 		const path = join(dir, "journal.sqlite");
 		const journal = await openSqlRunJournal(path);
-		const database = (journal as unknown as { readonly database: { transaction: (...args: never[]) => unknown } })
-			.database;
+		const { database } = journal as unknown as { readonly database: SqliteDatabase };
 		const transaction = database.transaction.bind(database);
 		let transactions = 0;
-		database.transaction = (...args: never[]) => {
+		database.transaction = <T>(callback: (tx: SqliteExecutor) => Promise<T>): Promise<T> => {
 			transactions++;
-			return transaction(...args);
+			return transaction(callback);
 		};
 		const backend = await JournalDurableBackend.open(journal);
 		cleanups.push(() => backend.close());
