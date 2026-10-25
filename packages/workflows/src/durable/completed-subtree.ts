@@ -1,7 +1,6 @@
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
-import { durableNestedRunSnapshots } from "./completed-catalog.js";
-import { parseWorkflowChildResult } from "./workflow-child-result.js";
+import { cloneRunSnapshot, durableNestedRunCatalog } from "./completed-catalog.js";
 
 /** Return one cached boundary's exact subtree only when every selected node is fully terminal. */
 export function durableCompletedNestedRunSubtree(
@@ -9,26 +8,25 @@ export function durableCompletedNestedRunSubtree(
 	rootWorkflowId: string,
 	childRunId: string,
 ): readonly RunSnapshot[] | undefined {
-	const nested = durableNestedRunSnapshots(backend, rootWorkflowId);
-	if (!nested.some((run) => run.id === childRunId)) return undefined;
-	const intentionalExitStatuses = new Map<string, RunSnapshot["status"]>();
-	for (const checkpoint of backend.listCheckpoints(rootWorkflowId)) {
-		if (checkpoint.kind !== "stage") continue;
-		const child = parseWorkflowChildResult(checkpoint.output);
-		if (child?.exited === true) intentionalExitStatuses.set(child.runId, child.status);
-	}
+	const catalog = durableNestedRunCatalog(backend, rootWorkflowId);
+	if (!catalog.positionsById.has(childRunId)) return undefined;
 	const included = new Set([childRunId]);
-	let priorSize = -1;
-	while (priorSize !== included.size) {
-		priorSize = included.size;
-		for (const run of nested) {
-			if (run.parentRunId !== undefined && included.has(run.parentRunId)) included.add(run.id);
+	const pending = [childRunId];
+	for (let runId = pending.pop(); runId !== undefined; runId = pending.pop()) {
+		for (const childId of catalog.childIdsByParent.get(runId) ?? []) {
+			if (included.has(childId)) continue;
+			included.add(childId);
+			pending.push(childId);
 		}
 	}
-	const subtree = nested.filter((run) => included.has(run.id));
+	const positions = [...included]
+		.flatMap((runId) => catalog.positionsById.get(runId) ?? [])
+		.sort((left, right) => left - right);
+	const subtree = positions.map((position) => catalog.runs[position]!);
 	const complete =
-		subtree.length === included.size && subtree.every((run) => isCompleteCachedRun(run, intentionalExitStatuses));
-	return complete ? subtree : undefined;
+		subtree.length === included.size &&
+		subtree.every((run) => isCompleteCachedRun(run, catalog.intentionalExitStatuses));
+	return complete ? subtree.map(cloneRunSnapshot) : undefined;
 }
 
 function isCompleteCachedRun(

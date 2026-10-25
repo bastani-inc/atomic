@@ -17,6 +17,14 @@ export interface ValidBoundaryLifecycle {
 
 export type BoundaryLifecycleResolution = { readonly error: string } | { readonly lifecycle: ValidBoundaryLifecycle };
 
+/** Records one boundary lifecycle reads, so indexed callers can supply them without rescanning every stage. */
+export interface BoundaryLifecycleRecords {
+	/** Boundary records sharing the start's replay key, stage id, or child run id, in checkpoint order. */
+	readonly related: readonly DurableStageCheckpoint[];
+	/** Records at the start's replay key that carry an output, in checkpoint order. */
+	readonly outputRecords: () => readonly DurableStageCheckpoint[];
+}
+
 /** Validate one boundary's atomic start/terminal lifecycle and resolve its latest legal state. */
 export function resolveBoundaryLifecycle(
 	start: DurableStageCheckpoint,
@@ -25,7 +33,6 @@ export function resolveBoundaryLifecycle(
 ): BoundaryLifecycleResolution {
 	const startTopology = start.topology;
 	const startBoundary = startTopology?.boundary;
-	const startRun = startTopology?.run;
 	const related = stages.filter((stage) => {
 		const boundary = stage.topology?.boundary;
 		return (
@@ -35,6 +42,27 @@ export function resolveBoundaryLifecycle(
 				boundary.child.runId === startBoundary?.child.runId)
 		);
 	});
+	return resolveBoundaryLifecycleFromRecords(
+		start,
+		{
+			related,
+			outputRecords: () =>
+				stages.filter((stage) => stage.replayKey === start.replayKey && stage.output !== undefined),
+		},
+		requireTerminal,
+	);
+}
+
+/** {@link resolveBoundaryLifecycle} over records the caller has already selected. */
+export function resolveBoundaryLifecycleFromRecords(
+	start: DurableStageCheckpoint,
+	records: BoundaryLifecycleRecords,
+	requireTerminal: boolean,
+): BoundaryLifecycleResolution {
+	const startTopology = start.topology;
+	const startBoundary = startTopology?.boundary;
+	const startRun = startTopology?.run;
+	const related = records.related;
 	const starts = related.filter((stage) => stage.topology!.boundary!.event === "start");
 	if (starts.length !== 1 || starts[0] !== start) return failure("boundary has no unique start record");
 	if (
@@ -110,7 +138,7 @@ export function resolveBoundaryLifecycle(
 		return failure("boundary has an illegal terminal transition");
 	}
 	const completed = terminals.find((terminal) => terminal.topology!.boundary!.status === "completed");
-	const outputRecords = stages.filter((stage) => stage.replayKey === start.replayKey && stage.output !== undefined);
+	const outputRecords = records.outputRecords();
 	if (
 		outputRecords.length !== (completed === undefined ? 0 : 1) ||
 		(completed !== undefined && outputRecords[0]?.checkpointId !== completed.checkpointId)

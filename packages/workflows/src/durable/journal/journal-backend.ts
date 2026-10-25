@@ -877,6 +877,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	listCheckpoints(runId: string) {
 		return this.projection.listCheckpoints(runId);
 	}
+	nestedSnapshotVersion(runId: string) {
+		return this.projection.nestedSnapshotVersion(runId);
+	}
 	getWorkflow(runId: string) {
 		return this.projection.getWorkflow(runId);
 	}

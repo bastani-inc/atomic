@@ -39,8 +39,37 @@ export function directChildTopologyError(
 	expectedRun: DurableStageRunTopology,
 	allowedNodeIds: ReadonlySet<string> = new Set(),
 ): string | undefined {
+	return directChildTopologyErrorFromRecords(
+		{
+			claiming: stages.filter((stage) => stage.topology?.run?.runId === expectedRun.runId),
+			direct: (claiming) => {
+				const directKeys = new Set(claiming.map((stage) => durableStageGroupKey(stage)));
+				return stages.filter((stage) => directKeys.has(durableStageGroupKey(stage)));
+			},
+		},
+		replayScope,
+		expectedRun,
+		allowedNodeIds,
+	);
+}
+
+/** Records one direct-child validation reads, so indexed callers can supply them without rescanning. */
+export interface DirectChildTopologyRecords {
+	/** Stage records whose run topology claims the expected child run, in checkpoint order. */
+	readonly claiming: readonly DurableStageCheckpoint[];
+	/** Every stage record sharing a durable group key with `claiming`, in checkpoint order. */
+	readonly direct: (claiming: readonly DurableStageCheckpoint[]) => readonly DurableStageCheckpoint[];
+}
+
+/** {@link directChildTopologyError} over records the caller has already selected. */
+export function directChildTopologyErrorFromRecords(
+	records: DirectChildTopologyRecords,
+	replayScope: string,
+	expectedRun: DurableStageRunTopology,
+	allowedNodeIds: ReadonlySet<string> = new Set(),
+): string | undefined {
 	const prefix = `${replayScope}:`;
-	const claiming = stages.filter((stage) => stage.topology?.run?.runId === expectedRun.runId);
+	const claiming = records.claiming;
 	if (claiming.some((stage) => !stage.replayKey.startsWith(prefix))) {
 		return "child run topology exists outside its durable invocation scope";
 	}
@@ -48,8 +77,7 @@ export function directChildTopologyError(
 		return "child checkpoint ownership is not reciprocal";
 	}
 
-	const directKeys = new Set(claiming.map((stage) => durableStageGroupKey(stage)));
-	const direct = stages.filter((stage) => directKeys.has(durableStageGroupKey(stage)));
+	const direct = records.direct(claiming);
 	const immutableError = immutableStageGroupError(direct);
 	if (immutableError !== undefined) return immutableError;
 

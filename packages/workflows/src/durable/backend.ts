@@ -5,6 +5,7 @@ import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
@@ -17,6 +18,7 @@ import type {
 	ResumableWorkflowEntry,
 } from "./types.js";
 import { DURABLE_STAGE_TOPOLOGY_VERSION } from "./types.js";
+import { parseWorkflowChildResult } from "./workflow-child-result.js";
 
 const SESSION_HEADER_READ_LIMIT_BYTES = 64 * 1024;
 
@@ -201,6 +203,14 @@ export interface DurableWorkflowBackend {
 	/** List all checkpoints for a workflow (in completion order). */
 	listCheckpoints(workflowId: string): readonly DurableCheckpoint[];
 
+	/**
+	 * Version of a root's checkpoint list for nested run reconstruction, or
+	 * `undefined` when this backend cannot provide one. It changes whenever a
+	 * recorded checkpoint can change the nested runs rebuilt from the list; see
+	 * `NestedSnapshotVersion` for the one class of record that leaves it alone.
+	 */
+	nestedSnapshotVersion?(workflowId: string): number | undefined;
+
 	/** Get the top-level workflow handle, or `undefined` if not registered. */
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 	/**
@@ -275,6 +285,149 @@ export interface DurableWorkflowBackend {
 	releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void | Promise<void>;
 }
 
+// Nested snapshot version
+// ---------------------------------------------------------------------------
+
+/** Checkpoint id prefix of the metadata record replay writes after hydrating a cached root stage. */
+export const STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX = "stage-replay-meta:";
+
+let lastVersion = 0;
+
+/** Every tracker draws from one counter, so a recreated root never repeats a version. */
+function nextVersion(): number {
+	lastVersion += 1;
+	return lastVersion;
+}
+
+interface ReplayGroupSummary {
+	readonly name: string;
+	readonly identity: string;
+	consistent: boolean;
+	hasOutput: boolean;
+	hasExitedChildOutput: boolean;
+}
+
+/**
+ * Version of one root's checkpoint list as nested run reconstruction sees it.
+ *
+ * Every recorded checkpoint bumps the version except one narrow, documented
+ * class that cannot change the nested runs rebuilt from the list: replaying a
+ * cached root stage writes one `stage-replay-meta:` record, so without this
+ * exemption resuming N cached child boundaries would rebuild every nested run
+ * N times. A record is exempt only when all of these hold:
+ *
+ * - It is a root-owned stage record with the replay-metadata id prefix and no
+ *   output, boundary event, or prompt occurrence key.
+ * - It sorts after every recorded checkpoint, so existing sequences do not move.
+ * - Its replay key already holds stage records that all share its name and
+ *   immutable identity (topology version, stage id, parents, source order,
+ *   and therefore its root run), and include an output that is not an exited
+ *   child.
+ *   The record therefore joins an existing root stage group without changing
+ *   identity validation, and can change only that root stage's timing and
+ *   status. Nested runs read a root stage's timing only to synthesize an
+ *   exited child or a pending child, and both are excluded.
+ * - No boundary replay key scopes its checkpoint id, so it cannot become raw
+ *   evidence against a zero-stage child.
+ *
+ * Anything else, including any record this rule cannot classify, bumps the
+ * version.
+ */
+export class NestedSnapshotVersion {
+	private current = nextVersion();
+	private latestCompletedAt = Number.NEGATIVE_INFINITY;
+	private readonly replayGroups = new Map<string, ReplayGroupSummary>();
+	private readonly boundaryReplayKeys = new Set<string>();
+
+	constructor(private readonly rootWorkflowId: string) {}
+
+	get version(): number {
+		return this.current;
+	}
+
+	/** Account for one newly recorded checkpoint, in record order. */
+	record(checkpoint: DurableCheckpoint): void {
+		if (!this.isInert(checkpoint)) this.current = nextVersion();
+		this.latestCompletedAt = Math.max(this.latestCompletedAt, checkpoint.completedAt);
+		if (checkpoint.kind !== "stage") return;
+		if (checkpoint.topology?.boundary !== undefined) this.boundaryReplayKeys.add(checkpoint.replayKey);
+		if (checkpoint.topology?.occurrenceKey !== undefined) return;
+		const identity = stageIdentity(checkpoint);
+		const exited = parseWorkflowChildResult(checkpoint.output)?.exited === true;
+		const summary = this.replayGroups.get(checkpoint.replayKey);
+		if (summary === undefined) {
+			this.replayGroups.set(checkpoint.replayKey, {
+				name: checkpoint.name,
+				identity,
+				consistent: true,
+				hasOutput: checkpoint.output !== undefined,
+				hasExitedChildOutput: exited,
+			});
+			return;
+		}
+		summary.consistent &&= summary.name === checkpoint.name && summary.identity === identity;
+		summary.hasOutput ||= checkpoint.output !== undefined;
+		summary.hasExitedChildOutput ||= exited;
+	}
+
+	private isInert(checkpoint: DurableCheckpoint): boolean {
+		if (
+			checkpoint.kind !== "stage" ||
+			!checkpoint.checkpointId.startsWith(STAGE_REPLAY_METADATA_CHECKPOINT_PREFIX) ||
+			checkpoint.output !== undefined ||
+			checkpoint.topology === undefined ||
+			checkpoint.topology.boundary !== undefined ||
+			checkpoint.topology.occurrenceKey !== undefined ||
+			!this.isRootOwned(checkpoint) ||
+			checkpoint.completedAt < this.latestCompletedAt
+		) {
+			return false;
+		}
+		const summary = this.replayGroups.get(checkpoint.replayKey);
+		if (
+			summary === undefined ||
+			!summary.consistent ||
+			!summary.hasOutput ||
+			summary.hasExitedChildOutput ||
+			summary.name !== checkpoint.name ||
+			summary.identity !== stageIdentity(checkpoint)
+		) {
+			return false;
+		}
+		const id = checkpoint.checkpointId;
+		for (let colon = id.indexOf(":"); colon >= 0; colon = id.indexOf(":", colon + 1)) {
+			if (this.boundaryReplayKeys.has(id.slice(0, colon))) return false;
+		}
+		return true;
+	}
+
+	private isRootOwned(checkpoint: DurableStageCheckpoint): boolean {
+		const runId = checkpoint.topology?.run?.runId;
+		return runId === undefined || runId === this.rootWorkflowId;
+	}
+}
+
+/** Fields `immutableStageGroupError` requires every record in one group to share. */
+function stageIdentity(checkpoint: DurableStageCheckpoint): string {
+	const topology = checkpoint.topology;
+	return JSON.stringify([
+		durableStageGroupKey(checkpoint),
+		topology?.version,
+		topology?.stageId,
+		topology?.parentIds,
+		topology?.sourceOrder,
+		topology?.run === undefined
+			? undefined
+			: [
+					topology.run.runId,
+					topology.run.runName,
+					topology.run.parentRunId,
+					topology.run.parentStageId,
+					topology.run.rootRunId,
+				],
+	]);
+}
+
 // Journal projection
 // ---------------------------------------------------------------------------
 
@@ -285,6 +438,7 @@ interface JournalWorkflowRecord {
 	uiByHash: Map<string, DurableUiCheckpoint>;
 	stageOutputByReplayKey: Map<string, DurableStageCheckpoint>;
 	stageSessionByReplayKey: Map<string, DurableStageCheckpoint>;
+	nestedSnapshotVersion: NestedSnapshotVersion;
 }
 
 function checkpointKey(c: DurableCheckpoint): string {
@@ -382,6 +536,7 @@ class JournalProjection {
 				uiByHash: new Map(),
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
+				nestedSnapshotVersion: new NestedSnapshotVersion(handle.workflowId),
 			});
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
@@ -500,6 +655,7 @@ class JournalProjection {
 		const key = checkpointKey(currentCheckpoint);
 		if (rec.checkpoints.has(key)) return;
 		rec.checkpoints.set(key, currentCheckpoint);
+		rec.nestedSnapshotVersion.record(currentCheckpoint);
 		if (currentCheckpoint.kind === "tool") {
 			const existing = rec.toolByHash.get(currentCheckpoint.argsHash);
 			if (
@@ -575,6 +731,10 @@ class JournalProjection {
 
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.workflows.get(workflowId)?.handle;
+	}
+
+	nestedSnapshotVersion(workflowId: string): number | undefined {
+		return this.workflows.get(workflowId)?.nestedSnapshotVersion.version;
 	}
 	getLoadableWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.getWorkflow(workflowId);
