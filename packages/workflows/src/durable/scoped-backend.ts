@@ -86,6 +86,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		return this.inner.getPendingStageMessageDeliveryCount?.(this.scope.rootWorkflowId, messageId, logicalRunId) ?? 0;
 	}
 
+	pendingStageDeliveryCountVersion(_workflowId: string): number | undefined {
+		return this.inner.pendingStageDeliveryCountVersion?.(this.scope.rootWorkflowId);
+	}
+
 	async readPendingStageMessageDeliveryCount(
 		workflowId: string,
 		messageId: string,
