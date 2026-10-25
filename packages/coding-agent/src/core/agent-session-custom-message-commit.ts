@@ -75,6 +75,19 @@ function queuesBehindFirstStagePrompt(session: AgentSession, options: SendMessag
 	);
 }
 
+/**
+ * A protected delivery accepted while queued input is paused writes its durable card before it queues the hidden
+ * turn. A resume during that write releases a hold that does not contain it yet and reports no released work, so
+ * nothing would ever start the turn. Start it here, as an idle delivery after the resume would have.
+ */
+function startTurnIfPauseReleasedDuringAdmission(session: AgentSession, starter: CustomMessage): void {
+	if (session._queuedMessagesPaused || session._subagentPolicy?.executionEnded !== undefined) return;
+	if (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0) return;
+	const turn = session._runAgentPrompt([], undefined, undefined, false, starter);
+	session._workflowStageAdmission?.trackAdmittedWork(turn);
+	void turn.catch(() => {});
+}
+
 /** Commit one delivery whose source generation already granted admission. */
 export async function commitAdmittedCustomMessage<T>(
 	session: AgentSession,
@@ -119,6 +132,7 @@ export async function commitAdmittedCustomMessage<T>(
 			const delivery = options.deliverAs === "followUp" ? "followUp" : "steer";
 			if (useProtectedReconciliation) {
 				await queueProtectedStreamingCustomMessage(self, appMessage, delivery);
+				startTurnIfPauseReleasedDuringAdmission(self, appMessage);
 			} else {
 				self._queueAgentMessage(appMessage, delivery);
 			}
@@ -231,6 +245,7 @@ export async function commitAdmittedCustomMessages<T>(
 		if (options?.triggerTurn === true) {
 			if (useProtectedReconciliation) {
 				await queueProtectedStreamingCustomMessages(self, appMessages, delivery);
+				startTurnIfPauseReleasedDuringAdmission(self, appMessages[0]!);
 			} else {
 				for (const item of appMessages) self._queueAgentMessage(item, delivery);
 			}
