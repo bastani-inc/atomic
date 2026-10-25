@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.44-alpha.7] - 2026-10-25
+
+Workflow stages always get their queued Intercom messages and never wait forever to start, even around pauses, worker replacement and reconnects.
+
+- **No stuck stages:** a stage no longer waits forever before its first turn for a pattern message it receives live, and never waits more than 60 seconds without delivery progress; any message still queued is delivered afterwards ([#3958](https://github.com/bastani-inc/atomic/pull/3958))
+- **No lost messages:** a direct send to a paused, blocked or not-yet-started stage is queued for that stage and survives a pooled worker replacement, and messages missed while a stage was disconnected arrive after it reconnects, with their delivery mode and reply target intact ([#3958](https://github.com/bastani-inc/atomic/pull/3958), [#3959](https://github.com/bastani-inc/atomic/pull/3959))
+
 ### Fixed
 
 - An Intercom message sent to one specific workflow stage while that stage is paused, blocked or awaiting input and has not started yet is now queued for that stage and reaches it when it starts. Previously the send was accepted as a message for a possible future stage (`notInKnownSet`) and matched only the stage's old id, so it was lost when the stage started under a new id, as it does when a pooled worker is replaced. Messages sent to the whole run (`workflow:<rootRunId>/**`) were not affected ([#3869](https://github.com/bastani-inc/atomic/issues/3869))
