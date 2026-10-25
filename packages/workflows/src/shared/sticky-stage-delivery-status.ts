@@ -1,11 +1,8 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import {
-	availableRunDurableBackend,
-	durableBackendForRun,
-	durableRootRunIdForRun,
-} from "../durable/run-owner-backend.js";
-import { stageMatchesPathPattern, workflowBoundaryHops } from "./pending-stage-status.js";
-import type { RunSnapshot } from "./store-types.js";
+import { availableRunDurableBackend, durableBackendForRun } from "../durable/run-owner-backend.js";
+import { createStagePathPatternIndex, createWorkflowBoundaryHopsResolver } from "./pending-stage-status.js";
+import type { PendingStageMessageDelivery, RunSnapshot } from "./store-types.js";
+import { reciprocalWorkflowRootRunId } from "./workflow-run-ownership.js";
 import { parseWorkflowStageTarget } from "./workflow-stage-target.js";
 
 export interface StickyStageDeliveryStatus {
@@ -33,13 +30,51 @@ export function stickyStageDeliveryStatuses(
 	const root = runs.find((run) => run.id === rootRunId);
 	const entries = (root?.pendingStageMessages ?? []).filter((entry) => entry.sticky === true);
 	const result: StickyStageDeliveryStatus[] = [];
+	// Parse each distinct target once and index the patterns, so a stage is matched only
+	// against the targets that can reach it rather than re-parsing every entry per stage.
+	const patternByTarget = new Map<string, number>();
+	const patterns: string[][] = [];
+	const entriesByPattern: number[][] = [];
+	const ownEntries: number[] = [];
+	entries.forEach((entry, index) => {
+		const target = entry.targetPath ?? entry.stageKey;
+		let pattern = patternByTarget.get(target);
+		if (pattern === undefined) {
+			const parsed = parseWorkflowStageTarget(target);
+			pattern = parsed?.rootRunId === rootRunId ? patterns.push(parsed.segments) - 1 : -1;
+			if (pattern >= 0) entriesByPattern.push([]);
+			patternByTarget.set(target, pattern);
+		}
+		if (pattern < 0) return;
+		entriesByPattern[pattern]!.push(index);
+		ownEntries.push(index);
+	});
+	if (ownEntries.length === 0) return result;
+	const patternIndex = createStagePathPatternIndex(patterns);
+	const deliveriesByEntry = new Map<number, Map<string, PendingStageMessageDelivery[]>>();
+	const entryReceipts = (index: number, runId: string, stageId: string): readonly PendingStageMessageDelivery[] => {
+		let byStage = deliveriesByEntry.get(index);
+		if (byStage === undefined) {
+			byStage = new Map();
+			for (const delivery of entries[index]!.deliveries ?? []) {
+				const key = `${delivery.runId}\u0000${delivery.stageId}`;
+				const list = byStage.get(key);
+				if (list === undefined) byStage.set(key, [delivery]);
+				else list.push(delivery);
+			}
+			deliveriesByEntry.set(index, byStage);
+		}
+		return byStage.get(`${runId}\u0000${stageId}`) ?? [];
+	};
 	availableBackend = availableRunDurableBackend(runs, rootRunId) ?? availableBackend;
 	const backend = availableBackend === undefined ? undefined : durableBackendForRun(availableBackend, runs, rootRunId);
+	const runById = new Map(runs.map((run) => [run.id, run]));
+	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
 	for (const run of runs) {
-		if (run.id !== rootRunId && run.rootRunId !== rootRunId && durableRootRunIdForRun(runs, run.id) !== rootRunId)
-			continue;
-		const resolved = durableRootRunIdForRun(runs, run.id) === rootRunId;
-		const hops = workflowBoundaryHops(runs, run.id);
+		const durableRootRunId = reciprocalWorkflowRootRunId(runById, run.id);
+		if (run.id !== rootRunId && run.rootRunId !== rootRunId && durableRootRunId !== rootRunId) continue;
+		const resolved = durableRootRunId === rootRunId;
+		const hops = hopsFor(run.id);
 		for (const stage of run.stages) {
 			if (
 				stage.nodeKind === "tool" ||
@@ -49,14 +84,17 @@ export function stickyStageDeliveryStatuses(
 				stage.workflowChild !== undefined
 			)
 				continue;
-			for (const entry of entries) {
+			const matchedEntries =
+				resolved && hops
+					? patternIndex
+							.matching(hops, [stage.id, stage.name])
+							.flatMap((pattern) => entriesByPattern[pattern]!)
+							.sort((left, right) => left - right)
+					: ownEntries;
+			for (const index of matchedEntries) {
+				const entry = entries[index]!;
 				const target = entry.targetPath ?? entry.stageKey;
-				const parsed = parseWorkflowStageTarget(target);
-				if (!parsed || parsed.rootRunId !== rootRunId) continue;
-				if (resolved && hops && !stageMatchesPathPattern(parsed.segments, hops, [stage.id, stage.name])) continue;
-				const receipts = (entry.deliveries ?? []).filter(
-					(delivery) => delivery.runId === run.id && delivery.stageId === stage.id,
-				);
+				const receipts = entryReceipts(index, run.id, stage.id);
 				const delivered =
 					backend?.hasCachedPendingStageDeliveryReceipt?.(
 						rootRunId,

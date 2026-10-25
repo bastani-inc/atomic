@@ -111,7 +111,31 @@ export function workflowBoundaryHops(
 	runs: readonly RunSnapshot[],
 	runId: string,
 ): readonly WorkflowBoundaryHop[] | undefined {
+	return boundaryHopsFrom(new Map(runs.map((run) => [run.id, run])), runId);
+}
+
+/**
+ * Build once per runs snapshot: the same hops as {@link workflowBoundaryHops} for every
+ * run, sharing one run index and caching each run's result, so walking every run of a
+ * large invocation is linear instead of rebuilding the index per run.
+ */
+export function createWorkflowBoundaryHopsResolver(
+	runs: readonly RunSnapshot[],
+): (runId: string) => readonly WorkflowBoundaryHop[] | undefined {
 	const runById = new Map(runs.map((run) => [run.id, run]));
+	const cache = new Map<string, readonly WorkflowBoundaryHop[] | undefined>();
+	return (runId) => {
+		if (cache.has(runId)) return cache.get(runId);
+		const hops = boundaryHopsFrom(runById, runId);
+		cache.set(runId, hops);
+		return hops;
+	};
+}
+
+function boundaryHopsFrom(
+	runById: ReadonlyMap<string, RunSnapshot>,
+	runId: string,
+): readonly WorkflowBoundaryHop[] | undefined {
 	const hops: WorkflowBoundaryHop[] = [];
 	let current = runById.get(runId);
 	while (current !== undefined && current.parentRunId !== undefined) {
@@ -153,6 +177,46 @@ export function stageMatchesPathPattern(
 	return workflowStagePathVariants(hops, stageSegments).some((candidate) =>
 		matchStagePathSegments(patternSegments, candidate),
 	);
+}
+
+/**
+ * Sticky glob targets indexed by their first segment. Matching one stage computes its
+ * depth-faithful variants once and only tries the patterns that can match a variant's
+ * first segment (a literal first segment must equal it) plus patterns whose first
+ * segment is a glob. Results equal filtering the patterns with
+ * {@link stageMatchesPathPattern}, in pattern order.
+ */
+export interface StagePathPatternIndex {
+	/** Indexes into the indexed patterns that match the stage, ascending. */
+	matching(hops: readonly WorkflowBoundaryHop[], stageSegments: readonly string[]): number[];
+}
+
+export function createStagePathPatternIndex(patterns: readonly (readonly string[])[]): StagePathPatternIndex {
+	const byFirstSegment = new Map<string, number[]>();
+	const globFirst: number[] = [];
+	patterns.forEach((pattern, index) => {
+		const first = pattern[0];
+		if (first === undefined || first.includes("*")) {
+			globFirst.push(index);
+			return;
+		}
+		const bucket = byFirstSegment.get(first);
+		if (bucket === undefined) byFirstSegment.set(first, [index]);
+		else bucket.push(index);
+	});
+	return {
+		matching(hops, stageSegments) {
+			if (patterns.length === 0) return [];
+			const variants = workflowStagePathVariants(hops, stageSegments);
+			const candidates = new Set<number>(globFirst);
+			for (const variant of variants) {
+				for (const index of byFirstSegment.get(variant[0]!) ?? []) candidates.add(index);
+			}
+			return [...candidates]
+				.sort((left, right) => left - right)
+				.filter((index) => variants.some((variant) => matchStagePathSegments(patterns[index]!, variant)));
+		},
+	};
 }
 
 function pendingStageTarget(

@@ -27,14 +27,31 @@ export function createMessageReader(
   onError: (error: Error) => void,
 ) {
   let buffer = Buffer.alloc(0);
+  // Chunks of a frame still arriving: joined once the frame is complete, not on every
+  // chunk, so a large frame costs linear rather than quadratic copying.
+  let pending: Buffer[] = [];
+  let pendingLength = 0;
+  let awaitedLength = 0;
 
   return (data: Buffer) => {
-    buffer = Buffer.concat([buffer, data]);
+    if (pendingLength + data.length < awaitedLength) {
+      pending.push(data);
+      pendingLength += data.length;
+      return;
+    }
+    buffer = pending.length === 0 ? Buffer.concat([buffer, data]) : Buffer.concat([...pending, data]);
+    pending = [];
+    pendingLength = 0;
+    awaitedLength = 0;
 
     while (buffer.length >= 4) {
       const length = buffer.readUInt32BE(0);
       
       if (buffer.length < 4 + length) {
+        pending = [buffer];
+        pendingLength = buffer.length;
+        awaitedLength = 4 + length;
+        buffer = Buffer.alloc(0);
         break;
       }
 
