@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
@@ -8,10 +8,33 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/shared/typ
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
+/**
+ * Every nested run reconstruction validates the boundary records first, exactly
+ * once, so counting that call counts reconstructions without a production seam.
+ */
+const reconstructions = vi.hoisted(() => ({ count: 0 }));
+vi.mock("../../packages/workflows/src/durable/completed-catalog-stage-groups.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../../packages/workflows/src/durable/completed-catalog-stage-groups.js")>();
+	return {
+		...actual,
+		validBoundaryRecordSet: (...args: Parameters<typeof actual.validBoundaryRecordSet>) => {
+			reconstructions.count += 1;
+			return actual.validBoundaryRecordSet(...args);
+		},
+	};
+});
+
 afterEach(closeMemoryTestBackends);
 
 const CHILDREN = 128;
 const POOL_WIDTH = 8;
+/**
+ * Reconstructions one resume may perform, independent of the child count. Replay
+ * looks the nested runs up once per cached child, so rebuilding them on each
+ * lookup would take at least CHILDREN.
+ */
+const MAX_RESUME_RECONSTRUCTIONS = 8;
 /** Structural: runs a 128-child pooled root through the real engine twice. */
 const POOLED_RESUME_TIMEOUT_MS = 60_000;
 
@@ -36,7 +59,7 @@ function childRuns(store: Store, rootId: string) {
 }
 
 test(
-	"resuming a pooled root replays every completed child without re-running it",
+	"resuming a pooled root replays every completed child without re-running it or rebuilding its nested runs per child",
 	async () => {
 		const backend = await createMemoryTestBackend();
 		const executions = new Map<string, number>();
@@ -94,17 +117,15 @@ test(
 		});
 
 		const firstStore = createStore();
-		const firstStarted = performance.now();
 		const first = await run(root, {}, options(firstStore));
-		const firstMs = performance.now() - firstStarted;
 		assert.equal(first.status, "failed");
 		assert.equal(executions.size, CHILDREN);
 
 		interrupt = false;
 		const resumedStore = createStore();
-		const resumeStarted = performance.now();
+		reconstructions.count = 0;
 		const resumed = await run(root, {}, options(resumedStore));
-		const resumeMs = performance.now() - resumeStarted;
+		const resumeReconstructions = reconstructions.count;
 		assert.equal(resumed.status, "completed", resumed.error);
 		assert.deepEqual(
 			resumed.result?.values,
@@ -117,11 +138,9 @@ test(
 		const resumedChildren = childRuns(resumedStore, rootId);
 		assert.equal(resumedChildren.length, CHILDREN);
 		assert.deepEqual(resumedChildren, childRuns(firstStore, rootId));
-		// Replay reuses every child's checkpoints, so it must not cost more than doing the work did.
-		// Rebuilding the nested runs once per cached child made it several times slower at this size.
 		assert.ok(
-			resumeMs < firstMs,
-			`resume took ${resumeMs.toFixed(0)} ms, longer than the ${firstMs.toFixed(0)} ms original run`,
+			resumeReconstructions <= MAX_RESUME_RECONSTRUCTIONS,
+			`resume rebuilt the nested runs ${resumeReconstructions} times for ${CHILDREN} cached children`,
 		);
 	},
 	POOLED_RESUME_TIMEOUT_MS,

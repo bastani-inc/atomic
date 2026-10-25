@@ -8,6 +8,7 @@ import { durableCompletedNestedRunSubtree } from "../../packages/workflows/src/d
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition, WorkflowExitStatus } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { durableNestedRunSnapshots as referenceNestedRunSnapshots } from "../helpers/reference-nested-run-snapshots/completed-catalog.js";
@@ -161,17 +162,20 @@ function assertMatchesReference(
 		);
 		if (subtree === undefined) continue;
 		completeSubtrees += 1;
-		// Callers own what they receive: mutating it must not leak into later lookups.
-		const first = subtree[0] as { status: string; stages: unknown[] };
-		first.status = "running";
-		first.stages.length = 0;
+		// Callers own what they receive, as the store does: mutating it must not leak into later lookups.
+		mutateLikeTheStore(subtree[0]);
 	}
-	const firstNested = nested[0] as { status: string; stages: unknown[] } | undefined;
-	if (firstNested !== undefined) {
-		firstNested.status = "running";
-		firstNested.stages.length = 0;
-	}
+	mutateLikeTheStore(nested[0]);
 	return completeSubtrees;
+}
+
+/** Mutate a returned run through the fields the store itself writes. */
+function mutateLikeTheStore(run: RunSnapshot | undefined): void {
+	if (run === undefined) return;
+	run.status = "running";
+	const stage = run.stages[0];
+	if (stage !== undefined) stage.status = "running";
+	run.stages.length = 0;
 }
 
 async function replayedBackend(
