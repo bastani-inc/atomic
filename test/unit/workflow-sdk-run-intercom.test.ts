@@ -12,7 +12,7 @@ import type { StageSessionCreateOptions } from "../../packages/workflows/src/run
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { IntercomWireProxy } from "../helpers/intercom-wire-proxy.js";
 import { testRunId } from "../helpers/run-id.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 import { makeMockSession } from "./stage-runner-helpers.js";
 
 const directory = makeTempDirectory("sdk-run-intercom-");
@@ -36,12 +36,9 @@ beforeAll(async () => {
 			stdio: "ignore",
 		}),
 	);
-	const deadline = Date.now() + 10_000;
-	while (!existsSync(getBrokerSocketPath(process.platform, brokerDirectory))) {
-		broker.assertRunning();
-		assert.ok(Date.now() < deadline, "local broker starts");
-		await sleep(25);
-	}
+	// The suite's clients come and go between tests, and the broker retires once none is connected for its idle
+	// window; the fixture holds a session for the whole file so a slow test cannot outlast that window.
+	await broker.holdSession(getBrokerSocketPath(process.platform, brokerDirectory), 10_000);
 	broker.onCleanup(() => proxy.close());
 	await proxy.listen();
 });
@@ -428,7 +425,10 @@ test("separately built SDK and extension bundles share one Intercom route owner 
 	owner.events.on("atomic:workflow-pending-stage-message", () => {
 		extensionOwned = true;
 	});
-	let shutdown: Parameters<NonNullable<ExtensionAPI["on"]>>[1] | undefined;
+	// The extension registers several session_shutdown handlers (its pending-stage bridge among them); a host runs
+	// every one. Keeping only the last left the bridge live, and its batched route announcement then re-registered
+	// this run's route after closeGroup, leaking a control connection into the next test.
+	const shutdownHandlers: NonNullable<Parameters<NonNullable<ExtensionAPI["on"]>>[1]>[] = [];
 	extension.default({
 		events: owner.events,
 		registerTool: () => undefined,
@@ -437,7 +437,7 @@ test("separately built SDK and extension bundles share one Intercom route owner 
 		registerFlag: () => undefined,
 		registerShortcut: () => undefined,
 		on: (event, handler) => {
-			if (event === "session_shutdown") shutdown = handler;
+			if (event === "session_shutdown") shutdownHandlers.push(handler);
 		},
 		disableAsyncDiscovery: true,
 	});
@@ -499,7 +499,7 @@ test("separately built SDK and extension bundles share one Intercom route owner 
 		);
 		assert.equal(routeOwners.size, 1, `one route owner connected for the run: ${[...routeOwners].join(", ")}`);
 	} finally {
-		await shutdown?.({ reason: "quit" });
+		for (const handler of shutdownHandlers) await handler({ reason: "quit" });
 		await owner.closeGroup(`workflow:${runId}`);
 	}
 });
