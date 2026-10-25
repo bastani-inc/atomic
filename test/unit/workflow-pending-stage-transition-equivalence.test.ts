@@ -8,6 +8,7 @@ import {
 	markPendingStageMessageDelivered,
 	markPendingStageMessageUndeliverable,
 	markPendingStageMessageUndeliverableNotified,
+	pendingStageUndeliverableNotificationId,
 	queueStageMessage,
 	queueStickyStageMessage,
 	recordPendingStageMessageDeliveries,
@@ -22,6 +23,7 @@ import type {
 	StageStatus,
 } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
+import { sleep } from "../helpers/runtime.js";
 
 const ROOT_RUN_ID = testRunId("pending-transition-equivalence-root");
 const CHILD_RUN_IDS = [0, 1, 2, 3].map((index) => testRunId(`pending-transition-equivalence-child-${index}`));
@@ -443,6 +445,11 @@ function input(id: string, stageKey: string, targetPath?: string): PendingStageM
 	};
 }
 
+/** The notification identity an undeliverable exact message carries; a queued one has none yet. */
+function notificationId(messageId: string): string {
+	return pendingStageUndeliverableNotificationId({ runId: ROOT_RUN_ID, stageKey: ROOT_STAGE_ID, id: messageId });
+}
+
 type Operation =
 	| { readonly kind: "queue-sticky"; readonly id: string; readonly target: string }
 	| { readonly kind: "queue-exact"; readonly id: string }
@@ -549,8 +556,15 @@ async function withPersistFault<T>(backend: DurableWorkflowBackend, action: () =
 	}
 }
 
-async function subjectWorld(): Promise<World> {
+async function subjectWorld(persistDelay?: () => Promise<void>): Promise<World> {
 	const { journal, backend } = await openBackend();
+	if (persistDelay !== undefined) {
+		const persist = backend.persistPendingStageMessages.bind(backend);
+		backend.persistPendingStageMessages = async (...args) => {
+			await persistDelay();
+			return await persist(...args);
+		};
+	}
 	let store = createStore();
 	const start = (pending?: PendingStageMessage[]) => {
 		store.recordRunStart(rootRun(pending));
@@ -595,14 +609,12 @@ async function subjectWorld(): Promise<World> {
 						backend,
 					);
 				case "notify-exact": {
-					const notification = (
-						store.runs().find((run) => run.id === ROOT_RUN_ID)?.pendingStageMessages ?? []
-					).find((candidate) => candidate.id === operation.id)?.undeliverableNotificationId;
+					const notification = notificationId(operation.id);
 					return await store.markPendingStageMessageUndeliverableNotified(
 						ROOT_RUN_ID,
 						ROOT_STAGE_ID,
 						operation.id,
-						notification ?? "none",
+						notification,
 						at(step),
 						backend,
 					);
@@ -695,14 +707,12 @@ async function referenceWorld(): Promise<World> {
 						backend,
 					);
 				case "notify-exact": {
-					const notification = (store.findRun(ROOT_RUN_ID)?.pendingStageMessages ?? []).find(
-						(candidate) => candidate.id === operation.id,
-					)?.undeliverableNotificationId;
+					const notification = notificationId(operation.id);
 					return await store.markPendingStageMessageUndeliverableNotified(
 						ROOT_RUN_ID,
 						ROOT_STAGE_ID,
 						operation.id,
-						notification ?? "none",
+						notification,
 						at(step),
 						backend,
 					);
@@ -813,6 +823,135 @@ describe("incremental pending-stage transitions", () => {
 			// The sequences must reach the paths under test: receipt archives and settled-entry retention.
 			assert.ok(archivedDeliveries > SEEDS * 20, `only ${archivedDeliveries} delivery receipts were archived`);
 			assert.ok(archivedMessages > 0, "no settled entry was archived beyond the retention limit");
+		},
+		EQUIVALENCE_TEST_TIMEOUT_MS,
+	);
+});
+
+/** Every this-many-th delivery-receipt archive fails, so faults land mid-compaction after earlier archives. */
+const ARCHIVE_FAULT_PERIOD = 9;
+
+/**
+ * Fail a fixed subset of receipt archives by call index. Batched and sequential execution archive the same
+ * receipts in the same order, so the same archives fail in both worlds.
+ */
+function failSomeArchives(backend: DurableWorkflowBackend): void {
+	const archive = backend.archivePendingStageDeliveryReceipt!.bind(backend);
+	let calls = 0;
+	backend.archivePendingStageDeliveryReceipt = async (...args) => {
+		calls++;
+		if (calls % ARCHIVE_FAULT_PERIOD === 0) throw new Error("injected receipt archive fault");
+		return await archive(...args);
+	};
+}
+
+/** Store transitions that may run concurrently; the rest change runs or inject faults and run alone. */
+const CONCURRENT_KINDS = new Set<Operation["kind"]>([
+	"queue-sticky",
+	"queue-exact",
+	"deliver-exact",
+	"undeliverable-exact",
+	"notify-exact",
+	"record",
+	"settle",
+]);
+
+describe("batched pending-stage transitions", () => {
+	test(
+		"concurrent queue, deliver, settle and notify calls match sequential execution for every caller, under archive faults",
+		async () => {
+			let concurrentCalls = 0;
+			let subjectPersists = 0;
+			let referencePersists = 0;
+			let archiveFaults = 0;
+			for (let seed = 1; seed <= SEEDS; seed++) {
+				const next = random(seed * 7919);
+				const sleepRandomly = async () => {
+					const roll = next();
+					if (roll < 0.4) return;
+					if (roll < 0.7) await Promise.resolve();
+					else await sleep(roll < 0.9 ? 0 : 1);
+				};
+				const subject = await subjectWorld(async () => {
+					subjectPersists++;
+					await sleepRandomly();
+				});
+				const reference = await referenceWorld();
+				const referencePersist = reference.backend.persistPendingStageMessages.bind(reference.backend);
+				reference.backend.persistPendingStageMessages = async (...args) => {
+					referencePersists++;
+					return await referencePersist(...args);
+				};
+				failSomeArchives(subject.backend);
+				failSomeArchives(reference.backend);
+				const ids = new Set<string>();
+				const script = operations(seed);
+				let step = 0;
+				while (step < script.length) {
+					// A run of concurrent transitions issued with random gaps, so some join the batch being
+					// built while others queue behind a persist in flight.
+					const group: [number, Operation][] = [];
+					const size = CONCURRENT_KINDS.has(script[step]!.kind) ? 1 + Math.floor(next() * 12) : 1;
+					while (group.length < size && step < script.length) {
+						const operation = script[step]!;
+						if (group.length > 0 && !CONCURRENT_KINDS.has(operation.kind)) break;
+						group.push([step, operation]);
+						step++;
+						if (!CONCURRENT_KINDS.has(operation.kind)) break;
+					}
+					const pending: Promise<unknown>[] = [];
+					for (const [index, operation] of group) {
+						if ("id" in operation) ids.add(operation.id);
+						pending.push(
+							subject.apply(operation, index).then(
+								(value) => ({ value }),
+								(error: Error) => ({ error: error.message }),
+							),
+						);
+						await sleepRandomly();
+					}
+					if (group.length > 1) concurrentCalls += group.length;
+					const results = await Promise.all(pending);
+					archiveFaults += results.filter(
+						(result) => (result as { error?: string }).error === "injected receipt archive fault",
+					).length;
+					for (const [offset, [index, operation]] of group.entries()) {
+						const where = `seed ${seed} step ${index} ${operation.kind}`;
+						const expected = await reference.apply(operation, index).then(
+							(value) => ({ value }),
+							(error: Error) => ({ error: error.message }),
+						);
+						assert.deepEqual(results[offset], expected, `${where}: result`);
+					}
+					const where = `seed ${seed} after step ${step - 1}`;
+					assert.deepEqual(subject.list(), reference.list(), `${where}: store list`);
+					assert.deepEqual(
+						subject.backend.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages,
+						reference.backend.getWorkflow(ROOT_RUN_ID)?.pendingStageMessages,
+						`${where}: persisted list`,
+					);
+					assert.deepEqual(
+						deliveryCounts(subject, [...ids]),
+						deliveryCounts(reference, [...ids]),
+						`${where}: delivery counts`,
+					);
+				}
+				assert.deepEqual(
+					await archivedReceipts(subject.journal),
+					await archivedReceipts(reference.journal),
+					`seed ${seed}: archived receipts`,
+				);
+				await subject.backend.close();
+				await reference.backend.close();
+			}
+			// Callers must actually fail mid-compaction, after earlier receipts were archived (Greptile #3947).
+			assert.ok(archiveFaults > SEEDS, `only ${archiveFaults} callers hit an archive fault`);
+			assert.ok(concurrentCalls > SEEDS * 100, `only ${concurrentCalls} calls ran concurrently`);
+			// Batching must actually have shared persists between transitions.
+			assert.ok(
+				subjectPersists < referencePersists * 0.8,
+				`batched execution persisted ${subjectPersists} times; sequential ${referencePersists}`,
+			);
 		},
 		EQUIVALENCE_TEST_TIMEOUT_MS,
 	);
