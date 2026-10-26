@@ -193,6 +193,10 @@ interface Waiter {
 	timer: ReturnType<typeof setTimeout> | undefined;
 	/** When the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
 	readonly waitingSince: number;
+	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
+	capTimer?: ReturnType<typeof setTimeout>;
+	/** The hold check whose outbox read is in flight; a wait that ends meanwhile reuses it (#3983). */
+	holdCheck?: Promise<void>;
 }
 
 interface TrackedHold {
@@ -1314,41 +1318,72 @@ export class MultiNodeRouter {
 				this.dropWaiter(waiter);
 				return;
 			}
-			void this.expireWaiter(waiter).catch((error: Error) => {
-				this.report(error);
-				this.expireUncertain(waiter);
-			});
+			// One hold check per waiter: a wait that ends while the previous check's read is still pending reuses it.
+			if (waiter.holdCheck !== undefined) return;
+			waiter.holdCheck = this.expireWaiter(waiter)
+				.catch((error: Error) => {
+					this.report(error);
+					this.expireUncertain(waiter);
+				})
+				.finally(() => {
+					waiter.holdCheck = undefined;
+				});
 		}, timeoutMs);
 		waiter.timer.unref?.();
+		// #3983: the save cap holds from the sender's own start, whatever the store does.
+		if (!waiter.queued && waiter.capTimer === undefined) {
+			waiter.capTimer = setTimeout(
+				() => this.expireUncertain(waiter),
+				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now()),
+			);
+			waiter.capTimer.unref?.();
+		}
+	}
+
+	/** The sender may wait this much longer under the save cap; 0 once the cap is reached. */
+	private capRemaining(waiter: Waiter): number {
+		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now());
 	}
 
 	/**
 	 * #3983: the sender's receipt wait ended. A recipient on another broker that reported, within the last receipt
-	 * wait, that it is still saving the message keeps its sender waiting another wait (told `send_held`), up to the
+	 * wait, that it is still saving the message keeps its sender waiting another wait (told `send_held`), within the
 	 * save cap; otherwise the sender hears that the outcome is uncertain, as before. The decision reads the outbox
-	 * row, which can wait behind other writes on the shared connection; a read slower than `HOLD_CHECK_GRACE_MS`
-	 * first tells the sender to keep waiting while it finishes, so a slow read never runs out the sender's own
-	 * deadline, and the sender still hears the outcome once the read answers or the provisional wait ends.
+	 * row, which can wait behind other writes on the shared connection: a read slower than `HOLD_CHECK_GRACE_MS`
+	 * first tells the sender to keep waiting while it finishes (within the cap), and a read that has not answered
+	 * within one receipt wait counts as no evidence, so the sender hears the outcome is uncertain. Only one read per
+	 * waiter is ever in flight, and the cap ends the wait however the store behaves.
 	 */
 	private async expireWaiter(waiter: Waiter): Promise<void> {
 		const provisional = setTimeout(() => {
-			if (this.waiters.get(waiter.messageId) !== waiter) return;
-			this.armWaiter(waiter, RECIPIENT_RECEIPT_TIMEOUT_MS);
-			this.holdSender(waiter, RECIPIENT_RECEIPT_TIMEOUT_MS);
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, this.capRemaining(waiter));
+			if (this.waiters.get(waiter.messageId) !== waiter || timeoutMs === 0) return;
+			this.armWaiter(waiter, timeoutMs);
+			this.holdSender(waiter, timeoutMs);
 		}, HOLD_CHECK_GRACE_MS);
 		provisional.unref?.();
-		let read: OutboxReadResult;
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = new Promise<"timed-out">((resolveTimeout) => {
+			deadline = setTimeout(() => resolveTimeout("timed-out"), RECIPIENT_RECEIPT_TIMEOUT_MS);
+			deadline.unref?.();
+		});
+		let read: OutboxReadResult | "timed-out";
 		try {
-			read = await this.state.outbox.read(waiter.messageId);
+			read = await Promise.race([this.state.outbox.read(waiter.messageId), timedOut]);
 		} finally {
 			clearTimeout(provisional);
+			clearTimeout(deadline);
 		}
 		if (this.waiters.get(waiter.messageId) !== waiter) return;
+		if (read === "timed-out") {
+			this.expireUncertain(waiter);
+			return;
+		}
 		if (read.status === "found" && read.row.state === "delivered") {
 			await this.finishDelivered(waiter);
 			return;
 		}
-		const remaining = waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now();
+		const remaining = this.capRemaining(waiter);
 		const savingAge = read.status === "found" && read.row.state === "claimed" ? read.row.savingAgeMs : undefined;
 		if (savingAge !== undefined && savingAge < RECIPIENT_RECEIPT_TIMEOUT_MS && remaining > 0) {
 			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
@@ -1383,6 +1418,7 @@ export class MultiNodeRouter {
 	private dropWaiter(waiter: Waiter): void {
 		if (this.waiters.get(waiter.messageId) === waiter) this.waiters.delete(waiter.messageId);
 		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+		if (waiter.capTimer !== undefined) clearTimeout(waiter.capTimer);
 	}
 
 	// ---------------------------------------------------------------------------------------------------------

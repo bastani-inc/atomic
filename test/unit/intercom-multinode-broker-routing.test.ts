@@ -44,6 +44,7 @@ import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
 import {
 	RECIPIENT_RECEIPT_TIMEOUT_MS,
+	RECIPIENT_SAVE_MAX_WAIT_MS,
 	RECIPIENT_SAVING_REPORT_INTERVAL_MS,
 	SEND_RESPONSE_TIMEOUT_MS,
 } from "../../packages/intercom/retry-policy.js";
@@ -1045,4 +1046,97 @@ test(
 		}
 	},
 	SLOW_HOLD_TEST_TIMEOUT_MS,
+);
+
+/** Steps fake time forward, letting the real store and bus settle between steps. */
+async function advance(totalMs: number, stepMs = 500): Promise<void> {
+	for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
+		await vi.advanceTimersByTimeAsync(stepMs);
+		await new Promise((resolveTick) => setImmediate(resolveTick));
+	}
+}
+
+test(
+	"a send whose hold check meets a permanently stalled store keeps one read in flight and ends uncertain within the save cap (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		let stalled = false;
+		let inFlight = 0;
+		let mostInFlight = 0;
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			if (!stalled) return read(messageId);
+			inFlight += 1;
+			mostInFlight = Math.max(mostInFlight, inFlight);
+			return new Promise<never>(() => {});
+		});
+		try {
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			b!.router.saving(recipient, sent.id);
+			stalled = true;
+			await advance(RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_RECEIPT_TIMEOUT_MS);
+			const outcome = outcomeOf(sender, sent.id);
+			assert.equal(outcome?.type, "delivery_failed", JSON.stringify(outcome));
+			assert.equal(mostInFlight, 1, `${mostInFlight} hold-check reads were in flight at once`);
+			const holds = framesOf(sender).filter((frame) => frame.type === "send_held" && frame.messageId === sent.id);
+			for (const hold of holds)
+				assert.ok(
+					hold.type === "send_held" && hold.timeoutMs <= RECIPIENT_SAVE_MAX_WAIT_MS,
+					"no hold reaches past the save cap",
+				);
+			assert.ok(Date.now() - sentAt >= RECIPIENT_RECEIPT_TIMEOUT_MS);
+		} finally {
+			spy.mockRestore();
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"a remote recipient that keeps reporting progress with a fast store keeps its sender waiting until the save cap (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			let outcomeAt: number | undefined;
+			for (let elapsed = 0; elapsed < RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_RECEIPT_TIMEOUT_MS; ) {
+				b!.router.saving(recipient, sent.id);
+				await advance(RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+				elapsed += RECIPIENT_SAVING_REPORT_INTERVAL_MS;
+				if (outcomeAt === undefined && outcomeOf(sender, sent.id) !== undefined) outcomeAt = Date.now();
+			}
+			assert.equal(outcomeOf(sender, sent.id)?.type, "delivery_failed");
+			assert.ok(outcomeAt !== undefined);
+			const waited = outcomeAt - sentAt;
+			assert.ok(
+				waited >= RECIPIENT_SAVE_MAX_WAIT_MS - RECIPIENT_RECEIPT_TIMEOUT_MS,
+				`the sender heard the outcome after ${waited} ms, before the save cap`,
+			);
+			assert.ok(
+				waited <= RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS,
+				`the sender waited ${waited} ms, past the save cap`,
+			);
+			assert.ok(
+				framesOf(sender).filter((frame) => frame.type === "send_held" && frame.messageId === sent.id).length > 1,
+				"progress reports held the sender",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
 );
