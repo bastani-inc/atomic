@@ -409,7 +409,9 @@ test.skipIf(process.platform === "win32")(
 							const view = await acquirePooledStage(live.store, target.runId, target.stage.id);
 							if (view !== undefined) {
 								const queued = view.handle.queuedUserMessages?.();
+								// Admitted by the replacement, not merely waiting in the outbox.
 								if (
+									!(view.handle as PooledStageHandle).hasPending &&
 									queued?.steering.includes("detached-steer") === true &&
 									queued.followUp.includes("detached-follow-up")
 								)
@@ -556,7 +558,8 @@ test.skipIf(process.platform === "win32")(
 				const ready = Promise.withResolvers<void>();
 				const check = () => {
 					const queued = handle.queuedUserMessages();
-					if (queued.steering.includes(steer) && queued.followUp.includes(follow) && !handle.isReconnecting)
+					// Admitted by the replacement, not merely waiting in the outbox.
+					if (queued.steering.includes(steer) && queued.followUp.includes(follow) && !handle.hasPending)
 						ready.resolve();
 				};
 				const stop = handle.subscribe(check);
@@ -657,7 +660,7 @@ test.skipIf(process.platform === "win32")(
 					for (;;) {
 						const reopenedHandle = reopened.handle as PooledStageHandle;
 						if (
-							!reopenedHandle.isReconnecting &&
+							!reopenedHandle.hasPending &&
 							reopenedHandle.placement.generation > 1 &&
 							reopenedHandle.queuedUserMessages().steering.includes("reopen-steer")
 						)

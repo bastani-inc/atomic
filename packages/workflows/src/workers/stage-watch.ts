@@ -52,9 +52,9 @@ export async function admitStageUserMessage(
 		await handle.followUp(text);
 		return { action: "followUp" };
 	};
-	// A turn under way, whether or not the stage handle reports it (a replayed turn may not), takes
-	// the text in its mode directly: through the stage's message admission it would wait for the
-	// whole turn to end before steering it.
+	// A turn under way, whether or not the stage handle reports it (a replayed turn may not, and
+	// holds the stage's message admission until it ends), takes the text in its mode directly:
+	// through that admission a steer would wait for the whole turn instead of steering it.
 	const busy = handle.isStreaming || handle.agentSession?.isStreaming === true;
 	const delivery = (async (): Promise<StageCommandResult> => {
 		if (busy) return queue();
