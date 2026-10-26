@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { catalogEvidence, parseEvalsCatalog } from "../../packages/coding-agent/src/core/model-routing-evals.js";
 import { readText } from "../helpers/runtime.js";
 
 test("the general model-selection guide stays compact and points to factual evals", async () => {
@@ -160,4 +161,171 @@ test("DeepSWE, FrontierCode and published results are sourced tables the router 
 		),
 		"Claude Sonnet 5.5 results come from Anthropic's launch materials",
 	);
+});
+
+const TERRA_AA_PUBLISHED_COLUMNS = [
+	"idx",
+	"Brief",
+	"Gn",
+	"Auto",
+	"TB4",
+	"Sci",
+	"HLE",
+	"PDF",
+	"Crit",
+	"OA",
+	"ONH",
+	"LCR",
+	"Omni",
+	"MMMU",
+];
+const TERRA_AA_ROWS: ReadonlyArray<readonly [slug: string, model: string, values: readonly string[]]> = [
+	[
+		"gpt-6-1-terra",
+		"GPT-6.1 Terra (max)",
+		["48.1", "45.1", "48.8", "60.2", "55.6", "55.1", "46.2", "28.6", "28.0", "49.1", "62.0", "82.7", "29.8", "84.7"],
+	],
+	[
+		"gpt-6-1-terra-xhigh",
+		"GPT-6.1 Terra (xhigh)",
+		["45.4", "41.6", "45.8", "59.9", "46.5", "53.4", "43.7", "26.6", "26.6", "49.6", "58.5", "81.7", "28.7", "83.8"],
+	],
+	[
+		"gpt-6-1-terra-high",
+		"GPT-6.1 Terra (high)",
+		["43.9", "38.2", "42.7", "58.5", "41.9", "51.6", "43.3", "28.0", "25.7", "50.0", "56.9", "82.3", "28.4", "83.8"],
+	],
+	[
+		"gpt-6-1-terra-medium",
+		"GPT-6.1 Terra (medium)",
+		["41.3", "34.5", "41.3", "57.8", "32.3", "51.6", "40.2", "28.4", "21.4", "49.4", "56.0", "80.7", "27.1", "82.8"],
+	],
+	[
+		"gpt-6-1-terra-low",
+		"GPT-6.1 Terra (low)",
+		["36.2", "26.5", "35.2", "56.2", "15.2", "52.4", "35.8", "25.6", "15.1", "47.8", "54.0", "81.0", "23.7", "82.5"],
+	],
+	[
+		"gpt-6-1-terra-non-reasoning",
+		"GPT-6.1 Terra (non-reasoning)",
+		["33.5", "36.4", "39.3", "51.0", "26.8", "47.8", "21.1", "23.2", "4.9", "44.0", "28.2", "67.7", "3.8", "76.0"],
+	],
+];
+
+test("GPT-6.1 Terra AA rows keep six configurations, their published values and unknown cells", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const terraRows = aa.rows.filter((row) => /^gpt-6-1-terra(?:-|$)/u.test(row[0]!));
+	assert.deepEqual(
+		terraRows.map((row) => row[0]),
+		TERRA_AA_ROWS.map(([slug]) => slug),
+		"each Terra configuration appears exactly once",
+	);
+	const scoreColumns = aa.header.slice(3);
+	for (const [slug, model, values] of TERRA_AA_ROWS) {
+		const row = terraRows.find((candidate) => candidate[0] === slug)!;
+		assert.deepEqual(row.slice(1, 3), [model, "2026-10-26"], slug);
+		const expected = scoreColumns.map((column) => {
+			const index = TERRA_AA_PUBLISHED_COLUMNS.indexOf(column);
+			return index < 0 ? "∅" : values[index]!;
+		});
+		assert.deepEqual(row.slice(3), expected, `${slug} keeps published values and leaves the rest unknown`);
+		assert.ok(evals.includes(`(https://artificialanalysis.ai/models/${slug})`), `${slug} cites its model page`);
+	}
+
+	const evidence = catalogEvidence(parseEvalsCatalog(evals), ["openai/gpt-6.1-terra"]);
+	for (const [slug] of TERRA_AA_ROWS) {
+		const line = evals.split("\n").find((candidate) => candidate.startsWith(`| ${slug} | GPT-6.1 Terra (`))!;
+		assert.ok(evidence.includes(line), `routing evidence carries ${slug} verbatim, unknown cells as ∅`);
+	}
+});
+
+test("GPT-6.1 Terra published results keep score, qualifier and source", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const terra = sectionTable(evals, "## Published benchmark results").rows.filter((row) =>
+		row[0]!.startsWith("gpt-6-1-terra"),
+	);
+	assert.deepEqual(terra, [
+		[
+			"gpt-6-1-terra",
+			"GPT-6.1 Terra",
+			"TB4",
+			"50.3",
+			"max effort; v4.0; OpenAI-reported, harness not stated",
+			"OpenAI",
+		],
+		[
+			"gpt-6-1-terra",
+			"GPT-6.1 Terra",
+			"XBench",
+			"97.1",
+			"ACE-normalized mean capability score; max tested solution length; effort not stated",
+			"OpenAI",
+		],
+		[
+			"gpt-6-1-terra",
+			"GPT-6.1 Terra",
+			"SECPro",
+			"83.3",
+			"pass@1; max tested solution length; effort not stated",
+			"OpenAI",
+		],
+		[
+			"gpt-6-1-terra",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"57.6",
+			"max effort; AA general settings above",
+			"Artificial Analysis",
+		],
+		[
+			"gpt-6-1-terra-xhigh",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"41.9",
+			"xhigh effort; AA general settings above",
+			"Artificial Analysis",
+		],
+		[
+			"gpt-6-1-terra-high",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"33.3",
+			"high effort; AA general settings above",
+			"Artificial Analysis",
+		],
+		[
+			"gpt-6-1-terra-medium",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"24.8",
+			"medium effort; AA general settings above",
+			"Artificial Analysis",
+		],
+		[
+			"gpt-6-1-terra-low",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"7.6",
+			"low effort; AA general settings above",
+			"Artificial Analysis",
+		],
+		[
+			"gpt-6-1-terra-non-reasoning",
+			"GPT-6.1 Terra",
+			"TBSci",
+			"24.3",
+			"non-reasoning; AA general settings above",
+			"Artificial Analysis",
+		],
+	]);
+	const sources = evals.split("\n").find((line) => line.startsWith("- GPT-6.1 Terra, accessed 2026-10-26:"));
+	assert.ok(sources, "Terra published results name their sources and access date");
+	assert.match(
+		sources,
+		/OpenAI = \[launch announcement\]\(https:\/\/openai\.com\/index\/introducing-gpt-6-1-terra\/\)/u,
+	);
+	assert.match(sources, /\[system card addendum\]\(https:\/\/deploymentsafety\.openai\.com\/gpt-6-1-terra\)/u);
+	assert.match(sources, /vendor-reported/u);
+	assert.match(evals, /\[evaluation page\]\(https:\/\/artificialanalysis\.ai\/evaluations\/terminal-bench-science\)/u);
 });
