@@ -1,6 +1,6 @@
 # GPT-6.1 Sol prompting and migration
 
-Use this reference when targeting `gpt-6.1-sol` or migrating from `gpt-6-sol`. Distilled from [OpenAI's GPT-6 Astra and GPT-6.1 Sol guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#gpt-6-astra-gpt-61-sol), checked September 30, 2026. OpenAI recommends Sol 6.1 for complex coding, computer use, and professional work when balancing quality and cost. Compare models on your own tasks; this positioning is not a measured improvement for your workload.
+Use this reference when targeting `gpt-6.1-sol` or migrating from `gpt-6-sol`. Distilled from [OpenAI's GPT-6 Astra and GPT-6.1 Sol guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#gpt-6-astra-gpt-61-sol), checked September 30, 2026; the Sol section was rechecked October 26, 2026. OpenAI describes Sol 6.1 as delivering near-Astra performance at a lower cost for complex coding, computer use, and professional work. Compare models on your own tasks; this positioning is not a measured improvement for your workload. For GPT-6.1 Terra, see [gpt_6_1_terra.md](gpt_6_1_terra.md).
 
 The source separates Sol 6.1 specifications and migration guidance from shared prompt templates. Those templates address behavior observed with Astra, not independently established Sol 6.1 behavior. Apply them only to failures you observe on Sol 6.1. The snippets below are adaptations, not verbatim OpenAI quotations.
 
