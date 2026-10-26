@@ -16,6 +16,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - pi-messages streams now fail on a `contentIndex` that is not the next or an existing content block, such as `__proto__` or a huge index ([pi 89c921d8](https://github.com/earendil-works/pi/commit/89c921d8b56b59e768b26e7f48b6832978119310))
 - The `pi-ai` CLI writes its `auth.json` with mode `0600`, so other users can no longer read the stored tokens; an existing file is tightened before new tokens are written ([pi 89c921d8](https://github.com/earendil-works/pi/commit/89c921d8b56b59e768b26e7f48b6832978119310))
 - OpenCode DeepSeek V4.1 Flash no longer sends `prompt_cache_retention` with long cache retention, which the OpenCode gateway rejects ([pi 89c921d8](https://github.com/earendil-works/pi/commit/89c921d8b56b59e768b26e7f48b6832978119310))
+- Google Generative AI, Google Vertex and Amazon Bedrock failures now report the server's retry hint as `retryAfterMs`: Google's `RetryInfo.retryDelay` from the error body, and Bedrock's `Retry-After` / `Retry-After-Ms` response headers. A Google request retried by the shared retry policy now waits that delay instead of a guessed backoff, and a delay above the retry-delay cap fails at once with the hint attached.
+- ChatGPT (Codex) HTTP failures other than usage limits now keep the HTTP status in their message (`402: …`), so an exhausted quota or server error is still recognizable from the message.
 
 ## [0.9.44] - 2026-10-25
 

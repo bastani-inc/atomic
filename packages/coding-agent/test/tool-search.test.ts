@@ -131,3 +131,25 @@ test("tool search ranks a tool first when the query is its name (pi#11331)", () 
 		);
 	}
 });
+
+test("tool search finds a tool whose name is only stop words, and nothing for other stop-word queries", () => {
+	const documents = [
+		{ name: "mcp__app__thread_read", description: "Read a thread." },
+		{ name: "mcp__app__for_each", description: "Run a step for each item." },
+		{ name: "mcp__app__is", description: "Check whether a value is set." },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	const ranker = new Bm25Ranker();
+	for (const [query, expected] of [
+		["is", "mcp__app__is"],
+		["for_each", "mcp__app__for_each"],
+		["app__is", "mcp__app__is"],
+	] as const) {
+		assert.deepEqual(
+			ranker.rank(query, documents, 1).map((match) => match.name),
+			[expected],
+			query,
+		);
+	}
+	assert.deepEqual(ranker.rank("the", documents, 5), []);
+	assert.deepEqual(ranker.rank("of the", documents, 5), []);
+});
