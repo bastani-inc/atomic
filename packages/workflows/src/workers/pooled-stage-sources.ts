@@ -1,5 +1,6 @@
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
 import type { Store } from "../shared/store.js";
+import type { PooledPromptAnswer, PromptResult } from "./stage-watch-types.js";
 
 /** A live view of one pooled stage, held until `release`; the last release closes its watch. */
 export interface PooledStageLease {
@@ -15,6 +16,8 @@ export interface PooledStageLease {
 /** Something that can open live views of stages running on its local workers: a pool. */
 export interface PooledStageSource {
 	acquire(runId: string, stageId: string): Promise<PooledStageLease | undefined>;
+	/** Answers a prompt of a stage on one of its workers; undefined when the stage is not its. */
+	answer?(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult | undefined>;
 }
 
 const sources = new WeakMap<Store, Set<PooledStageSource>>();
@@ -44,6 +47,20 @@ export async function acquirePooledStage(
 	for (const source of [...(sources.get(store) ?? [])]) {
 		const lease = await source.acquire(runId, stageId);
 		if (lease !== undefined) return lease;
+	}
+	return undefined;
+}
+
+/** Answers a prompt of a stage running on a local worker of a pool publishing into `store`. */
+export async function answerPooledStage(
+	store: Store,
+	runId: string,
+	stageId: string,
+	answer: PooledPromptAnswer,
+): Promise<PromptResult | undefined> {
+	for (const source of [...(sources.get(store) ?? [])]) {
+		const result = await source.answer?.(runId, stageId, answer);
+		if (result !== undefined) return result;
 	}
 	return undefined;
 }

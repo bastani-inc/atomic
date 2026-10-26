@@ -14,7 +14,7 @@ import {
 	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
-import type { Lease, RunJournal } from "../durable/journal/types.js";
+import { type Lease, type RunJournal, StaleLeaseError } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
@@ -59,8 +59,12 @@ import type {
 	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
+	PooledPromptAnswer,
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
+	PooledStageQuestion,
+	PromptRefusal,
+	PromptResult,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -333,8 +337,9 @@ interface WorkerSlot {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal;
+	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
+	readonly question?: PooledStageQuestion;
 	readonly error?: string;
 }
 
@@ -377,6 +382,7 @@ export class PoolCoordinator {
 	private readonly watches = new Map<WatchId, StageWatch>();
 	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
 	private stageCommandSequence = 0;
+	private promptNodes = false;
 	private lastTick = performance.now();
 	private stalledMs = 0;
 	private readonly ticker: NodeJS.Timeout;
@@ -481,6 +487,7 @@ export class PoolCoordinator {
 			case "control":
 				return this.control(command.state);
 			case "start":
+				this.promptNodes = command.promptNodes === true;
 				this.starting ??= this.start(command.sources, command.cwd, command.publish, command.rootRun);
 				return this.starting;
 			case "enqueue":
@@ -497,6 +504,10 @@ export class PoolCoordinator {
 				return;
 			case "stage-deliver":
 				return this.stageDeliver(command);
+			case "stage-question":
+				return this.stageQuestion(command.runId, command.stageId);
+			case "stage-answer":
+				return this.stageAnswer(command.runId, command.stageId, command.answer);
 			case "stage-pause":
 				return this.stageControl(command.watch, { op: "pause" });
 			case "stage-resume":
@@ -878,6 +889,30 @@ export class PoolCoordinator {
 		};
 	}
 
+	/** Reads a stage's brokered question from the worker whose attempt published the stage's run. */
+	private async stageQuestion(runId: string, stageId: string): Promise<PooledStageQuestion | undefined> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return undefined;
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		return (await this.stageCommand(slot, { attempt, op: "question", runId, stageId }))?.question;
+	}
+
+	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */
+	private async stageAnswer(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return { ok: false, refusal: "StaleAttempt" };
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		const result = await this.stageCommand(slot, { attempt, op: "answer", runId, stageId, answer });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === undefined) return { ok: true };
+		return {
+			ok: false,
+			refusal: refusal === "StageNotLive" || refusal === "PromptNotPending" ? refusal : "StaleAttempt",
+		};
+	}
+
 	/** Pauses or resumes one watched stage through its worker's airlock; pool control is untouched. */
 	private async stageControl(
 		id: WatchId,
@@ -1013,6 +1048,7 @@ export class PoolCoordinator {
 					root,
 					definitions: this.sources,
 					admission: options.admission,
+					...(this.promptNodes ? { promptNodes: true } : {}),
 				}),
 			],
 			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
@@ -1447,6 +1483,14 @@ export class PoolCoordinator {
 				for (const group of await unconfirmedProcessGroups(this.journal!, this.root!, scope))
 					if (!alive.includes(group)) alive.push(group);
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
+			// Every worker is stopped: work they still held is no attempt's any more, so it does not stay leased
+			// after the root ends (#3996). A quit keeps it leased for the root's resume, and quarantined work keeps
+			// its lease while its process groups may still run.
+			if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
+				// A root that no longer holds its lease has handed its work to its next incarnation.
+				await this.queue.releaseClosed(this.lease, [...this.quarantined]).catch((error: Error) => {
+					if (!(error instanceof StaleLeaseError)) throw error;
+				});
 		} catch (error) {
 			failure = error;
 		}

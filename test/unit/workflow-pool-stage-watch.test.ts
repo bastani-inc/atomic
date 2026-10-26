@@ -7,6 +7,8 @@ import {
 	type StageControlHandle,
 	type StageControlStatus,
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import { appendCoalesced } from "../../packages/workflows/src/workers/stage-watch-coalesce.js";
@@ -517,6 +519,75 @@ test("an idle prompt is receipted once, even when template expansion changes its
 	assert.deepEqual(stage.receipts(), ["op-prompt"]);
 });
 
+test("an answer reaches only the prompt it names, on the attempt the worker holds (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const store = createStore();
+	const broker = new StageUiBroker(store);
+	const held = { workId: "work", generation: 1 };
+	const watches = new WorkerStageWatches(
+		registry,
+		() => held,
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => "running",
+		{ prompts: () => ({ store, broker, fail: () => false }) },
+	);
+	store.recordRunStart({
+		id: "child",
+		name: "child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	store.recordStageStart("child", { id: "ask", name: "ask", status: "running", parentIds: [], toolEvents: [] });
+	store.recordStagePendingPrompt("child", "ask", { id: "prompt-1", kind: "input", message: "Branch?", createdAt: 1 });
+	const answered = store.awaitStagePendingPrompt("child", "ask", "prompt-1");
+	const answer = (commandId: number, promptId: string, generation = 1) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation },
+			op: "answer",
+			runId: "child",
+			stageId: "ask",
+			answer: { kind: "prompt", promptId, response: "main" },
+		});
+		const result = sent.find((message) => message.kind === "stage-command-result" && message.commandId === commandId);
+		return result?.kind === "stage-command-result" ? (result.refusal ?? "ok") : "none";
+	};
+	assert.equal(answer(1, "prompt-1", 2), "StaleAttempt");
+	assert.equal(answer(2, "another-prompt"), "PromptNotPending");
+	assert.equal(answer(3, "prompt-1"), "ok");
+	assert.equal(await answered, "main");
+	assert.equal(answer(4, "prompt-1"), "PromptNotPending", "an answered prompt is not answered twice");
+
+	// A stage's brokered question, such as ask_user_question, is answered through its broker.
+	store.recordStageStart("child", { id: "agent", name: "agent", status: "running", parentIds: [], toolEvents: [] });
+	broker.provideStagePrompt("child", "agent", {
+		prompt: {
+			id: "question-1",
+			kind: "ask_user_question",
+			questions: [{ question: "Ship it?", options: [{ label: "yes" }, { label: "no" }] }],
+			createdAt: 1,
+		},
+		buildResult: (value) => value.optionLabels,
+	});
+	const question = broker.requestCustomUi("child", "agent", () => {
+		throw new Error("no host renders in the worker");
+	});
+	watches.serve({
+		kind: "stage-command",
+		commandId: 5,
+		attempt: { workId: "work", generation: 1 },
+		op: "answer",
+		runId: "child",
+		stageId: "agent",
+		answer: { kind: "input", promptId: "question-1", answer: { optionLabels: ["yes"] } },
+	});
+	assert.deepEqual(await question, ["yes"]);
+});
 test("a replacement whose replayed session already holds an op reports it and admits it at most once (#3996)", async () => {
 	const registry = createStageControlRegistry();
 	const sent: Sent[] = [];
