@@ -1,7 +1,7 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
-import { replaceControlCharacters } from "../../utils/ansi.ts";
+import { replaceControlCharacters } from "../../utils/ansi.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";

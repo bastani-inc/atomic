@@ -3,7 +3,6 @@ import {
 	Container,
 	type Focusable,
 	getKeybindings,
-	hyperlink,
 	Input,
 	Spacer,
 	Text,
@@ -37,10 +36,14 @@ function displayUrl(value: string): string {
 	return webUrl(value) ?? replaceControlCharacters(value);
 }
 
-/** `text` as a terminal hyperlink to `url` when that is a web URL, else plain `text`. */
+/**
+ * `text` as an OSC 8 terminal hyperlink to `url` when that is a web URL, else plain `text`. Control characters in `text`
+ * are replaced so it cannot end the hyperlink or send its own escape sequences; the normalized target has none.
+ */
 function webLink(text: string, url: string): string {
+	const safeText = replaceControlCharacters(text);
 	const target = webUrl(url);
-	return target === undefined ? text : hyperlink(text, target);
+	return target === undefined ? safeText : `\x1b]8;;${target}\x07${safeText}\x1b]8;;\x07`;
 }
 
 /**
