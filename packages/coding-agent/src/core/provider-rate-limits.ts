@@ -109,18 +109,21 @@ export function modelIdForModel(model: string | object | undefined): string | un
 	return undefined;
 }
 
-/** Time until requests to the provider (and, when given, this model) are admitted again. */
-export function providerCooldownMs(provider: string | undefined, model?: string): number {
+/**
+ * Time until requests to the provider (and, when given, this model) are admitted again. Pass `now` to compare
+ * several limits against one clock reading.
+ */
+export function providerCooldownMs(provider: string | undefined, model?: string, now = Date.now()): number {
 	if (provider === undefined) return 0;
 	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.cooldownUntil));
-	return Math.max(0, until - Date.now());
+	return Math.max(0, until - now);
 }
 
 /** Time until an exhausted quota on the provider (and, when given, this model) resets. */
-export function providerUnavailableMs(provider: string | undefined, model?: string): number {
+export function providerUnavailableMs(provider: string | undefined, model?: string, now = Date.now()): number {
 	if (provider === undefined) return 0;
 	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.unavailableUntil));
-	return Math.max(0, until - Date.now());
+	return Math.max(0, until - now);
 }
 
 export function providerAdmissionDelayMs(provider: string, model?: string): number {

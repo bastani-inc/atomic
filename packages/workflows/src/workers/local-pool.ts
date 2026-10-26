@@ -8,6 +8,7 @@ import {
 	isBunBinary,
 	observeProviderRateLimits,
 	providerRateLimitObservations,
+	type QuestionnaireResult,
 } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
@@ -30,8 +31,17 @@ import {
 	type ExternalRunRouteOwner,
 	pendingStageMessageRouter,
 } from "../shared/external-run-routes.js";
+import type { StageInputAnswer } from "../shared/stage-prompt.js";
+import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
-import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
+import type { RunSnapshot } from "../shared/store-types.js";
+import type {
+	WorkflowDefinition,
+	WorkflowSerializableObject,
+	WorkflowSerializableValue,
+	WorkflowUIAdapter,
+} from "../shared/types.js";
 import { asWorkflowInfrastructureError, WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
 import {
@@ -54,23 +64,53 @@ import {
 	workerDefinitionSources,
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
+import { HeldPromptAnswers, promptIdentity, questionIdentity } from "./held-prompt-answers.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
-import type { PooledStageHandle } from "./pooled-stage-handle.js";
+import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
+import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
+import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
 import type {
+	ControlResult,
+	DeliveryOpId,
 	DeliveryResult,
+	PooledPromptAnswer,
 	PooledStageDelivery,
+	PooledStageQuestion,
 	PooledStageRef,
 	PooledStageWatchMessage,
+	PromptResult,
+	WatchEndReason,
 	WatchId,
 	WatchResult,
 } from "./stage-watch-types.js";
+
+/** A live view of one pooled stage, shared by everything that holds it. */
+interface StageView {
+	readonly key: string;
+	opening: Promise<PooledStageHandle | undefined>;
+	holders: number;
+	handle?: PooledStageHandle;
+	reconnect?: (wanted: () => boolean) => Promise<boolean>;
+	reconnecting?: Promise<void>;
+	/** Publications applied since the reconnect in flight began opening its watch. */
+	reconnectAge?: number;
+	/** The reconnect in flight, abandoned when it outlives {@link RECONNECT_ATTEMPT_PUBLICATIONS}. */
+	reconnectAttempt?: symbol;
+}
+
+/**
+ * Publications a reconnect may wait for its watch to open before the view tries again. A watch that
+ * never opens (its worker never answers) must not leave the view reconnecting for good (#3996).
+ */
+const RECONNECT_ATTEMPT_PUBLICATIONS = 40;
+
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
@@ -239,11 +279,34 @@ export class LocalWorkerPool {
 	/** Open stage watches, by id, to the listener their events go to (#3996). */
 	private readonly stageWatches = new Map<WatchId, (message: PooledStageWatchMessage) => void>();
 	/** One shared live view per watched stage, with the number of holders. */
-	private readonly stageViews = new Map<
-		string,
-		{ readonly opening: Promise<PooledStageHandle | undefined>; holders: number }
-	>();
+	private readonly stageViews = new Map<string, StageView>();
+	/** Text sent to each watched stage, by run and stage, kept until it arrives or the stage ends (#3996). */
+	private readonly outboxes = new Map<string, OutboundEntry[]>();
+	/** Stages whose outbox a view is being opened to deliver. */
+	private readonly outboxDeliveries = new Set<string>();
+	/** Views whose watch ended with their attempt; each reconnects once a replacement runs the stage. */
+	private readonly reconnectingViews = new Set<StageView>();
 	private releaseStageSource?: () => void;
+	/** An SDK caller's `ui`, which answers the `ctx.ui` prompts of pooled children. */
+	private promptUi?: WorkflowUIAdapter;
+	/** Prompts of pooled stages the root is routing an answer for, by run, stage and prompt id. */
+	private readonly routedPrompts = new Set<string>();
+	/** Brokered questions of pooled stages shown in the root, by run and stage. */
+	private readonly routedQuestions = new Map<
+		string,
+		{ readonly promptId: string; readonly generation: number; readonly controller: AbortController }
+	>();
+	/**
+	 * Gives a held answer to a prompt already routed to its answerer (the stage chat, `workflow
+	 * answer` or an SDK `ui`), by run, stage and prompt id (#4022). Whichever answers first is sent.
+	 */
+	private readonly routedPromptAnswers = new Map<string, (response: WorkflowSerializableValue) => void>();
+	/** An SDK caller's `stageUiBroker`, which shows the brokered questions of pooled stages. */
+	private questionBroker?: StageUiBroker;
+	/** Answers that reached a dead attempt, held for the replacement that asks again (#4022). */
+	private readonly heldAnswers = new HeldPromptAnswers();
+	/** Runs this pool's workers published, so answers for another pool's runs pass it by. */
+	private readonly ownedRuns = new Set<string>();
 	/** Stops sending this process's provider and model limits to the pool (#4023). */
 	private stopSharingRateLimits?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
@@ -275,6 +338,7 @@ export class LocalWorkerPool {
 			readonly stageControlRegistry?: StageControlRegistry;
 		},
 	) {
+		configurePooledWatchTrace(options.journalPath, "root");
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
 		if (
 			options.startupTimeoutMs !== undefined &&
@@ -353,13 +417,11 @@ export class LocalWorkerPool {
 		if (options[hostWorkerBindings]) return;
 		for (const key of [
 			"adapters",
-			"ui",
 			"persistence",
 			"mcp",
 			"overlay",
 			"models",
 			"registry",
-			"stageUiBroker",
 			"toolAdmissionBoundary",
 			"onStageStart",
 			"onStageEnd",
@@ -370,7 +432,7 @@ export class LocalWorkerPool {
 		] as const)
 			if (options[key] !== undefined) throw new Error(`Local workers refuse process-bound override: ${key}`);
 	}
-	private async start(root: string): Promise<void> {
+	private async start(root: string, promptNodes: boolean): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
 		if (!this.queue || !this.lease || this.lease.runId !== root)
 			throw new Error("Local worker pool requires root preparation");
@@ -408,6 +470,11 @@ export class LocalWorkerPool {
 			};
 			this.releaseStageSource = registerPooledStageSource(store, {
 				acquire: (runId, stageId) => this.acquirePooledStage(runId, stageId),
+				// Another pool sharing this store may own the run: only this pool's runs are answered here.
+				answer: (runId, stageId, answer) =>
+					this.ownedRuns.has(runId)
+						? this.answerPooledStagePrompt(runId, stageId, answer)
+						: Promise.resolve(undefined),
 			});
 			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) => {
 				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
@@ -418,6 +485,7 @@ export class LocalWorkerPool {
 			sources: this.sources,
 			cwd,
 			publish: store !== undefined,
+			...(promptNodes ? { promptNodes } : {}),
 			...this.rootRun(),
 		});
 	}
@@ -469,8 +537,282 @@ export class LocalWorkerPool {
 		return { ok: false, refusal: "Unconfirmed" };
 	}
 	/**
+	 * Answers a human-input prompt a pooled stage raised (#3996), bound to its prompt id:
+	 * a workflow `ctx.ui` prompt node or a stage's brokered question such as `ask_user_question`.
+	 */
+	async answerPooledStagePrompt(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({ kind: "stage-answer", runId, stageId, answer })) as PromptResult;
+	}
+	/**
+	 * Carries answers to `ctx.ui` prompts of pooled stages back to their workers. The root's store
+	 * holds each prompt as published, so every root answer path (stage chat, `workflow answer`)
+	 * resolves it there; an SDK caller's `ui` is asked instead when one was given.
+	 */
+	private routePrompts(
+		publications: readonly { readonly work: PoolWork; readonly runs: readonly RunSnapshot[] }[],
+	): void {
+		const store = this.store;
+		for (const { work, runs } of publications)
+			for (const run of runs) {
+				this.ownedRuns.add(run.id);
+				this.heldAnswers.settleRun(run.id, run.stages, work.generation);
+				for (const stage of run.stages) {
+					// The attempt that published this stage; a worker's own snapshot does not carry it.
+					const generation = work.generation;
+					this.heldAnswers.settle(run.id, stage, generation);
+					this.routeQuestion(run.id, stage.id, stage.inputRequest?.id, generation);
+					const prompt = stage.pendingPrompt;
+					if (prompt === undefined) continue;
+					const key = JSON.stringify([run.id, stage.id, prompt.id]);
+					if (this.routedPrompts.has(key)) continue;
+					this.routedPrompts.add(key);
+					// The user already answered this prompt while the attempt that asked it first was dying.
+					const held = this.heldAnswers.takePrompt(run.id, stage.id, prompt, generation);
+					if (held !== undefined) store?.resolveStagePendingPrompt(run.id, stage.id, prompt.id, held.response);
+					const fail = (error: Error) =>
+						this.answerPooledStagePrompt(run.id, stage.id, {
+							kind: "failed",
+							promptId: prompt.id,
+							error: error.message,
+						});
+					// A custom prompt renders a component that exists only in the worker: fail it at once.
+					// An answer held for this prompt that comes back refused later still answers it, once.
+					const heldLater = Promise.withResolvers<WorkflowSerializableValue>();
+					this.routedPromptAnswers.set(key, heldLater.resolve);
+					const answered =
+						held !== undefined
+							? Promise.resolve(held.response)
+							: prompt.kind === "custom"
+								? Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE))
+								: Promise.race([
+										heldLater.promise,
+										this.promptUi !== undefined
+											? askStagePromptUi(this.promptUi, prompt)
+											: (store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id) ??
+												Promise.reject(new Error("No workflow store answers this prompt."))),
+									]);
+					void answered.then(
+						() => this.routedPromptAnswers.delete(key),
+						() => this.routedPromptAnswers.delete(key),
+					);
+					const answer = answered.then(
+						async (response) => {
+							const result = await this.answerPooledStagePrompt(run.id, stage.id, {
+								kind: "prompt",
+								promptId: prompt.id,
+								response: response as WorkflowSerializableValue,
+							});
+							// The attempt that asked died before the answer reached it: hold the answer for the
+							// replacement, which asks the same prompt again (#4022).
+							if (!result.ok && result.refusal !== "StageNotLive") {
+								this.heldAnswers.hold(run.id, stage.id, {
+									kind: "prompt",
+									generation,
+									promptId: prompt.id,
+									identity: promptIdentity(prompt),
+									response: response as WorkflowSerializableValue,
+								});
+								this.applyHeldAnswer(run.id, stage.id, generation);
+							}
+							return result;
+						},
+						// A `ui` that rejects fails the prompt in the child; it is never asked again silently.
+						(error: Error) => (this.promptUi !== undefined || prompt.kind === "custom" ? fail(error) : undefined),
+					);
+					// A prompt answered or failed stays routed: asking again would ask the user twice. Only an
+					// answer its attempt never received re-arms it, for the replacement that asks again.
+					void answer
+						.then((result) => {
+							if (result?.ok === false && result.refusal === "StaleAttempt") this.routedPrompts.delete(key);
+						})
+						.catch(() => this.routedPrompts.delete(key));
+				}
+			}
+	}
+	/**
+	 * Shows a pooled stage's brokered question (`ask_user_question`) in the root's stage UI broker
+	 * (#3996), with the exact form an in-process stage shows: the attached stage chat renders it,
+	 * and an SDK caller's `stageUiBroker` receives it. The answer goes to the worker that asked.
+	 * When the worker's question is answered elsewhere or goes away, the root's request ends.
+	 */
+	private routeQuestion(runId: string, stageId: string, promptId: string | undefined, generation: number): void {
+		const key = JSON.stringify([runId, stageId]);
+		const active = this.routedQuestions.get(key);
+		if (active !== undefined && active.promptId === promptId) return;
+		if (active !== undefined) {
+			this.routedQuestions.delete(key);
+			active.controller.abort(new Error("The stage's question was answered or withdrawn."));
+		}
+		if (promptId === undefined || this.closed) return;
+		const controller = new AbortController();
+		this.routedQuestions.set(key, { promptId, generation, controller });
+		void this.askQuestion(runId, stageId, promptId, generation, controller)
+			.then((asked) => {
+				// The worker had not raised its form yet, or the root's broker failed it there:
+				// the stage's next question is shown again.
+				if (asked !== true && this.routedQuestions.get(key)?.controller === controller)
+					this.routedQuestions.delete(key);
+			})
+			.catch(() => {
+				if (this.routedQuestions.get(key)?.controller === controller) this.routedQuestions.delete(key);
+			});
+	}
+	/**
+	 * Shows the question and sends its answer; false when the worker had no form for it yet, and
+	 * "failed" when the root's broker rejected it, which fails the question in the worker with that error.
+	 */
+	private async askQuestion(
+		runId: string,
+		stageId: string,
+		promptId: string,
+		generation: number,
+		route: AbortController,
+	): Promise<boolean | "failed"> {
+		const signal = route.signal;
+		// The stage UI broker is loaded on first use, so pools whose stages never ask never load it.
+		const [question, { currentStageUiBroker }] = await Promise.all([
+			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
+			import("../shared/stage-ui-broker.js"),
+		]);
+		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
+		// The user already answered this question while the attempt that asked it first was dying.
+		const held = this.heldAnswers.takeQuestion(runId, stageId, question, generation);
+		if (held !== undefined) return this.sendQuestionAnswer(runId, stageId, question, generation, held.answer, route);
+		const broker = this.questionBroker ?? currentStageUiBroker();
+		let answered: { readonly value: QuestionnaireResult } | undefined;
+		let failure: Error | undefined;
+		try {
+			// The same form an in-process stage shows for this kind of question.
+			const form = presentStageQuestion({
+				broker,
+				runId,
+				stageId,
+				promptId,
+				kind: question.kind,
+				params: question.params,
+				signal,
+			});
+			await form.result;
+			answered = form.answered();
+		} catch (error) {
+			// The root's broker could not show the form (its host threw, say): the worker's question fails with
+			// that error, as an in-process stage's does, instead of waiting for an answer that never comes.
+			if (!signal.aborted) failure = error instanceof Error ? error : new Error(String(error));
+		} finally {
+			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
+		}
+		if (failure !== undefined) {
+			await this.answerPooledStagePrompt(runId, stageId, { kind: "failed", promptId, error: failure.message });
+			return "failed";
+		}
+		if (answered === undefined) return true;
+		// The form's result, as the worker's own form would have returned it.
+		return this.sendQuestionAnswer(runId, stageId, question, generation, { raw: answered.value }, route);
+	}
+	/**
+	 * Sends a question's answer to the stage's current attempt. An attempt that died before it
+	 * received the answer leaves it held for the replacement, which asks the same question again
+	 * (#4022); false then, so that question is routed again.
+	 */
+	private async sendQuestionAnswer(
+		runId: string,
+		stageId: string,
+		question: PooledStageQuestion,
+		generation: number,
+		answer: StageInputAnswer,
+		route: AbortController,
+	): Promise<boolean> {
+		const result = await this.answerPooledStagePrompt(runId, stageId, {
+			kind: "input",
+			promptId: question.promptId,
+			answer,
+		});
+		if (result.ok || result.refusal === "StageNotLive") return true;
+		this.heldAnswers.hold(runId, stageId, {
+			kind: "question",
+			generation,
+			promptId: question.promptId,
+			identity: questionIdentity(question),
+			answer,
+		});
+		// This route ends with this answer. A later attempt's route already showing the same question
+		// gets the held answer instead of a second one: its form closes, and the question is routed
+		// again to send it. Any other route is not this one's to end.
+		const key = JSON.stringify([runId, stageId]);
+		const active = this.routedQuestions.get(key);
+		if (active?.controller === route) this.routedQuestions.delete(key);
+		else if (active !== undefined && active.promptId === question.promptId && active.generation > generation) {
+			this.routedQuestions.delete(key);
+			active.controller.abort(new Error("The question was answered before its worker was replaced."));
+		}
+		this.applyHeldAnswer(runId, stageId, generation);
+		return false;
+	}
+	/**
+	 * Applies an answer just held to the prompt a replacement may already have asked before the
+	 * answer came back refused (#4022); later publications apply it otherwise.
+	 */
+	private applyHeldAnswer(runId: string, stageId: string, heldGeneration: number): void {
+		const stage = this.store
+			?.runs()
+			.find((run) => run.id === runId)
+			?.stages.find((candidate) => candidate.id === stageId);
+		if (stage === undefined || this.closed) return;
+		// The root's copy of the refusing attempt's stage shows the root's own answer, not the worker's state.
+		const generation = stage.workerExecution?.generation ?? 0;
+		if (generation <= heldGeneration) return;
+		if (stage.inputRequest !== undefined) this.routeQuestion(runId, stageId, stage.inputRequest.id, generation);
+		const prompt = stage.pendingPrompt;
+		// A prompt already routed waits for its answerer; the held answer answers it instead, once.
+		const deliver =
+			prompt === undefined ? undefined : this.routedPromptAnswers.get(JSON.stringify([runId, stageId, prompt.id]));
+		if (prompt === undefined || deliver === undefined) return;
+		const held = this.heldAnswers.takePrompt(runId, stageId, prompt, generation);
+		if (held === undefined) return;
+		// The stage chat's prompt card closes as answered; an SDK `ui` still asking is not asked to answer.
+		if (this.promptUi === undefined) this.store?.resolveStagePendingPrompt(runId, stageId, prompt.id, held.response);
+		deliver(held.response);
+	}
+	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
+	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({ kind: "stage-pause", watch })) as ControlResult;
+	}
+	/**
+	 * Releases a stage paused on its own. `message` is admitted at most once per op, through
+	 * the same ledger as {@link deliverToPooledStage}.
+	 */
+	async resumePooledStage(
+		watch: WatchId,
+		message?: { readonly op: DeliveryOpId; readonly text: string },
+	): Promise<ControlResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({
+			kind: "stage-resume",
+			watch,
+			...(message === undefined ? {} : { message }),
+		})) as ControlResult;
+	}
+	/** The watch doors of this pool for one live view; ends of a view's watches go to `ended`. */
+	private stageTransport(onEnded: (reason: WatchEndReason) => void): PooledStageTransport {
+		return {
+			watch: (ref, listener) =>
+				this.watchPooledStage(ref, (message) => {
+					listener(message);
+					if (message.kind === "ended") onEnded(message.reason);
+				}),
+			unwatch: (watch) => this.unwatchPooledStage(watch),
+			deliver: (delivery) => this.deliverToPooledStage(delivery),
+			pause: (watch) => this.pausePooledStage(watch),
+			resume: (watch, message) => this.resumePooledStage(watch, message),
+		};
+	}
+	/**
 	 * A shared live view of a running pooled stage, held until released; the last release
 	 * closes its watch. Undefined when the stage is not running on one of this pool's workers.
+	 * When the stage's attempt is fenced or its worker exits, the view reconnects to the
+	 * replacement attempt on later activity.
 	 */
 	private async acquirePooledStage(runId: string, stageId: string): Promise<PooledStageLease | undefined> {
 		const key = JSON.stringify([runId, stageId]);
@@ -481,31 +823,45 @@ export class LocalWorkerPool {
 					?.runs()
 					.find((run) => run.id === runId)
 					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
-			const opening = (async () => {
+			const created: StageView = { key, holders: 0, opening: Promise.resolve(undefined) };
+			const transport = this.stageTransport((reason) => {
+				tracePooledWatch("root.view.watch-ended", { key, reason, current: this.stageViews.get(key) === created });
+				if (this.stageViews.get(key) !== created) return;
+				if (reason === "attempt_fenced" || reason === "worker_exited" || reason === "resync")
+					this.reconnectingViews.add(created);
+				else this.stageViews.delete(key);
+			});
+			// The stage's outbox outlives its views, so text survives a chat that closes and reopens.
+			let outbox = this.outboxes.get(key);
+			if (outbox === undefined) {
+				outbox = [];
+				this.outboxes.set(key, outbox);
+			}
+			const outbound = outbox;
+			created.opening = (async () => {
 				// Loaded on first use, so pools nobody attaches to never load it.
-				const { openPooledStageHandle } = await import("./pooled-stage-handle.js");
-				const opened = await openPooledStageHandle(
-					{
-						watch: (ref, listener) =>
-							this.watchPooledStage(ref, (message) => {
-								listener(message);
-								if (message.kind === "ended" && this.stageViews.get(key) === current)
-									this.stageViews.delete(key);
-							}),
-						unwatch: (watch) => this.unwatchPooledStage(watch),
-						deliver: (delivery) => this.deliverToPooledStage(delivery),
-					},
+				const module = await import("./pooled-stage-handle.js");
+				const opened = await module.openPooledStageHandle(
+					transport,
 					{ runId, stageId },
 					stageName,
 					() => {
-						if (this.stageViews.get(key) === current) this.stageViews.delete(key);
+						if (this.stageViews.get(key) === created) this.stageViews.delete(key);
+						this.reconnectingViews.delete(created);
 					},
+					outbound,
 				);
-				return opened.ok ? opened.handle : undefined;
+				if (!opened.ok) return undefined;
+				created.handle = opened.handle;
+				created.reconnect = (wanted) => module.reconnectPooledStageHandle(opened.handle, transport, wanted);
+				// A view nobody holds stays open only until its outbox drains.
+				opened.handle.onDrained(() => {
+					if (created.holders === 0 && !opened.handle.hasPending) opened.handle.dispose();
+				});
+				return opened.handle;
 			})();
-			const current = { opening, holders: 0 };
-			view = current;
-			this.stageViews.set(key, current);
+			view = created;
+			this.stageViews.set(key, created);
 		}
 		const current = view;
 		current.holders++;
@@ -518,12 +874,101 @@ export class LocalWorkerPool {
 		let released = false;
 		return {
 			handle,
+			onReconnected: (listener) => handle.onRebind(listener),
 			release: () => {
 				if (released) return;
 				released = true;
-				if (--current.holders === 0) handle.dispose();
+				if (--current.holders > 0) return;
+				// Text still on its way keeps the view (and its watch) open until it arrives.
+				if (handle.hasPending) return;
+				this.reconnectingViews.delete(current);
+				handle.dispose();
 			},
 		};
+	}
+	/**
+	 * Keeps every stage's outbox moving (#3996): views whose attempt ended reconnect to the
+	 * replacement; a stage with text its current attempt has not admitted, and no view, gets a
+	 * view that delivers it and closes; a stage or run that ended reports what never arrived.
+	 */
+	private reconnectStageViews(): void {
+		const runs = this.store?.runs() ?? [];
+		const stageOf = (key: string) => {
+			const [runId, stageId] = JSON.parse(key) as [string, string];
+			const run = runs.find((candidate) => candidate.id === runId);
+			return { runId, stageId, run, stage: run?.stages.find((candidate) => candidate.id === stageId) };
+		};
+		const ended = (key: string): boolean => {
+			const { run, stage } = stageOf(key);
+			return (
+				run?.endedAt !== undefined ||
+				stage?.status === "completed" ||
+				stage?.status === "failed" ||
+				stage?.status === "skipped"
+			);
+		};
+		for (const view of this.reconnectingViews) {
+			if (view.reconnect === undefined || view.handle === undefined) continue;
+			const handle = view.handle;
+			if (ended(view.key)) {
+				tracePooledWatch("root.reconnect.stage-ended", { key: view.key });
+				this.reconnectingViews.delete(view);
+				handle.receive({ kind: "ended", reason: "stage_finished" });
+				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
+				this.outboxes.delete(view.key);
+				continue;
+			}
+			if (view.reconnecting !== undefined) {
+				// Still opening; give up on it once it is clearly stuck, and try a fresh watch.
+				view.reconnectAge = (view.reconnectAge ?? 0) + 1;
+				if (handle.isReconnecting && view.reconnectAge > RECONNECT_ATTEMPT_PUBLICATIONS) {
+					tracePooledWatch("root.reconnect.abandon", { key: view.key, age: view.reconnectAge });
+					view.reconnectAttempt = undefined;
+					view.reconnecting = undefined;
+				} else continue;
+			}
+			const attempt = Symbol("reconnect");
+			view.reconnectAttempt = attempt;
+			view.reconnectAge = 0;
+			tracePooledWatch("root.reconnect.start", { key: view.key, generation: handle.placement.generation });
+			view.reconnecting = view
+				.reconnect(() => view.reconnectAttempt === attempt)
+				.then((bound) => {
+					tracePooledWatch("root.reconnect.settled", {
+						key: view.key,
+						bound,
+						reconnecting: handle.isReconnecting,
+						pending: handle.hasPending,
+						generation: handle.placement.generation,
+					});
+					// A watch that ended again after this rebind queued the view anew; keep it queued.
+					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
+					if (bound && view.holders === 0 && !handle.hasPending) handle.dispose();
+				})
+				.catch(() => {})
+				.finally(() => {
+					if (view.reconnectAttempt !== attempt) return;
+					view.reconnectAttempt = undefined;
+					view.reconnecting = undefined;
+				});
+		}
+		for (const [key, outbox] of this.outboxes) {
+			if (this.stageViews.has(key)) continue;
+			if (ended(key)) {
+				this.outboxes.delete(key);
+				continue;
+			}
+			const { runId, stageId, stage } = stageOf(key);
+			const generation = stage?.workerExecution?.generation;
+			// Text admitted by an attempt that has since been replaced may have died with it.
+			if (generation === undefined || !outbox.some((entry) => entry.admittedBy !== generation)) continue;
+			if (this.outboxDeliveries.has(key)) continue;
+			this.outboxDeliveries.add(key);
+			void this.acquirePooledStage(runId, stageId)
+				.then((lease) => lease?.release())
+				.catch(() => {})
+				.finally(() => this.outboxDeliveries.delete(key));
+		}
 	}
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
 	private queueView(): PoolStageQueue {
@@ -619,7 +1064,10 @@ export class LocalWorkerPool {
 			throw new Error("Local workers require a durable child boundary");
 		this.rootBudget = options.rootBudget;
 		const root = options.parentRun.rootRunId;
-		this.starting ??= this.start(root);
+		// A pooled child's `ctx.ui` prompts wait for the root to answer them when the root can:
+		// through prompt nodes in the host, or through an SDK caller's `ui` (#3996). This is the
+		// pool's setting, not part of a child's work, so a resume re-enqueues identical work.
+		this.starting ??= this.start(root, options.usePromptNodesForUi === true || options.ui !== undefined);
 		await this.starting;
 		if (this.lease!.runId !== root) throw new Error("Local worker pool belongs to another root");
 		const selectedSource = this.sources[index]!;
@@ -644,6 +1092,8 @@ export class LocalWorkerPool {
 				executionMode: options.executionMode,
 			}),
 		) as WorkflowSerializableObject;
+		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;
+		if (options.stageUiBroker !== undefined) this.questionBroker ??= options.stageUiBroker;
 		this.evaluateBudget();
 		await this.flushRootRun();
 		const enqueued = (await this.command({
@@ -676,6 +1126,8 @@ export class LocalWorkerPool {
 					await this.inbound;
 					await this.backend.catchUpWorkflow(root);
 					await this.handoff?.complete(work);
+					// The child's stages are final now; end views still waiting to reconnect to them.
+					if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 					return result as unknown as RunResult;
 				}
 				const failed = this.workFailures.get(work.id);
@@ -844,6 +1296,7 @@ export class LocalWorkerPool {
 				if (error !== undefined)
 					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
 			});
+			this.routePrompts(publications.filter((_, index) => outcomes[index] === undefined));
 			const registry = this.options.stageControlRegistry;
 			if (registry !== undefined) {
 				const accepted = publications.filter((_, index) => outcomes[index] === undefined);
@@ -856,14 +1309,21 @@ export class LocalWorkerPool {
 							),
 					)
 				).then((registrations) => {
-					if (!this.closed)
-						for (const { work, runs } of accepted) if (!this.results.has(work.id)) registrations.sync(work, runs);
+					try {
+						if (!this.closed)
+							for (const { work, runs } of accepted)
+								if (!this.results.has(work.id)) registrations.sync(work, runs);
+					} catch {
+						// A caller registry that refuses a handle keeps the others; nothing may reject unhandled.
+					}
 					return registrations;
 				});
 			}
 		}
 		this.notice({ kind: "published", batch, rejected });
 		void this.flushRootRun();
+		// Views waiting for a replacement attempt reconnect once one publishes the stage (#3996).
+		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 	}
 	/** The full work of an attempt token, recording the attempt as current when it is newer. */
 	private track(attempt: PoolWorkToken): PoolWork | undefined {
@@ -941,14 +1401,38 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		for (const { controller } of this.routedQuestions.values())
+			controller.abort(new Error("Local worker pool is closed"));
+		this.routedQuestions.clear();
+		this.heldAnswers.clear();
+		this.routedPromptAnswers.clear();
 		this.stopSharingRateLimits?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();
+		// A pool that failed takes its unfinished children with it: show them failed rather than
+		// running forever (#3996). A graceful quit leaves them resumable.
+		const poolFailure = this.failure;
+		const store = this.store;
+		if (poolFailure !== undefined && store !== undefined)
+			store.batch(() => {
+				for (const run of store.runs())
+					if (
+						run.endedAt === undefined &&
+						run.rootRunId === this.root &&
+						run.id !== this.root &&
+						run.stages.some((stage) => stage.workerExecution !== undefined)
+					)
+						store.recordRunEnd(run.id, "failed", undefined, poolFailure.message);
+			});
 		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
 		this.stageWatches.clear();
 		for (const listener of watches) listener({ kind: "ended", reason: "pool_closed" });
+		// Views between attempts have no open watch to end; tell them the pool is gone.
+		for (const view of this.stageViews.values()) view.handle?.receive({ kind: "ended", reason: "pool_closed" });
+		this.reconnectingViews.clear();
+		this.outboxes.clear();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		this.signalChange();
 		let failure: unknown;
@@ -977,3 +1461,5 @@ export class LocalWorkerPool {
 		if (failure !== undefined) throw failure;
 	}
 }
+
+/** Asks an SDK caller's `ui` a pooled stage's prompt; custom prompts never reach it. */

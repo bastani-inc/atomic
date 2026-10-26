@@ -43,6 +43,7 @@ import type {
 } from "./coordinator-protocol.js";
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRateLimits, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
 import {
@@ -54,10 +55,17 @@ import {
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
+	ControlRefusal,
+	ControlResult,
+	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
+	PooledPromptAnswer,
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
+	PooledStageQuestion,
+	PromptRefusal,
+	PromptResult,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -335,8 +343,9 @@ interface WorkerSlot {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal | DeliveryRefusal;
+	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
+	readonly question?: PooledStageQuestion;
 	readonly error?: string;
 }
 
@@ -379,6 +388,7 @@ export class PoolCoordinator {
 	private readonly watches = new Map<WatchId, StageWatch>();
 	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
 	private stageCommandSequence = 0;
+	private promptNodes = false;
 	/** Provider and model limits recorded anywhere in the pool, sent to every worker and the root (#4023). */
 	private readonly rateLimits = new RateLimitObservationSet();
 	private readonly rateLimitOutbox = new RateLimitObservationOutbox((observations) =>
@@ -491,6 +501,7 @@ export class PoolCoordinator {
 			case "control":
 				return this.control(command.state);
 			case "start":
+				this.promptNodes = command.promptNodes === true;
 				this.starting ??= this.start(command.sources, command.cwd, command.publish, command.rootRun);
 				return this.starting;
 			case "enqueue":
@@ -507,6 +518,19 @@ export class PoolCoordinator {
 				return;
 			case "stage-deliver":
 				return this.stageDeliver(command);
+			case "stage-question":
+				return this.stageQuestion(command.runId, command.stageId);
+			case "stage-answer":
+				return this.stageAnswer(command.runId, command.stageId, command.answer);
+			case "stage-pause":
+				return this.stageControl(command.watch, { op: "pause" });
+			case "stage-resume":
+				return this.stageControl(command.watch, {
+					op: "resume",
+					...(command.message === undefined
+						? {}
+						: { message: { deliveryOp: command.message.op, text: command.message.text } }),
+				});
 			case "close":
 				this.closing ??= this.close();
 				return this.closing;
@@ -524,6 +548,7 @@ export class PoolCoordinator {
 		this.root = root;
 		this.options = options;
 		this.desiredControl ??= control;
+		configurePooledWatchTrace(options.journalPath, "coordinator");
 		this.journal ??= await resolveRunJournal({ journal: { path: options.journalPath } });
 		this.usageLedger ??= await openSqlPoolUsage(this.journal);
 		this.usageTotal = await this.usageLedger.total(root);
@@ -787,6 +812,17 @@ export class PoolCoordinator {
 	private async stageWatch(id: WatchId, runId: string, stageId: string): Promise<WatchResult> {
 		if (this.closed) return { ok: false, refusal: "PoolClosed" };
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		tracePooledWatch("coordinator.watch.open", {
+			watch: id,
+			runId,
+			stageId,
+			worker: slot?.worker,
+			workId: slot?.work?.id,
+			generation: slot?.work?.generation,
+			slots: [...this.slots].map(
+				(candidate) => `${candidate.worker}:${candidate.work?.generation ?? "-"}:${candidate.runs.has(runId)}`,
+			),
+		});
 		if (slot?.work === undefined) return { ok: false, refusal: "StageNotOnWorker" };
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
 		const watch: StageWatch = {
@@ -798,6 +834,13 @@ export class PoolCoordinator {
 		};
 		this.watches.set(id, watch);
 		const result = await this.stageCommand(slot, { attempt, op: "watch", watch: id, runId, stageId });
+		tracePooledWatch("coordinator.watch.opened", {
+			watch: id,
+			generation: attempt.generation,
+			snapshot: result?.snapshot !== undefined,
+			refusal: result?.refusal,
+			current: this.watches.get(id) === watch,
+		});
 		if (this.watches.get(id) !== watch) {
 			if (result?.snapshot !== undefined) this.stageCommand(slot, { attempt, op: "unwatch", watch: id });
 			return { ok: false, refusal: this.closed ? "PoolClosed" : "AttemptChanging" };
@@ -860,14 +903,86 @@ export class PoolCoordinator {
 		};
 	}
 
+	/** Reads a stage's brokered question from the worker whose attempt published the stage's run. */
+	private async stageQuestion(runId: string, stageId: string): Promise<PooledStageQuestion | undefined> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return undefined;
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		return (await this.stageCommand(slot, { attempt, op: "question", runId, stageId }))?.question;
+	}
+
+	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */
+	private async stageAnswer(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return { ok: false, refusal: "StaleAttempt" };
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		const result = await this.stageCommand(slot, { attempt, op: "answer", runId, stageId, answer });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === undefined) return { ok: true };
+		return {
+			ok: false,
+			refusal: refusal === "StageNotLive" || refusal === "PromptNotPending" ? refusal : "StaleAttempt",
+		};
+	}
+
+	/** Pauses or resumes one watched stage through its worker's airlock; pool control is untouched. */
+	private async stageControl(
+		id: WatchId,
+		command:
+			| { readonly op: "pause" }
+			| { readonly op: "resume"; readonly message?: { readonly deliveryOp: DeliveryOpId; readonly text: string } },
+	): Promise<ControlResult> {
+		const watch = this.watches.get(id);
+		if (watch === undefined || !watch.open)
+			return {
+				ok: false,
+				refusal: this.endedWatches.get(id) === "stage_finished" ? "StageNotLive" : "StaleAttempt",
+			};
+		const { slot, attempt } = watch;
+		if (slot.work?.id !== attempt.workId || slot.work.generation !== attempt.generation)
+			return { ok: false, refusal: "StaleAttempt" };
+		if (this.desiredControl !== undefined && this.desiredControl !== "running")
+			return { ok: false, refusal: "PoolPausedOrQuitting" };
+		const result = await this.stageCommand(slot, { attempt, watch: id, ...command });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting" || refusal === "StaleAttempt")
+			return { ok: false, refusal };
+		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return { ok: true, ...(result.action === undefined ? {} : { action: result.action }) };
+	}
+
 	private stageCommand(
 		slot: WorkerSlot,
 		command: DistributiveOmit<WorkerStageCommand, "kind" | "commandId">,
 	): Promise<StageCommandResult | undefined> {
-		if (!this.incarnations.has(slot.worker)) return Promise.resolve(undefined);
+		if (!this.incarnations.has(slot.worker)) {
+			tracePooledWatch("coordinator.command.no-worker", { op: command.op, worker: slot.worker });
+			return Promise.resolve(undefined);
+		}
 		const commandId = ++this.stageCommandSequence;
+		tracePooledWatch("coordinator.command.send", {
+			commandId,
+			op: command.op,
+			worker: slot.worker,
+			generation: command.attempt.generation,
+			watch: "watch" in command ? command.watch : undefined,
+		});
 		return new Promise((resolve) => {
-			slot.stageCommands.set(commandId, resolve);
+			slot.stageCommands.set(commandId, (result) => {
+				tracePooledWatch("coordinator.command.settled", {
+					commandId,
+					op: command.op,
+					answered: result !== undefined,
+					refusal: result?.refusal,
+					action: result?.action,
+					error: result?.error,
+				});
+				resolve(result);
+			});
 			slot.child.send({ kind: "stage-command", commandId, ...command } as WorkerStageCommand, (error) => {
 				if (!error) return;
 				slot.stageCommands.delete(commandId);
@@ -900,6 +1015,11 @@ export class PoolCoordinator {
 
 	/** Ends a watch for the root; no further events of it are forwarded. */
 	private endStageWatch(id: WatchId, reason: WatchEndReason): void {
+		tracePooledWatch("coordinator.watch.end", {
+			watch: id,
+			reason,
+			generation: this.watches.get(id)?.attempt.generation,
+		});
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
 		this.watches.delete(id);
@@ -957,6 +1077,7 @@ export class PoolCoordinator {
 					root,
 					definitions: this.sources,
 					admission: options.admission,
+					...(this.promptNodes ? { promptNodes: true } : {}),
 				}),
 			],
 			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
@@ -1404,6 +1525,14 @@ export class PoolCoordinator {
 				for (const group of await unconfirmedProcessGroups(this.journal!, this.root!, scope))
 					if (!alive.includes(group)) alive.push(group);
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
+			// Every worker is stopped: work they still held is no attempt's any more, so it does not stay leased
+			// after the root ends (#3996). A quit keeps it leased for the root's resume, and quarantined work keeps
+			// its lease while its process groups may still run.
+			if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
+				// A root that no longer holds its lease has handed its work to its next incarnation.
+				await this.queue.releaseClosed(this.lease, [...this.quarantined]).catch((error: Error) => {
+					if (!(error instanceof StaleLeaseError)) throw error;
+				});
 		} catch (error) {
 			failure = error;
 		}

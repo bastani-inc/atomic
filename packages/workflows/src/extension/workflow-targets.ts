@@ -148,10 +148,42 @@ export function resolveStageTarget(runId: string, stageTarget?: string, activeSt
 	if (uuidMatches.length === 1) return resolvedStageTarget(uuidMatches[0]!);
 	if (uuidMatches.length > 1) return ambiguousUuidStageTarget(target, uuidMatches);
 	const matches = graph.stages.filter((stage) => stageMatchesExpandedIdentifier(stage, target));
-	if (matches.length === 0)
+	if (matches.length === 0) {
+		// A failed child-workflow boundary collapses its child in the graph; a stage of that child
+		// that ran on a local worker is still reachable by its id or name, for its post-mortem (#3996).
+		const collapsed = collapsedPooledStages(activeStore, graph, target);
+		if (collapsed.length === 1) return { ok: true, ...collapsed[0]! };
+		if (collapsed.length > 1)
+			return {
+				ok: false,
+				code: "stage_ambiguous",
+				message: `Ambiguous stage identifier "${target}" matches: ${collapsed.map(({ runId: run, stageId }) => `${run}/${stageId}`).join(", ")}`,
+			};
 		return { ok: false, message: `Stage not found in run ${runId}: ${target}`, code: "stage_not_found" };
+	}
 	if (matches.length > 1) return ambiguousStageTarget(target, matches);
 	return resolvedStageTarget(matches[0]!);
+}
+
+/** Stages on local workers, named `target`, of the child runs of failed boundaries in `graph`. */
+function collapsedPooledStages(
+	activeStore: Store,
+	graph: ReturnType<typeof expandWorkflowGraph>,
+	target: string,
+): { readonly runId: string; readonly stageId: string }[] {
+	const runs = readGraphStoreSnapshot(activeStore).runs;
+	return graph.stages.flatMap((boundary) => {
+		if (boundary.status !== "failed") return [];
+		// A failed boundary drops its child reference; the child run still names its boundary.
+		const { runId, stageId } = boundary.workflowGraphTarget;
+		return runs
+			.filter((run) => run.parentRunId === runId && run.parentStageId === stageId)
+			.flatMap((run) =>
+				run.stages
+					.filter((stage) => stage.workerExecution !== undefined && (stage.id === target || stage.name === target))
+					.map((stage) => ({ runId: run.id, stageId: stage.id })),
+			);
+	});
 }
 
 function resolvedStageTarget(stage: ExpandedWorkflowStage): ToolStageTarget {

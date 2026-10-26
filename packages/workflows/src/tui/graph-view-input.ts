@@ -371,7 +371,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 		return this.toolDetailExpanded;
 	}
 
-	// ---- test seams ----
+	// ---- test seams (read the layout as the next frame would) ----
 	get _focusedIndex(): number {
 		this._syncLayout();
 		return this.focusedIndex;

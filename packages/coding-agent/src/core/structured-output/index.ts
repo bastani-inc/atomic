@@ -16,6 +16,12 @@ import { type JsonObject, STRUCTURED_OUTPUT_TOOL_NAME } from "../tools/structure
 import { compileChoiceSchema } from "./choice-schema.js";
 import { abortFailure, type DecisionTrace, resolveDecisionDeadlineMs, withinDecisionDeadline } from "./deadline.js";
 import { InvalidDecisionOutputError } from "./invalid-output.js";
+import {
+	carriedProviderFailure,
+	type ProviderFailureSignal,
+	providerFailureSignal,
+	withProviderFailure,
+} from "./provider-failure.js";
 import { describeSchemaErrors, schemaMismatchMessage, unparseableArgumentsMessage } from "./rejection-detail.js";
 import { resolveRouterModel } from "./resolver.js";
 import type {
@@ -156,18 +162,30 @@ async function inferChat<T extends TSchema>(
 		signal.throwIfAborted();
 		if (error instanceof Error && error.name === "AbortError")
 			throw new TerminalDecisionError("Structured output inference was aborted; no fallback was attempted.");
-		if (request.candidateFallback) throw new CandidateProviderError("Structured output provider request failed.");
-		// Provider exceptions can echo private state or credentials; do not retain their cause.
-		throw new Error("Structured output provider request failed. Check provider configuration and connectivity.");
+		// Provider exceptions can echo private state or credentials; do not retain their cause. Only a rate
+		// limit's or exhausted quota's status, code and retry hint are kept.
+		const failure = providerFailureSignal(error);
+		if (request.candidateFallback)
+			throw withProviderFailure(new CandidateProviderError("Structured output provider request failed."), failure);
+		throw withProviderFailure(
+			new Error("Structured output provider request failed. Check provider configuration and connectivity."),
+			failure,
+		);
 	}
 	signal.throwIfAborted();
 	if (request.candidateFallback && response.stopReason === "error")
-		throw new CandidateProviderError("Structured output provider request failed.");
+		throw withProviderFailure(
+			new CandidateProviderError("Structured output provider request failed."),
+			providerFailureSignal(response),
+		);
 	if (request.candidateFallback && response.stopReason === "aborted")
 		throw new TerminalDecisionError("Structured output inference was aborted; no fallback was attempted.");
 	if (response.stopReason === "error" || response.stopReason === "aborted")
-		throw new Error(
-			`Structured output inference ended with ${response.stopReason}; provider request failed; no decision was accepted.`,
+		throw withProviderFailure(
+			new Error(
+				`Structured output inference ended with ${response.stopReason}; provider request failed; no decision was accepted.`,
+			),
+			response.stopReason === "error" ? providerFailureSignal(response) : undefined,
 		);
 	if (response.content.some((part) => part.type === "fallback"))
 		throw new Error("Structured output requires exactly one structured_output call and no provider fallback.");
@@ -283,13 +301,17 @@ async function inferClassifier<T extends TSchema>(
 	} catch (error) {
 		signal.throwIfAborted();
 		if (error instanceof Error && error.name === "AbortError") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-		throw new ClassifierDecisionError(error instanceof Error ? error.message : undefined);
+		throw withProviderFailure(
+			new ClassifierDecisionError(error instanceof Error ? error.message : undefined),
+			providerFailureSignal(error),
+		);
 	}
 	signal.throwIfAborted();
 	if (!result || typeof result !== "object") throw new ClassifierDecisionError();
 	attempt.settle(result.stopReason);
 	if (result.stopReason === "aborted") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
-	if (result.stopReason !== "stop") throw new ClassifierDecisionError(result.errorMessage);
+	if (result.stopReason !== "stop")
+		throw withProviderFailure(new ClassifierDecisionError(result.errorMessage), providerFailureSignal(result));
 	if (!result.answers || typeof result.answers !== "object" || typeof result.model !== "string")
 		throw new ClassifierDecisionError();
 	const choices: Record<string, string> = {};
@@ -349,6 +371,8 @@ async function generateWithinDeadline<T extends TSchema>(
 	const choices = compileChoiceSchema(snapshot.schema);
 	const modelAttempts: ModelAttempt[] = [];
 	let lastDiagnostic: Error | undefined;
+	/** The last candidate's rate limit or exhausted quota, kept on the error when every candidate failed. */
+	let lastProviderFailure: ProviderFailureSignal | undefined;
 	for (const resolution of resolutions) {
 		assertNotCancelled(request.signal);
 		if ("failure" in resolution) {
@@ -386,6 +410,7 @@ async function generateWithinDeadline<T extends TSchema>(
 		} catch (error) {
 			assertNotCancelled(request.signal);
 			if (error instanceof ClassifierDecisionError) {
+				lastProviderFailure = carriedProviderFailure(error) ?? lastProviderFailure;
 				modelAttempts.push({ model: candidate.fullId, error: error.message });
 				continue;
 			}
@@ -398,6 +423,7 @@ async function generateWithinDeadline<T extends TSchema>(
 				);
 			}
 			lastDiagnostic = error instanceof OutputRepairExhaustedError ? error : undefined;
+			lastProviderFailure = carriedProviderFailure(error) ?? lastProviderFailure;
 			modelAttempts.push({
 				model: candidate.fullId,
 				error: error instanceof OutputRepairExhaustedError ? error.message : "Structured output inference failed.",
@@ -405,7 +431,10 @@ async function generateWithinDeadline<T extends TSchema>(
 		}
 	}
 	if (lastDiagnostic) throw lastDiagnostic;
-	throw new Error(`Structured output failed across ${modelAttempts.length} model candidate(s).`);
+	throw withProviderFailure(
+		new Error(`Structured output failed across ${modelAttempts.length} model candidate(s).`),
+		lastProviderFailure,
+	);
 }
 
 function withAttempts<T>(
