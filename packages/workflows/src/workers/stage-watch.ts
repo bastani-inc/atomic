@@ -156,6 +156,10 @@ export class WorkerStageWatches {
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
 			return;
 		}
+		if (command.op === "question") {
+			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.question(command) });
+			return;
+		}
 		if (command.op === "answer") {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.answer(command) });
 			return;
@@ -251,6 +255,19 @@ export class WorkerStageWatches {
 	 * holds: a workflow `ctx.ui` prompt node waiting in the attempt's store, or a stage's brokered
 	 * question waiting in its stage UI broker.
 	 */
+	/** The brokered question a stage of the held attempt waits on, with its exact tool parameters. */
+	private question(command: Extract<WorkerStageCommand, { op: "question" }>): StageCommandResult {
+		const held = this.attempt();
+		const prompts = this.options.prompts?.();
+		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !prompts)
+			return { refusal: "StaleAttempt" };
+		const questionnaire = prompts.broker.peekStageQuestionnaire(command.runId, command.stageId);
+		if (questionnaire === undefined) return { refusal: "PromptNotPending" };
+		return {
+			question: { promptId: questionnaire.prompt.id, kind: questionnaire.prompt.kind, params: questionnaire.params },
+		};
+	}
+
 	private answer(command: Extract<WorkerStageCommand, { op: "answer" }>): StageCommandResult {
 		const held = this.attempt();
 		const prompts = this.options.prompts?.();

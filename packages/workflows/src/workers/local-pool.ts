@@ -25,6 +25,7 @@ import {
 	type ExternalRunRouteOwner,
 	pendingStageMessageRouter,
 } from "../shared/external-run-routes.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import type { PendingPrompt, RunSnapshot } from "../shared/store-types.js";
 import type {
@@ -70,6 +71,7 @@ import type {
 	DeliveryResult,
 	PooledPromptAnswer,
 	PooledStageDelivery,
+	PooledStageQuestion,
 	PooledStageRef,
 	PooledStageWatchMessage,
 	PromptResult,
@@ -267,6 +269,13 @@ export class LocalWorkerPool {
 	private promptUi?: WorkflowUIAdapter;
 	/** Prompts of pooled stages the root is routing an answer for, by run, stage and prompt id. */
 	private readonly routedPrompts = new Set<string>();
+	/** Brokered questions of pooled stages shown in the root, by run and stage. */
+	private readonly routedQuestions = new Map<
+		string,
+		{ readonly promptId: string; readonly controller: AbortController }
+	>();
+	/** An SDK caller's `stageUiBroker`, which shows the brokered questions of pooled stages. */
+	private questionBroker?: StageUiBroker;
 	/** Runs this pool's workers published, so answers for another pool's runs pass it by. */
 	private readonly ownedRuns = new Set<string>();
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
@@ -381,7 +390,6 @@ export class LocalWorkerPool {
 			"overlay",
 			"models",
 			"registry",
-			"stageUiBroker",
 			"toolAdmissionBoundary",
 			"onStageStart",
 			"onStageEnd",
@@ -515,6 +523,7 @@ export class LocalWorkerPool {
 			for (const run of runs) {
 				this.ownedRuns.add(run.id);
 				for (const stage of run.stages) {
+					this.routeQuestion(run.id, stage.id, stage.inputRequest?.id);
 					const prompt = stage.pendingPrompt;
 					if (prompt === undefined) continue;
 					const key = JSON.stringify([run.id, stage.id, prompt.id]);
@@ -553,6 +562,71 @@ export class LocalWorkerPool {
 						.catch(() => this.routedPrompts.delete(key));
 				}
 			}
+	}
+	/**
+	 * Shows a pooled stage's brokered question (`ask_user_question`) in the root's stage UI broker
+	 * (#3996), with the exact form an in-process stage shows: the attached stage chat renders it,
+	 * and an SDK caller's `stageUiBroker` receives it. The answer goes to the worker that asked.
+	 * When the worker's question is answered elsewhere or goes away, the root's request ends.
+	 */
+	private routeQuestion(runId: string, stageId: string, promptId: string | undefined): void {
+		const key = JSON.stringify([runId, stageId]);
+		const active = this.routedQuestions.get(key);
+		if (active !== undefined && active.promptId === promptId) return;
+		if (active !== undefined) {
+			this.routedQuestions.delete(key);
+			active.controller.abort(new Error("The stage's question was answered or withdrawn."));
+		}
+		if (promptId === undefined || this.closed) return;
+		const controller = new AbortController();
+		this.routedQuestions.set(key, { promptId, controller });
+		void this.askQuestion(runId, stageId, promptId, controller.signal).catch(() => {});
+	}
+	private async askQuestion(runId: string, stageId: string, promptId: string, signal: AbortSignal): Promise<void> {
+		// Loaded on first use, so pools whose stages never ask never load them.
+		const [question, atomic, { currentStageUiBroker }, { buildStagePromptAdapter }] = await Promise.all([
+			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
+			import("@bastani/atomic"),
+			import("../shared/stage-ui-broker.js"),
+			import("../shared/stage-prompt.js"),
+		]);
+		if (question?.promptId !== promptId || signal.aborted) return;
+		const broker = this.questionBroker ?? currentStageUiBroker();
+		const adapter = buildStagePromptAdapter(promptId, question.kind, question.params, Date.now());
+		if (adapter !== undefined) broker.provideStagePrompt(runId, stageId, adapter);
+		let answered: { readonly value: unknown } | undefined;
+		try {
+			const execute = atomic.createAskUserQuestionToolDefinition().execute;
+			if (execute === undefined) return;
+			const context = {
+				hasUI: true,
+				ui: {
+					custom: async (factory: unknown, options?: unknown): Promise<unknown> => {
+						const value = await broker.requestCustomUi(
+							runId,
+							stageId,
+							factory as Parameters<StageUiBroker["requestCustomUi"]>[2],
+							options as Parameters<StageUiBroker["requestCustomUi"]>[3],
+							signal,
+						);
+						answered = { value };
+						return value;
+					},
+				},
+			};
+			await execute(
+				promptId,
+				question.params as Parameters<typeof execute>[1],
+				signal,
+				undefined,
+				context as unknown as Parameters<typeof execute>[4],
+			);
+		} finally {
+			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
+		}
+		if (answered === undefined || signal.aborted) return;
+		// The form's result, as the worker's own form would have returned it.
+		await this.answerPooledStagePrompt(runId, stageId, { kind: "input", promptId, answer: { raw: answered.value } });
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
@@ -829,6 +903,7 @@ export class LocalWorkerPool {
 			}),
 		) as WorkflowSerializableObject;
 		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;
+		if (options.stageUiBroker !== undefined) this.questionBroker ??= options.stageUiBroker;
 		this.evaluateBudget();
 		const enqueued = (await this.command({
 			kind: "enqueue",
@@ -1118,6 +1193,8 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		for (const { controller } of this.routedQuestions.values()) controller.abort(new Error("Local worker pool is closed"));
+		this.routedQuestions.clear();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();

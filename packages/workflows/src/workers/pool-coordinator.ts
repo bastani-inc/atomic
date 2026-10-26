@@ -61,6 +61,7 @@ import type {
 	PooledPromptAnswer,
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
+	PooledStageQuestion,
 	PromptRefusal,
 	PromptResult,
 	SeqEvent,
@@ -337,6 +338,7 @@ interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
 	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
+	readonly question?: PooledStageQuestion;
 	readonly error?: string;
 }
 
@@ -501,6 +503,8 @@ export class PoolCoordinator {
 				return;
 			case "stage-deliver":
 				return this.stageDeliver(command);
+			case "stage-question":
+				return this.stageQuestion(command.runId, command.stageId);
 			case "stage-answer":
 				return this.stageAnswer(command.runId, command.stageId, command.answer);
 			case "stage-pause":
@@ -863,6 +867,14 @@ export class PoolCoordinator {
 			ok: false,
 			refusal: refusal === "StageNotLive" || refusal === "Unconfirmed" ? refusal : "StaleAttempt",
 		};
+	}
+
+	/** Reads a stage's brokered question from the worker whose attempt published the stage's run. */
+	private async stageQuestion(runId: string, stageId: string): Promise<PooledStageQuestion | undefined> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return undefined;
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		return (await this.stageCommand(slot, { attempt, op: "question", runId, stageId }))?.question;
 	}
 
 	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */

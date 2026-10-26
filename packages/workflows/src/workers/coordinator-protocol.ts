@@ -92,6 +92,8 @@ export type CoordinatorCommandBody =
 	| { readonly kind: "stage-unwatch"; readonly watch: WatchId }
 	/** Admits user text into a watched stage at most once per op; answered with a `DeliveryResult`. */
 	| ({ readonly kind: "stage-deliver" } & PooledStageDelivery)
+	/** Reads the brokered question a pooled stage waits on; answered with a `PooledStageQuestion` or undefined. */
+	| { readonly kind: "stage-question"; readonly runId: string; readonly stageId: string }
 	/** Answers a prompt a pooled stage raised; answered with a `PromptResult`. */
 	| {
 			readonly kind: "stage-answer";

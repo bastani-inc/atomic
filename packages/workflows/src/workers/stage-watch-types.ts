@@ -1,8 +1,9 @@
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, QuestionParams } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import type { StageInputAnswer } from "../shared/stage-prompt.js";
+import type { StageInputKind } from "../shared/store-types.js";
 import type { StageSendUserMessageOptions, WorkflowSerializableValue } from "../shared/types.js";
 
 /**
@@ -119,6 +120,16 @@ export type PooledPromptAnswer =
 	| { readonly kind: "input"; readonly promptId: string; readonly answer: StageInputAnswer }
 	/** The root could not answer the prompt: it fails in the worker with `error`, as an in-process `ui` rejection does. */
 	| { readonly kind: "failed"; readonly promptId: string; readonly error: string };
+
+/**
+ * A stage's brokered question (`ask_user_question`) as its worker holds it (#3996): the exact
+ * tool parameters, so the root can show the same form an in-process stage shows.
+ */
+export interface PooledStageQuestion {
+	readonly promptId: string;
+	readonly kind: StageInputKind;
+	readonly params: QuestionParams;
+}
 
 /**
  * Why an answer was not applied.

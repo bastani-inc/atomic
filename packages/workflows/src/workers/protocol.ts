@@ -15,6 +15,7 @@ import type {
 	DeliveryRefusal,
 	PooledPromptAnswer,
 	PooledStageChatSnapshot,
+	PooledStageQuestion,
 	PromptRefusal,
 	SeqEvent,
 	WatchEndReason,
@@ -66,6 +67,7 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly snapshot?: PooledStageChatSnapshot;
 			readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 			readonly action?: StageUserMessageDeliveryAction;
+			readonly question?: PooledStageQuestion;
 			/** The stage refused the text for another reason; the message says why. */
 			readonly error?: string;
 	  }
@@ -103,6 +105,8 @@ export type WorkerStageCommand = {
 	  }
 	| { readonly op: "pause"; readonly watch: WatchId }
 	/** Answers a prompt of the attempt's stage; needs no watch, since a prompt waits for whoever answers. */
+	/** Reads the brokered question the attempt's stage waits on; needs no watch either. */
+	| { readonly op: "question"; readonly runId: string; readonly stageId: string }
 	| {
 			readonly op: "answer";
 			readonly runId: string;
