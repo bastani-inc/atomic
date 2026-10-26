@@ -44,7 +44,12 @@ import type {
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
-import { SqlResourceAdmission } from "./resource-admission.js";
+import {
+	type ProcessPermitScope,
+	reapProcessGroups,
+	SqlResourceAdmission,
+	unconfirmedProcessGroups,
+} from "./resource-admission.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
@@ -85,6 +90,12 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 
 type RouteOwner = ReturnType<typeof import("../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 type Bridge = ReturnType<typeof registerPendingStageIntercomBridge>;
+
+function unconfirmedCleanup(groups: readonly number[]): Error {
+	return new Error(
+		`Local worker process cleanup unconfirmed; ${groups.length > 0 ? `process groups ${groups.join(", ")} still running after SIGKILL; ` : ""}permits quarantined`,
+	);
+}
 
 export function workerLogDirectory(journalPath: string, root: string): string {
 	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
@@ -389,6 +400,20 @@ export class PoolCoordinator {
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
 	private cleanupFailure?: Error;
+	/** Work of exited workers whose leases recovery extends instead of expiring, while their process groups are reaped. */
+	private readonly held = new Set<string>();
+	/** Held work whose process groups survived reaping; its child failed and it is never released for replay. */
+	private readonly quarantined = new Set<string>();
+	/** Workers or attempts whose reap left process groups running; close reports those still running. */
+	private readonly unreaped: ProcessPermitScope[] = [];
+	/**
+	 * Earlier incarnations' attempts kept leased because their process groups were not confirmed gone, by work id.
+	 * `enqueued` records that this incarnation's root enqueued the attempt while it was still leased, so its release
+	 * must adopt it into the current epoch: the enqueue cannot, as it adopts only released work (#3979).
+	 */
+	private readonly retained = new Map<string, { enqueued: boolean }>();
+	/** Serializes enqueues with releases of retained attempts, so an enqueue is never lost between the two. */
+	private retainedTransitions: Promise<void> = Promise.resolve();
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
@@ -491,14 +516,78 @@ export class PoolCoordinator {
 		this.lease = lease;
 		const queue = await openSqlPoolQueue(this.journal);
 		await queue.initialize(lease, COORDINATOR_LEASE_MS);
-		await queue.releasePreviousIncarnations(lease);
+		// An earlier incarnation's attempt whose process groups are not confirmed gone stays leased: replaying it
+		// would run alongside them. Its groups on this host are reaped below; recovery releases it once they are gone.
+		const retained: PoolWork[] = [];
+		for (const work of await queue.inspect(root))
+			if (
+				work.state === "leased" &&
+				work.epoch < lease.epoch &&
+				(await unconfirmedProcessGroups(this.journal, root, { attempt: work })).length > 0
+			)
+				retained.push(work);
+		await queue.releasePreviousIncarnations(
+			lease,
+			retained.map((work) => work.id),
+		);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
 			await queue.setControl(lease, intended);
 			if (intended === (this.desiredControl ?? "running")) break;
 		}
 		this.queue = queue;
+		for (const work of retained) {
+			this.retained.set(work.id, { enqueued: false });
+			this.held.add(work.id);
+			const reaping = this.reapRetained(work);
+			this.cleanups.add(reaping);
+			void reaping.finally(() => this.cleanups.delete(reaping));
+		}
 		return this.usageTotal;
+	}
+
+	/**
+	 * Reaps a retained earlier attempt's process groups on this host with the bounded SIGTERM, then SIGKILL, sequence.
+	 * Once they are gone the attempt is released for replay. If any survive, only that child fails and the attempt
+	 * stays quarantined. Groups on another host cannot be reaped: the attempt stays retained until recovery confirms
+	 * them gone.
+	 */
+	private async reapRetained(work: PoolWork): Promise<void> {
+		try {
+			const { survivors, unprobeable } = await reapProcessGroups(this.journal!, this.root!, { attempt: work });
+			if (survivors.length > 0) {
+				this.quarantined.add(work.id);
+				this.unreaped.push({ attempt: work });
+				this.port.send({ kind: "work-failure", workId: work.id, error: unconfirmedCleanup(survivors).message });
+				return;
+			}
+			if (unprobeable.length === 0) await this.releaseRetained(work);
+		} catch (error) {
+			this.cleanupFailure ??= error instanceof Error ? error : new Error(String(error));
+		} finally {
+			if (!this.quarantined.has(work.id)) this.held.delete(work.id);
+		}
+	}
+
+	/** Releases a retained earlier attempt whose groups are gone, adopting it if this incarnation enqueued it. */
+	private releaseRetained(work: PoolWork): Promise<void> {
+		return this.retainedTransition(async () => {
+			const record = this.retained.get(work.id);
+			this.retained.delete(work.id);
+			// A stale token means the attempt already changed hands: nothing is left to release.
+			await this.queue!.releaseRetained(this.lease!, work, record?.enqueued === true).catch((error: Error) => {
+				if (error.message !== STALE_WORK_LEASE) throw error;
+			});
+		});
+	}
+
+	private retainedTransition<T>(action: () => Promise<T>): Promise<T> {
+		const result = this.retainedTransitions.then(action);
+		this.retainedTransitions = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
 	}
 
 	private async control(state: PoolControl["state"]): Promise<void> {
@@ -560,8 +649,20 @@ export class PoolCoordinator {
 		if (!this.queue || !this.lease || this.root === undefined)
 			throw new Error("Local worker pool requires root preparation");
 		if (command.rootRun !== undefined) this.routes?.updateRoot(command.rootRun);
-		const work = await this.queue.enqueue(this.lease, command.descriptor, command.boundary);
-		if (!this.attemptBase.has(work.id)) this.attemptBase.set(work.id, work.state === "ready" ? work.generation : 0);
+		const queue = this.queue;
+		const lease = this.lease;
+		const work = await this.retainedTransition(async () => {
+			const enqueued = await queue.enqueue(lease, command.descriptor, command.boundary);
+			const retained = this.retained.get(enqueued.id);
+			if (retained) retained.enqueued = true;
+			return enqueued;
+		});
+		// A retained earlier attempt counts as that incarnation's: attempts in this one start after it (#3979).
+		if (!this.attemptBase.has(work.id))
+			this.attemptBase.set(
+				work.id,
+				work.state === "ready" || (work.state === "leased" && work.epoch < lease.epoch) ? work.generation : 0,
+			);
 		const result = await this.queue.result(this.root, work.id);
 		return { work, ...(result === undefined ? {} : { result }) };
 	}
@@ -906,15 +1007,39 @@ export class PoolCoordinator {
 				for (const delivery of slot.deliveries.values())
 					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
 				slot.deliveries.clear();
+				// The exited worker's work stays leased until its process groups are reaped, so no other worker can
+				// claim it and replay alongside them.
+				const held = slot.work;
+				if (held) this.held.add(held.id);
+				// Set when this exit's cleanup failure fails only its child: the replacement is not an idle-worker crash.
+				let childFailed = false;
 				const cleanup = disconnected
 					.then(() => serial)
 					.then(async () => {
 						try {
-							if (await this.admission?.releaseStoppedSessions(worker))
-								throw new Error("Local worker process cleanup unconfirmed; permits quarantined");
+							const admission = this.admission;
+							if (!admission || (await admission.releaseStoppedSessions(worker)) === 0) return;
+							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded;
+							// groups that survive it fail only that worker's child, and never the rest of the pool.
+							const alive = await admission.reapStoppedProcesses(worker);
+							if (alive.length > 0) this.unreaped.push({ holder: worker });
+							// Close still reports any cleanup left unconfirmed, including permits never bound to a group.
+							if (this.closed && (alive.length > 0 || (await admission.releaseStoppedSessions(worker)) > 0))
+								throw unconfirmedCleanup(alive);
+							if (alive.length === 0) return;
+							const error = unconfirmedCleanup(alive);
+							if (held && (await this.queue!.result(this.root!, held.id)) === undefined) {
+								// Its lease stays held for the pool's lifetime: the child never replays alongside those groups.
+								this.quarantined.add(held.id);
+								slot.work = undefined;
+								childFailed = true;
+								this.port.send({ kind: "work-failure", workId: held.id, error: error.message });
+							}
 						} catch (error) {
 							this.cleanupFailure = error instanceof Error ? error : new Error(String(error));
 							throw this.cleanupFailure;
+						} finally {
+							if (held && !this.quarantined.has(held.id)) this.held.delete(held.id);
 						}
 					})
 					.then(async () => {
@@ -931,7 +1056,13 @@ export class PoolCoordinator {
 							work !== undefined &&
 							!(await this.queue!.releaseExited(this.lease!, work)) &&
 							(await this.superseded(work));
-						const exhausted = superseded ? false : work ? this.attempts(work) >= 3 : ++this.replacements > 3;
+						// A quarantined child consumes its own work item, so these replacements are bounded by the children
+						// and never count toward the idle-worker crash limit that fails the whole pool.
+						const exhausted = superseded
+							? false
+							: work
+								? this.attempts(work) >= 3
+								: !childFailed && ++this.replacements > 3;
 						if (exhausted) this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
@@ -1145,6 +1276,13 @@ export class PoolCoordinator {
 			const expiredBefore = Date.now();
 			for (const work of await queue.inspect(root)) {
 				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
+				if (this.quarantined.has(work.id)) continue;
+				if (this.held.has(work.id)) {
+					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
+						if (error.message !== STALE_WORK_LEASE) throw error;
+					});
+					continue;
+				}
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child && work.worker !== null && this.isLive(work.worker, child)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
@@ -1160,7 +1298,12 @@ export class PoolCoordinator {
 					))
 				)
 					continue;
-				await queue.expire(lease, work);
+				// Stopping the worker began its exit cleanup, which holds its work until its process groups are reaped.
+				if (this.held.has(work.id) || this.quarantined.has(work.id)) continue;
+				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
+				if ((await unconfirmedProcessGroups(this.journal!, root, { attempt: work })).length > 0) continue;
+				if (work.epoch < lease.epoch) await this.releaseRetained(work);
+				else await queue.expire(lease, work);
 			}
 		})().finally(() => {
 			this.recovering = undefined;
@@ -1213,6 +1356,12 @@ export class PoolCoordinator {
 			await Promise.all(stopping.map(({ child }) => this.stop(child)));
 			await Promise.all([...this.cleanups]);
 			if (this.cleanupFailure) throw this.cleanupFailure;
+			// A reap that finished before close may have left groups running; close reports those still running.
+			const alive: number[] = [];
+			for (const scope of this.unreaped)
+				for (const group of await unconfirmedProcessGroups(this.journal!, this.root!, scope))
+					if (!alive.includes(group)) alive.push(group);
+			if (alive.length > 0) throw unconfirmedCleanup(alive);
 		} catch (error) {
 			failure = error;
 		}
