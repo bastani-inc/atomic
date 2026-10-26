@@ -67,3 +67,25 @@ export function stageCanUseWorkflowPendingStageRoute(
 		workflowInvocationOwnsGroup(workflowGroup, resolveStageGroup(stageOptions, workflowGroup))
 	);
 }
+
+/** #4006: refusal for a sender outside the invocation; names the documented group to join. */
+export function workflowInvocationGroupRefusal(invocationGroup: string): string {
+	return `Target workflow run is in a different intercom group; join ${normalizeGroup(invocationGroup)} to send to its stages`;
+}
+
+/**
+ * The group a pending-stage sender acts in for the durable group check. The broker has already
+ * authorized the sender: by its current membership in the invocation group (an ordinary session
+ * that explicitly joined it), or (#4006) as the session that launched the run.
+ */
+export function pendingStageSenderGroup(
+	event: {
+		readonly from: { readonly group?: string; readonly groups?: readonly string[] };
+		readonly invocationControl?: boolean;
+	},
+	runGroup: string,
+): string | undefined {
+	return event.invocationControl === true || event.from.groups?.includes(runGroup) === true
+		? runGroup
+		: event.from.group;
+}
