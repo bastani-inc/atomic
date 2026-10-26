@@ -109,6 +109,15 @@ export function presentStageQuestion(input: {
  * call an in-process child's `ctx.ui` makes for it; a custom prompt cannot be shown outside its worker.
  */
 export function askStagePromptUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<WorkflowSerializableValue> {
+	// A `ui` method that throws before it returns its promise fails the prompt like one that rejects.
+	try {
+		return askUi(ui, prompt);
+	} catch (error) {
+		return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+	}
+}
+
+function askUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<WorkflowSerializableValue> {
 	switch (prompt.kind) {
 		case "input":
 			return ui.input(prompt.message);
