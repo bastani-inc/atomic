@@ -293,3 +293,49 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"a root stageUiBroker that rejects a pooled stage's ask_user_question fails that question in the worker with its error, and the root settles (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-question-reject-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const store = createStore();
+		let shown = 0;
+		class RejectingBroker extends StageUiBroker {
+			override requestCustomUi<T>(): Promise<T> {
+				shown++;
+				return Promise.reject(new Error("the caller's form host failed"));
+			}
+		}
+		const child = await loadWorkerWorkflow(childPath, "child");
+		try {
+			const execution = run(
+				parentOf(child),
+				{},
+				{
+					runId: testRunId("pool-stage-question-reject"),
+					cwd: directory,
+					store,
+					durableBackend: backend,
+					stageUiBroker: new RejectingBroker(store),
+					localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
+				},
+			);
+			// Explicit: the run settles on its own; without the failure reaching the worker it waits forever.
+			const outcome = await Promise.race([
+				execution,
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("the run did not settle")), CONDITION_TIMEOUT_MS).unref(),
+				),
+			]);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.text), /the caller's form host failed/);
+			assert.equal(shown, 1, "the rejected form is not shown again");
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);

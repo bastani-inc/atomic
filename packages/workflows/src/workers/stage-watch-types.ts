@@ -118,7 +118,7 @@ export type ControlResult =
 export type PooledPromptAnswer =
 	| { readonly kind: "prompt"; readonly promptId: string; readonly response: WorkflowSerializableValue }
 	| { readonly kind: "input"; readonly promptId: string; readonly answer: StageInputAnswer }
-	/** The root could not answer the prompt: it fails in the worker with `error`, as an in-process `ui` rejection does. */
+	/** The root could not answer the prompt or question: it fails in the worker with `error`, as an in-process `ui` or broker rejection does. */
 	| { readonly kind: "failed"; readonly promptId: string; readonly error: string };
 
 /**

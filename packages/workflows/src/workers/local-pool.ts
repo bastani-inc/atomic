@@ -594,13 +594,25 @@ export class LocalWorkerPool {
 		this.routedQuestions.set(key, { promptId, controller });
 		void this.askQuestion(runId, stageId, promptId, controller.signal)
 			.then((asked) => {
-				// The worker had not raised its form yet; the stage's next activity asks again.
-				if (!asked && this.routedQuestions.get(key)?.controller === controller) this.routedQuestions.delete(key);
+				// The worker had not raised its form yet, or the root's broker failed it there:
+				// the stage's next question is shown again.
+				if (asked !== true && this.routedQuestions.get(key)?.controller === controller)
+					this.routedQuestions.delete(key);
 			})
-			.catch(() => {});
+			.catch(() => {
+				if (this.routedQuestions.get(key)?.controller === controller) this.routedQuestions.delete(key);
+			});
 	}
-	/** Shows the question and sends its answer; false when the worker had no form for it yet. */
-	private async askQuestion(runId: string, stageId: string, promptId: string, signal: AbortSignal): Promise<boolean> {
+	/**
+	 * Shows the question and sends its answer; false when the worker had no form for it yet, and
+	 * "failed" when the root's broker rejected it, which fails the question in the worker with that error.
+	 */
+	private async askQuestion(
+		runId: string,
+		stageId: string,
+		promptId: string,
+		signal: AbortSignal,
+	): Promise<boolean | "failed"> {
 		// Loaded on first use, so pools whose stages never ask never load them.
 		const [question, atomic, { currentStageUiBroker }, { buildStagePromptAdapter }] = await Promise.all([
 			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
@@ -613,6 +625,7 @@ export class LocalWorkerPool {
 		const adapter = buildStagePromptAdapter(promptId, question.kind, question.params, Date.now());
 		if (adapter !== undefined) broker.provideStagePrompt(runId, stageId, adapter);
 		let answered: { readonly value: unknown } | undefined;
+		let failure: Error | undefined;
 		try {
 			const execute = atomic.createAskUserQuestionToolDefinition().execute;
 			if (execute === undefined) return true;
@@ -639,8 +652,16 @@ export class LocalWorkerPool {
 				undefined,
 				context as unknown as Parameters<typeof execute>[4],
 			);
+		} catch (error) {
+			// The root's broker could not show the form (its host threw, say): the worker's question fails with
+			// that error, as an in-process stage's does, instead of waiting for an answer that never comes.
+			if (!signal.aborted) failure = error instanceof Error ? error : new Error(String(error));
 		} finally {
 			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
+		}
+		if (failure !== undefined) {
+			await this.answerPooledStagePrompt(runId, stageId, { kind: "failed", promptId, error: failure.message });
+			return "failed";
 		}
 		if (answered === undefined || signal.aborted) return true;
 		// The form's result, as the worker's own form would have returned it.

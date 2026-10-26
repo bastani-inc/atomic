@@ -357,10 +357,15 @@ export class WorkerStageWatches {
 			?.stages.find((candidate) => candidate.id === command.stageId);
 		if (stage === undefined || TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
 		const { answer } = command;
-		if (answer.kind === "failed")
-			return prompts.fail(command.runId, command.stageId, answer.promptId, new Error(answer.error))
-				? {}
-				: { refusal: "PromptNotPending" };
+		if (answer.kind === "failed") {
+			const error = new Error(answer.error);
+			if (prompts.fail(command.runId, command.stageId, answer.promptId, error)) return {};
+			// A brokered question (`ask_user_question`) fails in its tool, as an in-process broker rejection does.
+			if (prompts.broker.peekStagePrompt(command.runId, command.stageId)?.id !== answer.promptId)
+				return { refusal: "PromptNotPending" };
+			prompts.broker.cancelStagePrompt(command.runId, command.stageId, error);
+			return {};
+		}
 		if (answer.kind === "prompt")
 			return prompts.store.resolveStagePendingPrompt(
 				command.runId,
