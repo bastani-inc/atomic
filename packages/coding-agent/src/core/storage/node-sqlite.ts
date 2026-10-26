@@ -11,6 +11,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { SqliteWriteQueue, type SqliteWriteTicket } from "./node-sqlite-write-queue.js";
 
 interface TransactionGates {
 	readonly files: Map<string, Promise<void>>;
@@ -55,10 +56,16 @@ function finalizeReleasedStatements(): void {
 	(globalThis as { Bun?: { gc(force: boolean): void } }).Bun?.gc(true);
 }
 
-/** Default for how long a transaction keeps retrying `BEGIN IMMEDIATE` while another connection holds the write lock. */
+/**
+ * Default for how long a transaction keeps retrying `BEGIN IMMEDIATE` while the write lock is held and nobody makes
+ * progress through it: every commit by another connection restarts the wait, so only a lock held without commits
+ * for this long fails the transaction.
+ */
 const DEFAULT_NODE_SQLITE_LOCK_WAIT_MS = 30_000;
 const LOCK_RETRY_BASE_DELAY_MS = 5;
 const LOCK_RETRY_MAX_DELAY_MS = 100;
+/** A writer at the head of the cross-process queue retries at least this often, so the lock it is owed does not sit idle. */
+const LOCK_RETRY_HEAD_MAX_DELAY_MS = 20;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
 
@@ -116,6 +123,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly ownsConnection: boolean;
 	private readonly transactionIdentity: string | DatabaseSync;
 	private readonly lockWaitMs: number;
+	/** Cross-process first-come-first-served order for the write lock; absent for in-memory databases. */
+	private readonly writeQueue?: SqliteWriteQueue;
 
 	constructor(
 		connection: DatabaseSync,
@@ -130,6 +139,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.connection = connection;
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
+		if (typeof transactionIdentity === "string") this.writeQueue = new SqliteWriteQueue(transactionIdentity);
 	}
 
 	private driver<T>(operation: () => T): T {
@@ -168,33 +178,61 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		});
 	}
 
+	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
+	private dataVersion(): number {
+		return this.driver(() => Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0));
+	}
+
 	/**
 	 * Takes the write lock without blocking the event loop. Nothing has run yet when `BEGIN IMMEDIATE` reports
-	 * SQLITE_BUSY, so the attempt is retried after a jittered timer until `lockWaitMs` has passed; every other
-	 * failure, and a lock still held at the deadline, rejects at once with its cause.
+	 * SQLITE_BUSY, so the attempt is retried after a timer. A refused writer queues with writers in other processes
+	 * and attempts the lock only when no earlier writer is still waiting, so none starves (#3978). The wait ends only
+	 * when the lock has been held for `lockWaitMs` with no other connection committing in that time; every other
+	 * failure rejects at once with its cause.
 	 */
 	private async begin(): Promise<void> {
-		const started = Date.now();
-		for (let attempt = 0; ; attempt += 1) {
-			try {
-				this.tryBegin();
-				return;
-			} catch (error) {
-				const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
-				if (!isSqliteBusy(cause)) throw error;
-				const remaining = started + this.lockWaitMs - Date.now();
-				if (remaining <= 0) {
-					throw unavailable(
-						this.descriptor,
-						cause,
-						`${sqliteFailureDetail(cause)}; gave up after waiting ${Date.now() - started} ms for the write lock`,
-					);
+		let ticket: SqliteWriteTicket | undefined;
+		try {
+			// Writers already waiting in other processes go first.
+			if (this.writeQueue?.othersWaiting()) ticket = this.writeQueue.join();
+			// Read only once the lock is refused, so an uncontended transaction pays nothing for it.
+			let version: number | undefined;
+			let stalledSince = Date.now();
+			let backoff = LOCK_RETRY_BASE_DELAY_MS;
+			for (;;) {
+				const behind = ticket?.behindOthers() === true;
+				if (!behind) {
+					try {
+						this.tryBegin();
+						return;
+					} catch (error) {
+						const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
+						if (!isSqliteBusy(cause)) throw error;
+						ticket ??= this.writeQueue?.join();
+						const current = this.dataVersion();
+						if (version === undefined) version = current;
+						else if (current !== version) {
+							version = current;
+							stalledSince = Date.now();
+						}
+						const stalledMs = Date.now() - stalledSince;
+						if (stalledMs >= this.lockWaitMs)
+							throw unavailable(
+								this.descriptor,
+								cause,
+								`${sqliteFailureDetail(cause)}; gave up after ${stalledMs} ms waiting for the write lock, held all that time with no other connection committing`,
+							);
+					}
+				} else {
+					// Writers ahead of this one are committing through the lock: that is progress, not a stall.
+					stalledSince = Date.now();
 				}
-				const backoff = Math.min(LOCK_RETRY_MAX_DELAY_MS, LOCK_RETRY_BASE_DELAY_MS * 2 ** attempt);
-				await new Promise((resolve) =>
-					setTimeout(resolve, Math.min(remaining, backoff * (0.5 + Math.random() / 2))),
-				);
+				const delay = ticket !== undefined && !behind ? Math.min(backoff, LOCK_RETRY_HEAD_MAX_DELAY_MS) : backoff;
+				backoff = Math.min(LOCK_RETRY_MAX_DELAY_MS, backoff * 2);
+				await new Promise((resolve) => setTimeout(resolve, delay * (0.5 + Math.random() / 2)));
 			}
+		} finally {
+			ticket?.leave();
 		}
 	}
 
