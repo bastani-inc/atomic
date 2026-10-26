@@ -3,7 +3,12 @@ import { durableBackendForRun, durableRootRunIdForRun } from "../durable/run-own
 import { availableStoreDurableBackend, requireStoreDurableBackend } from "../durable/store-backend.js";
 import { isSessionClosedError } from "../engine/session-closed-error.js";
 import { externalRunRouteOwner, registerPendingStageMessageRouter } from "../shared/external-run-routes.js";
-import { workflowInvocationIntercomGroup, workflowInvocationOwnsGroup } from "../shared/intercom-group.js";
+import {
+	pendingStageSenderGroup,
+	workflowInvocationGroupRefusal,
+	workflowInvocationIntercomGroup,
+	workflowInvocationOwnsGroup,
+} from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { registerWorkflowPendingStageRouteReadiness } from "../shared/pending-stage-route-readiness.js";
 import {
@@ -70,6 +75,8 @@ interface PendingStageMessageEvent {
 	readonly senderRegistrationName?: string;
 	readonly senderReturnAddress?: string;
 	readonly from?: PendingStageSender;
+	/** #4006: the broker authorized the sender as the session that launched the run. */
+	readonly invocationControl?: boolean;
 	readonly runId?: string;
 	readonly target?: string;
 	readonly message?: PendingStageMessageInput["message"];
@@ -700,8 +707,8 @@ async function queueAndPersist(
 	// The broker has already authorized the immutable registration identity.
 	// Preserve the sender identity in the durable entry, but use its current
 	// invocation membership for the durable group check so an ordinary session
-	// that explicitly joined workflow:<runId> can queue before stage startup.
-	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
+	// that explicitly joined workflow:<runId> (or launched the run) can queue before stage startup.
+	const senderGroup = pendingStageSenderGroup(event, runGroup);
 	const result: PendingStageQueueResult | undefined = await activeStore.queueStageMessage(
 		request,
 		senderGroup,
@@ -722,7 +729,7 @@ async function queueAndPersist(
 				reason: `Intercom message ID '${result.messageId}' was already queued for ${event.target} with a different target, sender, or payload`,
 			};
 		}
-		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
+		return { outcome: "refused", reason: workflowInvocationGroupRefusal(runGroup) };
 	}
 	if (result.entry.status === "delivered") return { outcome: "delivered" };
 	if (result.entry.status === "undeliverable") {
@@ -777,7 +784,7 @@ async function deliverStickyTarget(
 	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
 	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
-	const senderGroup = event.from.groups?.includes(runGroup) === true ? runGroup : event.from.group;
+	const senderGroup = pendingStageSenderGroup(event, runGroup);
 	const request: PendingStickyStageMessageInput = {
 		runId: rootRunId,
 		stageKey: event.target,
@@ -804,7 +811,7 @@ async function deliverStickyTarget(
 				reason: `Intercom message ID '${result.messageId}' was already queued for ${event.target} with a different target, sender, or payload`,
 			};
 		}
-		return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
+		return { outcome: "refused", reason: workflowInvocationGroupRefusal(runGroup) };
 	}
 	// Live matches are forwarded by the broker, which then reports the targets it actually
 	// wrote to (STICKY_LIVE_DELIVERED_EVENT); only those enter the durable ledger. Recording

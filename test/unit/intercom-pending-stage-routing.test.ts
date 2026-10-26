@@ -285,7 +285,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		assert.equal(payload.handled, true);
 		assert.deepEqual(result, {
 			outcome: "refused",
-			reason: "Target workflow run is in a different intercom group",
+			reason: `Target workflow run is in a different intercom group; join workflow:${RUN_ID} to send to its stages`,
 		});
 		assert.equal(store.pendingStageMessagesFor(RUN_ID, "reviewer").length, 0);
 		dispose();

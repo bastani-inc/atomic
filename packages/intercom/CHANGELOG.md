@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- The session that launched a workflow run can now send to that run's stages by exact path (`workflow:<rootRunId>/<stage>`) and by pattern (`workflow:<rootRunId>/**`), and sees them in `intercom list`, without joining the run's invocation group. Before, the send was refused with `Target workflow run is in a different intercom group`, because the run's route is registered on a separate connection and the broker could not tell that the sender had launched the run. The launching session now proves this with a secret that only its own process holds, never the run's stages. Its group memberships do not change, so the run's stages still cannot message it. A session that joins `workflow:<rootRunId>` keeps the same authority, and every other session is still refused, now with an error that names the group to join ([#4006](https://github.com/bastani-inc/atomic/issues/4006))
+
 ## [0.9.44] - 2026-10-25
 
 ### Changed

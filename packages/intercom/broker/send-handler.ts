@@ -6,7 +6,7 @@ import {
 	parseLegacyWorkflowStageTarget,
 	parseWorkflowStageTarget,
 } from "../workflow-stage-target.js";
-import { normalizeGroup } from "../group.js";
+import { normalizeGroup, workflowInvocationGroupRefusal } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
 import {
 	resolveSessionTarget,
@@ -541,7 +541,10 @@ export function handleBrokerSend(
         type: "delivery_failed",
         messageId: message.id,
         attemptId,
-        reason: "Target session is in a different intercom group",
+        // #4006: a live workflow stage is reached through its invocation; name the group to join.
+        reason: liveWorkflowTarget !== undefined && workflowTarget !== undefined
+          ? workflowInvocationGroupRefusal(`workflow:${workflowTarget.rootRunId}`)
+          : "Target session is in a different intercom group",
       });
       return;
     }

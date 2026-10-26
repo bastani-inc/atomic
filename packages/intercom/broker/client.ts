@@ -93,6 +93,8 @@ export interface PendingStageMessageRequest {
 	readonly senderRegistrationName?: string;
 	readonly senderReturnAddress?: string;
 	readonly live?: boolean;
+	/** #4006: the broker authorized the sender as the session that launched the run, not by membership. */
+	readonly invocationControl?: true;
 }
 
 /** Broker → route owner: the live stage targets a sticky broadcast was actually written to. */
@@ -212,6 +214,8 @@ export class IntercomClient extends EventEmitter {
 	/** #3906: the broker of the current registration refuses a pending-stage route without ending the connection. */
 	private brokerRefusesPendingStageRoutesInPlace = false;
 	private brokerAnswersStatus = false;
+	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
+	private brokerClaimsWorkflowInvocations = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -231,6 +235,7 @@ export class IntercomClient extends EventEmitter {
   private pendingBrokerStatus = new Map<string, { resolve: (report: BrokerStatusReport) => void; reject: (error: Error) => void }>();
   private _groups = normalizeGroups();
   private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private pendingWorkflowInvocationClaims = new Map<string, { resolve(claimed: boolean): void; reject(error: Error): void }>();
   private pendingStageRouteRegistrations = new Map<string, { resolve(): void; reject(error: Error): void }>();
 
   private pendingSupervisorAuthorizations = new Map<string, {
@@ -297,6 +302,7 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingPresence.values()) pending.reject(error);
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
+    for (const pending of this.pendingWorkflowInvocationClaims.values()) pending.reject(error);
     for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
     for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
     this.pendingLists.clear();
@@ -306,6 +312,7 @@ export class IntercomClient extends EventEmitter {
     this.pendingPresence.clear();
     this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
+    this.pendingWorkflowInvocationClaims.clear();
     this.pendingStageRouteRegistrations.clear();
     this.pendingBrokerStatus.clear();
   }
@@ -413,6 +420,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerAcknowledgesPendingStageRoutes = false;
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
+        this.brokerClaimsWorkflowInvocations = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -523,7 +531,8 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
           || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
           || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
-          || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)) {
+          || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
+          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -539,6 +548,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
+        this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -661,7 +671,8 @@ export class IntercomClient extends EventEmitter {
         break;
       }
 		case "pending_stage_message": {
-			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, target, message, live } = brokerMessage;
+			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, target, message, live, invocationControl } =
+				brokerMessage;
 			if (
 				typeof requestId !== "string" ||
 				!isSessionInfo(from) ||
@@ -670,7 +681,8 @@ export class IntercomClient extends EventEmitter {
 				typeof runId !== "string" ||
 				typeof target !== "string" ||
 				!isMessage(message) ||
-				(live !== undefined && typeof live !== "boolean")
+				(live !== undefined && typeof live !== "boolean") ||
+				(invocationControl !== undefined && invocationControl !== true)
 			) {
 				throw new Error("Invalid pending-stage message event");
 			}
@@ -683,6 +695,7 @@ export class IntercomClient extends EventEmitter {
 				target,
 				message,
 				...(live === true ? { live: true } : {}),
+				...(invocationControl === true ? { invocationControl: true } : {}),
 			} satisfies PendingStageMessageRequest);
 			break;
 		}
@@ -751,6 +764,15 @@ export class IntercomClient extends EventEmitter {
         if (!pending) return;
         this.pendingStageRouteRegistrations.delete(requestId);
         pending.resolve();
+        break;
+      }
+      case "workflow_invocation_claimed": {
+        const { requestId, claimed } = brokerMessage;
+        if (typeof requestId !== "string" || typeof claimed !== "boolean") throw new Error("Invalid workflow invocation claim answer");
+        const pending = this.pendingWorkflowInvocationClaims.get(requestId);
+        if (!pending) return;
+        this.pendingWorkflowInvocationClaims.delete(requestId);
+        pending.resolve(claimed);
         break;
       }
       case "live_workflow_stage_route_registered": {
@@ -1194,6 +1216,7 @@ export class IntercomClient extends EventEmitter {
 	possibleStages?: WorkflowPossibleStageAnnouncement[],
 	parent?: WorkflowRunParentAnnouncement,
 	dormant?: boolean,
+	launcherCapability?: string,
   ): void {
 	writeMessage(this.requireActiveSocket(), {
 		type: "register_pending_stage_route",
@@ -1204,6 +1227,7 @@ export class IntercomClient extends EventEmitter {
 		possibleStages,
 		...(parent === undefined ? {} : { parent }),
 		...(dormant === true ? { dormant: true as const } : {}),
+		...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
 	});
   }
 
@@ -1220,6 +1244,8 @@ export class IntercomClient extends EventEmitter {
 		possibleStages?: WorkflowPossibleStageAnnouncement[],
 		parent?: WorkflowRunParentAnnouncement,
 		dormant?: boolean,
+		/** #4006: the launcher-only secret, held by the process that launched the run and never by its stages. */
+		launcherCapability?: string,
 	): Promise<void> {
 		let socket: net.Socket;
 		try {
@@ -1229,7 +1255,7 @@ export class IntercomClient extends EventEmitter {
 		}
 		if (!this.brokerAcknowledgesPendingStageRoutes) {
 			try {
-				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant);
+				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant, launcherCapability);
 			} catch (error) {
 				return Promise.reject(toError(error));
 			}
@@ -1262,6 +1288,7 @@ export class IntercomClient extends EventEmitter {
 					possibleStages,
 					...(parent === undefined ? {} : { parent }),
 					...(dormant === true ? { dormant: true as const } : {}),
+					...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
 					...(this.multiplexesPendingStageRoutes && this.brokerRefusesPendingStageRoutesInPlace
 						? { refusalKeepsConnection: true as const }
 						: {}),
@@ -1273,6 +1300,31 @@ export class IntercomClient extends EventEmitter {
 			}
 		});
 	}
+
+  /**
+   * #4006: prove with the run's launcher capability (registered with the run's route, never given to its
+   * stages) that this session launched `runId`, so it may send to the run's stages without joining
+   * `workflow:<rootRunId>`. Resolves `false` when the broker refused the claim or predates it.
+   */
+  claimWorkflowInvocation(runId: string, launcherCapability: string): Promise<boolean> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    if (!this.brokerClaimsWorkflowInvocations) return Promise.resolve(false);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pendingWorkflowInvocationClaims.set(requestId, { resolve, reject });
+      try {
+        writeMessage(socket, { type: "claim_workflow_invocation", requestId, runId, capability: launcherCapability });
+      } catch (error) {
+        this.pendingWorkflowInvocationClaims.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
 
   registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
     let socket: net.Socket;

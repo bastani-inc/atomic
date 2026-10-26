@@ -128,7 +128,9 @@ test.skipIf(process.platform === "win32")(
 			await untilOrRunEnds(
 				async () => {
 					const target = pooledStage();
-					if (target === undefined) return false;
+					// The worker publishes the stage's session to the root asynchronously, so the root's
+					// copy can lag the worker's live stream; compare only once the root has caught up.
+					if (target?.stage.sessionId === undefined) return false;
 					const result = await pool.watchPooledStage(
 						{ runId: target.runId, stageId: target.stage.id },
 						(message) => received.push(message),
