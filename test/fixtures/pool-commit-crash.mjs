@@ -171,6 +171,8 @@ try {
 			if (crashed === "coordinator") await rejectStale(lease, /Stale lease/);
 			await rejectStale(coordinator);
 			assert.equal(await pool.expire(coordinator, attempt), true);
+			// A replacement coordinator's root re-enqueues its child before any worker may claim it (#3979).
+			await pool.enqueue(coordinator, work, boundary);
 			const replacement = await pool.claim(coordinator, attempt.worker, [work], RECOVERY_LEASE_MS);
 			assert.ok(replacement);
 			assert.equal(replacement.generation, attempt.generation + 1);

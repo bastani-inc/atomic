@@ -333,6 +333,9 @@ test.each(["initialize", "enqueue", "claim", "renew", "expire"] as const)(
 			await assert.rejects(staleMutations[operation](), /Stale lease/);
 			assert.deepEqual(await pool.inspect("root"), [held]);
 			assert.equal(await pool.expire(reacquired.lease, held), true);
+			assert.equal(await pool.claim(reacquired.lease, "worker", [work], 60_000), undefined);
+			// The resumed root re-enqueues its child before any worker may claim it (#3979).
+			await pool.enqueue(reacquired.lease, work, boundary);
 			const replacement = await pool.claim(reacquired.lease, "worker", [work], 60_000);
 			assert.ok(replacement);
 			assert.equal(replacement.epoch, reacquired.lease.epoch);
@@ -365,6 +368,8 @@ test("coordinator expiry and takeover fence every queue mutation; paused roots g
 		await assert.rejects(pool.expire(f.lease, held), /Stale lease/);
 		await assert.rejects(pool.renew(takeover.lease, held, 60_000), /Stale work lease/);
 		assert.equal(await pool.expire(takeover.lease, held), true);
+		// The resumed root re-enqueues its child before any worker may claim it (#3979).
+		await pool.enqueue(takeover.lease, work, boundary);
 		const next = await pool.claim(takeover.lease, "worker", [work], 60_000);
 		assert.equal(next?.epoch, takeover.lease.epoch);
 		assert.equal(next?.generation, held.generation + 1);
@@ -431,6 +436,9 @@ test("a new coordinator epoch releases every attempt leased by the previous inca
 		assert.equal(released?.state, "ready");
 		assert.equal(released?.worker, null);
 		await assert.rejects(pool.renew(takeover.lease, held, 60_000), /Stale work lease/);
+		assert.equal(await pool.claim(takeover.lease, "resumed-worker", [work], 60_000), undefined);
+		// The resumed root re-enqueues its child before any worker may claim it (#3979).
+		await pool.enqueue(takeover.lease, work, boundary);
 		const next = await pool.claim(takeover.lease, "resumed-worker", [work], 60_000);
 		assert.equal(next?.epoch, takeover.lease.epoch);
 		assert.equal(next?.generation, held.generation + 1);
