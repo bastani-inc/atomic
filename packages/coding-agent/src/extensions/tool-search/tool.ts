@@ -76,6 +76,26 @@ export function createToolSearchDocument(
 	if (namespace) parts.push(namespace.name, namespace.description ?? "", namespace.instructions ?? "");
 	return { name: tool.name, text: parts.filter((part) => part.trim()).join(" ") };
 }
+/** Lowercase with characters invalid in script identifiers as `_`, so `dev-radius` matches `dev_radius`. */
+function normalizeName(name: string): string {
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9_$]/g, "_");
+}
+/**
+ * Whether `query` names the tool: its full name or a suffix after a `__` separator, so `thread_read`
+ * and `app__thread_read` both name `mcp__app__thread_read`.
+ */
+function isNameQuery(query: string, name: string): boolean {
+	const normalized = normalizeName(name);
+	return normalized === query || normalized.endsWith(`__${query}`);
+}
+/**
+ * Okapi BM25 with the usual parameters. A query that names a tool ranks that tool first, because
+ * length normalization can otherwise rank a short description sharing the name's words above it.
+ * Ties keep document order.
+ */
 export class Bm25Ranker implements ToolRanker {
 	private readonly k1: number;
 	private readonly b: number;
@@ -99,6 +119,7 @@ export class Bm25Ranker implements ToolRanker {
 				return [term, Math.log(1 + (documents.length - frequency + 0.5) / (frequency + 0.5))];
 			}),
 		);
+		const nameQuery = normalizeName(query);
 		return documents
 			.flatMap((document, index) => {
 				let score = 0;
@@ -108,10 +129,11 @@ export class Bm25Ranker implements ToolRanker {
 					const norm = this.k1 * (1 - this.b + (this.b * lengths[index]) / average);
 					score += ((idf.get(term) ?? 0) * count * (this.k1 + 1)) / (count + norm);
 				}
-				return score > 0 ? [{ name: document.name, score }] : [];
+				return score > 0 ? [{ name: document.name, score, named: isNameQuery(nameQuery, document.name) }] : [];
 			})
-			.sort((a, b) => b.score - a.score)
-			.slice(0, limit);
+			.sort((a, b) => Number(b.named) - Number(a.named) || b.score - a.score)
+			.slice(0, limit)
+			.map(({ name, score }) => ({ name, score }));
 	}
 }
 export const toolSearchSchema = Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) });
