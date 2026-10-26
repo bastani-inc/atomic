@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { APP_TITLE } from "../src/config.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import "../src/modes/interactive/interactive-startup.ts";
+import { APP_TITLE } from "../src/config.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import "../src/modes/interactive/interactive-startup.js";
 
 describe("terminal title (pi 89c921d8)", () => {
 	it("replaces control characters in the session name so it cannot end the OSC title sequence", () => {
