@@ -91,3 +91,57 @@ test("a read of the hub inside a burst of store changes sees the burst's latest 
 		observation.dispose();
 	}
 });
+
+for (const pendingCase of ["changed", "removed"] as const) {
+	test(`an observer that subscribes while ${pendingCase} publications are pending receives its snapshot first (#4009)`, async () => {
+		const store = createStore();
+		const hub = new WorkflowActivityHub();
+		const observation = createWorkflowObservation(store, hub.registerWorkflowActivityPublisher(), "owner");
+		const root = (id: string) => ({
+			id,
+			name: id,
+			inputs: {},
+			status: "running" as const,
+			stages: [],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		try {
+			store.recordRunStart(root("kept"));
+			store.recordRunStart(root("gone"));
+			await new Promise((resolve) => setImmediate(resolve));
+			// Pending inside this turn: a changed root, or a removed one.
+			if (pendingCase === "changed") store.recordRunEnd("kept", "completed");
+			else store.removeRun("gone");
+			const frames: { kind: string; roots: Map<string, WorkflowRootActivity> }[] = [];
+			const folded = new Map<string, WorkflowRootActivity>();
+			let firstKind: string | undefined;
+			const subscription = hub.observeWorkflowActivity((frame) => {
+				firstKind ??= frame.kind;
+				if (frame.kind === "snapshot") {
+					folded.clear();
+					if (frame.availability === "ready") for (const entry of frame.roots) folded.set(entry.rootRunId, entry);
+				} else if (frame.kind === "changed") {
+					assert.ok(folded.has(frame.root.rootRunId), "a change applies to a root the observer knows");
+					folded.set(frame.root.rootRunId, frame.root);
+				} else {
+					assert.ok(folded.delete(frame.rootRunId), "a removal applies to a root the observer knows");
+				}
+				frames.push({ kind: frame.kind, roots: new Map(folded) });
+			});
+			await new Promise((resolve) => setImmediate(resolve));
+			subscription.dispose();
+			assert.equal(firstKind, "snapshot");
+			const last = frames.at(-1)!.roots;
+			if (pendingCase === "changed") assert.equal(last.get("kept")?.endedStatus, "completed");
+			else assert.deepEqual([...last.keys()], ["kept"]);
+			assert.deepEqual(
+				[...last.values()],
+				readyRoots(hub).map((entry) => entry),
+				"the observer's fold matches the hub",
+			);
+		} finally {
+			observation.dispose();
+		}
+	});
+}
