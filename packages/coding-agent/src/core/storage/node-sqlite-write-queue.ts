@@ -74,12 +74,15 @@ export class SqliteWriteQueue {
 
 export class SqliteWriteTicket {
 	private left = false;
+	private readonly queue: SqliteWriteQueue;
+	private readonly name: string;
+	private readonly path: string;
 
-	constructor(
-		private readonly queue: SqliteWriteQueue,
-		private readonly name: string,
-		private readonly path: string,
-	) {}
+	constructor(queue: SqliteWriteQueue, name: string, path: string) {
+		this.queue = queue;
+		this.name = name;
+		this.path = path;
+	}
 
 	/** Marks this ticket live and reports whether an older live ticket is still ahead of it. */
 	behindOthers(): boolean {
