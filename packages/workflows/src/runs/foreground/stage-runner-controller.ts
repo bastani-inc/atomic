@@ -2145,7 +2145,11 @@ export class StageSessionController {
 	): Promise<boolean> {
 		if (!this.resumeCurrentSession || this.session === undefined) return false;
 		const currentIndex = this.activeCandidateIndex ?? 0;
-		if (!walk.remaining.has(currentIndex) || candidateCooldownMs(this.currentModelValue()) > 0) {
+		if (
+			!walk.remaining.has(currentIndex) ||
+			candidateCooldownMs(this.currentModelValue()) > 0 ||
+			this.candidateUnavailable(this.currentModelValue())
+		) {
 			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
 			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;
