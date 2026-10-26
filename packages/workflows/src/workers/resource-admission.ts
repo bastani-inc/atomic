@@ -421,3 +421,59 @@ export class SqlResourceAdmission {
 		return remaining;
 	}
 }
+
+/** Whose process permits {@link unconfirmedProcessGroups} checks: one work attempt, or one worker. */
+export type ProcessPermitScope =
+	| { readonly attempt: { readonly id: string; readonly generation: number } }
+	| { readonly holder: string };
+
+/**
+ * The process groups of a root's granted, bound process permits in `scope` that are not confirmed gone. It reads
+ * the journal, so it holds in any process and after any restart. A group on this host that is gone, or holds only
+ * zombies, has its permit released and is not reported. A group on another host cannot be probed and is reported.
+ * Permits never bound to a process group are not reported: there is no group to probe.
+ */
+export async function unconfirmedProcessGroups(
+	journal: RunJournal,
+	root: string,
+	scope: ProcessPermitScope,
+): Promise<readonly number[]> {
+	const storage = sqlPoolStorage(journal);
+	if (!storage) return [];
+	const permits = `${storage.tables.runs}_resource_permits`;
+	const owners = `${storage.tables.runs}_resource_owners`;
+	return storage.transaction(async (tx) => {
+		if (!(await tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", permits))) return [];
+		const filter =
+			"attempt" in scope
+				? {
+						clause: "json_extract(p.attempt, '$.id') = ? AND json_extract(p.attempt, '$.generation') = ?",
+						args: [scope.attempt.id, scope.attempt.generation],
+					}
+				: { clause: "p.holder = ?", args: [scope.holder] };
+		const rows = await tx.all<SqliteRow & { operation: string; process_identity: string; host: string | null }>(
+			`SELECT p.operation, p.process_identity, o.host FROM ${permits} p LEFT JOIN ${owners} o ON o.id = p.owner WHERE p.root = ? AND p.kind = 'process' AND p.state = 'granted' AND p.process_identity IS NOT NULL AND ${filter.clause}`,
+			root,
+			...filter.args,
+		);
+		const alive: number[] = [];
+		for (const row of rows) {
+			const identity = JSON.parse(row.process_identity) as ResourceProcessIdentity;
+			const probeable =
+				row.host === admissionHost &&
+				process.platform !== "win32" &&
+				identity.kind === "unix-process-group" &&
+				Number.isSafeInteger(identity.id) &&
+				identity.id > 0;
+			if (probeable && processGroupState(identity.id) !== "alive") {
+				await tx.run(
+					`UPDATE ${permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
+					row.operation,
+				);
+				continue;
+			}
+			if (!alive.includes(identity.id)) alive.push(identity.id);
+		}
+		return alive;
+	});
+}

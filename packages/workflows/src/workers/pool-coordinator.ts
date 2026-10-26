@@ -43,7 +43,7 @@ import type {
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { WorkerRequest } from "./protocol.js";
-import { SqlResourceAdmission } from "./resource-admission.js";
+import { SqlResourceAdmission, unconfirmedProcessGroups } from "./resource-admission.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
 
 const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
@@ -65,6 +65,12 @@ const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliv
 
 type RouteOwner = ReturnType<typeof import("../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 type Bridge = ReturnType<typeof registerPendingStageIntercomBridge>;
+
+function unconfirmedCleanup(groups: readonly number[]): Error {
+	return new Error(
+		`Local worker process cleanup unconfirmed; ${groups.length > 0 ? `process groups ${groups.join(", ")} still running after SIGKILL; ` : ""}permits quarantined`,
+	);
+}
 
 export function workerLogDirectory(journalPath: string, root: string): string {
 	return join(dirname(resolve(journalPath)), "worker-logs", encodeURIComponent(root).replaceAll(".", "%2E"));
@@ -346,6 +352,8 @@ export class PoolCoordinator {
 	private readonly held = new Set<string>();
 	/** Held work whose process groups survived reaping; its child failed and it is never released for replay. */
 	private readonly quarantined = new Set<string>();
+	/** Exited workers whose reap left process groups running; close reports those still running. */
+	private readonly unreaped = new Set<string>();
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
@@ -437,7 +445,17 @@ export class PoolCoordinator {
 		this.lease = lease;
 		const queue = await openSqlPoolQueue(this.journal);
 		await queue.initialize(lease, COORDINATOR_LEASE_MS);
-		await queue.releasePreviousIncarnations(lease);
+		// An earlier incarnation's attempt whose process groups are not confirmed gone stays leased: replaying it
+		// would run alongside them. Recovery releases it once they are gone.
+		const retained: string[] = [];
+		for (const work of await queue.inspect(root))
+			if (
+				work.state === "leased" &&
+				work.epoch < lease.epoch &&
+				(await unconfirmedProcessGroups(this.journal, root, { attempt: work })).length > 0
+			)
+				retained.push(work.id);
+		await queue.releasePreviousIncarnations(lease, retained);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
 			await queue.setControl(lease, intended);
@@ -718,15 +736,12 @@ export class PoolCoordinator {
 							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded;
 							// groups that survive it fail only that worker's child, and never the rest of the pool.
 							const alive = await admission.reapStoppedProcesses(worker);
+							if (alive.length > 0) this.unreaped.add(worker);
 							// Close still reports any cleanup left unconfirmed, including permits never bound to a group.
 							if (this.closed && (alive.length > 0 || (await admission.releaseStoppedSessions(worker)) > 0))
-								throw new Error(
-									`Local worker process cleanup unconfirmed; ${alive.length > 0 ? `process groups ${alive.join(", ")} still running after SIGKILL; ` : ""}permits quarantined`,
-								);
+								throw unconfirmedCleanup(alive);
 							if (alive.length === 0) return;
-							const error = new Error(
-								`Local worker process cleanup unconfirmed; process groups ${alive.join(", ")} still running after SIGKILL; permits quarantined`,
-							);
+							const error = unconfirmedCleanup(alive);
 							if (held && (await this.queue!.result(this.root!, held.id)) === undefined) {
 								// Its lease stays held for the pool's lifetime: the child never replays alongside those groups.
 								this.quarantined.add(held.id);
@@ -915,6 +930,7 @@ export class PoolCoordinator {
 			const expiredBefore = Date.now();
 			for (const work of await queue.inspect(root)) {
 				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
+				if (this.quarantined.has(work.id)) continue;
 				if (this.held.has(work.id)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
 						if (error.message !== STALE_WORK_LEASE) throw error;
@@ -936,6 +952,10 @@ export class PoolCoordinator {
 					))
 				)
 					continue;
+				// Stopping the worker began its exit cleanup, which holds its work until its process groups are reaped.
+				if (this.held.has(work.id) || this.quarantined.has(work.id)) continue;
+				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
+				if ((await unconfirmedProcessGroups(this.journal!, root, { attempt: work })).length > 0) continue;
 				await queue.expire(lease, work);
 			}
 		})().finally(() => {
@@ -989,6 +1009,11 @@ export class PoolCoordinator {
 			await Promise.all(stopping.map(({ child }) => this.stop(child)));
 			await Promise.all([...this.cleanups]);
 			if (this.cleanupFailure) throw this.cleanupFailure;
+			// A reap that finished before close may have left groups running; close reports those still running.
+			const alive: number[] = [];
+			for (const worker of this.unreaped)
+				alive.push(...(await unconfirmedProcessGroups(this.journal!, this.root!, { holder: worker })));
+			if (alive.length > 0) throw unconfirmedCleanup(alive);
 		} catch (error) {
 			failure = error;
 		}

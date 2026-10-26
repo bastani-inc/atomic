@@ -4,7 +4,8 @@
 // (packages/workflows/src/workers/protocol.ts).
 //
 // First attempt of the child with input index 0: take a real process permit from the worker's SqlResourceAdmission, bind it to a
-// detached `sleep` process group, record that group, then SIGKILL itself so the group outlives it.
+// detached `sleep` process group, record that group, then SIGKILL itself so the group outlives it. With
+// ATOMIC_TEST_ORPHAN_MODE=stall it goes silent instead, so stalled-lease recovery is what stops it.
 // Its replayed attempt records whether the orphaned group was still alive when the replay was claimed.
 // Every other attempt completes its child at once.
 import { spawn } from "node:child_process";
@@ -65,7 +66,7 @@ function groupAlive(group) {
 
 async function orphanProcessGroup(work) {
 	// Loading the admission module can outlast a short lease: keep it renewed, as a real worker's heartbeat does.
-	setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
 	const jiti = createJiti(import.meta.url, { fsCache: false });
 	const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 	const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");
@@ -82,6 +83,11 @@ async function orphanProcessGroup(work) {
 	tool.unref();
 	await release.bindProcess({ kind: "unix-process-group", id: tool.pid });
 	writeFileSync(orphanMarker, String(tool.pid));
+	if (process.env.ATOMIC_TEST_ORPHAN_MODE === "stall") {
+		// The worker stops answering while its tool process group runs; recovery finds its lease expired and stops it.
+		clearInterval(renewal);
+		await new Promise(() => {});
+	}
 	// The worker dies while its tool process group is still running.
 	process.kill(process.pid, "SIGKILL");
 	await new Promise(() => {});
