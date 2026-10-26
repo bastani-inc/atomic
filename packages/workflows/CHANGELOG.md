@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
+- Workflow runs and local worker definitions load again after something such as a `/tmp` cleanup deletes the `jiti` transpile cache directory, instead of failing with `ENOENT: no such file or directory, open '/tmp/jiti/workflows-<name>.<hash>.cjs'` until Atomic restarts ([#3985](https://github.com/bastani-inc/atomic/issues/3985))
 
 ## [0.9.45] - 2026-10-25
 
