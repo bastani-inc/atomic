@@ -1192,7 +1192,7 @@ export class StageSessionController {
 			providerCooldownMs(workflowProviderId(candidates[limited]?.value)),
 		);
 		if (cooldowns.length === 0) return;
-		const maxWaitMs = settings?.maxRetryDelayMs || settings?.maxAgentDelayMs || 60_000;
+		const maxWaitMs = settings?.maxRetryDelayMs || (settings?.maxAgentDelayMs ?? 60_000);
 		if (Math.min(...cooldowns) > maxWaitMs) return;
 		walk.cooldownRounds += 1;
 		for (const limited of walk.rateLimited) {
