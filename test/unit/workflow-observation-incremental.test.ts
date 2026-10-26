@@ -6,6 +6,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { workflowObservationRuntime } from "../../packages/workflows/src/shared/store-factory.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import type {
+	PendingPrompt,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
@@ -15,6 +16,7 @@ import type {
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { workflowActivityNodeKey } from "../../packages/workflows/src/shared/workflow-activity.js";
 import {
+	type WorkflowObservationChange,
 	WorkflowObservationRuntime,
 	type WorkflowRuntimeEvent,
 } from "../../packages/workflows/src/shared/workflow-observation-runtime.js";
@@ -90,9 +92,13 @@ type ObservedEvent = Pick<
 	"target" | "attribution" | "delivery" | "rootRunId"
 >;
 
-function recordLifecycle(runtime: WorkflowObservationRuntime, into: ObservedEvent[]): void {
+function recordLifecycle(
+	runtime: WorkflowObservationRuntime,
+	into: ObservedEvent[],
+	recording: () => boolean = () => true,
+): void {
 	runtime.listeners.add((event: WorkflowRuntimeEvent) => {
-		if (event.kind !== "lifecycle") return;
+		if (event.kind !== "lifecycle" || !recording()) return;
 		const { target, attribution, delivery, rootRunId } = event.event;
 		into.push({ target, attribution, delivery, rootRunId });
 	});
@@ -113,6 +119,11 @@ const RUN_STATUSES: readonly RunStatus[] = ["completed", "failed", "cancelled", 
 const STAGE_STATUSES: readonly StageStatus[] = ["pending", "running", "completed", "failed", "skipped"];
 const TOOL_END_STATUSES: readonly ToolNodeStatus[] = ["completed", "failed", "cached", "cancelled"];
 
+/** Prompt ids are unique per run and stage but recur within them, as a reopened prompt does after a resume. */
+function prompt(id: string): PendingPrompt {
+	return { id, kind: "input", message: id, createdAt: 1 };
+}
+
 /** Applies one random store mutation of the kinds a workflow run produces. */
 function mutate(
 	store: Store,
@@ -125,7 +136,7 @@ function mutate(
 	const target = pick(runs);
 	const stage = target === undefined ? undefined : pick(target.stages);
 	const tool = target === undefined ? undefined : pick(target.toolNodes);
-	const op = Math.floor(next() * 16);
+	const op = Math.floor(next() * 22);
 	const id = `n${Math.floor(next() * 1e9)}`;
 	switch (op) {
 		case 0:
@@ -233,26 +244,110 @@ function mutate(
 				for (let index = 0; index < 3; index++) mutate(store, live, oracle, next);
 			});
 			return;
+		case 16:
+			if (target !== undefined && stage !== undefined && stage.pendingPrompt === undefined) {
+				// Executors open a stage prompt on the stage they registered, then republish it.
+				stage.pendingPrompt = prompt(`p-${target.id}-${stage.id}-${Math.floor(next() * 2)}`);
+				store.recordStageStart(target.id, stage);
+			}
+			return;
+		case 17:
+			if (target !== undefined && stage?.pendingPrompt !== undefined) {
+				stage.pendingPrompt = undefined;
+				store.recordStageStart(target.id, stage);
+			}
+			return;
+		case 18:
+			if (target !== undefined) {
+				const promptOp = Math.floor(next() * 4);
+				if (promptOp === 0 && stage !== undefined)
+					store.recordStagePendingPrompt(
+						target.id,
+						stage.id,
+						prompt(`p-${target.id}-${stage.id}-${Math.floor(next() * 2)}`),
+					);
+				else if (promptOp === 1 && stage?.pendingPrompt !== undefined)
+					store.resolveStagePendingPrompt(target.id, stage.id, stage.pendingPrompt.id, "answer");
+				else if (promptOp === 2)
+					store.recordPendingPrompt(target.id, prompt(`q-${target.id}-${Math.floor(next() * 2)}`));
+				else if (target.pendingPrompt !== undefined)
+					store.resolvePendingPrompt(target.id, target.pendingPrompt.id, "answer");
+			}
+			return;
+		case 19:
+			// recordRunExecutionState ignores an ended run, which would leave the in-place change unpublished.
+			if (target !== undefined && target.endedAt === undefined) {
+				// A run-level prompt changed in place, published by a run-scoped store change.
+				target.pendingPrompt =
+					target.pendingPrompt === undefined ? prompt(`q-${target.id}-${Math.floor(next() * 2)}`) : undefined;
+				store.recordRunExecutionState(target.id, { phase: "executing" });
+			}
+			return;
+		case 20:
+		case 21:
+			if (target !== undefined) {
+				// Resume replaces the run with a rebuilt snapshot: fewer stages, some prompts kept, some reopened.
+				const keep = (): boolean => next() < 0.6;
+				const reopen = (current: PendingPrompt | undefined, id: string): PendingPrompt | undefined => {
+					const choice = next();
+					if (choice < 0.4) return current === undefined ? undefined : { ...current };
+					if (choice < 0.7) return prompt(id);
+					return undefined;
+				};
+				live.startRun(target.id);
+				oracle.startRun(target.id);
+				store.recordRunStart({
+					...target,
+					status: next() < 0.5 ? target.status : "running",
+					stages: target.stages.filter(keep).map((kept) => {
+						const { pendingPrompt, ...rest } = kept;
+						const reopened = reopen(pendingPrompt, `p-${target.id}-${kept.id}-${Math.floor(next() * 2)}`);
+						return {
+							...rest,
+							toolEvents: [],
+							...(next() < 0.3 ? { status: "pending" as const } : {}),
+							...(reopened !== undefined ? { pendingPrompt: reopened } : {}),
+						};
+					}),
+					toolNodes: target.toolNodes.filter(keep).map((node) => ({ ...node })),
+					pendingPrompt: reopen(target.pendingPrompt, `q-${target.id}-${Math.floor(next() * 2)}`),
+				});
+			}
+			return;
 	}
 }
 
 test("run-scoped observation emits exactly what a full walk of every run emits", () => {
 	let compared = 0;
+	let promptsOpened = 0;
 	for (let seed = 1; seed <= 200; seed++) {
 		const store = createStore();
 		const live = workflowObservationRuntime(store);
 		const oracle = new FullWalkObservationRuntime(() => store.runs());
 		const observed: ObservedEvent[] = [];
 		const expected: ObservedEvent[] = [];
-		recordLifecycle(live, observed);
+		// Prompt answers and cancellations are emitted directly by the store, not by capture, so only capture is compared.
+		let capturing = false;
+		const capture = live.capture.bind(live);
+		live.capture = (changes?: readonly WorkflowObservationChange[]) => {
+			capturing = true;
+			try {
+				capture(changes);
+			} finally {
+				capturing = false;
+			}
+		};
+		recordLifecycle(live, observed, () => capturing);
 		recordLifecycle(oracle, expected);
 		store.subscribeInvalidation(() => oracle.capture());
 		const next = random(seed);
 		for (let step = 0; step < 80; step++) mutate(store, live, oracle, next);
 		assert.deepEqual(observed, expected, `seed ${seed}`);
 		compared += expected.length;
+		promptsOpened += expected.filter((event) => event.target.kind === "prompt").length;
 	}
 	assert.ok(compared > 2_000, `only ${compared} lifecycle events compared`);
+	assert.ok(promptsOpened > 500, `only ${promptsOpened} prompt openings compared`);
 });
 
 const CHILDREN = 150;
