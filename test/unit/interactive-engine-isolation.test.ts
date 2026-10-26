@@ -24,6 +24,20 @@ function maximumGap(timestamps: readonly number[]): number {
 }
 
 const REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS = 120_000;
+/** How long the fixture's blocking tool spins in the engine child without yielding. */
+const BLOCKING_TOOL_MS = 5_000;
+/** How long the fixture's extension module evaluation spins in the engine child without yielding. */
+const EXTENSION_INIT_BLOCK_MS = 2_000;
+
+/**
+ * The longest host heartbeat gap a test accepts while the engine child blocks for `blockMs`. A host that ran the
+ * blocked callback, or waited on it synchronously, would miss its heartbeat for that whole block. Ordinary gaps are
+ * scheduling noise, which parallel-suite load (and Windows' synchronous process spawn) stretches past 100 ms but not
+ * to half a block, so half the block separates the two without a fixed wall-clock budget.
+ */
+function hostStallBoundMs(blockMs: number): number {
+	return blockMs / 2;
+}
 
 test.sequential(
 	"the real agent path isolates a blocking extension tool and reports its child PID",
@@ -59,7 +73,11 @@ test.sequential(
 			runtimeExecutable: bunExecutable(),
 			provider: "isolation-fixture",
 			model: "blocking-model",
-			env: { ATOMIC_CODING_AGENT_DIR: join(tempDir, "agent"), ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile },
+			env: {
+				ATOMIC_CODING_AGENT_DIR: join(tempDir, "agent"),
+				ATOMIC_BLOCKING_TOOL_PID_FILE: pidFile,
+				ATOMIC_BLOCKING_TOOL_MS: String(BLOCKING_TOOL_MS),
+			},
 			args: [
 				"--no-session",
 				"--approve", // Explicit consent for the controlled blocking-tool extension.
@@ -101,7 +119,11 @@ test.sequential(
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 		const observedMaximumGap = maximumGap(heartbeatTimes);
-		assert.ok(observedMaximumGap <= 100, `host heartbeat gap ${observedMaximumGap.toFixed(1)} ms exceeded 100 ms`);
+		const stallBound = hostStallBoundMs(BLOCKING_TOOL_MS);
+		assert.ok(
+			observedMaximumGap < stallBound,
+			`host heartbeat gap ${observedMaximumGap.toFixed(1)} ms reached ${stallBound} ms while the tool blocked`,
+		);
 	},
 	REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS,
 );
@@ -209,7 +231,7 @@ test.sequential(
 			runtimeExecutable: bunExecutable(),
 			provider: "isolation-fixture",
 			model: "blocking-model",
-			env: { ATOMIC_BLOCKING_EXTENSION_INIT: "1" },
+			env: { ATOMIC_BLOCKING_EXTENSION_INIT_MS: String(EXTENSION_INIT_BLOCK_MS) },
 			args: [
 				"--no-session",
 				"--no-extensions",
@@ -243,7 +265,12 @@ test.sequential(
 			clearInterval(heartbeat);
 			ticks.push(performance.now());
 		}
-		assert.ok(maximumGap(ticks) <= 100, "host heartbeat stalled during extension initialization");
+		const observedMaximumGap = maximumGap(ticks);
+		const stallBound = hostStallBoundMs(EXTENSION_INIT_BLOCK_MS);
+		assert.ok(
+			observedMaximumGap < stallBound,
+			`host heartbeat stalled during extension initialization: gap ${observedMaximumGap.toFixed(1)} ms reached ${stallBound} ms`,
+		);
 	},
 	REAL_ENGINE_ISOLATION_TEST_TIMEOUT_MS,
 );

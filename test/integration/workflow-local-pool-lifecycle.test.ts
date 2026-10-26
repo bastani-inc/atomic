@@ -25,9 +25,19 @@ import { poolStageOptions } from "../fixtures/pool-stage-options.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS = 120_000;
+/**
+ * One pool's cold start to its child running: its coordinator and worker processes each load the workflow runtime
+ * through jiti, several CPU-seconds apiece, which took about 45 s with the CPU three times oversubscribed.
+ */
+const POOL_COLD_START_BUDGET_MS = 75_000;
+/** What a test keeps of its budget, after its waits give up, to close its pools and report the failure. */
+const LIFECYCLE_CLEANUP_HEADROOM_MS = 15_000;
+/** A restart test cold-starts two pools, the original and the restarted one. */
+const RESTART_WAIT_BUDGET_MS = 2 * POOL_COLD_START_BUDGET_MS;
+const RESTART_TEST_TIMEOUT_MS = RESTART_WAIT_BUDGET_MS + LIFECYCLE_CLEANUP_HEADROOM_MS;
 
 async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
-	const deadline = Date.now() + 60_000;
+	const deadline = Date.now() + POOL_COLD_START_BUDGET_MS;
 	while (!(await predicate())) {
 		if (Date.now() >= deadline) throw new Error("Worker lifecycle condition timed out");
 		await sleep(20);
@@ -448,6 +458,10 @@ test.each([
 ] as const)(
 	"explicit restart from $state admits local resources before child dispatch, cached=$cached (#3869)",
 	async ({ state, cached }) => {
+		// Every wait shares what is left of the test's budget: the restarted pool cold-starts its coordinator and
+		// worker again, which takes tens of seconds under parallel-suite load, and a fixed 30 s run timeout killed
+		// the restarted root before its child finished.
+		const budget = AbortSignal.timeout(RESTART_WAIT_BUDGET_MS);
 		const completed = Promise.withResolvers<void>();
 		const releaseRoot = Promise.withResolvers<void>();
 		let resuming = false;
@@ -470,14 +484,14 @@ test.each([
 					const { session } = await createAgentSession({
 						...options,
 						sessionManager: SessionManager.inMemory(f.directory),
-						resourceAdmissionSignal: AbortSignal.timeout(15_000),
+						resourceAdmissionSignal: budget,
 					});
 					try {
 						const { session: delegated } = await createAgentSession({
 							...options,
 							...session.extensionRunner.createContext().getChildSessionOptions!({ cwd: f.directory }),
 							sessionManager: SessionManager.inMemory(f.directory),
-							resourceAdmissionSignal: AbortSignal.timeout(15_000),
+							resourceAdmissionSignal: budget,
 						});
 						await delegated.dispose();
 						const supervisor = new TaskSupervisor();
@@ -499,7 +513,7 @@ test.each([
 								{
 									taskOwner: { supervisor, owner: opened.value },
 									onData() {},
-									signal: AbortSignal.timeout(15_000),
+									signal: budget,
 								},
 								false,
 							);
@@ -564,7 +578,7 @@ test.each([
 					cwd: f.directory,
 					store: createStore(),
 					durableBackend: backend,
-					signal: AbortSignal.timeout(30_000),
+					signal: budget,
 				},
 			);
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -590,5 +604,5 @@ test.each([
 			removeTempDirectory(f.directory);
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	RESTART_TEST_TIMEOUT_MS,
 );

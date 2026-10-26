@@ -10,6 +10,14 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import * as host from "../../packages/workflows/src/workers/admission-host.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
+/**
+ * Each pooled root forks a real pool coordinator process that loads the workflow runtime through jiti, several
+ * CPU-seconds on an idle machine and about 25 s with the CPU three times oversubscribed. A test's budget is this
+ * per pooled root times the pooled roots it starts, so it grows with that structural cost instead of sharing the
+ * fixed default.
+ */
+const POOLED_ROOT_BUDGET_MS = 45_000;
+
 const definition = workflow({
 	name: "public-pool",
 	description: "",
@@ -146,6 +154,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
 			removeTempDirectory(directory);
 		}
 	},
+	2 * POOLED_ROOT_BUDGET_MS,
 );
 
 test.skipIf(process.platform === "win32")("resume refuses to change an originally unpooled root (#3869)", async () => {
@@ -186,6 +195,7 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
+	2 * POOLED_ROOT_BUDGET_MS,
 );
 
 test.skipIf(process.platform === "win32")(
@@ -212,6 +222,7 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
+	3 * POOLED_ROOT_BUDGET_MS,
 );
 
 test.skipIf(process.platform === "win32")(
@@ -238,4 +249,5 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
+	3 * POOLED_ROOT_BUDGET_MS,
 );

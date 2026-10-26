@@ -6,8 +6,9 @@ import { getKeybindings, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
 import { formatKeyText, keyText } from "../../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
 import { trackDetachedChildPid } from "../../../packages/coding-agent/src/utils/shell.js";
-if (process.env.ATOMIC_BLOCKING_EXTENSION_INIT === "1") {
-	const deadline = performance.now() + 1_000;
+const extensionInitBlockMs = Number(process.env.ATOMIC_BLOCKING_EXTENSION_INIT_MS ?? 0);
+if (extensionInitBlockMs > 0) {
+	const deadline = performance.now() + extensionInitBlockMs;
 	while (performance.now() < deadline) {
 		// Intentionally block module evaluation in the engine child.
 	}
@@ -179,7 +180,7 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 			}
 			const deadline = process.env.ATOMIC_BLOCKING_TOOL_UNTIL_TERMINATED === "1"
 				? Number.POSITIVE_INFINITY
-				: performance.now() + 5_000;
+				: performance.now() + Number(process.env.ATOMIC_BLOCKING_TOOL_MS ?? 5_000);
 			while (performance.now() < deadline) {
 				// Intentionally never yield.
 			}
