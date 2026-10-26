@@ -117,7 +117,8 @@ const REISSUED_ON_RECOVERY = new Set(["ask_user_question"]);
  */
 async function askInterruptedQuestions(session: AgentSession): Promise<void> {
 	const messages = session.sessionManager.buildSessionProjection().messages;
-	const index = messages.findLastIndex((message) => message.role === "assistant");
+	let index = messages.length - 1;
+	while (index >= 0 && messages[index]?.role !== "assistant") index--;
 	const assistant = messages[index] as AssistantMessage | undefined;
 	if (assistant?.stopReason !== "toolUse") return;
 	const later = messages.slice(index + 1);
