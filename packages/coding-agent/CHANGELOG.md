@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `@bastani/atomic` exports `observeProviderRateLimits()`, `providerRateLimitObservations()` and `applyProviderRateLimitObservation()` with the `ProviderRateLimitObservation` type, so another process on the same host can apply the provider and model cooldowns and quota-exhausted marks this process recorded. An applied limit only ever extends the matching provider or model limit and counts no failure ([#4023](https://github.com/bastani-inc/atomic/issues/4023))
+
 ### Fixed
 
 - When the model that picks `auto` models (the router) answers with an HTTP 429 or an exhausted quota (402), the routing error now keeps that status, a rate-limit or quota code and the server's `Retry-After` hint. Before, it reported only `provider request failed`, so a workflow stage whose routing hit a rate limit was blocked as a provider outage. Now it is blocked as a rate limit or exhausted quota. The provider's error text is still never kept ([#4031](https://github.com/bastani-inc/atomic/issues/4031))
@@ -12,6 +16,9 @@
 - Fixed subagents launched with `context: "fork"` finishing instantly as "completed" with the parent's last message as their output. A forked child's history now stops before the parent's in-flight turn that is launching it, so providers that sign thinking no longer reject the child's first request as a modified turn. A child's output now comes only from messages it produced itself, and a child whose own turns all failed, or that ran none, is reported as failed with the provider's error instead of completing with inherited text. A child that completed a turn without final text, such as a tool-only child, still completes ([#3987](https://github.com/bastani-inc/atomic/issues/3987))
 - GitHub Copilot offers fewer models that fail on the first request with `model_not_available_for_integrator`: models enabled during `/login` are offered only if the model list re-read afterwards marks them usable, and an older login without a stored model list re-reads it on the next networked model refresh (until then, including offline, it keeps offering the catalog). Models you define for `github-copilot` in `models.json` stay offered. If Copilot still rejects a model this way, a fallback chain moves on to its next model, and the error reads "<model> isn't available to Atomic's GitHub Copilot integration; pick another model or run /login to refresh the model list" followed by the raw error ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
 - `tool_search` and codemode `searchTools()` rank a tool first when the query is its name, either the full name or the part after a `__` separator (`thread_read` for `mcp__app__thread_read`). Before, a shorter description that shared the name's words could rank above it ([pi #11331](https://github.com/earendil-works/pi/issues/11331))
+- The login dialog opens only web (`http:`/`https:`) sign-in URLs, and no longer prints control characters from sign-in, device-code or info URLs, which could end a terminal hyperlink and send escape sequences to the terminal. The terminal title likewise replaces control characters in session names and extension titles ([pi 89c921d8](https://github.com/earendil-works/pi/commit/89c921d8b56b59e768b26e7f48b6832978119310))
+- A Bedrock `ServiceQuotaExceededException` and a Google error body reporting a per-day quota violation now count as an exhausted quota, so model fallback moves straight to the next model instead of retrying the same one, and a throttled Bedrock request (`ThrottlingException`, shown as `Throttling error: …`) now counts as a rate limit, so its `Retry-After` cools the model down for other requests. The classifier also reads the error code a provider failure diagnostic records.
+- `tool_search` and codemode `searchTools()` now find a tool whose name is made only of stop words (for example `is`) when the query names it; other stop-word-only queries still return nothing.
 
 ## [0.9.45] - 2026-10-25
 

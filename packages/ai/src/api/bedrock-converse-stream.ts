@@ -57,6 +57,7 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -370,6 +371,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			flushOpenBlocks(openBlocks, output);
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
+			output.retryAfterMs =
+				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
 				appendBedrockFailureDiagnostic(output, error, responseRequestId);
 			}

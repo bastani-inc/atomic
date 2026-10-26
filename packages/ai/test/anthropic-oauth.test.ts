@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { Server } from "node:net";
 import { afterEach, describe, it, vi } from "vitest";
 import { anthropicOAuth } from "../src/auth/oauth/anthropic.js";
 import type { AuthEvent, AuthPrompt } from "../src/auth/types.js";
@@ -300,15 +301,8 @@ describe.sequential("Anthropic OAuth", () => {
 		assert.match(await response!.text(), /Signed in to Anthropic\./);
 	});
 
-	it("falls back to a free callback port when the preferred port cannot be bound (#10571)", async () => {
-		const blocker = createServer();
-		await new Promise<void>((resolve, reject) => {
-			blocker.once("error", (error: NodeJS.ErrnoException) => {
-				if (error.code === "EADDRINUSE") resolve();
-				else reject(error);
-			});
-			blocker.listen(53692, "127.0.0.1", resolve);
-		});
+	/** Complete a browser login and require that its callback did not use the preferred port. */
+	async function loginThroughFallbackPort(): Promise<void> {
 		const nativeFetch = globalThis.fetch;
 		let exchangedRedirectUri: string | undefined;
 		vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -318,38 +312,77 @@ describe.sequential("Anthropic OAuth", () => {
 		});
 		let redirectUri = "";
 		let callbackPage: Promise<Response> | undefined;
-		try {
-			const credential = await anthropicOAuth.login({
-				signal: neverAbortedSignal,
-				notify: (event) => {
-					if (event.type !== "auth_url") return;
-					const params = new URL(event.url).searchParams;
-					redirectUri = params.get("redirect_uri") ?? "";
-					const callbackUrl = new URL(redirectUri);
-					assert.equal(callbackUrl.hostname, "localhost");
-					assert.equal(callbackUrl.pathname, "/callback");
-					assert.notEqual(callbackUrl.port, "53692");
-					callbackUrl.hostname = "127.0.0.1";
-					callbackUrl.search = new URLSearchParams({
-						code: "browser-code",
-						state: params.get("state") ?? "",
-					}).toString();
-					callbackPage = nativeFetch(callbackUrl);
-				},
-				prompt: (prompt) => {
-					if (prompt.type === "select") return Promise.resolve("browser");
-					assert.equal(prompt.type, "manual_code");
-					assert.equal(prompt.placeholder, redirectUri);
-					return new Promise((_resolve, reject) => {
-						prompt.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-					});
-				},
+		const credential = await anthropicOAuth.login({
+			signal: neverAbortedSignal,
+			notify: (event) => {
+				if (event.type !== "auth_url") return;
+				const params = new URL(event.url).searchParams;
+				redirectUri = params.get("redirect_uri") ?? "";
+				const callbackUrl = new URL(redirectUri);
+				assert.equal(callbackUrl.hostname, "localhost");
+				assert.equal(callbackUrl.pathname, "/callback");
+				assert.notEqual(callbackUrl.port, "53692");
+				callbackUrl.hostname = "127.0.0.1";
+				callbackUrl.search = new URLSearchParams({
+					code: "browser-code",
+					state: params.get("state") ?? "",
+				}).toString();
+				callbackPage = nativeFetch(callbackUrl);
+			},
+			prompt: (prompt) => {
+				if (prompt.type === "select") return Promise.resolve("browser");
+				assert.equal(prompt.type, "manual_code");
+				assert.equal(prompt.placeholder, redirectUri);
+				return new Promise((_resolve, reject) => {
+					prompt.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+				});
+			},
+		});
+		assert.equal(credential.access, "access");
+		assert.equal(exchangedRedirectUri, redirectUri);
+		assert.equal((await callbackPage)?.status, 200);
+	}
+
+	it("falls back to a free callback port when the preferred port cannot be bound (#10571)", async () => {
+		const blocker = createServer();
+		await new Promise<void>((resolve, reject) => {
+			blocker.once("error", (error: NodeJS.ErrnoException) => {
+				// Either another listener holds the port, or the OS refuses it outright:
+				// Windows reserves excluded port ranges (`netsh int ipv4 show
+				// excludedportrange`) that fail every bind with EACCES. Both leave the
+				// preferred port unbindable, which is the precondition under test.
+				if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve();
+				else reject(error);
 			});
-			assert.equal(credential.access, "access");
-			assert.equal(exchangedRedirectUri, redirectUri);
-			assert.equal((await callbackPage)?.status, 200);
+			blocker.listen(53692, "127.0.0.1", resolve);
+		});
+		try {
+			await loginThroughFallbackPort();
 		} finally {
 			await new Promise<void>((resolve) => blocker.close(() => resolve()));
+		}
+	});
+
+	it("falls back to a free callback port when Windows refuses the preferred port with EACCES", async () => {
+		// Model a Windows excluded port range: every bind of the preferred port fails
+		// with EACCES rather than EADDRINUSE.
+		const listen = Server.prototype.listen;
+		const refusePreferredPort = vi
+			.spyOn(Server.prototype, "listen")
+			.mockImplementation(function (this: Server, ...args: Parameters<Server["listen"]>) {
+				if (args[0] !== 53692) return listen.apply(this, args);
+				const refusal = Object.assign(new Error("listen EACCES: permission denied 127.0.0.1:53692"), {
+					code: "EACCES",
+					syscall: "listen",
+				});
+				process.nextTick(() => this.emit("error", refusal));
+				return this;
+			});
+		try {
+			await loginThroughFallbackPort();
+			assert.ok(refusePreferredPort.mock.calls.some(([port]) => port === 53692));
+		} finally {
+			refusePreferredPort.mockRestore();
 		}
 	});
 });
