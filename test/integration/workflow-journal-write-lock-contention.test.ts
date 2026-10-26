@@ -174,6 +174,7 @@ const VICTIM_LOCK_WAIT_MS = 5_000;
 /** The writers that may commit while one waits: each other process's turn, plus the one already holding the lock. */
 const MAX_COMMITS_AHEAD = 2 * HOGS;
 const FAIRNESS_TEST_TIMEOUT_MS = 120_000;
+const PROGRESS_LOCK_WAIT_MS = 2_000;
 
 async function startHog(path: string, stopPath: string): Promise<SpawnedProcess> {
 	const hog = spawnProcess([process.execPath, HOG_FIXTURE, path, String(HOG_HOLD_MS), stopPath], {
@@ -245,8 +246,9 @@ test(
 		const directory = makeTempDirectory("journal-lock-progress-");
 		const path = join(directory, "journal.sqlite");
 		const stopPath = join(directory, "stop");
-		// The wait is shorter than the time the other writers keep the lock busy in total.
-		const database = await openNodeSqliteDatabase(path, { lockWaitMs: 4 * HOG_HOLD_MS });
+		// Far longer than any one commit holds the lock, even on a loaded machine, and far shorter than the time the
+		// other writers keep the lock busy in total, which is what a deadline blind to their commits measured.
+		const database = await openNodeSqliteDatabase(path, { lockWaitMs: PROGRESS_LOCK_WAIT_MS });
 		const hogs: SpawnedProcess[] = [];
 		try {
 			await database.exec("CREATE TABLE hog(pid INTEGER); CREATE TABLE victim(n INTEGER)");
