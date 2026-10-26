@@ -1280,6 +1280,14 @@ class IntercomBroker {
 							reason: UNCERTAIN_RECEIPT_REASON,
 						});
 					},
+					hold: (waiting, timeoutMs) => {
+						writeMessageIfOpen(waiting.socket, {
+							type: "send_held",
+							messageId: pending.messageId,
+							...(waiting.attemptId === undefined ? {} : { attemptId: waiting.attemptId }),
+							timeoutMs,
+						});
+					},
 				},
 				sender,
 			);
@@ -1697,6 +1705,7 @@ class IntercomBroker {
             refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
+            extendsSaves: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -2172,6 +2181,14 @@ class IntercomBroker {
 				this.multiNode?.received(recipient, clientMessage.messageId);
 				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
 			}
+			break;
+		}
+
+		case "saving": {
+			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid saving message");
+			const recipient = this.sessions.get(currentId);
+			if (recipient?.acknowledgesReceipt === true)
+				this.receipts.extend(clientMessage.messageId, deliveryTargetIdentity(recipient));
 			break;
 		}
 

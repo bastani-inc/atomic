@@ -747,6 +747,9 @@ export function handleBrokerSend(
           expire: (waiting) => {
             write(waiting.socket, { type: "delivery_failed", messageId: message.id, attemptId: waiting.attemptId, reason: UNCERTAIN_RECEIPT_REASON });
           },
+          hold: (waiting, timeoutMs) => {
+            write(waiting.socket, { type: "send_held", messageId: message.id, attemptId: waiting.attemptId, timeoutMs });
+          },
         },
         senderWaiting,
       );

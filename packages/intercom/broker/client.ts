@@ -216,6 +216,8 @@ export class IntercomClient extends EventEmitter {
 	private brokerAnswersStatus = false;
 	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
 	private brokerClaimsWorkflowInvocations = false;
+	/** #3983: the broker of the current registration accepts `saving`. */
+	private brokerExtendsSaves = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -421,6 +423,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
         this.brokerClaimsWorkflowInvocations = false;
+        this.brokerExtendsSaves = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -532,7 +535,8 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
           || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
           || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
-          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)) {
+          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)
+          || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -549,6 +553,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
+        this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -1393,6 +1398,15 @@ export class IntercomClient extends EventEmitter {
 	acknowledgeReceived(messageId: string): void {
 		if (!this.brokerAcknowledgesReceipt) return;
 		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+	}
+
+	/**
+	 * #3983: tell the broker this message is still being saved, so its sender keeps waiting instead of hearing the
+	 * outcome is uncertain. A no-op on a broker that did not advertise `extendsSaves`, or while disconnected.
+	 */
+	reportSaving(messageId: string): void {
+		if (!this.brokerExtendsSaves || !this.socket || this.socket.destroyed) return;
+		writeMessage(this.socket, { type: "saving", messageId });
 	}
 
 	sendPendingStageNotification(
