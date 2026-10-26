@@ -5,7 +5,11 @@ import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-
 import { normalizeContext } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
+	applyProviderRateLimitObservation,
+	observeProviderRateLimits,
+	type ProviderRateLimitObservation,
 	providerCooldownMs,
+	providerRateLimitObservations,
 	providerRateLimitSnapshot,
 	providerRetryHint,
 	providerUnavailableMs,
@@ -227,4 +231,128 @@ test("a late retry hint keeps the model scope its response was recorded with aft
 	recordProviderRateLimit("late-scoped", failure, model.id);
 	assert.equal(providerCooldownMs("late-scoped", "other-claude"), 0);
 	assert.equal(providerRateLimitSnapshot("late-scoped")?.rateLimitCount, 1);
+});
+
+test("a remote limit merges by its later end, keeps its model scope, and counts no failure (#4023)", () => {
+	vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	const now = Date.now();
+	recordProviderRateLimit("shared", { status: 429, retryAfterMs: 10_000, message: "Rate limit reached for m1" }, "m1");
+	assert.equal(
+		applyProviderRateLimitObservation({
+			provider: "shared",
+			model: "m1",
+			kind: "cooldown",
+			untilEpochMs: now + 30_000,
+		}),
+		true,
+	);
+	assert.equal(providerCooldownMs("shared", "m1"), 30_000);
+	assert.equal(providerCooldownMs("shared", "m2"), 0);
+	assert.equal(providerCooldownMs("shared"), 0);
+	// An earlier end never shortens the limit.
+	assert.equal(
+		applyProviderRateLimitObservation({
+			provider: "shared",
+			model: "m1",
+			kind: "cooldown",
+			untilEpochMs: now + 5_000,
+		}),
+		false,
+	);
+	assert.equal(providerCooldownMs("shared", "m1"), 30_000);
+	assert.equal(
+		applyProviderRateLimitObservation({ provider: "shared", kind: "unavailable", untilEpochMs: now + 3_600_000 }),
+		true,
+	);
+	assert.equal(providerUnavailableMs("shared", "m2"), 3_600_000);
+	assert.equal(providerCooldownMs("shared", "m2"), 0);
+	assert.equal(providerRateLimitSnapshot("shared")?.rateLimitCount, 1);
+	// The local backoff did not grow: the next local limit without a hint backs off from the first step.
+	vi.spyOn(Math, "random").mockReturnValue(0);
+	assert.equal(recordProviderRateLimit("shared", { status: 429 }), 500);
+});
+
+test("an expired remote limit is ignored and the current limits list only those still running (#4023)", () => {
+	vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	const now = Date.now();
+	assert.equal(applyProviderRateLimitObservation({ provider: "late", kind: "cooldown", untilEpochMs: now }), false);
+	assert.equal(
+		applyProviderRateLimitObservation({ provider: "late", kind: "cooldown", untilEpochMs: now - 1 }),
+		false,
+	);
+	assert.equal(providerCooldownMs("late"), 0);
+	applyProviderRateLimitObservation({ provider: "listed", model: "m/1", kind: "cooldown", untilEpochMs: now + 1_000 });
+	applyProviderRateLimitObservation({ provider: "listed", kind: "unavailable", untilEpochMs: now + 5_000 });
+	assert.deepEqual(providerRateLimitObservations(), [
+		{ provider: "listed", model: "m/1", kind: "cooldown", untilEpochMs: now + 1_000 },
+		{ provider: "listed", kind: "unavailable", untilEpochMs: now + 5_000 },
+	]);
+	vi.advanceTimersByTime(1_000);
+	assert.deepEqual(providerRateLimitObservations(), [
+		{ provider: "listed", kind: "unavailable", untilEpochMs: now + 5_000 },
+	]);
+});
+
+test("observers hear limits this process records or extends, not remote ones it applies (#4023)", () => {
+	vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	const now = Date.now();
+	const heard: ProviderRateLimitObservation[] = [];
+	const stop = observeProviderRateLimits((observation) => heard.push(observation));
+	try {
+		recordProviderRateLimit(
+			"heard",
+			{ status: 429, retryAfterMs: 30_000, message: "Rate limit reached for m1" },
+			"m1",
+		);
+		recordProviderRateLimit(
+			"heard",
+			{ status: 429, retryAfterMs: 1_000, message: "Rate limit reached for m1" },
+			"m1",
+		);
+		recordProviderRateLimit("heard", { status: 402, retryAfterMs: 60_000 });
+		applyProviderRateLimitObservation({ provider: "heard", kind: "cooldown", untilEpochMs: now + 90_000 });
+		recordProviderRateLimit("ordinary", { status: 500 });
+	} finally {
+		stop();
+	}
+	recordProviderRateLimit("heard", { status: 429, retryAfterMs: 120_000 });
+	assert.deepEqual(heard, [
+		{ provider: "heard", model: "m1", kind: "cooldown", untilEpochMs: now + 30_000 },
+		{ provider: "heard", kind: "unavailable", untilEpochMs: now + 60_000 },
+	]);
+});
+
+test("a throwing limit observer changes no request handling and does not block other observers (#4023)", async () => {
+	vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	const now = Date.now();
+	const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+	const heard: ProviderRateLimitObservation[] = [];
+	const stopThrowing = observeProviderRateLimits(() => {
+		throw new Error("observer failed");
+	});
+	const stopHeard = observeProviderRateLimits((observation) => heard.push(observation));
+	try {
+		const fetcher: typeof fetch = Object.assign(
+			async () =>
+				new Response(JSON.stringify({ error: { message: "Rate limit exceeded for limited-claude" } }), {
+					status: 429,
+					headers: { "Retry-After": "9" },
+				}),
+			globalThis.fetch,
+		);
+		const admission = await admitProviderStream(anthropicModel, { fetch: fetcher }, false);
+		const response = await admission.run(() => admission.options.fetch!("https://example.invalid"));
+		assert.equal(response.status, 429);
+		assert.equal(recordProviderRateLimit("observed-quota", { status: 402, retryAfterMs: 60_000 }), 60_000);
+	} finally {
+		stopThrowing();
+		stopHeard();
+	}
+	assert.equal(providerCooldownMs("anthropic-hints", "limited-claude"), 9000);
+	assert.equal(providerUnavailableMs("observed-quota"), 60_000);
+	assert.deepEqual(heard, [
+		{ provider: "anthropic-hints", model: "limited-claude", kind: "cooldown", untilEpochMs: now + 9000 },
+		{ provider: "observed-quota", kind: "unavailable", untilEpochMs: now + 60_000 },
+	]);
+	assert.equal(debug.mock.calls.length, 1);
 });

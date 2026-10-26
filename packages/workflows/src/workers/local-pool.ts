@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { isBunBinary } from "@bastani/atomic";
+import {
+	applyProviderRateLimitObservation,
+	isBunBinary,
+	observeProviderRateLimits,
+	providerRateLimitObservations,
+} from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import {
@@ -55,6 +60,7 @@ import type { PooledStageHandle } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
+import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
 import type {
@@ -238,6 +244,8 @@ export class LocalWorkerPool {
 		{ readonly opening: Promise<PooledStageHandle | undefined>; holders: number }
 	>();
 	private releaseStageSource?: () => void;
+	/** Stops sending this process's provider and model limits to the pool (#4023). */
+	private stopSharingRateLimits?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
 	constructor(
@@ -713,7 +721,23 @@ export class LocalWorkerPool {
 		const coordinator =
 			this.options.coordinator === "in-process" ? launchCoordinatorInProcess() : launchCoordinatorProcess();
 		this.coordinator = coordinator;
+		// #4023: limits recorded here reach the pool's workers, and theirs reach this process's walks and requests.
+		const outbox = new RateLimitObservationOutbox((observations) =>
+			coordinator.port.send({ kind: "rate-limits", observations }),
+		);
+		const unobserve = observeProviderRateLimits((observation) => outbox.offer(observation));
+		this.stopSharingRateLimits = () => {
+			unobserve();
+			outbox.close();
+		};
+		const current = providerRateLimitObservations();
+		if (current.length > 0) coordinator.port.send({ kind: "rate-limits", observations: current });
 		coordinator.port.onMessage((event) => {
+			if (event.kind === "rate-limits") {
+				// Applied at once: a model request or a fallback walk reads them, not the root's store.
+				for (const observation of event.observations) applyProviderRateLimitObservation(observation);
+				return;
+			}
 			// Every event, replies included, is applied in the order the coordinator sent it.
 			this.inbound = this.inbound.then(() => this.receive(event)).catch(() => {});
 		});
@@ -724,6 +748,7 @@ export class LocalWorkerPool {
 		return coordinator;
 	}
 	private lost(reason: Error): void {
+		this.stopSharingRateLimits?.();
 		this.pids.clear();
 		if (!this.closed) this.failure ??= reason;
 		for (const pending of this.commands.values()) pending.reject(reason);
@@ -916,6 +941,7 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		this.stopSharingRateLimits?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();
