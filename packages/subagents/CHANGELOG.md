@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent whose model is pinned with a thinking suffix (such as `provider/model:low`) no longer shows that suffix as part of its model on its launch and status cards once its session has started; the cards show `provider/model` and the thinking level beside it, as they do before the session starts ([#4009](https://github.com/bastani-inc/atomic/issues/4009))
+
 ## [0.9.44] - 2026-10-25
 
 ### Changed
