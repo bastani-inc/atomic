@@ -98,6 +98,13 @@ export function spawnRpcClientProcess(options: RpcClientProcessOptions): ChildPr
  */
 export const ENGINE_SHUTDOWN_GRACE_MS = 5_000;
 const RPC_CHILD_SHUTDOWN_GRACE_MS = 250;
+/**
+ * How long a force-killed child may take to have its exit reported before stop
+ * declares it unkillable. On Windows SIGTERM and SIGKILL both become
+ * TerminateProcess, which only starts termination, and a loaded runner has
+ * reported such an exit more than 500 ms later.
+ */
+const KILLED_CHILD_EXIT_REPORT_MS = 5_000;
 
 async function exitsWithin(exited: Promise<void>, ms: number): Promise<boolean> {
 	const deadline = new AbortController();
@@ -131,7 +138,7 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 	}
 	if (processTree && child.pid) killProcessTree(child.pid);
 	else child.kill("SIGKILL");
-	if (!(await exitsWithin(exited, 250))) {
+	if (!(await exitsWithin(exited, KILLED_CHILD_EXIT_REPORT_MS))) {
 		throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 	}
 	if (guardianFile) await rm(guardianFile, { force: true });

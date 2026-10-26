@@ -20,8 +20,17 @@ const REQUEST_AUTH_PREPARATION_TIMEOUT_MS = 15_000;
 const FIRST_AUTH_DELAY_MS = 14_000;
 const DEFAULT_AGENT_RETRY_BACKOFF_MS = 14_000;
 
+/**
+ * How long a wait may take for real session-store I/O (lock directories and JSONL
+ * appends) to settle while the fake clock is frozen. Only the fake clock measures
+ * the behaviour under test; this wall-clock bound just turns a genuine stall into
+ * a diagnosable assertion. A loaded Windows runner has taken more than 5 s for one
+ * prompt's store writes, so the bound keeps generous headroom.
+ */
+const IO_SETTLE_HEADROOM_MS = 20_000;
+
 async function waitForIo(condition: () => boolean): Promise<void> {
-	const deadline = performance.now() + 5000;
+	const deadline = performance.now() + IO_SETTLE_HEADROOM_MS;
 	while (!condition() && performance.now() < deadline) await sleep(1);
 	expect(condition()).toBe(true);
 }
