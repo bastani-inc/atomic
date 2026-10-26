@@ -110,6 +110,8 @@ async function step<T>(
 function setGate(path: string, released: 0 | 1): void {
 	const database = new TestSqliteDatabase(path);
 	try {
+		// The pool writes the same journal; wait for its write lock instead of failing on it.
+		database.run("PRAGMA busy_timeout = 30000");
 		database.run(`UPDATE test_live_stage_gate SET released = ${released}`);
 	} finally {
 		database.close();

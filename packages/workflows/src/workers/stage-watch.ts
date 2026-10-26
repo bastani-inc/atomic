@@ -44,14 +44,36 @@ export async function admitStageUserMessage(
 				if (event.type === "message_start" && event.message.role === "user")
 					startedTurn.resolve({ action: "prompt" });
 			});
-	// A busy session takes the text in its mode: a steer steers, anything else follows up.
+	// A busy session takes the text in its mode: a steer steers, anything else follows up. The text is
+	// admitted once it is in the session's queue; the call that queued it may settle much later (a
+	// replacement attempt's session still finishing its startup, say), and consumption is tracked by
+	// the receipts, so admission never waits for the turn.
+	const queuedIn: "steering" | "followUp" = intent === "steer" ? "steering" : "followUp";
+	const queuedAction: StageCommandResult = { action: intent === "steer" ? "steer" : "followUp" };
+	let stopQueueWatch = () => {};
 	const queue = async (): Promise<StageCommandResult> => {
-		if (intent === "steer") {
-			await handle.steer(text);
-			return { action: "steer" };
-		}
-		await handle.followUp(text);
-		return { action: "followUp" };
+		const queued = Promise.withResolvers<StageCommandResult>();
+		const before = handle.queuedUserMessages?.()[queuedIn].filter((entry) => entry === text).length ?? 0;
+		stopQueueWatch = handle.subscribe((event) => {
+			if (event.type !== "queue_update") return;
+			const entries = (event as { readonly steering?: readonly string[]; readonly followUp?: readonly string[] })[
+				queuedIn
+			];
+			if ((entries ?? []).filter((entry) => entry === text).length > before) queued.resolve(queuedAction);
+		});
+		const call = (async (): Promise<StageCommandResult> => {
+			if (intent === "steer") await handle.steer(text);
+			else await handle.followUp(text);
+			return queuedAction;
+		})();
+		tracePooledWatch("worker.deliver.queueing", { intent, before });
+		const admitted = await Promise.race([call, queued.promise]);
+		void call.then(
+			() => tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: true }),
+			(error: Error) =>
+				tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: false, error: error.message }),
+		);
+		return admitted;
 	};
 	// A turn under way, whether or not the stage handle reports it (a replayed turn may not, and
 	// holds the stage's message admission until it ends), takes the text in its mode directly:
@@ -76,6 +98,7 @@ export async function admitStageUserMessage(
 		return await Promise.race([delivery, startedTurn.promise]);
 	} finally {
 		unsubscribe();
+		stopQueueWatch();
 		// A turn this delivery started reports its own failure through the stage; the door has answered.
 		delivery.catch(() => {});
 	}

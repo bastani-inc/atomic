@@ -404,3 +404,42 @@ test("a watch that opens after its reconnect was abandoned is closed, not bound 
 	assert.deepEqual(fake.unwatched, ["watch-2"]);
 	assert.equal(opened.handle.isReconnecting, true);
 });
+
+test("a send its attempt never confirms does not hold later ones: they go, and the next attempt gets it, once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	fake.transport.deliver = (delivery) => {
+		// The trace's replacement: this follow-up's admission never answers on generation 1.
+		if (delivery.text === "FOLLOW" && delivery.watch === "watch-1") {
+			fake.deliveries.push(delivery);
+			return new Promise(() => {});
+		}
+		return deliver(delivery);
+	};
+	// No wait at all: the never-answered send is left unconfirmed at once.
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		[],
+		0,
+	);
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await assert.rejects(handle.followUp("FOLLOW"), /already arrived/);
+	await handle.steer("STEER");
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:FOLLOW", "watch-1:STEER"],
+		"the steer is not held behind the unconfirmed follow-up",
+	);
+	assert.equal(handle.hasPending, false, "an unconfirmed send does not keep the attempt busy");
+	assert.deepEqual(handle.queuedUserMessages().followUp, ["FOLLOW"], "it still shows as pending");
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.slice(2).map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:FOLLOW", "watch-2:STEER"],
+	);
+});

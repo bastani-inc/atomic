@@ -35,6 +35,12 @@ type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
 /** Mirrors the worker's `DELIVERY_RECEIPT_EVENT`, without loading worker code in the root. */
 const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
+/**
+ * How long one send may wait for its attempt to confirm it before later sends go ahead. Admission
+ * answers once text is queued, so this bounds only an attempt that never answers (#3996).
+ */
+export const POOLED_ADMISSION_WAIT_MS = 15_000;
+
 /** Watch ends after which the stage may continue on another attempt; the handle reconnects. */
 const RECONNECTABLE = new Set<WatchEndReason>(["attempt_fenced", "worker_exited", "resync"]);
 
@@ -92,6 +98,11 @@ export interface OutboundEntry {
 	admittedBy?: number;
 	/** The attempt generation whose send failed; that attempt is not asked again. */
 	failedOn?: number;
+	/**
+	 * The attempt generation that did not confirm the send in time. That attempt is not asked again
+	 * (it may still admit it, deduplicated by op); the next one is.
+	 */
+	unconfirmedOn?: number;
 	/** The caller waiting for the first send's outcome. */
 	waiter?: {
 		readonly resolve: (action: StageUserMessageDeliveryAction | undefined) => void;
@@ -152,6 +163,7 @@ export class PooledStageHandle implements StageControlHandle {
 		private readonly close: (watch: WatchId) => void,
 		private readonly transport: Pick<PooledStageTransport, "deliver" | "pause" | "resume">,
 		private readonly outbound: OutboundEntry[] = [],
+		private readonly admissionWaitMs = POOLED_ADMISSION_WAIT_MS,
 	) {
 		this.attempt = attempt;
 		this.adopt(snapshot);
@@ -194,10 +206,7 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	/** Whether text in the outbox still waits for this attempt, or the handle is reconnecting. */
 	get hasPending(): boolean {
-		return (
-			this.reconnecting ||
-			this.outbound.some((entry) => !this.admitted(entry) && entry.failedOn !== this.attempt.generation)
-		);
+		return this.reconnecting || this.outbound.some((entry) => this.sendable(entry));
 	}
 	get messages(): AgentSession["messages"] {
 		return this.settled;
@@ -372,6 +381,12 @@ export class PooledStageHandle implements StageControlHandle {
 		return this.outbound.filter((entry) => entry.failedOn === this.attempt.generation).length;
 	}
 
+	/** Not yet admitted by the current attempt, which has not refused it or left it unconfirmed. */
+	private sendable(entry: OutboundEntry): boolean {
+		const generation = this.attempt.generation;
+		return !this.admitted(entry) && entry.failedOn !== generation && entry.unconfirmedOn !== generation;
+	}
+
 	private admitted(entry: OutboundEntry): boolean {
 		return entry.admittedBy === this.attempt.generation;
 	}
@@ -480,9 +495,7 @@ export class PooledStageHandle implements StageControlHandle {
 			for (;;) {
 				if (this.disposed || this.ended !== undefined || (this.reconnecting && this.rebinding === undefined))
 					return;
-				const entry = this.outbound.find(
-					(candidate) => !this.admitted(candidate) && candidate.failedOn !== this.attempt.generation,
-				);
+				const entry = this.outbound.find((candidate) => this.sendable(candidate));
 				if (entry === undefined) break;
 				// The first new send also waits behind the replay's own prompt, keeping send order.
 				if (this.awaitingTurn) {
@@ -499,7 +512,31 @@ export class PooledStageHandle implements StageControlHandle {
 					const gone = this.watchGone.promise.then(
 						(): Awaited<ReturnType<PooledStageHandle["sendEntry"]>> => ({ ok: false, refusal: "StaleAttempt" }),
 					);
-					result = await Promise.race([this.sendEntry(entry, watch), gone]);
+					const sending = this.sendEntry(entry, watch);
+					// One send its attempt never confirms must not hold every later one: past the bound it
+					// stays unconfirmed (kept for the next attempt, deduplicated by op) and the next goes.
+					let bound: NodeJS.Timeout | undefined;
+					const unconfirmed = new Promise<"unconfirmed">((resolve) => {
+						bound = setTimeout(() => resolve("unconfirmed"), this.admissionWaitMs);
+					});
+					const outcome = await Promise.race([sending, gone, unconfirmed]).finally(() => clearTimeout(bound));
+					if (outcome === "unconfirmed") {
+						tracePooledWatch("root.outbox.unconfirmed", { op: entry.op, watch, generation });
+						entry.unconfirmedOn = generation;
+						entry.waiter?.reject(new PooledStageDeliveryError("Unconfirmed", this.stageName));
+						entry.waiter = undefined;
+						// Its attempt may still admit it; then it counts as admitted there.
+						void sending.then(
+							(late) => {
+								tracePooledWatch("root.outbox.late-settled", { op: entry.op, watch, ok: late.ok });
+								if (late.ok && this.outbound.includes(entry) && this.attempt.generation === generation)
+									entry.admittedBy = generation;
+							},
+							() => {},
+						);
+						continue;
+					}
+					result = outcome;
 				} catch (error) {
 					// The stage refused it, or the outcome is unknown. Either way the caller hears now,
 					// and the next attempt gets it again, deduplicated by its op.
@@ -647,6 +684,7 @@ export async function openPooledStageHandle(
 	stageName: string,
 	onClose: () => void = () => {},
 	outbound: OutboundEntry[] = [],
+	admissionWaitMs = POOLED_ADMISSION_WAIT_MS,
 ): Promise<
 	{ readonly ok: true; readonly handle: PooledStageHandle } | { readonly ok: false; readonly refusal: WatchRefusal }
 > {
@@ -675,6 +713,7 @@ export async function openPooledStageHandle(
 		},
 		transport,
 		outbound,
+		admissionWaitMs,
 	);
 	for (const message of early.splice(0)) handle.receive(message);
 	return { ok: true, handle };

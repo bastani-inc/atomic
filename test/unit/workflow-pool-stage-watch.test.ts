@@ -61,10 +61,13 @@ function delta(text: string, contentIndex = 0): AgentSessionEvent {
 	} as never as AgentSessionEvent;
 }
 
-function airlock() {
+function airlock(options: { readonly generation?: number } = {}) {
 	const registry = createStageControlRegistry();
 	const sent: Sent[] = [];
-	let attempt: { workId: string; generation: number } | undefined = { workId: "work", generation: 1 };
+	let attempt: { workId: string; generation: number } | undefined = {
+		workId: "work",
+		generation: options.generation ?? 1,
+	};
 	const watches = new WorkerStageWatches(
 		registry,
 		() => attempt,
@@ -626,4 +629,47 @@ test("between two turns of the stage's own loop, a steer and a follow-up are que
 		refusal: undefined,
 	});
 	assert.deepEqual(calls, ["steer", "followUp"]);
+});
+
+test("a replacement mid-turn admits a redelivered follow-up and then a steer as soon as each is queued, though queueing calls never settle (#3996)", async () => {
+	const { registry, sent, watches } = airlock({ generation: 2 });
+	const stage = streamingStage("agent");
+	const queues = { steering: [] as string[], followUp: [] as string[] };
+	const publish = () =>
+		stage.emit({ type: "queue_update", steering: [...queues.steering], followUp: [...queues.followUp] } as never);
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: true,
+		queuedUserMessages: () => ({ steering: [...queues.steering], followUp: [...queues.followUp] }),
+		// As on the trace's replacement: the text enters the session's queue, but the stage's call
+		// that queued it waits for the session's startup, which ends only with the replayed turn.
+		steer(text) {
+			queues.steering.push(text);
+			publish();
+			return new Promise(() => {});
+		},
+		followUp(text) {
+			queues.followUp.push(text);
+			publish();
+			return new Promise(() => {});
+		},
+	});
+	watches.serve({
+		kind: "stage-command",
+		commandId: 1,
+		attempt: { workId: "work", generation: 2 },
+		op: "watch",
+		watch: "watch-1" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	assert.deepEqual(await deliver(sent, watches, 2, "op-follow", "followUp", 2), {
+		action: "followUp",
+		refusal: undefined,
+	});
+	assert.deepEqual(await deliver(sent, watches, 3, "op-steer", "steer", 2), { action: "steer", refusal: undefined });
+	assert.deepEqual(queues, { steering: ["text-op-steer"], followUp: ["text-op-follow"] });
 });
