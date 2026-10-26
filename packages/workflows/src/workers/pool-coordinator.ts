@@ -953,6 +953,8 @@ export class PoolCoordinator {
 				// claim it and replay alongside them.
 				const held = slot.work;
 				if (held) this.held.add(held.id);
+				// Set when this exit's cleanup failure fails only its child: the replacement is not an idle-worker crash.
+				let childFailed = false;
 				const cleanup = disconnected
 					.then(() => serial)
 					.then(async () => {
@@ -972,6 +974,7 @@ export class PoolCoordinator {
 								// Its lease stays held for the pool's lifetime: the child never replays alongside those groups.
 								this.quarantined.add(held.id);
 								slot.work = undefined;
+								childFailed = true;
 								this.port.send({ kind: "work-failure", workId: held.id, error: error.message });
 							}
 						} catch (error) {
@@ -995,7 +998,13 @@ export class PoolCoordinator {
 							work !== undefined &&
 							!(await this.queue!.releaseExited(this.lease!, work)) &&
 							(await this.superseded(work));
-						const exhausted = superseded ? false : work ? this.attempts(work) >= 3 : ++this.replacements > 3;
+						// A quarantined child consumes its own work item, so these replacements are bounded by the children
+						// and never count toward the idle-worker crash limit that fails the whole pool.
+						const exhausted = superseded
+							? false
+							: work
+								? this.attempts(work) >= 3
+								: !childFailed && ++this.replacements > 3;
 						if (exhausted) this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})

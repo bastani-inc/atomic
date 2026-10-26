@@ -5,7 +5,9 @@
 //
 // First attempt of the child with input index 0: take a real process permit from the worker's SqlResourceAdmission, bind it to a
 // detached `sleep` process group, record that group, then SIGKILL itself so the group outlives it. With
-// ATOMIC_TEST_ORPHAN_MODE=stall it goes silent instead, so stalled-lease recovery is what stops it.
+// ATOMIC_TEST_ORPHAN_MODE=stall it goes silent instead, so stalled-lease recovery is what stops it. With
+// ATOMIC_TEST_ORPHAN_CHILDREN=N, the first attempt of every child with index below N does the same, recording its
+// group in `orphan-group-<index>` (index 0 keeps `orphan-group`).
 // Its replayed attempt records whether the orphaned group was still alive when the replay was claimed.
 // Every other attempt completes its child at once.
 import { spawn } from "node:child_process";
@@ -18,7 +20,8 @@ import { createJiti } from "jiti";
 
 const start = JSON.parse(process.argv[2]);
 const directory = dirname(start.journalPath);
-const orphanMarker = join(directory, "orphan-group");
+const orphanChildren = Number(process.env.ATOMIC_TEST_ORPHAN_CHILDREN ?? "1");
+const orphanMarker = (index) => join(directory, index === 0 ? "orphan-group" : `orphan-group-${index}`);
 const replayMarker = join(directory, "replay.json");
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 
@@ -82,7 +85,7 @@ async function orphanProcessGroup(work) {
 	const tool = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
 	tool.unref();
 	await release.bindProcess({ kind: "unix-process-group", id: tool.pid });
-	writeFileSync(orphanMarker, String(tool.pid));
+	writeFileSync(orphanMarker(work.inputs.index), String(tool.pid));
 	if (process.env.ATOMIC_TEST_ORPHAN_MODE === "stall") {
 		// The worker stops answering while its tool process group runs; recovery finds its lease expired and stops it.
 		clearInterval(renewal);
@@ -95,7 +98,7 @@ async function orphanProcessGroup(work) {
 
 async function complete(work) {
 	if (work.inputs.index === 0) {
-		const group = Number(readFileSync(orphanMarker, "utf8"));
+		const group = Number(readFileSync(orphanMarker(0), "utf8"));
 		writeFileSync(replayMarker, JSON.stringify({ group, orphanAliveAtReplay: groupAlive(group) }));
 	}
 	const journal = new DatabaseSync(start.journalPath, { readOnly: true, timeout: 60_000 });
@@ -125,7 +128,8 @@ try {
 			await delay(25);
 			continue;
 		}
-		if (work.inputs.index === 0 && !existsSync(orphanMarker)) await orphanProcessGroup(work);
+		if (work.inputs.index < orphanChildren && !existsSync(orphanMarker(work.inputs.index)))
+			await orphanProcessGroup(work);
 		await complete(work);
 	}
 } catch (error) {

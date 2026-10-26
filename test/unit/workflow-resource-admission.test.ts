@@ -335,3 +335,88 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+/** A detached `sleep` process group the kernel reports as existing until the test kills it. */
+function liveGroup() {
+	const leader = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+	const exited = once(leader, "exit");
+	return {
+		group: leader.pid!,
+		async kill() {
+			if (leader.exitCode === null && leader.signalCode === null) {
+				process.kill(-leader.pid!, "SIGKILL");
+				await exited;
+			}
+		},
+	};
+}
+
+const scanOf =
+	(...scans: admissionHost.ProcessGroupScan[]): admissionHost.ProcessGroupScanner =>
+	() =>
+		scans.shift() ?? { members: new Map(), complete: false };
+
+test.skipIf(process.platform === "win32")(
+	"a live process group counts as only zombies only after two complete, identical, non-empty all-zombie scans (#3986)",
+	async () => {
+		const live = liveGroup();
+		try {
+			const zombies = { members: new Map([[live.group, "Z"]]), complete: true };
+			const cases: [string, admissionHost.ProcessGroupScanner, admissionHost.ProcessGroupState][] = [
+				["an empty scan", scanOf({ members: new Map(), complete: true }), "alive"],
+				["a scan with a read failure", scanOf({ members: new Map([[live.group, "Z"]]), complete: false }), "alive"],
+				[
+					"a second scan that finds a member forked during the first",
+					scanOf(zombies, { members: new Map([...zombies.members, [live.group + 1, "S"]]), complete: true }),
+					"alive",
+				],
+				[
+					"a second scan that changes members",
+					scanOf(zombies, { members: new Map([[1, "Z"]]), complete: true }),
+					"alive",
+				],
+				["two stable all-zombie scans", scanOf(zombies, zombies), "zombie"],
+			];
+			for (const [name, scan, expected] of cases)
+				assert.equal(admissionHost.processGroupState(live.group, scan), expected, name);
+			await live.kill();
+			assert.equal(
+				admissionHost.processGroupState(live.group, scanOf()),
+				"gone",
+				"the kernel alone reports a group gone",
+			);
+		} finally {
+			await live.kill();
+		}
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"an empty process scan of a live group never releases its permit (#3986)",
+	async () => {
+		const f = await fixture();
+		const live = liveGroup();
+		const scanProbe = admissionHost.processGroupState;
+		// The kernel still reports the group, but every scan of the process table comes back empty.
+		const probe = vi
+			.spyOn(admissionHost, "processGroupState")
+			.mockImplementation((group) => scanProbe(group, () => ({ members: new Map(), complete: true })));
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		try {
+			const admission = await boundProcessPermit(f, live.group);
+			assert.deepEqual(await admission.reapStoppedProcesses("worker"), [live.group]);
+			assert.deepEqual(
+				(await admission.inspect()).map((row) => row.state),
+				["granted"],
+				"the live group's permit stays quarantined",
+			);
+		} finally {
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+			await live.kill();
+			await f.close();
+		}
+	},
+);

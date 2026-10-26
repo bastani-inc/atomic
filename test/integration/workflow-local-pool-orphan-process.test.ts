@@ -21,6 +21,7 @@ import { testRunId } from "../helpers/run-id.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
+	readDirectorySync,
 	readJson,
 	readTextSync,
 	removeTempDirectory,
@@ -95,8 +96,11 @@ async function openOrphanPool(path: string, options: PoolOptions) {
 
 type PooledChild = Awaited<ReturnType<typeof openOrphanPool>>["child"];
 
-/** The root: runs `children` pooled children; with `settle`, a child failure is recorded instead of failing the root. */
-function orphanRoot(child: PooledChild, children: number, outcomes: ChildOutcome[], settle = true) {
+/**
+ * The root: runs `children` pooled children; with `settle`, a child failure is recorded instead of failing the root.
+ * With `followUp`, one more child (index `children`) runs only after the first `children` settle.
+ */
+function orphanRoot(child: PooledChild, children: number, outcomes: ChildOutcome[], settle = true, followUp = false) {
 	return workflow({
 		name: "pool-orphan-process-root",
 		description: "",
@@ -110,6 +114,8 @@ function orphanRoot(child: PooledChild, children: number, outcomes: ChildOutcome
 				return {};
 			}
 			const settled = await Promise.allSettled(calls);
+			if (followUp)
+				settled.push(...(await Promise.allSettled([ctx.workflow(child, { inputs: { index: children } })])));
 			settled.forEach((outcome, index) => {
 				outcomes.push(
 					outcome.status === "fulfilled"
@@ -122,16 +128,20 @@ function orphanRoot(child: PooledChild, children: number, outcomes: ChildOutcome
 	});
 }
 
+function orphanGroups(directory: string): number[] {
+	return readDirectorySync(directory)
+		.filter((name) => /^orphan-group(-\d+)?$/.test(name))
+		.map((name) => Number(readTextSync(join(directory, name), "utf8")));
+}
+
 function killOrphan(directory: string): void {
-	const orphanMarker = join(directory, "orphan-group");
-	if (!fileExistsSync(orphanMarker)) return;
-	const group = Number(readTextSync(orphanMarker, "utf8"));
-	if (groupAlive(group)) process.kill(-group, "SIGKILL");
+	for (const group of orphanGroups(directory)) if (groupAlive(group)) process.kill(-group, "SIGKILL");
 }
 
 async function runOrphanPool(
 	options: PoolOptions & {
 		readonly children: number;
+		readonly followUp?: boolean;
 		readonly whileRunning?: (pool: RunningPool) => Promise<void>;
 		readonly afterRun: (pool: FinishedPool) => Promise<void>;
 	},
@@ -143,7 +153,7 @@ async function runOrphanPool(
 	const children: ChildOutcome[] = [];
 	try {
 		const execution = run(
-			orphanRoot(child, options.children, children),
+			orphanRoot(child, options.children, children, true, options.followUp),
 			{},
 			{ runId: root, cwd: directory, store: createStore(), durableBackend: backend },
 		);
@@ -288,6 +298,52 @@ test.skipIf(process.platform === "win32")(
 				},
 			});
 		} finally {
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"children whose process groups survive the reap never exhaust the pool's idle-worker retry limit (#3986)",
+	async () => {
+		// Four children in turn each leave a process group that never disappears, on a single worker, with no
+		// completion in between. A fifth, unrelated child is enqueued only after all four have failed.
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		process.env.ATOMIC_TEST_ORPHAN_CHILDREN = "4";
+		try {
+			await runOrphanPool({
+				children: 4,
+				followUp: true,
+				workers: 1,
+				inProcess: true,
+				async afterRun({ directory, path, result, children, pool }) {
+					assert.equal(result.status, "completed", result.error);
+					const groups = orphanGroups(directory);
+					assert.equal(groups.length, 4, "each of the four children left its own process group");
+					for (const outcome of children.slice(0, 4)) {
+						assert.ok(outcome.error instanceof WorkflowInfrastructureError, String(outcome.error));
+						assert.equal(outcome.error.code, "worker_cleanup_unconfirmed");
+					}
+					assert.deepEqual(
+						children[4],
+						{ index: 4, status: "completed" },
+						"the unrelated child is still claimed and completes",
+					);
+					assert.deepEqual(
+						permitStates(path).map(([, state]) => state),
+						["granted", "granted", "granted", "granted"],
+						"every surviving group's permit stays quarantined",
+					);
+					await assert.rejects(pool.close(), /Local worker process cleanup unconfirmed/);
+				},
+			});
+		} finally {
+			delete process.env.ATOMIC_TEST_ORPHAN_CHILDREN;
 			probe.mockRestore();
 			signal.mockRestore();
 			pause.mockRestore();
