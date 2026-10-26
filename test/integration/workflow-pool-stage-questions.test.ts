@@ -23,7 +23,7 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { POOL_QUESTION } from "../fixtures/pool-question-child.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator process and a worker process running a child workflow with an agent stage. */
@@ -192,8 +192,20 @@ test.skipIf(process.platform === "win32")(
 			clock += 1_000;
 			pane.handleInput("\r");
 			assert.equal(broker.peekStagePrompt(target.runId, target.stageId), undefined, "Enter answered the form");
-			await sleep(5000);
-			console.log("DBGS", JSON.stringify(store.runs().map((r) => ({ s: r.status, st: r.stages.map((x) => [x.name, x.status, x.inputRequest?.id]) }))), plain(pane.render(120)).slice(-1200));
+			// The stage then asks whether to move on, as an interactive stage does; that form answers the same way.
+			const ready = target;
+			await untilOrRunEnds(
+				async () => plain(shown.render(120)).includes("Are you ready to move on to the next stage?"),
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			clock += 1_000;
+			shown.handleInput("\r");
+			assert.equal(
+				broker.peekStagePrompt(ready.runId, ready.stageId),
+				undefined,
+				"Enter answered the readiness form",
+			);
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
 			assert.match(String(outcome.result?.text), /answered: .*yes/s);
