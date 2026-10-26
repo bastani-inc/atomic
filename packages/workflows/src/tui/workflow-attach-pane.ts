@@ -21,6 +21,7 @@ import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import { acquirePooledStage } from "../workers/pooled-stage-sources.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
 import { StageChatComposerDrafts } from "./stage-chat-composer-drafts.js";
@@ -30,6 +31,7 @@ import { resolveAttachedStageHandle } from "./workflow-attach-pane-handle.js";
 import type { WorkflowAttachPaneMode, WorkflowAttachPaneOpts } from "./workflow-attach-pane-types.js";
 
 const ENTER_TRANSITION_QUARANTINE_MS = 200;
+const TERMINAL_STAGE_STATUSES = new Set<StageSnapshot["status"]>(["completed", "failed", "skipped"]);
 export class WorkflowAttachPane implements Component {
 	private store: Store;
 	private sessionStore?: WorkflowAttachPaneOpts["sessionStore"];
@@ -56,6 +58,8 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	/** Closes the live view behind the attached chat of a stage on a local worker. */
+	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
 	/** Run id for the currently attached stage chat; graph mode keeps `runId` as the root graph run. */
 	private attachedRunId: string | null = null;
@@ -173,10 +177,24 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 		this.attachedRunId = runId;
 		this.lastAttachedStageId = stageId;
-		const resolution = resolveAttachedStageHandle(this.registry, this.resolvePostMortemHandle, runId, stageId);
-		const { handle, postMortemUnavailableReason } = resolution instanceof Promise ? await resolution : resolution;
-		if (generation !== this.attachmentGeneration || !this.visible) return;
-		this.chatView?.dispose();
+		const stage = this._stageSnapshot(runId, stageId);
+		const resolution = resolveAttachedStageHandle(
+			this.registry,
+			this.resolvePostMortemHandle,
+			runId,
+			stageId,
+			stage?.workerExecution !== undefined && !TERMINAL_STAGE_STATUSES.has(stage.status)
+				? () => acquirePooledStage(this.store, runId, stageId)
+				: undefined,
+		);
+		const { handle, postMortemUnavailableReason, release } =
+			resolution instanceof Promise ? await resolution : resolution;
+		if (generation !== this.attachmentGeneration || !this.visible) {
+			release?.();
+			return;
+		}
+		this._disposeChatView();
+		this.releaseChatHandle = release ?? null;
 		let chatView!: StageChatView;
 		chatView = new StageChatView({
 			store: this.store,
@@ -214,13 +232,19 @@ export class WorkflowAttachPane implements Component {
 		this.store.recordStageAttached(runId, stageId, this.visible);
 		this.hostRequestRender?.();
 	}
+	private _disposeChatView(): void {
+		this.chatView?.dispose();
+		const release = this.releaseChatHandle;
+		this.releaseChatHandle = null;
+		release?.();
+	}
 	private _detachFromStage(reason: StageChatDetachReason = "user", metadata: StageChatDetachMetadata = {}): void {
 		this.attachmentGeneration += 1;
 		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
 		}
-		this.chatView?.dispose();
+		this._disposeChatView();
 		this.chatView = null;
 		this.graphView.dispose();
 		this.graphView = this._buildGraphView(this.lastAttachedStageId ?? undefined, this.attachedRunId ?? undefined);
@@ -241,7 +265,7 @@ export class WorkflowAttachPane implements Component {
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
 		}
-		this.chatView?.dispose();
+		this._disposeChatView();
 		this.chatView = null;
 		this.graphView.dispose();
 		this.runId = runId;
@@ -459,7 +483,7 @@ export class WorkflowAttachPane implements Component {
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
 		}
-		this.chatView?.dispose();
+		this._disposeChatView();
 		this.chatView = null;
 		this.graphView.dispose();
 	}

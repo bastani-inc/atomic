@@ -6,7 +6,8 @@
 // checkpoints, the root pending-stage route an Intercom-capable stage takes, and
 // a pooled stage session created and appended to with message entries, some
 // over 100 KB. Every commit is a real pool mutation that the root validates and
-// journals; nothing is short-circuited.
+// journals; nothing is short-circuited. While the root watches its stage (#3996),
+// it streams that stage's session events as a worker's stage watch does.
 //
 // It loads only Node built-ins so that 150 of them stay cheap. It reads the
 // boundary-start checkpoint of its claimed work from the journal, as a real
@@ -31,7 +32,13 @@ const CHECKPOINT_EVENT = "CheckpointRecorded";
 
 let sequence = 0;
 const pending = new Map();
+// The stage this stub runs, once it runs one; a stage watch (#3996) opens on it.
+let watchable;
 process.on("message", (reply) => {
+	if (reply.kind === "stage-command") {
+		watchable?.serve(reply);
+		return;
+	}
 	if (reply.delivery) {
 		process.send({ id: 0, kind: "delivery-ack", deliveryId: reply.delivery.id });
 		return;
@@ -118,6 +125,8 @@ async function perform(work) {
 		activities: 0,
 		maxCommitMs: 0,
 		routeMs: 0,
+		stageEventBatches: 0,
+		stageEvents: 0,
 	};
 	const toolNodes = [];
 	const toolEvents = [];
@@ -280,6 +289,71 @@ async function perform(work) {
 		if (large) stats.largeAppends++;
 	};
 
+	// A watched stage streams like a busy agent turn: a batch of text deltas every
+	// config.stageEventBatchMs, each carrying the growing partial message, as a real worker sends.
+	const watched = new Map();
+	watchable = {
+		serve(command) {
+			const reply = (fields) =>
+				process.send({ id: 0, kind: "stage-command-result", commandId: command.commandId, ...fields });
+			if (command.op === "unwatch") {
+				clearInterval(watched.get(command.watch));
+				watched.delete(command.watch);
+				reply({});
+				return;
+			}
+			if (command.attempt.workId !== work.id || command.runId !== run.runId || command.stageId !== stageId) {
+				reply({ refusal: "StageNotOnWorker" });
+				return;
+			}
+			let seq = 0;
+			let text = "";
+			const partial = () => ({
+				role: "assistant",
+				content: [{ type: "text", text }],
+				api: "openai-completions",
+				provider: "fixture",
+				model: "load-model",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "stop",
+				timestamp: Date.now(),
+			});
+			reply({
+				snapshot: {
+					sessionId,
+					status: "running",
+					isStreaming: true,
+					messages: [],
+					streamingMessage: partial(),
+					pendingToolExecutionEvents: [],
+					queued: { steering: [], followUp: [] },
+					seq,
+				},
+			});
+			watched.set(
+				command.watch,
+				setInterval(() => {
+					const events = [];
+					for (let index = 0; index < config.stageEventsPerBatch; index++) {
+						const delta = `token-${seq} `;
+						text = text.length > config.stagePartialBytes ? delta : text + delta;
+						events.push({
+							seq: ++seq,
+							event: {
+								type: "message_update",
+								message: partial(),
+								assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: partial() },
+							},
+						});
+					}
+					stats.stageEventBatches++;
+					stats.stageEvents += events.length;
+					process.send({ id: 0, kind: "stage-events", watch: command.watch, events });
+				}, config.stageEventBatchMs),
+			);
+		},
+	};
+
 	let renewal;
 	let controlPulse;
 	let report;
@@ -354,6 +428,8 @@ async function perform(work) {
 	}
 	while (phase() !== "finish") await delay(100);
 	clearInterval(heartbeat);
+	for (const timer of watched.values()) clearInterval(timer);
+	watched.clear();
 	await renewal;
 	await controlPulse;
 	await report;
