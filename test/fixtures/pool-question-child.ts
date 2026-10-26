@@ -26,13 +26,17 @@ function text(message: { readonly content?: unknown } | undefined): string {
 		: "";
 }
 
+/** A user message carrying this marker is a follow-up the chat child replies to, instead of asking. */
+export const FOLLOW_UP_MARKER = "follow-up:";
+
 /**
  * A pooled child whose agent stage asks `ask_user_question`, then replies with the tool's result,
  * so a test sees which answer reached the worker. With `afterAnyResult`, the model replies to the
  * latest tool result even when a later message asks it to continue, as a model that does not
- * re-ask an interrupted question does.
+ * re-ask an interrupted question does. With `replyToFollowUps`, a user message carrying
+ * {@link FOLLOW_UP_MARKER} gets `heard <count>x: <text>`, counting that text's user messages.
  */
-function questionChild(name: string, afterAnyResult: boolean) {
+function questionChild(name: string, afterAnyResult: boolean, replyToFollowUps = false) {
 	return workflow({
 		name,
 		description: "Local worker ask_user_question fixture",
@@ -56,15 +60,33 @@ function questionChild(name: string, afterAnyResult: boolean) {
 					},
 				],
 				streamSimple(model, context) {
+					const last = context.messages.at(-1);
 					const result = afterAnyResult
 						? context.messages.findLast((message) => message.role === "toolResult")
-						: context.messages.at(-1)?.role === "toolResult"
-							? context.messages.at(-1)
+						: last?.role === "toolResult"
+							? last
 							: undefined;
-					const asked = result !== undefined;
-					const content: AssistantMessage["content"] = asked
-						? [{ type: "text", text: `answered: ${text(result)}` }]
-						: [{ type: "toolCall", id: "question-call", name: "ask_user_question", arguments: POOL_QUESTION }];
+					const followUp =
+						replyToFollowUps && last?.role === "user" && text(last).includes(FOLLOW_UP_MARKER) ? text(last) : undefined;
+					const asked = result !== undefined || followUp !== undefined;
+					const content: AssistantMessage["content"] =
+						followUp !== undefined
+							? [
+									{
+										type: "text",
+										text: `heard ${context.messages.filter((message) => message.role === "user" && text(message) === followUp).length}x: ${followUp}`,
+									},
+								]
+							: asked
+								? [{ type: "text", text: `answered: ${text(result)}` }]
+								: [
+										{
+											type: "toolCall",
+											id: replyToFollowUps ? `question-call-${context.messages.length}` : "question-call",
+											name: "ask_user_question",
+											arguments: POOL_QUESTION,
+										},
+									];
 					const message: AssistantMessage = {
 						role: "assistant",
 						api: model.api,
@@ -98,3 +120,6 @@ export const child = questionChild("pool-question-child", false);
 
 /** Replies to an interrupted question's result instead of asking again. */
 export const noReaskChild = questionChild("pool-question-no-reask-child", true);
+
+/** Asks again after each user message, except a follow-up, which it answers. */
+export const chatChild = questionChild("pool-question-chat-child", false, true);

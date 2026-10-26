@@ -627,7 +627,9 @@ export class LocalWorkerPool {
 		let answered: { readonly value: unknown } | undefined;
 		let failure: Error | undefined;
 		try {
-			const execute = atomic.createAskUserQuestionToolDefinition().execute;
+			const execute = atomic.createAskUserQuestionToolDefinition({
+				chatAsOption: question.kind === "readiness_gate",
+			}).execute;
 			if (execute === undefined) return true;
 			const context = {
 				hasUI: true,

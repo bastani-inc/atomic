@@ -1,4 +1,5 @@
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/pi-ai/compat";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import {
 	dismissProtectedStreamingCustomMessage,
@@ -142,14 +143,25 @@ async function askInterruptedQuestions(session: AgentSession): Promise<void> {
 			toolName: call.name,
 			args: call.arguments,
 		});
-		const result = await tool.execute(call.id, call.arguments, sessionLifetime(session));
+		let result: AgentToolResult;
+		let isError = false;
+		try {
+			result = await tool.execute(call.id, call.arguments, sessionLifetime(session));
+		} catch (error) {
+			if (isClosing(session)) return;
+			result = {
+				content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+				details: undefined,
+			};
+			isError = true;
+		}
 		if (isClosing(session)) return;
 		session._handleAgentEvent({
 			type: "tool_execution_end",
 			toolCallId: call.id,
 			toolName: call.name,
 			result,
-			isError: false,
+			isError,
 		});
 		const message: ToolResultMessage = {
 			role: "toolResult",
@@ -157,7 +169,7 @@ async function askInterruptedQuestions(session: AgentSession): Promise<void> {
 			toolName: call.name,
 			content: result.content,
 			details: result.details,
-			isError: false,
+			isError,
 			timestamp: Date.now(),
 		};
 		session._handleAgentEvent({ type: "message_start", message });

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, test, vi } from "vitest";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -21,7 +22,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { POOL_QUESTION } from "../fixtures/pool-question-child.js";
+import { FOLLOW_UP_MARKER, POOL_QUESTION } from "../fixtures/pool-question-child.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
@@ -216,6 +217,117 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"a pooled stage's readiness gate offers Chat about this without an editor, as an in-process gate does, and a follow-up typed in the stage composer reaches the stage once (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-readiness-chat-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "chatChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "chatChild" }],
+		});
+		const store = createStore();
+		const broker = new StageUiBroker(store);
+		const rootRunId = testRunId("pool-stage-readiness-chat");
+		let pane: WorkflowAttachPane | undefined;
+		let clock = 0;
+		const UP = "\x1b[A";
+		const DOWN = "\x1b[B";
+		const followUp = `${FOLLOW_UP_MARKER} also update the changelog`;
+		try {
+			const execution = engineRun(
+				parentOf(child),
+				{},
+				{
+					runId: rootRunId,
+					cwd: directory,
+					store,
+					durableBackend: backend,
+					stageUiBroker: broker,
+					usePromptNodesForUi: true,
+				},
+			);
+			let target: { runId: string; stageId: string } | undefined;
+			await untilOrRunEnds(
+				async () => {
+					for (const candidate of store.runs())
+						for (const stage of candidate.stages)
+							if (stage.inputRequest !== undefined && stage.workerExecution !== undefined)
+								target = { runId: candidate.id, stageId: stage.id };
+					return target !== undefined;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(target !== undefined);
+			const { runId, stageId } = target;
+			pane = new WorkflowAttachPane({
+				store,
+				graphTheme: deriveGraphTheme({}),
+				runId: rootRunId,
+				stageControlRegistry: createStageControlRegistry(),
+				stageUiBroker: broker,
+				onClose: () => {},
+				piTui: { requestRender: () => {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI,
+				piTheme: theme,
+				piKeybindings: new KeybindingsManager({}),
+				now: () => clock,
+			});
+			pane.retarget(rootRunId, stageId, runId);
+			const shown = pane;
+			const showsForm = (question: string) =>
+				untilOrRunEnds(
+					async () =>
+						broker.peekStagePrompt(runId, stageId) !== undefined && plain(shown.render(120)).includes(question),
+					execution,
+					CONDITION_TIMEOUT_MS,
+				);
+			// Keys go to a form a moment after it opens.
+			const press = (...keys: string[]) => {
+				clock += 1_000;
+				for (const key of keys) shown.handleInput(key);
+			};
+			const QUESTION = "Ship the release from the worker?";
+			const READY = "Are you ready to move on to the next stage?";
+			await showsForm(QUESTION);
+			press("\r");
+			await showsForm(READY);
+			// Up from the first option focuses "Chat about this"; as in-process, it is a choice, not an editor.
+			press(UP, ..."hold on");
+			assert.doesNotMatch(plain(shown.render(120)), /hold on/, "the readiness gate's chat row takes no text");
+			press("\r");
+			// The stage stays and chats: it asks again, and the next gate takes "I have more to explore".
+			await showsForm(QUESTION);
+			press("\r");
+			await showsForm(READY);
+			press(DOWN, "\r");
+			await untilOrRunEnds(
+				async () => broker.peekStagePrompt(runId, stageId) === undefined,
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			// The follow-up goes through the stage's own composer.
+			press(...followUp, "\r");
+			const outcome = await execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.equal(String(outcome.result?.text), `heard 1x: ${followUp}`);
+		} finally {
+			pane?.dispose();
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
 	"an ask_user_question pending when its worker dies is asked again on the replacement, and its one answer reaches the stage (#3996)",
 	async () => {
 		const directory = makeTempDirectory("pool-stage-question-kill-");
@@ -285,6 +397,87 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
 			assert.match(String(outcome.result?.text), /answered: .*no/s);
 			assert.doesNotMatch(String(outcome.result?.text), /interrupted/);
+		} finally {
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"an ask_user_question asked again on the replacement whose form host fails records that failure as the call's result, and the stage goes on (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-question-kill-reject-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "noReaskChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "noReaskChild" }],
+		});
+		const store = createStore();
+		const shown = Promise.withResolvers<void>();
+		const hostFails = Promise.withResolvers<never>();
+		let requests = 0;
+		/** A form host that stays open until the test fails it. */
+		class FailingBroker extends StageUiBroker {
+			override requestCustomUi<T>(): Promise<T> {
+				requests++;
+				shown.resolve();
+				return hostFails.promise;
+			}
+		}
+		try {
+			const execution = engineRun(
+				parentOf(child),
+				{},
+				{
+					runId: testRunId("pool-stage-question-kill-reject"),
+					cwd: directory,
+					store,
+					durableBackend: backend,
+					stageUiBroker: new FailingBroker(store),
+				},
+			);
+			await Promise.race([
+				shown.promise,
+				execution.then((outcome) => assert.fail(`the run ended first: ${JSON.stringify(outcome)}`)),
+			]);
+			const [worker] = pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// The replacement asks the same question again; then the root's form host fails.
+			await untilOrRunEnds(
+				async () =>
+					store
+						.runs()
+						.some((candidate) =>
+							candidate.stages.some(
+								(stage) =>
+									(stage.workerExecution?.generation ?? 0) > 1 && stage.inputRequest?.id === "question-call",
+							),
+						),
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			hostFails.reject(new Error("the replacement's form host failed"));
+			// Explicit: the run settles on its own; a stage whose session the failure disposed does not.
+			const outcome = await Promise.race([
+				execution,
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("the run did not settle")), CONDITION_TIMEOUT_MS).unref(),
+				),
+			]);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.text), /answered: .*the replacement's form host failed/s);
+			assert.equal(requests, 1, "the failed form is not shown again");
 		} finally {
 			await pool.close();
 			await backend.close();
