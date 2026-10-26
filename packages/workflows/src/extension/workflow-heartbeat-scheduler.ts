@@ -498,6 +498,13 @@ export function installWorkflowHeartbeatScheduler(
 	const scheduleWorkflowHeartbeats = (
 		run: WorkflowHeartbeatRun,
 		intervalMinutes: number,
+	): WorkflowHeartbeatScheduleResult => scheduleWorkflowHeartbeatsAt(run, intervalMinutes, now());
+
+	/** Schedule from `at`, the time the caller already decided against. */
+	const scheduleWorkflowHeartbeatsAt = (
+		run: WorkflowHeartbeatRun,
+		intervalMinutes: number,
+		at: number,
 	): WorkflowHeartbeatScheduleResult => {
 		state.scheduled.delete(run.id);
 		// A resolved interval of 0 creates no timer and no schedule record at all.
@@ -505,7 +512,7 @@ export function installWorkflowHeartbeatScheduler(
 		if (run.status !== "running") return { kind: "disabled" };
 		// Recovery and resume both land here: the floor is `now`, so missed
 		// boundaries are skipped rather than replayed.
-		const floor = Math.max(now(), state.lastEnqueuedAt.get(run.id) ?? Number.NEGATIVE_INFINITY);
+		const floor = Math.max(at, state.lastEnqueuedAt.get(run.id) ?? Number.NEGATIVE_INFINITY);
 		const anchorAt = resolveAnchorAt(run);
 		const scheduledAt = nextWorkflowHeartbeatBoundary(anchorAt, intervalMinutes, floor);
 		if (scheduledAt === undefined) return { kind: "disabled" };
@@ -576,6 +583,9 @@ export function installWorkflowHeartbeatScheduler(
 	const refresh = (): void => {
 		if (!active || typeof send !== "function") return;
 		const snapshot = readGraphStoreSnapshot(options.store);
+		// One clock reading for the whole pass: a boundary that passes between the owed check and the
+		// re-derivation below would otherwise be skipped as already missed.
+		const at = now();
 		const observed = new Set<string>();
 		for (const run of snapshot.runs) {
 			if (!isTopLevelWorkflowRun(run)) continue;
@@ -606,14 +616,14 @@ export function installWorkflowHeartbeatScheduler(
 			// `intervalMinutes` captured when it was derived, so a workflow reload in
 			// that window does not retro-fit a new cadence onto an owed boundary.
 			const owed = state.scheduled.get(run.id);
-			if (owed !== undefined && owed.scheduledAt <= now()) continue;
+			if (owed !== undefined && owed.scheduledAt <= at) continue;
 			const launched = readLaunchRecord(run.id);
 			const intervalMinutes = resolveRunIntervalMinutes(state, options.resolveIntervalMinutes, run, launched);
 			if (intervalMinutes === undefined) {
 				state.scheduled.delete(run.id);
 				continue;
 			}
-			scheduleWorkflowHeartbeats(run, intervalMinutes);
+			scheduleWorkflowHeartbeatsAt(run, intervalMinutes, at);
 		}
 		// A run that vanished from the store — cleared session state, a discarded
 		// graph — owns nothing either. The sweep covers every per-run field, not

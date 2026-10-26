@@ -1132,6 +1132,41 @@ describe("workflow heartbeat pause, restart, and terminal guards", () => {
 		harness.scheduler.dispose();
 	});
 
+	test("a boundary that passes while a refresh is running is delivered, not skipped", async () => {
+		const runId = testRunId("heartbeat-boundary-during-refresh");
+		const store = createStore();
+		startRun(store, runId);
+		let readCostMs = 0;
+		let clock: TestClock | undefined;
+		// A durable anchor read that takes time, as a real backend read does.
+		const anchorStore: WorkflowHeartbeatAnchorStore = {
+			readAnchorAt() {
+				clock?.advanceWithoutFiring(clock.current + readCostMs);
+				return undefined;
+			},
+			recordAnchorAt: async () => false,
+		};
+		const harness = installHarness({ store, defaultInterval: 1, anchorStore });
+		clock = harness.clock;
+		const boundary = STARTED_AT + MINUTE_MS;
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, boundary);
+
+		// Timers can fire about 1 ms before their deadline by the wall clock. The early wake-up
+		// finds nothing due and refreshes, and the boundary passes during that refresh.
+		harness.clock.advanceWithoutFiring(boundary - 1);
+		readCostMs = 2;
+		const [wakeUp] = harness.clock.live();
+		assert.ok(wakeUp !== undefined, "the boundary's wake-up is armed");
+		harness.clock.timers.delete(wakeUp.id);
+		wakeUp.handler();
+		readCostMs = 0;
+
+		assert.equal(harness.state.scheduled.get(runId)?.scheduledAt, boundary, "the boundary is kept, not advanced");
+		harness.clock.advanceBy(10);
+		assert.deepEqual(boundaries(harness.sent), [boundary], "the boundary is delivered");
+		harness.scheduler.dispose();
+	});
+
 	test("dispose clears the armed wake-up and stops the cadence", async () => {
 		const runId = testRunId("heartbeat-dispose");
 		const store = createStore();
