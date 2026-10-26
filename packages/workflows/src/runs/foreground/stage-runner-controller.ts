@@ -229,6 +229,14 @@ class StageSessionCreationCancelled extends Error {
 	}
 }
 
+/**
+ * Options for a resume message that replaces a paused prompt's text. The message is the
+ * operator's own text, so it is read literally, as an idle stage's resume message is sent.
+ */
+function resumeMessageOptions(sdkOptions: PromptOptions | undefined): PromptOptions {
+	return { ...sdkOptions, expandPromptTemplates: false };
+}
+
 function stageUserMessageText(message: StageSessionRuntime["messages"][number]): string | undefined {
 	if (message.role !== "user") return undefined;
 	if (typeof message.content === "string") return message.content;
@@ -766,7 +774,11 @@ export class StageSessionController {
 				const candidate = { id: workflowModelId(value) ?? "default", value };
 				this.beginAttemptUsage(activeSession);
 				try {
-					await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+					await this.promptWithThrownErrorRetry(
+						activeSession,
+						resumedText ?? text,
+						resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions),
+					);
 				} catch (error) {
 					await this.handleCandidateFailure(error, candidate, [candidate], 0);
 					throw error;
@@ -792,7 +804,11 @@ export class StageSessionController {
 				const activeSession = await this.ensureSession(consumer);
 				const resumedText = this.pendingCreationResumeMessage;
 				this.pendingCreationResumeMessage = undefined;
-				await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+				await this.promptWithThrownErrorRetry(
+					activeSession,
+					resumedText ?? text,
+					resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions),
+				);
 				this.artifactCapture.settleAttempt(true);
 			} catch (error) {
 				this.artifactCapture.settleAttempt(false);
@@ -813,8 +829,14 @@ export class StageSessionController {
 		const resumedText = this.pendingCreationResumeMessage;
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
+		let promptOptions = resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions);
+		const useResumeMessage = (message: string | undefined): void => {
+			if (message === undefined) return;
+			promptText = message;
+			promptOptions = resumeMessageOptions(sdkOptions);
+		};
 		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
-		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates, walk)) return;
+		if (await this.tryResumeCurrentSession(promptText, promptOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
 		// prompt, so every session the walk prompts from here receives the caller's
@@ -833,13 +855,13 @@ export class StageSessionController {
 					throw error;
 				}
 				index = this.activeCandidateIndex ?? index;
-				promptText = this.pendingCreationResumeMessage ?? promptText;
+				useResumeMessage(this.pendingCreationResumeMessage);
 				this.pendingCreationResumeMessage = undefined;
 			}
 			const readyIndex = await this.selectReadyCandidate(candidates, walk, index);
 			if (readyIndex === undefined) return;
 			index = readyIndex;
-			promptText = this.pendingCreationResumeMessage ?? promptText;
+			useResumeMessage(this.pendingCreationResumeMessage);
 			this.pendingCreationResumeMessage = undefined;
 			const candidate = candidates[index]!;
 			try {
@@ -854,7 +876,7 @@ export class StageSessionController {
 							);
 				if (isSessionCreationPauseResult(created)) {
 					if (created.resumeMessage === undefined) return;
-					promptText = created.resumeMessage;
+					useResumeMessage(created.resumeMessage);
 					continue;
 				}
 				const activeSession = created;
@@ -865,7 +887,7 @@ export class StageSessionController {
 				const { terminalScanStartIndex } = await this.promptWithThrownErrorRetry(
 					activeSession,
 					promptText,
-					sdkOptions,
+					promptOptions,
 				);
 				const terminalFailure = latestTerminalAssistantFailureSince(activeSession.messages, terminalScanStartIndex);
 				if (terminalFailure !== undefined) {
@@ -1370,6 +1392,7 @@ export class StageSessionController {
 	): Promise<{ readonly terminalScanStartIndex: number }> {
 		let retryAttempt = 0;
 		let nextText = text;
+		let nextOptions = sdkOptions;
 		let retryAdmittedPrompt = false;
 		let retainedPrompt: StageSessionRuntime["messages"][number] | undefined;
 		let terminalScanStartIndex: number | undefined;
@@ -1401,6 +1424,7 @@ export class StageSessionController {
 							return { terminalScanStartIndex: activeSession.messages.length };
 						}
 						nextText = outcome.message;
+						nextOptions = resumeMessageOptions(sdkOptions);
 						continue;
 					}
 					// No continuation is possible after all, so the retained prompt
@@ -1409,7 +1433,7 @@ export class StageSessionController {
 					retainedPrompt = undefined;
 					retryAdmittedPrompt = false;
 				}
-				const result = await this.promptWithPauseResume(activeSession, nextText, sdkOptions);
+				const result = await this.promptWithPauseResume(activeSession, nextText, nextOptions);
 				const terminalFailure = latestTerminalAssistantFailureSince(
 					activeSession.messages,
 					result.terminalScanStartIndex,
@@ -1488,6 +1512,7 @@ export class StageSessionController {
 						return { terminalScanStartIndex: activeSession.messages.length };
 					}
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					continue;
 				}
 				if (this.disposed)
@@ -2109,12 +2134,14 @@ export class StageSessionController {
 		sdkOptions: PromptOptions | undefined,
 	): Promise<{ readonly terminalScanStartIndex: number }> {
 		let nextText: string | undefined = initialText;
+		let nextOptions = sdkOptions;
 		while (nextText !== undefined) {
 			const pendingPauseBeforePrompt = this.pauseControl.currentResume();
 			if (pendingPauseBeforePrompt) {
 				const resumed = await pendingPauseBeforePrompt;
 				await resumed.runnerOwnedDeliverySettlement;
 				nextText = resumed.message;
+				nextOptions = resumeMessageOptions(sdkOptions);
 				if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 				continue;
 			}
@@ -2126,13 +2153,14 @@ export class StageSessionController {
 				// A live resume loops here without returning through the outer retry guard.
 				this.checkedSession(activeSession);
 				await this.waitForProvider(this.currentModelValue());
-				await activeSession.prompt(nextText, sdkOptions);
+				await activeSession.prompt(nextText, nextOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
 					const resumed = await pendingPauseAfterPrompt;
 					await resumed.runnerOwnedDeliverySettlement;
 					this.throwUnresolvedContextOverflowIfPresent();
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 					continue;
 				}
@@ -2147,6 +2175,7 @@ export class StageSessionController {
 					await resumed.runnerOwnedDeliverySettlement;
 					this.throwUnresolvedContextOverflowIfPresent();
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 					continue;
 				}
@@ -2177,8 +2206,12 @@ export class StageSessionController {
 				await this.disposeCurrentSession(index);
 				return false;
 			}
-			text = this.pendingCreationResumeMessage ?? text;
+			const resumedText = this.pendingCreationResumeMessage;
 			this.pendingCreationResumeMessage = undefined;
+			if (resumedText !== undefined) {
+				text = resumedText;
+				sdkOptions = resumeMessageOptions(sdkOptions);
+			}
 		}
 		this.resumeCurrentSession = false;
 		const resumedSession = this.session;
