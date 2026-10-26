@@ -120,6 +120,27 @@ describe("RpcClient request timeout policy", () => {
 		}
 	});
 
+	test("promptAndWait reports its timeout while the prompt is still unacknowledged", async () => {
+		const client = new RpcClient({ cliPath: writeChildScript(HELD_OPEN_CHILD) });
+		const unhandled: unknown[] = [];
+		const recordUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", recordUnhandled);
+		await client.start();
+		try {
+			// The child never acknowledges the prompt, so only promptAndWait's own
+			// timeout can end the wait, and it must surface as this call's rejection.
+			await expect(client.promptAndWait("never acknowledged", undefined, 50)).rejects.toThrow(
+				/Timeout collecting events/,
+			);
+		} finally {
+			await client.stop();
+			// Let a rejection orphaned by stop() reach the unhandled-rejection hook.
+			await new Promise((resolve) => setImmediate(resolve));
+			process.off("unhandledRejection", recordUnhandled);
+		}
+		expect(unhandled).toEqual([]);
+	});
+
 	test("waits for a queue resume that outlasts the deadline and clears the paused state (#3493)", async () => {
 		const client = new RpcClient({
 			cliPath: writeChildScript(DELAYED_RESUME_CHILD),
