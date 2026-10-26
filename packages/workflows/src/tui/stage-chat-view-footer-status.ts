@@ -60,7 +60,8 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");
-	const meta = sid ? `session ${sid}` : "";
+	const onLocalWorker = ctx.handle?.placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
+	const meta = [onLocalWorker ? "on local worker" : "", sid ? `session ${sid}` : ""].filter(Boolean).join(" · ");
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 
@@ -79,6 +80,10 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	if (visibleWidth(meta) + 1 <= width) {
 		lines.push(`${" ".repeat(Math.max(0, width - visibleWidth(meta) - 1))}${paint(meta, t.dim)} `);
 		return lines;
+	}
+	if (onLocalWorker) {
+		const placement = `   ${paint("on local worker", t.dim)}`;
+		lines.push(placement + " ".repeat(Math.max(0, width - visibleWidth(placement))));
 	}
 	for (const row of wrapIdentifierLines(sid, width, "   ", "   ")) {
 		const value = `${row.prefix}${paint(row.chunk, t.dim)}`;

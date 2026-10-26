@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, test, vi } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -458,6 +459,43 @@ describeModelRegistry((context) => {
 				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
 				expect(availableIds()).toEqual([allowed.id]);
+			});
+
+			test("a custom Copilot model from models.json stays offered outside the account model list (#3998)", async () => {
+				writeRawModelsJson({
+					"github-copilot": {
+						models: [
+							{
+								id: "custom-copilot-model",
+								name: "Custom Copilot model",
+								api: "openai-completions",
+								reasoning: false,
+								input: ["text"],
+							},
+						],
+					},
+				});
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const allowed = registry
+					.getAll()
+					.find((model) => model.provider === "github-copilot" && model.id !== "custom-copilot-model");
+				if (!allowed) throw new Error("Expected a built-in GitHub Copilot model");
+				await context.authStorage.modify("github-copilot", async () => ({
+					type: "oauth",
+					refresh: "r",
+					access: "a",
+					expires: Date.now() + 60_000,
+					availableModelIds: [allowed.id],
+				}));
+				await getModelRuntime(registry).refresh({ allowNetwork: false });
+
+				assert.deepEqual(
+					registry
+						.getAvailable()
+						.filter((model) => model.provider === "github-copilot")
+						.map((model) => model.id),
+					[allowed.id, "custom-copilot-model"],
+				);
 			});
 
 			test("a superseded availability pass leaves credential filtering in place", async () => {

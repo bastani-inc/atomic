@@ -1,4 +1,4 @@
-import type { ApiKeyAuth, OAuthAuth } from "./types.ts";
+import type { ApiKeyAuth, OAuthAuth, OAuthCredential } from "./types.ts";
 
 function resolveStoredKeyOrEnv(envVars: readonly string[]): ApiKeyAuth["resolve"] {
 	return async ({ ctx, credential, signal }) => {
@@ -59,6 +59,7 @@ export function lazyOAuth(input: {
 	isSubscription?: boolean;
 	loginLabel?: string;
 	usesCallbackServer?: boolean;
+	needsRefresh?: (credential: OAuthCredential) => boolean;
 	load: () => Promise<OAuthAuth>;
 }): OAuthAuth {
 	let promise: Promise<OAuthAuth> | undefined;
@@ -71,6 +72,7 @@ export function lazyOAuth(input: {
 		isSubscription: input.isSubscription,
 		loginLabel: input.loginLabel,
 		usesCallbackServer: input.usesCallbackServer,
+		...(input.needsRefresh ? { needsRefresh: input.needsRefresh } : {}),
 		login: async (interaction, options) => (await loaded()).login(interaction, options),
 		refresh: async (credential, signal) => (await loaded()).refresh(credential, signal),
 		toAuth: async (credential) => (await loaded()).toAuth(credential),
