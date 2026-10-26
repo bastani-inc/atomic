@@ -129,7 +129,10 @@ export class Bm25Ranker implements ToolRanker {
 					const norm = this.k1 * (1 - this.b + (this.b * lengths[index]) / average);
 					score += ((idf.get(term) ?? 0) * count * (this.k1 + 1)) / (count + norm);
 				}
-				return score > 0 ? [{ name: document.name, score, named: isNameQuery(nameQuery, document.name) }] : [];
+				// A query naming the tool keeps it even when tokenization shares no term with it (`readthread`
+				// for `readThread`).
+				const named = isNameQuery(nameQuery, document.name);
+				return score > 0 || named ? [{ name: document.name, score, named }] : [];
 			})
 			.sort((a, b) => Number(b.named) - Number(a.named) || b.score - a.score)
 			.slice(0, limit)

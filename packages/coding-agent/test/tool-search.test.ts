@@ -118,4 +118,16 @@ test("tool search ranks a tool first when the query is its name (pi#11331)", () 
 		ranker.rank("read", documents, 1).map((match) => match.name),
 		["mcp__app__queue_read"],
 	);
+	// A lowercase query naming a camelCase tool shares no BM25 term with it, but still names it.
+	const camel = [
+		{ name: "mcp__app__queue_read", description: "Read a queued message of this thread." },
+		{ name: "mcp__app__readThread", description: "Read a thread" },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	for (const query of ["readthread", "app__readthread"]) {
+		assert.deepEqual(
+			ranker.rank(query, camel, 1).map((match) => match.name),
+			["mcp__app__readThread"],
+			query,
+		);
+	}
 });
