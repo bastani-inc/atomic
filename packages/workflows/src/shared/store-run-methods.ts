@@ -78,7 +78,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const index = state.runs.findIndex((existing) => existing.id === run.id);
 			if (index === -1) state.runs.push(run);
 			else state.runs[index] = run;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId: run.id });
 		},
 
 		recordRunSummary(runId, summary, summarizedThrough): void {
@@ -93,7 +93,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (run === undefined || run.endedAt !== undefined) return;
 			if (update.phase !== undefined && update.phase !== run.phase) run.phaseStartedAt = Date.now();
 			Object.assign(run, update);
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId });
 		},
 
 		reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean {
@@ -153,7 +153,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
 			}
 			context.rejectAllStagePrompts(runId, run, `atomic-workflows: run ${runId} ended before prompt resolved`);
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId });
 			return true;
 		},
 
