@@ -131,3 +131,20 @@ export function resolveHomeGroup(
 export function workflowInvocationGroupRefusal(invocationGroup: string): string {
 	return `Target workflow run is in a different intercom group; join ${normalizeGroup(invocationGroup)} to send to its stages`;
 }
+
+/**
+ * Refusal for a workflow stage registered outside a run's invocation group: another run's stage,
+ * or an isolated subgroup stage of the same run. Joining never grants it control, so the reason
+ * must not tell it to join.
+ */
+export function workflowStageInvocationRefusal(senderRegistrationGroup: string, invocationGroup: string): string {
+	return `A workflow stage in ${normalizeGroup(senderRegistrationGroup)} cannot send to stages of ${normalizeGroup(invocationGroup)}; joining that group does not grant it control`;
+}
+
+/** The precise refusal for a sender registered in `senderRegistrationGroup` reaching stages of `invocationGroup`. */
+export function workflowInvocationRefusalFor(senderRegistrationGroup: string | undefined, invocationGroup: string): string {
+	const registration = normalizeGroup(senderRegistrationGroup);
+	return registration.startsWith("workflow:") && registration !== normalizeGroup(invocationGroup)
+		? workflowStageInvocationRefusal(registration, invocationGroup)
+		: workflowInvocationGroupRefusal(invocationGroup);
+}
