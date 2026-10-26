@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A workflow stage whose model fallback replaced its session no longer fails the replacement's prompt with `Agent is already processing. Specify streamingBehavior…` when an Intercom message reaches the stage during the swap. Like a fresh stage, the replacement now holds turn-starting messages as context for the stage prompt's turn ([#3982](https://github.com/bastani-inc/atomic/issues/3982))
 - Fixed a `.ts` storage adapter that serves both `sessions.storage` and `workflows.journal` failing to import `@bastani/atomic/workflows` when sessions loaded first; the journal now gets the running Atomic's workflows module ([#3973](https://github.com/bastani-inc/atomic/issues/3973))
 - ES module and TypeScript files a storage adapter imports by relative path now get the running Atomic's `@bastani/atomic/workflows`, `@bastani/atomic/storage`, and `@bastani/atomic`, as the adapter's entry file does. Before, a `.mjs` file or a `.js` file in a `"type": "module"` adapter package could resolve these imports from `node_modules` instead, so errors such as `StaleLeaseError` thrown from it failed Atomic's `instanceof` checks. CommonJS files other than the entry file still resolve these imports from `node_modules` ([#3972](https://github.com/bastani-inc/atomic/issues/3972))
 
