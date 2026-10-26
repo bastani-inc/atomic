@@ -325,7 +325,14 @@ export async function runAgentTask(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
-			...(launch ? { launch } : {}),
+			...(launch
+				? { launch }
+				: heldMessages?.taskExpands &&
+						input.options.resumeSession !== true &&
+						childSession.childSessionId === undefined
+					? // It stopped before its session existed, holding its unread task: only its launch can start it again.
+						{ launch: subagentChildLaunch(input.task, input.intentTask, input.options) }
+					: {}),
 			inherited: subagentChildInheritance(input.options),
 		});
 	};

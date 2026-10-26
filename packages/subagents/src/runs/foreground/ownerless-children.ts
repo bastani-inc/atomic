@@ -143,7 +143,12 @@ export function runOwnerlessChild(input: {
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(held?.messages.length ? { heldMessages: { taskId: launchId, ...held } } : {}),
-			...(queuedLaunch ? { launch: queuedLaunch } : {}),
+			...(queuedLaunch
+				? { launch: queuedLaunch }
+				: held?.taskExpands && input.options.resumeSession !== true && childSession.childSessionId === undefined
+					? // It stopped before its session existed, holding its unread task: only its launch can start it again.
+						{ launch: subagentChildLaunch(input.task, undefined, input.options) }
+					: {}),
 			inherited: subagentChildInheritance(input.options),
 		});
 	};

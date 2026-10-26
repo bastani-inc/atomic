@@ -2710,9 +2710,11 @@ test("a resume's message is delivered as written, whether or not the child had h
 });
 
 test("a held original task the child never read is prompted as its launch would prompt it (#4027)", async () => {
-	for (const taskExpands of [true, false]) {
+	// `taskExpands` absent is a record written before Atomic recorded it: its first held message keeps the handling it
+	// had then, prompted as a task.
+	for (const taskExpands of [true, false, undefined]) {
 		const h = harness();
-		const runId = `heldtask-${taskExpands}`;
+		const runId = `heldtask-${String(taskExpands)}`;
 		const { record } = await h.launch(runId);
 		await h.call({ action: "pause", id: record.childId });
 		const paused = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
@@ -2724,7 +2726,7 @@ test("a held original task the child never read is prompted as its launch would 
 			heldMessages: {
 				taskId: paused.taskId,
 				messages: [unreadTask, "/review src/held.ts"],
-				...(taskExpands ? { taskExpands: true as const } : {}),
+				...(taskExpands === undefined ? {} : { taskExpands }),
 			},
 		});
 		const resumed = await h.call({ action: "resume", id: record.childId });
@@ -2732,10 +2734,66 @@ test("a held original task the child never read is prompted as its launch would 
 		await settled(h, resumedTaskId(resumed));
 		const relaunch = h.runs.at(-1)!;
 		assert.equal(relaunch.task, unreadTask);
-		assert.equal(relaunch.options.resumeTaskLiteral, taskExpands ? undefined : true);
+		assert.equal(relaunch.options.resumeTaskLiteral, taskExpands === false ? true : undefined, String(taskExpands));
 		assert.deepEqual(relaunch.options.resumeFollowUps, [
 			"/review src/held.ts",
 			SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
 		]);
 	}
+});
+
+/** Three children of one run that may run one at a time: index 1 waits for the run's capacity, index 2 is queued. */
+async function capacityWaitingChildren(h: Harness, runId: string): Promise<void> {
+	const schedule = createExecutionScheduler(2);
+	await h.admit(runId, schedule, { runningCapacity: 1 });
+	await h.admit(runId, schedule, { runningCapacity: 1, index: 1 });
+	await h.admit(runId, schedule, { runningCapacity: 1, index: 2 });
+	await h.waitForLatest(`${runId}:0`, (candidate) => candidate.launchLeafId !== undefined);
+}
+
+async function runsOf(h: Harness, runId: string, index: number, count: number): Promise<Harness["runs"]> {
+	const deadline = Date.now() + RECORD_WAIT_MS;
+	for (;;) {
+		const runs = h.runs.filter((run) => run.options.runId === runId && run.options.index === index);
+		if (runs.length >= count || Date.now() >= deadline) return runs;
+		await sleep(10);
+	}
+}
+
+test("a child paused while it waits for its run's capacity, before its session exists, resumes with its task once (#4027)", async () => {
+	const h = harness();
+	await capacityWaitingChildren(h, "capwait");
+	const paused = await h.call({ action: "pause", id: "capwait:1" });
+	assert.notEqual(paused.isError, true, text(paused));
+	const stopped = await h.waitForLatest("capwait:1", (candidate) => candidate.terminalStatus === "paused");
+	assert.equal(stopped.childSessionId, undefined, "it stopped before its session existed");
+	assert.deepEqual(stopped.heldMessages?.messages, [ORIGINAL_TASK], "it holds the task it never read");
+
+	const resumed = await h.call({ action: "resume", id: "capwait:1" });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	// It waits for a slot in its run, as its launch did; pausing the child holding the other slot gives it one.
+	assert.notEqual((await h.call({ action: "pause", id: "capwait:2" })).isError, true);
+	const [, relaunch] = await runsOf(h, "capwait", 1, 2);
+	assert.equal(relaunch?.task, ORIGINAL_TASK, "it starts with its task");
+	assert.equal(relaunch?.options.resumeFollowUps, undefined, "and is not sent its task a second time");
+});
+
+test("a queued child stopped while it waits for its run's capacity is restored with its task once (#4027)", async () => {
+	const h = harness();
+	await capacityWaitingChildren(h, "capqueued");
+	// Pausing the child that holds the second slot dispatches the queued one, which then waits for capacity.
+	assert.notEqual((await h.call({ action: "pause", id: "capqueued:1" })).isError, true);
+	await runsOf(h, "capqueued", 2, 1);
+	await h.closeOwnerAndReopen("session-close");
+	const kept = await h.waitForLatest("capqueued:2", (candidate) => candidate.heldMessages !== undefined);
+	assert.deepEqual(kept.heldMessages?.messages, [ORIGINAL_TASK]);
+
+	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.ok(
+		outcomes.some((outcome) => outcome.kind === "restored" && outcome.record.childId === "capqueued:2"),
+		JSON.stringify(outcomes),
+	);
+	const [, restored] = await runsOf(h, "capqueued", 2, 2);
+	assert.equal(restored?.task, ORIGINAL_TASK);
+	assert.equal(restored?.options.resumeFollowUps, undefined, "its held task is its launch task, not sent again");
 });

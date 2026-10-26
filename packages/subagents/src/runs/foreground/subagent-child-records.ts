@@ -38,18 +38,27 @@ export type SubagentChildOwner =
 /**
  * What a stopped child had queued and not read, as a record keeps it. Resume delivers each message as written, except
  * that a first message flagged `taskExpands` is the child's original task it never read, prompted as a fresh launch
- * prompts it (prompt templates expanded, commands run).
+ * prompts it (prompt templates expanded, commands run). Records written before Atomic recorded the flag have none;
+ * their first held message keeps the handling it had then (see {@link heldTaskExpands}).
  */
 export interface SubagentChildHeldMessages {
 	readonly taskId: string;
 	readonly messages: readonly string[];
-	readonly taskExpands?: true;
+	readonly taskExpands?: boolean;
 }
 
 /** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
 export interface SubagentChildPendingMessages {
 	readonly messages: readonly string[];
-	readonly taskExpands?: true;
+	readonly taskExpands: boolean;
+}
+
+/**
+ * Whether a record's first held message is the child's original task it never read. A record written before Atomic
+ * recorded `taskExpands` keeps the handling resume gave its first held message then: prompted as a task.
+ */
+export function heldTaskExpands(held: SubagentChildHeldMessages): boolean {
+	return held.taskExpands ?? true;
 }
 
 /** A child result's unread messages, if it has any. */
@@ -58,7 +67,7 @@ export function pendingMessagesOfResult(result: {
 	readonly pendingTaskExpands?: boolean;
 }): SubagentChildPendingMessages | undefined {
 	if (!result.pendingMessages?.length) return undefined;
-	return { messages: result.pendingMessages, ...(result.pendingTaskExpands ? { taskExpands: true } : {}) };
+	return { messages: result.pendingMessages, taskExpands: result.pendingTaskExpands === true };
 }
 
 export interface SubagentChildRecord {

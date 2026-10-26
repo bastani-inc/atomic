@@ -36,6 +36,7 @@ import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHol
 import {
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
+	heldTaskExpands,
 	isRestorableSubagentChild,
 	readSubagentChildRecords,
 	recordSubagentChildGone,
@@ -233,7 +234,8 @@ function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResume
 	const held = recorded ? recorded.messages.filter((message) => !continuations.has(message)) : [];
 	// Only an original task the child never read keeps a fresh launch's handling; a held message it already received,
 	// or the resume's own message, is delivered as written whether or not anything was held (#4027).
-	const taskExpands = recorded?.taskExpands === true && held.length > 0 && held[0] === recorded.messages[0];
+	const taskExpands =
+		recorded !== undefined && heldTaskExpands(recorded) && held.length > 0 && held[0] === recorded.messages[0];
 	const [task = prompt, ...followUps] = [...held, prompt, ...(resume?.continuation ? [resume.continuation] : [])];
 	return { task, followUps, taskLiteral: !taskExpands };
 }
@@ -247,11 +249,15 @@ function freshPrompts(
 	launch: SubagentChildLaunch,
 	resume: SubagentChildResumeRequest | undefined,
 ): ResumePrompts {
-	const held = record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	const recorded =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages : undefined;
+	const held = recorded?.messages ?? [];
+	// A child stopped before it read its task holds that task first; its launch prompts it, so it is not sent twice.
+	const heldTask = recorded !== undefined && held[0] === launch.task && heldTaskExpands(recorded);
 	// The child never started: its task is prompted as its original launch would have prompted it.
 	return {
 		task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task,
-		followUps: held,
+		followUps: heldTask ? held.slice(1) : held,
 		taskLiteral: false,
 	};
 }
