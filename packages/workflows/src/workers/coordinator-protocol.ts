@@ -7,7 +7,7 @@ import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
-import type { PooledStageDelivery, SeqEvent, WatchEndReason, WatchId } from "./stage-watch-types.js";
+import type { DeliveryOpId, PooledStageDelivery, SeqEvent, WatchEndReason, WatchId } from "./stage-watch-types.js";
 
 /**
  * Main thread <-> pool coordinator protocol.
@@ -83,6 +83,14 @@ export type CoordinatorCommandBody =
 	| { readonly kind: "stage-unwatch"; readonly watch: WatchId }
 	/** Admits user text into a watched stage at most once per op; answered with a `DeliveryResult`. */
 	| ({ readonly kind: "stage-deliver" } & PooledStageDelivery)
+	/** Holds one watched stage's turn loop without touching pool control; answered with a `ControlResult`. */
+	| { readonly kind: "stage-pause"; readonly watch: WatchId }
+	/** Releases a stage paused on its own; the message goes through the delivery op ledger. */
+	| {
+			readonly kind: "stage-resume";
+			readonly watch: WatchId;
+			readonly message?: { readonly op: DeliveryOpId; readonly text: string };
+	  }
 	| { readonly kind: "close" };
 
 /** Request from the main thread; answered by one `reply` event with the same id. */

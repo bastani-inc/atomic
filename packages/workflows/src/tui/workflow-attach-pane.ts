@@ -14,7 +14,8 @@ import {
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
+import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -193,14 +194,36 @@ export class WorkflowAttachPane implements Component {
 				? () => acquirePooledStage(this.store, runId, stageId)
 				: undefined,
 		);
-		const { handle, postMortemUnavailableReason, release } =
+		const { handle, postMortemUnavailableReason, release, onReconnected } =
 			resolution instanceof Promise ? await resolution : resolution;
 		if (generation !== this.attachmentGeneration || !this.visible) {
 			release?.();
 			return;
 		}
 		this._disposeChatView();
-		this.releaseChatHandle = release ?? null;
+		// A pooled stage's view rebinds to a replacement attempt after its worker dies: the chat
+		// remounts on the replacement's transcript, keeping the composer draft (#3996).
+		const stopWatchingReconnects = onReconnected?.(() => {
+			if (generation !== this.attachmentGeneration || this.chatView === null) return;
+			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
+			this.chatView.dispose();
+			this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+		});
+		this.releaseChatHandle =
+			release === undefined
+				? null
+				: () => {
+						stopWatchingReconnects?.();
+						release();
+					};
+		this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+	}
+	private _mountChatView(
+		runId: string,
+		stageId: string,
+		handle: StageControlHandle | undefined,
+		postMortemUnavailableReason: PostMortemUnavailableReason | undefined,
+	): void {
 		let chatView!: StageChatView;
 		chatView = new StageChatView({
 			store: this.store,

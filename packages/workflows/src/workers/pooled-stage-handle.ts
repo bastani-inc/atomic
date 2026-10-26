@@ -11,6 +11,8 @@ import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-ru
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
 import type {
+	ControlRefusal,
+	ControlResult,
 	DeliveryIntent,
 	DeliveryOpId,
 	DeliveryRefusal,
@@ -18,6 +20,7 @@ import type {
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
 	PooledStageRef,
+	PooledStageWatch,
 	PooledStageWatchMessage,
 	WatchEndReason,
 	WatchId,
@@ -27,6 +30,9 @@ import type {
 
 type AgentMessage = AgentSession["messages"][number];
 type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
+
+/** Watch ends after which the stage may continue on another attempt; the handle reconnects. */
+const RECONNECTABLE = new Set<WatchEndReason>(["attempt_fenced", "worker_exited", "resync"]);
 
 /** The watch doors a pooled stage handle is built on; a pool implements them over its coordinator. */
 export interface PooledStageTransport {
@@ -38,23 +44,35 @@ export interface PooledStageTransport {
 	unwatch(watch: WatchId): Promise<void>;
 	/** The one door for user text into the watched stage; at most once per op. */
 	deliver(delivery: PooledStageDelivery): Promise<DeliveryResult>;
+	/** Holds or releases this one stage's turn loop; pool control is untouched. */
+	pause(watch: WatchId): Promise<ControlResult>;
+	resume(watch: WatchId, message?: { readonly op: DeliveryOpId; readonly text: string }): Promise<ControlResult>;
 }
 
-/** User text a pooled stage did not admit, with the reason. */
+/** User text or a control a pooled stage did not admit, with the reason. */
 export class PooledStageDeliveryError extends Error {
 	constructor(
-		readonly refusal: DeliveryRefusal,
+		readonly refusal: DeliveryRefusal | ControlRefusal,
 		stageName: string,
 	) {
 		super(
 			refusal === "StageNotLive"
-				? `Stage "${stageName}" finished before the message was delivered; open it again to continue in post-mortem chat.`
-				: refusal === "StaleAttempt"
-					? `Stage "${stageName}" moved to another worker attempt; the message was not delivered.`
-					: `The connection to stage "${stageName}" was lost; the message may not have been delivered.`,
+				? `Stage "${stageName}" finished first; open it again to continue in post-mortem chat.`
+				: refusal === "PoolPausedOrQuitting"
+					? `The local worker pool running stage "${stageName}" is paused or quitting; resume the run first.`
+					: refusal === "StaleAttempt"
+						? `Stage "${stageName}" is moving to another worker attempt; the message is sent again when it reconnects.`
+						: `The connection to stage "${stageName}" was lost; the message is sent again when it reconnects unless it already arrived.`,
 		);
 		this.name = "PooledStageDeliveryError";
 	}
+}
+
+/** A delivery made through this handle, kept until a reconnected attempt's session shows it arrived. */
+interface OutboundEntry {
+	readonly op: DeliveryOpId;
+	readonly text: string;
+	readonly options?: PooledStageDelivery["options"];
 }
 
 /**
@@ -63,48 +81,58 @@ export class PooledStageDeliveryError extends Error {
  * It mirrors the worker's real handle from one watch: the snapshot the watch opened with,
  * then its ordered events. Consumers read it like an in-process handle. It has no
  * `agentSession`; user text goes through the pool's single delivery door.
+ *
+ * When the worker dies or its attempt is fenced, the handle reports `reconnecting` until
+ * the pool rebinds it to the replacement attempt. It then redelivers, at most once per op,
+ * every message it sent that the replacement attempt's session does not hold.
  */
 export class PooledStageHandle implements StageControlHandle {
 	readonly sessionFile = undefined;
-	readonly placement: StagePlacement;
 	private readonly listeners = new Set<AgentSessionEventListener>();
-	private readonly settled: AgentMessage[];
-	private readonly toolExecutions = new StageToolExecutionBuffer();
-	private readonly queued = new StageQueuedUserMessageBuffer();
+	private readonly rebindListeners = new Set<(redelivered: number) => void>();
+	private readonly outbound: OutboundEntry[] = [];
+	private settled: AgentMessage[] = [];
+	private toolExecutions = new StageToolExecutionBuffer();
+	private queued = new StageQueuedUserMessageBuffer();
 	private streaming: StreamingMessage;
-	private currentStatus: StageControlStatus;
-	private streamingNow: boolean;
-	private seq: number;
+	private currentStatus: StageControlStatus = "running";
+	private streamingNow = false;
+	private seq = 0;
+	private attempt: { readonly workId: string; readonly generation: number };
 	private ended?: WatchEndReason;
+	private reconnecting = false;
+	private redelivered?: number;
 	private disposed = false;
+	private session: string | undefined;
 
 	constructor(
 		readonly runId: string,
 		readonly stageId: string,
 		readonly stageName: string,
-		private readonly watchId: WatchId,
+		private watchId: WatchId,
 		snapshot: PooledStageChatSnapshot,
 		attempt: { readonly workId: string; readonly generation: number },
-		private readonly close: () => void,
-		private readonly deliverDoor: (delivery: PooledStageDelivery) => Promise<DeliveryResult>,
-		readonly sessionId = snapshot.sessionId,
+		private readonly close: (watch: WatchId) => void,
+		private readonly transport: Pick<PooledStageTransport, "deliver" | "pause" | "resume">,
 	) {
-		this.placement = { kind: "local-worker", workId: attempt.workId, generation: attempt.generation };
-		this.settled = [...snapshot.messages];
-		this.streaming = snapshot.streamingMessage;
-		this.currentStatus = snapshot.status;
-		this.streamingNow = snapshot.isStreaming;
-		this.seq = snapshot.seq;
-		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
-		this.queued.record({
-			type: "queue_update",
-			steering: [...snapshot.queued.steering],
-			followUp: [...snapshot.queued.followUp],
-		} as AgentSessionEvent);
+		this.attempt = attempt;
+		this.adopt(snapshot);
 	}
 
 	get watch(): WatchId {
 		return this.watchId;
+	}
+	get placement(): StagePlacement {
+		return {
+			kind: "local-worker",
+			workId: this.attempt.workId,
+			generation: this.attempt.generation,
+			...(this.reconnecting ? { reconnecting: true } : {}),
+			...(this.redelivered === undefined ? {} : { redelivered: this.redelivered }),
+		};
+	}
+	get sessionId(): string | undefined {
+		return this.session;
 	}
 	get status(): StageControlStatus {
 		return this.currentStatus;
@@ -115,9 +143,13 @@ export class PooledStageHandle implements StageControlHandle {
 	get isDisposed(): boolean {
 		return this.disposed;
 	}
-	/** Why the watch behind this handle ended; undefined while it is live. */
+	/** Why the watch behind this handle ended for good; undefined while it is live or reconnecting. */
 	get endReason(): WatchEndReason | undefined {
 		return this.ended;
+	}
+	/** True between the end of a watch on a fenced attempt and its rebinding to the next one. */
+	get isReconnecting(): boolean {
+		return this.reconnecting;
 	}
 	get messages(): AgentSession["messages"] {
 		return this.settled;
@@ -132,11 +164,20 @@ export class PooledStageHandle implements StageControlHandle {
 		return this.queued.snapshot();
 	}
 
+	/** Observes rebinding to a replacement attempt, with the number of messages redelivered. */
+	onRebind(listener: (redelivered: number) => void): () => void {
+		this.rebindListeners.add(listener);
+		return () => {
+			this.rebindListeners.delete(listener);
+		};
+	}
+
 	/** Applies one message of the watch stream. */
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
-			this.ended ??= message.reason;
 			this.streamingNow = false;
+			if (RECONNECTABLE.has(message.reason) && !this.disposed) this.reconnecting = true;
+			else this.ended ??= message.reason;
 			return;
 		}
 		for (const { seq, event } of message.events) {
@@ -145,6 +186,39 @@ export class PooledStageHandle implements StageControlHandle {
 			this.apply(event);
 			for (const listener of [...this.listeners]) listener(event);
 		}
+	}
+
+	/**
+	 * Binds the handle to a watch of the replacement attempt, then redelivers in send order
+	 * every message whose op the replacement's session does not hold. Returns how many.
+	 */
+	async rebind(watch: PooledStageWatch): Promise<number> {
+		const previous = this.watchId;
+		this.watchId = watch.id;
+		this.attempt = watch.attempt;
+		this.adopt(watch.snapshot);
+		this.reconnecting = false;
+		if (previous !== watch.id) this.close(previous);
+		const present = new Set(watch.snapshot.deliveredOps ?? []);
+		const outstanding = this.outbound.filter((entry) => !present.has(entry.op));
+		this.outbound.splice(0, this.outbound.length, ...outstanding);
+		let redelivered = 0;
+		for (const entry of outstanding) {
+			// `auto`: the replay may be at a different point than the original send.
+			const result = await this.transport.deliver({
+				watch: this.watchId,
+				op: entry.op,
+				text: entry.text,
+				intent: "auto",
+				...(entry.options === undefined ? {} : { options: entry.options }),
+			});
+			if (result.ok) redelivered++;
+			else if (result.refusal === "StageNotLive") this.forget(entry.op);
+			else break;
+		}
+		this.redelivered = redelivered;
+		for (const listener of [...this.rebindListeners]) listener(redelivered);
+		return redelivered;
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -178,17 +252,49 @@ export class PooledStageHandle implements StageControlHandle {
 		await this.deliver(text, "followUp");
 	}
 	async pause(): Promise<void> {
-		throw unsupported(this.stageName);
+		this.throwIfClosed();
+		const result = await this.transport.pause(this.watchId);
+		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		this.currentStatus = "paused";
+		this.streamingNow = false;
 	}
-	async resume(): Promise<undefined> {
-		throw unsupported(this.stageName);
+	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
+		this.throwIfClosed();
+		const entry = message === undefined || message.trim().length === 0 ? undefined : this.record(message, undefined);
+		beforeResume?.();
+		const result = await this.transport.resume(
+			this.watchId,
+			entry === undefined ? undefined : { op: entry.op, text: entry.text },
+		);
+		if (!result.ok) {
+			if (entry !== undefined && result.refusal !== "StaleAttempt") this.forget(entry.op);
+			throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		}
+		this.currentStatus = "running";
+		return result.action;
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.listeners.clear();
-		this.close();
+		this.rebindListeners.clear();
+		this.close(this.watchId);
+	}
+
+	private throwIfClosed(): void {
+		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
+	}
+
+	private record(text: string, options: PooledStageDelivery["options"]): OutboundEntry {
+		const entry = { op: randomUUID() as DeliveryOpId, text, ...(options === undefined ? {} : { options }) };
+		this.outbound.push(entry);
+		return entry;
+	}
+
+	private forget(op: DeliveryOpId): void {
+		const index = this.outbound.findIndex((entry) => entry.op === op);
+		if (index >= 0) this.outbound.splice(index, 1);
 	}
 
 	private async deliver(
@@ -196,18 +302,43 @@ export class PooledStageHandle implements StageControlHandle {
 		intent: DeliveryIntent,
 		options?: StageSendUserMessageOptions,
 	): Promise<StageUserMessageDeliveryAction> {
-		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
-		const result = await this.deliverDoor({
+		this.throwIfClosed();
+		const entry = this.record(
+			text,
+			options?.expandPromptTemplates === undefined
+				? undefined
+				: { expandPromptTemplates: options.expandPromptTemplates },
+		);
+		const result = await this.transport.deliver({
 			watch: this.watchId,
-			op: randomUUID() as DeliveryOpId,
+			op: entry.op,
 			text,
 			intent,
-			...(options?.expandPromptTemplates === undefined
-				? {}
-				: { options: { expandPromptTemplates: options.expandPromptTemplates } }),
+			...(entry.options === undefined ? {} : { options: entry.options }),
 		});
-		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		if (!result.ok) {
+			// A stale or unconfirmed delivery stays in the ledger and is redelivered on reconnect.
+			if (result.refusal === "StageNotLive") this.forget(entry.op);
+			throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		}
 		return result.action;
+	}
+
+	private adopt(snapshot: PooledStageChatSnapshot): void {
+		this.session = snapshot.sessionId;
+		this.settled = [...snapshot.messages];
+		this.streaming = snapshot.streamingMessage;
+		this.currentStatus = snapshot.status;
+		this.streamingNow = snapshot.isStreaming;
+		this.seq = snapshot.seq;
+		this.toolExecutions = new StageToolExecutionBuffer();
+		for (const event of snapshot.pendingToolExecutionEvents) this.toolExecutions.record(event);
+		this.queued = new StageQueuedUserMessageBuffer();
+		this.queued.record({
+			type: "queue_update",
+			steering: [...snapshot.queued.steering],
+			followUp: [...snapshot.queued.followUp],
+		} as AgentSessionEvent);
 	}
 
 	private apply(event: AgentSessionEvent): void {
@@ -235,10 +366,6 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 }
 
-function unsupported(stageName: string): Error {
-	return new Error(`Stage "${stageName}" runs on a local worker; pausing it is not available yet.`);
-}
-
 /** Opens a watch through `transport` and returns the handle that mirrors it. */
 export async function openPooledStageHandle(
 	transport: PooledStageTransport,
@@ -256,6 +383,7 @@ export async function openPooledStageHandle(
 	});
 	if (!result.ok) return result;
 	const { watch } = result;
+	let closed = false;
 	handle = new PooledStageHandle(
 		ref.runId,
 		ref.stageId,
@@ -263,12 +391,42 @@ export async function openPooledStageHandle(
 		watch.id,
 		watch.snapshot,
 		watch.attempt,
-		() => {
-			onClose();
-			void transport.unwatch(watch.id);
+		(id) => {
+			void transport.unwatch(id);
+			if (handle?.isDisposed === true && !closed) {
+				closed = true;
+				onClose();
+			}
 		},
-		(delivery) => transport.deliver(delivery),
+		transport,
 	);
 	for (const message of early.splice(0)) handle.receive(message);
 	return { ok: true, handle };
+}
+
+/**
+ * Reopens a reconnecting handle on its stage's current attempt through `transport`.
+ * Resolves false while no attempt runs the stage yet; the caller retries on later activity.
+ */
+export async function reconnectPooledStageHandle(
+	handle: PooledStageHandle,
+	transport: PooledStageTransport,
+): Promise<boolean> {
+	if (!handle.isReconnecting || handle.isDisposed) return false;
+	let bound = false;
+	const early: PooledStageWatchMessage[] = [];
+	const result = await transport.watch({ runId: handle.runId, stageId: handle.stageId }, (message) => {
+		if (bound) handle.receive(message);
+		else early.push(message);
+	});
+	if (!result.ok) return false;
+	if (handle.isDisposed) {
+		await transport.unwatch(result.watch.id);
+		return false;
+	}
+	const rebinding = handle.rebind(result.watch);
+	bound = true;
+	for (const message of early.splice(0)) handle.receive(message);
+	await rebinding;
+	return true;
 }

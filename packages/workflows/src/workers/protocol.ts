@@ -9,6 +9,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type {
 	AttemptRef,
+	ControlRefusal,
 	DeliveryIntent,
 	DeliveryOpId,
 	DeliveryRefusal,
@@ -57,7 +58,7 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly kind: "stage-command-result";
 			readonly commandId: number;
 			readonly snapshot?: PooledStageChatSnapshot;
-			readonly refusal?: WatchRefusal | DeliveryRefusal;
+			readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal;
 			readonly action?: StageUserMessageDeliveryAction;
 			/** The stage refused the text for another reason; the message says why. */
 			readonly error?: string;
@@ -91,6 +92,13 @@ export type WorkerStageCommand = {
 			readonly text: string;
 			readonly intent: DeliveryIntent;
 			readonly expandPromptTemplates?: boolean;
+	  }
+	| { readonly op: "pause"; readonly watch: WatchId }
+	| {
+			readonly op: "resume";
+			readonly watch: WatchId;
+			/** Sent as the next user message, admitted at most once per op. */
+			readonly message?: { readonly deliveryOp: DeliveryOpId; readonly text: string };
 	  }
 );
 

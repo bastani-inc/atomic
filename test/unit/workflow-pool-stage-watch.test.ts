@@ -306,3 +306,107 @@ test("a delivery for another attempt or a finished stage is refused and not admi
 	assert.equal((await deliver(sent, watches, 3, "late", "steer")).refusal, "StageNotLive");
 	assert.deepEqual(stage.admitted, []);
 });
+
+test("per-stage pause and resume go through the airlock, and wait while the pool itself is paused (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	let control = "running";
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 1 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => control,
+	);
+	const stage = deliverableStage(true);
+	const calls: string[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		async pause() {
+			calls.push("pause");
+		},
+		async resume(message?: string) {
+			calls.push(`resume:${message ?? ""}`);
+			return message === undefined ? undefined : "prompt";
+		},
+	});
+	openWatch(watches);
+	const command = async (
+		commandId: number,
+		op: "pause" | "resume",
+		message?: { deliveryOp: string; text: string },
+	) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op,
+			watch: "watch-1" as WatchId,
+			...(message === undefined
+				? {}
+				: { message: { deliveryOp: message.deliveryOp as DeliveryOpId, text: message.text } }),
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		for (;;) {
+			const result = sent.find((entry) => entry.kind === "stage-command-result" && entry.commandId === commandId);
+			if (result?.kind === "stage-command-result") return { action: result.action, refusal: result.refusal };
+			await sleep(1);
+		}
+	};
+	assert.deepEqual(await command(2, "pause"), { action: undefined, refusal: undefined });
+	assert.deepEqual(await command(3, "resume", { deliveryOp: "op-r", text: "carry on" }), {
+		action: "prompt",
+		refusal: undefined,
+	});
+	// The resume message's op is in the delivery ledger: a retry releases the stage without sending it again.
+	assert.deepEqual(await command(4, "resume", { deliveryOp: "op-r", text: "carry on" }), {
+		action: "prompt",
+		refusal: undefined,
+	});
+	control = "paused";
+	assert.equal((await command(5, "pause")).refusal, "PoolPausedOrQuitting");
+	assert.deepEqual(calls, ["pause", "resume:carry on"]);
+});
+
+test("a delivered op is recorded in the session once its text arrives, and a snapshot reports it (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = deliverableStage(true);
+	const entries: { type: string; customType?: string; data?: { op: string } }[] = [];
+	const handle: StageControlHandle = {
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		agentSession: {
+			sessionManager: {
+				getEntries: () => entries,
+				async appendCustomEntry(customType: string, data: { op: string }) {
+					entries.push({ type: "custom", customType, data });
+					return "entry";
+				},
+			},
+		} as never,
+	};
+	registry.register(handle);
+	openWatch(watches);
+	await deliver(sent, watches, 2, "op-steer", "steer");
+	assert.deepEqual(entries, [], "nothing is recorded while the text is only queued");
+	stage.emit({
+		type: "message_end",
+		message: { role: "user", content: [{ type: "text", text: "text-op-steer" }], timestamp: 1 },
+	} as never as AgentSessionEvent);
+	assert.deepEqual(entries, [{ type: "custom", customType: "atomic-pooled-delivery-op", data: { op: "op-steer" } }]);
+	watches.serve({
+		kind: "stage-command",
+		commandId: 9,
+		attempt: { workId: "work", generation: 1 },
+		op: "watch",
+		watch: "watch-2" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
+	assert.ok(reopened?.kind === "stage-command-result");
+	assert.deepEqual(reopened.snapshot?.deliveredOps, ["op-steer"]);
+});

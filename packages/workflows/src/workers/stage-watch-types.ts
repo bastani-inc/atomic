@@ -42,6 +42,11 @@ export interface PooledStageChatSnapshot {
 	readonly streamingMessage?: AssistantMessage;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
+	/**
+	 * Delivery ops whose text this attempt's session already holds, so a handle that reconnects
+	 * after a fence redelivers only what the replacement attempt does not have.
+	 */
+	readonly deliveredOps?: readonly DeliveryOpId[];
 	/** Seq of the last event folded into this snapshot; the stream continues after it. */
 	readonly seq: number;
 }
@@ -87,6 +92,16 @@ export type DeliveryRefusal = "StaleAttempt" | "StageNotLive" | "Unconfirmed";
 export type DeliveryResult =
 	| { readonly ok: true; readonly action: StageUserMessageDeliveryAction }
 	| { readonly ok: false; readonly refusal: DeliveryRefusal };
+
+/**
+ * Why a per-stage pause or resume was refused.
+ * - `PoolPausedOrQuitting`: pool-wide control holds every stage; per-stage control waits for it.
+ */
+export type ControlRefusal = "StaleAttempt" | "StageNotLive" | "PoolPausedOrQuitting";
+
+export type ControlResult =
+	| { readonly ok: true; readonly action?: StageUserMessageDeliveryAction }
+	| { readonly ok: false; readonly refusal: ControlRefusal };
 
 /** One user delivery through a watch. */
 export interface PooledStageDelivery {

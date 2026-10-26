@@ -80,6 +80,12 @@ function fakeTransport(overrides: Partial<PooledStageChatSnapshot> = {}) {
 			deliveries.push(delivery);
 			return { ok: true, action: delivery.intent === "followUp" ? "followUp" : "steer" };
 		},
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
+		},
 	};
 	return {
 		transport,

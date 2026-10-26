@@ -1,4 +1,4 @@
-import type { AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
@@ -42,6 +42,13 @@ export async function admitStageUserMessage(
 	return { action: "prompt" };
 }
 
+/**
+ * Custom session entry recording that a delivery op's text entered the session. It is not
+ * part of the model's context; a reconnecting handle reads it to redeliver only what a
+ * replacement attempt does not hold (#3996).
+ */
+export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+
 /** A watched stage's events leave the worker at most this often, as one batch. */
 export const STAGE_EVENT_BATCH_INTERVAL_MS = 50;
 
@@ -77,6 +84,8 @@ export class WorkerStageWatches {
 		private readonly registry: StageControlRegistry,
 		private readonly attempt: () => AttemptRef | undefined,
 		private readonly send: (message: DistributiveOmit<Outbound, "id">) => void,
+		/** Pool-wide control as the worker last observed it. */
+		private readonly control: () => string = () => "running",
 	) {}
 
 	serve(command: WorkerStageCommand): void {
@@ -85,9 +94,15 @@ export class WorkerStageWatches {
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
 			return;
 		}
-		if (command.op === "deliver") {
-			void this.deliver(command).then((result) =>
-				this.send({ kind: "stage-command-result", commandId: command.commandId, ...result }),
+		if (command.op === "deliver" || command.op === "pause" || command.op === "resume") {
+			const result =
+				command.op === "deliver"
+					? this.deliver(command)
+					: command.op === "pause"
+						? this.pause(command)
+						: this.resume(command);
+			void result.then((outcome) =>
+				this.send({ kind: "stage-command-result", commandId: command.commandId, ...outcome }),
 			);
 			return;
 		}
@@ -133,6 +148,64 @@ export class WorkerStageWatches {
 		}
 	}
 
+	/** The watched handle when the command is for the attempt this worker holds; otherwise the refusal. */
+	private airlock(command: { readonly attempt: AttemptRef; readonly watch: WatchId }): Watch | DeliveryRefusal {
+		const held = this.attempt();
+		const watch = this.watches.get(command.watch);
+		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !watch)
+			return "StaleAttempt";
+		return isTerminal(watch.handle) ? "StageNotLive" : watch;
+	}
+
+	private async pause(command: Extract<WorkerStageCommand, { op: "pause" }>): Promise<StageCommandResult> {
+		const watch = this.airlock(command);
+		if (typeof watch === "string") return { refusal: watch };
+		if (this.control() !== "running") return { refusal: "PoolPausedOrQuitting" };
+		try {
+			await watch.handle.pause();
+			return {};
+		} catch (error) {
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
+		}
+	}
+
+	private async resume(command: Extract<WorkerStageCommand, { op: "resume" }>): Promise<StageCommandResult> {
+		const watch = this.airlock(command);
+		if (typeof watch === "string") return { refusal: watch };
+		if (this.control() !== "running") return { refusal: "PoolPausedOrQuitting" };
+		const message = command.message;
+		// A retried resume whose message this attempt already admitted is answered from the ledger.
+		const recorded = message === undefined ? undefined : this.ledger.get(message.deliveryOp);
+		if (recorded !== undefined) return recorded;
+		const unmark =
+			message === undefined ? () => {} : this.markDelivered(watch.handle, message.deliveryOp, message.text);
+		const resumed = (async (): Promise<StageCommandResult> => {
+			const action = await watch.handle.resume(message?.text);
+			return action === undefined ? {} : { action };
+		})().catch((error: Error): StageCommandResult => {
+			unmark();
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message };
+		});
+		if (message !== undefined) this.ledger.set(message.deliveryOp, resumed);
+		return resumed;
+	}
+
+	/**
+	 * Records the op in the stage's session once its text enters the session as a user message,
+	 * so a replacement attempt that replays the session knows the text arrived.
+	 */
+	private markDelivered(handle: StageControlHandle, op: DeliveryOpId, text: string): () => void {
+		const sessionManager = handle.agentSession?.sessionManager;
+		if (sessionManager === undefined) return () => {};
+		const unsubscribe = handle.subscribe((event) => {
+			if (event.type !== "message_end" || event.message.role !== "user") return;
+			if (!messageText(event.message).includes(text)) return;
+			unsubscribe();
+			void sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
+		});
+		return unsubscribe;
+	}
+
 	private async deliver(command: Extract<WorkerStageCommand, { op: "deliver" }>): Promise<StageCommandResult> {
 		const recorded = this.ledger.get(command.deliveryOp);
 		if (recorded !== undefined) return recorded;
@@ -146,15 +219,16 @@ export class WorkerStageWatches {
 		)
 			return refuse("StaleAttempt");
 		if (isTerminal(watch.handle)) return refuse("StageNotLive");
+		const unmark = this.markDelivered(watch.handle, command.deliveryOp, command.text);
 		const admitted = admitStageUserMessage(
 			watch.handle,
 			command.text,
 			command.intent,
 			command.expandPromptTemplates,
-		).catch(
-			(error: Error): StageCommandResult =>
-				isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
-		);
+		).catch((error: Error): StageCommandResult => {
+			unmark();
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message };
+		});
 		this.ledger.set(command.deliveryOp, admitted);
 		return admitted;
 	}
@@ -185,8 +259,28 @@ export class WorkerStageWatches {
 	}
 }
 
+function messageText(message: object): string {
+	const content = "content" in message ? message.content : undefined;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block: { readonly type?: string; readonly text?: string }) =>
+			block.type === "text" ? (block.text ?? "") : "",
+		)
+		.join("");
+}
+
+function deliveredOps(entries: readonly SessionEntry[]): DeliveryOpId[] {
+	return entries.flatMap((entry) => {
+		if (entry.type !== "custom" || entry.customType !== DELIVERY_OP_ENTRY) return [];
+		const op = (entry.data as { readonly op?: string } | undefined)?.op;
+		return typeof op === "string" ? [op as DeliveryOpId] : [];
+	});
+}
+
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
 	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
+	const entries = handle.agentSession?.sessionManager.getEntries();
 	return {
 		sessionId: handle.sessionId,
 		status: handle.status,
@@ -195,6 +289,7 @@ function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnaps
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,
+		...(entries === undefined ? {} : { deliveredOps: deliveredOps(entries) }),
 		seq,
 	};
 }

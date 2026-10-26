@@ -5,6 +5,11 @@ import type { Store } from "../shared/store.js";
 export interface PooledStageLease {
 	readonly handle: StageControlHandle;
 	release(): void;
+	/**
+	 * Observes the view reconnecting to a replacement attempt after its worker died or its
+	 * attempt was fenced, with the number of messages it redelivered.
+	 */
+	onReconnected?(listener: (redelivered: number) => void): () => void;
 }
 
 /** Something that can open live views of stages running on its local workers: a pool. */

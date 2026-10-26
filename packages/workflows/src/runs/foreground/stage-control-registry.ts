@@ -48,6 +48,10 @@ export interface StagePlacement {
 	readonly kind: "local-worker";
 	readonly workId: string;
 	readonly generation: number;
+	/** The worker's attempt ended; the view waits for the replacement attempt. */
+	readonly reconnecting?: boolean;
+	/** Messages redelivered to the current attempt after the last reconnect. */
+	readonly redelivered?: number;
 }
 
 /**

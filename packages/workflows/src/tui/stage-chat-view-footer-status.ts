@@ -60,8 +60,17 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");
-	const onLocalWorker = ctx.handle?.placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
-	const meta = [onLocalWorker ? "on local worker" : "", sid ? `session ${sid}` : ""].filter(Boolean).join(" · ");
+	const placement = ctx.handle?.placement;
+	const onLocalWorker = placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
+	const redelivered = placement?.redelivered ?? 0;
+	const meta = [
+		onLocalWorker ? "on local worker" : "",
+		placement?.reconnecting === true ? "RECONNECTING" : "",
+		redelivered > 0 ? `redelivered ${redelivered} message${redelivered === 1 ? "" : "s"}` : "",
+		sid ? `session ${sid}` : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 

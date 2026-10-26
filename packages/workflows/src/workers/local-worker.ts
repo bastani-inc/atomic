@@ -178,6 +178,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
 			(message) => process.send?.({ ...message, id: 0 }),
+			() => controlState,
 		);
 		const observeControl = async () => {
 			const control = (await request({ kind: "control" })) as PoolControl;

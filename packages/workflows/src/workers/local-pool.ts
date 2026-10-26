@@ -51,20 +51,34 @@ import {
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
-import type { PooledStageHandle } from "./pooled-stage-handle.js";
+import type { PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
 import type {
+	ControlResult,
+	DeliveryOpId,
 	DeliveryResult,
 	PooledStageDelivery,
 	PooledStageRef,
 	PooledStageWatchMessage,
+	WatchEndReason,
 	WatchId,
 	WatchResult,
 } from "./stage-watch-types.js";
+
+/** A live view of one pooled stage, shared by everything that holds it. */
+interface StageView {
+	readonly key: string;
+	opening: Promise<PooledStageHandle | undefined>;
+	holders: number;
+	handle?: PooledStageHandle;
+	reconnect?: () => Promise<boolean>;
+	reconnecting?: Promise<void>;
+}
+
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
@@ -230,10 +244,9 @@ export class LocalWorkerPool {
 	/** Open stage watches, by id, to the listener their events go to (#3996). */
 	private readonly stageWatches = new Map<WatchId, (message: PooledStageWatchMessage) => void>();
 	/** One shared live view per watched stage, with the number of holders. */
-	private readonly stageViews = new Map<
-		string,
-		{ readonly opening: Promise<PooledStageHandle | undefined>; holders: number }
-	>();
+	private readonly stageViews = new Map<string, StageView>();
+	/** Views whose watch ended with their attempt; each reconnects once a replacement runs the stage. */
+	private readonly reconnectingViews = new Set<StageView>();
 	private releaseStageSource?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
@@ -457,9 +470,45 @@ export class LocalWorkerPool {
 		}
 		return { ok: false, refusal: "Unconfirmed" };
 	}
+	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
+	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({ kind: "stage-pause", watch })) as ControlResult;
+	}
+	/**
+	 * Releases a stage paused on its own. `message` is admitted at most once per op, through
+	 * the same ledger as {@link deliverToPooledStage}.
+	 */
+	async resumePooledStage(
+		watch: WatchId,
+		message?: { readonly op: DeliveryOpId; readonly text: string },
+	): Promise<ControlResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({
+			kind: "stage-resume",
+			watch,
+			...(message === undefined ? {} : { message }),
+		})) as ControlResult;
+	}
+	/** The watch doors of this pool for one live view; ends of a view's watches go to `ended`. */
+	private stageTransport(onEnded: (reason: WatchEndReason) => void): PooledStageTransport {
+		return {
+			watch: (ref, listener) =>
+				this.watchPooledStage(ref, (message) => {
+					listener(message);
+					if (message.kind === "ended") onEnded(message.reason);
+				}),
+			unwatch: (watch) => this.unwatchPooledStage(watch),
+			deliver: (delivery) => this.deliverToPooledStage(delivery),
+			pause: (watch) => this.pausePooledStage(watch),
+			resume: (watch, message) => this.resumePooledStage(watch, message),
+		};
+	}
 	/**
 	 * A shared live view of a running pooled stage, held until released; the last release
 	 * closes its watch. Undefined when the stage is not running on one of this pool's workers.
+	 * When the stage's attempt is fenced or its worker exits, the view reconnects to the
+	 * replacement attempt on later activity.
 	 */
 	private async acquirePooledStage(runId: string, stageId: string): Promise<PooledStageLease | undefined> {
 		const key = JSON.stringify([runId, stageId]);
@@ -470,31 +519,27 @@ export class LocalWorkerPool {
 					?.runs()
 					.find((run) => run.id === runId)
 					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
-			const opening = (async () => {
+			const created: StageView = { key, holders: 0, opening: Promise.resolve(undefined) };
+			const transport = this.stageTransport((reason) => {
+				if (this.stageViews.get(key) !== created) return;
+				if (reason === "attempt_fenced" || reason === "worker_exited" || reason === "resync")
+					this.reconnectingViews.add(created);
+				else this.stageViews.delete(key);
+			});
+			created.opening = (async () => {
 				// Loaded on first use, so pools nobody attaches to never load it.
-				const { openPooledStageHandle } = await import("./pooled-stage-handle.js");
-				const opened = await openPooledStageHandle(
-					{
-						watch: (ref, listener) =>
-							this.watchPooledStage(ref, (message) => {
-								listener(message);
-								if (message.kind === "ended" && this.stageViews.get(key) === current)
-									this.stageViews.delete(key);
-							}),
-						unwatch: (watch) => this.unwatchPooledStage(watch),
-						deliver: (delivery) => this.deliverToPooledStage(delivery),
-					},
-					{ runId, stageId },
-					stageName,
-					() => {
-						if (this.stageViews.get(key) === current) this.stageViews.delete(key);
-					},
-				);
-				return opened.ok ? opened.handle : undefined;
+				const module = await import("./pooled-stage-handle.js");
+				const opened = await module.openPooledStageHandle(transport, { runId, stageId }, stageName, () => {
+					if (this.stageViews.get(key) === created) this.stageViews.delete(key);
+					this.reconnectingViews.delete(created);
+				});
+				if (!opened.ok) return undefined;
+				created.handle = opened.handle;
+				created.reconnect = () => module.reconnectPooledStageHandle(opened.handle, transport);
+				return opened.handle;
 			})();
-			const current = { opening, holders: 0 };
-			view = current;
-			this.stageViews.set(key, current);
+			view = created;
+			this.stageViews.set(key, created);
 		}
 		const current = view;
 		current.holders++;
@@ -507,12 +552,45 @@ export class LocalWorkerPool {
 		let released = false;
 		return {
 			handle,
+			onReconnected: (listener) => handle.onRebind(listener),
 			release: () => {
 				if (released) return;
 				released = true;
-				if (--current.holders === 0) handle.dispose();
+				if (--current.holders === 0) {
+					this.reconnectingViews.delete(current);
+					handle.dispose();
+				}
 			},
 		};
+	}
+	/** Retries the reconnection of views whose attempt ended, once activity may show the next one. */
+	private reconnectStageViews(): void {
+		for (const view of this.reconnectingViews) {
+			if (view.reconnecting !== undefined || view.reconnect === undefined || view.handle === undefined) continue;
+			const handle = view.handle;
+			const stage = this.store
+				?.runs()
+				.find((run) => run.id === handle.runId)
+				?.stages.find((candidate) => candidate.id === handle.stageId);
+			if (
+				stage !== undefined &&
+				(stage.status === "completed" || stage.status === "failed" || stage.status === "skipped")
+			) {
+				this.reconnectingViews.delete(view);
+				handle.receive({ kind: "ended", reason: "stage_finished" });
+				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
+				continue;
+			}
+			view.reconnecting = view
+				.reconnect()
+				.then((bound) => {
+					if (bound) this.reconnectingViews.delete(view);
+				})
+				.catch(() => {})
+				.finally(() => {
+					view.reconnecting = undefined;
+				});
+		}
 	}
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
 	private queueView(): PoolStageQueue {
@@ -807,6 +885,7 @@ export class LocalWorkerPool {
 		}
 		this.notice({ kind: "published", batch, rejected });
 		this.refreshRootRun();
+		if (this.reconnectingViews.size > 0) this.reconnectStageViews();
 	}
 	/** The full work of an attempt token, recording the attempt as current when it is newer. */
 	private track(attempt: PoolWorkToken): PoolWork | undefined {

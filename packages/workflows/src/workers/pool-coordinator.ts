@@ -48,6 +48,9 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
+	ControlRefusal,
+	ControlResult,
+	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
 	PooledStageChatSnapshot,
@@ -318,7 +321,7 @@ interface WorkerSlot {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal | DeliveryRefusal;
+	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
 	readonly error?: string;
 }
@@ -466,6 +469,15 @@ export class PoolCoordinator {
 				return;
 			case "stage-deliver":
 				return this.stageDeliver(command);
+			case "stage-pause":
+				return this.stageControl(command.watch, { op: "pause" });
+			case "stage-resume":
+				return this.stageControl(command.watch, {
+					op: "resume",
+					...(command.message === undefined
+						? {}
+						: { message: { deliveryOp: command.message.op, text: command.message.text } }),
+				});
 			case "close":
 				this.closing ??= this.close();
 				return this.closing;
@@ -740,6 +752,34 @@ export class PoolCoordinator {
 			ok: false,
 			refusal: refusal === "StageNotLive" || refusal === "Unconfirmed" ? refusal : "StaleAttempt",
 		};
+	}
+
+	/** Pauses or resumes one watched stage through its worker's airlock; pool control is untouched. */
+	private async stageControl(
+		id: WatchId,
+		command:
+			| { readonly op: "pause" }
+			| { readonly op: "resume"; readonly message?: { readonly deliveryOp: DeliveryOpId; readonly text: string } },
+	): Promise<ControlResult> {
+		const watch = this.watches.get(id);
+		if (watch === undefined || !watch.open)
+			return {
+				ok: false,
+				refusal: this.endedWatches.get(id) === "stage_finished" ? "StageNotLive" : "StaleAttempt",
+			};
+		const { slot, attempt } = watch;
+		if (slot.work?.id !== attempt.workId || slot.work.generation !== attempt.generation)
+			return { ok: false, refusal: "StaleAttempt" };
+		if (this.desiredControl !== undefined && this.desiredControl !== "running")
+			return { ok: false, refusal: "PoolPausedOrQuitting" };
+		const result = await this.stageCommand(slot, { attempt, watch: id, ...command });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting" || refusal === "StaleAttempt")
+			return { ok: false, refusal };
+		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return { ok: true, ...(result.action === undefined ? {} : { action: result.action }) };
 	}
 
 	private stageCommand(
