@@ -478,45 +478,7 @@ export class SqlResourceAdmission {
 	 * be reaped and stay quarantined; they are not reported. Call it only for a holder whose process has exited.
 	 */
 	async reapStoppedProcesses(holder: string): Promise<readonly number[]> {
-		if (process.platform === "win32") return [];
-		const permits = await this.storage.transaction((tx) =>
-			tx.all<PermitRow>(
-				`SELECT p.* FROM ${this.permits} p JOIN ${this.owners} o ON o.id = p.owner WHERE p.root = ? AND p.holder = ? AND p.kind = 'process' AND p.state = 'granted' AND p.process_identity IS NOT NULL AND o.host = ?`,
-				this.options.root,
-				holder,
-				admissionHost,
-			),
-		);
-		const groups = new Map<number, string[]>();
-		for (const permit of permits) {
-			const identity = JSON.parse(permit.process_identity!) as ResourceProcessIdentity;
-			if (identity.kind !== "unix-process-group" || !Number.isSafeInteger(identity.id) || identity.id <= 0) continue;
-			groups.set(identity.id, [...(groups.get(identity.id) ?? []), permit.operation]);
-		}
-		const alive = () => [...groups.keys()].filter((group) => processGroupState(group) === "alive");
-		const settle = async (grace: number) => {
-			let remaining = alive();
-			for (let waited = 0; remaining.length > 0 && waited < grace; waited += REAP_POLL_MS) {
-				await reapPause(REAP_POLL_MS);
-				remaining = alive();
-			}
-			return remaining;
-		};
-		for (const group of alive()) signalProcessGroup(group, "SIGTERM");
-		let remaining = await settle(REAP_TERM_GRACE_MS);
-		for (const group of remaining) signalProcessGroup(group, "SIGKILL");
-		remaining = await settle(REAP_KILL_GRACE_MS);
-		await this.storage.transaction(async (tx) => {
-			for (const [group, operations] of groups) {
-				if (remaining.includes(group)) continue;
-				for (const operation of operations)
-					await tx.run(
-						`UPDATE ${this.permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
-						operation,
-					);
-			}
-		});
-		return remaining;
+		return (await settleProcessGroups(this.storage, this.options.root, { holder }, true)).survivors;
 	}
 }
 
@@ -525,19 +487,20 @@ export type ProcessPermitScope =
 	| { readonly attempt: { readonly id: string; readonly generation: number } }
 	| { readonly holder: string };
 
-/**
- * The process groups of a root's granted, bound process permits in `scope` that are not confirmed gone. It reads
- * the journal, so it holds in any process and after any restart. A group on this host that is gone, or holds only
- * zombies, has its permit released and is not reported. A group on another host cannot be probed and is reported.
- * Permits never bound to a process group are not reported: there is no group to probe.
- */
-export async function unconfirmedProcessGroups(
-	journal: RunJournal,
+/** Bound process groups of granted permits: those on this host still alive, and those that cannot be probed. */
+export interface ProcessGroupSettlement {
+	/** Groups on this host still alive (after the bounded reap, when reaping). */
+	readonly survivors: readonly number[];
+	/** Groups on another host, or with an identity this host cannot probe; never signalled or confirmed here. */
+	readonly unprobeable: readonly number[];
+}
+
+async function settleProcessGroups(
+	storage: SqlPoolStorage,
 	root: string,
 	scope: ProcessPermitScope,
-): Promise<readonly number[]> {
-	const storage = sqlPoolStorage(journal);
-	if (!storage) return [];
+	reap: boolean,
+): Promise<ProcessGroupSettlement> {
 	const permits = `${storage.tables.runs}_resource_permits`;
 	const owners = `${storage.tables.runs}_resource_owners`;
 	// Read without the shared write lock; take it only to release permits of groups confirmed gone (#3978).
@@ -556,19 +519,37 @@ export async function unconfirmedProcessGroups(
 			...filter.args,
 		);
 	});
-	const alive: number[] = [];
-	const confirmed: string[] = [];
+	const groups = new Map<number, string[]>();
+	const unprobeable: number[] = [];
 	for (const row of rows) {
 		const identity = JSON.parse(row.process_identity) as ResourceProcessIdentity;
-		const probeable =
+		if (
 			row.host === admissionHost &&
 			process.platform !== "win32" &&
 			identity.kind === "unix-process-group" &&
 			Number.isSafeInteger(identity.id) &&
-			identity.id > 0;
-		if (probeable && processGroupState(identity.id) !== "alive") confirmed.push(row.operation);
-		else if (!alive.includes(identity.id)) alive.push(identity.id);
+			identity.id > 0
+		)
+			groups.set(identity.id, [...(groups.get(identity.id) ?? []), row.operation]);
+		else if (!unprobeable.includes(identity.id)) unprobeable.push(identity.id);
 	}
+	const alive = () => [...groups.keys()].filter((group) => processGroupState(group) === "alive");
+	const settle = async (grace: number) => {
+		let remaining = alive();
+		for (let waited = 0; remaining.length > 0 && waited < grace; waited += REAP_POLL_MS) {
+			await reapPause(REAP_POLL_MS);
+			remaining = alive();
+		}
+		return remaining;
+	};
+	let survivors = alive();
+	if (reap && survivors.length > 0) {
+		for (const group of survivors) signalProcessGroup(group, "SIGTERM");
+		survivors = await settle(REAP_TERM_GRACE_MS);
+		for (const group of survivors) signalProcessGroup(group, "SIGKILL");
+		survivors = await settle(REAP_KILL_GRACE_MS);
+	}
+	const confirmed = [...groups].flatMap(([group, operations]) => (survivors.includes(group) ? [] : operations));
 	if (confirmed.length > 0)
 		await storage.transaction(async (tx) => {
 			for (const operation of confirmed)
@@ -577,5 +558,37 @@ export async function unconfirmedProcessGroups(
 					operation,
 				);
 		});
-	return alive;
+	return { survivors, unprobeable };
+}
+
+/**
+ * The process groups of a root's granted, bound process permits in `scope` that are not confirmed gone. It reads
+ * the journal, so it holds in any process and after any restart. A group on this host that is gone, or holds only
+ * zombies, has its permit released and is not reported. A group on another host cannot be probed and is reported.
+ * Permits never bound to a process group are not reported: there is no group to probe.
+ */
+export async function unconfirmedProcessGroups(
+	journal: RunJournal,
+	root: string,
+	scope: ProcessPermitScope,
+): Promise<readonly number[]> {
+	const storage = sqlPoolStorage(journal);
+	if (!storage) return [];
+	const { survivors, unprobeable } = await settleProcessGroups(storage, root, scope, false);
+	return [...survivors, ...unprobeable.filter((group) => !survivors.includes(group))];
+}
+
+/**
+ * Reaps the process groups on this host of a root's granted, bound process permits in `scope`, with the same bounded
+ * SIGTERM, then SIGKILL, sequence as {@link SqlResourceAdmission.reapStoppedProcesses}. Groups confirmed gone have
+ * their permits released. Groups on another host cannot be signalled or probed; they are reported as `unprobeable`.
+ */
+export async function reapProcessGroups(
+	journal: RunJournal,
+	root: string,
+	scope: ProcessPermitScope,
+): Promise<ProcessGroupSettlement> {
+	const storage = sqlPoolStorage(journal);
+	if (!storage) return { survivors: [], unprobeable: [] };
+	return settleProcessGroups(storage, root, scope, true);
 }

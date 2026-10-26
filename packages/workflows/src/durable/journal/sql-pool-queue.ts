@@ -661,6 +661,26 @@ export class SqlPoolQueue {
 			return true;
 		});
 	}
+	/**
+	 * Releases an earlier incarnation's attempt that this incarnation retained while its process groups ran. With
+	 * `adopt`, because this root incarnation already enqueued it, the work takes the current epoch and is claimable
+	 * now; otherwise it waits, as any released earlier work does, for this incarnation's enqueue to adopt it.
+	 */
+	async releaseRetained(lease: Lease, token: WorkLease, adopt: boolean): Promise<boolean> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token);
+			if (row.epoch >= lease.epoch) return false;
+			await tx.run(
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0, epoch = ? WHERE id = ?`,
+				adopt ? lease.epoch : row.epoch,
+				row.id,
+			);
+			return true;
+		});
+	}
 	/** Releases work leased by earlier root incarnations, except the `retained` work ids, which stay leased. */
 	async releasePreviousIncarnations(lease: Lease, retained: readonly string[] = []): Promise<number> {
 		lease = snapshotLease(lease);

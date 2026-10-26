@@ -43,7 +43,12 @@ import type {
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { WorkerRequest } from "./protocol.js";
-import { SqlResourceAdmission, unconfirmedProcessGroups } from "./resource-admission.js";
+import {
+	type ProcessPermitScope,
+	reapProcessGroups,
+	SqlResourceAdmission,
+	unconfirmedProcessGroups,
+} from "./resource-admission.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
 
 const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
@@ -352,8 +357,16 @@ export class PoolCoordinator {
 	private readonly held = new Set<string>();
 	/** Held work whose process groups survived reaping; its child failed and it is never released for replay. */
 	private readonly quarantined = new Set<string>();
-	/** Exited workers whose reap left process groups running; close reports those still running. */
-	private readonly unreaped = new Set<string>();
+	/** Workers or attempts whose reap left process groups running; close reports those still running. */
+	private readonly unreaped: ProcessPermitScope[] = [];
+	/**
+	 * Earlier incarnations' attempts kept leased because their process groups were not confirmed gone, by work id.
+	 * `enqueued` records that this incarnation's root enqueued the attempt while it was still leased, so its release
+	 * must adopt it into the current epoch: the enqueue cannot, as it adopts only released work (#3979).
+	 */
+	private readonly retained = new Map<string, { enqueued: boolean }>();
+	/** Serializes enqueues with releases of retained attempts, so an enqueue is never lost between the two. */
+	private retainedTransitions: Promise<void> = Promise.resolve();
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
@@ -448,23 +461,77 @@ export class PoolCoordinator {
 		const queue = await openSqlPoolQueue(this.journal);
 		await queue.initialize(lease, COORDINATOR_LEASE_MS);
 		// An earlier incarnation's attempt whose process groups are not confirmed gone stays leased: replaying it
-		// would run alongside them. Recovery releases it once they are gone.
-		const retained: string[] = [];
+		// would run alongside them. Its groups on this host are reaped below; recovery releases it once they are gone.
+		const retained: PoolWork[] = [];
 		for (const work of await queue.inspect(root))
 			if (
 				work.state === "leased" &&
 				work.epoch < lease.epoch &&
 				(await unconfirmedProcessGroups(this.journal, root, { attempt: work })).length > 0
 			)
-				retained.push(work.id);
-		await queue.releasePreviousIncarnations(lease, retained);
+				retained.push(work);
+		await queue.releasePreviousIncarnations(
+			lease,
+			retained.map((work) => work.id),
+		);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
 			await queue.setControl(lease, intended);
 			if (intended === (this.desiredControl ?? "running")) break;
 		}
 		this.queue = queue;
+		for (const work of retained) {
+			this.retained.set(work.id, { enqueued: false });
+			this.held.add(work.id);
+			const reaping = this.reapRetained(work);
+			this.cleanups.add(reaping);
+			void reaping.finally(() => this.cleanups.delete(reaping));
+		}
 		return this.usageTotal;
+	}
+
+	/**
+	 * Reaps a retained earlier attempt's process groups on this host with the bounded SIGTERM, then SIGKILL, sequence.
+	 * Once they are gone the attempt is released for replay. If any survive, only that child fails and the attempt
+	 * stays quarantined. Groups on another host cannot be reaped: the attempt stays retained until recovery confirms
+	 * them gone.
+	 */
+	private async reapRetained(work: PoolWork): Promise<void> {
+		try {
+			const { survivors, unprobeable } = await reapProcessGroups(this.journal!, this.root!, { attempt: work });
+			if (survivors.length > 0) {
+				this.quarantined.add(work.id);
+				this.unreaped.push({ attempt: work });
+				this.port.send({ kind: "work-failure", workId: work.id, error: unconfirmedCleanup(survivors).message });
+				return;
+			}
+			if (unprobeable.length === 0) await this.releaseRetained(work);
+		} catch (error) {
+			this.cleanupFailure ??= error instanceof Error ? error : new Error(String(error));
+		} finally {
+			if (!this.quarantined.has(work.id)) this.held.delete(work.id);
+		}
+	}
+
+	/** Releases a retained earlier attempt whose groups are gone, adopting it if this incarnation enqueued it. */
+	private releaseRetained(work: PoolWork): Promise<void> {
+		return this.retainedTransition(async () => {
+			const record = this.retained.get(work.id);
+			this.retained.delete(work.id);
+			// A stale token means the attempt already changed hands: nothing is left to release.
+			await this.queue!.releaseRetained(this.lease!, work, record?.enqueued === true).catch((error: Error) => {
+				if (error.message !== STALE_WORK_LEASE) throw error;
+			});
+		});
+	}
+
+	private retainedTransition<T>(action: () => Promise<T>): Promise<T> {
+		const result = this.retainedTransitions.then(action);
+		this.retainedTransitions = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
 	}
 
 	private async control(state: PoolControl["state"]): Promise<void> {
@@ -526,8 +593,20 @@ export class PoolCoordinator {
 		if (!this.queue || !this.lease || this.root === undefined)
 			throw new Error("Local worker pool requires root preparation");
 		if (command.rootRun !== undefined) this.routes?.updateRoot(command.rootRun);
-		const work = await this.queue.enqueue(this.lease, command.descriptor, command.boundary);
-		if (!this.attemptBase.has(work.id)) this.attemptBase.set(work.id, work.state === "ready" ? work.generation : 0);
+		const queue = this.queue;
+		const lease = this.lease;
+		const work = await this.retainedTransition(async () => {
+			const enqueued = await queue.enqueue(lease, command.descriptor, command.boundary);
+			const retained = this.retained.get(enqueued.id);
+			if (retained) retained.enqueued = true;
+			return enqueued;
+		});
+		// A retained earlier attempt counts as that incarnation's: attempts in this one start after it (#3979).
+		if (!this.attemptBase.has(work.id))
+			this.attemptBase.set(
+				work.id,
+				work.state === "ready" || (work.state === "leased" && work.epoch < lease.epoch) ? work.generation : 0,
+			);
 		const result = await this.queue.result(this.root, work.id);
 		return { work, ...(result === undefined ? {} : { result }) };
 	}
@@ -739,7 +818,7 @@ export class PoolCoordinator {
 							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded;
 							// groups that survive it fail only that worker's child, and never the rest of the pool.
 							const alive = await admission.reapStoppedProcesses(worker);
-							if (alive.length > 0) this.unreaped.add(worker);
+							if (alive.length > 0) this.unreaped.push({ holder: worker });
 							// Close still reports any cleanup left unconfirmed, including permits never bound to a group.
 							if (this.closed && (alive.length > 0 || (await admission.releaseStoppedSessions(worker)) > 0))
 								throw unconfirmedCleanup(alive);
@@ -993,7 +1072,8 @@ export class PoolCoordinator {
 				if (this.held.has(work.id) || this.quarantined.has(work.id)) continue;
 				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
 				if ((await unconfirmedProcessGroups(this.journal!, root, { attempt: work })).length > 0) continue;
-				await queue.expire(lease, work);
+				if (work.epoch < lease.epoch) await this.releaseRetained(work);
+				else await queue.expire(lease, work);
 			}
 		})().finally(() => {
 			this.recovering = undefined;
@@ -1048,8 +1128,9 @@ export class PoolCoordinator {
 			if (this.cleanupFailure) throw this.cleanupFailure;
 			// A reap that finished before close may have left groups running; close reports those still running.
 			const alive: number[] = [];
-			for (const worker of this.unreaped)
-				alive.push(...(await unconfirmedProcessGroups(this.journal!, this.root!, { holder: worker })));
+			for (const scope of this.unreaped)
+				for (const group of await unconfirmedProcessGroups(this.journal!, this.root!, scope))
+					if (!alive.includes(group)) alive.push(group);
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
 		} catch (error) {
 			failure = error;

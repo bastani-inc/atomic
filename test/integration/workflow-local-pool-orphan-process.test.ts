@@ -175,18 +175,22 @@ interface WorkRow {
 	readonly state: string;
 	readonly worker: string;
 	readonly generation: number;
+	readonly epoch: number;
 }
 
 function workRow(path: string, root: string): WorkRow {
 	const journal = new DatabaseSync(path, { readOnly: true });
 	try {
-		const row = journal.prepare("SELECT id, state, worker, generation FROM wf_runs_work WHERE root = ?").get(root);
+		const row = journal
+			.prepare("SELECT id, state, worker, generation, epoch FROM wf_runs_work WHERE root = ?")
+			.get(root);
 		assert.ok(row);
 		return {
 			id: String(row.id),
 			state: String(row.state),
 			worker: String(row.worker),
 			generation: Number(row.generation),
+			epoch: Number(row.epoch),
 		};
 	} finally {
 		journal.close();
@@ -406,49 +410,65 @@ for (const mode of ["exit", "stall"] as const)
 		ORPHAN_PROCESS_TEST_TIMEOUT_MS,
 	);
 
-test.skipIf(process.platform === "win32")(
-	"a durable resume keeps quarantined work unclaimable while its process group runs, and replays it after (#3986)",
-	async () => {
-		const directory = makeTempDirectory("pool-orphan-resume-");
-		const path = join(directory, "journal.sqlite");
-		const root = testRunId("pool-orphan-resume-root");
-		const claim = vi.spyOn(SqlPoolQueue.prototype, "claim");
+/**
+ * The first incarnation quarantines child 0, whose group survives its reap, so the root fails; then `resume` runs
+ * the root again through `resumeDurableWorkflow` on a fresh backend and pool.
+ */
+async function quarantineThenResume(
+	resume: (context: {
+		readonly directory: string;
+		readonly path: string;
+		readonly root: string;
+		readonly group: number;
+		readonly quarantined: WorkRow;
+		readonly resumeRoot: (outcomes: ChildOutcome[]) => Promise<{
+			readonly pool: LocalWorkerPool;
+			readonly completion: () => Promise<{ readonly status?: string; readonly error?: string }>;
+		}>;
+	}) => Promise<void>,
+): Promise<void> {
+	const directory = makeTempDirectory("pool-orphan-resume-");
+	const path = join(directory, "journal.sqlite");
+	const root = testRunId("pool-orphan-resume-root");
+	const opened: Awaited<ReturnType<typeof openOrphanPool>>[] = [];
+	try {
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		const first = await openOrphanPool(path, { workers: 1, inProcess: true });
 		try {
-			// The first incarnation quarantines child 0: its group survives the reap, so the root fails.
-			const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
-			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
-			const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
-			const first = await openOrphanPool(path, { workers: 1, inProcess: true });
-			try {
-				const result = await run(
-					orphanRoot(first.child, 1, [], false),
-					{},
-					{ runId: root, cwd: directory, store: createStore(), durableBackend: first.backend },
-				);
-				assert.equal(result.status, "failed");
-				assert.match(result.error ?? "", /process groups \d+ still running/);
-			} finally {
-				await first.pool.close().catch(() => {});
-				await first.backend.close();
-				probe.mockRestore();
-				signal.mockRestore();
-				pause.mockRestore();
-			}
-			const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
-			assert.ok(groupAlive(group), "the quarantined group still runs");
-			const quarantined = workRow(path, root);
-			assert.equal(quarantined.state, "leased");
-
-			// The resumed incarnation probes the real group.
-			const resumed = await openOrphanPool(path, { workers: 1, inProcess: true });
-			const outcomes: ChildOutcome[] = [];
-			try {
+			const result = await run(
+				orphanRoot(first.child, 1, [], false),
+				{},
+				{ runId: root, cwd: directory, store: createStore(), durableBackend: first.backend },
+			);
+			assert.equal(result.status, "failed");
+			assert.match(result.error ?? "", /process groups \d+ still running/);
+		} finally {
+			await first.pool.close().catch(() => {});
+			await first.backend.close();
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+		}
+		const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+		assert.ok(groupAlive(group), "the quarantined group still runs");
+		const quarantined = workRow(path, root);
+		assert.equal(quarantined.state, "leased");
+		await resume({
+			directory,
+			path,
+			root,
+			group,
+			quarantined,
+			async resumeRoot(outcomes) {
+				const resumed = await openOrphanPool(path, { workers: 1, inProcess: true });
+				opened.push(resumed);
 				const store = createStore();
 				const jobs = createJobTracker();
 				let completion: Promise<unknown> | undefined;
-				const claimsBefore = claim.mock.results.length;
 				const accepted = await resumeDurableWorkflow(root, {
-					registry: createRegistry().register(orphanRoot(resumed.child, 1, outcomes, false)),
+					registry: createRegistry().register(orphanRoot(resumed.child, 1, outcomes)),
 					baseRunOpts: { store, cwd: directory },
 					durableBackend: resumed.backend,
 					jobs,
@@ -457,32 +477,123 @@ test.skipIf(process.platform === "win32")(
 					},
 				});
 				assert.ok(accepted.ok, accepted.ok ? "" : accepted.message);
+				return {
+					pool: resumed.pool,
+					async completion() {
+						await completion;
+						const record = store.runs().find((candidate) => candidate.id === root);
+						return { status: record?.status, error: record?.error };
+					},
+				};
+			},
+		});
+	} finally {
+		for (const { pool, backend } of opened) {
+			await pool.close().catch(() => {});
+			await backend.close();
+		}
+		killOrphan(directory);
+		removeTempDirectory(directory);
+	}
+}
+
+test.skipIf(process.platform === "win32")(
+	"a durable resume adopts a retained attempt the root enqueued while it was leased once its groups are gone (#3986)",
+	async () => {
+		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
+			let reaped = false;
+			const probe = vi
+				.spyOn(admissionHost, "processGroupState")
+				.mockImplementation(() => (reaped ? "gone" : "alive"));
+			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+			// The resumed coordinator's reap of the retained attempt holds until the root has enqueued it.
+			const barrier = reapBarrier();
+			const enqueue = vi.spyOn(SqlPoolQueue.prototype, "enqueue");
+			const claim = vi.spyOn(SqlPoolQueue.prototype, "claim");
+			try {
+				const outcomes: ChildOutcome[] = [];
+				const resumed = await resumeRoot(outcomes);
+				await barrier.started;
+				await until(() => enqueue.mock.results.length > 0);
+				const enqueued = await enqueue.mock.results[0]!.value;
+				assert.equal(enqueued.id, quarantined.id);
+				assert.equal(enqueued.state, "leased", "the resumed root enqueues the retained attempt while it is leased");
+				const claimsBefore = claim.mock.results.length;
 				await until(() => claim.mock.results.length > claimsBefore + 1);
 				for (const outcome of claim.mock.results.slice(claimsBefore))
-					assert.equal(
-						await outcome.value,
-						undefined,
-						"the resumed pool cannot claim work whose group still runs",
-					);
-				assert.deepEqual(workRow(path, root), quarantined, "the quarantined attempt keeps its lease across resume");
-				assert.equal(fileExistsSync(join(directory, "replay.json")), false);
+					assert.equal(await outcome.value, undefined, "the retained attempt is not claimable while it is reaped");
+				const epoch = claim.mock.calls.at(-1)![0].epoch;
+				assert.ok(epoch > quarantined.epoch);
+				assert.deepEqual(workRow(path, root), quarantined);
 
 				process.kill(-group, "SIGKILL");
-				await completion;
-				const record = store.runs().find((candidate) => candidate.id === root);
-				assert.equal(record?.status, "completed", record?.error);
+				await until(() => !groupAlive(group));
+				reaped = true;
+				barrier.release();
+				// Released, it must be adopted into the resumed epoch, or no worker of this incarnation can claim it.
+				await until(() => {
+					const row = workRow(path, root);
+					return row.state === "completed" || (row.state === "ready" && row.epoch !== epoch);
+				});
+				assert.equal(workRow(path, root).epoch, epoch, "the released attempt is adopted into the resumed epoch");
+				const record = await resumed.completion();
+				assert.equal(record.status, "completed", record.error);
 				assert.deepEqual(outcomes, [{ index: 0, status: "completed" }]);
+				assert.equal(workRow(path, root).generation, quarantined.generation + 1, "one replay in this incarnation");
 				const replay = await readJson<{ orphanAliveAtReplay: boolean }>(join(directory, "replay.json"));
 				assert.equal(replay.orphanAliveAtReplay, false, "the replay starts only after the group exits");
 			} finally {
-				await resumed.pool.close().catch(() => {});
-				await resumed.backend.close();
+				barrier.release();
+				probe.mockRestore();
+				signal.mockRestore();
+				barrier.pause.mockRestore();
+				enqueue.mockRestore();
+				claim.mockRestore();
 			}
-		} finally {
-			claim.mockRestore();
-			killOrphan(directory);
-			removeTempDirectory(directory);
-		}
+		});
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a durable resume reaps a retained attempt's groups and fails only its child if they survive the bound (#3986)",
+	async () => {
+		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
+			// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
+			const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+			const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+			try {
+				const outcomes: ChildOutcome[] = [];
+				const resumed = await resumeRoot(outcomes);
+				const record = await resumed.completion();
+				assert.equal(record.status, "completed", record.error);
+				const failed = outcomes[0]?.error;
+				assert.ok(failed instanceof WorkflowInfrastructureError, String(failed));
+				assert.equal(failed.code, "worker_cleanup_unconfirmed");
+				assert.equal(failed.retryable, true);
+				assert.match(failed.message, unconfirmedCleanup(group));
+				assert.deepEqual(
+					signal.mock.calls.map(([target, name]) => [target, name]),
+					[
+						[group, "SIGTERM"],
+						[group, "SIGKILL"],
+					],
+					"the resumed coordinator reaps the retained group with the bounded sequence",
+				);
+				assert.deepEqual(workRow(path, root), quarantined, "the attempt stays quarantined, never replayed");
+				assert.equal(fileExistsSync(join(directory, "replay.json")), false);
+				assert.deepEqual(
+					permitStates(path).map(([, state]) => state),
+					["granted"],
+				);
+				await assert.rejects(resumed.pool.close(), unconfirmedCleanup(group));
+			} finally {
+				probe.mockRestore();
+				signal.mockRestore();
+				pause.mockRestore();
+			}
+		});
 	},
 	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
 );
