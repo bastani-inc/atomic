@@ -1,12 +1,18 @@
 import {
 	appendRunEndWhenRecorded,
 	reconcileTerminalRunResult,
+	recordedFailureClassification,
 	type SelectedRunFailureMetadata,
 } from "../runs/foreground/executor-lifecycle.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowPersistencePort } from "../shared/types.js";
+
+function failureOf(metadata: SelectedRunFailureMetadata): Pick<RunResult, "failure"> {
+	const failure = recordedFailureClassification(metadata);
+	return failure === undefined ? {} : { failure };
+}
 
 /** Record, persist, and return one ordinary terminal workflow failure. */
 export async function finalizeTerminalFailure(input: {
@@ -50,7 +56,7 @@ export async function finalizeTerminalFailure(input: {
 		runId,
 		runSnapshot,
 		store,
-		{ status: "failed", error: metadata.errorMessage },
+		{ status: "failed", error: metadata.errorMessage, ...failureOf(metadata) },
 		onRunEnd,
 	);
 }

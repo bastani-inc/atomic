@@ -1165,7 +1165,17 @@ interface RunResult<
   readonly error?: string;
   readonly exited?: boolean;
   readonly exitReason?: string;
+  readonly failure?: RunFailureClassification;
   readonly stages: readonly StageSnapshot[];
+}
+interface RunFailureClassification extends WorkflowSerializableObject {
+  readonly kind: "auth" | "rate_limit" | "provider" | "cancelled" | "unknown";
+  readonly code?: string;
+  readonly retryable: boolean;
+  readonly resumable: boolean;
+  readonly recoverability?: "recoverable" | "non_recoverable" | "unknown";
+  readonly disposition?: "active_blocked" | "terminal_killed" | "terminal_failed";
+  readonly retryAfterMs?: number;
 }
 interface StageSnapshot extends WorkflowSerializableObject {
   readonly id: string;
@@ -1184,6 +1194,15 @@ interface StageSnapshot extends WorkflowSerializableObject {
 ```
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
+
+`failure` describes how a run that failed, or blocked on a failure, was classified. It is absent for runs that did not fail, and for results recorded before this field existed.
+- `kind` and `code` say what failed.
+- `retryable` says whether retrying the same work can succeed, as for a rate limit or an outage.
+- `resumable` says whether the run can be resumed.
+- `disposition` says whether the run failed (`terminal_failed`), was stopped (`terminal_killed`), or stays `running` and blocked until a resume (`active_blocked`). It is absent when the run failed outside any stage.
+- `retryAfterMs` is the server's retry hint, when it sent one.
+
+When a child workflow fails, its parent classifies the failure from the child's `failure`, never from workflow or stage names in the error text. An ordinary child failure fails the parent; a child blocked on a rate limit blocks the parent for resume. A child result without `failure` is classified from the child's own error text.
 
 Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. Selections recorded before `candidates` existed omit it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
