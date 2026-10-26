@@ -134,6 +134,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private pumping?: Promise<void>;
 	/** Something to send arrived while the sender ran. */
 	private pumpAgain = false;
+	/** Settles when the current watch ends or is replaced: a send to it stops waiting then. */
+	private watchGone = Promise.withResolvers<void>();
 	/** Redelivery waits for the attempt's own first turn, so the replay's prompt comes first. */
 	private awaitingTurn = false;
 	/** A rebind in flight: the handle reads as reconnecting until the outbox drains. */
@@ -245,6 +247,7 @@ export class PooledStageHandle implements StageControlHandle {
 	/** Applies one message of the watch stream. */
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
+			this.leaveWatch();
 			this.streamingNow = false;
 			if (RECONNECTABLE.has(message.reason) && !this.disposed && this.ended === undefined) this.reconnecting = true;
 			else this.end(message.reason);
@@ -267,6 +270,7 @@ export class PooledStageHandle implements StageControlHandle {
 	 */
 	rebind(watch: PooledStageWatch): Promise<number> {
 		const previous = this.watchId;
+		this.leaveWatch();
 		this.finishRebind(false);
 		this.watchId = watch.id;
 		this.attempt = watch.attempt;
@@ -339,6 +343,7 @@ export class PooledStageHandle implements StageControlHandle {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.leaveWatch();
 		for (const entry of this.outbound) {
 			entry.waiter?.reject(new Error(`Stage chat "${this.stageName}" is closed.`));
 			entry.waiter = undefined;
@@ -348,6 +353,12 @@ export class PooledStageHandle implements StageControlHandle {
 		this.rebindListeners.clear();
 		this.drainedListeners.clear();
 		this.close(this.watchId);
+	}
+
+	/** Releases sends waiting on the current watch; the next watch gets a fresh signal. */
+	private leaveWatch(): void {
+		this.watchGone.resolve();
+		this.watchGone = Promise.withResolvers<void>();
 	}
 
 	private throwIfClosed(): void {
@@ -467,7 +478,11 @@ export class PooledStageHandle implements StageControlHandle {
 				const redelivery = entry.admittedBy !== undefined;
 				let result: Awaited<ReturnType<PooledStageHandle["sendEntry"]>>;
 				try {
-					result = await this.sendEntry(entry, watch);
+					// A send whose watch ended or was replaced is sent again to the next one, by its op.
+					const gone = this.watchGone.promise.then(
+						(): Awaited<ReturnType<PooledStageHandle["sendEntry"]>> => ({ ok: false, refusal: "StaleAttempt" }),
+					);
+					result = await Promise.race([this.sendEntry(entry, watch), gone]);
 				} catch (error) {
 					// The stage refused it, or the outcome is unknown. Either way the caller hears now,
 					// and the next attempt gets it again, deduplicated by its op.
@@ -642,6 +657,7 @@ export async function openPooledStageHandle(
 export async function reconnectPooledStageHandle(
 	handle: PooledStageHandle,
 	transport: PooledStageTransport,
+	wanted: () => boolean = () => true,
 ): Promise<boolean> {
 	if (!handle.isReconnecting || handle.isDisposed) return false;
 	let bound = false;
@@ -651,7 +667,8 @@ export async function reconnectPooledStageHandle(
 		else early.push(message);
 	});
 	if (!result.ok) return false;
-	if (handle.isDisposed) {
+	// A view that gave up on this attempt, or closed, does not bind a watch that opened late.
+	if (handle.isDisposed || !wanted()) {
 		await transport.unwatch(result.watch.id);
 		return false;
 	}

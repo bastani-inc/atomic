@@ -75,9 +75,19 @@ interface StageView {
 	opening: Promise<PooledStageHandle | undefined>;
 	holders: number;
 	handle?: PooledStageHandle;
-	reconnect?: () => Promise<boolean>;
+	reconnect?: (wanted: () => boolean) => Promise<boolean>;
 	reconnecting?: Promise<void>;
+	/** Publications applied since the reconnect in flight began opening its watch. */
+	reconnectAge?: number;
+	/** The reconnect in flight, abandoned when it outlives {@link RECONNECT_ATTEMPT_PUBLICATIONS}. */
+	reconnectAttempt?: symbol;
 }
+
+/**
+ * Publications a reconnect may wait for its watch to open before the view tries again. A watch that
+ * never opens (its worker never answers) must not leave the view reconnecting for good (#3996).
+ */
+const RECONNECT_ATTEMPT_PUBLICATIONS = 40;
 
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
@@ -554,7 +564,7 @@ export class LocalWorkerPool {
 				);
 				if (!opened.ok) return undefined;
 				created.handle = opened.handle;
-				created.reconnect = () => module.reconnectPooledStageHandle(opened.handle, transport);
+				created.reconnect = (wanted) => module.reconnectPooledStageHandle(opened.handle, transport, wanted);
 				// A view nobody holds stays open only until its outbox drains.
 				opened.handle.onDrained(() => {
 					if (created.holders === 0 && !opened.handle.hasPending) opened.handle.dispose();
@@ -609,7 +619,7 @@ export class LocalWorkerPool {
 			);
 		};
 		for (const view of this.reconnectingViews) {
-			if (view.reconnecting !== undefined || view.reconnect === undefined || view.handle === undefined) continue;
+			if (view.reconnect === undefined || view.handle === undefined) continue;
 			const handle = view.handle;
 			if (ended(view.key)) {
 				this.reconnectingViews.delete(view);
@@ -618,8 +628,19 @@ export class LocalWorkerPool {
 				this.outboxes.delete(view.key);
 				continue;
 			}
+			if (view.reconnecting !== undefined) {
+				// Still opening; give up on it once it is clearly stuck, and try a fresh watch.
+				view.reconnectAge = (view.reconnectAge ?? 0) + 1;
+				if (handle.isReconnecting && view.reconnectAge > RECONNECT_ATTEMPT_PUBLICATIONS) {
+					view.reconnectAttempt = undefined;
+					view.reconnecting = undefined;
+				} else continue;
+			}
+			const attempt = Symbol("reconnect");
+			view.reconnectAttempt = attempt;
+			view.reconnectAge = 0;
 			view.reconnecting = view
-				.reconnect()
+				.reconnect(() => view.reconnectAttempt === attempt)
 				.then((bound) => {
 					// A watch that ended again after this rebind queued the view anew; keep it queued.
 					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
@@ -627,6 +648,8 @@ export class LocalWorkerPool {
 				})
 				.catch(() => {})
 				.finally(() => {
+					if (view.reconnectAttempt !== attempt) return;
+					view.reconnectAttempt = undefined;
 					view.reconnecting = undefined;
 				});
 		}

@@ -11,6 +11,8 @@ export const ROUNDS_STEER = "rounds-steer";
 export const ROUNDS_FOLLOW_UP = "rounds-follow-up";
 /** While `release` is missing from the child's cwd, the agent holds before its next round. */
 export const ROUNDS_RELEASE_FILE = "release";
+/** With `foreground`, the first round's tool call itself runs until the test creates this file. */
+export const ROUNDS_TOOL_RELEASE_FILE = "release-tool";
 
 type Message = { readonly role: string; readonly content?: unknown };
 
@@ -31,7 +33,7 @@ function text(message: Message | undefined): string {
 export const child = workflow({
 	name: "pool-rounds-child",
 	description: "Local worker stage that runs tool rounds",
-	inputs: { cwd: Type.String() },
+	inputs: { cwd: Type.String(), foreground: Type.Optional(Type.Boolean()) },
 	outputs: { text: Type.String() },
 	async run(ctx) {
 		const options = await poolStageOptions(ctx.inputs.cwd, false, process.pid);
@@ -71,7 +73,10 @@ export const child = workflow({
 							id: `round-${rounds + 1}-${Date.now()}`,
 							name: "bash",
 							arguments: {
-								command: `echo round ${rounds + 1}`,
+								command:
+									ctx.inputs.foreground === true && rounds === 0
+										? `while [ ! -f '${join(ctx.inputs.cwd, ROUNDS_TOOL_RELEASE_FILE)}' ]; do sleep 0.05; done; echo round 1`
+										: `echo round ${rounds + 1}`,
 							},
 						},
 					];

@@ -211,9 +211,12 @@ export class WorkerStageWatches {
 
 	/** Ops the stage's session holds receipts for: its live entries and its committed ones. */
 	private deliveredOps(handle: StageControlHandle): Set<DeliveryOpId> | Promise<Set<DeliveryOpId>> {
-		const live = deliveredOps(handle.agentSession?.sessionManager?.getEntries() ?? []);
+		const session = handle.agentSession?.sessionManager;
+		const live = deliveredOps(session?.getEntries() ?? []);
 		const load = this.options.entries;
-		if (handle.sessionId === undefined || load === undefined) return new Set(live);
+		// An attached session holds every entry it replayed; only a stage that has not attached its
+		// session yet needs the committed entries, so nothing here waits on the session store then.
+		if (session !== undefined || handle.sessionId === undefined || load === undefined) return new Set(live);
 		return load(handle.sessionId).then(
 			(committed) => new Set([...live, ...deliveredOps(committed ?? [])]),
 			() => new Set(live),

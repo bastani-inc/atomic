@@ -364,3 +364,43 @@ test("a worker that refuses a send after its caller went away leaves no unhandle
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(opened.handle.isDisposed, true);
 });
+
+test("a redelivery its worker never answers does not hold the view: a fresh watch gets the text, once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	let hang = false;
+	fake.transport.deliver = (delivery) => {
+		if (!hang) return deliver(delivery);
+		fake.deliveries.push(delivery);
+		return new Promise(() => {});
+	};
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await handle.steer("STEER");
+	fake.end("worker_exited");
+	hang = true;
+	// The replacement's worker never answers the redelivery: the view stays reconnecting.
+	const stuck = reconnectPooledStageHandle(handle, fake.transport);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(handle.isReconnecting, true);
+	// The pool gives up on that attempt and opens a fresh watch, as it does after enough activity.
+	hang = false;
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport, () => true), true);
+	assert.equal(handle.isReconnecting, false);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:STEER", "watch-2:STEER", "watch-3:STEER"],
+	);
+	assert.equal(await stuck, false, "the abandoned rebind settles");
+});
+
+test("a watch that opens after its reconnect was abandoned is closed, not bound (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(opened.handle, fake.transport, () => false), false);
+	assert.deepEqual(fake.unwatched, ["watch-2"]);
+	assert.equal(opened.handle.isReconnecting, true);
+});
