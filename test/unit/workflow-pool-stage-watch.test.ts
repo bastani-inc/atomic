@@ -562,6 +562,23 @@ test("an answer reaches only the prompt it names, on the attempt the worker hold
 	assert.equal(answer(3, "prompt-1"), "ok");
 	assert.equal(await answered, "main");
 	assert.equal(answer(4, "prompt-1"), "PromptNotPending", "an answered prompt is not answered twice");
+	// #4022: a stage this attempt has not recreated yet has no prompt pending; only a finished stage is gone.
+	const answerStage = (commandId: number, stageId: string) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op: "answer",
+			runId: "child",
+			stageId,
+			answer: { kind: "prompt", promptId: "prompt-1", response: "main" },
+		});
+		const result = sent.find((message) => message.kind === "stage-command-result" && message.commandId === commandId);
+		return result?.kind === "stage-command-result" ? (result.refusal ?? "ok") : "none";
+	};
+	assert.equal(answerStage(40, "not-recreated-yet"), "PromptNotPending");
+	store.recordStageStart("child", { id: "done", name: "done", status: "completed", parentIds: [], toolEvents: [] });
+	assert.equal(answerStage(41, "done"), "StageNotLive");
 
 	// A stage's brokered question, such as ask_user_question, is answered through its broker.
 	store.recordStageStart("child", { id: "agent", name: "agent", status: "running", parentIds: [], toolEvents: [] });

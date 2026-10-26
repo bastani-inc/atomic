@@ -357,7 +357,10 @@ export class WorkerStageWatches {
 			.runs()
 			.find((run) => run.id === command.runId)
 			?.stages.find((candidate) => candidate.id === command.stageId);
-		if (stage === undefined || TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
+		// A stage this attempt has not recreated yet has no prompt pending here; only a finished stage is
+		// gone for good (#4022). The root holds an answer refused for the former for the prompt asked again.
+		if (stage === undefined) return { refusal: "PromptNotPending" };
+		if (TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
 		const { answer } = command;
 		if (answer.kind === "failed") {
 			const error = new Error(answer.error);

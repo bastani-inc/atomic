@@ -273,6 +273,62 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"#4022: an SDK ui method that throws before returning its promise fails the pooled child with that error, and the root settles",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-prompt-sdk-throw-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerWorkflow(childPath, "child");
+		let asked = 0;
+		const ui: WorkflowUIAdapter = {
+			input() {
+				asked++;
+				throw new Error("the caller's prompt window failed to open");
+			},
+			async confirm() {
+				return false;
+			},
+			async select(_message, options) {
+				return options[0]!;
+			},
+			async editor(initial) {
+				return initial ?? "";
+			},
+			async custom() {
+				throw new Error("not used");
+			},
+		};
+		try {
+			// Explicit: the run settles on its own; a throw that escapes routing leaves the child waiting forever.
+			const outcome = await Promise.race([
+				run(
+					parentOf(child),
+					{},
+					{
+						runId: testRunId("pool-stage-prompt-sdk-throw"),
+						cwd: directory,
+						store: createStore(),
+						durableBackend: backend,
+						ui,
+						localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
+					},
+				),
+				new Promise<never>((_, reject) =>
+					setTimeout(() => reject(new Error("the run did not settle")), CONDITION_TIMEOUT_MS).unref(),
+				),
+			]);
+			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			assert.match(JSON.stringify(outcome.error), /the caller's prompt window failed to open/);
+			assert.equal(asked, 1, "a throwing ui is not asked again");
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
 	"an SDK ui that rejects fails the pooled child with that error, and the root settles (#3996)",
 	async () => {
 		const directory = makeTempDirectory("pool-stage-prompt-sdk-reject-");
