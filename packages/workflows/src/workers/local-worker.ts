@@ -31,6 +31,7 @@ import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
+import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
 	type WorkerDeliver,
@@ -212,6 +213,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		},
 	});
 	const reader = await JournalDurableBackend.open(readOnlyJournal, { runs: [] });
+	configurePooledWatchTrace(start.journalPath, `worker:${process.pid}`);
 	const sessions = await new StorageProvider().openSessionStore(
 		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(journal)!.tables.runs}_pool_` },
 		{ agentDir: "", domain: "sessions" },

@@ -123,3 +123,11 @@ export function resolveHomeGroup(
 	}
 	return DEFAULT_GROUP;
 }
+
+/**
+ * #4006: refusal for a sender outside a workflow invocation. It names the documented
+ * `workflow:<rootRunId>` group to join, never an internal identifier.
+ */
+export function workflowInvocationGroupRefusal(invocationGroup: string): string {
+	return `Target workflow run is in a different intercom group; join ${normalizeGroup(invocationGroup)} to send to its stages`;
+}

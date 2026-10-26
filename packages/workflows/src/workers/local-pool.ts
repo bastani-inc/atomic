@@ -62,6 +62,7 @@ import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
+import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
@@ -86,9 +87,19 @@ interface StageView {
 	opening: Promise<PooledStageHandle | undefined>;
 	holders: number;
 	handle?: PooledStageHandle;
-	reconnect?: () => Promise<boolean>;
+	reconnect?: (wanted: () => boolean) => Promise<boolean>;
 	reconnecting?: Promise<void>;
+	/** Publications applied since the reconnect in flight began opening its watch. */
+	reconnectAge?: number;
+	/** The reconnect in flight, abandoned when it outlives {@link RECONNECT_ATTEMPT_PUBLICATIONS}. */
+	reconnectAttempt?: symbol;
 }
+
+/**
+ * Publications a reconnect may wait for its watch to open before the view tries again. A watch that
+ * never opens (its worker never answers) must not leave the view reconnecting for good (#3996).
+ */
+const RECONNECT_ATTEMPT_PUBLICATIONS = 40;
 
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
@@ -307,6 +318,7 @@ export class LocalWorkerPool {
 			readonly stageControlRegistry?: StageControlRegistry;
 		},
 	) {
+		configurePooledWatchTrace(options.journalPath, "root");
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
 		if (
 			options.startupTimeoutMs !== undefined &&
@@ -686,6 +698,7 @@ export class LocalWorkerPool {
 					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
 			const created: StageView = { key, holders: 0, opening: Promise.resolve(undefined) };
 			const transport = this.stageTransport((reason) => {
+				tracePooledWatch("root.view.watch-ended", { key, reason, current: this.stageViews.get(key) === created });
 				if (this.stageViews.get(key) !== created) return;
 				if (reason === "attempt_fenced" || reason === "worker_exited" || reason === "resync")
 					this.reconnectingViews.add(created);
@@ -713,7 +726,7 @@ export class LocalWorkerPool {
 				);
 				if (!opened.ok) return undefined;
 				created.handle = opened.handle;
-				created.reconnect = () => module.reconnectPooledStageHandle(opened.handle, transport);
+				created.reconnect = (wanted) => module.reconnectPooledStageHandle(opened.handle, transport, wanted);
 				// A view nobody holds stays open only until its outbox drains.
 				opened.handle.onDrained(() => {
 					if (created.holders === 0 && !opened.handle.hasPending) opened.handle.dispose();
@@ -768,24 +781,47 @@ export class LocalWorkerPool {
 			);
 		};
 		for (const view of this.reconnectingViews) {
-			if (view.reconnecting !== undefined || view.reconnect === undefined || view.handle === undefined) continue;
+			if (view.reconnect === undefined || view.handle === undefined) continue;
 			const handle = view.handle;
 			if (ended(view.key)) {
+				tracePooledWatch("root.reconnect.stage-ended", { key: view.key });
 				this.reconnectingViews.delete(view);
 				handle.receive({ kind: "ended", reason: "stage_finished" });
 				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
 				this.outboxes.delete(view.key);
 				continue;
 			}
+			if (view.reconnecting !== undefined) {
+				// Still opening; give up on it once it is clearly stuck, and try a fresh watch.
+				view.reconnectAge = (view.reconnectAge ?? 0) + 1;
+				if (handle.isReconnecting && view.reconnectAge > RECONNECT_ATTEMPT_PUBLICATIONS) {
+					tracePooledWatch("root.reconnect.abandon", { key: view.key, age: view.reconnectAge });
+					view.reconnectAttempt = undefined;
+					view.reconnecting = undefined;
+				} else continue;
+			}
+			const attempt = Symbol("reconnect");
+			view.reconnectAttempt = attempt;
+			view.reconnectAge = 0;
+			tracePooledWatch("root.reconnect.start", { key: view.key, generation: handle.placement.generation });
 			view.reconnecting = view
-				.reconnect()
+				.reconnect(() => view.reconnectAttempt === attempt)
 				.then((bound) => {
+					tracePooledWatch("root.reconnect.settled", {
+						key: view.key,
+						bound,
+						reconnecting: handle.isReconnecting,
+						pending: handle.hasPending,
+						generation: handle.placement.generation,
+					});
 					// A watch that ended again after this rebind queued the view anew; keep it queued.
 					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
 					if (bound && view.holders === 0 && !handle.hasPending) handle.dispose();
 				})
 				.catch(() => {})
 				.finally(() => {
+					if (view.reconnectAttempt !== attempt) return;
+					view.reconnectAttempt = undefined;
 					view.reconnecting = undefined;
 				});
 		}

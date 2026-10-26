@@ -364,3 +364,104 @@ test("a worker that refuses a send after its caller went away leaves no unhandle
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(opened.handle.isDisposed, true);
 });
+
+test("a redelivery its worker never answers does not hold the view: a fresh watch gets the text, once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	let hang = false;
+	fake.transport.deliver = (delivery) => {
+		if (!hang) return deliver(delivery);
+		fake.deliveries.push(delivery);
+		return new Promise(() => {});
+	};
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await handle.steer("STEER");
+	fake.end("worker_exited");
+	hang = true;
+	// The replacement's worker never answers the redelivery: the view stays reconnecting.
+	const stuck = reconnectPooledStageHandle(handle, fake.transport);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(handle.isReconnecting, true);
+	// The pool gives up on that attempt and opens a fresh watch, as it does after enough activity.
+	hang = false;
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport, () => true), true);
+	assert.equal(handle.isReconnecting, false);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:STEER", "watch-2:STEER", "watch-3:STEER"],
+	);
+	assert.equal(await stuck, false, "the abandoned rebind settles");
+});
+
+test("a watch that opens after its reconnect was abandoned is closed, not bound (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(opened.handle, fake.transport, () => false), false);
+	assert.deepEqual(fake.unwatched, ["watch-2"]);
+	assert.equal(opened.handle.isReconnecting, true);
+});
+
+test("a send its attempt never confirms does not hold later ones: they go, and the next attempt gets it, once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	fake.transport.deliver = (delivery) => {
+		// The trace's replacement: this follow-up's admission never answers on generation 1.
+		if (delivery.text === "FOLLOW" && delivery.watch === "watch-1") {
+			fake.deliveries.push(delivery);
+			return new Promise(() => {});
+		}
+		return deliver(delivery);
+	};
+	// A short wait: the never-answered send is soon left unconfirmed, and later tried again.
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		[],
+		5,
+	);
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await assert.rejects(handle.followUp("FOLLOW"), /already arrived/);
+	await handle.steer("STEER");
+	assert.deepEqual(
+		fake.deliveries.slice(0, 2).map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:FOLLOW", "watch-1:STEER"],
+		"the steer is not held behind the unconfirmed follow-up",
+	);
+	assert.equal(handle.hasPending, false, "an unconfirmed send does not keep the attempt busy");
+	assert.deepEqual(handle.queuedUserMessages().followUp, ["FOLLOW"], "it still shows as pending");
+	assert.equal(handle.placement.undelivered, 1, "and is counted, never dropped silently");
+	// It is tried again on the same attempt.
+	while (fake.deliveries.filter(({ text }) => text === "FOLLOW").length < 2)
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.filter(({ watch }) => watch === "watch-2").map(({ text }) => text),
+		["FOLLOW", "STEER"],
+		"the next attempt gets each once, in order (its session holds neither)",
+	);
+	assert.equal(handle.placement.undelivered, undefined);
+});
+
+test("the same text sent twice while reconnecting shows as two pending rows, and both are redelivered (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	fake.end("worker_exited");
+	await assert.rejects(handle.followUp("run the tests"), /sent again when it reconnects/);
+	await assert.rejects(handle.followUp("run the tests"), /sent again when it reconnects/);
+	assert.deepEqual(handle.queuedUserMessages().followUp, ["run the tests", "run the tests"]);
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:run the tests", "watch-2:run the tests"],
+	);
+});

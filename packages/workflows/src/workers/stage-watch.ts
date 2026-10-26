@@ -3,6 +3,7 @@ import type { StageControlHandle, StageControlRegistry } from "../runs/foregroun
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
@@ -45,14 +46,39 @@ export async function admitStageUserMessage(
 				if (event.type === "message_start" && event.message.role === "user")
 					startedTurn.resolve({ action: "prompt" });
 			});
-	// A busy session takes the text in its mode: a steer steers, anything else follows up.
+	// A busy session takes the text in its mode: a steer steers, anything else follows up. The text is
+	// admitted once it is in the session's queue; the call that queued it may settle much later (a
+	// replacement attempt's session still finishing its startup, say), and consumption is tracked by
+	// the receipts, so admission never waits for the turn.
+	const queuedIn: "steering" | "followUp" = intent === "steer" ? "steering" : "followUp";
+	const queuedAction: StageCommandResult = { action: intent === "steer" ? "steer" : "followUp" };
+	let stopQueueWatch = () => {};
 	const queue = async (): Promise<StageCommandResult> => {
-		if (intent === "steer") {
-			await handle.steer(text);
-			return { action: "steer" };
-		}
-		await handle.followUp(text);
-		return { action: "followUp" };
+		const queued = Promise.withResolvers<StageCommandResult>();
+		const before = handle.queuedUserMessages?.()[queuedIn].filter((entry) => entry === text).length ?? 0;
+		stopQueueWatch = handle.subscribe((event) => {
+			if (event.type !== "queue_update") return;
+			const entries = (event as { readonly steering?: readonly string[]; readonly followUp?: readonly string[] })[
+				queuedIn
+			];
+			if ((entries ?? []).filter((entry) => entry === text).length > before) queued.resolve(queuedAction);
+		});
+		// The stage queues into a turn its live session already runs directly, and arms its own
+		// continuation for it (see the stage control handle).
+		const direct = handle.agentSession?.isStreaming === true;
+		const call = (async (): Promise<StageCommandResult> => {
+			if (intent === "steer") await handle.steer(text);
+			else await handle.followUp(text);
+			return queuedAction;
+		})();
+		tracePooledWatch("worker.deliver.queueing", { intent, before, direct });
+		const admitted = await Promise.race([call, queued.promise]);
+		void call.then(
+			() => tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: true }),
+			(error: Error) =>
+				tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: false, error: error.message }),
+		);
+		return admitted;
 	};
 	// A turn under way, whether or not the stage handle reports it (a replayed turn may not, and
 	// holds the stage's message admission until it ends), takes the text in its mode directly:
@@ -77,6 +103,7 @@ export async function admitStageUserMessage(
 		return await Promise.race([delivery, startedTurn.promise]);
 	} finally {
 		unsubscribe();
+		stopQueueWatch();
 		// A turn this delivery started reports its own failure through the stage; the door has answered.
 		delivery.catch(() => {});
 	}
@@ -162,6 +189,15 @@ export class WorkerStageWatches {
 	) {}
 
 	serve(command: WorkerStageCommand): void {
+		const held = this.attempt();
+		tracePooledWatch("worker.command", {
+			commandId: command.commandId,
+			op: command.op,
+			watch: "watch" in command ? command.watch : undefined,
+			generation: command.attempt.generation,
+			heldGeneration: held?.generation,
+			heldWorkId: held?.workId === command.attempt.workId,
+		});
 		if (command.op === "unwatch") {
 			this.close(command.watch);
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
@@ -201,10 +237,17 @@ export class WorkerStageWatches {
 	): void {
 		const held = this.attempt();
 		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation) {
+			tracePooledWatch("worker.watch.refused", { watch: command.watch, refusal: "AttemptChanging" });
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "AttemptChanging" });
 			return;
 		}
 		if (handle === undefined || isTerminal(handle) || this.registry.get(command.runId, command.stageId) !== handle) {
+			tracePooledWatch("worker.watch.refused", {
+				watch: command.watch,
+				refusal: "StageNotOnWorker",
+				handle: handle !== undefined,
+				terminal: handle === undefined ? undefined : isTerminal(handle),
+			});
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "StageNotOnWorker" });
 			return;
 		}
@@ -218,6 +261,16 @@ export class WorkerStageWatches {
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
 		this.watches.set(command.watch, watch);
+		tracePooledWatch("worker.watch.opened", {
+			watch: command.watch,
+			status: handle.status,
+			streaming: handle.isStreaming,
+			sessionStreaming: handle.agentSession?.isStreaming,
+			turnLoopBusy: handle.isTurnLoopBusy,
+			turnStarted: this.options.turnStarted?.(handle),
+			session: handle.agentSession !== undefined,
+			delivered: [...delivered],
+		});
 		this.send({
 			kind: "stage-command-result",
 			commandId: command.commandId,
@@ -231,9 +284,12 @@ export class WorkerStageWatches {
 
 	/** Ops the stage's session holds receipts for: its live entries and its committed ones. */
 	private deliveredOps(handle: StageControlHandle): Set<DeliveryOpId> | Promise<Set<DeliveryOpId>> {
-		const live = deliveredOps(handle.agentSession?.sessionManager?.getEntries() ?? []);
+		const session = handle.agentSession?.sessionManager;
+		const live = deliveredOps(session?.getEntries() ?? []);
 		const load = this.options.entries;
-		if (handle.sessionId === undefined || load === undefined) return new Set(live);
+		// An attached session holds every entry it replayed; only a stage that has not attached its
+		// session yet needs the committed entries, so nothing here waits on the session store then.
+		if (session !== undefined || handle.sessionId === undefined || load === undefined) return new Set(live);
 		return load(handle.sessionId).then(
 			(committed) => new Set([...live, ...deliveredOps(committed ?? [])]),
 			() => new Set(live),
@@ -242,12 +298,23 @@ export class WorkerStageWatches {
 
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
 	sweep(): void {
-		for (const [id, watch] of this.watches)
+		for (const [id, watch] of this.watches) {
+			// The stage registered another handle (it moved from replaying to running live, say): this
+			// watch would see nothing more, so the root opens a new one on the current handle.
+			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
+			if (current !== undefined && current !== watch.handle && !isTerminal(current)) {
+				tracePooledWatch("worker.watch.handle-replaced", { watch: id });
+				this.flush(id);
+				this.close(id);
+				this.send({ kind: "stage-watch-ended", watch: id, reason: "resync" });
+				continue;
+			}
 			if (isTerminal(watch.handle)) {
 				this.flush(id);
 				this.close(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "stage_finished" });
 			}
+		}
 	}
 
 	/** Ends every watch when the attempt ends; the coordinator tells the root. */
@@ -384,17 +451,42 @@ export class WorkerStageWatches {
 
 	private async deliver(command: Extract<WorkerStageCommand, { op: "deliver" }>): Promise<StageCommandResult> {
 		const recorded = this.ledger.get(command.deliveryOp);
-		if (recorded !== undefined) return recorded;
-		const held = this.attempt();
 		const watch = this.watches.get(command.watch);
+		if (recorded !== undefined) {
+			// A retry of text still being admitted: once it sits in the session's queue it is admitted.
+			const queue = command.intent === "steer" ? "steering" : "followUp";
+			if (watch?.handle.queuedUserMessages?.()[queue].includes(command.text) === true)
+				return Promise.race([
+					recorded,
+					Promise.resolve({ action: command.intent === "steer" ? "steer" : "followUp" } as const),
+				]);
+			return recorded;
+		}
+		const held = this.attempt();
 		const refuse = (refusal: DeliveryRefusal): Promise<StageCommandResult> => Promise.resolve({ refusal });
 		if (
 			held?.workId !== command.attempt.workId ||
 			held.generation !== command.attempt.generation ||
 			watch === undefined
-		)
+		) {
+			tracePooledWatch("worker.deliver.refused", {
+				op: command.deliveryOp,
+				refusal: "StaleAttempt",
+				watched: watch !== undefined,
+			});
 			return refuse("StaleAttempt");
+		}
 		if (isTerminal(watch.handle)) return refuse("StageNotLive");
+		tracePooledWatch("worker.deliver.admit", {
+			op: command.deliveryOp,
+			watch: command.watch,
+			intent: command.intent,
+			status: watch.handle.status,
+			streaming: watch.handle.isStreaming,
+			sessionStreaming: watch.handle.agentSession?.isStreaming,
+			turnLoopBusy: watch.handle.isTurnLoopBusy,
+			current: this.registry.get(watch.handle.runId, watch.handle.stageId) === watch.handle,
+		});
 		const admitted = Promise.resolve(this.deliveredOps(watch.handle))
 			.then((delivered) =>
 				// The session already holds this op, e.g. from before a replay: admit it at most once.
@@ -408,6 +500,14 @@ export class WorkerStageWatches {
 				(error: Error): StageCommandResult =>
 					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
 			);
+		void admitted.then((outcome) =>
+			tracePooledWatch("worker.deliver.settled", {
+				op: command.deliveryOp,
+				action: outcome.action,
+				refusal: outcome.refusal,
+				error: outcome.error,
+			}),
+		);
 		this.ledger.set(command.deliveryOp, admitted);
 		return admitted;
 	}

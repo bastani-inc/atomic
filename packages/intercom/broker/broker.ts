@@ -72,7 +72,7 @@ import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
 import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
-import { hasGroup, normalizeGroup, normalizeGroups } from "../group.js";
+import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationGroupRefusal } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
 	knownGroupSummaries,
@@ -121,6 +121,11 @@ interface PendingStageRouteRegistration {
   readonly capability: string;
   /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
   readonly dormant?: true;
+  /**
+   * #4006: held only by the process that launched the run, never by its stages. Presenting it in
+   * `claim_workflow_invocation` grants that session the invocation's control without membership.
+   */
+  readonly launcherCapability?: string;
 }
 
 interface WorkflowRosterRegistration {
@@ -347,6 +352,11 @@ class IntercomBroker {
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
   private workflowRosters = new Map<string, WorkflowRosterRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
+  /**
+   * #4006: runs each connected session launched, proven with the run's launcher capability. Keyed by session,
+   * then run, holding the capability claimed; a claim lapses when the run's route carries another one.
+   */
+  private workflowInvocationClaims = new Map<string, Map<string, string>>();
   /** Multi-node S5: set only when the agent directory's settings select a top-level shared `storage`. */
   private readonly sharedStorageSetting = readSharedStorageSetting(dirname(INTERCOM_DIR));
   private readonly routeRemote: RemoteSendRouter | undefined =
@@ -649,15 +659,55 @@ class IntercomBroker {
 	}
 
 	/**
-	 * Invocation control may come from the invocation owner or from an ordinary
-	 * host session that explicitly joined the invocation group. A workflow stage
-	 * registered under any workflow group cannot turn mutable membership into a
-	 * parent-control capability for a sibling (or for another workflow run).
+	 * Invocation control may come from the invocation owner, from the session that
+	 * launched the run (#4006), or from an ordinary host session that explicitly
+	 * joined the invocation group. A workflow stage registered under any workflow
+	 * group cannot turn mutable membership into a parent-control capability for a
+	 * sibling (or for another workflow run).
 	 */
 	private canControlWorkflowInvocation(sender: ConnectedSession, invocationGroup: string): boolean {
+		return this.controlsWorkflowInvocationByMembership(sender, invocationGroup) || this.launchedWorkflowInvocation(sender, invocationGroup);
+	}
+
+	private controlsWorkflowInvocationByMembership(sender: ConnectedSession, invocationGroup: string): boolean {
 		if (!hasGroup(sessionGroups(sender.info), invocationGroup)) return false;
 		const registrationGroup = normalizeGroup(sender.registrationGroup);
 		return registrationGroup === invocationGroup || !registrationGroup.startsWith("workflow:");
+	}
+
+	/** #4006: the sender holds a current claim on a run whose route is registered under `invocationGroup`. */
+	private launchedWorkflowInvocation(sender: ConnectedSession, invocationGroup: string): boolean {
+		const claims = this.workflowInvocationClaims.get(sender.info.id);
+		if (claims === undefined) return false;
+		const group = normalizeGroup(invocationGroup);
+		for (const [runId, capability] of claims) {
+			const route = this.pendingStageRoutes.get(runId);
+			if (route?.launcherCapability === capability && normalizeGroup(route.group) === group) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Only the holder of a run's launcher capability can claim to have launched it. That capability is
+	 * separate from the route capability every stage of the run holds, so a stage cannot claim.
+	 */
+	private claimWorkflowInvocation(sessionId: string, runId: string, capability: string): boolean {
+		const route = this.pendingStageRoutes.get(runId);
+		if (
+			route?.launcherCapability === undefined ||
+			route.launcherCapability !== capability ||
+			!normalizeGroup(route.group).startsWith("workflow:")
+		) {
+			return false;
+		}
+		const claims = this.workflowInvocationClaims.get(sessionId) ?? new Map<string, string>();
+		// Claims on runs whose routes are gone can never authorize again.
+		for (const claimedRunId of claims.keys()) {
+			if (!this.pendingStageRoutes.has(claimedRunId)) claims.delete(claimedRunId);
+		}
+		claims.set(runId, capability);
+		this.workflowInvocationClaims.set(sessionId, claims);
+		return true;
 	}
 
 	private canControlLiveWorkflowStage = (
@@ -723,7 +773,12 @@ class IntercomBroker {
 		const entries: WorkflowFutureStageRosterEntry[] = [];
 		for (const [runId, roster] of this.workflowRosters) {
 			if (roster.possibleStages === undefined || roster.possibleStages.length === 0) continue;
-			if (![...requesterGroups].some((group) => invocationOwnsGroup(roster.group, group))) continue;
+			if (
+				![...requesterGroups].some((group) => invocationOwnsGroup(roster.group, group)) &&
+				!this.launchedWorkflowInvocation(requester, roster.group)
+			) {
+				continue;
+			}
 			if (selected !== undefined && selected !== roster.group) continue;
 			for (const row of roster.possibleStages) {
 				if (this.isNonAgentWorkflowTarget(row.target)) continue;
@@ -899,10 +954,14 @@ class IntercomBroker {
         type: "delivery_failed",
         messageId: route.message.id,
         ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-        reason: "Target workflow run is in a different intercom group",
+        reason: workflowInvocationGroupRefusal(ownerRegistration.group),
       });
       return true;
     }
+    // #4006: the run's host checks membership again before queueing; say when the broker authorized the launcher instead.
+    const invocationControl =
+      !this.controlsWorkflowInvocationByMembership(route.from, ownerRegistration.group) &&
+      this.launchedWorkflowInvocation(route.from, ownerRegistration.group);
     const requestId = randomUUID();
     const timeout = setTimeout(() => {
       const pending = this.pendingStageAcknowledgments.get(requestId);
@@ -944,6 +1003,7 @@ class IntercomBroker {
 			target: route.target,
         message: route.message,
 		...(route.liveTargetId === undefined ? {} : { live: true }),
+		...(invocationControl ? { invocationControl: true as const } : {}),
       })
     ) {
       // The owner's socket stopped accepting frames between resolving the route
@@ -1636,6 +1696,7 @@ class IntercomBroker {
             acknowledgesPendingStageRoutes: true as const,
             refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
+            claimsWorkflowInvocations: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -1835,10 +1896,13 @@ class IntercomBroker {
           typeof clientMessage.group !== "string" ||
           typeof clientMessage.capability !== "string" ||
           !clientMessage.capability ||
-          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string")
+          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string") ||
+          (clientMessage.launcherCapability !== undefined &&
+            (typeof clientMessage.launcherCapability !== "string" || !clientMessage.launcherCapability))
         ) {
           throw new Error("Invalid pending-stage route registration");
         }
+        const launcherCapability = clientMessage.launcherCapability;
         const routeRequestId = clientMessage.requestId;
         // The route is applied synchronously, so this answer proves the update is visible to every later request.
         const acknowledgeRoute = (): void => {
@@ -1955,6 +2019,7 @@ class IntercomBroker {
           group: ownerGroup,
           capability: clientMessage.capability,
           ...(dormant ? { dormant: true as const } : {}),
+          ...(launcherCapability === undefined ? {} : { launcherCapability }),
         });
         if (yieldedDormant !== undefined) {
           const revoked = this.sessions.get(yieldedDormant.sessionId);
@@ -1972,6 +2037,24 @@ class IntercomBroker {
           this.retireAmbiguousNameAliases(clientMessage.runId);
         }
         acknowledgeRoute();
+        break;
+      }
+
+      case "claim_workflow_invocation": {
+        if (
+          typeof clientMessage.requestId !== "string" ||
+          typeof clientMessage.runId !== "string" ||
+          typeof clientMessage.capability !== "string" ||
+          !clientMessage.capability ||
+          currentId === null
+        ) {
+          throw new Error("Invalid workflow invocation claim");
+        }
+        writeMessageIfOpen(socket, {
+          type: "workflow_invocation_claimed",
+          requestId: clientMessage.requestId,
+          claimed: this.claimWorkflowInvocation(currentId, clientMessage.runId, clientMessage.capability),
+        });
         break;
       }
 
@@ -2384,6 +2467,7 @@ class IntercomBroker {
 	for (const [requestId, activation] of this.liveWorkflowStageRouteActivations) {
 		if (activation.sessionId === sessionId) this.liveWorkflowStageRouteActivations.delete(requestId);
 	}
+	this.workflowInvocationClaims.delete(sessionId);
 	this.sessions.delete(sessionId);
 	this.multiNode?.sessionLeft(departed);
 	this.sessionIdReclaim.retire(sessionId, departed.registrationReturnAddress);

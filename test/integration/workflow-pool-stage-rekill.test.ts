@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@bastani/atomic";
@@ -22,7 +22,12 @@ import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool
 import { poolSessionStore } from "../../packages/workflows/src/workers/pool-session-store.js";
 import type { PooledStageHandle } from "../../packages/workflows/src/workers/pooled-stage-handle.js";
 import { acquirePooledStage } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
-import { ROUNDS_FOLLOW_UP, ROUNDS_RELEASE_FILE, ROUNDS_STEER } from "../fixtures/pool-rounds-child.js";
+import {
+	ROUNDS_FOLLOW_UP,
+	ROUNDS_RELEASE_FILE,
+	ROUNDS_STEER,
+	ROUNDS_TOOL_RELEASE_FILE,
+} from "../fixtures/pool-rounds-child.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -82,7 +87,7 @@ async function step(
 	}
 }
 
-async function roundsPool(prefix: string) {
+async function roundsPool(prefix: string, foreground = false, admission = false) {
 	const directory = makeTempDirectory(prefix);
 	const path = join(directory, "journal.sqlite");
 	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
@@ -95,6 +100,8 @@ async function roundsPool(prefix: string) {
 	const pool = new LocalWorkerPool(backend, {
 		journalPath: path,
 		workers: 1,
+		// With admission, a tool's process group outlives a killed worker until the pool reaps it.
+		...(admission ? { admission: {} } : {}),
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
 	});
 	const store = createStore();
@@ -107,7 +114,7 @@ async function roundsPool(prefix: string) {
 			inputs: {},
 			outputs: { text: Type.String() },
 			async run(ctx) {
-				const result = await ctx.workflow(child, { inputs: { cwd: directory } });
+				const result = await ctx.workflow(child, { inputs: { cwd: directory, foreground } });
 				return { text: String(result.outputs.text) };
 			},
 		}),
@@ -132,6 +139,7 @@ async function roundsPool(prefix: string) {
 	};
 	const close = async () => {
 		writeFileSync(join(directory, ROUNDS_RELEASE_FILE), "");
+		writeFileSync(join(directory, ROUNDS_TOOL_RELEASE_FILE), "");
 		controller.abort(new Error("test cleanup"));
 		await execution.catch(() => {});
 		await pool.close();
@@ -270,6 +278,79 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 					lines.indexOf(`user: ${ROUNDS_FOLLOW_UP}-1`) > steerAt,
 					"the follow-up came after the steer's turn",
 				);
+			} finally {
+				lease?.release();
+				await live.close();
+			}
+		},
+		LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+	);
+
+for (const admission of [false, true])
+	test.skipIf(process.platform === "win32")(
+		`killed while a tool call runs in the foreground${admission ? " (process admission)" : ""}, the stage reconnects, takes its steer and follow-up once each, and leaves RECONNECTING while the replacement runs (#3996)`,
+		async () => {
+			const live = await roundsPool(`pool-stage-rekill-foreground-${admission}-`, true, admission);
+			let handle: PooledStageHandle | undefined;
+			let lease: Awaited<ReturnType<typeof acquirePooledStage>>;
+			const targets: string[] = [];
+			const observe = () =>
+				JSON.stringify({
+					targets,
+					placement: handle?.placement,
+					stageName: handle?.stageName,
+					reconnecting: handle?.isReconnecting,
+					pending: handle?.hasPending,
+					streaming: handle?.isStreaming,
+					tools: handle?.pendingToolExecutionEvents().length,
+					queued: handle?.queuedUserMessages(),
+					generation: live.generation(),
+					status: live.stage()?.stage.status,
+				});
+			try {
+				await step("stage running", () => live.stage()?.stage.status === "running", live.execution, observe);
+				const target = live.stage()!;
+				lease = await acquirePooledStage(live.store, target.runId, target.stage.id);
+				assert.ok(lease !== undefined);
+				handle = lease.handle as PooledStageHandle;
+				const stageName = handle.stageName;
+				// The first round's bash call is running in the foreground.
+				await step(
+					"tool running",
+					() => (handle?.pendingToolExecutionEvents().length ?? 0) > 0,
+					live.execution,
+					observe,
+				);
+				await handle.steer(`${ROUNDS_STEER}-1`);
+				await handle.followUp(`${ROUNDS_FOLLOW_UP}-1`);
+				const names = new Set<string>();
+				const stopNames = handle.subscribe(() => names.add(handle!.stageName));
+				await rebound(live, handle, live.kill(), targets, observe);
+				stopNames();
+				assert.deepEqual(
+					[...names].filter((name) => name !== stageName),
+					[],
+					"the stage keeps its name while it reconnects",
+				);
+				assert.ok(
+					!existsSync(join(live.directory, ROUNDS_TOOL_RELEASE_FILE)),
+					"reconnected before the tool finished",
+				);
+				writeFileSync(join(live.directory, ROUNDS_TOOL_RELEASE_FILE), "");
+				writeFileSync(join(live.directory, ROUNDS_RELEASE_FILE), "");
+				lease.release();
+				const outcome = await live.execution;
+				assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+				const lines = await transcript(live);
+				console.log("[pool-stage-rekill foreground] rebind targets", targets, lines);
+				const steerAt = lines.indexOf(`user: ${ROUNDS_STEER}-1`);
+				assert.equal(lines.filter((line) => line === `user: ${ROUNDS_STEER}-1`).length, 1, JSON.stringify(lines));
+				assert.equal(
+					lines.filter((line) => line === `user: ${ROUNDS_FOLLOW_UP}-1`).length,
+					1,
+					JSON.stringify(lines),
+				);
+				assert.match(lines[steerAt + 1] ?? "", new RegExp(`^assistant: ack ${ROUNDS_STEER}-1 after`));
 			} finally {
 				lease?.release();
 				await live.close();

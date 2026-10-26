@@ -56,7 +56,8 @@ export function injectStageLabelIntoEditorTopRule(
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
 	const t = ctx.theme;
-	const stageName = stage?.name ?? "stage";
+	// While a pooled stage moves to a replacement attempt, its run may be republished before the stage is.
+	const stageName = stage?.name ?? ctx.handle?.stageName ?? "stage";
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");

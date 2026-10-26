@@ -237,6 +237,11 @@ export type ClientMessage =
 		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
 		dormant?: true;
 		/**
+		 * #4006: a secret held only by the process that launched the run, never given to its stages. The launching
+		 * session presents it in `claim_workflow_invocation`.
+		 */
+		launcherCapability?: string;
+		/**
 		 * #3906: the connection carries the routes of many runs, so a refusal of this one is answered with
 		 * `pending_stage_route_refused` and leaves the connection open. Honoured only with a `requestId`, and sent only to
 		 * a broker that advertised `refusesPendingStageRoutesInPlace`; an older broker ignores it and ends the connection.
@@ -250,6 +255,13 @@ export type ClientMessage =
       stageKeys: string[];
       capability: string;
     }
+	/**
+	 * #4006: the session that launched a run proves it with the run's launcher capability (not the route
+	 * capability its stages hold) and gains the invocation's send authority without joining
+	 * `workflow:<rootRunId>`. Sent only to a broker that advertised `claimsWorkflowInvocations`; the broker
+	 * answers with `workflow_invocation_claimed`.
+	 */
+	| { type: "claim_workflow_invocation"; requestId: string; runId: string; capability: string }
 	| {
 		type: "pending_stage_message_result";
 		requestId: string;
@@ -292,7 +304,10 @@ export type BrokerMessage =
 			refusesPendingStageRoutesInPlace?: true;
 			/** This broker answers `broker_status`; absent on older brokers, which drop a client that sends it. */
 			brokerStatus?: true;
+			/** #4006: this broker accepts `claim_workflow_invocation`; absent on older brokers, which drop a client that sends it. */
+			claimsWorkflowInvocations?: true;
 	  }
+	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }
   | { type: "question_target"; messageId: string; attemptId: string; sessionId: string }
  | { type: "sessions"; requestId: string; sessions: SessionInfo[]; workflowStages?: WorkflowStageRosterEntry[]; workflowFutureStages?: WorkflowFutureStageRosterEntry[]; restricted?: true }
@@ -311,6 +326,8 @@ export type BrokerMessage =
 			target: string;
 			message: Message;
 			live?: boolean;
+			/** #4006: the broker authorized the sender as the session that launched this run, not by membership. */
+			invocationControl?: true;
 	  }
   | { type: "live_workflow_stage_route_registered"; requestId: string }
 	| { type: "pending_stage_route_registered"; requestId: string }

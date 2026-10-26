@@ -140,6 +140,7 @@ test.skipIf(process.platform === "win32")(
 		const broker = new StageUiBroker(store);
 		const rootRunId = testRunId("pool-stage-question-chat");
 		let pane: WorkflowAttachPane | undefined;
+		let clock = 0;
 		try {
 			const execution = engineRun(
 				parentOf(child),
@@ -176,6 +177,7 @@ test.skipIf(process.platform === "win32")(
 				piTui: { requestRender: () => {}, terminal: { rows: 40, columns: 120 } } as unknown as TUI,
 				piTheme: theme,
 				piKeybindings: {},
+				now: () => clock,
 			});
 			pane.retarget(rootRunId, target.stageId, target.runId);
 			const shown = pane;
@@ -186,14 +188,12 @@ test.skipIf(process.platform === "win32")(
 			);
 			assert.match(plain(pane.render(120)), /release-preview-marker/, "the form shows the option's preview");
 			// Enter picks the highlighted first option, as in an in-process stage's form.
-			for (
-				let presses = 0;
-				presses < 5 && broker.peekStagePrompt(target.runId, target.stageId) !== undefined;
-				presses++
-			) {
-				pane.handleInput("\r");
-				await sleep(50);
-			}
+			// The form ignores Enter for a moment after it opens, against keys meant for something else.
+			clock += 1_000;
+			pane.handleInput("\r");
+			assert.equal(broker.peekStagePrompt(target.runId, target.stageId), undefined, "Enter answered the form");
+			await sleep(5000);
+			console.log("DBGS", JSON.stringify(store.runs().map((r) => ({ s: r.status, st: r.stages.map((x) => [x.name, x.status, x.inputRequest?.id]) }))), plain(pane.render(120)).slice(-1200));
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
 			assert.match(String(outcome.result?.text), /answered: .*yes/s);
