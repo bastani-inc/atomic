@@ -225,7 +225,10 @@ test.skipIf(process.platform === "win32")(
 		try {
 			let firstPrompt: ReturnType<typeof pooledPrompt>;
 			await untilOrRunEnds(
-				async () => (firstPrompt = pooledPrompt(store)) !== undefined,
+				async () => {
+					firstPrompt = pooledPrompt(store);
+					return firstPrompt !== undefined;
+				},
 				first.execution,
 				CONDITION_TIMEOUT_MS,
 			);
@@ -234,7 +237,10 @@ test.skipIf(process.platform === "win32")(
 			second = await hostRun("pool-stage-prompt-second-", store);
 			let secondPrompt: ReturnType<typeof pooledPrompt>;
 			await untilOrRunEnds(
-				async () => (secondPrompt = pooledPrompt(store, [firstPrompt!.runId])) !== undefined,
+				async () => {
+					secondPrompt = pooledPrompt(store, [firstPrompt!.runId]);
+					return secondPrompt !== undefined;
+				},
 				second.execution,
 				CONDITION_TIMEOUT_MS,
 			);

@@ -9,6 +9,7 @@ import { createToolControlRegistry } from "../../packages/workflows/src/engine/r
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -146,7 +147,7 @@ test("child budget overrides fail before launching workers (#3869)", async () =>
 	}
 });
 
-test("local workers accept a caller stage-control registry and ui, and still refuse every other process-bound option (#3996)", async () => {
+test("local workers accept a caller stage-control registry, ui and stage UI broker, and still refuse every other process-bound option (#3996)", async () => {
 	const journal = await resolveRunJournal({ journal: { memory: true } });
 	const backend = await JournalDurableBackend.open(journal);
 	const pool = new LocalWorkerPool(backend, { journalPath: "/unused", workers: 1, definitions: [] });
@@ -165,6 +166,7 @@ test("local workers accept a caller stage-control registry and ui, and still ref
 				},
 			}),
 		);
+		assert.doesNotThrow(() => pool.validateOptions({ stageUiBroker: new StageUiBroker(createStore()) }));
 		const refused = [
 			"adapters",
 			"persistence",
@@ -172,7 +174,6 @@ test("local workers accept a caller stage-control registry and ui, and still ref
 			"overlay",
 			"models",
 			"registry",
-			"stageUiBroker",
 			"toolAdmissionBoundary",
 			"onStageStart",
 			"onStageEnd",
