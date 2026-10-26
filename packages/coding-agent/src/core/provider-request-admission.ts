@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Api, AssistantMessage, Model, StreamOptions } from "@bastani/pi-ai";
 import { createFetchWithAdmission } from "@bastani/pi-ai/utils/request-admission";
 import {
+	isProviderLimitFailure,
 	isProviderRateLimit,
 	markProviderRateLimitObserved,
 	recordProviderRateLimit,
@@ -20,31 +21,47 @@ const FETCH_APIS = new Set([
 
 interface StreamAdmissionState {
 	observedRateLimit: boolean;
+	observedQuotaExhaustion: boolean;
 }
 
 const streamAdmission = new AsyncLocalStorage<StreamAdmissionState>();
 const admittedFetches = new WeakMap<typeof fetch, Map<string, typeof fetch>>();
 
-function providerFetch(provider: string, originalFetch: typeof fetch): typeof fetch {
+async function responseText(response: Response): Promise<string> {
+	try {
+		return await response.clone().text();
+	} catch {
+		return "";
+	}
+}
+
+function providerFetch(provider: string, model: string, originalFetch: typeof fetch): typeof fetch {
 	let providers = admittedFetches.get(originalFetch);
 	if (!providers) {
 		providers = new Map();
 		admittedFetches.set(originalFetch, providers);
 	}
-	const cached = providers.get(provider);
+	const key = `${provider}/${model}`;
+	const cached = providers.get(key);
 	if (cached) return cached;
 	const observedFetch: typeof fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
 		const state = streamAdmission.getStore();
-		if (state) state.observedRateLimit = false;
+		if (state) {
+			state.observedRateLimit = false;
+			state.observedQuotaExhaustion = false;
+		}
 		const response = await originalFetch(input, init);
-		if (response.status === 429) {
-			recordProviderRateLimit(provider, { status: 429, headers: response.headers });
-			if (state) state.observedRateLimit = true;
-		} else if (response.ok) recordProviderSuccess(provider);
+		if (response.status === 429 || response.status === 402) {
+			// The body can name the model whose limit was hit, which scopes the cooldown to that model.
+			const failure = { status: response.status, headers: response.headers, message: await responseText(response) };
+			recordProviderRateLimit(provider, failure, model);
+			if (state && response.status === 429) state.observedRateLimit = true;
+			if (state && response.status === 402) state.observedQuotaExhaustion = true;
+		} else if (response.ok) recordProviderSuccess(provider, model);
 		return response;
 	}, originalFetch);
-	const admitted = createFetchWithAdmission(observedFetch, (signal) => waitForAdmission(provider, signal));
-	providers.set(provider, admitted);
+	const admitted = createFetchWithAdmission(observedFetch, (signal) => waitForAdmission(provider, model, signal));
+	providers.set(key, admitted);
 	return admitted;
 }
 
@@ -65,10 +82,10 @@ function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-async function waitForAdmission(provider: string, signal?: AbortSignal): Promise<void> {
+async function waitForAdmission(provider: string, model: string, signal?: AbortSignal): Promise<void> {
 	while (true) {
 		signal?.throwIfAborted();
-		const delay = tryAdmitProviderRequest(provider);
+		const delay = tryAdmitProviderRequest(provider, model);
 		if (delay === 0) return;
 		await sleepForAdmission(Math.min(delay, 60_000), signal);
 	}
@@ -79,14 +96,14 @@ export async function admitProviderStream(
 	options: StreamOptions,
 	ownsTransport: boolean,
 ): Promise<{ options: StreamOptions; run<T>(invoke: () => T): T; observeFailure(error: AssistantMessage): void }> {
-	const state: StreamAdmissionState = { observedRateLimit: false };
+	const state: StreamAdmissionState = { observedRateLimit: false, observedQuotaExhaustion: false };
 	const usesFetch =
 		!ownsTransport &&
 		(FETCH_APIS.has(model.api) || (model.api === "openai-codex-responses" && options.transport === "sse"));
 	if (usesFetch) {
-		options = { ...options, fetch: providerFetch(model.provider, options.fetch ?? globalThis.fetch) };
+		options = { ...options, fetch: providerFetch(model.provider, model.id, options.fetch ?? globalThis.fetch) };
 	} else {
-		await waitForAdmission(model.provider, options.signal);
+		await waitForAdmission(model.provider, model.id, options.signal);
 	}
 	return {
 		options,
@@ -95,8 +112,9 @@ export async function admitProviderStream(
 			if (state.observedRateLimit && error.stopReason === "error" && !isProviderRateLimit(error)) {
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
 			}
-			if (!isProviderRateLimit(error)) return;
-			if (!state.observedRateLimit) recordProviderRateLimit(model.provider, error);
+			if (!isProviderLimitFailure(error)) return;
+			if (!state.observedRateLimit && !state.observedQuotaExhaustion)
+				recordProviderRateLimit(model.provider, error, model.id);
 			markProviderRateLimitObserved(error);
 		},
 	};

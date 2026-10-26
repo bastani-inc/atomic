@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Anthropic Messages, Azure OpenAI Responses, Mistral and pi-messages failures now report the server retry hint (`Retry-After-Ms`, `Retry-After` in seconds or as an HTTP date, or a body `retry_after`) as `AssistantMessage.retryAfterMs`, as the OpenAI providers already did. A hint longer than `maxRetryDelayMs` stays on the failure that rejects it, and HTTP 529 overload responses are retryable like 503 ([#3984](https://github.com/bastani-inc/atomic/issues/3984))
+
 ## [0.9.44] - 2026-10-25
 
 ### Breaking Changes

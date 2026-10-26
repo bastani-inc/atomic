@@ -301,13 +301,13 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 	{
 		label: "code usage_limit_reached",
 		failure: { code: "usage_limit_reached", message: "localized" },
-		kind: "rate_limit",
+		kind: "quota_exhausted",
 		retryable: true,
 	},
 	{
 		label: "code insufficient_quota",
 		failure: { code: "insufficient_quota", message: "localized" },
-		kind: "rate_limit",
+		kind: "quota_exhausted",
 		retryable: true,
 	},
 	// Cancellation nested under a usage-limit wrapper must stay non-retryable.

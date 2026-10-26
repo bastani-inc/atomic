@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
 import { describe, test } from "vitest";
 import { _isRetryableError } from "../../packages/coding-agent/src/core/agent-session-retry.js";
+import { isRetryableSameModelFailure } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import {
 	isRetryableModelFailure as subagentsIsRetryable,
 	normalizeModelFailureSignal as subagentsNormalize,
@@ -47,11 +48,17 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 		}
 	});
 
-	test("usage-limit provider codes classify as rate_limit", () => {
-		for (const code of ["usage_limit_reached", "usage_limit_exceeded", "usage_limit", "insufficient_quota"]) {
+	test("usage-limit and quota provider codes classify as an exhausted quota that may still fall back", () => {
+		for (const code of [
+			"usage_limit_reached",
+			"usage_limit_exceeded",
+			"usage_limit",
+			"insufficient_quota",
+			"quota_exceeded",
+		]) {
 			const failure = { code, message: "localized provider text" };
-			assert.equal(workflowsNormalize(failure).kind, "rate_limit", code);
-			assert.equal(subagentsNormalize(failure).kind, "rate_limit", code);
+			assert.equal(workflowsNormalize(failure).kind, "quota_exhausted", code);
+			assert.equal(subagentsNormalize(failure).kind, "quota_exhausted", code);
 			assert.equal(workflowsIsRetryable(failure), true, code);
 			assert.equal(subagentsIsRetryable(failure), true, code);
 		}
@@ -163,5 +170,20 @@ describe("main-chat retry classifies usage-limit exhaustion as retryable", () =>
 			false,
 		);
 		assert.equal(_isRetryableError.call(session as never, errorMessage({ errorMessage: "Tool not found" })), false);
+	});
+});
+
+describe("quota exhaustion and overload responses", () => {
+	test("a 402 assistant error is an exhausted quota that falls back without a same-model retry", () => {
+		const failure = { stopReason: "error", errorMessage: '402 {"type":"error","error":{"message":"quota spent"}}' };
+		assert.equal(workflowsNormalize(failure).kind, "quota_exhausted");
+		assert.equal(workflowsIsRetryable(failure), true);
+		assert.equal(isRetryableSameModelFailure(failure), false);
+	});
+
+	test("a 529 assistant error is a retryable overload even without overload wording", () => {
+		const failure = { stopReason: "error", errorMessage: '529 {"type":"error","error":{"message":"try later"}}' };
+		assert.equal(workflowsNormalize(failure).kind, "provider_unavailable");
+		assert.equal(isRetryableSameModelFailure(failure), true);
 	});
 });
