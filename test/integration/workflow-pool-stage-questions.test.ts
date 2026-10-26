@@ -214,3 +214,82 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"an ask_user_question pending when its worker dies is asked again on the replacement, and its one answer reaches the stage (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-question-kill-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "noReaskChild",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "noReaskChild" }],
+		});
+		const store = createStore();
+		const broker = new StageUiBroker(store);
+		try {
+			const execution = engineRun(
+				parentOf(child),
+				{},
+				{
+					runId: testRunId("pool-stage-question-kill"),
+					cwd: directory,
+					store,
+					durableBackend: backend,
+					stageUiBroker: broker,
+				},
+			);
+			const asked = (afterGeneration: number) => {
+				for (const candidate of store.runs())
+					for (const stage of candidate.stages) {
+						const generation = stage.workerExecution?.generation;
+						if (generation === undefined || generation <= afterGeneration) continue;
+						if (broker.peekStageQuestionnaire(candidate.id, stage.id) !== undefined)
+							return { runId: candidate.id, stageId: stage.id, generation };
+					}
+				return undefined;
+			};
+			let first: ReturnType<typeof asked>;
+			await untilOrRunEnds(
+				async () => {
+					first = asked(0);
+					return first !== undefined;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(first !== undefined);
+			const [worker] = pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// The replacement shows the same form again.
+			let again: ReturnType<typeof asked>;
+			await untilOrRunEnds(
+				async () => {
+					again = asked(first!.generation);
+					return again !== undefined;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(again !== undefined);
+			assert.deepEqual(broker.peekStageQuestionnaire(again.runId, again.stageId)?.params, POOL_QUESTION);
+			assert.equal(broker.answerStagePrompt(again.runId, again.stageId, { optionLabels: ["no"] }), true);
+			const outcome = await execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.text), /answered: .*no/s);
+			assert.doesNotMatch(String(outcome.result?.text), /interrupted/);
+		} finally {
+			await pool.close();
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);

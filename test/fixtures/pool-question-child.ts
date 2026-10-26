@@ -27,61 +27,74 @@ function text(message: { readonly content?: unknown } | undefined): string {
 }
 
 /**
- * A pooled child whose agent stage asks `ask_user_question` once, then replies with the tool's
- * result, so a test sees which answer reached the worker.
+ * A pooled child whose agent stage asks `ask_user_question`, then replies with the tool's result,
+ * so a test sees which answer reached the worker. With `afterAnyResult`, the model replies to the
+ * latest tool result even when a later message asks it to continue, as a model that does not
+ * re-ask an interrupted question does.
  */
-export const child = workflow({
-	name: "pool-question-child",
-	description: "Local worker ask_user_question fixture",
-	inputs: {},
-	outputs: { text: Type.String() },
-	async run(ctx) {
-		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
-		options.modelRuntime.registerProvider("pool-fixture", {
-			api: "openai-completions",
-			baseUrl: "https://example.invalid",
-			apiKey: "fixture",
-			models: [
-				{
-					id: "fixture",
-					name: "Fixture",
-					reasoning: false,
-					input: ["text"],
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					contextWindow: 100000,
-					maxTokens: 1000,
-				},
-			],
-			streamSimple(model, context) {
-				const last = context.messages.at(-1);
-				const asked = last?.role === "toolResult";
-				const content: AssistantMessage["content"] = asked
-					? [{ type: "text", text: `answered: ${text(last)}` }]
-					: [{ type: "toolCall", id: "question-call", name: "ask_user_question", arguments: POOL_QUESTION }];
-				const message: AssistantMessage = {
-					role: "assistant",
-					api: model.api,
-					provider: model.provider,
-					model: model.id,
-					timestamp: Date.now(),
-					content,
-					stopReason: asked ? "stop" : "toolUse",
-					usage: {
-						input: 1,
-						output: 1,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 2,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+function questionChild(name: string, afterAnyResult: boolean) {
+	return workflow({
+		name,
+		description: "Local worker ask_user_question fixture",
+		inputs: {},
+		outputs: { text: Type.String() },
+		async run(ctx) {
+			const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+			options.modelRuntime.registerProvider("pool-fixture", {
+				api: "openai-completions",
+				baseUrl: "https://example.invalid",
+				apiKey: "fixture",
+				models: [
+					{
+						id: "fixture",
+						name: "Fixture",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 100000,
+						maxTokens: 1000,
 					},
-				};
-				const stream = createAssistantMessageEventStream();
-				stream.push({ type: "done", reason: asked ? "stop" : "toolUse", message });
-				stream.end();
-				return stream;
-			},
-		});
-		const stage = ctx.stage("agent", options as never);
-		return { text: await stage.complete("Ask before shipping") };
-	},
-});
+				],
+				streamSimple(model, context) {
+					const result = afterAnyResult
+						? context.messages.findLast((message) => message.role === "toolResult")
+						: context.messages.at(-1)?.role === "toolResult"
+							? context.messages.at(-1)
+							: undefined;
+					const asked = result !== undefined;
+					const content: AssistantMessage["content"] = asked
+						? [{ type: "text", text: `answered: ${text(result)}` }]
+						: [{ type: "toolCall", id: "question-call", name: "ask_user_question", arguments: POOL_QUESTION }];
+					const message: AssistantMessage = {
+						role: "assistant",
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+						timestamp: Date.now(),
+						content,
+						stopReason: asked ? "stop" : "toolUse",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					};
+					const stream = createAssistantMessageEventStream();
+					stream.push({ type: "done", reason: asked ? "stop" : "toolUse", message });
+					stream.end();
+					return stream;
+				},
+			});
+			const stage = ctx.stage("agent", options as never);
+			return { text: await stage.complete("Ask before shipping") };
+		},
+	});
+}
+
+export const child = questionChild("pool-question-child", false);
+
+/** Replies to an interrupted question's result instead of asking again. */
+export const noReaskChild = questionChild("pool-question-no-reask-child", true);
