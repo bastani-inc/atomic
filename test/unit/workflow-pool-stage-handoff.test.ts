@@ -956,6 +956,8 @@ test("a fresh coordinator restores pending stage messages, receipts and control 
 		assert.equal(await queue.expire(lease, f.first), true);
 		assert.equal(await queue.claim(lease, "worker-two", [descriptor], 60_000), undefined);
 		await queue.setControl(lease, "running");
+		// The resumed root re-enqueues its child before any worker may claim it (#3979).
+		await queue.enqueue(lease, descriptor, boundary);
 		const next = await queue.claim(lease, "worker-two", [descriptor], 60_000);
 		assert.ok(next);
 		const store = createStore();
