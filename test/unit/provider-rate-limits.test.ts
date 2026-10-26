@@ -1,6 +1,6 @@
 import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
-import type { Model } from "@bastani/pi-ai";
+import type { AssistantMessage, Model } from "@bastani/pi-ai";
 import { stream as streamAnthropicMessages } from "@bastani/pi-ai/api/anthropic-messages";
 import { normalizeContext } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -99,7 +99,7 @@ function anthropicFailure(status: number, headers: Record<string, string>, messa
 	);
 }
 
-test("an anthropic-messages 429 with Retry-After cools the provider for that long, not a backoff guess", async () => {
+test("an anthropic-messages 429 with Retry-After cools the provider for that long, not a backoff guess (#3984)", async () => {
 	vi.useRealTimers();
 	vi.spyOn(Math, "random").mockReturnValue(0);
 	const context = normalizeContext({ systemPrompt: "", messages: [{ role: "user", content: "hi", timestamp: 0 }] });
@@ -113,7 +113,7 @@ test("an anthropic-messages 429 with Retry-After cools the provider for that lon
 	assert.equal(providerCooldownMs("anthropic-hints"), 7000);
 });
 
-test("an exhausted quota marks the account unavailable until its reset without holding back requests", () => {
+test("an exhausted quota marks the account unavailable until its reset without holding back requests (#3984)", () => {
 	vi.setSystemTime(new Date("2026-10-22T12:00:00Z"));
 	const failure = {
 		stopReason: "error",
@@ -125,7 +125,7 @@ test("an exhausted quota marks the account unavailable until its reset without h
 	assert.equal(providerCooldownMs("quota-account"), 0);
 });
 
-test("a limit that names the failing model cools only that model; an unnamed one cools the provider", () => {
+test("a limit that names the failing model cools only that model; an unnamed one cools the provider (#3984)", () => {
 	const named = { status: 429, message: "Rate limit reached for model-a on requests per minute", retryAfterMs: 5000 };
 	assert.equal(recordProviderRateLimit("scoped", named, "model-a"), 5000);
 	assert.equal(providerCooldownMs("scoped", "model-a"), 5000);
@@ -136,7 +136,7 @@ test("a limit that names the failing model cools only that model; an unnamed one
 	assert.equal(providerCooldownMs("scoped", "model-a"), 5000);
 });
 
-test("HTTP admission scopes a 429 to the model its response body names", async () => {
+test("HTTP admission scopes a 429 to the model its response body names (#3984)", async () => {
 	const fetcher: typeof fetch = Object.assign(
 		async () =>
 			new Response(JSON.stringify({ error: { message: "Rate limit exceeded for limited-claude" } }), {
@@ -150,4 +150,57 @@ test("HTTP admission scopes a 429 to the model its response body names", async (
 	assert.equal(response.status, 429);
 	assert.equal(providerCooldownMs("anthropic-hints", "limited-claude"), 9000);
 	assert.equal(providerCooldownMs("anthropic-hints", "other-claude"), 0);
+});
+
+function assistantFailure(errorMessage: string, retryAfterMs?: number): AssistantMessage {
+	return {
+		role: "assistant",
+		api: anthropicModel.api,
+		provider: anthropicModel.provider,
+		model: anthropicModel.id,
+		content: [],
+		stopReason: "error",
+		errorMessage,
+		...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+		timestamp: Date.now(),
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	};
+}
+
+test("HTTP admission reads the retry hint from a headerless 402 body (#3984)", async () => {
+	const threeHours = 3 * 60 * 60 * 1000;
+	const fetcher: typeof fetch = Object.assign(
+		async () =>
+			new Response(JSON.stringify({ error: { message: "quota spent" }, retry_after: threeHours / 1000 }), {
+				status: 402,
+			}),
+		globalThis.fetch,
+	);
+	const model = { ...anthropicModel, provider: "headerless-quota" };
+	const admission = await admitProviderStream(model, { fetch: fetcher }, false);
+	const response = await admission.run(() => admission.options.fetch!("https://example.invalid"));
+	assert.equal(response.status, 402);
+	assert.equal(providerUnavailableMs("headerless-quota"), threeHours);
+	assert.equal(providerRateLimitSnapshot("headerless-quota")?.rateLimitCount, 1);
+});
+
+test("a later retry hint for an already observed failure extends its cooldown without counting it twice (#3984)", async () => {
+	vi.spyOn(Math, "random").mockReturnValue(0);
+	const fetcher: typeof fetch = Object.assign(async () => new Response("{}", { status: 429 }), globalThis.fetch);
+	const model = { ...anthropicModel, provider: "late-hint" };
+	const admission = await admitProviderStream(model, { fetch: fetcher }, false);
+	await admission.run(() => admission.options.fetch!("https://example.invalid"));
+	assert.equal(providerCooldownMs("late-hint"), 500);
+	const failure = assistantFailure("429 Too Many Requests", 45_000);
+	admission.observeFailure(failure);
+	assert.equal(providerCooldownMs("late-hint"), 45_000);
+	assert.equal(recordProviderRateLimit("late-hint", failure, model.id), 45_000);
+	assert.equal(providerRateLimitSnapshot("late-hint")?.rateLimitCount, 1);
 });

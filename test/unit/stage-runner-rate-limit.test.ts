@@ -750,7 +750,7 @@ function fallbackChainContext(
 	) as InternalStageContext;
 }
 
-test("an exhausted quota whose reset is hours away moves straight to the fallback without waiting", async () => {
+test("an exhausted quota whose reset is hours away moves straight to the fallback without waiting (#3984)", async () => {
 	const calls: string[] = [];
 	const reset = new Date(Date.now() + 5 * 60 * 60 * 1000).toUTCString();
 	const ctx = fallbackChainContext(
@@ -776,7 +776,7 @@ test("an exhausted quota whose reset is hours away moves straight to the fallbac
 	}
 });
 
-test("a 429 naming the limited model does not delay another model on the same provider", async () => {
+test("a 429 naming the limited model does not delay another model on the same provider (#3984)", async () => {
 	const calls: string[] = [];
 	const ctx = fallbackChainContext(
 		["scoped-account/model-a", "scoped-account/model-b"],
@@ -800,7 +800,7 @@ test("a 429 naming the limited model does not delay another model on the same pr
 	}
 });
 
-test("a 429 that does not name a model still cools every model on the provider", async () => {
+test("a 429 that does not name a model still cools every model on the provider (#3984)", async () => {
 	const calls: string[] = [];
 	const ctx = fallbackChainContext(
 		["unscoped-account/model-a", "unscoped-account/model-b"],
@@ -828,7 +828,7 @@ test("a 429 that does not name a model still cools every model on the provider",
 	}
 });
 
-test("a 529 overload honors its retry hint like a 503", async () => {
+test("a 529 overload honors its retry hint like a 503 (#3984)", async () => {
 	let calls = 0;
 	const ctx = limitedContext("overloaded-account", async () => {
 		calls += 1;

@@ -190,7 +190,7 @@ test("openai-codex-responses ignores a non-JSON 520 page without a hint (#3623)"
 	assert.equal(result.retryAfterMs, undefined);
 });
 
-test("anthropic-messages reports a 429 Retry-After in seconds as retryAfterMs", async () => {
+test("anthropic-messages reports a 429 Retry-After in seconds as retryAfterMs (#3984)", async () => {
 	const result = await streamAnthropicMessages(anthropicModel, context, {
 		apiKey: "k",
 		maxRetries: 0,
@@ -200,7 +200,7 @@ test("anthropic-messages reports a 429 Retry-After in seconds as retryAfterMs", 
 	assert.equal(result.retryAfterMs, 7000);
 });
 
-test("anthropic-messages reports a 402 HTTP-date reset as retryAfterMs", async () => {
+test("anthropic-messages reports a 402 HTTP-date reset as retryAfterMs (#3984)", async () => {
 	const reset = new Date(Date.now() + 3 * 60 * 60 * 1000).toUTCString();
 	const result = await streamAnthropicMessages(anthropicModel, context, {
 		apiKey: "k",
@@ -211,7 +211,7 @@ test("anthropic-messages reports a 402 HTTP-date reset as retryAfterMs", async (
 	assert.ok(result.retryAfterMs !== undefined && result.retryAfterMs > 2.9 * 60 * 60 * 1000);
 });
 
-test("an anthropic-messages 529 retry waits for its Retry-After like a 503", async () => {
+test("an anthropic-messages 529 retry waits for its Retry-After like a 503 (#3984)", async () => {
 	const result = await streamAnthropicMessages(anthropicModel, context, {
 		apiKey: "k",
 		maxRetries: 0,
@@ -221,7 +221,7 @@ test("an anthropic-messages 529 retry waits for its Retry-After like a 503", asy
 	assert.equal(assistantRetryDelayMs({ enabled: true, maxRetries: 3, baseDelayMs: 2000 }, 1, result), 4000);
 });
 
-test("a provider retry hint beyond maxRetryDelayMs stays on the failure that rejects it", async () => {
+test("a provider retry hint beyond maxRetryDelayMs stays on the failure that rejects it (#3984)", async () => {
 	const result = await streamAnthropicMessages(anthropicModel, context, {
 		apiKey: "k",
 		maxRetries: 2,
@@ -242,7 +242,7 @@ test.each([
 		(fetch: typeof globalThis.fetch) =>
 			streamPiMessages(piMessagesModel, context, { apiKey: "k", maxRetries: 0, fetch }),
 	],
-] as const)("%s reports a 429 Retry-After as retryAfterMs", async (_api, run) => {
+] as const)("%s reports a 429 Retry-After as retryAfterMs (#3984)", async (_api, run) => {
 	const fetch = vi.fn(
 		async () =>
 			new Response(JSON.stringify({ error: { message: "slow down" } }), {

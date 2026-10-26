@@ -180,21 +180,50 @@ export function recordProviderRateLimit(
 	const remaining = () =>
 		kind === "quota_exhausted" ? providerUnavailableMs(provider, model) : providerCooldownMs(provider, model);
 	for (const value of failureObjects(error)) {
-		if (state.observedFailures.delete(value)) return remaining();
+		if (state.observedFailures.delete(value)) {
+			// Already counted; a server hint on this later view of the failure can still extend the limit.
+			recordProviderRetryHint(provider, error, model);
+			return remaining();
+		}
 	}
 	const providerEntry = providerLimit(provider);
-	const limit =
-		model !== undefined && failureNamesModel(error, model)
-			? providerLimit(modelLimitKey(provider, model))
-			: providerEntry;
+	const limit = scopedLimit(provider, error, model);
 	providerEntry.rateLimitCount += 1;
 	limit.consecutiveLimits += 1;
 	const backoff = Math.min(60_000, 1000 * 2 ** Math.min(limit.consecutiveLimits - 1, 6));
-	const delay = providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5);
+	extendLimit(limit, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
+	return remaining();
+}
+
+function scopedLimit(provider: string, error: unknown, model: string | undefined): ProviderLimit {
+	return model !== undefined && failureNamesModel(error, model)
+		? providerLimit(modelLimitKey(provider, model))
+		: providerLimit(provider);
+}
+
+function extendLimit(limit: ProviderLimit, kind: "rate_limit" | "quota_exhausted", delay: number): void {
 	const until = Math.ceil(Date.now() + Math.max(1, delay));
 	if (kind === "quota_exhausted") limit.unavailableUntil = Math.max(limit.unavailableUntil, until);
 	else limit.cooldownUntil = Math.max(limit.cooldownUntil, until);
-	return remaining();
+}
+
+/**
+ * Apply the server retry hint of a failure that was already recorded, without counting it again. A limit
+ * only ever grows, so a guess made before the hint was known cannot shorten it.
+ */
+export function recordProviderRetryHint(provider: string | undefined, error: unknown, model?: string): void {
+	if (provider === undefined) return;
+	const kind = normalizeModelFailureSignal(error)?.kind;
+	if (kind !== "rate_limit" && kind !== "quota_exhausted") return;
+	const retryAfterMs = providerRetryHint(error).retryAfterMs;
+	if (retryAfterMs === undefined) return;
+	// Keep the scope chosen when the failure was first recorded, even if this view no longer names the model.
+	const modelEntry = model === undefined ? undefined : state.providers.get(modelLimitKey(provider, model));
+	const now = Date.now();
+	const modelScoped =
+		modelEntry !== undefined &&
+		(kind === "quota_exhausted" ? modelEntry.unavailableUntil : modelEntry.cooldownUntil) > now;
+	extendLimit(modelScoped ? modelEntry : scopedLimit(provider, error, model), kind, retryAfterMs);
 }
 
 export function recordProviderSuccess(provider: string, model?: string): void {
