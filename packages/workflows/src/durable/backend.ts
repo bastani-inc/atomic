@@ -892,6 +892,12 @@ class JournalProjection {
 		return [...rec.checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt);
 	}
 
+	/** One stage checkpoint by id, without listing the run's checkpoints. */
+	getStageCheckpoint(workflowId: string, checkpointId: string): DurableStageCheckpoint | undefined {
+		const checkpoint = this.workflows.get(workflowId)?.checkpoints.get(`stage:${checkpointId}`);
+		return checkpoint?.kind === "stage" ? checkpoint : undefined;
+	}
+
 	getWorkflow(workflowId: string): DurableWorkflowHandle | undefined {
 		return this.workflows.get(workflowId)?.handle;
 	}

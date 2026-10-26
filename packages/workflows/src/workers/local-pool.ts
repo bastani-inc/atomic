@@ -21,6 +21,7 @@ import {
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease } from "../durable/journal/types.js";
+import type { DurableCheckpoint, DurableStageCheckpoint } from "../durable/types.js";
 import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
@@ -626,14 +627,13 @@ export class LocalWorkerPool {
 		if ((await definitionDigest(selectedSource.path)) !== selectedSource.digest)
 			throw new Error("Worker definition compatibility error");
 		await this.backend.catchUpWorkflow(root);
-		const boundary = this.backend
-			.listCheckpoints(root)
-			.find(
-				(entry) =>
-					entry.kind === "stage" &&
-					entry.topology?.boundary?.event === "start" &&
-					entry.topology.stageId === options.parentRun!.stageId,
-			);
+		const isChildBoundary = (entry: DurableCheckpoint | undefined): entry is DurableStageCheckpoint =>
+			entry?.kind === "stage" &&
+			entry.topology?.boundary?.event === "start" &&
+			entry.topology.stageId === options.parentRun!.stageId;
+		// The boundary is found by its id: listing every root checkpoint per child made a fan-out quadratic.
+		const recorded = this.backend.getStageCheckpoint(root, `boundary-start:${options.durableScope.scopePrefix}`);
+		const boundary = isChildBoundary(recorded) ? recorded : this.backend.listCheckpoints(root).find(isChildBoundary);
 		if (boundary?.kind !== "stage") throw new Error("Missing durable child boundary");
 		const execution = JSON.parse(
 			JSON.stringify({

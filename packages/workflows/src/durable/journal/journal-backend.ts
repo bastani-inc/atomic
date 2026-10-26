@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { setImmediate } from "node:timers";
 import { StorageError, type StorageFailureCause } from "@bastani/atomic/storage";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../runs/foreground/stage-session-heartbeat.js";
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../../shared/store-types.js";
@@ -68,6 +69,56 @@ function removeProcessExitCleanup(cleanup: () => void): void {
 	if (processExitCleanups.delete(cleanup) && processExitCleanups.size === 0)
 		process.off("exit", runProcessExitCleanups);
 }
+/**
+ * Bounds how long journal work keeps one turn of the event loop.
+ *
+ * Journal operations resolve in microtasks once their SQLite statement returns, so a fan-out
+ * that starts or dispatches many children chains every child's journal work into one turn: the
+ * 150-worker load gate measured single tasks of 300 ms at worker startup on a contended host.
+ * Before an operation runs, `journalTurnPause` lets it through while the current turn is younger
+ * than the budget; past it, when a fan-out has many operations waiting, every operation waits for
+ * one shared `setImmediate`, so timers, input and I/O run in between, and the operations then
+ * continue in their original order. A single run's sequential journal work, which keeps only a
+ * few operations waiting, never pauses, so its ordering against other promises is unchanged.
+ *
+ * `setImmediate` comes from `node:timers`, so a test that fakes the global timers cannot hold
+ * journal work behind an immediate it never runs.
+ */
+const JOURNAL_TURN_BUDGET_MS = 8;
+/** Waiting operations that mark a fan-out; one workflow's own work keeps far fewer queued. */
+const FAN_OUT_WAITING_OPERATIONS = 32;
+
+let turnStartedAt: number | undefined;
+let pause: Promise<void> | undefined;
+
+/**
+ * `undefined` while the current turn has budget left or `waiting()` (the operations queued on
+ * the caller's journal, this one included) is below a fan-out's, so the operation runs without an extra
+ * microtask; otherwise a promise that resolves after the event loop has turned.
+ */
+function journalTurnPause(waiting: () => number): Promise<void> | undefined {
+	if (pause !== undefined) return pause.then(() => journalTurnPause(waiting));
+	const now = performance.now();
+	if (turnStartedAt === undefined) {
+		turnStartedAt = now;
+		// The next check phase ends this turn, so the following one starts with a fresh budget.
+		setImmediate(() => {
+			turnStartedAt = undefined;
+		});
+		return undefined;
+	}
+	if (waiting() < FAN_OUT_WAITING_OPERATIONS || now - turnStartedAt < JOURNAL_TURN_BUDGET_MS) return undefined;
+	const turned = new Promise<void>((resolve) => {
+		setImmediate(() => {
+			pause = undefined;
+			turnStartedAt = undefined;
+			resolve();
+		});
+	});
+	pause = turned;
+	return turned.then(() => journalTurnPause(waiting));
+}
+
 type Operation<T> = Generator<Promise<void>, T, void>;
 type BackendState = "open" | "closing" | "closed";
 type SnapshotPayload = { readonly handle: DurableWorkflowHandle; readonly prompts?: PromptReservationSnapshot };
@@ -229,6 +280,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly pending = new Map<string | symbol, Promise<void>>();
+	/** Operations queued or running on this backend; many at once mark a fan-out (see `journalTurnPause`). */
+	private waitingOperations = 0;
 	/**
 	 * The receipts and settlements queued last for each run, not yet started: one more appended before any other
 	 * operation of the run joins them, so they are written together in their queue order.
@@ -313,10 +366,17 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	): Promise<T> {
 		if (typeof runId === "string") this.appendBatches.delete(runId);
 		const prior = this.pending.get(runId) ?? Promise.resolve();
-		const result = prior.then(() => this.mutationContext.run(admitted, () => execute(action())));
+		const run = () => this.mutationContext.run(admitted, () => execute(action()));
+		this.waitingOperations++;
+		// A fan-out's journal work yields the event loop between operations once it has held a turn too long.
+		const result = prior.then(() => journalTurnPause(() => this.waitingOperations)?.then(run) ?? run());
 		const settled = result.then(
-			() => {},
-			() => {},
+			() => {
+				this.waitingOperations--;
+			},
+			() => {
+				this.waitingOperations--;
+			},
 		);
 		this.pending.set(runId, settled);
 		void settled.then(() => {
@@ -973,6 +1033,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	listCheckpoints(runId: string) {
 		return this.projection.listCheckpoints(runId);
+	}
+	/** One stage checkpoint by id, for callers that would otherwise scan `listCheckpoints` per lookup. */
+	getStageCheckpoint(runId: string, checkpointId: string) {
+		return this.projection.getStageCheckpoint(runId, checkpointId);
 	}
 	nestedSnapshotVersion(runId: string) {
 		return this.projection.nestedSnapshotVersion(runId);
