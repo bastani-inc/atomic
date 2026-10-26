@@ -661,22 +661,23 @@ test("invocation roster control is directional across owned subgroups", async ()
 	const otherRunLateralPeekAfterJoin = await otherRun.listDirectory(subgroupB);
 	assert.deepEqual(otherRunLateralPeekAfterJoin.sessions, []);
 	assert.deepEqual(otherRunLateralPeekAfterJoin.workflowStages, []);
-	for (const [sender, messageId] of [
-		[memberA, "subgroup-pending-escalation"],
-		[otherRun, "other-root-pending-escalation"],
+	// Joining could never authorize these stages, so the refusal names why instead of suggesting a join.
+	for (const [sender, senderGroup, messageId] of [
+		[memberA, subgroupA, "subgroup-pending-escalation"],
+		[otherRun, "workflow:other-run", "other-root-pending-escalation"],
 	] as const) {
 		const result = await sender.send(`workflow:${runId}/b`, { messageId, text: "must stay isolated" });
 		assert.equal(result.delivered, false);
 		assert.equal(
 			result.reason,
-			`Target workflow run is in a different intercom group; join workflow:${runId} to send to its stages`,
+			`A workflow stage in ${senderGroup} cannot send to stages of workflow:${runId}; joining that group does not grant it control`,
 		);
 	}
 
 	await memberB.registerLiveWorkflowStageRoute(runId, ["b"], capability);
-	for (const [sender, messageId] of [
-		[memberA, "subgroup-live-ask-escalation"],
-		[otherRun, "other-root-live-ask-escalation"],
+	for (const [sender, senderGroup, messageId] of [
+		[memberA, subgroupA, "subgroup-live-ask-escalation"],
+		[otherRun, "workflow:other-run", "other-root-live-ask-escalation"],
 	] as const) {
 		const result = await sender.send(`workflow:${runId}/b`, {
 			messageId,
@@ -686,7 +687,7 @@ test("invocation roster control is directional across owned subgroups", async ()
 		assert.equal(result.delivered, false);
 		assert.equal(
 			result.reason,
-			`Target workflow run is in a different intercom group; join workflow:${runId} to send to its stages`,
+			`A workflow stage in ${senderGroup} cannot send to stages of workflow:${runId}; joining that group does not grant it control`,
 		);
 	}
 });
@@ -2837,7 +2838,8 @@ test("only the launcher capability, never the route capability stages hold, gran
 		assert.deepEqual(await isolatedStage.next("delivery_failed", (frame) => frame.messageId === messageId), {
 			type: "delivery_failed",
 			messageId,
-			reason: `Target workflow run is in a different intercom group; join ${group} to send to its stages`,
+			// Joining could never grant an isolated stage control, so the refusal doesn't suggest it.
+			reason: `A workflow stage in ${subgroupA} cannot send to stages of ${group}; joining that group does not grant it control`,
 		});
 	}
 	assert.equal(
@@ -2877,4 +2879,122 @@ test("only the launcher capability, never the route capability stages hold, gran
 		message: { id: "issue-4006-stale", timestamp: 3, content: { text: "stale" } },
 	});
 	assert.equal((await launcher.next("delivery_failed")).messageId, "issue-4006-stale");
+});
+
+test("undeliverable notices reach the launcher and a joined sender outside the run's group, never an unrelated session (#4006)", async () => {
+	const runId = "c4006c40-0600-4006-8006-400640064006";
+	const group = `workflow:${runId}`;
+	const routeCapability = "issue-4006-notice-route-capability";
+	const launcherCapability = "issue-4006-notice-launcher-capability";
+	const owner = new WireClient();
+	const launcher = new WireClient();
+	const joined = new WireClient();
+	const outsider = new WireClient();
+	await register(owner, "issue-4006-notice-owner", group);
+	const launcherId = await register(launcher, "issue-4006-notice-launcher", "default");
+	const joinedId = await register(joined, "issue-4006-notice-joined", "default");
+	const outsiderId = await register(outsider, "issue-4006-notice-outsider", "default");
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: routeCapability,
+		launcherCapability,
+		stages: [
+			{ stageId: "a", stageName: "a", target: `${group}/a`, lifecycle: "pending", routeEligible: true, group },
+		],
+	});
+	assert.equal(await registrationOutcome(owner, "issue-4006-notice-route"), "acknowledged");
+	launcher.send({
+		type: "claim_workflow_invocation",
+		requestId: "notice-claim",
+		runId,
+		capability: launcherCapability,
+	});
+	assert.equal((await launcher.next("workflow_invocation_claimed")).claimed, true);
+	joined.send({ type: "join_group", group, requestId: "notice-join" });
+	await joined.next("membership_ack", (frame) => frame.requestId === "notice-join");
+
+	const notify = (to: string, id: string): void =>
+		owner.send({
+			type: "send_pending_stage_notification",
+			runId,
+			capability: routeCapability,
+			to,
+			message: { id, timestamp: 5, replyTo: `queued-${id}`, content: { text: `undeliverable ${id}` } },
+		});
+	for (const [client, to, id] of [
+		[launcher, launcherId, "notice-launcher"],
+		[joined, joinedId, "notice-joined"],
+	] as const) {
+		notify(to, id);
+		const request = await client.next("pending_stage_notification", (frame) => frame.message.id === id);
+		client.send({ type: "pending_stage_notification_result", requestId: request.requestId, delivered: true });
+		assert.equal((await owner.next("delivered", (frame) => frame.messageId === id)).messageId, id);
+		assert.equal(client.received.filter((frame) => frame.type === "pending_stage_notification").length, 1);
+	}
+
+	// A session that neither launched nor joined the run gets no notice, even when addressed directly.
+	notify(outsiderId, "notice-outsider");
+	assert.equal(
+		(await owner.next("delivery_failed", (frame) => frame.messageId === "notice-outsider")).reason,
+		"Session not found",
+	);
+	for (const client of [outsider, launcher, joined]) {
+		assert.equal(
+			client.received.some(
+				(frame) => frame.type === "pending_stage_notification" && frame.message.id === "notice-outsider",
+			),
+			false,
+		);
+	}
+});
+
+test("a stage of another run that joined the group is refused with a reason that doesn't tell it to join (#4006)", async () => {
+	const runId = "d4006d40-0600-4006-8006-400640064006";
+	const group = `workflow:${runId}`;
+	const foreignGroup = "workflow:e4006e40-0600-4006-8006-400640064006";
+	const owner = new WireClient();
+	const foreignStage = new WireClient();
+	const outsider = new WireClient();
+	await register(owner, "issue-4006-refusal-owner", group);
+	await register(foreignStage, "issue-4006-foreign-stage", foreignGroup);
+	await register(outsider, "issue-4006-refusal-outsider", "default");
+	owner.send({
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability: "issue-4006-refusal-route-capability",
+		launcherCapability: "issue-4006-refusal-launcher-capability",
+		stages: [
+			{ stageId: "a", stageName: "a", target: `${group}/a`, lifecycle: "pending", routeEligible: true, group },
+		],
+	});
+	assert.equal(await registrationOutcome(owner, "issue-4006-refusal-route"), "acknowledged");
+	foreignStage.send({ type: "join_group", group, requestId: "foreign-join" });
+	await foreignStage.next("membership_ack", (frame) => frame.requestId === "foreign-join");
+
+	for (const [to, messageId] of [
+		[`${group}/a`, "foreign-exact"],
+		[`${group}/**`, "foreign-pattern"],
+	] as const) {
+		foreignStage.send({ type: "send", to, message: { id: messageId, timestamp: 1, content: { text: "foreign" } } });
+		assert.equal(
+			(await foreignStage.next("delivery_failed", (frame) => frame.messageId === messageId)).reason,
+			`A workflow stage in ${foreignGroup} cannot send to stages of ${group}; joining that group does not grant it control`,
+		);
+		outsider.send({
+			type: "send",
+			to,
+			message: { id: `outsider-${messageId}`, timestamp: 1, content: { text: "outsider" } },
+		});
+		assert.equal(
+			(await outsider.next("delivery_failed", (frame) => frame.messageId === `outsider-${messageId}`)).reason,
+			`Target workflow run is in a different intercom group; join ${group} to send to its stages`,
+		);
+	}
+	assert.equal(
+		owner.received.some((frame) => frame.type === "pending_stage_message"),
+		false,
+	);
 });
