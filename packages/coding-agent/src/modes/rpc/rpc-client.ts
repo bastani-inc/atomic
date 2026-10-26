@@ -459,7 +459,13 @@ export class RpcClient extends RpcClientApi {
 	}
 	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<RpcEvent[]> {
 		const eventsPromise = this.collectEvents(timeout);
-		await this.prompt(message, images);
+		const accepted = this.prompt(message, images);
+		// A prompt has no request deadline, so `timeout` must also end the wait while
+		// the prompt is still unacknowledged. Whichever settles first decides; both are
+		// observed so the loser's later rejection is never an unhandled rejection.
+		eventsPromise.catch(() => {});
+		accepted.catch(() => {});
+		await Promise.race([accepted, eventsPromise]);
 		return eventsPromise;
 	}
 	private handleLine(line: string, generation: number): void {

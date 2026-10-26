@@ -5,9 +5,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
 import { bunExecutable, cliPath, removeTempDirs } from "./cli-test-helpers.ts";
 
-/** A real CLI child plus extension loading is structural work, not a unit-test delay. */
-const REAL_RPC_WIRE_PROCESS_TIMEOUT_MS = 120_000;
+/**
+ * `RpcClient.start()` returns as soon as the child is spawned, so booting the real
+ * CLI and loading the extension happens after it. A loaded Windows runner has taken
+ * over 60 s for that boot (concurrent CLI-spawning suites ran 4-7x slower than
+ * usual), so the boot gets its own bound, measured by an answered request, and the
+ * prompt deadline only covers the prompt itself.
+ */
+const CLI_BOOT_TIMEOUT_MS = 120_000;
 const RPC_PROMPT_TIMEOUT_MS = 60_000;
+/** Boot and prompt bounds plus room for teardown. */
+const REAL_RPC_WIRE_PROCESS_TIMEOUT_MS = CLI_BOOT_TIMEOUT_MS + RPC_PROMPT_TIMEOUT_MS + 30_000;
 const EXPECTED_DELTAS = ["alpha", "-beta", "-gamma"] as const;
 const EXPECTED_TEXT = EXPECTED_DELTAS.join("");
 
@@ -105,10 +113,13 @@ describe("spawned RPC wire emits delta-only message updates", () => {
 					PI_CODING_AGENT_DIR: "",
 				},
 				args: ["--no-session", "--no-extensions", "--extension", extensionPath, "--no-tools"],
+				requestTimeoutMs: CLI_BOOT_TIMEOUT_MS,
 			});
 
 			try {
 				await client.start();
+				// Answered only once the CLI has booted, loaded the extension and is reading stdin.
+				await client.getState();
 				const events = await client.promptAndWait("respond deterministically", undefined, RPC_PROMPT_TIMEOUT_MS);
 				const updates = events.filter((event) => event.type === "message_update");
 				expect(updates.length).toBeGreaterThan(0);
