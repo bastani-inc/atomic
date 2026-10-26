@@ -124,6 +124,7 @@ function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boole
 			: accountModels
 					.filter((model) => !model.id.endsWith("-fast") && model.policyState === "enabled")
 					.map((model) => model.id);
+	// Fast siblings are not picker entries: a fast ID the account lists is entitled unless its policy is disabled.
 	const fastModelIds = accountModels
 		.filter((model) => model.id.endsWith("-fast") && model.policyState !== "disabled")
 		.map((model) => model.id);
@@ -483,28 +484,39 @@ async function loginGitHubCopilot(interaction: ProviderAuthInteraction): Promise
 		enterpriseDomain ?? undefined,
 		interaction.signal,
 	);
-	const models = await fetchGitHubCopilotModels(
+	const loginRetryPolicy = { maxRetries: 2, maxElapsedMs: 5000 };
+	let models = await fetchGitHubCopilotModels(
 		credentials.access,
 		enterpriseDomain ?? undefined,
 		interaction.signal,
-		{
-			maxRetries: 2,
-			maxElapsedMs: 5000,
-		},
+		loginRetryPolicy,
 	);
-	let enabledModelIds: string[] = [];
 	if (models.policyModelIds.length > 0) {
 		interaction.notify({ type: "progress", message: "Enabling models..." });
-		enabledModelIds = await enableGitHubCopilotModels(
+		const enabledModelIds = await enableGitHubCopilotModels(
 			credentials.access,
 			models.policyModelIds,
 			enterpriseDomain ?? undefined,
 			interaction.signal,
 		);
+		// A successful policy update does not prove the model is usable from this client: offer it
+		// only if the re-read model list marks it usable. Keep the first list when the re-read fails.
+		if (enabledModelIds.length > 0) {
+			try {
+				models = await fetchGitHubCopilotModels(
+					credentials.access,
+					enterpriseDomain ?? undefined,
+					interaction.signal,
+					loginRetryPolicy,
+				);
+			} catch (error) {
+				if (interaction.signal.aborted) throw error;
+			}
+		}
 	}
 	return {
 		...credentials,
-		availableModelIds: [...new Set([...models.availableModelIds, ...enabledModelIds])],
+		availableModelIds: models.availableModelIds,
 		fastModelIds: models.fastModelIds,
 	};
 }

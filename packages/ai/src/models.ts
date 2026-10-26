@@ -18,6 +18,7 @@ import type {
 	Credential,
 	CredentialStore,
 	LoginOptions,
+	OAuthCredential,
 	ProviderAuth,
 } from "./auth/types.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "./models-store.ts";
@@ -663,8 +664,37 @@ class ModelsImpl implements MutableModels {
 			}),
 		);
 
+		// Providers without a model source still repair a stored OAuth credential that lacks data
+		// only a refresh restores (see `OAuthAuth.needsRefresh`), so its availability filter has it.
+		const repairable = allowNetwork
+			? Array.from(this.providers.values()).filter(
+					(provider) =>
+						provider.refreshModels === undefined &&
+						provider.auth.oauth?.needsRefresh !== undefined &&
+						(!selected || selected.has(provider.id)),
+				)
+			: [];
+		const repair = Promise.all(
+			repairable.map(async (provider) => {
+				try {
+					const stored = await readProviderCredential(this.credentials, provider, callerSignal);
+					if (stored?.type !== "oauth" || provider.auth.oauth?.needsRefresh?.(stored) !== true) return;
+					await this.resolveRefreshCredential(provider, stored, callerSignal);
+				} catch (error) {
+					if (!callerSignal.aborted) {
+						errors.set(
+							provider.id,
+							error instanceof Error
+								? error
+								: new ModelsError("auth", `Credential refresh failed for ${provider.id}`, { cause: error }),
+						);
+					}
+				}
+			}),
+		);
+
 		try {
-			await raceWithAbortSignal(refresh, callerSignal);
+			await raceWithAbortSignal(Promise.all([refresh, repair]), callerSignal);
 		} catch (error) {
 			if (!callerSignal.aborted) throw error;
 		}
@@ -680,15 +710,11 @@ class ModelsImpl implements MutableModels {
 		if (stored?.type === "oauth") {
 			const oauth = provider.auth.oauth;
 			if (!oauth) return undefined;
-			if (Date.now() < stored.expires) return stored;
+			const needsRefresh = (current: OAuthCredential) =>
+				Date.now() >= current.expires || oauth.needsRefresh?.(current) === true;
+			if (!needsRefresh(stored)) return stored;
 			if (signal.aborted) return undefined;
-			return refreshStoredOAuthCredential(
-				this.credentials,
-				provider.id,
-				oauth,
-				(current) => Date.now() >= current.expires,
-				signal,
-			);
+			return refreshStoredOAuthCredential(this.credentials, provider.id, oauth, needsRefresh, signal);
 		}
 
 		const apiKey = provider.auth.apiKey;

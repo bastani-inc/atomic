@@ -7,6 +7,7 @@ import {
 	_runAutoCompaction,
 } from "../../packages/coding-agent/src/core/agent-session-auto-compaction.js";
 import {
+	_applyProviderErrorGuidance,
 	_createRetryPromiseForAgentEnd,
 	_processAgentEvent,
 } from "../../packages/coding-agent/src/core/agent-session-events.js";
@@ -20,6 +21,7 @@ import {
 	_trySwitchToFallbackModel,
 } from "../../packages/coding-agent/src/core/agent-session-retry.js";
 import type { CreateAgentSessionFromServicesOptions } from "../../packages/coding-agent/src/core/agent-session-services.js";
+import { normalizeModelFailureSignal } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 
 function model(provider: string, id: string): Model<Api> {
 	return {
@@ -897,6 +899,84 @@ test("a gRPC ResourceExhausted failure is both same-model retryable and fallback
 
 	assert.equal(_isRetryableError.call(session as never, message), true);
 	assert.equal(_isFallbackableError.call(session as never, message), true);
+});
+
+test("a Copilot model unavailable to the client integration names the model and advances the fallback chain (#3998)", async () => {
+	const primary = model("github-copilot", "claude-opus-4.8-fast");
+	const fallback = model("anthropic", "claude-opus-4-8");
+	const rawError =
+		'OpenAI API error (400): {"message":"The requested model is not available for integrator \\"vscode-chat\\". Verify the correct Copilot-Integration-Id header is being sent.","code":"model_not_available_for_integrator","param":"model","type":"invalid_request_error"}';
+	const failed = retryableMessage({ errorMessage: rawError, provider: primary.provider, model: primary.id });
+
+	_applyProviderErrorGuidance.call({} as never, { type: "message_end", message: failed });
+	assert.equal(
+		failed.errorMessage,
+		`claude-opus-4.8-fast isn't available to Atomic's GitHub Copilot integration; pick another model or run /login to refresh the model list.\n\n${rawError}`,
+	);
+	assert.equal(normalizeModelFailureSignal(rawError).kind, "model_unavailable");
+	assert.equal(normalizeModelFailureSignal(failed).kind, "model_unavailable");
+
+	const events: Array<{ type: string; [key: string]: unknown }> = [];
+	let continued = 0;
+	const session = {
+		model: primary,
+		thinkingLevel: "high" as ThinkingLevel,
+		_fallbackModels: ["anthropic/claude-opus-4-8:high"],
+		_fallbackAttemptedKeys: new Set<string>(),
+		_fallbackBlockedModels: [] as Model<Api>[],
+		_retryAttempt: 0,
+		settingsManager: {
+			getRetrySettings: () => ({ enabled: true, maxRetries: 3, baseDelayMs: 1000 }),
+			getDefaultThinkingLevel: () => "high" as ThinkingLevel,
+			getDefaultProvider: () => "github-copilot",
+		},
+		_modelRuntime: {
+			getAvailableSnapshot: () => [primary, fallback],
+			getModel: (provider: string, id: string) =>
+				provider === fallback.provider && id === fallback.id ? fallback : undefined,
+			hasConfiguredAuth: () => true,
+		},
+		agent: {
+			state: { model: primary, thinkingLevel: "high" as ThinkingLevel, messages: [failed] },
+			continue: async () => {
+				continued += 1;
+			},
+		},
+		sessionManager: {
+			appendModelChange: (provider: string, id: string) => events.push({ type: "session_model", provider, id }),
+			appendThinkingLevelChange: () => undefined,
+		},
+		_withContextWindowForModelSwitch: (candidate: Model<Api>) => candidate,
+		_refreshBaseSystemPromptFromActiveTools: () => undefined,
+		_omitTrailingAssistantAttempt: omitTrailingAssistantAttempt,
+		_emitModelChanged: () => undefined,
+		_emitModelSelect: async () => undefined,
+		_emit: (event: { type: string; [key: string]: unknown }) => events.push(event),
+		_resolveRetry: () => undefined,
+		_isRetryableError,
+		_isFallbackableError,
+		_trySwitchToFallbackModel,
+	};
+
+	const handled = await _handleRetryableError.call(session as never, failed);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	assert.equal(handled, true);
+	assert.equal(
+		events.some((event) => event.type === "auto_retry_start"),
+		false,
+		"an unavailable model must not be re-requested",
+	);
+	assert.ok(
+		events.some(
+			(event) =>
+				event.type === "model_fallback_start" &&
+				event.to === "anthropic/claude-opus-4-8" &&
+				event.reason === failed.errorMessage,
+		),
+	);
+	assert.equal(session.agent.state.model, fallback);
+	assert.equal(continued, 1);
 });
 
 test("a terminal provider failure skips reasoning-only variants of the failed model", async () => {
