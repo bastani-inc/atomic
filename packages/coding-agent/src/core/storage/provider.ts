@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
@@ -99,12 +101,56 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 	return JSON.stringify(selection);
 }
 
+/** Virtual module through which transformed adapter modules make their imports. */
+const ADAPTER_IMPORTS = "atomic:storage-adapter-imports";
+/**
+ * Appended to every module the adapter loader transforms. The hoisted declaration replaces the `jitiImport` that jiti
+ * passes each module, so the module's static and dynamic imports reach {@link createAdapterImports} with its own loader.
+ */
+const ADAPTER_IMPORT_HOOK = `\nfunction jitiImport(id, options) { return require(${JSON.stringify(ADAPTER_IMPORTS)}).import(require, id, options); }\n`;
+
+/** Whether Node loads a file as ESM: jiti imports such files natively, outside the loader's host modules. */
+function isNativeEsm(filename: string): boolean {
+	if (filename.endsWith(".mjs")) return true;
+	if (!filename.endsWith(".js")) return false;
+	for (let directory = dirname(filename); ; directory = dirname(directory)) {
+		const manifest = join(directory, "package.json");
+		if (existsSync(manifest)) {
+			const { type } = JSON.parse(readFileSync(manifest, "utf8")) as { type?: string };
+			return type === "module";
+		}
+		if (directory === dirname(directory)) return false;
+	}
+}
+
+/**
+ * Evaluates the ESM files an adapter module imports by path through the adapter loader, once per load, so their own
+ * imports get the host modules too. Package imports, such as an adapter's driver, load as jiti loads them.
+ */
+function createAdapterImports(): { import(jiti: Jiti, id: string, options?: JitiResolveOptions): Promise<object> } {
+	const evaluated = new Set<string>();
+	return {
+		import(jiti, id, options) {
+			const byPath = id.startsWith(".") || id.startsWith("file:") || isAbsolute(id);
+			const filename = byPath ? fileURLToPath(jiti.esmResolve(id)) : undefined;
+			if (filename === undefined || evaluated.has(filename) || !isNativeEsm(filename)) {
+				return jiti.import<object>(id, options);
+			}
+			evaluated.add(filename);
+			const source = readFileSync(filename, "utf8");
+			return jiti.evalModule(source, { filename, async: true, forceTranspile: true }) as Promise<object>;
+		},
+	};
+}
+
 /**
  * Loads an adapter module the way the extension loader loads extensions: `@bastani/atomic/storage` (and
  * `@bastani/atomic`) resolve to this host's own modules, so adapters need no installed copy of Atomic and share its
  * error classes. `hostModules` adds live modules by specifier; run journals pass the running
- * `@bastani/atomic/workflows`. A package name selects an adapter listed by an installed Atomic package; other
- * specifiers, and package names no installed package lists, resolve from the agent directory.
+ * `@bastani/atomic/workflows`. The ES module and TypeScript files the adapter imports by path get the same host
+ * modules; nested CommonJS files resolve them from `node_modules`. A package name selects an adapter listed by an
+ * installed Atomic package; other specifiers, and package names no installed package lists, resolve from the agent
+ * directory.
  */
 export async function loadStorageAdapter(
 	module: string,
@@ -118,14 +164,23 @@ export async function loadStorageAdapter(
 				import("../extensions/loader-host-modules.js"),
 				import("../package-manager-storage-adapters.js"),
 			]);
+		const id = pathToFileURL(join(context.agentDir, "storage-adapter.js")).href;
+		const babel = await createHostModuleJiti(id, {});
 		const loader = await createHostModuleJiti(
-			pathToFileURL(join(context.agentDir, "storage-adapter.js")).href,
-			{ ...(await getStorageAdapterHostModules()), ...hostModules },
+			id,
+			{ ...(await getStorageAdapterHostModules()), ...hostModules, [ADAPTER_IMPORTS]: createAdapterImports() },
 			// JS adapters must also pass through virtual host modules, not native-import a second host copy. A load
 			// given extra host modules must not reuse a module another load evaluated without them: the cached
 			// module's imports stay bound to that first loader, so a .ts adapter serving several domains would miss
-			// them. Such loads evaluate afresh, as JS adapters always do.
-			{ interopDefault: true, tryNative: false, moduleCache: Object.keys(hostModules).length === 0 },
+			// them. Such loads evaluate afresh, as JS adapters always do. jiti's source cache would return transforms
+			// without the import hook, so only the Babel step uses it.
+			{
+				interopDefault: true,
+				tryNative: false,
+				fsCache: false,
+				moduleCache: Object.keys(hostModules).length === 0,
+				transform: (options) => ({ code: `${babel.transform(options)}${ADAPTER_IMPORT_HOOK}` }),
+			},
 		);
 		const specifier = (await resolvePackageStorageAdapter(module, context.agentDir)) ?? module;
 		const location = loader.esmResolve(specifier);
