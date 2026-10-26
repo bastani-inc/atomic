@@ -31,6 +31,21 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		await runtime.innerCtx.__ensureSessionFromId(sessionId);
 		await runtime.captureStageSessionMeta({ awaitDurable: true });
 	};
+	/**
+	 * Queues text for the stage. A turn the live session is already running takes it into its own
+	 * queue: the stage context's queueing first waits for the stage's session to be ready, which on a
+	 * pooled replacement attempt still starting up lasts until that turn ends (#3996).
+	 */
+	const queueIntoLiveTurn = async (text: string, kind: "steer" | "followUp"): Promise<void> => {
+		const live = runtime.innerCtx.__agentSession();
+		if (live?.isStreaming === true) {
+			if (kind === "steer") await live.steer(text);
+			else await live.followUp(text);
+			return;
+		}
+		if (kind === "steer") await runtime.innerCtx.steer(text);
+		else await runtime.innerCtx.followUp(text);
+	};
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
 	// One lifetime subscription feeds both runtime projections, so the queue stays
@@ -147,7 +162,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		},
 		async steer(text: string) {
 			runtime.throwIfStageMutationBlocked();
-			await ensureMessagingSession();
+			// A live turn needs no reattached session: the text goes into that turn.
+			if (runtime.innerCtx.__agentSession()?.isStreaming !== true) await ensureMessagingSession();
 			runtime.throwIfStageMutationBlocked();
 			// A user message queued into an in-flight turn should nudge the stage
 			// back to its objective once that turn ends: arm the pending flag so
@@ -155,9 +171,12 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			// tracked call resolves. Idle deliveries start a fresh user turn and
 			// need no continuation nudge, so only arm while streaming.
 			// Between turns of the stage's own loop counts too: the loop takes the message next.
-			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true;
+			const queuedIntoInFlightTurn =
+				runtime.innerCtx.isStreaming ||
+				runtime.innerCtx.__agentSession()?.isStreaming === true ||
+				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await runtime.innerCtx.steer(text);
+				await queueIntoLiveTurn(text, "steer");
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();
@@ -165,13 +184,17 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		},
 		async followUp(text: string) {
 			runtime.throwIfStageMutationBlocked();
-			await ensureMessagingSession();
+			// A live turn needs no reattached session: the text goes into that turn.
+			if (runtime.innerCtx.__agentSession()?.isStreaming !== true) await ensureMessagingSession();
 			runtime.throwIfStageMutationBlocked();
 			// Same in-flight continuation arming as steer(): see comment above.
 			// Between turns of the stage's own loop counts too: the loop takes the message next.
-			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true;
+			const queuedIntoInFlightTurn =
+				runtime.innerCtx.isStreaming ||
+				runtime.innerCtx.__agentSession()?.isStreaming === true ||
+				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await runtime.innerCtx.followUp(text);
+				await queueIntoLiveTurn(text, "followUp");
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();

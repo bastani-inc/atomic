@@ -449,3 +449,19 @@ test("a send its attempt never confirms does not hold later ones: they go, and t
 	);
 	assert.equal(handle.placement.undelivered, undefined);
 });
+
+test("the same text sent twice while reconnecting shows as two pending rows, and both are redelivered (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	fake.end("worker_exited");
+	await assert.rejects(handle.followUp("run the tests"), /sent again when it reconnects/);
+	await assert.rejects(handle.followUp("run the tests"), /sent again when it reconnects/);
+	assert.deepEqual(handle.queuedUserMessages().followUp, ["run the tests", "run the tests"]);
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:run the tests", "watch-2:run the tests"],
+	);
+});

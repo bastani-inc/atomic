@@ -65,9 +65,12 @@ export class WorkflowAttachPane implements Component {
 	private _flushStoreUpdate(): void {
 		if (!this.storeUpdatePending || this.unsubscribeStore === null) return;
 		this.storeUpdatePending = false;
-		this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
+		// Input quarantines count from when the publication arrived, not from when it was handled.
+		this._handleStoreUpdate(readGraphStoreSnapshot(this.store), this.storeUpdateAt);
 	}
 	private storeUpdatePending = false;
+	/** When the latest deferred publication arrived, by this pane's clock. */
+	private storeUpdateAt = 0;
 	/** The attachment whose pooled view may remount the chat when it reconnects. */
 	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
@@ -109,6 +112,7 @@ export class WorkflowAttachPane implements Component {
 		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () => {
 			if (this.storeBurst !== undefined) {
 				this.storeUpdatePending = true;
+				this.storeUpdateAt = this.now();
 				return;
 			}
 			this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
@@ -355,7 +359,7 @@ export class WorkflowAttachPane implements Component {
 			stageId: match.workflowGraphTarget.stageId,
 		};
 	}
-	private _handleStoreUpdate(snapshot: StoreSnapshot): void {
+	private _handleStoreUpdate(snapshot: StoreSnapshot, at: number = this.now()): void {
 		if (!this.visible) {
 			this._syncAwaitingInputKeys(snapshot);
 			return;
@@ -369,7 +373,7 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode === "graph") {
 			const key = this._runAwaitingInputKey(snapshot, runId);
 			if (key !== null && key !== this.lastGraphAwaitingInputKey) {
-				this.graphEnterQuarantineUntil = this.now() + ENTER_TRANSITION_QUARANTINE_MS;
+				this.graphEnterQuarantineUntil = at + ENTER_TRANSITION_QUARANTINE_MS;
 			}
 			this.lastGraphAwaitingInputKey = key;
 			this.lastStageAwaitingInputKey = null;
@@ -378,7 +382,7 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			const key = this._stageAwaitingInputKey(snapshot, this.attachedRunId, this.lastAttachedStageId);
 			if (key !== null && key !== this.lastStageAwaitingInputKey) {
-				this.stagePromptEnterQuarantineUntil = this.now() + ENTER_TRANSITION_QUARANTINE_MS;
+				this.stagePromptEnterQuarantineUntil = at + ENTER_TRANSITION_QUARANTINE_MS;
 			}
 			this.lastStageAwaitingInputKey = key;
 			this.lastGraphAwaitingInputKey = this._runAwaitingInputKey(snapshot, runId);

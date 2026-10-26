@@ -61,17 +61,11 @@ export async function admitStageUserMessage(
 			];
 			if ((entries ?? []).filter((entry) => entry === text).length > before) queued.resolve(queuedAction);
 		});
-		// A turn the live session is running takes the text into its own queue directly. The stage
-		// handle's queueing waits for the stage's session to be ready, which on a replacement attempt
-		// still starting up (its creation in flight while the replayed turn runs) can take until the
-		// turn ends.
-		const session = handle.agentSession;
-		const direct = session?.isStreaming === true;
+		// The stage queues into a turn its live session already runs directly, and arms its own
+		// continuation for it (see the stage control handle).
+		const direct = handle.agentSession?.isStreaming === true;
 		const call = (async (): Promise<StageCommandResult> => {
-			if (direct && session !== undefined) {
-				if (intent === "steer") await session.steer(text);
-				else await session.followUp(text);
-			} else if (intent === "steer") await handle.steer(text);
+			if (intent === "steer") await handle.steer(text);
 			else await handle.followUp(text);
 			return queuedAction;
 		})();

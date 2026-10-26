@@ -231,13 +231,24 @@ export class PooledStageHandle implements StageControlHandle {
 		// Between attempts, nothing in the outbox is known to have arrived.
 		const waiting = this.reconnecting ? this.outbound : this.outbound.filter((entry) => !this.admitted(entry));
 		if (waiting.length === 0) return queued;
-		const steering = [...queued.steering];
-		const followUp = [...queued.followUp];
-		for (const entry of waiting) {
-			const queue = entry.intent === "steer" ? steering : followUp;
-			if (!queue.includes(entry.text)) queue.push(entry.text);
-		}
-		return { steering, followUp };
+		// One row per pending op: a text the attempt's queue already lists (it admitted that op) is not
+		// listed twice, but two ops with the same text are two rows.
+		const merge = (listed: readonly string[], intent: (entry: OutboundEntry) => boolean): string[] => {
+			const rows = [...listed];
+			const unmatched = new Map<string, number>();
+			for (const text of listed) unmatched.set(text, (unmatched.get(text) ?? 0) + 1);
+			for (const entry of waiting) {
+				if (!intent(entry)) continue;
+				const matching = unmatched.get(entry.text) ?? 0;
+				if (matching > 0) unmatched.set(entry.text, matching - 1);
+				else rows.push(entry.text);
+			}
+			return rows;
+		};
+		return {
+			steering: merge(queued.steering, (entry) => entry.intent === "steer"),
+			followUp: merge(queued.followUp, (entry) => entry.intent !== "steer"),
+		};
 	}
 
 	/** Observes rebinding to a replacement attempt, with the number of messages redelivered. */
