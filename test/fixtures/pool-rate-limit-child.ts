@@ -68,7 +68,7 @@ export const child = workflow({
 		sawLimits: Type.Boolean(),
 		/** Wall-clock end of the rate-limited model's cooldown the first worker recorded from the 429. */
 		limitedUntil: Type.Number(),
-		earlyCooldownMs: Type.Number(),
+		earlyCooldownEnd: Type.Number(),
 		replies: Type.Array(Type.String()),
 	},
 	async run(ctx) {
@@ -82,8 +82,8 @@ export const child = workflow({
 			}
 		};
 		if (ctx.inputs.role === "early") {
-			const earlyCooldownMs = await ctx.tool("early-cooldown", {}, async () => providerCooldownMs(EARLY_PROVIDER));
-			return { sawLimits: false, limitedUntil: 0, earlyCooldownMs, replies: [] };
+			const earlyCooldownEnd = await ctx.tool("early-cooldown", {}, async () => Date.now() + providerCooldownMs(EARLY_PROVIDER));
+			return { sawLimits: false, limitedUntil: 0, earlyCooldownEnd, replies: [] };
 		}
 		if (ctx.inputs.role === "first") {
 			let limitedUntil = 0;
@@ -100,7 +100,7 @@ export const child = workflow({
 				// that holds the later quota mark has already applied this cooldown, unless it had ended.
 				const replies = [await ask("limited", LIMITED_MODEL), await ask("quota", QUOTA_MODEL)];
 				done = replies.join("; ");
-				return { sawLimits: true, limitedUntil, earlyCooldownMs: 0, replies };
+				return { sawLimits: true, limitedUntil, earlyCooldownEnd: 0, replies };
 			} catch (error) {
 				done = error instanceof Error ? error.message : String(error);
 				throw error;
@@ -139,6 +139,6 @@ export const child = workflow({
 			await ask("spare", SPARE_MODEL),
 			await ask("limited", LIMITED_MODEL),
 		];
-		return { sawLimits, limitedUntil: 0, earlyCooldownMs: 0, replies };
+		return { sawLimits, limitedUntil: 0, earlyCooldownEnd: 0, replies };
 	},
 });

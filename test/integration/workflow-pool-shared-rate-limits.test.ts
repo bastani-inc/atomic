@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import {
+	providerCooldownMs,
 	providerUnavailableMs,
 	recordProviderRateLimit,
 } from "../../packages/coding-agent/src/core/provider-rate-limits.js";
@@ -33,6 +34,10 @@ import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/r
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 /** The 429's cooldown. Only ordering depends on it, never how fast the machine is; short enough to wait out. */
 const RETRY_AFTER_SECONDS = 6;
+/** Outlasts any test budget, so the early cooldown is still active whenever the new worker reads it. */
+const EARLY_COOLDOWN_MS = 3_600_000;
+/** The worker and the root each read the clock once to turn the remaining cooldown into its end time. */
+const CLOCK_READ_SLACK_MS = 1_000;
 
 // Keep the real coordinator, fork and IPC, but run the shipped worker rather than
 // cold-transpiling its entire source graph through jiti.
@@ -250,11 +255,16 @@ test(
 test(
 	"a newly started local worker receives the limits the pool already holds (#4023)",
 	async () => {
-		recordProviderRateLimit(EARLY_PROVIDER, { status: 429, retryAfterMs: 60_000 });
+		recordProviderRateLimit(EARLY_PROVIDER, { status: 429, retryAfterMs: EARLY_COOLDOWN_MS });
+		const recordedEnd = Date.now() + providerCooldownMs(EARLY_PROVIDER);
 		const result = await withPool("shared-limits-early", 1, (child) => async (ctx) => {
 			const early = await ctx.workflow(child, { inputs: { role: "early", baseUrl } });
 			assert.equal(early.status, "completed", JSON.stringify(early));
-			assert.ok(Number(early.outputs.earlyCooldownMs) > 50_000, JSON.stringify(early.outputs));
+			const workerEnd = Number(early.outputs.earlyCooldownEnd);
+			assert.ok(
+				Math.abs(workerEnd - recordedEnd) <= CLOCK_READ_SLACK_MS,
+				`worker cooldown end ${workerEnd} vs recorded ${recordedEnd}: ${JSON.stringify(early.outputs)}`,
+			);
 			return {};
 		});
 		assert.equal(result.status, "completed", JSON.stringify(result));
