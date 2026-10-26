@@ -42,8 +42,18 @@ import type {
 } from "./coordinator-protocol.js";
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
-import type { WorkerRequest } from "./protocol.js";
+import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
+import { StageEventBacklog } from "./stage-watch-coalesce.js";
+import type {
+	AttemptRef,
+	PooledStageChatSnapshot,
+	SeqEvent,
+	WatchEndReason,
+	WatchId,
+	WatchRefusal,
+	WatchResult,
+} from "./stage-watch-types.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
 
 const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
@@ -59,6 +69,12 @@ const STDERR_DRAIN_GRACE_MS = 1_000;
  * it, the stage's own Intercom keeps waiting for the owner.
  */
 const ROUTE_REGISTRATION_WAIT_MS = 120_000;
+/**
+ * A watch whose undelivered events pass either bound is ended with `resync`; the watcher
+ * reopens it for a fresh snapshot instead of the coordinator queueing without bound.
+ */
+export const STAGE_WATCH_BACKLOG_EVENTS = 2_000;
+export const STAGE_WATCH_BACKLOG_BYTES = 8 * 1024 * 1024;
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
@@ -290,6 +306,24 @@ interface WorkerSlot {
 	readonly child: ChildProcess;
 	work?: PoolWork;
 	readonly deliveries: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
+	/** Runs the current attempt published, so a stage watch can find the worker that runs it. */
+	readonly runs: Set<string>;
+	/** Stage commands awaiting the worker's result; undefined resolves a worker that exited. */
+	readonly stageCommands: Map<number, (result: StageCommandResult | undefined) => void>;
+}
+
+interface StageCommandResult {
+	readonly snapshot?: PooledStageChatSnapshot;
+	readonly refusal?: WatchRefusal;
+}
+
+/** One open stage watch: bound to the attempt it opened on, with at most one batch awaiting the root. */
+interface StageWatch {
+	readonly slot: WorkerSlot;
+	readonly attempt: AttemptRef;
+	open: boolean;
+	inFlight: boolean;
+	readonly pending: StageEventBacklog;
 }
 
 /**
@@ -315,6 +349,9 @@ export class PoolCoordinator {
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly deliveryRequests = new Map<number, { readonly slot: WorkerSlot; readonly workerRequest: number }>();
 	private readonly inflight = new Set<Promise<unknown>>();
+	private readonly slots = new Set<WorkerSlot>();
+	private readonly watches = new Map<WatchId, StageWatch>();
+	private stageCommandSequence = 0;
 	private lastTick = performance.now();
 	private stalledMs = 0;
 	private readonly ticker: NodeJS.Timeout;
@@ -345,6 +382,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
+	private readonly attemptBase = new Map<string, number>();
 
 	constructor(private readonly port: CoordinatorPort<CoordinatorEvent, CoordinatorInbound>) {
 		port.onMessage((message) => this.receive(message));
@@ -380,7 +419,8 @@ export class PoolCoordinator {
 	}
 
 	private notice(notice: CoordinatorNotice): void {
-		if (notice.kind === "budget") this.budgetBlocked = notice.blocked;
+		if (notice.kind === "stage-events-applied") this.stageEventsApplied(notice.watch);
+		else if (notice.kind === "budget") this.budgetBlocked = notice.blocked;
 		else if (notice.kind === "root") this.routes?.updateRoot(notice.rootRun);
 		else {
 			const batch = this.batches.get(notice.batch);
@@ -410,6 +450,11 @@ export class PoolCoordinator {
 				return this.transport(command.request, command);
 			case "undeliverable":
 				return (await this.routes?.undeliverable(command.payload)) ?? false;
+			case "stage-watch":
+				return this.stageWatch(command.watch, command.runId, command.stageId);
+			case "stage-unwatch":
+				this.stageUnwatch(command.watch);
+				return;
 			case "close":
 				this.closing ??= this.close();
 				return this.closing;
@@ -503,6 +548,7 @@ export class PoolCoordinator {
 			throw new Error("Local worker pool requires root preparation");
 		if (command.rootRun !== undefined) this.routes?.updateRoot(command.rootRun);
 		const work = await this.queue.enqueue(this.lease, command.descriptor, command.boundary);
+		if (!this.attemptBase.has(work.id)) this.attemptBase.set(work.id, work.state === "ready" ? work.generation : 0);
 		const result = await this.queue.result(this.root, work.id);
 		return { work, ...(result === undefined ? {} : { result }) };
 	}
@@ -609,7 +655,103 @@ export class PoolCoordinator {
 		return true;
 	}
 
+	/** Opens a watch on the worker that holds the stage's run, through that worker's airlock. */
+	private async stageWatch(id: WatchId, runId: string, stageId: string): Promise<WatchResult> {
+		if (this.closed) return { ok: false, refusal: "PoolClosed" };
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return { ok: false, refusal: "StageNotOnWorker" };
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		const watch: StageWatch = {
+			slot,
+			attempt,
+			open: false,
+			inFlight: false,
+			pending: new StageEventBacklog({ events: STAGE_WATCH_BACKLOG_EVENTS, bytes: STAGE_WATCH_BACKLOG_BYTES }),
+		};
+		this.watches.set(id, watch);
+		const result = await this.stageCommand(slot, { attempt, op: "watch", watch: id, runId, stageId });
+		if (this.watches.get(id) !== watch) {
+			if (result?.snapshot !== undefined) this.stageCommand(slot, { attempt, op: "unwatch", watch: id });
+			return { ok: false, refusal: this.closed ? "PoolClosed" : "AttemptChanging" };
+		}
+		if (result?.snapshot === undefined) {
+			this.watches.delete(id);
+			return { ok: false, refusal: result?.refusal ?? (this.closed ? "PoolClosed" : "AttemptChanging") };
+		}
+		watch.open = true;
+		return { ok: true, watch: { id, attempt, snapshot: result.snapshot } };
+	}
+
+	private stageUnwatch(id: WatchId): void {
+		const watch = this.watches.get(id);
+		if (watch === undefined) return;
+		this.watches.delete(id);
+		if (watch.slot.work?.id === watch.attempt.workId && watch.slot.work.generation === watch.attempt.generation)
+			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });
+	}
+
+	private stageCommand(
+		slot: WorkerSlot,
+		command: DistributiveOmit<WorkerStageCommand, "kind" | "commandId">,
+	): Promise<StageCommandResult | undefined> {
+		if (!this.incarnations.has(slot.worker)) return Promise.resolve(undefined);
+		const commandId = ++this.stageCommandSequence;
+		return new Promise((resolve) => {
+			slot.stageCommands.set(commandId, resolve);
+			slot.child.send({ kind: "stage-command", commandId, ...command } as WorkerStageCommand, (error) => {
+				if (!error) return;
+				slot.stageCommands.delete(commandId);
+				resolve(undefined);
+			});
+		});
+	}
+
+	/** A worker's batch of watched events; held and merged while the previous batch awaits the root. */
+	private stageEvents(slot: WorkerSlot, id: WatchId, events: readonly SeqEvent[]): void {
+		const watch = this.watches.get(id);
+		if (watch === undefined || watch.slot !== slot) return;
+		if (!watch.inFlight && watch.pending.length === 0) {
+			watch.inFlight = true;
+			this.port.send({ kind: "stage-events", watch: id, events });
+			return;
+		}
+		if (!watch.pending.push(events)) this.endStageWatch(id, "resync");
+	}
+
+	private stageEventsApplied(id: WatchId): void {
+		const watch = this.watches.get(id);
+		if (watch === undefined) return;
+		watch.inFlight = false;
+		if (watch.pending.length === 0) return;
+		const events = watch.pending.drain();
+		watch.inFlight = true;
+		this.port.send({ kind: "stage-events", watch: id, events });
+	}
+
+	/** Ends a watch for the root; no further events of it are forwarded. */
+	private endStageWatch(id: WatchId, reason: WatchEndReason): void {
+		const watch = this.watches.get(id);
+		if (watch === undefined) return;
+		this.watches.delete(id);
+		if (reason === "resync") {
+			// The watcher reopens for a fresh snapshot; the backlog it fell behind on is dropped.
+			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });
+			watch.pending.drain();
+		}
+		if (!watch.open) return;
+		if (watch.pending.length > 0) this.port.send({ kind: "stage-events", watch: id, events: watch.pending.drain() });
+		this.port.send({ kind: "stage-watch-ended", watch: id, reason });
+	}
+
+	private endStageWatches(match: (watch: StageWatch) => boolean, reason: WatchEndReason): void {
+		for (const [id, watch] of [...this.watches]) if (match(watch)) this.endStageWatch(id, reason);
+	}
+
 	private fence(work: PoolWork): void {
+		this.endStageWatches(
+			(watch) => watch.attempt.workId === work.id && watch.attempt.generation <= work.generation,
+			"attempt_fenced",
+		);
 		this.pendingActivity.delete(work.id);
 		this.routes?.fence(work);
 		this.port.send({ kind: "fence", work: { id: work.id, generation: work.generation } });
@@ -636,7 +778,8 @@ export class PoolCoordinator {
 		if (child.pid !== undefined) this.port.send({ kind: "spawned", pid: child.pid });
 		const worker = randomUUID();
 		this.incarnations.set(worker, child);
-		const slot: WorkerSlot = { worker, child, deliveries: new Map() };
+		const slot: WorkerSlot = { worker, child, deliveries: new Map(), runs: new Set(), stageCommands: new Map() };
+		this.slots.add(slot);
 		let ready = false;
 		let serial: Promise<void> = Promise.resolve();
 		const logPath = join(this.logDirectory!, `${worker}.log`);
@@ -697,6 +840,10 @@ export class PoolCoordinator {
 				this.readyWorkers.delete(worker);
 				this.controlAcks.delete(worker);
 				this.lastHeard.delete(worker);
+				this.slots.delete(slot);
+				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
+				for (const settle of slot.stageCommands.values()) settle(undefined);
+				slot.stageCommands.clear();
 				if (slot.work) this.fence(slot.work);
 				for (const delivery of slot.deliveries.values())
 					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
@@ -721,8 +868,12 @@ export class PoolCoordinator {
 							this.replacements = 0;
 						}
 						if (this.closed) return;
-						if (work) await this.queue!.releaseExited(this.lease!, work);
-						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
+						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
+						const superseded =
+							work !== undefined &&
+							!(await this.queue!.releaseExited(this.lease!, work)) &&
+							(await this.superseded(work));
+						const exhausted = superseded ? false : work ? this.attempts(work) >= 3 : ++this.replacements > 3;
 						if (exhausted) this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
@@ -735,6 +886,20 @@ export class PoolCoordinator {
 			child.on("message", (message: WorkerRequest) => {
 				this.observeResponsiveness();
 				this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
+				if (message.kind === "stage-command-result") {
+					const settle = slot.stageCommands.get(message.commandId);
+					slot.stageCommands.delete(message.commandId);
+					settle?.(message);
+					return;
+				}
+				if (message.kind === "stage-events") {
+					this.stageEvents(slot, message.watch, message.events);
+					return;
+				}
+				if (message.kind === "stage-watch-ended") {
+					if (this.watches.get(message.watch)?.slot === slot) this.endStageWatch(message.watch, message.reason);
+					return;
+				}
 				if (message.kind === "delivery-ack") {
 					const pending = slot.deliveries.get(message.deliveryId);
 					slot.deliveries.delete(message.deliveryId);
@@ -758,6 +923,16 @@ export class PoolCoordinator {
 					const queue = this.queue!;
 					const lease = this.lease!;
 					if (message.kind === "control") return queue.control(lease);
+					if (message.kind === "fenced") {
+						const fenced = slot.work;
+						slot.work = undefined;
+						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
+						// not replaced: it is released for replay and counts as a failed attempt, so refusals stay bounded.
+						if (fenced && !(await this.superseded(fenced)) && (await queue.releaseExited(lease, fenced)))
+							if (this.attempts(fenced) >= 3)
+								this.fail(new Error("Local worker retry limit: the root refused every attempt as stale"));
+						return;
+					}
 					if (message.kind === "controlled") {
 						const control = await queue.control(lease);
 						if (message.revision > control.revision) throw new Error("Unknown control revision");
@@ -768,6 +943,7 @@ export class PoolCoordinator {
 						if (slot.work) throw new Error("Worker already holds an attempt");
 						if (this.budgetBlocked) return;
 						await this.recoverExpired();
+						slot.runs.clear();
 						slot.work = await queue.claim(
 							lease,
 							worker,
@@ -785,7 +961,10 @@ export class PoolCoordinator {
 						work = await queue.extend(lease, work, options.leaseMs);
 						slot.work = work;
 					}
-					if (message.kind === "activity") return this.publish(work, message.runs);
+					if (message.kind === "activity") {
+						for (const run of message.runs) slot.runs.add(run.id);
+						return this.publish(work, message.runs);
+					}
 					if (message.kind === "route") {
 						if (this.routes === undefined) return undefined;
 						await this.flush();
@@ -851,6 +1030,7 @@ export class PoolCoordinator {
 					}
 					if (message.kind !== "complete") throw new Error("Invalid worker operation");
 					await queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject);
+					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
 					slot.work = undefined;
 					await this.sendResult(work.id);
@@ -863,10 +1043,29 @@ export class PoolCoordinator {
 					);
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) => child.send({ id: message.id, error: error.message }, replied),
+					(error: Error) =>
+						child.send(
+							{
+								id: message.id,
+								error: error.message,
+								...(error.message === STALE_WORK_LEASE ? { fenced: true } : {}),
+							},
+							replied,
+						),
 				);
 			});
 		});
+	}
+
+	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
+	private attempts(work: PoolWork): number {
+		return work.generation - (this.attemptBase.get(work.id) ?? 0);
+	}
+
+	/** Whether a newer attempt, or completion, replaced this one. */
+	private async superseded(work: PoolWork): Promise<boolean> {
+		const current = (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id);
+		return current === undefined || current.generation !== work.generation || current.state === "completed";
 	}
 
 	private assertPublished(work: PoolWork): void {
@@ -966,6 +1165,7 @@ export class PoolCoordinator {
 			await Promise.all(stopped.map((log) => rm(log, { force: true }).catch(() => {})));
 			if (this.logDirectory !== undefined) await rmdir(this.logDirectory).catch(() => {});
 		}
+		this.endStageWatches(() => true, "pool_closed");
 		this.flush();
 		try {
 			await this.routes?.close();

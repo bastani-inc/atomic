@@ -7,6 +7,7 @@ import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
+import type { SeqEvent, WatchEndReason, WatchId } from "./stage-watch-types.js";
 
 /**
  * Main thread <-> pool coordinator protocol.
@@ -76,6 +77,10 @@ export type CoordinatorCommandBody =
 	  }
 	| ({ readonly kind: "transport"; readonly request: number } & DeliveryPayload)
 	| { readonly kind: "undeliverable"; readonly payload: Record<string, unknown> }
+	/** Opens a watch of one running pooled stage; answered with a `WatchResult` (#3996). */
+	| { readonly kind: "stage-watch"; readonly watch: WatchId; readonly runId: string; readonly stageId: string }
+	/** Stops a watch; idempotent. */
+	| { readonly kind: "stage-unwatch"; readonly watch: WatchId }
 	| { readonly kind: "close" };
 
 /** Request from the main thread; answered by one `reply` event with the same id. */
@@ -90,6 +95,8 @@ export interface DeliveryPayload {
 export type CoordinatorNotice =
 	| { readonly kind: "budget"; readonly blocked: boolean }
 	| { readonly kind: "root"; readonly rootRun: PoolRootProjection }
+	/** The root applied the last `stage-events` batch of this watch; the next one may follow. */
+	| { readonly kind: "stage-events-applied"; readonly watch: WatchId }
 	| {
 			readonly kind: "published";
 			readonly batch: number;
@@ -148,6 +155,10 @@ export type CoordinatorEvent =
 			readonly usage?: PoolUsage;
 	  }
 	| { readonly kind: "failure"; readonly error: string }
+	/** Ordered events of an open watch; at most one batch per watch awaits `stage-events-applied`. */
+	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
+	/** The last event of a watch. */
+	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
 	| { readonly kind: "request"; readonly id: number; readonly request: CoordinatorRequestBody };
 
 /** Main thread answer to a coordinator `request`. */

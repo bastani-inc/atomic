@@ -1,4 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -49,9 +50,12 @@ import {
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
+import type { PooledStageHandle } from "./pooled-stage-handle.js";
+import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
+import type { PooledStageRef, PooledStageWatchMessage, WatchId, WatchResult } from "./stage-watch-types.js";
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
@@ -214,6 +218,14 @@ export class LocalWorkerPool {
 	private failure?: Error;
 	private closed = false;
 	private readonly releaseBinding: () => void;
+	/** Open stage watches, by id, to the listener their events go to (#3996). */
+	private readonly stageWatches = new Map<WatchId, (message: PooledStageWatchMessage) => void>();
+	/** One shared live view per watched stage, with the number of holders. */
+	private readonly stageViews = new Map<
+		string,
+		{ readonly opening: Promise<PooledStageHandle | undefined>; holders: number }
+	>();
+	private releaseStageSource?: () => void;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -307,7 +319,7 @@ export class LocalWorkerPool {
 		try {
 			if (this.coordinator !== undefined) await this.command({ kind: "control", state });
 		} finally {
-			if (state === "quit") await this.close();
+			if (state === "quit") await this.shutdown();
 		}
 	}
 	validateOptions(options: RunOpts): void {
@@ -368,6 +380,9 @@ export class LocalWorkerPool {
 				notifyUndeliverable: async (payload) =>
 					!this.closed && (await this.command({ kind: "undeliverable", payload })) === true,
 			};
+			this.releaseStageSource = registerPooledStageSource(store, {
+				acquire: (runId, stageId) => this.acquirePooledStage(runId, stageId),
+			});
 			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) => {
 				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
 			});
@@ -379,6 +394,90 @@ export class LocalWorkerPool {
 			publish: store !== undefined,
 			...this.rootRun(),
 		});
+	}
+	/**
+	 * Opens a live, attempt-bound view of one running pooled stage (#3996). `listener` receives
+	 * the stage's session events after the returned snapshot, in order, and finally the watch's
+	 * end; the first of them may arrive before this promise settles. Events flow only while the
+	 * watch is open: a stage nobody watches sends none.
+	 */
+	async watchPooledStage(
+		ref: PooledStageRef,
+		listener: (message: PooledStageWatchMessage) => void,
+	): Promise<WatchResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "PoolClosed" };
+		if (this.coordinator === undefined) return { ok: false, refusal: "StageNotOnWorker" };
+		const watch = randomUUID() as WatchId;
+		this.stageWatches.set(watch, listener);
+		try {
+			const result = (await this.command({ kind: "stage-watch", watch, ...ref })) as WatchResult;
+			if (!result.ok) this.stageWatches.delete(watch);
+			return result;
+		} catch {
+			this.stageWatches.delete(watch);
+			return { ok: false, refusal: "PoolClosed" };
+		}
+	}
+	/** Stops a watch's events. Idempotent; unknown ids succeed. */
+	async unwatchPooledStage(watch: WatchId): Promise<void> {
+		if (!this.stageWatches.delete(watch) || this.closed || this.coordinatorLost !== undefined) return;
+		await this.command({ kind: "stage-unwatch", watch }).catch(() => {});
+	}
+	/**
+	 * A shared live view of a running pooled stage, held until released; the last release
+	 * closes its watch. Undefined when the stage is not running on one of this pool's workers.
+	 */
+	private async acquirePooledStage(runId: string, stageId: string): Promise<PooledStageLease | undefined> {
+		const key = JSON.stringify([runId, stageId]);
+		let view = this.stageViews.get(key);
+		if (view === undefined) {
+			const stageName =
+				this.store
+					?.runs()
+					.find((run) => run.id === runId)
+					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
+			const opening = (async () => {
+				// Loaded on first use, so pools nobody attaches to never load it.
+				const { openPooledStageHandle } = await import("./pooled-stage-handle.js");
+				const opened = await openPooledStageHandle(
+					{
+						watch: (ref, listener) =>
+							this.watchPooledStage(ref, (message) => {
+								listener(message);
+								if (message.kind === "ended" && this.stageViews.get(key) === current)
+									this.stageViews.delete(key);
+							}),
+						unwatch: (watch) => this.unwatchPooledStage(watch),
+					},
+					{ runId, stageId },
+					stageName,
+					() => {
+						if (this.stageViews.get(key) === current) this.stageViews.delete(key);
+					},
+				);
+				return opened.ok ? opened.handle : undefined;
+			})();
+			const current = { opening, holders: 0 };
+			view = current;
+			this.stageViews.set(key, current);
+		}
+		const current = view;
+		current.holders++;
+		const handle = await current.opening.catch(() => undefined);
+		if (handle === undefined || handle.isDisposed || handle.endReason !== undefined) {
+			current.holders--;
+			if (this.stageViews.get(key) === current) this.stageViews.delete(key);
+			return undefined;
+		}
+		let released = false;
+		return {
+			handle,
+			release: () => {
+				if (released) return;
+				released = true;
+				if (--current.holders === 0) handle.dispose();
+			},
+		};
 	}
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
 	private queueView(): PoolStageQueue {
@@ -423,7 +522,7 @@ export class LocalWorkerPool {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
 			try {
-				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.close();
+				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.shutdown();
 			} catch (closeError) {
 				throw asWorkflowInfrastructureError(closeError) ?? closeError;
 			}
@@ -436,6 +535,7 @@ export class LocalWorkerPool {
 		options: RunOpts,
 	): Promise<RunResult> {
 		if (options.budget !== undefined) throw new Error("Local workers refuse process-bound override: budget");
+		if (this.closed) throw this.closedError(options.parentRun?.rootRunId);
 		const source = workerDefinitionSources.get(definition);
 		const index = this.options.definitions.findIndex(
 			(binding) =>
@@ -501,11 +601,7 @@ export class LocalWorkerPool {
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
-				if (this.closed) {
-					if (this.failure) throw this.failure;
-					if (this.desiredControl === "quit") throw new WorkflowGracefulQuitError(root, "worker pool teardown");
-					throw new Error("Local worker pool is closed");
-				}
+				if (this.closed) throw this.closedError(root);
 				const result = this.results.get(work.id);
 				if (result) {
 					await this.inbound;
@@ -615,6 +711,16 @@ export class LocalWorkerPool {
 				this.failure ??= new Error(event.error);
 				this.signalChange();
 				return;
+			case "stage-events":
+				this.stageWatches.get(event.watch)?.({ kind: "events", events: event.events });
+				this.notice({ kind: "stage-events-applied", watch: event.watch });
+				return;
+			case "stage-watch-ended": {
+				const listener = this.stageWatches.get(event.watch);
+				this.stageWatches.delete(event.watch);
+				listener?.({ kind: "ended", reason: event.reason });
+				return;
+			}
 			case "request":
 				// Started in order and answered whenever they finish: a delivery waits on its worker.
 				void this.serve(event.id, event.request);
@@ -697,8 +803,26 @@ export class LocalWorkerPool {
 			},
 		);
 	}
+	/** Why a closed pool refuses a child; a failed or quit pool keeps refusing until its owner closes it. */
+	private closedError(root: string | undefined): Error {
+		if (this.failure) return this.failure;
+		if (this.desiredControl === "quit" && root !== undefined)
+			return new WorkflowGracefulQuitError(root, "worker pool teardown");
+		return new Error("Local worker pool is closed");
+	}
 	private closing?: Promise<void>;
+	/** The owner's close: stops the pool and detaches it, so later roots on this backend may bind their own. */
 	close(): Promise<void> {
+		const closing = this.shutdown();
+		this.releaseBinding();
+		return closing;
+	}
+	/**
+	 * Stops the pool but keeps it bound to its root. A child the root starts afterwards then fails with the pool's
+	 * failure, or suspends after a quit, instead of running in the host, whose session store cannot see the pool's
+	 * stage sessions (#3979).
+	 */
+	private shutdown(): Promise<void> {
 		this.closing ??= this.dispose();
 		return this.closing;
 	}
@@ -706,7 +830,10 @@ export class LocalWorkerPool {
 		this.closed = true;
 		clearInterval(this.ticker);
 		this.ticker = undefined;
-		this.releaseBinding();
+		this.releaseStageSource?.();
+		const watches = [...this.stageWatches.values()];
+		this.stageWatches.clear();
+		for (const listener of watches) listener({ kind: "ended", reason: "pool_closed" });
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		this.signalChange();
 		let failure: unknown;
