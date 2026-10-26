@@ -168,6 +168,9 @@ export class PooledStageHandle implements StageControlHandle {
 		private readonly admissionWaitMs = POOLED_ADMISSION_WAIT_MS,
 	) {
 		this.attempt = attempt;
+		// The outbox outlives views: text an earlier view left unconfirmed is tried again by this one,
+		// deduplicated by op, so closing the chat never ends its retries (#3996).
+		for (const entry of outbound) entry.unconfirmedOn = undefined;
 		this.adopt(snapshot);
 		this.reconcile(snapshot);
 		this.pump();

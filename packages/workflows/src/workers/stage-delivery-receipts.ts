@@ -64,8 +64,12 @@ export class StageDeliveryReceipts {
 	): Promise<T> {
 		const before = { steering: this.queues.steering.enqueued, followUp: this.queues.followUp.enqueued };
 		if (!streaming) this.prompting = op;
+		let promptPending = false;
 		try {
 			const result = await admit();
+			// An idle prompt may be admitted before its user message starts the turn (a resume that waits
+			// for a provider cooldown first, say): the receipt waits for that message, not for the call.
+			promptPending = result.action === "prompt" && this.prompting === op;
 			const queue: QueueName | undefined =
 				result.action === "steer" ? "steering" : result.action === "followUp" ? "followUp" : undefined;
 			if (queue !== undefined && this.queues[queue].enqueued > before[queue]) {
@@ -76,7 +80,7 @@ export class StageDeliveryReceipts {
 			}
 			return result;
 		} finally {
-			if (this.prompting === op) this.prompting = undefined;
+			if (!promptPending && this.prompting === op) this.prompting = undefined;
 		}
 	}
 

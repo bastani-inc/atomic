@@ -486,3 +486,48 @@ test("text first sent to a replacement attempt before its own prompt starts wait
 		["watch-2:STEER"],
 	);
 });
+
+test("text left unconfirmed when its chat closes is retried by the stage's next view and delivered once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	let answering = false;
+	fake.transport.deliver = (delivery) => {
+		if (answering) return deliver(delivery);
+		fake.deliveries.push(delivery);
+		return new Promise(() => {});
+	};
+	const outbox: OutboundEntry[] = [];
+	const first = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+		5,
+	);
+	assert.ok(first.ok);
+	await assert.rejects(first.handle.followUp("FOLLOW"), /already arrived/);
+	assert.equal(first.handle.placement.undelivered, 1, "unconfirmed on this attempt");
+	// The chat closes while the text is unconfirmed; its retry timer goes with it.
+	first.handle.dispose();
+	answering = true;
+	// Later activity reopens the stage's outbox on the same attempt, as the pool does.
+	const second = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+		5,
+	);
+	assert.ok(second.ok);
+	while (second.handle.hasPending || fake.deliveries.length < 2)
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.deepEqual(
+		fake.deliveries.map(({ text }) => text),
+		["FOLLOW", "FOLLOW"],
+		"tried again under the same op",
+	);
+	assert.equal(fake.deliveries[0]!.op, fake.deliveries[1]!.op);
+	assert.equal(second.handle.placement.undelivered, undefined, "and admitted");
+});
