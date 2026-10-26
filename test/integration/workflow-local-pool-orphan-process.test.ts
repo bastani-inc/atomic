@@ -1,0 +1,655 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+import { test, vi } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
+import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
+import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
+import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
+import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { testRunId } from "../helpers/run-id.js";
+import {
+	fileExistsSync,
+	makeTempDirectory,
+	readDirectorySync,
+	readJson,
+	readTextSync,
+	removeTempDirectory,
+	sleep,
+} from "../helpers/runtime.js";
+
+const ORPHAN_PROCESS_TEST_TIMEOUT_MS = 120_000;
+/** The shortest work lease a pool accepts, so the held lease expires while the reap is blocked. */
+const SHORT_LEASE_MS = 2_000;
+const childPath = fileURLToPath(new URL("../fixtures/pool-load-child.ts", import.meta.url));
+const stubWorker = fileURLToPath(new URL("../fixtures/pool-orphan-process-stub-worker.mjs", import.meta.url));
+
+function groupAlive(group: number): boolean {
+	try {
+		process.kill(-group, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+interface ChildOutcome {
+	readonly index: number;
+	readonly status?: string;
+	readonly error?: Error;
+}
+
+interface RunningPool {
+	readonly directory: string;
+	readonly root: string;
+	readonly path: string;
+	readonly pool: LocalWorkerPool;
+}
+
+interface FinishedPool {
+	readonly directory: string;
+	readonly path: string;
+	readonly result: RunResult;
+	readonly children: readonly ChildOutcome[];
+	readonly pool: LocalWorkerPool;
+}
+
+interface PoolOptions {
+	readonly workers: number;
+	readonly inProcess?: boolean;
+	readonly leaseMs?: number;
+}
+
+/**
+ * A pool whose children run on protocol stub workers (test/fixtures/pool-orphan-process-stub-worker.mjs).
+ * The worker serving child 0 first takes a process permit bound to a detached `sleep` process group and
+ * then SIGKILLs itself, or goes silent with ATOMIC_TEST_ORPHAN_MODE=stall, so that group outlives it.
+ */
+async function openOrphanPool(path: string, options: PoolOptions) {
+	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+	const child = await loadWorkerDefinition({
+		path: childPath,
+		exportName: "child",
+		digest: await definitionDigest(childPath),
+	});
+	const pool = new LocalWorkerPool(backend, {
+		journalPath: path,
+		workers: options.workers,
+		admission: {},
+		definitions: [{ definition: child, path: childPath, exportName: "child" }],
+		workerEntry: stubWorker,
+		...(options.inProcess ? { coordinator: "in-process" as const } : {}),
+		...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+	});
+	return { backend, child, pool };
+}
+
+type PooledChild = Awaited<ReturnType<typeof openOrphanPool>>["child"];
+
+/**
+ * The root: runs `children` pooled children; with `settle`, a child failure is recorded instead of failing the root.
+ * With `followUp`, one more child (index `children`) runs only after the first `children` settle.
+ */
+function orphanRoot(child: PooledChild, children: number, outcomes: ChildOutcome[], settle = true, followUp = false) {
+	return workflow({
+		name: "pool-orphan-process-root",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			const calls = Array.from({ length: children }, (_, index) => ctx.workflow(child, { inputs: { index } }));
+			if (!settle) {
+				for (const result of await Promise.all(calls))
+					outcomes.push({ index: outcomes.length, status: result.status });
+				return {};
+			}
+			const settled = await Promise.allSettled(calls);
+			if (followUp)
+				settled.push(...(await Promise.allSettled([ctx.workflow(child, { inputs: { index: children } })])));
+			settled.forEach((outcome, index) => {
+				outcomes.push(
+					outcome.status === "fulfilled"
+						? { index, status: outcome.value.status }
+						: { index, error: outcome.reason as Error },
+				);
+			});
+			return {};
+		},
+	});
+}
+
+function orphanGroups(directory: string): number[] {
+	return readDirectorySync(directory)
+		.filter((name) => /^orphan-group(-\d+)?$/.test(name))
+		.map((name) => Number(readTextSync(join(directory, name), "utf8")));
+}
+
+function killOrphan(directory: string): void {
+	for (const group of orphanGroups(directory)) if (groupAlive(group)) process.kill(-group, "SIGKILL");
+}
+
+async function runOrphanPool(
+	options: PoolOptions & {
+		readonly children: number;
+		readonly followUp?: boolean;
+		readonly whileRunning?: (pool: RunningPool) => Promise<void>;
+		readonly afterRun: (pool: FinishedPool) => Promise<void>;
+	},
+): Promise<void> {
+	const directory = makeTempDirectory("pool-orphan-process-");
+	const path = join(directory, "journal.sqlite");
+	const { backend, child, pool } = await openOrphanPool(path, options);
+	const root = testRunId("pool-orphan-process-root");
+	const children: ChildOutcome[] = [];
+	try {
+		const execution = run(
+			orphanRoot(child, options.children, children, true, options.followUp),
+			{},
+			{ runId: root, cwd: directory, store: createStore(), durableBackend: backend },
+		);
+		await options.whileRunning?.({ directory, root, path, pool });
+		const result = await execution;
+		await options.afterRun({ directory, path, result, children, pool });
+	} finally {
+		await pool.close().catch(() => {});
+		await backend.close();
+		killOrphan(directory);
+		removeTempDirectory(directory);
+	}
+}
+
+function permitStates(path: string): string[][] {
+	const journal = new DatabaseSync(path, { readOnly: true });
+	try {
+		return journal
+			.prepare("SELECT kind, state, reason FROM wf_runs_resource_permits")
+			.all()
+			.map((row) => [String(row.kind), String(row.state), String(row.reason)]);
+	} finally {
+		journal.close();
+	}
+}
+
+interface WorkRow {
+	readonly id: string;
+	readonly state: string;
+	readonly worker: string;
+	readonly generation: number;
+	readonly epoch: number;
+}
+
+function workRow(path: string, root: string): WorkRow {
+	const journal = new DatabaseSync(path, { readOnly: true });
+	try {
+		const row = journal
+			.prepare("SELECT id, state, worker, generation, epoch FROM wf_runs_work WHERE root = ?")
+			.get(root);
+		assert.ok(row);
+		return {
+			id: String(row.id),
+			state: String(row.state),
+			worker: String(row.worker),
+			generation: Number(row.generation),
+			epoch: Number(row.epoch),
+		};
+	} finally {
+		journal.close();
+	}
+}
+
+async function until(condition: () => boolean): Promise<void> {
+	while (!condition()) await sleep(25);
+}
+
+/** A barrier the reap waits on at its first pause, released by the test. */
+function reapBarrier() {
+	let reapStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		reapStarted = resolve;
+	});
+	let release!: () => void;
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const pause = vi.spyOn(admissionHost, "reapPause").mockImplementation(async () => {
+		reapStarted();
+		await released;
+	});
+	return { started, release, pause };
+}
+
+function unconfirmedCleanup(group: number): RegExp {
+	return new RegExp(`Local worker process cleanup unconfirmed; process groups ${group} still running`);
+}
+
+test.skipIf(process.platform === "win32")(
+	"a worker that dies while its tool process group runs replays only its child once that group is reaped (#3986)",
+	async () => {
+		await runOrphanPool({
+			children: 1,
+			workers: 1,
+			async afterRun({ directory, path, result, children }) {
+				assert.equal(result.status, "completed", result.error);
+				assert.deepEqual(children, [{ index: 0, status: "completed" }]);
+				const replay = await readJson<{ group: number; orphanAliveAtReplay: boolean }>(
+					join(directory, "replay.json"),
+				);
+				assert.equal(
+					replay.orphanAliveAtReplay,
+					false,
+					"the replay never overlaps the dead attempt's process group",
+				);
+				assert.equal(groupAlive(replay.group), false);
+				assert.deepEqual(permitStates(path), [["process", "released", "process group cleanup confirmed"]]);
+			},
+		});
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a process group that survives the bounded reap fails only its own child, and a later close reports it (#3986)",
+	async () => {
+		// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		try {
+			await runOrphanPool({
+				children: 2,
+				workers: 2,
+				inProcess: true,
+				async afterRun({ directory, path, result, children, pool }) {
+					assert.equal(result.status, "completed", result.error);
+					const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+					const failed = children[0]?.error;
+					assert.ok(failed instanceof WorkflowInfrastructureError, String(failed));
+					assert.equal(failed.code, "worker_cleanup_unconfirmed");
+					assert.equal(failed.retryable, true);
+					assert.match(failed.message, unconfirmedCleanup(group));
+					assert.deepEqual(children[1], { index: 1, status: "completed" }, "the rest of the pool keeps running");
+					assert.equal(
+						fileExistsSync(join(directory, "replay.json")),
+						false,
+						"the child never replays alongside the live group",
+					);
+					assert.ok(groupAlive(group));
+					assert.deepEqual(
+						signal.mock.calls.map(([, name]) => name),
+						["SIGTERM", "SIGKILL"],
+					);
+					assert.deepEqual(
+						permitStates(path).map(([, state]) => state),
+						["granted"],
+						"the live group's permit stays quarantined",
+					);
+					// The reap finished before close started: close still reports the surviving group.
+					await assert.rejects(pool.close(), unconfirmedCleanup(group));
+				},
+			});
+		} finally {
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"children whose process groups survive the reap never exhaust the pool's idle-worker retry limit (#3986)",
+	async () => {
+		// Four children in turn each leave a process group that never disappears, on a single worker, with no
+		// completion in between. A fifth, unrelated child is enqueued only after all four have failed.
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		process.env.ATOMIC_TEST_ORPHAN_CHILDREN = "4";
+		try {
+			await runOrphanPool({
+				children: 4,
+				followUp: true,
+				workers: 1,
+				inProcess: true,
+				async afterRun({ directory, path, result, children, pool }) {
+					assert.equal(result.status, "completed", result.error);
+					const groups = orphanGroups(directory);
+					assert.equal(groups.length, 4, "each of the four children left its own process group");
+					for (const outcome of children.slice(0, 4)) {
+						assert.ok(outcome.error instanceof WorkflowInfrastructureError, String(outcome.error));
+						assert.equal(outcome.error.code, "worker_cleanup_unconfirmed");
+					}
+					assert.deepEqual(
+						children[4],
+						{ index: 4, status: "completed" },
+						"the unrelated child is still claimed and completes",
+					);
+					assert.deepEqual(
+						permitStates(path).map(([, state]) => state),
+						["granted", "granted", "granted", "granted"],
+						"every surviving group's permit stays quarantined",
+					);
+					await assert.rejects(pool.close(), /Local worker process cleanup unconfirmed/);
+				},
+			});
+		} finally {
+			delete process.env.ATOMIC_TEST_ORPHAN_CHILDREN;
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a close that starts while a surviving process group is reaped reports it (#3986)",
+	async () => {
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const barrier = reapBarrier();
+		try {
+			await runOrphanPool({
+				children: 1,
+				workers: 1,
+				inProcess: true,
+				async whileRunning({ directory, pool }) {
+					await barrier.started;
+					const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+					const closing = pool.close();
+					// The coordinator handles commands in order and marks itself closed as it starts closing, so a
+					// reply to a later command proves its close began before the reap resumes.
+					await pool.control("running");
+					barrier.release();
+					await assert.rejects(closing, unconfirmedCleanup(group));
+				},
+				async afterRun({ directory, children }) {
+					assert.ok(children[0]?.error, "the closed pool did not run the child");
+					assert.equal(fileExistsSync(join(directory, "replay.json")), false);
+				},
+			});
+		} finally {
+			barrier.release();
+			probe.mockRestore();
+			signal.mockRestore();
+			barrier.pause.mockRestore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+for (const mode of ["exit", "stall"] as const)
+	test.skipIf(process.platform === "win32")(
+		`a worker's work is not claimable while its process groups are reaped after it ${mode === "exit" ? "exits" : "stalls and is stopped"}, and is claimed after (#3986)`,
+		async () => {
+			let reaped = false;
+			const probe = vi
+				.spyOn(admissionHost, "processGroupState")
+				.mockImplementation(() => (reaped ? "gone" : "alive"));
+			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+			// The reap holds at its first pause until the test has observed claims refused.
+			const barrier = reapBarrier();
+			const extend = vi.spyOn(SqlPoolQueue.prototype, "extend");
+			const claim = vi.spyOn(SqlPoolQueue.prototype, "claim");
+			if (mode === "stall") process.env.ATOMIC_TEST_ORPHAN_MODE = "stall";
+			try {
+				await runOrphanPool({
+					children: 1,
+					workers: 2,
+					inProcess: true,
+					leaseMs: SHORT_LEASE_MS,
+					async whileRunning({ directory, root, path }) {
+						await barrier.started;
+						const extendsBefore = extend.mock.calls.length;
+						const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+						try {
+							const held = workRow(path, root);
+							assert.equal(held.state, "leased");
+							// Recovery finds the stopped worker's lease expired and extends it instead of releasing it.
+							await until(() => {
+								const current = workRow(path, root);
+								return (
+									current.state !== "leased" ||
+									current.generation !== held.generation ||
+									extend.mock.calls.slice(extendsBefore).some(([, token]) => token.id === held.id)
+								);
+							});
+							assert.deepEqual(
+								workRow(path, root),
+								held,
+								"recovery does not release the work while it is reaped",
+							);
+							const before = claim.mock.results.length;
+							await until(() => claim.mock.results.length > before + 1);
+							for (const outcome of claim.mock.results.slice(before))
+								assert.equal(
+									await outcome.value,
+									undefined,
+									"another worker's claim during the reap is refused",
+								);
+							assert.deepEqual(workRow(path, root), held, "the work stays with the stopped worker's attempt");
+						} finally {
+							// Let the blocked reap finish, so a failed assertion cannot hold pool close on it.
+							if (groupAlive(group)) process.kill(-group, "SIGKILL");
+							await until(() => !groupAlive(group));
+							reaped = true;
+							barrier.release();
+						}
+					},
+					async afterRun({ directory, result, children }) {
+						assert.equal(result.status, "completed", result.error);
+						assert.deepEqual(children, [{ index: 0, status: "completed" }], "the work is claimed after the reap");
+						const replay = await readJson<{ orphanAliveAtReplay: boolean }>(join(directory, "replay.json"));
+						assert.equal(replay.orphanAliveAtReplay, false);
+					},
+				});
+			} finally {
+				delete process.env.ATOMIC_TEST_ORPHAN_MODE;
+				barrier.release();
+				probe.mockRestore();
+				signal.mockRestore();
+				barrier.pause.mockRestore();
+				extend.mockRestore();
+				claim.mockRestore();
+			}
+		},
+		ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+	);
+
+/**
+ * The first incarnation quarantines child 0, whose group survives its reap, so the root fails; then `resume` runs
+ * the root again through `resumeDurableWorkflow` on a fresh backend and pool.
+ */
+async function quarantineThenResume(
+	resume: (context: {
+		readonly directory: string;
+		readonly path: string;
+		readonly root: string;
+		readonly group: number;
+		readonly quarantined: WorkRow;
+		readonly resumeRoot: (outcomes: ChildOutcome[]) => Promise<{
+			readonly pool: LocalWorkerPool;
+			readonly completion: () => Promise<{ readonly status?: string; readonly error?: string }>;
+		}>;
+	}) => Promise<void>,
+): Promise<void> {
+	const directory = makeTempDirectory("pool-orphan-resume-");
+	const path = join(directory, "journal.sqlite");
+	const root = testRunId("pool-orphan-resume-root");
+	const opened: Awaited<ReturnType<typeof openOrphanPool>>[] = [];
+	try {
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		const first = await openOrphanPool(path, { workers: 1, inProcess: true });
+		try {
+			const result = await run(
+				orphanRoot(first.child, 1, [], false),
+				{},
+				{ runId: root, cwd: directory, store: createStore(), durableBackend: first.backend },
+			);
+			assert.equal(result.status, "failed");
+			assert.match(result.error ?? "", /process groups \d+ still running/);
+		} finally {
+			await first.pool.close().catch(() => {});
+			await first.backend.close();
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+		}
+		const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+		assert.ok(groupAlive(group), "the quarantined group still runs");
+		const quarantined = workRow(path, root);
+		assert.equal(quarantined.state, "leased");
+		await resume({
+			directory,
+			path,
+			root,
+			group,
+			quarantined,
+			async resumeRoot(outcomes) {
+				const resumed = await openOrphanPool(path, { workers: 1, inProcess: true });
+				opened.push(resumed);
+				const store = createStore();
+				const jobs = createJobTracker();
+				let completion: Promise<unknown> | undefined;
+				const accepted = await resumeDurableWorkflow(root, {
+					registry: createRegistry().register(orphanRoot(resumed.child, 1, outcomes)),
+					baseRunOpts: { store, cwd: directory },
+					durableBackend: resumed.backend,
+					jobs,
+					onRunAccepted: (id) => {
+						completion = jobs.get(id)?.promise;
+					},
+				});
+				assert.ok(accepted.ok, accepted.ok ? "" : accepted.message);
+				return {
+					pool: resumed.pool,
+					async completion() {
+						await completion;
+						const record = store.runs().find((candidate) => candidate.id === root);
+						return { status: record?.status, error: record?.error };
+					},
+				};
+			},
+		});
+	} finally {
+		for (const { pool, backend } of opened) {
+			await pool.close().catch(() => {});
+			await backend.close();
+		}
+		killOrphan(directory);
+		removeTempDirectory(directory);
+	}
+}
+
+test.skipIf(process.platform === "win32")(
+	"a durable resume adopts a retained attempt the root enqueued while it was leased once its groups are gone (#3986)",
+	async () => {
+		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
+			let reaped = false;
+			const probe = vi
+				.spyOn(admissionHost, "processGroupState")
+				.mockImplementation(() => (reaped ? "gone" : "alive"));
+			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+			// The resumed coordinator's reap of the retained attempt holds until the root has enqueued it.
+			const barrier = reapBarrier();
+			const enqueue = vi.spyOn(SqlPoolQueue.prototype, "enqueue");
+			const claim = vi.spyOn(SqlPoolQueue.prototype, "claim");
+			try {
+				const outcomes: ChildOutcome[] = [];
+				const resumed = await resumeRoot(outcomes);
+				await barrier.started;
+				await until(() => enqueue.mock.results.length > 0);
+				const enqueued = await enqueue.mock.results[0]!.value;
+				assert.equal(enqueued.id, quarantined.id);
+				assert.equal(enqueued.state, "leased", "the resumed root enqueues the retained attempt while it is leased");
+				const claimsBefore = claim.mock.results.length;
+				await until(() => claim.mock.results.length > claimsBefore + 1);
+				for (const outcome of claim.mock.results.slice(claimsBefore))
+					assert.equal(await outcome.value, undefined, "the retained attempt is not claimable while it is reaped");
+				const epoch = claim.mock.calls.at(-1)![0].epoch;
+				assert.ok(epoch > quarantined.epoch);
+				assert.deepEqual(workRow(path, root), quarantined);
+
+				process.kill(-group, "SIGKILL");
+				await until(() => !groupAlive(group));
+				reaped = true;
+				barrier.release();
+				// Released, it must be adopted into the resumed epoch, or no worker of this incarnation can claim it.
+				await until(() => {
+					const row = workRow(path, root);
+					return row.state === "completed" || (row.state === "ready" && row.epoch !== epoch);
+				});
+				assert.equal(workRow(path, root).epoch, epoch, "the released attempt is adopted into the resumed epoch");
+				const record = await resumed.completion();
+				assert.equal(record.status, "completed", record.error);
+				assert.deepEqual(outcomes, [{ index: 0, status: "completed" }]);
+				assert.equal(workRow(path, root).generation, quarantined.generation + 1, "one replay in this incarnation");
+				const replay = await readJson<{ orphanAliveAtReplay: boolean }>(join(directory, "replay.json"));
+				assert.equal(replay.orphanAliveAtReplay, false, "the replay starts only after the group exits");
+			} finally {
+				barrier.release();
+				probe.mockRestore();
+				signal.mockRestore();
+				barrier.pause.mockRestore();
+				enqueue.mockRestore();
+				claim.mockRestore();
+			}
+		});
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a durable resume reaps a retained attempt's groups and fails only its child if they survive the bound (#3986)",
+	async () => {
+		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
+			// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
+			const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+			const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+			const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+			try {
+				const outcomes: ChildOutcome[] = [];
+				const resumed = await resumeRoot(outcomes);
+				const record = await resumed.completion();
+				assert.equal(record.status, "completed", record.error);
+				const failed = outcomes[0]?.error;
+				assert.ok(failed instanceof WorkflowInfrastructureError, String(failed));
+				assert.equal(failed.code, "worker_cleanup_unconfirmed");
+				assert.equal(failed.retryable, true);
+				assert.match(failed.message, unconfirmedCleanup(group));
+				assert.deepEqual(
+					signal.mock.calls.map(([target, name]) => [target, name]),
+					[
+						[group, "SIGTERM"],
+						[group, "SIGKILL"],
+					],
+					"the resumed coordinator reaps the retained group with the bounded sequence",
+				);
+				assert.deepEqual(workRow(path, root), quarantined, "the attempt stays quarantined, never replayed");
+				assert.equal(fileExistsSync(join(directory, "replay.json")), false);
+				assert.deepEqual(
+					permitStates(path).map(([, state]) => state),
+					["granted"],
+				);
+				await assert.rejects(resumed.pool.close(), unconfirmedCleanup(group));
+			} finally {
+				probe.mockRestore();
+				signal.mockRestore();
+				pause.mockRestore();
+			}
+		});
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);

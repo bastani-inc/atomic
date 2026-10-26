@@ -165,6 +165,8 @@ export type CoordinatorEvent =
 			readonly usage?: PoolUsage;
 	  }
 	| { readonly kind: "failure"; readonly error: string }
+	/** One child failed without failing the pool. */
+	| { readonly kind: "work-failure"; readonly workId: string; readonly error: string }
 	/** Ordered events of an open watch; at most one batch per watch awaits `stage-events-applied`. */
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	/** The last event of a watch. */
