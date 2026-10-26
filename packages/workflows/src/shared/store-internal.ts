@@ -10,7 +10,7 @@ import type {
 	StoreSnapshot,
 	WorkflowNotice,
 } from "./store-types.js";
-import { WorkflowObservationRuntime } from "./workflow-observation-runtime.js";
+import { type WorkflowObservationChange, WorkflowObservationRuntime } from "./workflow-observation-runtime.js";
 
 /**
  * Statuses that represent a terminal run state — cannot be overwritten.
@@ -58,10 +58,12 @@ export interface StoreContext {
 	readonly observation: WorkflowObservationRuntime;
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
-	notify(): void;
+	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
+	notify(change?: WorkflowObservationChange): void;
 	/** Runs `update` with every invalidation it causes coalesced into one notification at its end. */
 	batch<T>(update: () => T): T;
-	bumpAndNotify(): void;
+	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
+	bumpAndNotify(change?: WorkflowObservationChange): void;
 	findRun(runId: string): RunSnapshot | undefined;
 	findStage(run: RunSnapshot, stageId: string): StageSnapshot | undefined;
 	rejectPrompt(promptId: string, reason: string): void;
@@ -166,13 +168,21 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 
 	let batchDepth = 0;
 	let batchedNotification = false;
+	/** Changes inside the open batch; undefined once any change was not scoped. */
+	let batchedChanges: WorkflowObservationChange[] | undefined = [];
 
-	function notify(): void {
+	function notify(change?: WorkflowObservationChange): void {
 		if (batchDepth > 0) {
 			batchedNotification = true;
+			if (change === undefined) batchedChanges = undefined;
+			else batchedChanges?.push(change);
 			return;
 		}
-		observation.capture();
+		observation.capture(change === undefined ? undefined : [change]);
+		publish();
+	}
+
+	function publish(): void {
 		for (const fn of state.invalidationListeners) {
 			try {
 				fn();
@@ -192,9 +202,9 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		}
 	}
 
-	function bumpAndNotify(): void {
+	function bumpAndNotify(change?: WorkflowObservationChange): void {
 		state.version++;
-		notify();
+		notify(change);
 	}
 
 	function batch<T>(update: () => T): T {
@@ -204,8 +214,11 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		} finally {
 			batchDepth--;
 			if (batchDepth === 0 && batchedNotification) {
+				const changes = batchedChanges;
 				batchedNotification = false;
-				notify();
+				batchedChanges = [];
+				observation.capture(changes);
+				publish();
 			}
 		}
 	}
