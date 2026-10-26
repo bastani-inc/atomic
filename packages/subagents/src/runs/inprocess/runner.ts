@@ -610,20 +610,44 @@ function statsFor(session: AgentSession | undefined, fallbackSessionId: string):
 	}
 }
 
-function outputFor(session: AgentSession | undefined): string {
+type BranchEntry = ReturnType<SessionManager["getBranch"]>[number];
+type TranscriptMessage = Extract<BranchEntry, { type: "message" }>["message"];
+
+/**
+ * The messages this attempt produced: entries on the child's branch after its launch leaf.
+ * A forked child's session also carries the parent's history up to the fork point, and none
+ * of that is the child's output (#3987). A launch leaf missing from the branch yields
+ * nothing rather than the whole inherited transcript.
+ */
+function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | null): TranscriptMessage[] {
+	const branch = manager.getBranch();
+	const launchIndex = launchLeafId === null ? -1 : branch.findIndex((entry) => entry.id === launchLeafId);
+	if (launchLeafId !== null && launchIndex === -1) return [];
+	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+}
+
+function outputFor(ownMessages: readonly TranscriptMessage[]): string {
 	return lastNonEmptyAssistantText(
-		session?.messages as Parameters<typeof lastNonEmptyAssistantText>[0],
-		session?.getLastAssistantText(),
+		ownMessages.filter((message) => message.role === "assistant") as Parameters<typeof lastNonEmptyAssistantText>[0],
 	);
 }
 
-function cancelledEnvelope(session: AgentSession | undefined, spec: ChildSpec, stats: AttemptStats): string {
+/** Why an attempt that settled without a stop ended with no output of its own. */
+function noOutputCause(ownMessages: readonly TranscriptMessage[]): string {
+	const lastAssistant = ownMessages.findLast((message) => message.role === "assistant");
+	const errorMessage = lastAssistant?.role === "assistant" ? lastAssistant.errorMessage?.trim() : undefined;
+	return errorMessage || "Child ended without producing any assistant output.";
+}
+
+function cancelledEnvelope(
+	session: AgentSession | undefined,
+	spec: ChildSpec,
+	stats: AttemptStats,
+	ownMessages: readonly TranscriptMessage[],
+): string {
 	return recoverCancelledChildOutput({
 		progressPath: spec.progressPath,
-		assistantText: lastNonEmptyAssistantText(
-			session?.messages as Parameters<typeof lastNonEmptyAssistantText>[0],
-			outputFor(session),
-		),
+		assistantText: outputFor(ownMessages),
 		toolCount: stats.toolCalls,
 		sessionPath: session?.sessionFile ?? spec.sessionManager?.getSessionFile(),
 		...(spec.progressArtifactPath ? { progressArtifactPath: spec.progressArtifactPath } : {}),
@@ -945,7 +969,7 @@ export class SubagentControlRuntime {
 						envelope: killed
 							? "Killed. This child cannot be resumed."
 							: waitResult === PARENT_CANCEL_CAUSE
-								? cancelledEnvelope(undefined, admitted.spec, stats)
+								? cancelledEnvelope(undefined, admitted.spec, stats, [])
 								: INTERRUPTED_ENVELOPE,
 						...(effectiveModelId === undefined ? {} : { model: effectiveModelId }),
 						...(effectiveThinking === undefined ? {} : { thinking: effectiveThinking }),
@@ -981,6 +1005,8 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		// Messages this attempt produced; a forked child's inherited history is never among them.
+		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
 
 		let termination: TerminationCauseName | undefined;
@@ -1042,6 +1068,8 @@ export class SubagentControlRuntime {
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
 			if (workflow) await sessionManager.markSessionInternal(workflow);
+			const launchLeafId = sessionManager.getLeafId();
+			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
 			let created: { session: AgentSession };
 			if (admitted.spec.testSession) {
 				created = { session: createTestSession(sessionManager, admitted.spec) };
@@ -1256,16 +1284,19 @@ export class SubagentControlRuntime {
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
 			const sessionFile = session.sessionFile;
-			const output = outputFor(session);
-			const status = attemptStatus(termination);
+			const producedMessages = ownMessages();
+			const output = outputFor(producedMessages);
+			// A child that settled without a stop and produced nothing of its own failed (#3987).
+			const noOutput = termination === undefined && !output.trim() ? noOutputCause(producedMessages) : undefined;
+			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
 			const envelope =
 				termination === PARENT_CANCEL_CAUSE
-					? cancelledEnvelope(session, admitted.spec, stats)
+					? cancelledEnvelope(session, admitted.spec, stats, producedMessages)
 					: status === "interrupted"
 						? INTERRUPTED_ENVELOPE
-						: boundedEnvelope(output || termination || "(no output)", undefined);
+						: boundedEnvelope(output || noOutput || termination || "(no output)", undefined);
 			if (status === "ok")
 				return {
 					status,
@@ -1298,7 +1329,7 @@ export class SubagentControlRuntime {
 				};
 			return {
 				status,
-				cause: termination ?? "agent session ended without a successful completion",
+				cause: noOutput ?? termination ?? "agent session ended without a successful completion",
 				stats,
 				path: admitted.identity.path,
 				envelope,
@@ -1328,7 +1359,7 @@ export class SubagentControlRuntime {
 					path: admitted.identity.path,
 					envelope:
 						termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-							? cancelledEnvelope(session, admitted.spec, stats)
+							? cancelledEnvelope(session, admitted.spec, stats, ownMessages())
 							: this.killedChildren.has(admitted.identity.path)
 								? "Killed. This child cannot be resumed."
 								: INTERRUPTED_ENVELOPE,

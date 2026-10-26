@@ -6,6 +6,7 @@
 
 - Fixed a `.ts` storage adapter that serves both `sessions.storage` and `workflows.journal` failing to import `@bastani/atomic/workflows` when sessions loaded first; the journal now gets the running Atomic's workflows module ([#3973](https://github.com/bastani-inc/atomic/issues/3973))
 - ES module and TypeScript files a storage adapter imports by relative path now get the running Atomic's `@bastani/atomic/workflows`, `@bastani/atomic/storage`, and `@bastani/atomic`, as the adapter's entry file does. Before, a `.mjs` file or a `.js` file in a `"type": "module"` adapter package could resolve these imports from `node_modules` instead, so errors such as `StaleLeaseError` thrown from it failed Atomic's `instanceof` checks. CommonJS files other than the entry file still resolve these imports from `node_modules` ([#3972](https://github.com/bastani-inc/atomic/issues/3972))
+- Fixed subagents launched with `context: "fork"` finishing instantly as "completed" with the parent's last message as their output. A forked child's history now stops before the parent's in-flight turn that is launching it, so providers that sign thinking no longer reject the child's first request as a modified turn. A child's output now comes only from messages it produced itself, and a child that produced none is reported as failed with the provider's error instead of completing with inherited text ([#3987](https://github.com/bastani-inc/atomic/issues/3987))
 
 ## [0.9.45] - 2026-10-25
 
