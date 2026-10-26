@@ -250,12 +250,12 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	steer(
 		text: string,
 		images?: ImageContent[],
-		options?: Pick<PromptOptions, "source">,
+		options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 	): Promise<QueuedInputDisposition>;
 	followUp(
 		text: string,
 		images?: ImageContent[],
-		options?: Pick<PromptOptions, "source">,
+		options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 	): Promise<QueuedInputDisposition>;
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
@@ -582,6 +582,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
 	readonly _messagesAwaitingPersistence: WeakSet<object>;
+	readonly _reissuedToolCallIds: Set<string>;
 	_lastAssistantToolResults: AgentMessage[];
 	_lastActivityOutcome: AgentActivityOutcome;
 	_isBeforeSettle: boolean;

@@ -9,11 +9,13 @@ import { poolStageOptions } from "./pool-stage-options.js";
 export const LIVE_STAGE_FIRST_DELTA = "streamed-before-hold ";
 export const LIVE_STAGE_SECOND_DELTA = "streamed-after-release";
 
-async function released(journalPath: string): Promise<void> {
+/** Resolves true once the test releases the gate, or false when the turn is aborted first. */
+async function released(journalPath: string, signal: AbortSignal | undefined): Promise<boolean> {
 	for (;;) {
+		if (signal?.aborted) return false;
 		const database = new TestSqliteDatabase(journalPath);
 		try {
-			if (database.query("SELECT released FROM test_live_stage_gate").get()?.released) return;
+			if (database.query("SELECT released FROM test_live_stage_gate").get()?.released) return true;
 		} finally {
 			database.close();
 		}
@@ -48,7 +50,7 @@ export const child = workflow({
 					maxTokens: 1000,
 				},
 			],
-			streamSimple(model) {
+			streamSimple(model, _context, streamOptions) {
 				const stream = createAssistantMessageEventStream();
 				const partial = (text: string): AssistantMessage => ({
 					role: "assistant",
@@ -77,7 +79,12 @@ export const child = workflow({
 						delta: LIVE_STAGE_FIRST_DELTA,
 						partial: partial(LIVE_STAGE_FIRST_DELTA),
 					});
-					await released(ctx.inputs.journalPath);
+					if (!(await released(ctx.inputs.journalPath, streamOptions?.signal))) {
+						// Aborted mid-turn, as a pause does: end the stream the way a provider does.
+						stream.push({ type: "error", reason: "aborted", error: { ...partial(LIVE_STAGE_FIRST_DELTA), stopReason: "aborted" } });
+						stream.end();
+						return;
+					}
 					stream.push({ type: "text_delta", contentIndex: 0, delta: LIVE_STAGE_SECOND_DELTA, partial: partial(full) });
 					stream.push({ type: "text_end", contentIndex: 0, content: full, partial: partial(full) });
 					stream.push({ type: "done", reason: "stop", message: partial(full) });

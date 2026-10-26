@@ -344,6 +344,11 @@ export function deferMessagesInterleavedWithToolBatch<TMessage extends AgentMess
 export interface ToolCallPairRepairOptions {
 	/** Close a final unanswered tool call when reopening an inactive session. */
 	repairTrailing?: boolean;
+	/**
+	 * Calls that are running again (an interrupted question asked anew on resume): they are
+	 * pending, not interrupted, so no interrupted result is inserted for them.
+	 */
+	inFlightToolCallIds?: ReadonlySet<string>;
 }
 
 export function repairOrphanToolResults<TMessage extends AgentMessage>(
@@ -358,7 +363,7 @@ export function repairOrphanToolResults<TMessage extends AgentMessage>(
 	const repaired: (TMessage | ToolResultMessage)[] = [];
 	const flushUnanswered = (): void => {
 		for (const call of pendingToolCalls) {
-			if (answeredToolCallIds?.has(call.id)) continue;
+			if (answeredToolCallIds?.has(call.id) || options.inFlightToolCallIds?.has(call.id)) continue;
 			const interrupted: ToolResultMessage = {
 				role: "toolResult",
 				toolCallId: call.id,

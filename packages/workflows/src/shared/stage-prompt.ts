@@ -50,6 +50,8 @@ interface BuiltAnswer {
 	kind: "option" | "custom" | "chat" | "multi";
 	answer: string | null;
 	selected?: string[];
+	/** The chosen option's preview, as the interactive form reports it. */
+	preview?: string;
 }
 interface BuiltResult {
 	answers: BuiltAnswer[];
@@ -293,6 +295,17 @@ function answerMulti(question: StageInputQuestion, candidates: readonly string[]
 	return { questionIndex: 0, question: question.question, kind: "multi", answer: null, selected };
 }
 
+/** The authored preview of a single-select answer's option, from the exact tool parameters. */
+function withPreview(result: unknown, params: QuestionParams | undefined): unknown {
+	const built = result as BuiltResult;
+	const first = built?.answers?.[0];
+	if (first?.kind !== "option" || first.answer === null) return result;
+	const option = params?.questions[0]?.options.find((candidate) => candidate.label === first.answer);
+	const preview = (option as { readonly preview?: unknown } | undefined)?.preview;
+	if (typeof preview !== "string" || preview.length === 0) return result;
+	return { ...built, answers: [{ ...first, preview }, ...built.answers.slice(1)] } satisfies BuiltResult;
+}
+
 function buildResult(questions: readonly StageInputQuestion[], answer: StageInputAnswer): unknown {
 	if (answer.raw !== undefined) return answer.raw;
 	const question = questions[0];
@@ -337,6 +350,8 @@ export function buildStagePromptAdapter(
 	return {
 		prompt,
 		questionnaireParams: args as QuestionParams,
-		buildResult: (answer) => buildResult(questions, answer),
+		// A headless answer reports the chosen option's preview, as the interactive form does.
+		buildResult: (answer) =>
+			answer.raw !== undefined ? answer.raw : withPreview(buildResult(questions, answer), args as QuestionParams),
 	};
 }

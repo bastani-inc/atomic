@@ -6,6 +6,7 @@ import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sql
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
@@ -393,6 +394,76 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(laterOutputs, undefined, "the later child ran in the host process");
 			assert.ok(afterFault instanceof WorkflowInfrastructureError, String(afterFault));
 			assert.equal(afterFault.code, "worker_retry_limit");
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	WORKER_FAILURE_ROOT_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a pool that fails releases the work its workers still held, so none stays leased after the root completes (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-fault-releases-leases-");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const crashingPath = fileURLToPath(new URL("../fixtures/pool-crashing-child.ts", import.meta.url));
+		const waitingPath = fileURLToPath(new URL("../fixtures/pool-lifecycle-child.ts", import.meta.url));
+		const crashing = await loadWorkerDefinition({
+			path: crashingPath,
+			exportName: "crashingChild",
+			digest: await definitionDigest(crashingPath),
+		});
+		const waiting = await loadWorkerDefinition({
+			path: waitingPath,
+			exportName: "child",
+			digest: await definitionDigest(waitingPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 2,
+			definitions: [
+				{ definition: crashing, path: crashingPath, exportName: "crashingChild" },
+				{ definition: waiting, path: waitingPath, exportName: "child" },
+			],
+		});
+		const root = "pool-fault-releases-leases-root";
+		const parent = workflow({
+			name: "pool-fault-releases-leases-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				// The waiting child holds its worker's lease until the pool fails: its release file never appears.
+				const settled = await Promise.allSettled([
+					ctx.workflow(waiting, { inputs: { releasePath: join(directory, "never") } }),
+					ctx.workflow(crashing),
+				]);
+				assert.deepEqual(
+					settled.map((outcome) => outcome.status),
+					["rejected", "rejected"],
+				);
+				return {};
+			},
+		});
+		try {
+			const outcome = await run(
+				parent,
+				{},
+				{ runId: root, cwd: directory, store: createStore(), durableBackend: backend },
+			);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			await pool.close().catch(() => {});
+			const work = await (await openSqlPoolQueue(journal)).inspect(root);
+			assert.equal(work.length, 2);
+			assert.deepEqual(
+				work.filter((item) => item.state === "leased").map((item) => item.childRunId),
+				[],
+				"no work stays leased to a worker of the failed pool",
+			);
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();

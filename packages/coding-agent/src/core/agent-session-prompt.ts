@@ -827,11 +827,14 @@ async function queueUserInput(
 	images: ImageContent[] | undefined,
 	behavior: "steer" | "followUp",
 	source: NonNullable<PromptOptions["source"]>,
+	expandPromptTemplates = true,
 ): Promise<QueuedInputDisposition> {
 	assertSessionOpen(session);
 	const owner = resolveWorkflowStageDeliveryTarget(session);
-	if (owner !== session) return queueUserInput(owner, text, images, behavior, source);
-	return trackSessionWork(session, () => admittedQueueUserInput(session, text, images, behavior, source));
+	if (owner !== session) return queueUserInput(owner, text, images, behavior, source, expandPromptTemplates);
+	return trackSessionWork(session, () =>
+		admittedQueueUserInput(session, text, images, behavior, source, expandPromptTemplates),
+	);
 }
 
 async function admittedQueueUserInput(
@@ -840,9 +843,11 @@ async function admittedQueueUserInput(
 	images: ImageContent[] | undefined,
 	behavior: "steer" | "followUp",
 	source: NonNullable<PromptOptions["source"]>,
+	expandPromptTemplates: boolean,
 ): Promise<QueuedInputDisposition> {
 	const lifetime = sessionLifetime(session);
-	if (text.startsWith("/")) session._throwIfExtensionCommand(text);
+	// Literal text is never a command, so it is never refused for looking like one.
+	if (expandPromptTemplates && text.startsWith("/")) session._throwIfExtensionCommand(text);
 	const admission =
 		source === "extension" ? UNORDERED_ADMISSION : reserveQueuedInputAdmission(session, behavior, lifetime);
 	try {
@@ -858,7 +863,9 @@ async function admittedQueueUserInput(
 				images = result.images ?? images;
 			}
 		}
-		const expandedText = expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates]);
+		const expandedText = expandPromptTemplates
+			? expandPromptTemplate(session._expandSkillCommand(text), [...session.promptTemplates])
+			: text;
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;
 		assertSessionOpen(session);
@@ -934,6 +941,7 @@ export function deliverQueuedInputIfIdle(session: AgentSession, options?: { user
  * Delivered after the current assistant turn finishes executing its tool calls,
  * before the next LLM call.
  * Expands skill commands and prompt templates. Errors on extension commands.
+ * With `expandPromptTemplates: false` the text is queued literally and never refused as a command.
  * @param images Optional image attachments to include with the message
  * @throws Error if text is an extension command
  */
@@ -942,15 +950,23 @@ export async function steer(
 	this: AgentSession,
 	text: string,
 	images?: ImageContent[],
-	options?: Pick<PromptOptions, "source">,
+	options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 ): Promise<QueuedInputDisposition> {
-	return queueUserInput(this, text, images, "steer", options?.source ?? "interactive");
+	return queueUserInput(
+		this,
+		text,
+		images,
+		"steer",
+		options?.source ?? "interactive",
+		options?.expandPromptTemplates ?? true,
+	);
 }
 
 /**
  * Queue a follow-up message to be processed after the agent finishes.
  * Delivered only when agent has no more tool calls or steering messages.
  * Expands skill commands and prompt templates. Errors on extension commands.
+ * With `expandPromptTemplates: false` the text is queued literally and never refused as a command.
  * @param images Optional image attachments to include with the message
  * @throws Error if text is an extension command
  */
@@ -959,9 +975,16 @@ export async function followUp(
 	this: AgentSession,
 	text: string,
 	images?: ImageContent[],
-	options?: Pick<PromptOptions, "source">,
+	options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 ): Promise<QueuedInputDisposition> {
-	return queueUserInput(this, text, images, "followUp", options?.source ?? "interactive");
+	return queueUserInput(
+		this,
+		text,
+		images,
+		"followUp",
+		options?.source ?? "interactive",
+		options?.expandPromptTemplates ?? true,
+	);
 }
 
 /**

@@ -559,24 +559,34 @@ describe("/workflow run-control chat commands", () => {
 			{ info: (message) => messages.push(message), error: (message) => messages.push(message) },
 			{} as never,
 		);
+		if (!all) {
+			// A stage token names the stage to pause (#3996); an unknown one is refused before confirming.
+			assert.equal(confirmations.length, 0);
+			assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+			assert.match(messages.join("\n"), /not found/i);
+			return;
+		}
 		assert.equal(confirmations.length, 1);
-		assert.match(confirmations[0], all ? /Pause all 1 in-flight workflow runs/ : /Pause workflow run/);
+		assert.match(confirmations[0], /Pause all 1 in-flight workflow runs/);
 		assert.equal(store.runs().find((run) => run.id === runId)?.status, confirmed ? "paused" : "running");
 		assert.match(messages.join("\n"), confirmed ? /paused/i : /Cancelled/);
 	});
 
 	test.sequential.each(["", "-y", "--yes"])(
-		"top-level pause %s implicitly confirms and ignores extra stage tokens",
+		"top-level pause %s implicitly confirms, and refuses an unknown stage token without pausing the run (#3996)",
 		async (flag) => {
 			const runId = testRunId(`pause-yes-${flag}`);
 			store.recordRunStart(makeInflightRun(runId));
 			registerTestStageHandle(runId, "worker");
 			const { workflowCmd } = await registerWorkflowCommand();
-			const { ctx } = buildCtx();
+			const { ctx, messages } = buildCtx();
 			ctx.ui.confirm = async () => {
 				throw new Error("confirmation was bypassed");
 			};
 			await workflowCmd.options.handler(`pause ${flag} ${runId} nonexistent-stage extra-token`, ctx);
+			assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+			assert.match(messages.join("\n"), /not found/i);
+			await workflowCmd.options.handler(`pause ${flag} ${runId}`, ctx);
 			assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
 		},
 	);

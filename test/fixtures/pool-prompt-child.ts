@@ -1,0 +1,98 @@
+import { workflow } from "@bastani/atomic/workflows";
+import { Type } from "typebox";
+import { passReaskGate } from "./pool-reask-gate.js";
+import { poolStageOptions } from "./pool-stage-options.js";
+
+/** A pooled child that asks its user a question through `ctx.ui` and returns the answer. */
+export const child = workflow({
+	name: "pool-prompt-child",
+	description: "Local worker ctx.ui prompt fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		return { branch: await ctx.ui.input("Which branch should the worker use?") };
+	},
+});
+
+/** A pooled child that asks through `ctx.ui.custom`, whose component exists only in its worker. */
+export const customChild = workflow({
+	name: "pool-prompt-custom-child",
+	description: "Local worker ctx.ui.custom fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const branch = await ctx.ui.custom<string>(() => {
+			throw new Error("the component is never rendered outside the worker");
+		});
+		return { branch };
+	},
+});
+
+/** A pooled child that asks two questions in turn and returns both answers. */
+export const twoPromptChild = workflow({
+	name: "pool-two-prompt-child",
+	description: "Local worker ctx.ui two-prompt fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const first = await ctx.ui.input("Which branch should the worker use?");
+		const second = await ctx.ui.input("Which remote should the worker push to?");
+		return { branch: `${first}@${second}` };
+	},
+});
+
+/** A pooled child that asks its user to pick one choice through `ctx.ui.select`. */
+export const selectChild = workflow({
+	name: "pool-select-child",
+	description: "Local worker ctx.ui.select fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		return { branch: await ctx.ui.select("Which branch should the worker use?", ["main", "release", "develop"]) };
+	},
+});
+
+/** A pooled child whose replacement attempt waits at a gate before it asks again (#4022). */
+export const gatedChild = workflow({
+	name: "pool-gated-prompt-child",
+	description: "Local worker gated ctx.ui prompt fixture",
+	inputs: { journalPath: Type.String() },
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		await passReaskGate(ctx.inputs.journalPath);
+		return { branch: await ctx.ui.input("Which branch should the worker use?") };
+	},
+});
+
+/**
+ * Like {@link gatedChild}, but its prompt text depends on data the attempt reads: the replacement
+ * attempt asks a different question at the same point of the same code (#4022).
+ */
+export const gatedChangedChild = workflow({
+	name: "pool-gated-changed-prompt-child",
+	description: "Local worker gated ctx.ui prompt fixture whose question text depends on the attempt",
+	inputs: { journalPath: Type.String() },
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const replacement = await passReaskGate(ctx.inputs.journalPath);
+		const target = replacement ? "tag" : "branch";
+		return { branch: await ctx.ui.input(`Which ${target} should the worker use?`) };
+	},
+});
+
+/**
+ * A pooled child whose replacement attempt runs an agent stage where the replaced attempt asked a
+ * prompt (#4022): a different path through the child, which the pool must refuse.
+ */
+export const gatedDivergentChild = workflow({
+	name: "pool-gated-divergent-child",
+	description: "Local worker fixture whose replacement takes a different step than the replaced attempt",
+	inputs: { journalPath: Type.String() },
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const replacement = await passReaskGate(ctx.inputs.journalPath);
+		if (!replacement) return { branch: await ctx.ui.input("Which branch should the worker use?") };
+		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+		return { branch: await ctx.stage("build", options as never).complete("Build it") };
+	},
+});
