@@ -266,7 +266,7 @@ export class ModelRuntimeStreaming {
 					let terminal = false;
 					for await (const event of source) {
 						if (event.type === "error") admission.observeFailure(event.error);
-						if (event.type === "done") recordProviderSuccess(prepared.model.provider);
+						if (event.type === "done") recordProviderSuccess(prepared.model.provider, prepared.model.id);
 						if (event.type === "start") {
 							pending.push(event);
 							continue;
@@ -288,7 +288,7 @@ export class ModelRuntimeStreaming {
 					if (!rejection && !terminal) {
 						const result = await source.result();
 						if (result.stopReason !== "error" && result.stopReason !== "aborted")
-							recordProviderSuccess(prepared.model.provider);
+							recordProviderSuccess(prepared.model.provider, prepared.model.id);
 						if (result.stopReason === "error") admission.observeFailure(result);
 						const event: AssistantMessageEvent =
 							result.stopReason === "error" || result.stopReason === "aborted"

@@ -15,6 +15,7 @@ import type {
 } from "../types.ts";
 import { combineAbortSignals } from "../utils/abort-signals.ts";
 import { truncateErrorText } from "../utils/error-body.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -179,6 +180,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatMistralError(error);
+			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {
@@ -336,7 +338,7 @@ async function requestMistralStream(
 
 	if (!response.ok) {
 		const body = await readMistralErrorBody(response, requestSignal, timeoutMs);
-		throw new MistralHttpError(response.status, body, response.statusText);
+		throw new MistralHttpError(response.status, body, response.statusText, response.headers);
 	}
 	if (!response.body) {
 		throw new Error("Mistral response has no body");
@@ -379,12 +381,14 @@ async function readMistralErrorBody(
 class MistralHttpError extends Error {
 	statusCode: number;
 	body: string;
+	headers: Headers;
 
-	constructor(statusCode: number, body: string, statusText: string) {
+	constructor(statusCode: number, body: string, statusText: string, headers: Headers) {
 		super(statusText || `Request failed with status ${statusCode}`);
 		this.name = "MistralHttpError";
 		this.statusCode = statusCode;
 		this.body = body;
+		this.headers = headers;
 	}
 }
 

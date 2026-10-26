@@ -29,6 +29,7 @@ import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { ownedSlice } from "../utils/text.ts";
@@ -103,12 +104,14 @@ type PiMessagesErrorBody = {
 export class PiMessagesResponseError extends Error {
 	code?: string;
 	readonly diagnosticDetails: JsonObject;
+	readonly retryAfterMs?: number;
 
-	constructor(message: string, code: string | undefined, diagnosticDetails: JsonObject) {
+	constructor(message: string, code: string | undefined, diagnosticDetails: JsonObject, retryAfterMs?: number) {
 		super(message);
 		this.name = "PiMessagesResponseError";
 		this.code = code;
 		this.diagnosticDetails = diagnosticDetails;
+		if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
 	}
 }
 
@@ -147,17 +150,22 @@ function createPiMessagesResponseError(
 ): PiMessagesResponseError {
 	const errorBody = parsePiMessagesErrorBody(body);
 	const code = typeof errorBody?.error?.code === "string" ? errorBody.error.code : undefined;
-	return new PiMessagesResponseError(formatPiMessagesResponseError(response, body, errorBody), code, {
-		version: 1,
-		provider: model.provider,
-		model: model.id,
-		url: url.toString(),
-		status: response.status,
-		statusText: response.statusText,
-		...(errorBody?.error === undefined ? {} : { error: errorBody.error as JsonValue }),
-		...(errorBody ? {} : { body: truncateDiagnosticString(body) }),
-		timestampMs: Date.now(),
-	});
+	return new PiMessagesResponseError(
+		formatPiMessagesResponseError(response, body, errorBody),
+		code,
+		{
+			version: 1,
+			provider: model.provider,
+			model: model.id,
+			url: url.toString(),
+			status: response.status,
+			statusText: response.statusText,
+			...(errorBody?.error === undefined ? {} : { error: errorBody.error as JsonValue }),
+			...(errorBody ? {} : { body: truncateDiagnosticString(body) }),
+			timestampMs: Date.now(),
+		},
+		getRetryAfterMs(response.headers, body),
+	);
 }
 
 function createEmptyUsage(): PiMessagesUsage {
@@ -354,6 +362,9 @@ function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: 
 		usage: createEmptyUsage(),
 		stopReason: reason,
 		errorMessage: error instanceof Error ? error.message : String(error),
+		...(error instanceof PiMessagesResponseError && error.retryAfterMs !== undefined
+			? { retryAfterMs: error.retryAfterMs }
+			: {}),
 		timestamp: Date.now(),
 	};
 
