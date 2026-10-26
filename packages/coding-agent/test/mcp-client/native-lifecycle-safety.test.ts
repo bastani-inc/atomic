@@ -21,6 +21,14 @@ function deferred<T = void>() {
 	return { promise, resolve };
 }
 
+/**
+ * The refresh-retirement fixture is a real Bun child that loads a TypeScript
+ * fixture and takes the credential lock before printing "locked". A cold start on
+ * a loaded runner can outlast `vi.waitFor`'s 1 s default, so the wait is sized
+ * for process start-up.
+ */
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+
 describe("native MCP lifecycle safety", () => {
 	const cleanups: (() => Promise<void> | void)[] = [];
 	afterEach(async () => {
@@ -94,7 +102,7 @@ describe("native MCP lifecycle safety", () => {
 			child.on("error", reject);
 			child.on("exit", resolve);
 		});
-		await vi.waitFor(() => expect(output, errors).toContain("locked"));
+		await vi.waitFor(() => expect(output, errors).toContain("locked"), { timeout: CHILD_PROCESS_START_TIMEOUT_MS });
 		let removed = false;
 		const logout = credentials.removeAsync("test", url).then((result) => {
 			removed = true;

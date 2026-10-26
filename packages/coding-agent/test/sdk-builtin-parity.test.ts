@@ -4285,6 +4285,11 @@ test.each(["close", "reload", "rollback", "cancel"])(
 	},
 );
 
+// The `started` marker is written by a real `node -e` child spawned through `pi.exec`.
+// A cold Node start on a loaded runner can outlast `vi.waitFor`'s 1 s default, so
+// the wait is sized for process start-up, like COMMAND_REPLACEMENT_RESUME_TIMEOUT_MS.
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+
 // #3105: a subprocess admitted before the seal remains owned through completion.
 test("direct extension execution drains before shutdown", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "sdk-exec-drain-"));
@@ -4322,7 +4327,9 @@ test("direct extension execution drains before shutdown", async () => {
 	]);
 	let close: Promise<void> | undefined;
 	try {
-		await vi.waitFor(() => assert.equal(existsSync(join(cwd, "started")), true));
+		await vi.waitFor(() => assert.equal(existsSync(join(cwd, "started")), true), {
+			timeout: CHILD_PROCESS_START_TIMEOUT_MS,
+		});
 		close = session.dispose();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(shutdown, false, "shutdown cannot precede admitted subprocess completion");
@@ -4557,7 +4564,9 @@ test.each(["close", "close-error", "candidate", "factory"])(
 						void child.then(() => {
 							settled = true;
 						});
-						await vi.waitFor(() => assert.ok(existsSync(join(cwd, "started"))));
+						await vi.waitFor(() => assert.ok(existsSync(join(cwd, "started"))), {
+							timeout: CHILD_PROCESS_START_TIMEOUT_MS,
+						});
 						entered();
 						if (mode === "close-error") throw new Error("shutdown primary");
 					});
