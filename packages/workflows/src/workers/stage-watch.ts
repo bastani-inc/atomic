@@ -61,12 +61,21 @@ export async function admitStageUserMessage(
 			];
 			if ((entries ?? []).filter((entry) => entry === text).length > before) queued.resolve(queuedAction);
 		});
+		// A turn the live session is running takes the text into its own queue directly. The stage
+		// handle's queueing waits for the stage's session to be ready, which on a replacement attempt
+		// still starting up (its creation in flight while the replayed turn runs) can take until the
+		// turn ends.
+		const session = handle.agentSession;
+		const direct = session?.isStreaming === true;
 		const call = (async (): Promise<StageCommandResult> => {
-			if (intent === "steer") await handle.steer(text);
+			if (direct && session !== undefined) {
+				if (intent === "steer") await session.steer(text);
+				else await session.followUp(text);
+			} else if (intent === "steer") await handle.steer(text);
 			else await handle.followUp(text);
 			return queuedAction;
 		})();
-		tracePooledWatch("worker.deliver.queueing", { intent, before });
+		tracePooledWatch("worker.deliver.queueing", { intent, before, direct });
 		const admitted = await Promise.race([call, queued.promise]);
 		void call.then(
 			() => tracePooledWatch("worker.deliver.queue-call-settled", { intent, ok: true }),
@@ -374,9 +383,18 @@ export class WorkerStageWatches {
 
 	private async deliver(command: Extract<WorkerStageCommand, { op: "deliver" }>): Promise<StageCommandResult> {
 		const recorded = this.ledger.get(command.deliveryOp);
-		if (recorded !== undefined) return recorded;
-		const held = this.attempt();
 		const watch = this.watches.get(command.watch);
+		if (recorded !== undefined) {
+			// A retry of text still being admitted: once it sits in the session's queue it is admitted.
+			const queue = command.intent === "steer" ? "steering" : "followUp";
+			if (watch?.handle.queuedUserMessages?.()[queue].includes(command.text) === true)
+				return Promise.race([
+					recorded,
+					Promise.resolve({ action: command.intent === "steer" ? "steer" : "followUp" } as const),
+				]);
+			return recorded;
+		}
+		const held = this.attempt();
 		const refuse = (refusal: DeliveryRefusal): Promise<StageCommandResult> => Promise.resolve({ refusal });
 		if (
 			held?.workId !== command.attempt.workId ||

@@ -307,16 +307,19 @@ test("a steer to a turn under way lands in the turn, not behind it, even when th
 		// A replayed turn: the session streams, the stage handle has not caught up, and its message
 		// admission is held until the turn ends.
 		isStreaming: false,
-		agentSession: { isStreaming: true } as never,
+		// The streaming session takes the text into its own queues.
+		agentSession: {
+			isStreaming: true,
+			async steer() {
+				calls.push("steer");
+			},
+			async followUp() {
+				calls.push("followUp");
+			},
+		} as never,
 		sendUserMessage: () => {
 			calls.push("sendUserMessage");
 			return new Promise(() => {});
-		},
-		async steer() {
-			calls.push("steer");
-		},
-		async followUp() {
-			calls.push("followUp");
 		},
 	});
 	openWatch(watches);
@@ -672,4 +675,60 @@ test("a replacement mid-turn admits a redelivered follow-up and then a steer as 
 	});
 	assert.deepEqual(await deliver(sent, watches, 3, "op-steer", "steer", 2), { action: "steer", refusal: undefined });
 	assert.deepEqual(queues, { steering: ["text-op-steer"], followUp: ["text-op-follow"] });
+});
+
+test("a replacement whose stage handle cannot queue yet (its session still starting) admits text through the live session's own queue (#3996)", async () => {
+	const { registry, sent, watches } = airlock({ generation: 2 });
+	const stage = streamingStage("agent");
+	const queues = { steering: [] as string[], followUp: [] as string[] };
+	const publish = () =>
+		stage.emit({ type: "queue_update", steering: [...queues.steering], followUp: [...queues.followUp] } as never);
+	const stageCalls: string[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: true,
+		queuedUserMessages: () => ({ steering: [...queues.steering], followUp: [...queues.followUp] }),
+		// As traced (pwt2): the stage's queueing waits for its session's startup and never queues.
+		steer() {
+			stageCalls.push("steer");
+			return new Promise(() => {});
+		},
+		followUp() {
+			stageCalls.push("followUp");
+			return new Promise(() => {});
+		},
+		// The replayed turn's live session streams and takes text into its queues at once.
+		agentSession: {
+			isStreaming: true,
+			async steer(text: string) {
+				queues.steering.push(text);
+				publish();
+				return "queued";
+			},
+			async followUp(text: string) {
+				queues.followUp.push(text);
+				publish();
+				return "queued";
+			},
+		} as never,
+	});
+	watches.serve({
+		kind: "stage-command",
+		commandId: 1,
+		attempt: { workId: "work", generation: 2 },
+		op: "watch",
+		watch: "watch-1" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	assert.deepEqual(await deliver(sent, watches, 2, "op-follow", "followUp", 2), {
+		action: "followUp",
+		refusal: undefined,
+	});
+	assert.deepEqual(await deliver(sent, watches, 3, "op-steer", "steer", 2), { action: "steer", refusal: undefined });
+	assert.deepEqual(queues, { steering: ["text-op-steer"], followUp: ["text-op-follow"] });
+	assert.deepEqual(stageCalls, []);
 });

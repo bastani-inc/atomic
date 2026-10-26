@@ -416,30 +416,36 @@ test("a send its attempt never confirms does not hold later ones: they go, and t
 		}
 		return deliver(delivery);
 	};
-	// No wait at all: the never-answered send is left unconfirmed at once.
+	// A short wait: the never-answered send is soon left unconfirmed, and later tried again.
 	const opened = await openPooledStageHandle(
 		fake.transport,
 		{ runId: "child", stageId: "agent" },
 		"agent",
 		() => {},
 		[],
-		0,
+		5,
 	);
 	assert.ok(opened.ok);
 	const handle = opened.handle;
 	await assert.rejects(handle.followUp("FOLLOW"), /already arrived/);
 	await handle.steer("STEER");
 	assert.deepEqual(
-		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		fake.deliveries.slice(0, 2).map(({ watch, text }) => `${watch}:${text}`),
 		["watch-1:FOLLOW", "watch-1:STEER"],
 		"the steer is not held behind the unconfirmed follow-up",
 	);
 	assert.equal(handle.hasPending, false, "an unconfirmed send does not keep the attempt busy");
 	assert.deepEqual(handle.queuedUserMessages().followUp, ["FOLLOW"], "it still shows as pending");
+	assert.equal(handle.placement.undelivered, 1, "and is counted, never dropped silently");
+	// It is tried again on the same attempt.
+	while (fake.deliveries.filter(({ text }) => text === "FOLLOW").length < 2)
+		await new Promise((resolve) => setTimeout(resolve, 5));
 	fake.end("worker_exited");
 	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
 	assert.deepEqual(
-		fake.deliveries.slice(2).map(({ watch, text }) => `${watch}:${text}`),
-		["watch-2:FOLLOW", "watch-2:STEER"],
+		fake.deliveries.filter(({ watch }) => watch === "watch-2").map(({ text }) => text),
+		["FOLLOW", "STEER"],
+		"the next attempt gets each once, in order (its session holds neither)",
 	);
+	assert.equal(handle.placement.undelivered, undefined);
 });

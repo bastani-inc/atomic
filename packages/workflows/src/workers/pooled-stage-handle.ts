@@ -148,6 +148,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private pumpAgain = false;
 	/** Settles when the current watch ends or is replaced: a send to it stops waiting then. */
 	private watchGone = Promise.withResolvers<void>();
+	/** Sends unconfirmed text again after a wait; see {@link PooledStageHandle.retryUnconfirmed}. */
+	private retryTimer?: NodeJS.Timeout;
 	/** Redelivery waits for the attempt's own first turn, so the replay's prompt comes first. */
 	private awaitingTurn = false;
 	/** A rebind in flight: the handle reads as reconnecting until the outbox drains. */
@@ -354,6 +356,7 @@ export class PooledStageHandle implements StageControlHandle {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.leaveWatch();
+		clearTimeout(this.retryTimer);
 		for (const entry of this.outbound) {
 			entry.waiter?.reject(new Error(`Stage chat "${this.stageName}" is closed.`));
 			entry.waiter = undefined;
@@ -375,10 +378,34 @@ export class PooledStageHandle implements StageControlHandle {
 		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
 	}
 
-	/** Text that never reached the stage (ended), or whose send this attempt refused (live). */
+	/**
+	 * Text that never reached the stage (ended), or that this attempt refused or never confirmed
+	 * (live). Unconfirmed text stays in the outbox, is shown as pending, and goes to the next attempt;
+	 * it is never dropped without being counted here.
+	 */
 	private undeliveredCount(): number {
 		if (this.undelivered !== undefined) return this.undelivered;
-		return this.outbound.filter((entry) => entry.failedOn === this.attempt.generation).length;
+		const generation = this.attempt.generation;
+		return this.outbound.filter((entry) => entry.failedOn === generation || entry.unconfirmedOn === generation)
+			.length;
+	}
+
+	/**
+	 * Sends text the current attempt left unconfirmed again after another wait, in order: it is
+	 * never dropped, only counted as not delivered until an attempt admits it (#3996).
+	 */
+	private retryUnconfirmed(): void {
+		if (this.retryTimer !== undefined || this.disposed || this.ended !== undefined) return;
+		const generation = this.attempt.generation;
+		if (!this.outbound.some((entry) => entry.unconfirmedOn === generation && !this.admitted(entry))) return;
+		this.retryTimer = setTimeout(() => {
+			this.retryTimer = undefined;
+			if (this.disposed || this.ended !== undefined || this.attempt.generation !== generation) return;
+			for (const entry of this.outbound) if (entry.unconfirmedOn === generation) entry.unconfirmedOn = undefined;
+			tracePooledWatch("root.outbox.retry-unconfirmed", { stage: this.stageId, generation });
+			this.pump();
+		}, this.admissionWaitMs);
+		this.retryTimer.unref?.();
 	}
 
 	/** Not yet admitted by the current attempt, which has not refused it or left it unconfirmed. */
@@ -529,8 +556,11 @@ export class PooledStageHandle implements StageControlHandle {
 						void sending.then(
 							(late) => {
 								tracePooledWatch("root.outbox.late-settled", { op: entry.op, watch, ok: late.ok });
-								if (late.ok && this.outbound.includes(entry) && this.attempt.generation === generation)
-									entry.admittedBy = generation;
+								if (!late.ok || !this.outbound.includes(entry) || this.attempt.generation !== generation)
+									return;
+								entry.admittedBy = generation;
+								entry.unconfirmedOn = undefined;
+								for (const listener of [...this.listeners]) listener({ type: "queue_update" } as never);
 							},
 							() => {},
 						);
@@ -569,6 +599,7 @@ export class PooledStageHandle implements StageControlHandle {
 			}
 			this.finishRebind(true);
 			for (const listener of [...this.drainedListeners]) listener();
+			this.retryUnconfirmed();
 		})()
 			// A send's failure reaches its caller above; nothing here may reject unhandled.
 			.catch(() => {})
