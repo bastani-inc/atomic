@@ -409,6 +409,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.isTurnLoopBusy();
 		},
 
+		__generationClosedUnderStage() {
+			return controller.generationClosedUnderStage();
+		},
+
 		async __queueIntoLiveTurn(text, kind) {
 			// The stage's current session, without waiting for a creation still in flight (#3996).
 			const session = controller.currentSession;

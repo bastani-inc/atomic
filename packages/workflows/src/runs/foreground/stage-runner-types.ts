@@ -236,6 +236,8 @@ export interface InternalStageContext extends StageContext {
 	__idleForRelease(): boolean;
 	/** Internal: true while a message, the stage's own prompt included, holds or waits for the turn loop. */
 	__turnLoopBusy?(): boolean;
+	/** Internal: true when the stage's generation closed while the stage still ran (not by its own finish). */
+	__generationClosedUnderStage?(): boolean;
 	/**
 	 * Internal: queues text into the turn the stage's current session is running, without waiting
 	 * for the stage's session to be ready; false when no turn runs.
