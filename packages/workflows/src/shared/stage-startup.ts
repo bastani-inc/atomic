@@ -23,7 +23,11 @@ export interface StageStartupSnapshot {
 }
 
 export function formatStageStartup(startup: StageStartupSnapshot, now = Date.now()): string {
-	const observedAt = startup.state === "dispatched" ? startup.phaseStartedAt : (startup.settledAt ?? now);
+	if (startup.state === "dispatched") {
+		const dispatchedAfter = Math.max(0, Math.floor((startup.phaseStartedAt - startup.startedAt) / 1000));
+		return `startup complete (dispatched after ${dispatchedAfter}s)`;
+	}
+	const observedAt = startup.settledAt ?? now;
 	const age = Math.max(0, Math.floor((observedAt - startup.phaseStartedAt) / 1000));
 	const total = Math.max(0, Math.floor((observedAt - startup.startedAt) / 1000));
 	const recovery =
