@@ -253,6 +253,12 @@ export class PoolStageHandoff {
 				if (stage.sessionId === undefined) attempt.sessions.delete(key);
 				else attempt.sessions.set(key, stage.sessionId);
 			}
+			// Whether a chat in this process is attached to a stage is the root's own state: a worker's
+			// republished run never knows it, and dropping it would stop the chat answering prompts.
+			const previous = this.store.runs().find((candidate) => candidate.id === run.id);
+			for (const stage of run.stages)
+				if (previous?.stages.find((candidate) => candidate.id === stage.id)?.attached === true)
+					stage.attached = true;
 			this.store.recordRunStart(run);
 		}
 		if (changed) this.store.recordRunExecutionState(root, { lastProgressAt: Date.now() });
