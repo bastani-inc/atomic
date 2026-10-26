@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A resumed subagent child now receives its resume message and the messages it had queued and not read exactly as written. They used to go through `prompt()` or `followUp()` depending on whether the child had held messages, so `/review …` was replaced by a prompt template's contents, a registered command such as `/workflow` either ran or failed the child with `Extension command "/workflow" cannot be queued`, and text the child had already received was expanded a second time. Only an original task the child never read is still prompted the way a fresh launch prompts it ([#4027](https://github.com/bastani-inc/atomic/pull/4027)).
+- A subagent child paused, quit or stopped by its owner while it waited for its run's running capacity, before its session existed, can be resumed and restored again: it used to report `could not be resumed: no session was recorded for it`. A child admitted behind its run's concurrency limit and stopped that way no longer receives its task twice when it is restored. Resuming or restoring a child that had not started now says it started fresh with its task instead of claiming it resumed from its own session ([#4027](https://github.com/bastani-inc/atomic/pull/4027)).
+
 ## [0.9.44] - 2026-10-25
 
 ### Changed
