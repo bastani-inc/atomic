@@ -99,3 +99,8 @@ export function getSupportedThinkingLevels(model: ModelInfo | undefined): Thinki
 	});
 	return levels;
 }
+
+/** A model id as task records show it: without a thinking suffix, which they report separately (#4009). */
+export function taskRecordModel(model: string | undefined): string | undefined {
+	return model === undefined ? undefined : splitKnownThinkingSuffix(model).baseModel;
+}

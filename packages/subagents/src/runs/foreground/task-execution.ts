@@ -13,6 +13,7 @@ import type {
 	YieldReason,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agents.js";
+import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import {
@@ -492,7 +493,7 @@ export async function runAgentTask(input: {
 					if (child.model !== undefined || child.thinking !== undefined)
 						context.reportActivity({
 							reportId: "terminal-model",
-							change: { kind: "model", model: child.model, thinking: child.thinking },
+							change: { kind: "model", model: taskRecordModel(child.model), thinking: child.thinking },
 						});
 					const stopped = takeSubagentChildStop(context.ref.taskId);
 					const stoppedByControl = stopped !== undefined && child.status === "interrupted";

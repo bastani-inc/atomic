@@ -9,6 +9,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { bindRunDurableBackend, durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { workflowPendingStageRouteCapability } from "../../packages/workflows/src/shared/pending-stage-route-capability.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -1166,6 +1167,124 @@ test("a receipt refused for a replaced attempt reaches the worker as a stale wor
 		release.resolve();
 		await delivery?.catch(() => {});
 		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("a replacement worker's first publications keep the replaced attempt's stages, marked reconnecting, until it republishes them (#4009)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([
+				stage("plan", { status: "completed" }),
+				stage("work", { sessionId: "session-a", parentIds: ["plan"] }),
+			]),
+		]);
+		const next = await f.replacement();
+		f.handoff.fence(f.first);
+		const childStages = () => f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages ?? [];
+		// The replacement replays the child from scratch: its first activity has the run before any stage.
+		await f.handoff.publish(next, [childRun([])]);
+		assert.deepEqual(
+			childStages().map((entry) => [entry.id, entry.status, entry.workerExecution?.reconnecting]),
+			[
+				["plan", "completed", true],
+				["work", "running", true],
+			],
+		);
+		assert.equal(childStages()[1]?.sessionId, undefined, "the replaced attempt's session stays released");
+		// Each stage the replacement republishes takes the place of its last known state.
+		await f.handoff.publish(next, [childRun([stage("plan", { status: "completed" })])]);
+		assert.deepEqual(
+			childStages().map((entry) => [
+				entry.id,
+				entry.workerExecution?.generation,
+				entry.workerExecution?.reconnecting,
+			]),
+			[
+				["plan", next.generation, undefined],
+				["work", f.first.generation, true],
+			],
+		);
+		// Replay may give a stage a new id; its replay key still names the stage it replaces.
+		await f.handoff.publish(next, [
+			childRun([
+				stage("plan", { status: "completed" }),
+				stage("work-replayed", {
+					sessionId: "session-b",
+					parentIds: ["plan"],
+					replayKey: `${descriptor.scope}:work`,
+				}),
+			]),
+		]);
+		assert.deepEqual(
+			childStages().map((entry) => [entry.id, entry.sessionId, entry.workerExecution?.reconnecting]),
+			[
+				["plan", undefined, undefined],
+				["work-replayed", "session-b", undefined],
+			],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a replacement worker's terminal publication drops the replaced attempt's stages it did not republish (#4009)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("abandoned", { sessionId: "session-a" })])]);
+		const next = await f.replacement();
+		f.handoff.fence(f.first);
+		await f.handoff.publish(next, [childRun([])]);
+		assert.deepEqual(
+			f.store
+				.runs()
+				.find((run) => run.id === descriptor.childRunId)
+				?.stages.map((entry) => entry.id),
+			["abandoned"],
+		);
+		await f.handoff.publish(next, [
+			childRun([stage("other", { status: "completed" })], { status: "completed", endedAt: 5 }),
+		]);
+		assert.deepEqual(
+			f.store
+				.runs()
+				.find((run) => run.id === descriptor.childRunId)
+				?.stages.map((entry) => entry.id),
+			["other"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a retained reconnecting stage follows its parent to the id the replacement republished it under (#4009)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([
+				stage("plan", { status: "completed", replayKey: `${descriptor.scope}:plan` }),
+				stage("work", { sessionId: "session-a", parentIds: ["plan"], replayKey: `${descriptor.scope}:work` }),
+			]),
+		]);
+		const next = await f.replacement();
+		f.handoff.fence(f.first);
+		await f.handoff.publish(next, [
+			childRun([stage("plan-replayed", { status: "completed", replayKey: `${descriptor.scope}:plan` })]),
+		]);
+		const stages = f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages ?? [];
+		assert.deepEqual(
+			stages.map((entry) => [entry.id, [...entry.parentIds], entry.workerExecution?.reconnecting]),
+			[
+				["plan-replayed", [], undefined],
+				["work", ["plan-replayed"], true],
+			],
+		);
+		// The graph keeps the edge: `work` hangs from the republished `plan`, not from the root boundary.
+		const graph = expandWorkflowGraph(f.store.graphSnapshot(), ROOT);
+		const work = graph.stages.find((entry) => entry.workflowGraphTarget.stageId === "work");
+		assert.deepEqual(work?.parentIds, [`${descriptor.childRunId}:plan-replayed`]);
+	} finally {
 		await f.close();
 	}
 });

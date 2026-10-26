@@ -348,6 +348,11 @@ export interface StageSnapshot {
 		readonly generation: number;
 		readonly renewedAt: number;
 		readonly expiresAt: number;
+		/**
+		 * Set on the last known state of a stage whose worker was replaced, kept until the
+		 * replacement attempt republishes the stage (#4009).
+		 */
+		readonly reconnecting?: true;
 	};
 	/**
 	 * Pending steering and follow-up messages of a stage on a local worker, published with its
