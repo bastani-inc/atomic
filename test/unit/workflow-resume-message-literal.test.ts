@@ -1,7 +1,7 @@
 import { createSyntheticSourceInfo, type PromptTemplate } from "@bastani/atomic";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.ts";
-import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.ts";
+import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
+import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { assert, createStageControlRegistry, createStore, deferred, run, test, workflow } from "./executor-shared.js";
 

@@ -30,7 +30,7 @@ test("typed template-like text reaches a streaming stage literally, as it does a
 	const fixture = await createStageSkillFixture({ prompts: [reviewTemplate] });
 	const started = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
-	let streaming: Promise<unknown> | undefined;
+	let streaming: ReturnType<NonNullable<typeof fixture.handle.sendUserMessage>> | undefined;
 	try {
 		fixture.stage.appendResponses([
 			async () => {
