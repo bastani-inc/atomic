@@ -350,6 +350,11 @@ export interface StageSnapshot {
 		readonly expiresAt: number;
 	};
 	/**
+	 * Pending steering and follow-up messages of a stage on a local worker, published with its
+	 * activity so the graph can show them without a live view of the stage (#3996).
+	 */
+	queuedUserMessageCount?: number;
+	/**
 	 * Parent stage ids. Treat as immutable from consumer code; the executor may
 	 * replace the frozen array before a stage starts when late topology inference
 	 * refreshes parents, so do not cache this reference across store updates.

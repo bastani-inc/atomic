@@ -1,6 +1,8 @@
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
+import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
+import type { StageSendUserMessageOptions } from "../shared/types.js";
 
 /**
  * Identity and payload types of a pooled stage watch: a live, attempt-bound view of one
@@ -67,6 +69,33 @@ export type WatchEndReason = "attempt_fenced" | "worker_exited" | "stage_finishe
 export type WatchResult =
 	| { readonly ok: true; readonly watch: PooledStageWatch }
 	| { readonly ok: false; readonly refusal: WatchRefusal };
+
+/** Minted by the root handle once per user action; the worker admits each at most once. */
+export type DeliveryOpId = string & { readonly __brand: "DeliveryOpId" };
+
+/** How user text joins the stage's turn: steer it, queue a follow-up, or whichever fits (`auto`). */
+export type DeliveryIntent = "steer" | "followUp" | "auto";
+
+/**
+ * Why user text was not admitted.
+ * - `StaleAttempt`: the watch's attempt was fenced before admission; the text was not delivered.
+ * - `StageNotLive`: the stage finished before admission; continue in post-mortem chat.
+ * - `Unconfirmed`: the transport was lost after sending; the text may or may not have been admitted.
+ */
+export type DeliveryRefusal = "StaleAttempt" | "StageNotLive" | "Unconfirmed";
+
+export type DeliveryResult =
+	| { readonly ok: true; readonly action: StageUserMessageDeliveryAction }
+	| { readonly ok: false; readonly refusal: DeliveryRefusal };
+
+/** One user delivery through a watch. */
+export interface PooledStageDelivery {
+	readonly watch: WatchId;
+	readonly op: DeliveryOpId;
+	readonly text: string;
+	readonly intent: DeliveryIntent;
+	readonly options?: Pick<StageSendUserMessageOptions, "expandPromptTemplates">;
+}
 
 /** A stage watch's events after the snapshot, or its end. Applied in order. */
 export type PooledStageWatchMessage =

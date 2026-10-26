@@ -19,6 +19,7 @@ import type { Lease } from "../durable/journal/types.js";
 import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
+import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import {
 	claimExternalRunRoute,
 	type ExternalRunRouteOwner,
@@ -51,11 +52,19 @@ import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import type { PooledStageHandle } from "./pooled-stage-handle.js";
+import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
-import type { PooledStageRef, PooledStageWatchMessage, WatchId, WatchResult } from "./stage-watch-types.js";
+import type {
+	DeliveryResult,
+	PooledStageDelivery,
+	PooledStageRef,
+	PooledStageWatchMessage,
+	WatchId,
+	WatchResult,
+} from "./stage-watch-types.js";
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
@@ -226,6 +235,8 @@ export class LocalWorkerPool {
 		{ readonly opening: Promise<PooledStageHandle | undefined>; holders: number }
 	>();
 	private releaseStageSource?: () => void;
+	/** Registrations in the caller's registry, loaded and applied in activity order. */
+	private registrations?: Promise<PooledStageRegistrations>;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -246,6 +257,11 @@ export class LocalWorkerPool {
 			 * message boundary, so a test can intercept coordinator-side calls. Public options never set it.
 			 */
 			readonly coordinator?: "in-process";
+			/**
+			 * A caller's registry (SDK `RunOpts.stageControlRegistry`) that receives a handle for
+			 * every live pooled stage. A handle opens a watch only while it is used.
+			 */
+			readonly stageControlRegistry?: StageControlRegistry;
 		},
 	) {
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
@@ -332,7 +348,6 @@ export class LocalWorkerPool {
 			"overlay",
 			"models",
 			"registry",
-			"stageControlRegistry",
 			"stageUiBroker",
 			"toolAdmissionBoundary",
 			"onStageStart",
@@ -424,6 +439,25 @@ export class LocalWorkerPool {
 		await this.command({ kind: "stage-unwatch", watch }).catch(() => {});
 	}
 	/**
+	 * The one door for user text into a pooled stage's session (#3996). Admits `delivery.text`
+	 * into the watched attempt at most once per `delivery.op`; this is irreversible once
+	 * admitted, since the model may act on it. A lost reply is retried once with the same op;
+	 * when the outcome is still unknown the result is `Unconfirmed`.
+	 */
+	async deliverToPooledStage(delivery: PooledStageDelivery): Promise<DeliveryResult> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			if (this.closed || this.coordinatorLost !== undefined) break;
+			try {
+				return (await this.command({ kind: "stage-deliver", ...delivery })) as DeliveryResult;
+			} catch (error) {
+				if (this.closed || this.coordinatorLost !== undefined) break;
+				// The stage refused the text; retrying the same op returns the same refusal.
+				if (attempt === 1) throw error;
+			}
+		}
+		return { ok: false, refusal: "Unconfirmed" };
+	}
+	/**
 	 * A shared live view of a running pooled stage, held until released; the last release
 	 * closes its watch. Undefined when the stage is not running on one of this pool's workers.
 	 */
@@ -448,6 +482,7 @@ export class LocalWorkerPool {
 									this.stageViews.delete(key);
 							}),
 						unwatch: (watch) => this.unwatchPooledStage(watch),
+						deliver: (delivery) => this.deliverToPooledStage(delivery),
 					},
 					{ runId, stageId },
 					stageName,
@@ -708,6 +743,7 @@ export class LocalWorkerPool {
 			case "result":
 				if (event.usage !== undefined) this.usageTotal = event.usage;
 				this.results.set(event.workId, event.result);
+				void this.registrations?.then((registrations) => registrations.forget(event.workId));
 				this.signalChange();
 				return;
 			case "failure":
@@ -751,6 +787,23 @@ export class LocalWorkerPool {
 				if (error !== undefined)
 					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
 			});
+			const registry = this.options.stageControlRegistry;
+			if (registry !== undefined) {
+				const accepted = publications.filter((_, index) => outcomes[index] === undefined);
+				this.registrations = (
+					this.registrations ??
+					import("./pooled-stage-registry.js").then(
+						({ PooledStageRegistrations }) =>
+							new PooledStageRegistrations(registry, (runId, stageId) =>
+								this.acquirePooledStage(runId, stageId),
+							),
+					)
+				).then((registrations) => {
+					if (!this.closed)
+						for (const { work, runs } of accepted) if (!this.results.has(work.id)) registrations.sync(work, runs);
+					return registrations;
+				});
+			}
 		}
 		this.notice({ kind: "published", batch, rejected });
 		this.refreshRootRun();
@@ -817,6 +870,7 @@ export class LocalWorkerPool {
 		this.ticker = undefined;
 		this.releaseBinding();
 		this.releaseStageSource?.();
+		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
 		this.stageWatches.clear();
 		for (const listener of watches) listener({ kind: "ended", reason: "pool_closed" });

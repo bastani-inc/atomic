@@ -13,9 +13,11 @@ import { createToolControlRegistry } from "../engine/run-tool-control-registry.j
 import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
-import { createStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { createStageControlRegistry, type StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { createStore } from "../shared/store.js";
+import type { RunSnapshot } from "../shared/store-types.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
@@ -32,6 +34,16 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
+
+/** Stamps each published stage with its handle's queued message count, for the root's graph. */
+function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
+	for (const run of runs)
+		for (const stage of run.stages) {
+			const count = stageQueuedUserMessageCount(stageControls.peek(run.id, stage.id)?.queuedUserMessages?.());
+			if (count > 0) stage.queuedUserMessageCount = count;
+		}
+	return runs;
+}
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
@@ -223,7 +235,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				const current = (async () => {
 					while (activityDirty) {
 						activityDirty = false;
-						await request({ kind: "activity", runs: structuredClone(store.runs()) });
+						await request({
+							kind: "activity",
+							runs: withQueuedCounts(structuredClone(store.runs()), stageControls),
+						});
 					}
 				})();
 				publication = current;

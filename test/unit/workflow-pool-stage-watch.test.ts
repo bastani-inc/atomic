@@ -10,7 +10,7 @@ import {
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import { appendCoalesced } from "../../packages/workflows/src/workers/stage-watch-coalesce.js";
-import type { SeqEvent, WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
+import type { DeliveryOpId, SeqEvent, WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { sleep } from "../helpers/runtime.js";
 
 type Sent = Extract<WorkerRequest, { kind: "stage-command-result" | "stage-events" | "stage-watch-ended" }>;
@@ -206,4 +206,103 @@ test("coalescing merges deltas of one block without losing text, and keeps every
 		[1, 4, 5, 7],
 		"merged deltas take the newest seq; the block end separates blocks",
 	);
+});
+
+/** A worker-side stage whose idle-aware delivery records what it admitted. */
+function deliverableStage(streaming: boolean) {
+	const stage = streamingStage("agent");
+	const admitted: { readonly text: string; readonly deliverAs: string | undefined }[] = [];
+	const handle: StageControlHandle = {
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: streaming,
+		async sendUserMessage(text, options) {
+			admitted.push({ text, deliverAs: options?.deliverAs });
+			return streaming ? (options?.deliverAs ?? "followUp") : "prompt";
+		},
+	};
+	return { ...stage, handle, admitted };
+}
+
+function openWatch(watches: WorkerStageWatches): void {
+	watches.serve({
+		kind: "stage-command",
+		commandId: 1,
+		attempt: { workId: "work", generation: 1 },
+		op: "watch",
+		watch: "watch-1" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+}
+
+async function deliver(
+	sent: Sent[],
+	watches: WorkerStageWatches,
+	commandId: number,
+	deliveryOp: string,
+	intent: "steer" | "followUp" | "auto",
+	generation = 1,
+) {
+	watches.serve({
+		kind: "stage-command",
+		commandId,
+		attempt: { workId: "work", generation },
+		op: "deliver",
+		watch: "watch-1" as WatchId,
+		deliveryOp: deliveryOp as DeliveryOpId,
+		text: `text-${deliveryOp}`,
+		intent,
+	});
+	for (;;) {
+		const result = sent.find((message) => message.kind === "stage-command-result" && message.commandId === commandId);
+		if (result?.kind === "stage-command-result") return { action: result.action, refusal: result.refusal };
+		await sleep(1);
+	}
+}
+
+test("a delivery admits the stage's own idle-aware action for each intent, as an in-process stage reports (#3996)", async () => {
+	for (const streaming of [true, false]) {
+		const { registry, sent, watches } = airlock();
+		const stage = deliverableStage(streaming);
+		registry.register(stage.handle);
+		openWatch(watches);
+		const steer = await deliver(sent, watches, 2, "steer", "steer");
+		const followUp = await deliver(sent, watches, 3, "follow", "followUp");
+		const auto = await deliver(sent, watches, 4, "auto", "auto");
+		assert.deepEqual(
+			[steer.action, followUp.action, auto.action],
+			streaming ? ["steer", "followUp", "followUp"] : ["prompt", "prompt", "prompt"],
+		);
+		assert.deepEqual(
+			stage.admitted.map(({ deliverAs }) => deliverAs),
+			["steer", "followUp", undefined],
+		);
+	}
+});
+
+test("a retried delivery op is admitted at most once (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = deliverableStage(true);
+	registry.register(stage.handle);
+	openWatch(watches);
+	const first = await deliver(sent, watches, 2, "op-1", "steer");
+	// The reply was lost on the way to the root; the root retries with the same op.
+	const retried = await deliver(sent, watches, 3, "op-1", "steer");
+	assert.deepEqual(first, { action: "steer", refusal: undefined });
+	assert.deepEqual(retried, first);
+	assert.deepEqual(stage.admitted, [{ text: "text-op-1", deliverAs: "steer" }]);
+});
+
+test("a delivery for another attempt or a finished stage is refused and not admitted (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = deliverableStage(true);
+	registry.register(stage.handle);
+	openWatch(watches);
+	assert.equal((await deliver(sent, watches, 2, "stale", "steer", 2)).refusal, "StaleAttempt");
+	stage.finish();
+	assert.equal((await deliver(sent, watches, 3, "late", "steer")).refusal, "StageNotLive");
+	assert.deepEqual(stage.admitted, []);
 });
