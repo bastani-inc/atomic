@@ -580,9 +580,15 @@ export class LocalWorkerPool {
 		if (promptId === undefined || this.closed) return;
 		const controller = new AbortController();
 		this.routedQuestions.set(key, { promptId, controller });
-		void this.askQuestion(runId, stageId, promptId, controller.signal).catch(() => {});
+		void this.askQuestion(runId, stageId, promptId, controller.signal)
+			.then((asked) => {
+				// The worker had not raised its form yet; the stage's next activity asks again.
+				if (!asked && this.routedQuestions.get(key)?.controller === controller) this.routedQuestions.delete(key);
+			})
+			.catch(() => {});
 	}
-	private async askQuestion(runId: string, stageId: string, promptId: string, signal: AbortSignal): Promise<void> {
+	/** Shows the question and sends its answer; false when the worker had no form for it yet. */
+	private async askQuestion(runId: string, stageId: string, promptId: string, signal: AbortSignal): Promise<boolean> {
 		// Loaded on first use, so pools whose stages never ask never load them.
 		const [question, atomic, { currentStageUiBroker }, { buildStagePromptAdapter }] = await Promise.all([
 			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
@@ -590,14 +596,14 @@ export class LocalWorkerPool {
 			import("../shared/stage-ui-broker.js"),
 			import("../shared/stage-prompt.js"),
 		]);
-		if (question?.promptId !== promptId || signal.aborted) return;
+		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
 		const broker = this.questionBroker ?? currentStageUiBroker();
 		const adapter = buildStagePromptAdapter(promptId, question.kind, question.params, Date.now());
 		if (adapter !== undefined) broker.provideStagePrompt(runId, stageId, adapter);
 		let answered: { readonly value: unknown } | undefined;
 		try {
 			const execute = atomic.createAskUserQuestionToolDefinition().execute;
-			if (execute === undefined) return;
+			if (execute === undefined) return true;
 			const context = {
 				hasUI: true,
 				ui: {
@@ -624,9 +630,10 @@ export class LocalWorkerPool {
 		} finally {
 			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
 		}
-		if (answered === undefined || signal.aborted) return;
+		if (answered === undefined || signal.aborted) return true;
 		// The form's result, as the worker's own form would have returned it.
 		await this.answerPooledStagePrompt(runId, stageId, { kind: "input", promptId, answer: { raw: answered.value } });
+		return true;
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
