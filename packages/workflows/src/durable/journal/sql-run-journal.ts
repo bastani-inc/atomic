@@ -90,6 +90,7 @@ export class SqlRunJournal implements RunJournal {
 		this.legacy = legacy;
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body)),
+			read: (body) => this.operation(() => body(this.database)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 		});
