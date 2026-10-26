@@ -237,6 +237,11 @@ export type ClientMessage =
 		/** Interrupted run queued by its restarted owner before resume; yields to the process that resumes it (#3760). */
 		dormant?: true;
 		/**
+		 * #4006: a secret held only by the process that launched the run, never given to its stages. The launching
+		 * session presents it in `claim_workflow_invocation`.
+		 */
+		launcherCapability?: string;
+		/**
 		 * #3906: the connection carries the routes of many runs, so a refusal of this one is answered with
 		 * `pending_stage_route_refused` and leaves the connection open. Honoured only with a `requestId`, and sent only to
 		 * a broker that advertised `refusesPendingStageRoutesInPlace`; an older broker ignores it and ends the connection.
@@ -251,9 +256,10 @@ export type ClientMessage =
       capability: string;
     }
 	/**
-	 * #4006: the session that launched a run proves it with the run's route capability and gains the
-	 * invocation's send authority without joining `workflow:<rootRunId>`. Sent only to a broker that
-	 * advertised `claimsWorkflowInvocations`; the broker answers with `workflow_invocation_claimed`.
+	 * #4006: the session that launched a run proves it with the run's launcher capability (not the route
+	 * capability its stages hold) and gains the invocation's send authority without joining
+	 * `workflow:<rootRunId>`. Sent only to a broker that advertised `claimsWorkflowInvocations`; the broker
+	 * answers with `workflow_invocation_claimed`.
 	 */
 	| { type: "claim_workflow_invocation"; requestId: string; runId: string; capability: string }
 	| {

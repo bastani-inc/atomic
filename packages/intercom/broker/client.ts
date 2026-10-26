@@ -1216,6 +1216,7 @@ export class IntercomClient extends EventEmitter {
 	possibleStages?: WorkflowPossibleStageAnnouncement[],
 	parent?: WorkflowRunParentAnnouncement,
 	dormant?: boolean,
+	launcherCapability?: string,
   ): void {
 	writeMessage(this.requireActiveSocket(), {
 		type: "register_pending_stage_route",
@@ -1226,6 +1227,7 @@ export class IntercomClient extends EventEmitter {
 		possibleStages,
 		...(parent === undefined ? {} : { parent }),
 		...(dormant === true ? { dormant: true as const } : {}),
+		...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
 	});
   }
 
@@ -1242,6 +1244,8 @@ export class IntercomClient extends EventEmitter {
 		possibleStages?: WorkflowPossibleStageAnnouncement[],
 		parent?: WorkflowRunParentAnnouncement,
 		dormant?: boolean,
+		/** #4006: the launcher-only secret, held by the process that launched the run and never by its stages. */
+		launcherCapability?: string,
 	): Promise<void> {
 		let socket: net.Socket;
 		try {
@@ -1251,7 +1255,7 @@ export class IntercomClient extends EventEmitter {
 		}
 		if (!this.brokerAcknowledgesPendingStageRoutes) {
 			try {
-				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant);
+				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant, launcherCapability);
 			} catch (error) {
 				return Promise.reject(toError(error));
 			}
@@ -1284,6 +1288,7 @@ export class IntercomClient extends EventEmitter {
 					possibleStages,
 					...(parent === undefined ? {} : { parent }),
 					...(dormant === true ? { dormant: true as const } : {}),
+					...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
 					...(this.multiplexesPendingStageRoutes && this.brokerRefusesPendingStageRoutesInPlace
 						? { refusalKeepsConnection: true as const }
 						: {}),
@@ -1297,11 +1302,11 @@ export class IntercomClient extends EventEmitter {
 	}
 
   /**
-   * #4006: prove with the run's route capability that this session launched `runId`, so it may send to the
-   * run's stages without joining `workflow:<rootRunId>`. Resolves `false` when the broker refused the claim
-   * or predates it.
+   * #4006: prove with the run's launcher capability (registered with the run's route, never given to its
+   * stages) that this session launched `runId`, so it may send to the run's stages without joining
+   * `workflow:<rootRunId>`. Resolves `false` when the broker refused the claim or predates it.
    */
-  claimWorkflowInvocation(runId: string, capability: string): Promise<boolean> {
+  claimWorkflowInvocation(runId: string, launcherCapability: string): Promise<boolean> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -1313,7 +1318,7 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       this.pendingWorkflowInvocationClaims.set(requestId, { resolve, reject });
       try {
-        writeMessage(socket, { type: "claim_workflow_invocation", requestId, runId, capability });
+        writeMessage(socket, { type: "claim_workflow_invocation", requestId, runId, capability: launcherCapability });
       } catch (error) {
         this.pendingWorkflowInvocationClaims.delete(requestId);
         reject(toError(error));

@@ -121,6 +121,11 @@ interface PendingStageRouteRegistration {
   readonly capability: string;
   /** Registered by a restarted owner for an interrupted run; yields to the process that resumes it (#3760). */
   readonly dormant?: true;
+  /**
+   * #4006: held only by the process that launched the run, never by its stages. Presenting it in
+   * `claim_workflow_invocation` grants that session the invocation's control without membership.
+   */
+  readonly launcherCapability?: string;
 }
 
 interface WorkflowRosterRegistration {
@@ -348,8 +353,8 @@ class IntercomBroker {
   private workflowRosters = new Map<string, WorkflowRosterRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
   /**
-   * #4006: runs each connected session launched, proven with the run's route capability. Keyed by session,
-   * then run, holding the capability claimed; a claim lapses when the run's route moves to another capability.
+   * #4006: runs each connected session launched, proven with the run's launcher capability. Keyed by session,
+   * then run, holding the capability claimed; a claim lapses when the run's route carries another one.
    */
   private workflowInvocationClaims = new Map<string, Map<string, string>>();
   /** Multi-node S5: set only when the agent directory's settings select a top-level shared `storage`. */
@@ -677,21 +682,28 @@ class IntercomBroker {
 		const group = normalizeGroup(invocationGroup);
 		for (const [runId, capability] of claims) {
 			const route = this.pendingStageRoutes.get(runId);
-			if (route?.capability === capability && normalizeGroup(route.group) === group) return true;
+			if (route?.launcherCapability === capability && normalizeGroup(route.group) === group) return true;
 		}
 		return false;
 	}
 
-	/** Only the holder of a run's current route capability can claim to have launched it. */
+	/**
+	 * Only the holder of a run's launcher capability can claim to have launched it. That capability is
+	 * separate from the route capability every stage of the run holds, so a stage cannot claim.
+	 */
 	private claimWorkflowInvocation(sessionId: string, runId: string, capability: string): boolean {
 		const route = this.pendingStageRoutes.get(runId);
-		if (route === undefined || route.capability !== capability || !normalizeGroup(route.group).startsWith("workflow:")) {
+		if (
+			route?.launcherCapability === undefined ||
+			route.launcherCapability !== capability ||
+			!normalizeGroup(route.group).startsWith("workflow:")
+		) {
 			return false;
 		}
 		const claims = this.workflowInvocationClaims.get(sessionId) ?? new Map<string, string>();
-		// Claims on runs whose routes are gone or moved on can never authorize again.
-		for (const [claimedRunId, claimedCapability] of claims) {
-			if (this.pendingStageRoutes.get(claimedRunId)?.capability !== claimedCapability) claims.delete(claimedRunId);
+		// Claims on runs whose routes are gone can never authorize again.
+		for (const claimedRunId of claims.keys()) {
+			if (!this.pendingStageRoutes.has(claimedRunId)) claims.delete(claimedRunId);
 		}
 		claims.set(runId, capability);
 		this.workflowInvocationClaims.set(sessionId, claims);
@@ -1884,10 +1896,13 @@ class IntercomBroker {
           typeof clientMessage.group !== "string" ||
           typeof clientMessage.capability !== "string" ||
           !clientMessage.capability ||
-          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string")
+          (clientMessage.requestId !== undefined && typeof clientMessage.requestId !== "string") ||
+          (clientMessage.launcherCapability !== undefined &&
+            (typeof clientMessage.launcherCapability !== "string" || !clientMessage.launcherCapability))
         ) {
           throw new Error("Invalid pending-stage route registration");
         }
+        const launcherCapability = clientMessage.launcherCapability;
         const routeRequestId = clientMessage.requestId;
         // The route is applied synchronously, so this answer proves the update is visible to every later request.
         const acknowledgeRoute = (): void => {
@@ -2004,6 +2019,7 @@ class IntercomBroker {
           group: ownerGroup,
           capability: clientMessage.capability,
           ...(dormant ? { dormant: true as const } : {}),
+          ...(launcherCapability === undefined ? {} : { launcherCapability }),
         });
         if (yieldedDormant !== undefined) {
           const revoked = this.sessions.get(yieldedDormant.sessionId);

@@ -17,6 +17,7 @@ import {
   waitForIntercomPeer,
 } from "./session-recovery.js";
 import { APP_NAME, type ExtensionAPI, type ExtensionContext, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -245,7 +246,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
-  /** #4006: the run capability this session's current client has proven it launched, per run. */
+  /**
+   * #4006: per run, a secret minted here and registered with the run's route. Unlike the route capability,
+   * it never leaves this process, so the run's stages cannot use it to claim the launcher's authority.
+   */
+  const launcherCapabilities = new Map<string, string>();
+  const launcherCapabilityFor = (runId: string): string => {
+    let capability = launcherCapabilities.get(runId);
+    if (capability === undefined) {
+      capability = randomUUID();
+      launcherCapabilities.set(runId, capability);
+    }
+    return capability;
+  };
+  /** #4006: the launcher capability this session's current client has claimed, per run. */
   const launchedRunClaims = new Map<string, { readonly client: IntercomClient; readonly capability: string }>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
   // #3904: the routes of every run in one invocation group share one connection, not one per run.
@@ -1089,6 +1103,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 				route.possibleStages,
 				route.parent,
 				route.dormant === true,
+				launcherCapabilityFor(runId),
 			)
 			.catch((error: Error) => {
 				if (error instanceof IntercomPendingStageRouteRefusedError) {
@@ -1129,6 +1144,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         route.possibleStages,
         route.parent,
         route.dormant === true,
+        launcherCapabilityFor(runId),
       );
       if (!pendingStageRouteClientIsCurrent(runId, state, contextAtStart, generationAtStart)) {
         throw supersededPendingStageRouteError(contextAtStart, generationAtStart);
@@ -1188,22 +1204,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) });
     // Stage startup waits on the route alone; a lost claim is made again when this session reconnects.
-    await claimLaunchedRun(activeClient, runId, route).catch(() => {});
+    await claimLaunchedRun(activeClient, runId).catch(() => {});
   }
   /**
    * #4006: a run whose route lives on its own connection is still this session's run. Prove it with the
-   * route capability so this session can steer the run's stages without joining `workflow:<rootRunId>`.
+   * launcher capability registered with that route so this session can steer the run's stages without
+   * joining `workflow:<rootRunId>`.
    * Membership is unchanged, so the run's stages gain no route back to this session.
    */
-  async function claimLaunchedRun(
-    activeClient: IntercomClient,
-    runId: string,
-    route: PendingStageRouteRegistration,
-  ): Promise<void> {
+  async function claimLaunchedRun(activeClient: IntercomClient, runId: string): Promise<void> {
+    const capability = launcherCapabilityFor(runId);
     const claimed = launchedRunClaims.get(runId);
-    if (claimed?.client === activeClient && claimed.capability === route.capability) return;
-    if (await activeClient.claimWorkflowInvocation(runId, route.capability)) {
-      launchedRunClaims.set(runId, { client: activeClient, capability: route.capability });
+    if (claimed?.client === activeClient && claimed.capability === capability) return;
+    if (await activeClient.claimWorkflowInvocation(runId, capability)) {
+      launchedRunClaims.set(runId, { client: activeClient, capability });
     }
   }
   /** A dormant route always gets its own connection so a revocation can close it alone (#3760). */
@@ -1292,7 +1306,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               }
               // A run's own connection recovers on that run's own backoff; it must not decide this client's fate.
               void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) })
-                .then(() => claimLaunchedRun(nextClient, runId, route))
+                .then(() => claimLaunchedRun(nextClient, runId))
                 .catch(() => {});
             }
             const orchestration = contextAtStart.orchestrationContext;
