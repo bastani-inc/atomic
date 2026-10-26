@@ -116,7 +116,7 @@ test("a deferred widget refresh that fails stays inside its timer instead of cra
 	const dispose = installStoreWidget(
 		{
 			ui: {
-				setWidget: (_key: string, factory: unknown) => {
+				setWidget: (_key, factory) => {
 					if (factory) throw new Error("Component-factory widgets are unavailable in this RPC host.");
 				},
 				notify: () => {},
