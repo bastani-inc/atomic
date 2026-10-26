@@ -121,7 +121,8 @@ export class WorkerStageWatches {
 		private readonly send: (message: DistributiveOmit<Outbound, "id">) => void,
 		/** Pool-wide control as the worker last observed it. */
 		private readonly control: () => string = () => "running",
-		private readonly session: {
+		/** What the airlock reads from the attempt beyond its stage handles; later phases add to it. */
+		private readonly options: {
 			/** The stage session's committed entries, for a handle whose session is not attached yet. */
 			readonly entries?: (sessionId: string) => Promise<readonly SessionEntry[] | undefined>;
 			/** Whether the stage started a turn in this attempt. */
@@ -184,7 +185,7 @@ export class WorkerStageWatches {
 			snapshot: {
 				...snapshot(handle, watch.seq),
 				deliveredOps: [...delivered],
-				turnStarted: handle.isStreaming || this.session.turnStarted?.(handle) === true,
+				turnStarted: handle.isStreaming || this.options.turnStarted?.(handle) === true,
 			},
 		});
 	}
@@ -192,7 +193,7 @@ export class WorkerStageWatches {
 	/** Ops the stage's session holds receipts for: its live entries and its committed ones. */
 	private deliveredOps(handle: StageControlHandle): Set<DeliveryOpId> | Promise<Set<DeliveryOpId>> {
 		const live = deliveredOps(handle.agentSession?.sessionManager.getEntries() ?? []);
-		const load = this.session.entries;
+		const load = this.options.entries;
 		if (handle.sessionId === undefined || load === undefined) return new Set(live);
 		return load(handle.sessionId).then(
 			(committed) => new Set([...live, ...deliveredOps(committed ?? [])]),

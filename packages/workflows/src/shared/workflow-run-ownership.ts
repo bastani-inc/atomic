@@ -38,7 +38,7 @@ export function reciprocalWorkflowRootRunId(
 		}
 
 		const parent = runById.get(parentRunId);
-		const boundary = parent?.stages.find((stage) => stage.id === parentStageId);
+		const boundary = parent === undefined ? undefined : findSnapshotStage(parent.stages, parentStageId);
 		if (parent === undefined || authoritativeWorkflowChildRunId(boundary) !== currentId) {
 			return undefined;
 		}
@@ -46,4 +46,40 @@ export function reciprocalWorkflowRootRunId(
 	}
 
 	return undefined;
+}
+
+/**
+ * Id lookups into frozen store snapshots (#3996).
+ *
+ * A graph snapshot is deep-frozen per store version, so an index built from one of its arrays
+ * stays valid for as long as the array lives. Views that look up a run or stage per rendered
+ * node use these instead of scanning, which made each layout quadratic in the stage count.
+ * A mutable array is scanned as before, since it may change after an index is built.
+ */
+const runIndexes = new WeakMap<readonly RunSnapshot[], ReadonlyMap<string, RunSnapshot>>();
+const stageIndexes = new WeakMap<readonly StageSnapshot[], ReadonlyMap<string, StageSnapshot>>();
+
+function index<T extends { readonly id: string }>(
+	items: readonly T[],
+	cache: WeakMap<readonly T[], ReadonlyMap<string, T>>,
+): ReadonlyMap<string, T> {
+	let byId = cache.get(items);
+	if (byId === undefined) {
+		const built = new Map<string, T>();
+		// The first item with an id wins, as `find` would return it.
+		for (const item of items) if (!built.has(item.id)) built.set(item.id, item);
+		byId = built;
+		cache.set(items, byId);
+	}
+	return byId;
+}
+
+export function findSnapshotRun(runs: readonly RunSnapshot[], runId: string): RunSnapshot | undefined {
+	return Object.isFrozen(runs) ? index(runs, runIndexes).get(runId) : runs.find((run) => run.id === runId);
+}
+
+export function findSnapshotStage(stages: readonly StageSnapshot[], stageId: string): StageSnapshot | undefined {
+	return Object.isFrozen(stages)
+		? index(stages, stageIndexes).get(stageId)
+		: stages.find((stage) => stage.id === stageId);
 }
