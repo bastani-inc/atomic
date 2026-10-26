@@ -344,7 +344,9 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	const handle = liveHandle(ctx);
 	if (!handle) return;
 	ctx.chatHost.appendMessages(handle.messages);
-	ctx.chatHost.hydrateStreamingAssistantMessage(handle.agentSession?.agent?.state.streamingMessage);
+	ctx.chatHost.hydrateStreamingAssistantMessage(
+		handle.agentSession?.agent?.state.streamingMessage ?? handle.streamingMessage?.(),
+	);
 }
 
 function snapshotMessagesFromSession(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {

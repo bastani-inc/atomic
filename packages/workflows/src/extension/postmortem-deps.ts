@@ -54,6 +54,11 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 		sessionStore: deps.adapters.sessionStore,
 		cwd: resolveStageCwd(runId, deps.store ?? store),
 		defaultSessionDir: deps.resolveDefaultStageSessionDir(),
+		pooledSessionStore: async () => {
+			const backend = requireStoreDurableBackend(deps.store ?? store, runId);
+			const { poolSessionStore } = await import("../workers/pool-session-store.js");
+			return poolSessionStore(backend);
+		},
 	};
 }
 

@@ -59,6 +59,34 @@ export interface PostMortemStageChatDeps {
 	/** Default stage session directory to restore after a host restart. */
 	readonly defaultSessionDir?: string;
 	readonly sessionStore?: SessionStore;
+	/**
+	 * The store of sessions that stages on local workers committed to the journal, tried when
+	 * the stage's session is not in the selected store (#3996).
+	 */
+	readonly pooledSessionStore?: () => Promise<SessionStore | undefined>;
+}
+
+/** The store that reopens the stage's retained session: the selected store, else the pooled one. */
+async function reopenableSessionStore(
+	runId: string,
+	stageId: string,
+	sessionId: string,
+	deps: PostMortemStageChatDeps,
+): Promise<SessionStore | undefined> {
+	const sessionStore = await stageSessionStore(
+		{
+			sessionStore:
+				deps.registry.getSessionStore(runId, stageId) ?? deps.sessionStore ?? deps.adapters?.sessionStore,
+			cwd: deps.cwd,
+		},
+		deps.defaultSessionDir,
+	);
+	if (await isReopenableSession(sessionStore, sessionId)) return sessionStore;
+	const pooled = await deps.pooledSessionStore?.().catch(() => undefined);
+	if (pooled === undefined) return undefined;
+	if (await isReopenableSession(pooled, sessionId)) return pooled;
+	await pooled.close();
+	return undefined;
 }
 
 /** Terminal statuses whose retained agent session may be reopened for follow-up. */
@@ -94,15 +122,8 @@ export async function ensurePostMortemStageHandle(
 	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await stageSessionStore(
-		{
-			sessionStore:
-				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
-			cwd: deps.cwd,
-		},
-		deps.defaultSessionDir,
-	);
-	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
+	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
 	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 
 	const adapters = deps.adapters;
@@ -130,15 +151,8 @@ export async function acquirePostMortemStageHandle(
 	if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
 	const sessionId = stage.sessionId;
 	if (sessionId === undefined) return { ok: false, reason: "no_session" };
-	const sessionStore = await stageSessionStore(
-		{
-			sessionStore:
-				deps.registry.getSessionStore(runId, stage.id) ?? deps.sessionStore ?? deps.adapters.sessionStore,
-			cwd: deps.cwd,
-		},
-		deps.defaultSessionDir,
-	);
-	if (!(await isReopenableSession(sessionStore, sessionId))) return { ok: false, reason: "invalid_session" };
+	const sessionStore = await reopenableSessionStore(runId, stage.id, sessionId, deps);
+	if (sessionStore === undefined) return { ok: false, reason: "invalid_session" };
 	if (deps.registry.generation !== generation) return { ok: false, reason: "closed" };
 	const adapters = deps.adapters;
 	const lease = deps.registry.acquireDetached(runId, stage.id, () =>

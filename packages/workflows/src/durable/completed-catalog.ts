@@ -5,6 +5,7 @@ import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
+import { poolSessionStore } from "../workers/pool-session-store.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { CheckpointCatalogIndex } from "./completed-catalog-index.js";
 import {
@@ -122,6 +123,12 @@ export async function completedWorkflowRunSnapshots(
 	const checkpoints = backend.listCheckpoints(entry.workflowId);
 	if (checkpoints.length === 0) return [];
 	const selectedStore = sessionStore ?? (await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd }));
+	// Stages that ran on local workers keep their sessions in the journal's pool tables (#3996).
+	let pooled: Promise<SessionStore | undefined> | undefined;
+	const pooledStore = () => {
+		pooled ??= poolSessionStore(backend);
+		return pooled;
+	};
 	try {
 		const runs = await Promise.all(
 			runSnapshotsFromCheckpoints(
@@ -132,7 +139,9 @@ export async function completedWorkflowRunSnapshots(
 				COMPLETED_RECONSTRUCTION,
 			).map(async (run) => ({
 				...run,
-				stages: await Promise.all(run.stages.map((stage) => validatedStageTranscript(stage, selectedStore))),
+				stages: await Promise.all(
+					run.stages.map((stage) => validatedStageTranscript(stage, selectedStore, pooledStore)),
+				),
 			})),
 		);
 		const rootIndex = runs.findIndex((run) => run.id === handle.workflowId);
@@ -160,6 +169,7 @@ export async function completedWorkflowRunSnapshots(
 		return [root, ...runs.filter((_, index) => index !== rootIndex)];
 	} finally {
 		if (sessionStore === undefined) await selectedStore.close();
+		await (await pooled?.catch(() => undefined))?.close();
 	}
 }
 
@@ -353,8 +363,14 @@ export function cloneRunSnapshot(run: RunSnapshot): RunSnapshot {
 	return copy;
 }
 
-async function validatedStageTranscript(stage: StageSnapshot, store: SessionStore): Promise<StageSnapshot> {
+async function validatedStageTranscript(
+	stage: StageSnapshot,
+	store: SessionStore,
+	pooledStore: () => Promise<SessionStore | undefined>,
+): Promise<StageSnapshot> {
 	if (stage.sessionId !== undefined && (await isReopenableSession(store, stage.sessionId))) return stage;
+	const pooled = stage.sessionId === undefined ? undefined : await pooledStore().catch(() => undefined);
+	if (pooled !== undefined && (await isReopenableSession(pooled, stage.sessionId!))) return stage;
 	const { sessionId: _sessionId, sessionFile: _sessionFile, ...withoutSession } = stage;
 	return withoutSession;
 }

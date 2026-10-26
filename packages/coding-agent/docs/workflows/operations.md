@@ -883,6 +883,14 @@ The supported placement is multiple local processes on Linux or macOS. Windows a
 
 The root's existing `/workflow status`, `/workflow stages`, steering, pause, quit, and resume controls still address one root. A worker failure can replay an unfinished child from its last committed checkpoint. This is at-least-once recovery. An external effect that happens before its checkpoint can happen again; use stable logical idempotency keys for effects that must not duplicate.
 
+### Watching stages on local workers
+
+A stage that runs on a local worker opens from the workflow graph or `/workflow attach` like any other stage. While it runs, its chat shows the transcript so far and the reply as it streams, with tool calls. The chat header reads `on local worker`. Sending messages to such a stage from its chat (Enter, Ctrl+F) is not available yet; Intercom sends to the stage still reach it.
+
+Only the stages you have open stream to the root process. A pool with many workers sends nothing extra for stages nobody is watching.
+
+When the stage finishes, close the chat and open the stage again to continue in post-mortem chat. A finished stage that ran on a local worker reopens for post-mortem chat in the same session and after a restart.
+
 ### Worker startup and failures
 
 Each worker process must report that it is ready within `localWorkers.startupTimeoutMs` milliseconds. By default the deadline is 30000 ms, scaled up when the pool has more workers than the machine has CPU cores or the machine is already busy: it is 30000 ms times (worker count + 1-minute load average) ÷ CPU cores, at least 30000 ms and at most 600000 ms. When a pool starts, it runs children as soon as one worker is ready. A worker that exits or times out during that startup is left out of the pool, and the run fails only when no worker starts. A replacement worker that cannot start fails the run. `startupTimeoutMs` is not saved with the root, so you can change it before resuming. If a run fails with `Local worker startup timed out after … ms: workers were too slow to start`, the machine could not start the workers in time; set `workflows.localWorkers.startupTimeoutMs` (or `localWorkers.startupTimeoutMs` in the SDK) to a higher value, or use fewer workers.

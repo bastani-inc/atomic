@@ -22,6 +22,7 @@ import { loadWorkerDefinition } from "./definitions.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
 	type WorkerDeliver,
+	type WorkerInbound,
 	type WorkerReply,
 	type WorkerRequest,
 	type WorkerStageDelivery,
@@ -29,6 +30,7 @@ import {
 } from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
+import { WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
@@ -49,7 +51,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		number,
 		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
 	>();
-	process.on("message", (reply: WorkerReply) => {
+	let stageWatches: WorkerStageWatches | undefined;
+	process.on("message", (message: WorkerInbound) => {
+		if ("kind" in message) {
+			stageWatches?.serve(message);
+			return;
+		}
+		const reply = message;
 		const receiver = pending.get(reply.id);
 		if (reply.delivery) {
 			const delivery = reply.delivery;
@@ -156,6 +164,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		let activeController: AbortController | undefined;
 		const toolControls = createToolControlRegistry();
 		const stageControls = createStageControlRegistry();
+		let heldAttempt: PoolWork | undefined;
+		stageWatches = new WorkerStageWatches(
+			stageControls,
+			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
+			(message) => process.send?.({ ...message, id: 0 }),
+		);
 		const observeControl = async () => {
 			const control = (await request({ kind: "control" })) as PoolControl;
 			if (control.revision === controlRevision) return;
@@ -198,6 +212,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			await reader.catchUpWorkflow(start.root);
 			const controller = new AbortController();
 			activeController = controller;
+			heldAttempt = work;
 			const store = createStore();
 			currentStore = store;
 			let publication: Promise<void> | undefined;
@@ -286,6 +301,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				process.exitCode = 1;
 			};
 			const heartbeat = setInterval(() => {
+				stageWatches?.sweep();
 				renewal ??= request({ kind: "renew" })
 					.then(() => {})
 					.catch(failPulse)
@@ -337,6 +353,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					}),
 				);
 				clearInterval(heartbeat);
+				// Watched events reach the coordinator before the attempt's end does.
+				stageWatches?.clear();
 				await renewal;
 				await report;
 				await controlPulse;
@@ -351,6 +369,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			} finally {
 				clearInterval(heartbeat);
 				unsubscribe();
+				stageWatches?.clear();
+				heldAttempt = undefined;
 				activeController = undefined;
 			}
 		}

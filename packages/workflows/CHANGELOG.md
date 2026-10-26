@@ -6,11 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Opening a running stage that runs on a local worker (`workflows.localWorkers`) from the workflow graph or `/workflow attach` now shows its live chat: the transcript so far, the reply as it streams, and tool calls, with `on local worker` in the chat header. It no longer shows "Post-mortem chat is available only after the stage completes". Only stages you have open stream to the root, so pools with many workers send nothing extra for stages nobody watches. Sending messages from the chat of such a stage is not available yet ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+
 ### Fixed
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
 - A sticky Intercom send to a workflow pattern target (for example `workflow:<rootRunId>/**`) no longer fails newly starting pooled stages with `Extension startup failed: … pending-stage message <id> changed during delivery`. A stage drain whose transcript snapshot was taken before a slow session append finished used to deliver the already-receipted message again and then fail. The drain now treats an existing delivery receipt for that stage and session as success, so the message reaches each stage exactly once ([#3980](https://github.com/bastani-inc/atomic/issues/3980))
+- A finished stage that ran on a local worker now reopens for post-mortem chat. It used to report `The retained session is missing, unreadable, or invalid` in the same session and SESSION UNAVAILABLE after a restart, because its session lives in the workflow journal rather than the host's session store ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
 
 ## [0.9.45] - 2026-10-25
 
