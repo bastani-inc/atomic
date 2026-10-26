@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
+- Large local worker pools no longer lose child workflows to `database is locked … gave up after waiting 30000 ms for the write lock` after a few hours. Resource admission reconciliation, which every pooled worker runs before it starts a command, read the whole resource permit history twice for every live worker while it held the journal's write lock. With 160 workers and tens of thousands of permits, each pass held the lock for nearly a second. Reconciliation now uses indexes, keeps only the most recent 256 released permits, and takes the write lock only when it has a permit to fence or prune ([#3978](https://github.com/bastani-inc/atomic/issues/3978))
 
 ## [0.9.45] - 2026-10-25
 

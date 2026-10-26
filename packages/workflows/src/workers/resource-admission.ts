@@ -10,6 +10,14 @@ import type { RunJournal } from "../durable/journal/types.js";
 import { admissionBootIdentity, admissionHost, admissionProcessStopped } from "./admission-host.js";
 
 const OWNER_LEASE_MS = 30_000;
+/** Released permits kept for inspection; older ones are pruned so the table cannot grow with run history. */
+export const RELEASED_PERMIT_RETENTION = 256;
+/** Most released permits one reconcile prunes, so catching up on a legacy history never holds the write lock long. */
+const PRUNE_BATCH = 1000;
+const EXPIRED_REASON = "owner expired; cleanup unconfirmed";
+const UNCONFIRMED_REASON = "cleanup unconfirmed";
+const ANONYMOUS_REASON = "owner identity unavailable; cleanup unconfirmed";
+const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
@@ -37,6 +45,29 @@ type PermitRow = SqliteRow & {
 	attempt: string | null;
 	process_identity: string | null;
 };
+/** A waiting or granted permit with its owner row, if the owner still has one. */
+type LivePermitRow = SqliteRow & {
+	operation: string;
+	owner: string | null;
+	kind: Resource;
+	state: string;
+	reason: string | null;
+	process_identity: string | null;
+	host: string | null;
+	boot: string | null;
+	pid: number | null;
+	expired: number | null;
+};
+
+function processGroupStopped(encoded: string): boolean {
+	const identity = JSON.parse(encoded) as ResourceProcessIdentity;
+	return (
+		identity.kind === "unix-process-group" &&
+		Number.isSafeInteger(identity.id) &&
+		identity.id > 0 &&
+		admissionProcessStopped(-identity.id)
+	);
+}
 
 export class SqlResourceAdmission {
 	private readonly permits: string;
@@ -84,6 +115,10 @@ export class SqlResourceAdmission {
 			for (const column of ["owner", "attempt", "process_identity"])
 				if (!columns.some((entry) => entry.name === column))
 					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+			// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
+			// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
+			await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
+				CREATE INDEX IF NOT EXISTS ${admission.permits}_state ON ${admission.permits}(state)`);
 			if (!(await tx.all(`PRAGMA table_info(${admission.owners})`)).some((entry) => entry.name === "boot"))
 				await tx.exec(`ALTER TABLE ${admission.owners} ADD COLUMN boot TEXT`);
 			await tx.run(
@@ -275,17 +310,46 @@ export class SqlResourceAdmission {
 			throw error;
 		}
 	}
+	/**
+	 * Fences permits whose owner died, rebooted away or expired, and prunes old released permits. Every pooled worker
+	 * runs this before it admits a command, so it first reads the live permits without the shared write lock and takes
+	 * that lock only when something would change; each statement is indexed so its cost tracks live permits, not history.
+	 */
 	async reconcile(): Promise<void> {
 		const boot = await admissionBootIdentity();
-		await this.storage.transaction(async (tx) => {
-			const owners = await tx.all<OwnerRow>(
-				`SELECT DISTINCT o.* FROM ${this.owners} o JOIN ${this.permits} p ON p.owner = o.id WHERE p.state != 'released'`,
-			);
-			for (const owner of owners) {
+		const fences = new Map<string, { rebooted: boolean; stopped: boolean }>();
+		const fence = (owner: { id: string; host: string; boot: string | null; pid: number }) => {
+			let known = fences.get(owner.id);
+			if (!known) {
 				const rebooted = owner.host === admissionHost && !!boot && !!owner.boot && boot !== owner.boot;
 				const stopped = rebooted || (owner.host === admissionHost && admissionProcessStopped(owner.pid));
+				known = { rebooted, stopped };
+				fences.set(owner.id, known);
+			}
+			return known;
+		};
+		const pending = await this.storage.read(async (db) => {
+			const live = await db.all<LivePermitRow>(
+				`SELECT p.operation, p.owner, p.kind, p.state, p.reason, p.process_identity, o.host, o.boot, o.pid,
+				o.expires_at < ${NOW_MS} AS expired FROM ${this.permits} p LEFT JOIN ${this.owners} o ON o.id = p.owner
+				WHERE p.state IN ('waiting', 'granted')`,
+			);
+			if (live.some((permit) => this.needsFencing(permit, fence))) return true;
+			return !!(await db.get(
+				`SELECT 1 AS prunable FROM ${this.permits} WHERE +state = 'released' AND ticket <= ${this.prunableBefore} LIMIT 1`,
+				RELEASED_PERMIT_RETENTION,
+			));
+		});
+		if (!pending) return;
+		fences.clear();
+		await this.storage.transaction(async (tx) => {
+			const owners = await tx.all<OwnerRow>(
+				`SELECT o.* FROM ${this.owners} o WHERE o.id IN (SELECT owner FROM ${this.permits} WHERE state IN ('waiting', 'granted'))`,
+			);
+			for (const owner of owners) {
+				const { rebooted, stopped } = fence(owner);
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = 'abandoned waiter fenced' WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < CAST(unixepoch('subsec') * 1000 AS INTEGER)))`,
+					`UPDATE ${this.permits} SET state = 'released', reason = 'abandoned waiter fenced' WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
 					owner.id,
 					stopped ? 1 : 0,
 					owner.id,
@@ -301,43 +365,77 @@ export class SqlResourceAdmission {
 						owner.id,
 					);
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = 'cleanup unconfirmed' WHERE owner = ? AND kind = 'process' AND state = 'granted'`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ?`,
+						UNCONFIRMED_REASON,
 						owner.id,
+						UNCONFIRMED_REASON,
 					);
 				} else {
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = 'owner expired; cleanup unconfirmed' WHERE owner = ? AND state = 'granted' AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < CAST(unixepoch('subsec') * 1000 AS INTEGER))`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND reason IS NOT ? AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS})`,
+						EXPIRED_REASON,
 						owner.id,
+						EXPIRED_REASON,
 						owner.id,
 					);
 				}
 				if (owner.host === admissionHost && process.platform !== "win32") {
 					const processes = await tx.all<PermitRow>(
-						`SELECT * FROM ${this.permits} WHERE owner = ? AND kind = 'process' AND state = 'granted' AND process_identity IS NOT NULL`,
+						`SELECT * FROM ${this.permits} WHERE owner = ? AND state = 'granted' AND kind = 'process' AND process_identity IS NOT NULL`,
 						owner.id,
 					);
-					for (const permit of processes) {
-						const identity = JSON.parse(permit.process_identity!) as ResourceProcessIdentity;
-						if (
-							identity.kind === "unix-process-group" &&
-							Number.isSafeInteger(identity.id) &&
-							identity.id > 0 &&
-							admissionProcessStopped(-identity.id)
-						)
+					for (const permit of processes)
+						if (processGroupStopped(permit.process_identity!))
 							await tx.run(
 								`UPDATE ${this.permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
 								permit.operation,
 							);
-					}
 				}
 			}
 			await tx.run(
 				`UPDATE ${this.permits} SET state = 'released', reason = 'legacy waiter fenced' WHERE owner IS NULL AND state = 'waiting'`,
 			);
 			await tx.run(
-				`UPDATE ${this.permits} SET reason = 'owner identity unavailable; cleanup unconfirmed' WHERE owner IS NULL AND state = 'granted'`,
+				`UPDATE ${this.permits} SET reason = ? WHERE owner IS NULL AND state = 'granted' AND reason IS NOT ?`,
+				ANONYMOUS_REASON,
+				ANONYMOUS_REASON,
+			);
+			// Released permits are terminal: nothing reads them but `inspect`, so only recent history is kept.
+			await tx.run(
+				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} WHERE +state = 'released'
+				AND ticket <= ${this.prunableBefore} ORDER BY ticket LIMIT ?)`,
+				RELEASED_PERMIT_RETENTION,
+				PRUNE_BATCH,
 			);
 		});
+	}
+	/** The newest released ticket beyond the retained history, or NULL while there is nothing to prune. */
+	private get prunableBefore(): string {
+		return `(SELECT ticket FROM ${this.permits} WHERE state = 'released' ORDER BY ticket DESC LIMIT 1 OFFSET ?)`;
+	}
+	/** Whether the write pass of `reconcile` would change this live permit; mirrors its statements one for one. */
+	private needsFencing(
+		permit: LivePermitRow,
+		fence: (owner: { id: string; host: string; boot: string | null; pid: number }) => {
+			rebooted: boolean;
+			stopped: boolean;
+		},
+	): boolean {
+		if (permit.owner === null) return permit.state === "waiting" || permit.reason !== ANONYMOUS_REASON;
+		// A permit whose owner row is gone is never fenced: only owners can be confirmed dead.
+		if (permit.host === null || permit.pid === null) return false;
+		const { rebooted, stopped } = fence({ id: permit.owner, host: permit.host, boot: permit.boot, pid: permit.pid });
+		if (rebooted) return true;
+		if (permit.state === "waiting") return stopped || !!permit.expired;
+		if (stopped && (permit.kind === "session" || permit.reason !== UNCONFIRMED_REASON)) return true;
+		if (!stopped && permit.expired && permit.reason !== EXPIRED_REASON) return true;
+		return (
+			permit.kind === "process" &&
+			permit.host === admissionHost &&
+			process.platform !== "win32" &&
+			permit.process_identity !== null &&
+			processGroupStopped(permit.process_identity)
+		);
 	}
 	async inspect(): Promise<PermitRow[]> {
 		return this.storage.transaction((tx) => tx.all<PermitRow>(`SELECT * FROM ${this.permits} ORDER BY ticket`));
@@ -346,7 +444,7 @@ export class SqlResourceAdmission {
 		await this.reconcile();
 		return this.storage.transaction(async (tx) => {
 			await tx.run(
-				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state != 'released' AND (kind = 'session' OR state = 'waiting')`,
+				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state IN ('waiting', 'granted') AND (kind = 'session' OR state = 'waiting')`,
 				this.options.root,
 				holder,
 			);
