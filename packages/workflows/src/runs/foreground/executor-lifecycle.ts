@@ -53,13 +53,17 @@ export async function appendRunEndWhenRecorded(
 	await appendRunEnd(persistence, payload);
 }
 
-/** A run or stage's recorded failure classification, when it recorded one (#4031). */
+/**
+ * A run or stage's recorded failure classification, when it recorded one (#4031). Every recorded field is
+ * kept as recorded, `resumable` included; only fields it did not record are derived from its code or kind.
+ */
 export function recordedFailureClassification(source: {
 	readonly failureKind?: WorkflowFailureKind;
 	readonly failureCode?: WorkflowFailureCode;
 	readonly failureRecoverability?: WorkflowFailureRecoverability;
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly retryAfterMs?: number;
+	readonly resumable?: boolean;
 }): RunFailureClassification | undefined {
 	if (source.failureKind === undefined) return undefined;
 	return runFailureClassification({
@@ -68,6 +72,7 @@ export function recordedFailureClassification(source: {
 		...(source.failureRecoverability !== undefined ? { recoverability: source.failureRecoverability } : {}),
 		...(source.failureDisposition !== undefined ? { disposition: source.failureDisposition } : {}),
 		...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
+		...(source.resumable !== undefined ? { resumable: source.resumable } : {}),
 	});
 }
 

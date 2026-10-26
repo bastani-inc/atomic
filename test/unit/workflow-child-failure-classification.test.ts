@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { DurableNestedTopologyError } from "../../packages/workflows/src/durable/boundary-topology.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { runResultFromSnapshot } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { bindChildWorkerDispatcher } from "../../packages/workflows/src/workers/dispatch.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -223,3 +226,49 @@ test.each(CHILD_ERRORS)(
 		for (const outcome of outcomes) assert.deepEqual(outcome, outcomes[0]);
 	},
 );
+
+function topologyFailure(name: string) {
+	return workflow({
+		name,
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.tool("replay", {}, async () => {
+				throw new DurableNestedTopologyError("caller owns the failed task session");
+			});
+			return {};
+		},
+	});
+}
+
+test("a run failing on a non-resumable topology error reports failure.resumable false, live and restored (#4031)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const result = await run(topologyFailure("plain"), {}, { runId: "topology", store, durableBackend: backend });
+	assert.equal(result.status, "failed", JSON.stringify(result));
+	assert.equal(store.runs().find((snapshot) => snapshot.id === "topology")?.resumable, false);
+	assert.equal(result.failure?.resumable, false, JSON.stringify(result.failure));
+	const handle = backend.getWorkflow("topology");
+	assert.ok(handle);
+	const [restored] = durableWorkflowRunSnapshots(backend, handle);
+	assert.equal(restored?.resumable, false);
+	assert.equal(runResultFromSnapshot(restored!).failure?.resumable, false);
+});
+
+test("a parent of a child that failed on a non-resumable topology error does not offer resume (#4031)", async () => {
+	const backend = await createMemoryTestBackend();
+	const store = createStore();
+	const result = await run(
+		parentOf("root", topologyFailure("plain-child")),
+		{},
+		{
+			runId: "topology-root",
+			store,
+			durableBackend: backend,
+		},
+	);
+	assert.equal(result.status, "failed", JSON.stringify(result));
+	assert.equal(result.failure?.resumable, false, JSON.stringify(result.failure));
+	assert.equal(store.runs().find((snapshot) => snapshot.id === "topology-root")?.resumable, false);
+});

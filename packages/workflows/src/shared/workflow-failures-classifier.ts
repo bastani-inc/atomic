@@ -95,23 +95,22 @@ function decisionOfRecordedCode(
 }
 
 /**
- * The decision a recorded run or stage classification stands for: the usual decision for its code, else
- * for its kind. A failure neither one names keeps the recorded recoverability and disposition.
+ * The decision a recorded run or stage classification stands for: every field it recorded, and for the
+ * rest the usual decision for its code, else for its kind.
  */
 function decisionOfRecorded(recorded: RecordedFailure): WorkflowFailureDecision {
 	const code = recorded.code;
 	const canonical =
 		(code === undefined ? undefined : decisionOfRecordedCode(code, recorded.retryAfterMs)) ??
 		strongDecisionFromNormalizedCode(recorded.kind, recorded.retryAfterMs);
-	const decision =
-		canonical ??
-		({
-			...unknownDecision(),
-			...(recorded.recoverability !== undefined ? { recoverability: recorded.recoverability } : {}),
-			...(recorded.disposition !== undefined ? { disposition: recorded.disposition } : {}),
-		} satisfies WorkflowFailureDecision);
+	// Every recorded field wins over the derived one; only what the failure did not record is derived.
 	return {
-		...decision,
+		...(canonical ?? unknownDecision()),
+		kind: recorded.kind,
+		...(code !== undefined ? { code } : {}),
+		...(recorded.recoverability !== undefined ? { recoverability: recorded.recoverability } : {}),
+		...(recorded.disposition !== undefined ? { disposition: recorded.disposition } : {}),
+		...(recorded.retryAfterMs !== undefined ? { retryAfterMs: recorded.retryAfterMs } : {}),
 		...(recorded.retryable !== undefined ? { retryable: recorded.retryable } : {}),
 		...(recorded.resumable !== undefined ? { resumable: recorded.resumable } : {}),
 	};
