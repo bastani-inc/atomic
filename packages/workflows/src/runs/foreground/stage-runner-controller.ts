@@ -28,6 +28,7 @@ import type {
 	WorkflowModelUsage,
 	WorkflowModelValue,
 } from "../../shared/types.js";
+import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import {
 	buildModelCandidatesFromCatalog,
 	errorMessage,
@@ -77,6 +78,7 @@ import {
 	normalizeSessionCreateResult,
 	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
+	stageError,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
@@ -567,8 +569,13 @@ export class StageSessionController {
 				}
 				if (this.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
 				this.settleStartup(true);
-				throw new Error(
-					`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
+				// #4031: classified as the routing failure it wraps, never by the stage name in this message.
+				throw classifyFailureFrom(
+					new Error(
+						`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
+						{ cause: error },
+					),
+					error,
 				);
 			});
 			this.routingPromise = routing;
@@ -606,7 +613,7 @@ export class StageSessionController {
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== generation)
 				throw this.staleCreationReason(generation);
 		}
-		if (this.disposed) throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+		if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 		this.opts.signal?.throwIfAborted();
 		if (this.session !== undefined && this.activeCreation === undefined) return this.checkedSession(this.session);
 		if (!this.sessionPromise) {
@@ -941,7 +948,7 @@ export class StageSessionController {
 
 	private async finishDisposeAll(): Promise<void> {
 		this.disposed = true;
-		const reason = new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+		const reason = stageError(this.opts.stageName, "session has been disposed");
 		this.markAbort(reason);
 		this.pauseControl.reject(reason);
 		for (const unsubscribe of this.listenerUnsubscribes.values()) unsubscribe();
@@ -1474,8 +1481,7 @@ export class StageSessionController {
 					if (sleepError instanceof ThrownErrorRetryPaused) pauseResume = sleepError.resume;
 					else {
 						if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-						if (this.disposed)
-							throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+						if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 						throw sleepError;
 					}
 				}
@@ -1495,8 +1501,7 @@ export class StageSessionController {
 					nextOptions = resumeMessageOptions(sdkOptions);
 					continue;
 				}
-				if (this.disposed)
-					throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+				if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 				if (this.opts.signal?.aborted) throw this.workflowAbortReason();
 				// Only resume the existing turn when the restored transcript still
 				// satisfies pi-agent-core's continuation contract. A retained
@@ -1676,7 +1681,7 @@ export class StageSessionController {
 				index = this.activeCandidateIndex ?? index + 1;
 			}
 		}
-		throw lastError ?? new Error(`atomic-workflows: stage "${this.opts.stageName}" has no usable model candidate`);
+		throw lastError ?? stageError(this.opts.stageName, "has no usable model candidate");
 	}
 
 	private async createInitialSessionWithRetry(
@@ -1799,12 +1804,10 @@ export class StageSessionController {
 						};
 					}
 					if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-					if (this.disposed)
-						throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+					if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 					throw sleepError;
 				}
-				if (this.disposed)
-					throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+				if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 				if (this.opts.signal?.aborted) throw this.workflowAbortReason();
 			}
 		}
@@ -1958,14 +1961,13 @@ export class StageSessionController {
 			}
 			if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration)
 				throw this.disposed
-					? new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`)
+					? stageError(this.opts.stageName, "session has been disposed")
 					: this.staleCreationReason(startGeneration);
 			throw error;
 		}
 		if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration) {
 			await disposeStageSession(normalizeSessionCreateResult(created).session).catch(() => {});
-			if (this.disposed)
-				throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+			if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 			throw this.staleCreationReason(startGeneration);
 		}
 		this.reportStartupPhase("session-attachment");
@@ -2075,7 +2077,7 @@ export class StageSessionController {
 		// A later prompt must not replace a rejected cleanup barrier with an empty shutdown.
 		if (this.sessionShutdownPromise !== undefined) await this.sessionShutdownPromise;
 		const startGeneration = this.abortGeneration;
-		this.abortThrownErrorRetries(new Error(`atomic-workflows: stage "${this.opts.stageName}" session was replaced`));
+		this.abortThrownErrorRetries(stageError(this.opts.stageName, "session was replaced"));
 		const current = this.session;
 		this.messageAdmission.reset();
 		this.replacement.retire(current);
