@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A stage whose whole model and fallback chain returns HTTP 429 now waits for the earliest recorded provider cooldown and retries, instead of failing after one attempt per model. The wait is bounded: at most `retry.maxRetries` extra rounds per prompt, and only when the earliest cooldown fits the retry-delay cap (`retry.provider.maxRetryDelayMs`, else `retry.maxAgentDelayMs`, else 60 s). A persistent 429 still fails the stage once those rounds are spent ([#3984](https://github.com/bastani-inc/atomic/issues/3984))
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
 

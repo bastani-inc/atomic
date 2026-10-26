@@ -115,6 +115,10 @@ export const WORKFLOW_STAGE_END_CHILDREN_STATE = "atomic:workflow-stage-end-chil
 interface CandidateWalk {
 	readonly remaining: Set<number>;
 	readonly rateLimitFailures: Map<number, number>;
+	/** Candidates dropped only because their rate-limit budget ran out. */
+	readonly rateLimited: Set<number>;
+	/** Whole-chain cooldown waits already spent (#3984). */
+	cooldownRounds: number;
 }
 
 type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"]>>;
@@ -1157,19 +1161,44 @@ export class StageSessionController {
 		return {
 			remaining: new Set(candidates.map((_, index) => index).filter((index) => index >= start)),
 			rateLimitFailures: new Map(),
+			rateLimited: new Set(),
+			cooldownRounds: 0,
 		};
 	}
 
-	private recordCandidateFailure(walk: CandidateWalk, index: number, error: unknown): void {
+	private recordCandidateFailure(
+		walk: CandidateWalk,
+		index: number,
+		error: unknown,
+		candidates: readonly WorkflowResolvedModelCandidate[],
+	): void {
 		const failures = (walk.rateLimitFailures.get(index) ?? 0) + 1 + this.sessionInternalRetries;
 		this.sessionInternalRetries = 0;
 		const settings = this.retrySettings();
 		const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
-		if (isWorkflowRateLimit(error)) {
+		const rateLimited = isWorkflowRateLimit(error);
+		if (rateLimited) {
 			walk.rateLimitFailures.set(index, failures);
 			if (failures <= retries) return;
+			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
+		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Wait for the
+		// earliest recorded cooldown (it must fit the retry-hint cap) and give each throttled candidate a fresh
+		// budget, at most `retry.maxRetries` times per walk, instead of failing the stage.
+		if (!rateLimited || walk.remaining.size > 0 || walk.cooldownRounds >= retries) return;
+		const cooldowns = [...walk.rateLimited]
+			.map((limited) => providerCooldownMs(workflowProviderId(candidates[limited]?.value)))
+			.filter((delay) => delay > 0);
+		if (cooldowns.length === 0) return;
+		const maxWaitMs = settings?.maxRetryDelayMs || settings?.maxAgentDelayMs || 60_000;
+		if (Math.min(...cooldowns) > maxWaitMs) return;
+		walk.cooldownRounds += 1;
+		for (const limited of walk.rateLimited) {
+			walk.remaining.add(limited);
+			walk.rateLimitFailures.delete(limited);
+		}
+		walk.rateLimited.clear();
 	}
 
 	private async selectReadyCandidate(
@@ -2143,7 +2172,7 @@ export class StageSessionController {
 			}
 			if (isWorkflowRateLimit(err)) {
 				for (let index = 0; index < currentIndex; index++) walk.remaining.add(index);
-				this.recordCandidateFailure(walk, currentIndex, err);
+				this.recordCandidateFailure(walk, currentIndex, err, candidates);
 				if (walk.remaining.size === 0) {
 					this.notifyModelFallbackMetaChange();
 					throw err;
@@ -2215,7 +2244,7 @@ export class StageSessionController {
 		});
 		let nextIndex: number | undefined = index + 1 < candidates.length ? index + 1 : undefined;
 		if (walk !== undefined) {
-			this.recordCandidateFailure(walk, index, err);
+			this.recordCandidateFailure(walk, index, err, candidates);
 			nextIndex = undefined;
 			if (
 				!this.opts.signal?.aborted &&
