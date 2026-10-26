@@ -43,18 +43,26 @@ export async function admitStageUserMessage(
 				if (event.type === "message_start" && event.message.role === "user")
 					startedTurn.resolve({ action: "prompt" });
 			});
-	const delivery = (async (): Promise<StageCommandResult> => {
-		if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
-		if (intent === "steer" && handle.isStreaming) {
+	// A busy session takes the text in its mode: a steer steers, anything else follows up.
+	const queue = async (): Promise<StageCommandResult> => {
+		if (intent === "steer") {
 			await handle.steer(text);
 			return { action: "steer" };
 		}
-		if (intent !== "steer" && handle.isStreaming) {
-			await handle.followUp(text);
-			return { action: "followUp" };
+		await handle.followUp(text);
+		return { action: "followUp" };
+	};
+	const delivery = (async (): Promise<StageCommandResult> => {
+		try {
+			if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
+			await handle.prompt(text);
+			return { action: "prompt" };
+		} catch (error) {
+			// The session was busy after all (a replayed turn the stage handle did not report):
+			// queue the text in its mode rather than prompt over the running turn.
+			if (error instanceof Error && BUSY_SESSION.test(error.message)) return queue();
+			throw error;
 		}
-		await handle.prompt(text);
-		return { action: "prompt" };
 	})();
 	try {
 		return await Promise.race([delivery, startedTurn.promise]);
@@ -71,6 +79,9 @@ export async function admitStageUserMessage(
  * replacement attempt does not hold (#3996).
  */
 export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+
+/** What a session says when asked to start a turn while one is running. */
+const BUSY_SESSION = /already processing/i;
 
 /** A watched stage's events leave the worker at most this often, as one batch. */
 export const STAGE_EVENT_BATCH_INTERVAL_MS = 50;

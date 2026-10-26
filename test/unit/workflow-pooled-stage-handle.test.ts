@@ -339,3 +339,28 @@ test("a send whose transport rejects fails its caller at once, and the next atte
 		["watch-1:UNSURE", "watch-1:NEXT", "watch-2:UNSURE", "watch-2:NEXT"],
 	);
 });
+
+test("a worker that refuses a send after its caller went away leaves no unhandled rejection in the root (#3996)", async () => {
+	const fake = pool(() => []);
+	const refusal = Promise.withResolvers<never>();
+	refusal.promise.catch(() => {});
+	const deliver = fake.transport.deliver;
+	let first = true;
+	fake.transport.deliver = async (delivery) => {
+		if (!first) return deliver(delivery);
+		first = false;
+		fake.deliveries.push(delivery);
+		return refusal.promise;
+	};
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const sent = opened.handle.steer("STEER");
+	// The chat closes while the worker still holds the send.
+	opened.handle.dispose();
+	await assert.rejects(sent, /is closed/);
+	refusal.reject(new Error("Agent is already processing a prompt. Use steer() or followUp() to queue messages."));
+	// Vitest fails the run on an unhandled rejection; let it surface if there is one.
+	await new Promise((resolve) => setImmediate(resolve));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(opened.handle.isDisposed, true);
+});

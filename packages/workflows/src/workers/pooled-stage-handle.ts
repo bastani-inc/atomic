@@ -129,6 +129,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private session: string | undefined;
 	/** The outbox's sender while it runs; one at a time keeps send order. */
 	private pumping?: Promise<void>;
+	/** Something to send arrived while the sender ran. */
+	private pumpAgain = false;
 	/** Redelivery waits for the attempt's own first turn, so the replay's prompt comes first. */
 	private awaitingTurn = false;
 	/** A rebind in flight: the handle reads as reconnecting until the outbox drains. */
@@ -161,7 +163,7 @@ export class PooledStageHandle implements StageControlHandle {
 			generation: this.attempt.generation,
 			...(this.reconnecting ? { reconnecting: true } : {}),
 			...(this.redelivered === undefined ? {} : { redelivered: this.redelivered }),
-			...(this.undelivered === undefined ? {} : { undelivered: this.undelivered }),
+			...(this.undeliveredCount() === 0 ? {} : { undelivered: this.undeliveredCount() }),
 		};
 	}
 	get sessionId(): string | undefined {
@@ -332,6 +334,12 @@ export class PooledStageHandle implements StageControlHandle {
 		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
 	}
 
+	/** Text that never reached the stage (ended), or whose send this attempt refused (live). */
+	private undeliveredCount(): number {
+		if (this.undelivered !== undefined) return this.undelivered;
+		return this.outbound.filter((entry) => entry.failedOn === this.attempt.generation).length;
+	}
+
 	private admitted(entry: OutboundEntry): boolean {
 		return entry.admittedBy === this.attempt.generation;
 	}
@@ -413,7 +421,12 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Sends outbox text this attempt has not admitted, in order, one message at a time. */
 	private pump(): void {
-		if (this.pumping !== undefined) return;
+		// A send queued while the sender is finishing must not be missed: run again after it.
+		if (this.pumping !== undefined) {
+			this.pumpAgain = true;
+			return;
+		}
+		this.pumpAgain = false;
 		this.pumping = (async () => {
 			for (;;) {
 				if (this.disposed || this.ended !== undefined || (this.reconnecting && this.rebinding === undefined))
@@ -455,9 +468,13 @@ export class PooledStageHandle implements StageControlHandle {
 			}
 			this.finishRebind(true);
 			for (const listener of [...this.drainedListeners]) listener();
-		})().finally(() => {
-			this.pumping = undefined;
-		});
+		})()
+			// A send's failure reaches its caller above; nothing here may reject unhandled.
+			.catch(() => {})
+			.finally(() => {
+				this.pumping = undefined;
+				if (this.pumpAgain) this.pump();
+			});
 	}
 
 	private async sendEntry(

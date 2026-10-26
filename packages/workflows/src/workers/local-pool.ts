@@ -944,8 +944,13 @@ export class LocalWorkerPool {
 							),
 					)
 				).then((registrations) => {
-					if (!this.closed)
-						for (const { work, runs } of accepted) if (!this.results.has(work.id)) registrations.sync(work, runs);
+					try {
+						if (!this.closed)
+							for (const { work, runs } of accepted)
+								if (!this.results.has(work.id)) registrations.sync(work, runs);
+					} catch {
+						// A caller registry that refuses a handle keeps the others; nothing may reject unhandled.
+					}
 					return registrations;
 				});
 			}

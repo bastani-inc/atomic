@@ -504,3 +504,44 @@ test("a replacement whose replayed session already holds an op reports it and ad
 	assert.deepEqual(again, { action: "handled", refusal: undefined }, "the op is not admitted a second time");
 	assert.deepEqual(stage.admitted, []);
 });
+
+test.each([
+	["steer", "steer", "steer"],
+	["followUp", "followUp", "followUp"],
+	["auto", "followUp", "followUp"],
+] as const)(
+	"a %s delivery to a replacement that is busy but not reported streaming is queued in its mode, never prompted (#3996)",
+	async (intent, expectedCall, expectedAction) => {
+		const { registry, sent, watches } = airlock();
+		const stage = streamingStage("agent");
+		const calls: string[] = [];
+		registry.register({
+			...stage.handle,
+			get status() {
+				return stage.handle.status;
+			},
+			// The replayed turn runs, but the stage handle does not report it yet.
+			isStreaming: false,
+			async sendUserMessage() {
+				calls.push("sendUserMessage");
+				throw new Error("Agent is already processing a prompt. Use steer() or followUp() to queue messages.");
+			},
+			async prompt() {
+				calls.push("prompt");
+				throw new Error("Agent is already processing a prompt.");
+			},
+			async steer() {
+				calls.push("steer");
+			},
+			async followUp() {
+				calls.push("followUp");
+			},
+		});
+		openWatch(watches);
+		assert.deepEqual(await deliver(sent, watches, 2, `op-${intent}`, intent), {
+			action: expectedAction,
+			refusal: undefined,
+		});
+		assert.deepEqual(calls, ["sendUserMessage", expectedCall]);
+	},
+);
