@@ -1,6 +1,7 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+import { replaceControlCharacters } from "../../utils/ansi.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
@@ -351,11 +352,10 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveModeBase): void {
 	const cwdBasename = path.basename(this.sessionManager.getCwd());
 	const sessionName = this.sessionManager.getSessionName();
-	if (sessionName) {
-		this.ui.terminal.setTitle(`${APP_TITLE} - ${sessionName} - ${cwdBasename}`);
-	} else {
-		this.ui.terminal.setTitle(`${APP_TITLE} - ${cwdBasename}`);
-	}
+	// Session names come from session files: a BEL or ESC in the title would end the OSC title sequence early and send
+	// the rest to the terminal as escape sequences.
+	const title = sessionName ? `${APP_TITLE} - ${sessionName} - ${cwdBasename}` : `${APP_TITLE} - ${cwdBasename}`;
+	this.ui.terminal.setTitle(replaceControlCharacters(title));
 };
 
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
