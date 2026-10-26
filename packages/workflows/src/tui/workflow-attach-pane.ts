@@ -22,6 +22,7 @@ import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
 import { acquirePooledStage } from "../workers/pooled-stage-sources.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
@@ -59,6 +60,16 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	private storeBurst?: NodeJS.Immediate;
+	/** Handles a publication the current burst deferred, before input or a frame reads state. */
+	private _flushStoreUpdate(): void {
+		if (!this.storeUpdatePending || this.unsubscribeStore === null) return;
+		this.storeUpdatePending = false;
+		this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
+	}
+	private storeUpdatePending = false;
+	/** The attachment whose pooled view may remount the chat when it reconnects. */
+	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
 	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -93,9 +104,19 @@ export class WorkflowAttachPane implements Component {
 		this.setToolsExpanded = opts.setToolsExpanded;
 		this.footerData = opts.footerData;
 		this.now = opts.now ?? Date.now;
-		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () =>
-			this._handleStoreUpdate(readGraphStoreSnapshot(this.store)),
-		);
+		// The first publication of a task is handled at once; the rest of a burst (a fan-out
+		// starts hundreds of stages in one task) is handled once, after it (#3996).
+		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () => {
+			if (this.storeBurst !== undefined) {
+				this.storeUpdatePending = true;
+				return;
+			}
+			this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
+			this.storeBurst = setImmediate(() => {
+				this.storeBurst = undefined;
+				this._flushStoreUpdate();
+			});
+		});
 		this.graphView = this._buildGraphView();
 		const target =
 			opts.initialAttachStageId !== undefined && this.runId
@@ -203,8 +224,11 @@ export class WorkflowAttachPane implements Component {
 		this._disposeChatView();
 		// A pooled stage's view rebinds to a replacement attempt after its worker dies: the chat
 		// remounts on the replacement's transcript, keeping the composer draft (#3996).
+		// Identity of this attachment: hiding and showing the pane keeps it, detaching ends it.
+		const attachment = Symbol("pooled-stage-attachment");
+		this.pooledAttachment = attachment;
 		const stopWatchingReconnects = onReconnected?.(() => {
-			if (generation !== this.attachmentGeneration || this.chatView === null) return;
+			if (this.pooledAttachment !== attachment || this.chatView === null) return;
 			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
 			this.chatView.dispose();
 			this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
@@ -262,6 +286,7 @@ export class WorkflowAttachPane implements Component {
 		this.hostRequestRender?.();
 	}
 	private _disposeChatView(): void {
+		this.pooledAttachment = undefined;
 		this.chatView?.dispose();
 		const release = this.releaseChatHandle;
 		this.releaseChatHandle = null;
@@ -389,12 +414,14 @@ export class WorkflowAttachPane implements Component {
 		return stage?.attached === true && this._stageSnapshotNeedsInput(stage);
 	}
 	render(width: number): string[] {
+		this._flushStoreUpdate();
 		if (this.mode === "stage-chat" && this.chatView) {
 			return this.chatView.render(width);
 		}
 		return this.graphView.render(width);
 	}
 	handleInput(data: string): boolean | undefined {
+		this._flushStoreUpdate();
 		if (!this.visible) return false;
 		if (this.mode === "stage-chat" && this.chatView) {
 			if (this._shouldQuarantineStagePromptEnter(data)) return true;
@@ -495,8 +522,9 @@ export class WorkflowAttachPane implements Component {
 		return this._stageSnapshot(runId, stageId)?.attached === true;
 	}
 	private _stageSnapshot(runId: string, stageId: string): StageSnapshot | undefined {
-		const run = readGraphStoreSnapshot(this.store).runs.find((candidate) => candidate.id === runId);
-		return run?.stages.find((candidate) => candidate.id === stageId);
+		// Called per graph node while laying out: indexed lookups keep a layout linear in its nodes.
+		const run = findSnapshotRun(readGraphStoreSnapshot(this.store).runs, runId);
+		return run === undefined ? undefined : findSnapshotStage(run.stages, stageId);
 	}
 	private _stageSnapshotNeedsInput(stage: Pick<StageSnapshot, "pendingPrompt" | "inputRequest" | "status">): boolean {
 		return stage.pendingPrompt !== undefined || stage.inputRequest !== undefined || stage.status === "awaiting_input";
@@ -507,6 +535,8 @@ export class WorkflowAttachPane implements Component {
 	}
 	dispose(): void {
 		this.attachmentGeneration += 1;
+		if (this.storeBurst !== undefined) clearImmediate(this.storeBurst);
+		this.storeBurst = undefined;
 		this.unsubscribeStore?.();
 		this.unsubscribeStore = null;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {

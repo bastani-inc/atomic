@@ -45,18 +45,31 @@ export async function admitStageUserMessage(
 				if (event.type === "message_start" && event.message.role === "user")
 					startedTurn.resolve({ action: "prompt" });
 			});
-	const delivery = (async (): Promise<StageCommandResult> => {
-		if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
-		if (intent === "steer" && handle.isStreaming) {
+	// A busy session takes the text in its mode: a steer steers, anything else follows up.
+	const queue = async (): Promise<StageCommandResult> => {
+		if (intent === "steer") {
 			await handle.steer(text);
 			return { action: "steer" };
 		}
-		if (intent !== "steer" && handle.isStreaming) {
-			await handle.followUp(text);
-			return { action: "followUp" };
+		await handle.followUp(text);
+		return { action: "followUp" };
+	};
+	// A turn under way, whether or not the stage handle reports it (a replayed turn may not, and
+	// holds the stage's message admission until it ends), takes the text in its mode directly:
+	// through that admission a steer would wait for the whole turn instead of steering it.
+	const busy = handle.isStreaming || handle.agentSession?.isStreaming === true;
+	const delivery = (async (): Promise<StageCommandResult> => {
+		if (busy) return queue();
+		try {
+			if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
+			await handle.prompt(text);
+			return { action: "prompt" };
+		} catch (error) {
+			// The session was busy after all (a replayed turn the stage handle did not report):
+			// queue the text in its mode rather than prompt over the running turn.
+			if (error instanceof Error && BUSY_SESSION.test(error.message)) return queue();
+			throw error;
 		}
-		await handle.prompt(text);
-		return { action: "prompt" };
 	})();
 	try {
 		return await Promise.race([delivery, startedTurn.promise]);
@@ -73,6 +86,12 @@ export async function admitStageUserMessage(
  * replacement attempt does not hold (#3996).
  */
 export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+
+/** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
+export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
+
+/** What a session says when asked to start a turn while one is running. */
+const BUSY_SESSION = /already processing/i;
 
 /** A watched stage's events leave the worker at most this often, as one batch. */
 export const STAGE_EVENT_BATCH_INTERVAL_MS = 50;
@@ -112,9 +131,15 @@ export class WorkerStageWatches {
 		private readonly send: (message: DistributiveOmit<Outbound, "id">) => void,
 		/** Pool-wide control as the worker last observed it. */
 		private readonly control: () => string = () => "running",
-		/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
-		private readonly prompts: () => { readonly store: Store; readonly broker: StageUiBroker } | undefined = () =>
-			undefined,
+		/** What the airlock reads from the attempt beyond its stage handles. */
+		private readonly options: {
+			/** The stage session's committed entries, for a handle whose session is not attached yet. */
+			readonly entries?: (sessionId: string) => Promise<readonly SessionEntry[] | undefined>;
+			/** Whether the stage started a turn in this attempt. */
+			readonly turnStarted?: (handle: StageControlHandle) => boolean;
+			/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
+			readonly prompts?: () => { readonly store: Store; readonly broker: StageUiBroker } | undefined;
+		} = {},
 	) {}
 
 	serve(command: WorkerStageCommand): void {
@@ -139,13 +164,24 @@ export class WorkerStageWatches {
 			);
 			return;
 		}
+		const handle = this.registry.get(command.runId, command.stageId);
+		// The receipts a replayed session already holds, read before the stream starts.
+		const delivered = handle === undefined ? new Set<DeliveryOpId>() : this.deliveredOps(handle);
+		if (delivered instanceof Promise) void delivered.then((ops) => this.open(command, handle, ops));
+		else this.open(command, handle, delivered);
+	}
+
+	private open(
+		command: Extract<WorkerStageCommand, { op: "watch" }>,
+		handle: StageControlHandle | undefined,
+		delivered: ReadonlySet<DeliveryOpId>,
+	): void {
 		const held = this.attempt();
 		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation) {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "AttemptChanging" });
 			return;
 		}
-		const handle = this.registry.get(command.runId, command.stageId);
-		if (handle === undefined || isTerminal(handle)) {
+		if (handle === undefined || isTerminal(handle) || this.registry.get(command.runId, command.stageId) !== handle) {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "StageNotOnWorker" });
 			return;
 		}
@@ -159,7 +195,26 @@ export class WorkerStageWatches {
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
 		this.watches.set(command.watch, watch);
-		this.send({ kind: "stage-command-result", commandId: command.commandId, snapshot: snapshot(handle, watch.seq) });
+		this.send({
+			kind: "stage-command-result",
+			commandId: command.commandId,
+			snapshot: {
+				...snapshot(handle, watch.seq),
+				deliveredOps: [...delivered],
+				turnStarted: handle.isStreaming || this.options.turnStarted?.(handle) === true,
+			},
+		});
+	}
+
+	/** Ops the stage's session holds receipts for: its live entries and its committed ones. */
+	private deliveredOps(handle: StageControlHandle): Set<DeliveryOpId> | Promise<Set<DeliveryOpId>> {
+		const live = deliveredOps(handle.agentSession?.sessionManager?.getEntries() ?? []);
+		const load = this.options.entries;
+		if (handle.sessionId === undefined || load === undefined) return new Set(live);
+		return load(handle.sessionId).then(
+			(committed) => new Set([...live, ...deliveredOps(committed ?? [])]),
+			() => new Set(live),
+		);
 	}
 
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
@@ -190,7 +245,7 @@ export class WorkerStageWatches {
 	 */
 	private answer(command: Extract<WorkerStageCommand, { op: "answer" }>): StageCommandResult {
 		const held = this.attempt();
-		const prompts = this.prompts();
+		const prompts = this.options.prompts?.();
 		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !prompts)
 			return { refusal: "StaleAttempt" };
 		const stage = prompts.store
@@ -249,8 +304,11 @@ export class WorkerStageWatches {
 		// A retried resume whose message this attempt already admitted is answered from the ledger.
 		const recorded = message === undefined ? undefined : this.ledger.get(message.deliveryOp);
 		if (recorded !== undefined) return recorded;
+		// A message the session already holds, e.g. from before a replay, is not sent again.
+		const alreadyHeld =
+			message !== undefined && (await Promise.resolve(this.deliveredOps(watch.handle))).has(message.deliveryOp);
 		const resumeWith = async (): Promise<StageCommandResult> => {
-			const action = await watch.handle.resume(message?.text);
+			const action = await watch.handle.resume(alreadyHeld ? undefined : message?.text);
 			return action === undefined ? {} : { action };
 		};
 		const resumed = (
@@ -274,6 +332,10 @@ export class WorkerStageWatches {
 		if (receipts === undefined) {
 			receipts = new StageDeliveryReceipts(handle, (op) => {
 				void handle.agentSession?.sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
+				// Watchers learn it arrived, so their outbox stops carrying it.
+				for (const [id, watch] of this.watches)
+					if (watch.handle === handle)
+						this.record(id, { type: DELIVERY_RECEIPT_EVENT, op } as never as AgentSessionEvent);
 			});
 			this.receipts.set(handle, receipts);
 		}
@@ -293,9 +355,14 @@ export class WorkerStageWatches {
 		)
 			return refuse("StaleAttempt");
 		if (isTerminal(watch.handle)) return refuse("StageNotLive");
-		const admitted = this.receiptsFor(watch.handle)
-			.track(command.deliveryOp, watch.handle.isStreaming, () =>
-				admitStageUserMessage(watch.handle, command.text, command.intent, command.expandPromptTemplates),
+		const admitted = Promise.resolve(this.deliveredOps(watch.handle))
+			.then((delivered) =>
+				// The session already holds this op, e.g. from before a replay: admit it at most once.
+				delivered.has(command.deliveryOp)
+					? { action: "handled" as const }
+					: this.receiptsFor(watch.handle).track(command.deliveryOp, watch.handle.isStreaming, () =>
+							admitStageUserMessage(watch.handle, command.text, command.intent, command.expandPromptTemplates),
+						),
 			)
 			.catch(
 				(error: Error): StageCommandResult =>
@@ -341,7 +408,6 @@ function deliveredOps(entries: readonly SessionEntry[]): DeliveryOpId[] {
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {
 	const streamingMessage = handle.agentSession?.agent?.state.streamingMessage;
-	const entries = handle.agentSession?.sessionManager.getEntries();
 	return {
 		sessionId: handle.sessionId,
 		status: handle.status,
@@ -350,7 +416,6 @@ function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnaps
 		...(streamingMessage === undefined ? {} : { streamingMessage }),
 		pendingToolExecutionEvents: [...(handle.pendingToolExecutionEvents?.() ?? [])],
 		queued: handle.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES,
-		...(entries === undefined ? {} : { deliveredOps: deliveredOps(entries) }),
 		seq,
 	};
 }

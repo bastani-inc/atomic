@@ -57,7 +57,7 @@ import {
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
-import type { PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
+import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
@@ -255,6 +255,10 @@ export class LocalWorkerPool {
 	private readonly stageWatches = new Map<WatchId, (message: PooledStageWatchMessage) => void>();
 	/** One shared live view per watched stage, with the number of holders. */
 	private readonly stageViews = new Map<string, StageView>();
+	/** Text sent to each watched stage, by run and stage, kept until it arrives or the stage ends (#3996). */
+	private readonly outboxes = new Map<string, OutboundEntry[]>();
+	/** Stages whose outbox a view is being opened to deliver. */
+	private readonly outboxDeliveries = new Set<string>();
 	/** Views whose watch ended with their attempt; each reconnects once a replacement runs the stage. */
 	private readonly reconnectingViews = new Set<StageView>();
 	private releaseStageSource?: () => void;
@@ -581,16 +585,33 @@ export class LocalWorkerPool {
 					this.reconnectingViews.add(created);
 				else this.stageViews.delete(key);
 			});
+			// The stage's outbox outlives its views, so text survives a chat that closes and reopens.
+			let outbox = this.outboxes.get(key);
+			if (outbox === undefined) {
+				outbox = [];
+				this.outboxes.set(key, outbox);
+			}
+			const outbound = outbox;
 			created.opening = (async () => {
 				// Loaded on first use, so pools nobody attaches to never load it.
 				const module = await import("./pooled-stage-handle.js");
-				const opened = await module.openPooledStageHandle(transport, { runId, stageId }, stageName, () => {
-					if (this.stageViews.get(key) === created) this.stageViews.delete(key);
-					this.reconnectingViews.delete(created);
-				});
+				const opened = await module.openPooledStageHandle(
+					transport,
+					{ runId, stageId },
+					stageName,
+					() => {
+						if (this.stageViews.get(key) === created) this.stageViews.delete(key);
+						this.reconnectingViews.delete(created);
+					},
+					outbound,
+				);
 				if (!opened.ok) return undefined;
 				created.handle = opened.handle;
 				created.reconnect = () => module.reconnectPooledStageHandle(opened.handle, transport);
+				// A view nobody holds stays open only until its outbox drains.
+				opened.handle.onDrained(() => {
+					if (created.holders === 0 && !opened.handle.hasPending) opened.handle.dispose();
+				});
 				return opened.handle;
 			})();
 			view = created;
@@ -611,29 +632,43 @@ export class LocalWorkerPool {
 			release: () => {
 				if (released) return;
 				released = true;
-				if (--current.holders === 0) {
-					this.reconnectingViews.delete(current);
-					handle.dispose();
-				}
+				if (--current.holders > 0) return;
+				// Text still on its way keeps the view (and its watch) open until it arrives.
+				if (handle.hasPending) return;
+				this.reconnectingViews.delete(current);
+				handle.dispose();
 			},
 		};
 	}
-	/** Retries the reconnection of views whose attempt ended, once activity may show the next one. */
+	/**
+	 * Keeps every stage's outbox moving (#3996): views whose attempt ended reconnect to the
+	 * replacement; a stage with text its current attempt has not admitted, and no view, gets a
+	 * view that delivers it and closes; a stage or run that ended reports what never arrived.
+	 */
 	private reconnectStageViews(): void {
+		const runs = this.store?.runs() ?? [];
+		const stageOf = (key: string) => {
+			const [runId, stageId] = JSON.parse(key) as [string, string];
+			const run = runs.find((candidate) => candidate.id === runId);
+			return { runId, stageId, run, stage: run?.stages.find((candidate) => candidate.id === stageId) };
+		};
+		const ended = (key: string): boolean => {
+			const { run, stage } = stageOf(key);
+			return (
+				run?.endedAt !== undefined ||
+				stage?.status === "completed" ||
+				stage?.status === "failed" ||
+				stage?.status === "skipped"
+			);
+		};
 		for (const view of this.reconnectingViews) {
 			if (view.reconnecting !== undefined || view.reconnect === undefined || view.handle === undefined) continue;
 			const handle = view.handle;
-			const stage = this.store
-				?.runs()
-				.find((run) => run.id === handle.runId)
-				?.stages.find((candidate) => candidate.id === handle.stageId);
-			if (
-				stage !== undefined &&
-				(stage.status === "completed" || stage.status === "failed" || stage.status === "skipped")
-			) {
+			if (ended(view.key)) {
 				this.reconnectingViews.delete(view);
 				handle.receive({ kind: "ended", reason: "stage_finished" });
 				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
+				this.outboxes.delete(view.key);
 				continue;
 			}
 			view.reconnecting = view
@@ -641,11 +676,29 @@ export class LocalWorkerPool {
 				.then((bound) => {
 					// A watch that ended again after this rebind queued the view anew; keep it queued.
 					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
+					if (bound && view.holders === 0 && !handle.hasPending) handle.dispose();
 				})
 				.catch(() => {})
 				.finally(() => {
 					view.reconnecting = undefined;
 				});
+		}
+		for (const [key, outbox] of this.outboxes) {
+			if (this.stageViews.has(key)) continue;
+			if (ended(key)) {
+				this.outboxes.delete(key);
+				continue;
+			}
+			const { runId, stageId, stage } = stageOf(key);
+			const generation = stage?.workerExecution?.generation;
+			// Text admitted by an attempt that has since been replaced may have died with it.
+			if (generation === undefined || !outbox.some((entry) => entry.admittedBy !== generation)) continue;
+			if (this.outboxDeliveries.has(key)) continue;
+			this.outboxDeliveries.add(key);
+			void this.acquirePooledStage(runId, stageId)
+				.then((lease) => lease?.release())
+				.catch(() => {})
+				.finally(() => this.outboxDeliveries.delete(key));
 		}
 	}
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */
@@ -783,6 +836,8 @@ export class LocalWorkerPool {
 					await this.inbound;
 					await this.backend.catchUpWorkflow(root);
 					await this.handoff?.complete(work);
+					// The child's stages are final now; end views still waiting to reconnect to them.
+					if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 					return result as unknown as RunResult;
 				}
 				const failed = this.workFailures.get(work.id);
@@ -947,15 +1002,20 @@ export class LocalWorkerPool {
 							),
 					)
 				).then((registrations) => {
-					if (!this.closed)
-						for (const { work, runs } of accepted) if (!this.results.has(work.id)) registrations.sync(work, runs);
+					try {
+						if (!this.closed)
+							for (const { work, runs } of accepted)
+								if (!this.results.has(work.id)) registrations.sync(work, runs);
+					} catch {
+						// A caller registry that refuses a handle keeps the others; nothing may reject unhandled.
+					}
 					return registrations;
 				});
 			}
 		}
 		this.notice({ kind: "published", batch, rejected });
 		this.refreshRootRun();
-		if (this.reconnectingViews.size > 0) this.reconnectStageViews();
+		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 	}
 	/** The full work of an attempt token, recording the attempt as current when it is newer. */
 	private track(attempt: PoolWorkToken): PoolWork | undefined {
@@ -1036,10 +1096,29 @@ export class LocalWorkerPool {
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();
+		// A pool that failed takes its unfinished children with it: show them failed rather than
+		// running forever (#3996). A graceful quit leaves them resumable.
+		const poolFailure = this.failure;
+		const store = this.store;
+		if (poolFailure !== undefined && store !== undefined)
+			store.batch(() => {
+				for (const run of store.runs())
+					if (
+						run.endedAt === undefined &&
+						run.rootRunId === this.root &&
+						run.id !== this.root &&
+						run.stages.some((stage) => stage.workerExecution !== undefined)
+					)
+						store.recordRunEnd(run.id, "failed", undefined, poolFailure.message);
+			});
 		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
 		this.stageWatches.clear();
 		for (const listener of watches) listener({ kind: "ended", reason: "pool_closed" });
+		// Views between attempts have no open watch to end; tell them the pool is gone.
+		for (const view of this.stageViews.values()) view.handle?.receive({ kind: "ended", reason: "pool_closed" });
+		this.reconnectingViews.clear();
+		this.outboxes.clear();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		this.signalChange();
 		let failure: unknown;

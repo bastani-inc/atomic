@@ -14,7 +14,11 @@ import { createToolControlRegistry } from "../engine/run-tool-control-registry.j
 import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
-import { createStageControlRegistry, type StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+	type StageControlRegistry,
+} from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -54,6 +58,33 @@ class WorkAttemptFencedError extends Error {
 		super(message);
 		this.name = "WorkAttemptFencedError";
 	}
+}
+
+/** The registry, with each registered stage's first turn in this process recorded in `started`. */
+function trackTurnStarts(registry: StageControlRegistry, started: WeakSet<StageControlHandle>): StageControlRegistry {
+	return new Proxy(registry, {
+		get(target, key) {
+			if (key === "register")
+				return (handle: StageControlHandle) => {
+					const unsubscribe = handle.subscribe((event) => {
+						if (
+							event.type !== "agent_start" &&
+							!(event.type === "message_start" && event.message.role === "assistant")
+						)
+							return;
+						started.add(handle);
+						unsubscribe();
+					});
+					const unregister = target.register(handle);
+					return () => {
+						unsubscribe();
+						unregister();
+					};
+				};
+			const value = Reflect.get(target, key);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
 }
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
@@ -207,7 +238,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		let currentStore = createStore();
 		let activeController: AbortController | undefined;
 		const toolControls = createToolControlRegistry();
-		const stageControls = createStageControlRegistry();
+		// Whether each stage started a turn in this attempt: a reconnecting root view redelivers
+		// only after the replay's own prompt, so the replay is not preceded by redelivered text (#3996).
+		const turnStarted = new WeakSet<StageControlHandle>();
+		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
 		let heldAttempt: PoolWork | undefined;
 		let prompts: { readonly store: Store; readonly broker: StageUiBroker } | undefined;
 		stageWatches = new WorkerStageWatches(
@@ -215,7 +249,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
 			(message) => process.send?.({ ...message, id: 0 }),
 			() => controlState,
-			() => prompts,
+			{
+				entries: async (sessionId) => (await sessions.load(sessionId)).entries,
+				turnStarted: (handle) => turnStarted.has(handle),
+				prompts: () => prompts,
+			},
 		);
 		const observeControl = async () => {
 			const control = (await request({ kind: "control" })) as PoolControl;

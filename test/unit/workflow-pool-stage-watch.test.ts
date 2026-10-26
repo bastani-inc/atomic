@@ -224,6 +224,13 @@ function deliverableStage(streaming: boolean) {
 			admitted.push({ text, deliverAs: options?.deliverAs });
 			return streaming ? (options?.deliverAs ?? "followUp") : "prompt";
 		},
+		// A turn under way takes text straight into its queues.
+		async steer(text) {
+			admitted.push({ text, deliverAs: "steer" });
+		},
+		async followUp(text) {
+			admitted.push({ text, deliverAs: "followUp" });
+		},
 	};
 	return { ...stage, handle, admitted };
 }
@@ -278,11 +285,46 @@ test("a delivery admits the stage's own idle-aware action for each intent, as an
 			[steer.action, followUp.action, auto.action],
 			streaming ? ["steer", "followUp", "followUp"] : ["prompt", "prompt", "prompt"],
 		);
+		// A turn under way queues each text in its mode (auto follows up); an idle stage gets the
+		// stage's own idle-aware delivery.
 		assert.deepEqual(
 			stage.admitted.map(({ deliverAs }) => deliverAs),
-			["steer", "followUp", undefined],
+			streaming ? ["steer", "followUp", "followUp"] : ["steer", "followUp", undefined],
 		);
 	}
+});
+
+test("a steer to a turn under way lands in the turn, not behind it, even when the stage's admission is held (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		// A replayed turn: the session streams, the stage handle has not caught up, and its message
+		// admission is held until the turn ends.
+		isStreaming: false,
+		agentSession: { isStreaming: true } as never,
+		sendUserMessage: () => {
+			calls.push("sendUserMessage");
+			return new Promise(() => {});
+		},
+		async steer() {
+			calls.push("steer");
+		},
+		async followUp() {
+			calls.push("followUp");
+		},
+	});
+	openWatch(watches);
+	assert.deepEqual(await deliver(sent, watches, 2, "op-steer", "steer"), { action: "steer", refusal: undefined });
+	assert.deepEqual(await deliver(sent, watches, 3, "op-follow", "followUp"), {
+		action: "followUp",
+		refusal: undefined,
+	});
+	assert.deepEqual(calls, ["steer", "followUp"]);
 });
 
 test("a retried delivery op is admitted at most once (#3996)", async () => {
@@ -401,6 +443,14 @@ function queuingStage(streaming: boolean) {
 			publish();
 			return options?.deliverAs ?? "followUp";
 		},
+		async steer(text) {
+			queues.steering.push(text);
+			publish();
+		},
+		async followUp(text) {
+			queues.followUp.push(text);
+			publish();
+		},
 		agentSession: {
 			sessionManager: {
 				getEntries: () => entries,
@@ -477,7 +527,7 @@ test("an answer reaches only the prompt it names, on the attempt the worker hold
 		() => held,
 		(message) => sent.push({ ...message, id: 0 } as Sent),
 		() => "running",
-		() => ({ store, broker }),
+		{ prompts: () => ({ store, broker }) },
 	);
 	store.recordRunStart({
 		id: "child",
@@ -535,3 +585,84 @@ test("an answer reaches only the prompt it names, on the attempt the worker hold
 	});
 	assert.deepEqual(await question, ["yes"]);
 });
+test("a replacement whose replayed session already holds an op reports it and admits it at most once (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 2 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => "running",
+		{
+			// The committed session of the replaced attempt, before this attempt attached its own.
+			entries: async () => [
+				{ type: "custom", customType: "atomic-pooled-delivery-op", data: { op: "op-before-kill" } } as never,
+			],
+		},
+	);
+	const stage = deliverableStage(true);
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		sessionId: "replayed-session",
+	});
+	watches.serve({
+		kind: "stage-command",
+		commandId: 1,
+		attempt: { workId: "work", generation: 2 },
+		op: "watch",
+		watch: "watch-1" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	await untilSent(sent, "stage-command-result");
+	const opened = sent[0];
+	assert.ok(opened?.kind === "stage-command-result");
+	assert.deepEqual(opened.snapshot?.deliveredOps, ["op-before-kill"]);
+	const again = await deliver(sent, watches, 2, "op-before-kill", "steer", 2);
+	assert.deepEqual(again, { action: "handled", refusal: undefined }, "the op is not admitted a second time");
+	assert.deepEqual(stage.admitted, []);
+});
+
+test.each([
+	["steer", "steer", "steer"],
+	["followUp", "followUp", "followUp"],
+	["auto", "followUp", "followUp"],
+] as const)(
+	"a %s delivery to a replacement that is busy but not reported streaming is queued in its mode, never prompted (#3996)",
+	async (intent, expectedCall, expectedAction) => {
+		const { registry, sent, watches } = airlock();
+		const stage = streamingStage("agent");
+		const calls: string[] = [];
+		registry.register({
+			...stage.handle,
+			get status() {
+				return stage.handle.status;
+			},
+			// The replayed turn runs, but the stage handle does not report it yet.
+			isStreaming: false,
+			async sendUserMessage() {
+				calls.push("sendUserMessage");
+				throw new Error("Agent is already processing a prompt. Use steer() or followUp() to queue messages.");
+			},
+			async prompt() {
+				calls.push("prompt");
+				throw new Error("Agent is already processing a prompt.");
+			},
+			async steer() {
+				calls.push("steer");
+			},
+			async followUp() {
+				calls.push("followUp");
+			},
+		});
+		openWatch(watches);
+		assert.deepEqual(await deliver(sent, watches, 2, `op-${intent}`, intent), {
+			action: expectedAction,
+			refusal: undefined,
+		});
+		assert.deepEqual(calls, ["sendUserMessage", expectedCall]);
+	},
+);

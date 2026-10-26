@@ -52,6 +52,8 @@ export interface StagePlacement {
 	readonly reconnecting?: boolean;
 	/** Messages redelivered to the current attempt after the last reconnect. */
 	readonly redelivered?: number;
+	/** Messages that never reached the stage before it ended. */
+	readonly undelivered?: number;
 }
 
 /**

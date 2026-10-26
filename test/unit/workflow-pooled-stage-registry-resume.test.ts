@@ -10,6 +10,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { RegisteredPooledStageHandle } from "../../packages/workflows/src/workers/pooled-stage-registry.js";
+import { registerPooledStageSource } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
 import { testRunId } from "../helpers/run-id.js";
 
 test("resuming a paused pooled stage through its registered handle forwards the resume message (#3996)", async () => {
@@ -74,4 +75,65 @@ test("resuming a paused pooled stage through its registered handle forwards the 
 	});
 	assert.equal(result.ok, true, JSON.stringify(result));
 	assert.deepEqual(resumed, ["carry on with the tests"]);
+});
+
+test("resuming the whole run also resumes a stage on a local worker that was paused on its own (#3996)", async () => {
+	const store = createStore();
+	const runId = testRunId("pooled-whole-run-resume");
+	store.recordRunStart({
+		id: runId,
+		name: "pooled-child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		startedAt: 1,
+		stages: [
+			{
+				id: "agent",
+				name: "agent",
+				status: "paused" as const,
+				parentIds: [],
+				toolEvents: [],
+				sessionId: "session",
+				workerExecution: { worker: "worker-1", generation: 1, renewedAt: 1, expiresAt: 2 },
+			},
+		],
+	});
+	const resumed: string[] = [];
+	let status: StageControlHandle["status"] = "paused";
+	const pooled: StageControlHandle = {
+		runId,
+		stageId: "agent",
+		stageName: "agent",
+		get status() {
+			return status;
+		},
+		sessionId: "session",
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {},
+		async resume() {
+			resumed.push("agent");
+			status = "running";
+			return undefined;
+		},
+		subscribe: () => () => {},
+	};
+	const unregister = registerPooledStageSource(store, {
+		async acquire(_runId, stageId) {
+			return stageId === "agent" ? { handle: pooled, release() {} } : undefined;
+		},
+	});
+	try {
+		const result = await resumeRun(runId, { store, stageControlRegistry: createStageControlRegistry() });
+		assert.equal(result.ok, true, JSON.stringify(result));
+		assert.deepEqual(resumed, ["agent"]);
+	} finally {
+		unregister();
+	}
 });

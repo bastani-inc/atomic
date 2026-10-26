@@ -32,3 +32,11 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOAD_GATE_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"the root main thread stays responsive under 150 busy local workers with the attach pane showing the graph and a pooled stage's chat (#3996)",
+	async () => {
+		await runPoolLoadGate(1, { pane: true });
+	},
+	LOAD_GATE_TIMEOUT_MS,
+);

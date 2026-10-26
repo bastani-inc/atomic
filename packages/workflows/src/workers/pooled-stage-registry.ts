@@ -142,7 +142,8 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 
 	private open(): Promise<PooledStageLease | undefined> {
 		if (this.lease === undefined) {
-			const opening = this.acquire(this.runId, this.stage.id);
+			// A view that cannot open reads as no view; nothing here may reject unhandled.
+			const opening = this.acquire(this.runId, this.stage.id).catch(() => undefined);
 			this.lease = opening;
 			void opening.then((lease) => {
 				if (this.lease !== opening) lease?.release();

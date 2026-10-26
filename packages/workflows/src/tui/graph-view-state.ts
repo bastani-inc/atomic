@@ -82,6 +82,9 @@ export abstract class GraphViewState {
 	protected initialFocusedRunId?: string;
 	protected piTui?: GraphViewOpts["piTui"];
 	protected requestRender?: () => void;
+	/** A publication arrived since the last layout (overlay mode coalesces them). */
+	protected layoutStale = false;
+	private staleLayoutTimer?: NodeJS.Immediate;
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
 	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
@@ -140,8 +143,20 @@ export abstract class GraphViewState {
 		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
 
 		this._unsubscribe = subscribeStoreInvalidation(this.store, () => {
+			// The overlay lays out the first publication of a task at once and coalesces the rest
+			// of a burst (a fan-out starts hundreds of stages in one task) into one more layout,
+			// built before the next frame or keypress needs it (#3996).
+			if (this.mode === "overlay" && this.staleLayoutTimer !== undefined) {
+				this.layoutStale = true;
+				return;
+			}
 			this.currentSnapshot = readGraphStoreSnapshot(this.store);
 			this._rebuildLayout();
+			if (this.mode === "overlay")
+				this.staleLayoutTimer = setImmediate(() => {
+					this.staleLayoutTimer = undefined;
+					if (this._refreshStaleLayout()) this.requestRender?.();
+				});
 		});
 		this.currentSnapshot = readGraphStoreSnapshot(this.store);
 		this._rebuildLayout();
@@ -167,6 +182,15 @@ export abstract class GraphViewState {
 			}, ANIMATION_TICK_MS);
 			(this._intervalId as { unref?: () => void }).unref?.();
 		}
+	}
+
+	/** Brings a coalesced layout up to date; true when it was stale. */
+	protected _refreshStaleLayout(): boolean {
+		if (!this.layoutStale) return false;
+		this.layoutStale = false;
+		this.currentSnapshot = readGraphStoreSnapshot(this.store);
+		this._rebuildLayout();
+		return true;
 	}
 
 	protected _needsAnimationTick(): boolean {
@@ -532,6 +556,8 @@ export abstract class GraphViewState {
 	}
 
 	dispose(): void {
+		if (this.staleLayoutTimer !== undefined) clearImmediate(this.staleLayoutTimer);
+		this.staleLayoutTimer = undefined;
 		if (this._intervalId != null) {
 			clearInterval(this._intervalId);
 			this._intervalId = null;

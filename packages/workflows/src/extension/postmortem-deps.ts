@@ -71,9 +71,51 @@ export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
 ): (runId: string, stageId: string) => Promise<EnsurePostMortemStageHandleResult | undefined> {
 	return async (runId, stageId) => {
-		const run = readGraphStoreSnapshot(deps.store ?? store).runs.find((candidate) => candidate.id === runId);
-		const stage = run?.stages.find((candidate) => candidate.id === stageId);
-		if (stage === undefined) return undefined;
+		const snapshot = readGraphStoreSnapshot(deps.store ?? store);
+		const run = snapshot.runs.find((candidate) => candidate.id === runId);
+		const found = run?.stages.find((candidate) => candidate.id === stageId);
+		if (found === undefined) return undefined;
+		// A stage on a local worker whose run ended without settling it (its pool gave up on the
+		// child) failed with its run; its retained session reopens like any failed pooled stage (#3996).
+		const root =
+			run?.rootRunId === undefined ? undefined : snapshot.runs.find((candidate) => candidate.id === run.rootRunId);
+		const pooledEnded =
+			found.workerExecution !== undefined &&
+			(run?.endedAt !== undefined || root?.endedAt !== undefined) &&
+			found.status !== "completed" &&
+			found.status !== "failed" &&
+			found.status !== "skipped";
+		// A fenced attempt's stage loses its live session id in the store; its last session is still
+		// recorded on the stage's session checkpoints in the journal.
+		const sessionId =
+			found.sessionId ??
+			(found.workerExecution === undefined ? undefined : pooledStageSessionId(deps.store ?? store, runId, stageId));
+		const stage = {
+			...found,
+			...(pooledEnded ? { status: "failed" as const } : {}),
+			...(sessionId === undefined ? {} : { sessionId }),
+		};
 		return ensurePostMortemStageHandle(runId, stage, postMortemDepsForRun(runId, deps));
 	};
+}
+
+/** The last session a stage on a local worker committed, from its session checkpoints. */
+function pooledStageSessionId(runStore: Store, runId: string, stageId: string): string | undefined {
+	try {
+		const backend = requireStoreDurableBackend(runStore, runId);
+		const run = readGraphStoreSnapshot(runStore).runs.find((candidate) => candidate.id === runId);
+		const root = run?.rootRunId ?? runId;
+		let sessionId: string | undefined;
+		for (const checkpoint of backend.listCheckpoints(root))
+			if (
+				checkpoint.kind === "stage" &&
+				checkpoint.sessionId !== undefined &&
+				checkpoint.topology?.stageId === stageId &&
+				checkpoint.topology.run?.runId === runId
+			)
+				sessionId = checkpoint.sessionId;
+		return sessionId;
+	} catch {
+		return undefined;
+	}
 }

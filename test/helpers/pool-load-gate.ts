@@ -24,12 +24,16 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { initTheme } from "@bastani/atomic";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import {
@@ -83,6 +87,9 @@ const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const WORKER_STARTUP_TIMEOUT_MS = 120_000;
 const ACTIVATION_TIMEOUT_MS = 120_000;
 
+/** The mounted attach pane renders a frame this often, as the TUI does while it animates. */
+const PANE_FRAME_MS = 100;
+const PANE_WIDTH = 200;
 /** A watched stage's stream: a batch every STAGE_EVENT_BATCH_MS, as a real worker's stage watch sends. */
 const STAGE_EVENT_BATCH_MS = 50;
 const STAGE_EVENTS_PER_BATCH = 8;
@@ -202,7 +209,10 @@ async function startIsolatedBroker(directory: string): Promise<IntercomBrokerFix
 }
 
 /** Runs the gate; `watches` is the number of pooled stages the root watches during traffic. */
-export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
+export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?: boolean } = {}): Promise<void> {
+	// With `pane`, the interactive attach pane stays mounted for the whole fan-out, rendering
+	// the graph at the TUI's frame rate, and the watched stage is opened in its chat (#3996).
+	if (options.pane === true) initTheme("dark", false);
 	const directory = makeTempDirectory("pool-load-gate-");
 	const broker = await startIsolatedBroker(directory);
 	const path = join(directory, "journal.sqlite");
@@ -278,15 +288,34 @@ export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
 		);
 	};
 	const store = createStore();
+	const rootRunId = testRunId(`pool-load-gate-root-${watches}${options.pane === true ? "-pane" : ""}`);
+	const pane =
+		options.pane === true
+			? new WorkflowAttachPane({
+					store,
+					graphTheme: deriveGraphTheme({}),
+					runId: rootRunId,
+					stageControlRegistry: createStageControlRegistry(),
+					onClose: () => {},
+				})
+			: undefined;
+	let frames = 0;
+	let slowestFrameMs = 0;
+	const frameTimer =
+		pane === undefined
+			? undefined
+			: setInterval(() => {
+					const began = performance.now();
+					pane.render(PANE_WIDTH);
+					const took = performance.now() - began;
+					if (took > slowestFrameMs) slowestFrameMs = took;
+					frames++;
+				}, PANE_FRAME_MS);
 	let watch: { readonly lease: PooledStageLease; events: number } | undefined;
 	const startedAt = performance.now();
 	const stopStartupLag = measureLag();
 	let settled = false;
-	const execution = run(
-		parent,
-		{},
-		{ runId: testRunId(`pool-load-gate-root-${watches}`), cwd: directory, store, durableBackend: backend },
-	)
+	const execution = run(parent, {}, { runId: rootRunId, cwd: directory, store, durableBackend: backend })
 		.then(
 			(result) => ({ status: result.status, error: result.error }),
 			(error: Error) => ({ status: "rejected", error: error.message }),
@@ -326,6 +355,11 @@ export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
 				)
 				.at(0);
 			assert.ok(target !== undefined, "no pooled stage to watch");
+			if (pane !== undefined) {
+				// The stage chat opens the watch, as Enter on the graph node does.
+				pane.retarget(rootRunId, target.stageId, target.runId);
+				while (!pane._hasChatView) await sleep(25);
+			}
 			const lease = await acquirePooledStage(store, target.runId, target.stageId);
 			assert.ok(lease !== undefined, "the pooled stage did not open a live view");
 			const opened = { lease, events: 0 };
@@ -359,6 +393,10 @@ export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
 		const report = {
 			workers: WORKERS,
 			watches,
+			pane:
+				options.pane === true
+					? { frames, widthColumns: PANE_WIDTH, slowestFrameMs: Math.round(slowestFrameMs) }
+					: undefined,
 			watchedEventsReceived: watch?.events ?? 0,
 			stubsStreamingStageEvents: stats.filter((entry) => entry.stageEvents > 0).length,
 			stageEventsSent: total("stageEvents"),
@@ -411,6 +449,8 @@ export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
 		);
 		if (watches === 1) assert.ok((watch?.events ?? 0) > 0, "the watched stage's events never reached the root");
 	} finally {
+		clearInterval(frameTimer);
+		pane?.dispose();
 		writeTextSync(phaseFile, "finish");
 		await pool.close();
 		await backend.close();

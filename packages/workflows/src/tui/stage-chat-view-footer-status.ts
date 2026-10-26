@@ -67,6 +67,9 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 		onLocalWorker ? "on local worker" : "",
 		placement?.reconnecting === true ? "RECONNECTING" : "",
 		redelivered > 0 ? `redelivered ${redelivered} message${redelivered === 1 ? "" : "s"}` : "",
+		(placement?.undelivered ?? 0) > 0
+			? `${placement!.undelivered} message${placement!.undelivered === 1 ? "" : "s"} not delivered`
+			: "",
 	]
 		.filter(Boolean)
 		.join(" · ");
