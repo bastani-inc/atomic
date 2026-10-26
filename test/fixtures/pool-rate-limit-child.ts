@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import * as atomic from "@bastani/atomic";
 import { AuthStorage, ModelRuntime, providerCooldownMs, providerUnavailableMs, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
@@ -45,16 +46,22 @@ export async function limitedStageOptions(cwd: string, baseUrl: string, model: s
 }
 
 /**
- * Role `first` meets the provider's limits: an exhausted quota on one model, then a 429 on another.
- * Role `second` waits until both limits reach its own process, then asks the quota model with a fallback,
- * the spare model, and the rate-limited model, in that order. Role `early` reports the cooldown of
- * {@link EARLY_PROVIDER} it sees as it starts.
+ * Role `first` meets the provider's limits: a 429 on one model, then an exhausted quota on another.
+ * Role `second` waits until the provider has sent both limits and the quota mark reaches its own
+ * process, then asks the quota model with a fallback, the spare model, and the rate-limited model, in
+ * that order. Role `early` reports the cooldown of {@link EARLY_PROVIDER} it sees as it starts.
  */
 export const child = workflow({
 	name: "pool-rate-limit-child",
 	description: "Provider limits shared across a local worker pool",
 	inputs: { role: Type.String(), baseUrl: Type.String() },
-	outputs: { sawLimits: Type.Boolean(), earlyCooldownMs: Type.Number(), replies: Type.Array(Type.String()) },
+	outputs: {
+		sawLimits: Type.Boolean(),
+		/** Wall-clock end of the rate-limited model's cooldown the first worker recorded from the 429. */
+		limitedUntil: Type.Number(),
+		earlyCooldownMs: Type.Number(),
+		replies: Type.Array(Type.String()),
+	},
 	async run(ctx) {
 		const cwd = ctx.cwd ?? process.cwd();
 		const ask = async (name: string, model: string, fallbacks: readonly string[] = []) => {
@@ -67,27 +74,45 @@ export const child = workflow({
 		};
 		if (ctx.inputs.role === "early") {
 			const earlyCooldownMs = await ctx.tool("early-cooldown", {}, async () => providerCooldownMs(EARLY_PROVIDER));
-			return { sawLimits: false, earlyCooldownMs, replies: [] };
+			return { sawLimits: false, limitedUntil: 0, earlyCooldownMs, replies: [] };
 		}
 		if (ctx.inputs.role === "first") {
-			const replies = [await ask("quota", QUOTA_MODEL), await ask("limited", LIMITED_MODEL)];
-			return { sawLimits: true, earlyCooldownMs: 0, replies };
+			let limitedUntil = 0;
+			// Looked up by name: a build without limit observers then fails on the pool's behavior, not here.
+			const stop =
+				"observeProviderRateLimits" in atomic
+					? atomic.observeProviderRateLimits((limit) => {
+							if (limit.model === LIMITED_MODEL && limit.kind === "cooldown") limitedUntil = limit.untilEpochMs;
+						})
+					: () => {};
+			try {
+				// The 429 first: the pool sends each scope's first limit at once over ordered channels, so a worker
+				// that holds the later quota mark has already applied this cooldown, unless it had ended.
+				const replies = [await ask("limited", LIMITED_MODEL), await ask("quota", QUOTA_MODEL)];
+				return { sawLimits: true, limitedUntil, earlyCooldownMs: 0, replies };
+			} finally {
+				stop();
+			}
 		}
+		// Wait, however long the first worker's stages take, until the provider has sent both limits.
+		for (;;) {
+			const status = (await (await fetch(`${ctx.inputs.baseUrl}/limits-sent`)).json()) as { sent: boolean };
+			if (status.sent) break;
+			await delay(25);
+		}
+		// From here only the pool's message hop remains; the bound only keeps an unfixed pool from hanging. The
+		// quota mark lasts an hour, so however slow that hop is, the mark is still running when it arrives.
 		let sawLimits = false;
-		for (const deadline = Date.now() + 20_000; Date.now() < deadline; await delay(10)) {
-			if (
-				providerCooldownMs(LIMITED_PROVIDER, LIMITED_MODEL) > 0 &&
-				providerUnavailableMs(LIMITED_PROVIDER, QUOTA_MODEL) > 0
-			) {
+		for (const deadline = Date.now() + 30_000; Date.now() < deadline; await delay(10))
+			if (providerUnavailableMs(LIMITED_PROVIDER, QUOTA_MODEL) > 0) {
 				sawLimits = true;
 				break;
 			}
-		}
 		const replies = [
 			await ask("walk", QUOTA_MODEL, [SPARE_MODEL]),
 			await ask("spare", SPARE_MODEL),
 			await ask("limited", LIMITED_MODEL),
 		];
-		return { sawLimits, earlyCooldownMs: 0, replies };
+		return { sawLimits, limitedUntil: 0, earlyCooldownMs: 0, replies };
 	},
 });

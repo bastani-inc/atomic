@@ -29,7 +29,7 @@ import {
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
-/** Long enough that the second worker's other requests land inside it, short enough to wait out. */
+/** The 429's cooldown. Only ordering depends on it, never how fast the machine is; short enough to wait out. */
 const RETRY_AFTER_SECONDS = 6;
 
 // Keep the real coordinator, fork and IPC, but run the shipped worker rather than
@@ -51,6 +51,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 interface ProviderRequest {
+	/** Order the fake provider received the request in. */
+	readonly sequence: number;
 	readonly label: string;
 	readonly model: string;
 	readonly at: number;
@@ -64,6 +66,13 @@ function fakeProvider() {
 	const chunk = (model: string, body: object) =>
 		`data: ${JSON.stringify({ id: "chatcmpl_test", object: "chat.completion.chunk", created: 1, model, ...body })}\n\n`;
 	const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+		if (request.method === "GET" && request.url?.endsWith("/limits-sent")) {
+			// The second worker's signal that both limits are out, so it never races the first worker's stages.
+			const sent = requests.some((entry) => entry.status === 429) && requests.some((entry) => entry.status === 402);
+			response.writeHead(200, { "content-type": "application/json" });
+			response.end(JSON.stringify({ sent }));
+			return;
+		}
 		let raw = "";
 		request.setEncoding("utf8");
 		request.on("data", (data: string) => {
@@ -74,7 +83,7 @@ function fakeProvider() {
 			const label = /label:(\w+)/.exec(raw)?.[1] ?? "unknown";
 			const at = Date.now();
 			const respond = (status: number, headers: Record<string, string>, text: string) => {
-				requests.push({ label, model: body.model, at, status });
+				requests.push({ sequence: requests.length, label, model: body.model, at, status });
 				response.writeHead(status, headers);
 				response.end(text);
 			};
@@ -168,13 +177,16 @@ async function withPool(
 test(
 	"a 429 or exhausted quota one local worker meets holds back the other workers and the root (#4023)",
 	async () => {
+		let cooldownEnd = 0;
 		await withPool("shared-limits-root", 2, (child) => async (ctx) => {
 			const [first, second] = await Promise.all(
 				["first", "second"].map((role) => ctx.workflow(child, { inputs: { role, baseUrl } })),
 			);
 			assert.equal(first!.status, "completed", JSON.stringify(first));
 			assert.equal(second!.status, "completed", JSON.stringify(second));
-			assert.equal(second!.outputs.sawLimits, true, "the second worker received the first worker's limits");
+			assert.equal(second!.outputs.sawLimits, true, "the second worker received the first worker's quota mark");
+			// The cooldown end the first worker recorded from the 429.
+			cooldownEnd = Number(first!.outputs.limitedUntil);
 			// The root's own fallback walk skips the model a worker found exhausted.
 			assert.ok(providerUnavailableMs(LIMITED_PROVIDER, QUOTA_MODEL) > 0);
 			const rootOptions = await limitedStageOptions(ctx.cwd ?? process.cwd(), baseUrl, QUOTA_MODEL, [SPARE_MODEL]);
@@ -184,21 +196,23 @@ test(
 		const limited = provider.requests.find((request) => request.status === 429);
 		assert.ok(limited, JSON.stringify(provider.requests));
 		assert.equal(limited.label, "first");
-		const cooldownEnd = limited.at + RETRY_AFTER_SECONDS * 1000;
 		const of = (label: string, model: string) =>
 			provider.requests.filter((request) => request.label === label && request.model === model);
 		// Exhausted quota: the second worker's walk and the root's walk go straight to the fallback.
 		assert.deepEqual(of("second", QUOTA_MODEL), []);
 		assert.deepEqual(of("root", QUOTA_MODEL), []);
 		assert.equal(of("root", SPARE_MODEL).length, 1);
-		// The 429 named its model: the spare model on the same provider answered the second worker during it.
-		const spare = of("second", SPARE_MODEL);
-		assert.equal(spare.length, 2, JSON.stringify(provider.requests));
-		assert.ok(spare.every((request) => request.at < cooldownEnd));
-		// The rate-limited model saw nothing from the second worker until the first worker's cooldown ended.
+		// That end came from the 429's Retry-After, counted from after the provider sent it.
+		assert.ok(cooldownEnd >= limited.at + RETRY_AFTER_SECONDS * 1000, String(cooldownEnd - limited.at));
+		// The 429 named its model: the spare model on the same provider answered the second worker while its
+		// request to the rate-limited model was held back.
 		const held = of("second", LIMITED_MODEL);
 		assert.equal(held.length, 1, JSON.stringify(provider.requests));
-		assert.ok(held[0]!.at >= cooldownEnd, `${held[0]!.at - limited.at} ms after the 429`);
+		const spare = of("second", SPARE_MODEL);
+		assert.equal(spare.length, 2, JSON.stringify(provider.requests));
+		assert.ok(spare.every((request) => request.sequence < held[0]!.sequence));
+		// The rate-limited model saw nothing from the second worker until that cooldown ended.
+		assert.ok(held[0]!.at >= cooldownEnd, `${held[0]!.at - cooldownEnd} ms after the cooldown's end`);
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
