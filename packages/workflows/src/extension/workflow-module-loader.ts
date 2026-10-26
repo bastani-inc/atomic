@@ -79,14 +79,18 @@ export type WorkflowHostModules = Record<"@bastani/atomic" | "@bastani/pi-ai" | 
 
 export type WorkflowHostModuleProvider = () => Promise<WorkflowHostModules>;
 
-const workflowModuleLoader = createJiti(import.meta.url, {
-	moduleCache: false,
-	// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
-	// resolution instead of handing some imports back to native import().
-	tryNative: false,
-	// Resolve the current SDK once while workflow files are evaluated fresh.
-	virtualModules: WORKFLOWS_VIRTUAL_MODULES,
-});
+function createWorkflowModuleLoader(virtualModules: Record<string, unknown>) {
+	// Build a fresh jiti per load: jiti creates its filesystem cache directory only when an instance is constructed,
+	// so a long-lived instance fails with ENOENT on every load after something (such as a /tmp cleanup) deletes it.
+	return createJiti(import.meta.url, {
+		moduleCache: false,
+		// Keep workflow-file import semantics deterministic: jiti owns .ts/.js/.mjs/.cjs
+		// resolution instead of handing some imports back to native import().
+		tryNative: false,
+		// Resolve the current SDK once while workflow files are evaluated fresh.
+		virtualModules,
+	});
+}
 
 function materializeModuleObject(mod: object): Record<string, unknown> {
 	const materialized: Record<string, unknown> = {};
@@ -155,13 +159,9 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
 }
 
 export function loadWorkflowModule(filePath: string, hostModules?: WorkflowHostModules): Record<string, unknown> {
-	const loader = hostModules
-		? createJiti(import.meta.url, {
-				moduleCache: false,
-				tryNative: false,
-				virtualModules: { ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules },
-			})
-		: workflowModuleLoader;
+	const loader = createWorkflowModuleLoader(
+		hostModules ? { ...WORKFLOWS_VIRTUAL_MODULES, ...hostModules } : WORKFLOWS_VIRTUAL_MODULES,
+	);
 	return normalizeWorkflowModule(loader(filePath));
 }
 

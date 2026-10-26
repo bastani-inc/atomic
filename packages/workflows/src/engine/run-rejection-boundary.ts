@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { inspect } from "node:util";
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import { normalizeStackPath, parsePromptStackFrame } from "../runs/shared/prompt-callsite.js";
 import type { StageContext, WorkflowUIContext } from "../shared/types.js";
 import { isWorkflowRuntimeModule } from "../shared/workflow-source.js";
@@ -294,8 +295,17 @@ function onUnhandledRejection(reason: unknown, promise?: Promise<unknown>): void
 		return;
 	}
 	const error = isObject(reason) ? reason : unhandledRejectionError(reason);
+	const staleExtensionContext = isStaleExtensionContextError(error);
 	for (const [scope, effect] of owners) {
 		if (effect !== "fail-run" || !scope.live) continue;
+		if (staleExtensionContext) {
+			// #3981: a session replaced by model fallback is disposed while the run continues, and work still
+			// holding its extension API rejects with this error. It is never the run's own failure: failing the
+			// run here hid the stage's real error (a rate limit). Report it with its stack so the call site
+			// that captured the retired context can be found, and let the run settle on its own outcome.
+			console.error(`atomic-workflows: run ${scope.runId} ignored a stale extension-context rejection`, error);
+			continue;
+		}
 		try {
 			scope.fail(error);
 		} catch {}
