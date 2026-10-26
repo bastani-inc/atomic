@@ -736,6 +736,19 @@ function isOpenAiGpt6ModelId(modelId: string): boolean {
 	return isOpenAiGpt6AstraModelId(modelId) || modelId === "gpt-6-sol" || modelId === "gpt-6-luna" || modelId === "gpt-6.1-sol";
 }
 
+/** Strips Bedrock's `openai.` model prefix and optional `us.`/`global.` inference-profile prefix. */
+function getOpenAiBaseModelId(model: Model<Api>): string {
+	return model.api === "bedrock-converse-stream" ? model.id.replace(/^(?:global\.|us\.)?openai\./, "") : model.id;
+}
+
+// Bedrock serves OpenAI's first-party GPT-6 family, so its routes take the same efforts as the direct API.
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-sol.html
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-luna.html
+// https://developers.openai.com/api/docs/models/gpt-6.1-sol
+function isBedrockOpenAiGpt6Model(model: Model<Api>): boolean {
+	return model.api === "bedrock-converse-stream" && isOpenAiGpt6ModelId(getOpenAiBaseModelId(model));
+}
+
 function supportsOpenAiXhigh(modelId: string): boolean {
 	return (
 		modelId.includes("gpt-5.2") ||
@@ -755,7 +768,7 @@ function supportsOpenAiMax(model: Model<Api>): boolean {
 		model.api === "openai-completions";
 	return (
 		((model.id.includes("gpt-5.6") || isOpenAiGpt6ModelId(model.id)) && supportedApi) ||
-		(isOpenAiGpt6AstraModelId(model.id) && model.api === "bedrock-converse-stream")
+		isBedrockOpenAiGpt6Model(model)
 	);
 }
 
@@ -1318,10 +1331,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 			(model.api === "openai-responses" ||
 				model.api === "azure-openai-responses" ||
 				model.api === "openai-codex-responses")) ||
-		(model.api === "bedrock-converse-stream" && isOpenAiGpt6AstraModelId(model.id))
+		isBedrockOpenAiGpt6Model(model)
 	) {
+		const baseModelId = getOpenAiBaseModelId(model);
 		mergeThinkingLevelMap(model, {
-			off: isOpenAiGpt6AstraModelId(model.id) || model.id === "gpt-6.1-sol" ? null : "none",
+			off: isOpenAiGpt6AstraModelId(baseModelId) || baseModelId === "gpt-6.1-sol" ? null : "none",
 			minimal: null,
 			low: "low",
 			medium: "medium",

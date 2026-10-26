@@ -322,6 +322,21 @@ test("generates only the three Codex-advertised Bedrock IDs with safe zero prici
 	}
 });
 
+test("gives Bedrock GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna routes their published reasoning efforts", () => {
+	const fixture = { name: "fixture", reasoning: true, tool_call: true, limit: { context: 1_050_000, output: 128_000 } };
+	const solIds = ["openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol"];
+	const gpt6Ids = ["openai.gpt-6-sol", "global.openai.gpt-6-sol", "us.openai.gpt-6-luna"];
+	const bedrock = generate([], [], {
+		"amazon-bedrock": { models: Object.fromEntries([...solIds, ...gpt6Ids].map((id) => [id, fixture])) },
+	})["amazon-bedrock"];
+	const efforts = { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+
+	// OpenAI: GPT-6.1 Sol supports low, medium (default), high, xhigh, and max; not none or minimal.
+	for (const id of solIds) assert.deepEqual(bedrock[id]?.thinkingLevelMap, { off: null, ...efforts }, id);
+	// AWS model cards: GPT-6 Sol and GPT-6 Luna accept none, low, medium, high, xhigh, or max.
+	for (const id of gpt6Ids) assert.deepEqual(bedrock[id]?.thinkingLevelMap, { off: "none", ...efforts }, id);
+});
+
 test("keeps models.dev pricing tiers for Amazon Bedrock models", () => {
 	const bedrock = generate([], [], {
 		"amazon-bedrock": {
