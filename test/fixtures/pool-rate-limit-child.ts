@@ -60,7 +60,8 @@ export async function limitedStageOptions(cwd: string, baseUrl: string, model: s
  * that order. Role `early` reports the cooldown of {@link EARLY_PROVIDER} it sees as it starts.
  */
 export const child = workflow({
-	name: "pool-rate-limit-child",
+	// Named and worded without rate-limit vocabulary, so a failure of this fixture fails its root (#4031).
+	name: "pool-shared-limits-child",
 	description: "Provider limits shared across a local worker pool",
 	inputs: { role: Type.String(), baseUrl: Type.String() },
 	outputs: {
@@ -116,11 +117,11 @@ export const child = workflow({
 			if (status.sent429 && status.sent402) break;
 			if (status.firstDone !== undefined) {
 				const missing = [
-					...(status.sent429 ? [] : ["429 rate-limit"]),
-					...(status.sent402 ? [] : ["402 quota-exhausted"]),
+					...(status.sent429 ? [] : ["the limited model's scripted first reply"]),
+					...(status.sent402 ? [] : ["the exhausted model's scripted reply"]),
 				].join(" and ");
 				throw new Error(
-					`The provider never sent the ${missing} response the first worker should have met: ${status.firstDone}`,
+					`The first worker finished before the fake server sent ${missing}, so there is nothing for this worker to share.`,
 				);
 			}
 			await delay(25);

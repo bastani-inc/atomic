@@ -275,9 +275,12 @@ test(
 				assert.equal(first!.status, "completed", JSON.stringify(first));
 				return { second: second!.status };
 			});
-			// The run settles with the second worker's failure, which names the response that never came.
-			assert.notEqual(result.status, "completed", JSON.stringify(result));
-			assert.match(result.error ?? "", /The provider never sent the 429 rate-limit response/);
+			// The run fails with the second worker's error, which names the reply that never came.
+			assert.equal(result.status, "failed", JSON.stringify(result));
+			assert.match(
+				result.error ?? "",
+				/The first worker finished before the fake server sent the limited model's scripted first reply/,
+			);
 			// The second worker sent no model request: it failed while still waiting for the limits.
 			assert.deepEqual(
 				dropping.requests.filter((request) => request.label === "second"),
