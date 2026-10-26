@@ -286,8 +286,13 @@ export class LocalWorkerPool {
 	/** Brokered questions of pooled stages shown in the root, by run and stage. */
 	private readonly routedQuestions = new Map<
 		string,
-		{ readonly promptId: string; readonly controller: AbortController }
+		{ readonly promptId: string; readonly generation: number; readonly controller: AbortController }
 	>();
+	/**
+	 * Gives a held answer to a prompt already routed to its answerer (the stage chat, `workflow
+	 * answer` or an SDK `ui`), by run, stage and prompt id (#4022). Whichever answers first is sent.
+	 */
+	private readonly routedPromptAnswers = new Map<string, (response: WorkflowSerializableValue) => void>();
 	/** An SDK caller's `stageUiBroker`, which shows the brokered questions of pooled stages. */
 	private questionBroker?: StageUiBroker;
 	/** Answers that reached a dead attempt, held for the replacement that asks again (#4022). */
@@ -562,15 +567,25 @@ export class LocalWorkerPool {
 							error: error.message,
 						});
 					// A custom prompt renders a component that exists only in the worker: fail it at once.
+					// An answer held for this prompt that comes back refused later still answers it, once.
+					const heldLater = Promise.withResolvers<WorkflowSerializableValue>();
+					this.routedPromptAnswers.set(key, heldLater.resolve);
 					const answered =
 						held !== undefined
 							? Promise.resolve(held.response)
 							: prompt.kind === "custom"
 								? Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE))
-								: this.promptUi !== undefined
-									? askStagePromptUi(this.promptUi, prompt)
-									: (store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id) ??
-										Promise.reject(new Error("No workflow store answers this prompt.")));
+								: Promise.race([
+										heldLater.promise,
+										this.promptUi !== undefined
+											? askStagePromptUi(this.promptUi, prompt)
+											: (store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id) ??
+												Promise.reject(new Error("No workflow store answers this prompt."))),
+									]);
+					void answered.then(
+						() => this.routedPromptAnswers.delete(key),
+						() => this.routedPromptAnswers.delete(key),
+					);
 					const answer = answered.then(
 						async (response) => {
 							const result = await this.answerPooledStagePrompt(run.id, stage.id, {
@@ -621,8 +636,8 @@ export class LocalWorkerPool {
 		}
 		if (promptId === undefined || this.closed) return;
 		const controller = new AbortController();
-		this.routedQuestions.set(key, { promptId, controller });
-		void this.askQuestion(runId, stageId, promptId, generation, controller.signal)
+		this.routedQuestions.set(key, { promptId, generation, controller });
+		void this.askQuestion(runId, stageId, promptId, generation, controller)
 			.then((asked) => {
 				// The worker had not raised its form yet, or the root's broker failed it there:
 				// the stage's next question is shown again.
@@ -642,8 +657,9 @@ export class LocalWorkerPool {
 		stageId: string,
 		promptId: string,
 		generation: number,
-		signal: AbortSignal,
+		route: AbortController,
 	): Promise<boolean | "failed"> {
+		const signal = route.signal;
 		// The stage UI broker is loaded on first use, so pools whose stages never ask never load it.
 		const [question, { currentStageUiBroker }] = await Promise.all([
 			this.command({ kind: "stage-question", runId, stageId }) as Promise<PooledStageQuestion | undefined>,
@@ -652,7 +668,7 @@ export class LocalWorkerPool {
 		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
 		// The user already answered this question while the attempt that asked it first was dying.
 		const held = this.heldAnswers.takeQuestion(runId, stageId, question, generation);
-		if (held !== undefined) return this.sendQuestionAnswer(runId, stageId, question, generation, held.answer);
+		if (held !== undefined) return this.sendQuestionAnswer(runId, stageId, question, generation, held.answer, route);
 		const broker = this.questionBroker ?? currentStageUiBroker();
 		let answered: { readonly value: QuestionnaireResult } | undefined;
 		let failure: Error | undefined;
@@ -682,7 +698,7 @@ export class LocalWorkerPool {
 		}
 		if (answered === undefined) return true;
 		// The form's result, as the worker's own form would have returned it.
-		return this.sendQuestionAnswer(runId, stageId, question, generation, { raw: answered.value });
+		return this.sendQuestionAnswer(runId, stageId, question, generation, { raw: answered.value }, route);
 	}
 	/**
 	 * Sends a question's answer to the stage's current attempt. An attempt that died before it
@@ -695,6 +711,7 @@ export class LocalWorkerPool {
 		question: PooledStageQuestion,
 		generation: number,
 		answer: StageInputAnswer,
+		route: AbortController,
 	): Promise<boolean> {
 		const result = await this.answerPooledStagePrompt(runId, stageId, {
 			kind: "input",
@@ -709,9 +726,16 @@ export class LocalWorkerPool {
 			identity: questionIdentity(question),
 			answer,
 		});
-		// The routed question ends with this answer; a replacement already asking is routed again.
+		// This route ends with this answer. A later attempt's route already showing the same question
+		// gets the held answer instead of a second one: its form closes, and the question is routed
+		// again to send it. Any other route is not this one's to end.
 		const key = JSON.stringify([runId, stageId]);
-		if (this.routedQuestions.get(key)?.promptId === question.promptId) this.routedQuestions.delete(key);
+		const active = this.routedQuestions.get(key);
+		if (active?.controller === route) this.routedQuestions.delete(key);
+		else if (active !== undefined && active.promptId === question.promptId && active.generation > generation) {
+			this.routedQuestions.delete(key);
+			active.controller.abort(new Error("The question was answered before its worker was replaced."));
+		}
 		this.applyHeldAnswer(runId, stageId, generation);
 		return false;
 	}
@@ -730,11 +754,15 @@ export class LocalWorkerPool {
 		if (generation <= heldGeneration) return;
 		if (stage.inputRequest !== undefined) this.routeQuestion(runId, stageId, stage.inputRequest.id, generation);
 		const prompt = stage.pendingPrompt;
-		// A prompt already routed waits on the store: answering it there sends it on.
-		if (prompt === undefined || this.promptUi !== undefined) return;
-		if (!this.routedPrompts.has(JSON.stringify([runId, stageId, prompt.id]))) return;
+		// A prompt already routed waits for its answerer; the held answer answers it instead, once.
+		const deliver =
+			prompt === undefined ? undefined : this.routedPromptAnswers.get(JSON.stringify([runId, stageId, prompt.id]));
+		if (prompt === undefined || deliver === undefined) return;
 		const held = this.heldAnswers.takePrompt(runId, stageId, prompt, generation);
-		if (held !== undefined) this.store?.resolveStagePendingPrompt(runId, stageId, prompt.id, held.response);
+		if (held === undefined) return;
+		// The stage chat's prompt card closes as answered; an SDK `ui` still asking is not asked to answer.
+		if (this.promptUi === undefined) this.store?.resolveStagePendingPrompt(runId, stageId, prompt.id, held.response);
+		deliver(held.response);
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
@@ -1329,6 +1357,7 @@ export class LocalWorkerPool {
 			controller.abort(new Error("Local worker pool is closed"));
 		this.routedQuestions.clear();
 		this.heldAnswers.clear();
+		this.routedPromptAnswers.clear();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();

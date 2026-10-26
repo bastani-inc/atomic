@@ -20,10 +20,13 @@ import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/index.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { PoolStageHandoff, type PoolStagePublication } from "../../packages/workflows/src/workers/stage-handoff.js";
+import type { PooledPromptAnswer, PromptResult } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { createReaskGate, reaskGateStarts, releaseReaskGate } from "../fixtures/pool-reask-gate.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -67,7 +70,7 @@ function plain(lines: readonly string[]): string {
 }
 
 /** A host-mode root over a one-worker pool, with the real attach pane mounted on nothing yet. */
-async function openRun(prefix: string, childPath: string, exportName: string, gated = false) {
+async function openRun(prefix: string, childPath: string, exportName: string, gated = false, ui?: WorkflowUIAdapter) {
 	const directory = makeTempDirectory(prefix);
 	const path = join(directory, "journal.sqlite");
 	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
@@ -99,7 +102,8 @@ async function openRun(prefix: string, childPath: string, exportName: string, ga
 			store,
 			durableBackend: backend,
 			stageUiBroker: broker,
-			usePromptNodesForUi: true,
+			// An SDK caller's `ui` answers ctx.ui prompts; otherwise the host shows them as prompt nodes.
+			...(ui === undefined ? { usePromptNodesForUi: true } : { ui }),
 		},
 	);
 	let clock = 0;
@@ -467,6 +471,160 @@ test.skipIf(process.platform === "win32")(
 				stop();
 			}
 		} finally {
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an SDK ui answer to the dead attempt's prompt, refused after the replacement asked the same prompt, answers the replacement once",
+	async () => {
+		const asks: { readonly prompt: string; readonly answer: PromiseWithResolvers<string> }[] = [];
+		const asked = new EventTarget();
+		const ui: WorkflowUIAdapter = {
+			input(prompt) {
+				const answer = Promise.withResolvers<string>();
+				asks.push({ prompt, answer });
+				asked.dispatchEvent(new Event("ask"));
+				return answer.promise;
+			},
+			confirm: async () => false,
+			select: async (_message, options) => options[0]!,
+			editor: async (initial) => initial ?? "",
+			custom: async () => {
+				throw new Error("not used");
+			},
+		};
+		const run = await openRun("pool-open-prompt-sdk-race-", promptChildPath, "gatedChild", true, ui);
+		try {
+			await untilValue(() => (asks.length === 1 ? true : undefined), run.execution);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			// Explicit signal: the replacement asked the same prompt, and the root asked the SDK ui again.
+			await untilValue(() => (asks.length === 2 ? true : undefined), run.execution);
+			assert.equal(asks[1]!.prompt, asks[0]!.prompt);
+			// Only now does the first ask get its answer: it reaches the dead attempt and is refused.
+			asks[0]!.answer.resolve("first-answer");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "first-answer" });
+			assert.equal(asks.length, 2, "the user's one answer was enough");
+		} finally {
+			for (const ask of asks) ask.answer.resolve("unused");
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an ask_user_question answer refused after the replacement showed the same form closes that form, answers the replacement once, and the next form opens",
+	async () => {
+		// Holds the refusal of the dead attempt's answer until the replacement shows its form.
+		const refusalGate = Promise.withResolvers<void>();
+		const refusalHeld = Promise.withResolvers<void>();
+		const answer = LocalWorkerPool.prototype.answerPooledStagePrompt;
+		let held = false;
+		const intercepted = vi
+			.spyOn(LocalWorkerPool.prototype, "answerPooledStagePrompt")
+			.mockImplementation(async function (
+				this: LocalWorkerPool,
+				runId: string,
+				stageId: string,
+				reply: PooledPromptAnswer,
+			): Promise<PromptResult> {
+				const result = await answer.call(this, runId, stageId, reply);
+				if (reply.kind !== "input" || result.ok || held) return result;
+				held = true;
+				refusalHeld.resolve();
+				await refusalGate.promise;
+				return result;
+			});
+		// A replacement may publish its stage before it asks again; that ends the dead attempt's route
+		// while its answer is in flight. Publish the replacement's first view of the stage that way.
+		const publish = PoolStageHandoff.prototype.publishBatch;
+		let splitOnce = true;
+		const publications = vi.spyOn(PoolStageHandoff.prototype, "publishBatch").mockImplementation(async function (
+			this: PoolStageHandoff,
+			batch: readonly PoolStagePublication[],
+		) {
+			const list = batch as PoolStagePublication[];
+			const index = list.findIndex(
+				(entry) =>
+					entry.work.generation > 1 &&
+					entry.runs.some((run) => run.stages.some((stage) => stage.inputRequest !== undefined)),
+			);
+			if (splitOnce && index >= 0) {
+				splitOnce = false;
+				const asking = list[index]!;
+				list.splice(index, 0, {
+					work: asking.work,
+					runs: asking.runs.map((run) => ({
+						...run,
+						stages: run.stages.map(({ inputRequest: _asked, ...stage }) => stage),
+					})),
+				});
+			}
+			return publish.call(this, list);
+		});
+		const run = await openRun("pool-open-prompt-question-race-", questionChildPath, "gatedNoReaskChild", true);
+		try {
+			const asked = () => {
+				for (const candidate of run.store.runs())
+					for (const stage of candidate.stages) {
+						const generation = stage.workerExecution?.generation;
+						if (
+							generation !== undefined &&
+							run.broker.peekStageQuestionnaire(candidate.id, stage.id) !== undefined
+						)
+							return { runId: candidate.id, stageId: stage.id, generation };
+					}
+				return undefined;
+			};
+			const first = await untilValue(asked, run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Ship the release from the worker?") ? true : undefined),
+				run.execution,
+			);
+			run.advance();
+			run.pane.handleInput(DOWN);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// Submitted in the same tick as the kill: the answer can only reach the dead attempt.
+			run.pane.handleInput("\r");
+			let shownAgain = 0;
+			const stopCounting = run.broker.onStageRequestRegistered(() => {
+				shownAgain++;
+			});
+			await refusalHeld.promise;
+			// Explicit signal: the replacement's stage started and waits before it asks again.
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			// Explicit signal: the replacement asked again and the root shows its form.
+			await untilValue(() => (shownAgain > 0 ? true : undefined), run.execution);
+			stopCounting();
+			refusalGate.resolve();
+			// The held answer answers the replacement; its form closes and the readiness gate opens next.
+			await untilValue(
+				() =>
+					plain(run.pane.render(120)).includes("Are you ready to move on to the next stage?") ? true : undefined,
+				run.execution,
+			);
+			run.advance();
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.branch), /answered: .*no/s);
+		} finally {
+			refusalGate.resolve();
+			intercepted.mockRestore();
+			publications.mockRestore();
 			await run.close();
 		}
 	},
