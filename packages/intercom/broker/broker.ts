@@ -2200,7 +2200,7 @@ class IntercomBroker {
 		case "saving": {
 			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid saving message");
 			const recipient = this.sessions.get(currentId);
-			if (recipient?.acknowledgesReceipt === true)
+			if (recipient?.acknowledgesReceipt === true && !this.multiNode?.saving(recipient, clientMessage.messageId))
 				this.receipts.extend(clientMessage.messageId, deliveryTargetIdentity(recipient));
 			break;
 		}
