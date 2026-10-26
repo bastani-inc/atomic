@@ -34,6 +34,8 @@ function snapshot(deliveredOps: readonly string[] = []): PooledStageChatSnapshot
 function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly string[]) {
 	const deliveries: PooledStageDelivery[] = [];
 	const unwatched: WatchId[] = [];
+	let hold: Promise<void> | undefined;
+	const started = Promise.withResolvers<void>();
 	const listeners: ((message: PooledStageWatchMessage) => void)[] = [];
 	let generation = 0;
 	const transport: PooledStageTransport = {
@@ -54,6 +56,10 @@ function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly s
 		},
 		async deliver(delivery) {
 			deliveries.push(delivery);
+			if (hold !== undefined) {
+				started.resolve();
+				await hold;
+			}
 			return { ok: true, action: delivery.intent === "followUp" ? "followUp" : "steer" };
 		},
 		async pause() {
@@ -67,6 +73,10 @@ function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly s
 		transport,
 		deliveries,
 		unwatched,
+		deliveryStarted: started.promise,
+		holdDeliveries(until: Promise<void>) {
+			hold = until;
+		},
 		end(reason: "worker_exited" | "stage_finished") {
 			listeners.at(-1)?.({ kind: "ended", reason });
 		},
@@ -88,15 +98,22 @@ test("after its worker dies the handle reconnects and redelivers, once each and 
 	const redelivered: number[] = [];
 	handle.onRebind((count) => redelivered.push(count));
 
-	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	// While the rebind redelivers, the handle still reads as reconnecting.
+	const gate = Promise.withResolvers<void>();
+	fake.holdDeliveries(gate.promise);
+	const reconnecting = reconnectPooledStageHandle(handle, fake.transport);
+	await fake.deliveryStarted;
+	assert.equal(handle.placement.reconnecting, true, "RECONNECTING shows for the whole rebind");
+	gate.resolve();
+	assert.equal(await reconnecting, true);
 	const original = fake.deliveries.slice(0, 3);
 	assert.deepEqual(
 		fake.deliveries.slice(3).map(({ watch, op, text, intent }) => ({ watch, op, text, intent })),
 		[
-			{ watch: "watch-2", op: original[1]!.op, text: "still queued", intent: "auto" },
-			{ watch: "watch-2", op: original[2]!.op, text: "queued follow-up", intent: "auto" },
+			{ watch: "watch-2", op: original[1]!.op, text: "still queued", intent: "steer" },
+			{ watch: "watch-2", op: original[2]!.op, text: "queued follow-up", intent: "followUp" },
 		],
-		"only what the replacement lacks is sent again, under its original op",
+		"only what the replacement lacks is sent again, under its original op and in its original mode",
 	);
 	assert.deepEqual(redelivered, [2]);
 	assert.deepEqual(handle.placement, { kind: "local-worker", workId: "work", generation: 2, redelivered: 2 });

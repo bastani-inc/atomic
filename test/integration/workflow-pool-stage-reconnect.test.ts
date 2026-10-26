@@ -293,6 +293,23 @@ test.skipIf(process.platform === "win32")(
 				observe,
 			);
 			assert.equal(redelivered, 2, "both queued messages were lost with the worker and sent again");
+			// Each came back in its original mode, mid-turn: the steer joins the held turn, the follow-up waits.
+			const modes = () => {
+				const queued = handle.queuedUserMessages();
+				return queued.steering.includes("steer-from-root") && queued.followUp.includes("follow-up-from-root");
+			};
+			const preserved = Promise.withResolvers<void>();
+			const unsubscribe = handle.subscribe(() => {
+				if (modes()) preserved.resolve();
+			});
+			if (modes()) preserved.resolve();
+			await step(
+				"redelivered steer queued as a steer, follow-up as a follow-up",
+				preserved.promise,
+				live.execution,
+				() => JSON.stringify({ queued: handle.queuedUserMessages(), streaming: handle.isStreaming }),
+			);
+			unsubscribe();
 			assert.ok(handle.placement.generation > firstGeneration);
 			assert.equal(handle.placement.reconnecting, undefined);
 
