@@ -42,6 +42,11 @@ import { SupervisorChannelCache } from "../../packages/intercom/broker/superviso
 import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
+import {
+	RECIPIENT_RECEIPT_TIMEOUT_MS,
+	RECIPIENT_SAVING_REPORT_INTERVAL_MS,
+	SEND_RESPONSE_TIMEOUT_MS,
+} from "../../packages/intercom/retry-policy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
@@ -984,3 +989,60 @@ test("an ask to an offline terminal child is refused like an ask to a live one",
 	a!.send(asker, "child", plain);
 	assert.equal((await waitFor(() => outcomeOf(asker, plain.id))).type, "queued", "a plain send is still queued");
 });
+
+/** A write stall on the sender's shared connection: longer than the sender's wait past the receipt wait. */
+const OUTBOX_READ_STALL_MS = 5_000;
+const SLOW_HOLD_TEST_TIMEOUT_MS = 4 * (RECIPIENT_RECEIPT_TIMEOUT_MS + OUTBOX_READ_STALL_MS);
+
+test(
+	"a remote recipient still saving keeps its sender waiting even when the hold check's outbox read is slow (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = message();
+		const sentAt = Date.now();
+		a!.send(sender, "recipient", sent);
+		await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+		// The recipient's save is held while it reports progress, as a pooled stage's journal commit can wait.
+		const saving = setInterval(() => b!.router.saving(recipient, sent.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		b!.router.saving(recipient, sent.id);
+		// From now on the sender's broker reads the outbox behind a write stall on its shared connection.
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			await new Promise((resolveStall) => setTimeout(resolveStall, OUTBOX_READ_STALL_MS));
+			return read(messageId);
+		});
+		try {
+			const held = await waitFor(
+				() =>
+					framesOf(sender).find((frame) => frame.type === "send_held" && frame.messageId === sent.id) === undefined
+						? undefined
+						: Date.now(),
+				SEND_RESPONSE_TIMEOUT_MS + OUTBOX_READ_STALL_MS,
+			);
+			// The sender's client gives up `SEND_RESPONSE_TIMEOUT_MS` after its send unless a hold reaches it first.
+			assert.ok(
+				held - sentAt < SEND_RESPONSE_TIMEOUT_MS,
+				`the sender was told to keep waiting only ${held - sentAt} ms after its send`,
+			);
+			assert.equal(outcomeOf(sender, sent.id), undefined, "no outcome while the recipient is still saving");
+			// The recipient keeps reporting through another receipt wait, then saves.
+			await new Promise((resolveSave) => setTimeout(resolveSave, RECIPIENT_RECEIPT_TIMEOUT_MS));
+			clearInterval(saving);
+			b!.router.received(recipient, sent.id);
+			const outcome = await waitFor(() => outcomeOf(sender, sent.id), CROSS_NODE_WAIT_MS + OUTBOX_READ_STALL_MS);
+			assert.equal(outcome.type, "delivered", JSON.stringify(outcome));
+			assert.equal(
+				framesOf(sender).filter((frame) => frame.type === "delivery_failed" && frame.messageId === sent.id).length,
+				0,
+			);
+			assert.equal(messageFrames(recipient, sent.id).length, 1, "delivered once");
+		} finally {
+			clearInterval(saving);
+			spy.mockRestore();
+		}
+	},
+	SLOW_HOLD_TEST_TIMEOUT_MS,
+);

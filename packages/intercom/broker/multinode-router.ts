@@ -31,6 +31,7 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxReadResult,
 	type OutboxRow,
 	type RecipientPresenceSubject,
 	type RestoringReservationLease,
@@ -70,6 +71,12 @@ export const OFFLINE_SESSION_TARGET = "offline session";
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
+/**
+ * #3983: how long the decision to keep a sender waiting may take before the sender is told to keep waiting while it
+ * finishes. Well inside the sender's own wait past the receipt wait (`SEND_RESPONSE_TIMEOUT_MS` minus
+ * `RECIPIENT_RECEIPT_TIMEOUT_MS`).
+ */
+const HOLD_CHECK_GRACE_MS = 500;
 /** A session that moved here may find its presence lease still held by the broker it just left. */
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
@@ -1300,6 +1307,7 @@ export class MultiNodeRouter {
 	}
 
 	private armWaiter(waiter: Waiter, timeoutMs: number): void {
+		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
 		waiter.timer = setTimeout(() => {
 			if (this.waiters.get(waiter.messageId) !== waiter) return;
 			if (waiter.queued) {
@@ -1317,10 +1325,24 @@ export class MultiNodeRouter {
 	/**
 	 * #3983: the sender's receipt wait ended. A recipient on another broker that reported, within the last receipt
 	 * wait, that it is still saving the message keeps its sender waiting another wait (told `send_held`), up to the
-	 * save cap; otherwise the sender hears that the outcome is uncertain, as before.
+	 * save cap; otherwise the sender hears that the outcome is uncertain, as before. The decision reads the outbox
+	 * row, which can wait behind other writes on the shared connection; a read slower than `HOLD_CHECK_GRACE_MS`
+	 * first tells the sender to keep waiting while it finishes, so a slow read never runs out the sender's own
+	 * deadline, and the sender still hears the outcome once the read answers or the provisional wait ends.
 	 */
 	private async expireWaiter(waiter: Waiter): Promise<void> {
-		const read = await this.state.outbox.read(waiter.messageId);
+		const provisional = setTimeout(() => {
+			if (this.waiters.get(waiter.messageId) !== waiter) return;
+			this.armWaiter(waiter, RECIPIENT_RECEIPT_TIMEOUT_MS);
+			this.holdSender(waiter, RECIPIENT_RECEIPT_TIMEOUT_MS);
+		}, HOLD_CHECK_GRACE_MS);
+		provisional.unref?.();
+		let read: OutboxReadResult;
+		try {
+			read = await this.state.outbox.read(waiter.messageId);
+		} finally {
+			clearTimeout(provisional);
+		}
 		if (this.waiters.get(waiter.messageId) !== waiter) return;
 		if (read.status === "found" && read.row.state === "delivered") {
 			await this.finishDelivered(waiter);
@@ -1331,15 +1353,20 @@ export class MultiNodeRouter {
 		if (savingAge !== undefined && savingAge < RECIPIENT_RECEIPT_TIMEOUT_MS && remaining > 0) {
 			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
 			this.armWaiter(waiter, timeoutMs);
-			this.host.write(waiter.socket, {
-				type: "send_held",
-				messageId: waiter.messageId,
-				...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
-				timeoutMs,
-			});
+			this.holdSender(waiter, timeoutMs);
 			return;
 		}
 		this.expireUncertain(waiter);
+	}
+
+	private holdSender(waiter: Waiter, timeoutMs: number): void {
+		if (this.waiters.get(waiter.messageId) !== waiter) return;
+		this.host.write(waiter.socket, {
+			type: "send_held",
+			messageId: waiter.messageId,
+			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
+			timeoutMs,
+		});
 	}
 
 	private expireUncertain(waiter: Waiter): void {
