@@ -142,11 +142,11 @@ In the table, **CPU** is the p50 / p95 across runs of each run's average CPU. **
 | --- | ---: | --- | ---: | ---: | --- | --- |
 | unit-tests linux-x64 | 706 | 68 % / 83 % | 0.45 | 3.3 GB | 491 s / 1048 s (1320 s) | **8x16** |
 | unit-tests windows-x64 | 704 | 76 % / 100 % | 0.63 | 4.4 GB | 698 s / 1328 s (1320 s) | **8x16** |
-| integration-tests linux-x64 | 704 | 54 % / 64 % | 0.25 | 3.5 GB | 211 s / 521 s (600 s) | **8x16** |
-| integration-tests windows-x64 | 708 | 64 % / 100 % | 0.42 | 4.9 GB | 365 s / 846 s (840 s) | **8x16** |
+| integration-tests linux-x64 | 704 | 54 % / 64 % | 0.25 | 3.5 GB | 211 s / 521 s (1200 s) | **8x16** |
+| integration-tests windows-x64 | 708 | 64 % / 100 % | 0.42 | 4.9 GB | 365 s / 846 s (1200 s) | **8x16** |
 | agent-suite linux-x64 | 702 | 69 % / 74 % | 0.40 | 2.9 GB | 337 s / 695 s (900 s) | **8x16** |
 | agent-suite windows-x64 | 705 | 77 % / 100 % | 0.72 | 3.6 GB | 557 s / 864 s (1200 s) | **8x16** |
-| release-archive linux-x64 | 702 | 43 % / 48 % | 0.24 | 1.4 GB | 89 s / 124 s (240 s) | 4x16 |
+| release-archive linux-x64 | 702 | 43 % / 48 % | 0.24 | 1.4 GB | 89 s / 124 s (420 s) | 4x16 |
 | release-archive windows-x64 | 702 | 49 % / 100 % | 0.25 | 3.5 GB | 166 s / 271 s (420 s) | 4x16 |
 | static-checks | 702 | 51 % / 55 % | 0.30 | 2.7 GB | 101 s / 151 s (300 s) | 4x16 |
 | `test` result gate (per leg) | 711 | 28 % / 33 % | 0.17 | 0.3 GB | 4 s / 5 s (60 s) | 4x16 |
