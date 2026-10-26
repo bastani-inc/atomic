@@ -169,10 +169,13 @@ interface DeclaredTimeout {
  * Explicit per-test budgets by qualified `scope > name`, plus those declared but
  * not statically evaluable. Titles only known at run time (template literals,
  * dynamic `.each` tables) are matched by `patterns` against the reported name.
+ * `unbudgeted` lists exact declarations with no explicit budget: they keep the
+ * suite default and never borrow a pattern's budget.
  */
 export interface DeclaredBudgets {
 	timeouts: Map<string, number>;
 	unresolved: Set<string>;
+	unbudgeted: Set<string>;
 	patterns: { pattern: RegExp; timeoutMs: number | undefined }[];
 }
 
@@ -492,7 +495,7 @@ function platformBranch(expression: Expression): Expression {
  * test, such as a `setTimeout` or a poll helper, are never declarations.
  */
 export function declaredBudgets(source: string, file?: string): DeclaredBudgets {
-	const budgets: DeclaredBudgets = { timeouts: new Map(), unresolved: new Set(), patterns: [] };
+	const budgets: DeclaredBudgets = { timeouts: new Map(), unresolved: new Set(), unbudgeted: new Set(), patterns: [] };
 	const program = parseModule(source, file);
 	if (!program) return budgets;
 	const scope = moduleScope(program, file);
@@ -539,20 +542,33 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 		if (chosen.type === "Identifier" && chosen.name === "undefined") return undefined;
 		return { value: evaluator.evaluate(chosen, scope) };
 	};
+	const callbackNames = new Set<string>();
+	for (const statement of program.body) {
+		if (statement.type === "FunctionDeclaration" && statement.id) callbackNames.add(statement.id.name);
+	}
+	for (const [name, init] of scope.constants) {
+		if (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression") callbackNames.add(name);
+	}
+	const isCallback = (node: Expression): boolean =>
+		node.type === "ArrowFunctionExpression" ||
+		node.type === "FunctionExpression" ||
+		(node.type === "Identifier" && callbackNames.has(node.name));
 	const timeoutOf = (call: CallExpression): DeclaredTimeout | undefined => {
-		const third = unwrapExpression(call.arguments[2]);
-		if (third && third.type !== "ArrowFunctionExpression" && third.type !== "FunctionExpression") {
-			return evaluateTimeout(third);
-		}
+		// `test(name, options, body)`: the options object carries the budget and the
+		// third argument is the body, whether written inline or as a named callback.
 		const options = unwrapExpression(call.arguments[1]);
-		if (options?.type !== "ObjectExpression") return undefined;
-		for (const property of options.properties) {
-			if (property.type !== "ObjectProperty" || property.computed) continue;
-			const key = property.key.type === "Identifier" ? property.key.name : undefined;
-			if (key !== "timeout") continue;
-			return evaluateTimeout(property.value);
+		if (options?.type === "ObjectExpression") {
+			for (const property of options.properties) {
+				if (property.type !== "ObjectProperty" || property.computed) continue;
+				const key = property.key.type === "Identifier" ? property.key.name : undefined;
+				if (key !== "timeout") continue;
+				return evaluateTimeout(property.value);
+			}
+			return undefined;
 		}
-		return undefined;
+		// `test(name, body, timeout)`.
+		const third = unwrapExpression(call.arguments[2]);
+		return third && !isCallback(third) ? evaluateTimeout(third) : undefined;
 	};
 	const titlesOf = (call: CallExpression, found: Declarer): Title[] | undefined => {
 		const parts = titleParts(call.arguments[0]);
@@ -614,7 +630,16 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 			inherited = suiteTimeouts[level];
 		}
 		const keys = titles ? qualified(titles) : undefined;
-		if (inherited && keys) for (const key of keys) record(key, inherited);
+		if (!keys) return;
+		if (inherited) {
+			for (const key of keys) record(key, inherited);
+			return;
+		}
+		for (const key of keys) {
+			if (key.every((part): part is { exact: string } => "exact" in part)) {
+				budgets.unbudgeted.add(key.map((part) => part.exact).join(" > "));
+			}
+		}
 	};
 	for (const statement of program.body) visit(statement, onCall, () => {});
 	return budgets;
@@ -642,12 +667,14 @@ function timeoutIndex(rootDir: string): (file: string, fullName: string) => Expl
 			const path = resolve(rootDir, file);
 			declared = existsSync(path)
 				? declaredBudgets(readFileSync(path, "utf8"), path)
-				: { timeouts: new Map(), unresolved: new Set(), patterns: [] };
+				: { timeouts: new Map(), unresolved: new Set(), unbudgeted: new Set(), patterns: [] };
 			cache.set(file, declared);
 		}
+		// Exact declarations take priority over run-time title patterns.
 		const timeoutMs = declared.timeouts.get(fullName);
 		if (timeoutMs !== undefined) return { kind: "explicit", timeoutMs };
 		if (declared.unresolved.has(fullName)) return { kind: "unresolved" };
+		if (declared.unbudgeted.has(fullName)) return undefined;
 		// A run-time title can match more than one declaration; keep the tightest budget, as for exact names.
 		const matches = declared.patterns.filter((entry) => entry.pattern.test(fullName));
 		const resolved = matches.flatMap((entry) => (entry.timeoutMs === undefined ? [] : [entry.timeoutMs]));

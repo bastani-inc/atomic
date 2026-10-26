@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import {
+	declaredBudgets,
 	declaredTimeouts,
 	evaluateDurations,
 	parseVitestReport,
@@ -629,6 +630,69 @@ test("an explicit timeout the guard cannot evaluate is reported unresolved, not 
 		assert.match(
 			renderDurationTable(scored),
 			/\| n\/a \| 40000\.00 ms \| unresolved \(explicit\) \| unresolved\.test\.ts \| computed \|/,
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// Greptile PRRT_kwDOQHh8ns6wfPjy: with a named callback in the third slot, the
+// options object still carries the budget; the callback is not a timeout.
+test("an options-object timeout is read even when the body is a named callback", () => {
+	const source = [
+		"async function body() {}",
+		"const arrow = async () => {};",
+		'test("named function body", { timeout: 80_000 }, body);',
+		'test("named arrow body", { timeout: 85_000 }, arrow);',
+		'test("numeric budget after a named body", body, 90_000);',
+	].join("\n");
+	assert.deepEqual(
+		new Map(declaredTimeouts(source)),
+		new Map([
+			["named function body", 80_000],
+			["named arrow body", 85_000],
+			["numeric budget after a named body", 90_000],
+		]),
+	);
+	assert.deepEqual([...declaredBudgets(source).unresolved], []);
+});
+
+// Greptile PRRT_kwDOQHh8ns6wfPj5: a dynamic table's title pattern must not lend
+// its budget to a plain test whose exact declaration carries none.
+test("a declared test without a budget never borrows a dynamic table's budget", () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-exact-first-"));
+	try {
+		writeFileSync(
+			join(directory, "mixed.test.ts"),
+			[
+				'test.each(computeRows())("case %s", async () => {',
+				"}, 120_000);",
+				'test("case plain", async () => {',
+				"});",
+			].join("\n"),
+		);
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "mixed.test.ts",
+						tests: [
+							{ title: "case dynamic", status: "passed", duration: 20_000 },
+							{ title: "case plain", status: "passed", duration: 20_000 },
+						],
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		const budgets = new Map(scored.samples.map((sample) => [sample.name, [sample.timeoutMs, sample.explicit]]));
+		assert.deepEqual(budgets.get("case dynamic"), [120_000, true]);
+		assert.deepEqual(budgets.get("case plain"), [30_000, false]);
+		assert.deepEqual(
+			scored.warnings.map((sample) => sample.name),
+			["case plain"],
 		);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
