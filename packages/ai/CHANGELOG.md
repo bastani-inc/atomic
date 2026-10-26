@@ -4,6 +4,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- `OAuthAuth.needsRefresh()` (optional) reports that an unexpired stored credential lacks data only a refresh restores; `Models.refresh()` with network access then refreshes it once for providers without a model source ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
+
+### Fixed
+
+- GitHub Copilot offers only models the account's `/models` response marks usable: a `-fast` model needs the same selectable signal as any other model, a model enabled during login is offered only if the re-read model list marks it usable, and an OAuth login without a stored model list offers no catalog models until `Models.refresh()` re-reads the list ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
+
 ## [0.9.44] - 2026-10-25
 
 ### Breaking Changes

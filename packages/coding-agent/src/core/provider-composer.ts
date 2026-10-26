@@ -159,18 +159,25 @@ export function composeModelProvider(
 					}
 				: undefined,
 		filterModels: base?.filterModels
-			? (models, credential: Credential | undefined) =>
-					base.filterModels!(models, credential).map((model) => {
-						const original = models.find((entry) => entry.id === model.id);
-						if (config?.models?.some((entry) => entry.id === model.id)) return original ?? model;
+			? (models, credential: Credential | undefined) => {
+					// Models the user defines in models.json are an explicit choice: the base provider's
+					// account filter (such as GitHub Copilot's model list) must not hide them.
+					const isConfigured = (model: Model<Api>) =>
+						config?.models?.some((entry) => entry.id === model.id) === true;
+					const filtered = new Map(base.filterModels!(models, credential).map((model) => [model.id, model]));
+					return models.flatMap((original) => {
+						if (isConfigured(original)) return [original];
+						const model = filtered.get(original.id);
+						if (model === undefined) return [];
 						const inheritedContext = model.fastRoute
 							? config?.modelOverrides?.[model.fastRoute.baseModelId]?.contextWindow
 							: undefined;
 						const personalized =
 							inheritedContext === undefined ? model : { ...model, contextWindow: inheritedContext };
 						const override = config?.modelOverrides?.[model.id];
-						return override ? applyModelOverride(personalized, override) : personalized;
-					})
+						return [override ? applyModelOverride(personalized, override) : personalized];
+					});
+				}
 			: undefined,
 		filterAllModels: base?.filterAllModels
 			? (models, credential: Credential | undefined) => base.filterAllModels!(models, credential)

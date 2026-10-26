@@ -176,6 +176,47 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual([pickerModelId]);
 	});
 
+	it("offers neither a non-selectable fast model nor a non-selectable regular model (#3998)", async () => {
+		const provider = githubCopilotProvider();
+		const regularModel = provider.getModels()[0];
+		const hiddenRegularModel = provider.getModels()[1];
+		if (!regularModel || !hiddenRegularModel) throw new Error("Expected GitHub Copilot catalog models");
+		const hiddenFastModelId = `${regularModel.id}-fast`;
+
+		const credentials = await refreshGitHubCopilotModelsForTest([
+			{
+				id: regularModel.id,
+				model_picker_enabled: true,
+				policy: { state: "enabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+			{
+				id: hiddenRegularModel.id,
+				model_picker_enabled: false,
+				policy: { state: "enabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+			{
+				id: hiddenFastModelId,
+				model_picker_enabled: false,
+				policy: { state: "enabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
+		]);
+
+		const hiddenFastModel = {
+			...regularModel,
+			id: hiddenFastModelId,
+			fastRoute: { baseModelId: regularModel.id, upstreamModelId: hiddenFastModelId },
+		};
+		assert.deepEqual(
+			provider
+				.filterModels?.([regularModel, hiddenRegularModel, hiddenFastModel], { ...credentials, type: "oauth" })
+				.map((model) => model.id),
+			[regularModel.id],
+		);
+	});
+
 	it("advertises entitled fast variants and keeps unentitled ones out of the picker", async () => {
 		const credentials = await refreshGitHubCopilotModelsForTest([
 			{
@@ -185,19 +226,19 @@ describe("GitHub Copilot OAuth device flow", () => {
 			},
 			{
 				id: "claude-opus-4.8-fast",
-				model_picker_enabled: false,
+				model_picker_enabled: true,
 				policy: { state: "enabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
 			{
 				id: "claude-opus-4.7-fast",
-				model_picker_enabled: false,
+				model_picker_enabled: true,
 				policy: { state: "disabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
 		]);
 
-		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8"]);
+		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8", "claude-opus-4.8-fast"]);
 		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
 
 		const provider = githubCopilotProvider();
@@ -462,8 +503,86 @@ describe("GitHub Copilot OAuth device flow", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 		await loginPromise;
 
-		expect(catalogRequestCount).toBe(1);
+		// Enabling a policy re-reads the account's model list to confirm what is now usable.
+		expect(catalogRequestCount).toBe(2);
 		expect(policyModelIds).toEqual([unconfiguredModelId]);
+	});
+
+	it("offers a model enabled at login only when the re-read model list marks it usable (#3998)", async () => {
+		vi.useFakeTimers();
+
+		const providerModels = githubCopilotProvider().getModels();
+		const enabledModelId = requireModelId(providerModels, 0);
+		const confirmedModelId = requireModelId(providerModels, 1);
+		const unconfirmedModelId = requireModelId(providerModels, 2);
+		const catalog = (afterPolicyUpdate: boolean) => [
+			{ id: enabledModelId, model_picker_enabled: false, policy: { state: "enabled" } },
+			{
+				id: confirmedModelId,
+				model_picker_enabled: false,
+				policy: { state: afterPolicyUpdate ? "enabled" : "unconfigured" },
+			},
+			// The policy update succeeds, but the account still does not mark this model usable.
+			{ id: unconfirmedModelId, model_picker_enabled: false, policy: { state: "unconfigured" } },
+		];
+		let catalogRequestCount = 0;
+		const policyModelIds: string[] = [];
+		stubGitHubCopilotLoginFetch({
+			models: () => jsonResponse({ data: catalog(catalogRequestCount++ > 0) }),
+			policy: (modelId) => {
+				policyModelIds.push(modelId);
+				return new Response("", { status: 200 });
+			},
+		});
+
+		const loginPromise = loginGitHubCopilotForTest({ onDeviceCode: () => {}, onPrompt: async () => "" });
+		await vi.advanceTimersByTimeAsync(1000);
+		const credentials = await loginPromise;
+
+		expect(policyModelIds).toEqual([confirmedModelId, unconfirmedModelId]);
+		expect(credentials.availableModelIds).toEqual([enabledModelId, confirmedModelId]);
+	});
+
+	it("offers no catalog models for a stored login without a model list until it is re-read (#3998)", async () => {
+		const provider = githubCopilotProvider();
+		const modelId = requireModelId(provider.getModels(), 0);
+		const store = new InMemoryCredentialStore();
+		await store.modify("github-copilot", async () => ({
+			type: "oauth",
+			access: testCopilotAccessToken,
+			refresh: "ghu_refresh_token",
+			expires: Date.now() + 60 * 60_000,
+		}));
+		const models = createModels({ credentials: store });
+		models.setProvider(provider);
+		expect(await models.getAvailable("github-copilot")).toEqual([]);
+
+		let catalogRequestCount = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				const url = getUrl(input);
+				if (url.includes("/copilot_internal/v2/token")) {
+					return jsonResponse({ token: testCopilotAccessToken, expires_at: 9999999999 });
+				}
+				if (url === testCopilotModelsUrl) {
+					catalogRequestCount += 1;
+					return jsonResponse({
+						data: [{ id: modelId, model_picker_enabled: true, capabilities: { supports: { tool_calls: true } } }],
+					});
+				}
+				throw new Error(`Unexpected fetch URL: ${url}`);
+			}),
+		);
+
+		const result = await models.refresh();
+		expect(result.errors.size).toBe(0);
+		expect(catalogRequestCount).toBe(1);
+		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual([modelId]);
+
+		// A stored list is not fetched again.
+		await models.refresh();
+		expect(catalogRequestCount).toBe(1);
 	});
 
 	it("retries a throttled policy update after Retry-After", async () => {

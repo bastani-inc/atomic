@@ -224,6 +224,9 @@ function messageLooksLikeModelUnavailable(message: string): boolean {
 	);
 }
 
+/** GitHub Copilot rejects a model this client integration cannot use with a generic 400 `invalid_request_error`. */
+const MODEL_UNAVAILABLE_FOR_INTEGRATOR_PATTERN = /model_not_available_for_integrator|not available for integrator/i;
+
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
 	switch (status) {
 		case 400:
@@ -337,6 +340,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "model_unavailable":
 		case "model_disabled":
 		case "unknown_model":
+		case "model_not_available_for_integrator":
 			return "model_unavailable";
 		case "provider_error":
 		case "api_error":
@@ -413,6 +417,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (refusalKind !== undefined) return refusalKind;
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
+	if (MODEL_UNAVAILABLE_FOR_INTEGRATOR_PATTERN.test(message)) return "model_unavailable";
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;

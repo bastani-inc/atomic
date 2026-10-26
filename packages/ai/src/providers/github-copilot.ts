@@ -2,6 +2,7 @@ import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
+import type { OAuthCredential } from "../auth/types.ts";
 import { loadGitHubCopilotOAuth } from "../auth/oauth/load.ts";
 import { createProvider, type Provider } from "../models.ts";
 import { GITHUB_COPILOT_MODELS } from "./github-copilot.models.ts";
@@ -12,6 +13,11 @@ function advertisedModelIds(value: unknown): ReadonlySet<string> | undefined {
 	return new Set(value);
 }
 
+/** A login saved before Copilot model lists were stored, or whose list is malformed, must re-read it. */
+function lacksAccountModelList(credential: OAuthCredential): boolean {
+	return advertisedModelIds(credential.availableModelIds) === undefined;
+}
+
 export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai-completions" | "openai-responses"> {
 	return createProvider({
 		id: "github-copilot",
@@ -19,7 +25,12 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 		baseUrl: "https://api.individual.githubcopilot.com",
 		auth: {
 			apiKey: envApiKeyAuth("GitHub Copilot token", ["COPILOT_GITHUB_TOKEN"]),
-			oauth: lazyOAuth({ name: "GitHub Copilot", isSubscription: true, load: loadGitHubCopilotOAuth }),
+			oauth: lazyOAuth({
+				name: "GitHub Copilot",
+				isSubscription: true,
+				needsRefresh: lacksAccountModelList,
+				load: loadGitHubCopilotOAuth,
+			}),
 		},
 		models: Object.values(GITHUB_COPILOT_MODELS),
 		filterModels: (models, credential) => {
@@ -31,7 +42,11 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 				// entitles. Fast-ness comes from the explicit route metadata, never from the `-fast` suffix:
 				// a Copilot-owned model that merely ends in `-fast` is an ordinary picker model.
 				if (model.fastRoute !== undefined) return entitledFastModelIds?.has(model.id) === true;
-				return availableModelIds?.has(model.id) ?? true;
+				// An OAuth login without a stored model list offers nothing until `Models.refresh()` re-reads
+				// it; the catalog includes models this account or client cannot use. A token supplied
+				// without a login carries no list, so it keeps the catalog.
+				if (oauth !== undefined) return availableModelIds?.has(model.id) === true;
+				return true;
 			});
 		},
 		api: {

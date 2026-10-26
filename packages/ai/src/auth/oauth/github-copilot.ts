@@ -118,15 +118,15 @@ function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boole
 		.filter((model) => model.pickerEnabled && model.policyState !== "disabled")
 		.map((model) => model.id);
 	const usePolicyFallback = allowPolicyFallback && pickerModelIds.length === 0;
-	const availableModelIds =
-		pickerModelIds.length > 0 || !allowPolicyFallback
-			? pickerModelIds
-			: accountModels
-					.filter((model) => !model.id.endsWith("-fast") && model.policyState === "enabled")
-					.map((model) => model.id);
-	const fastModelIds = accountModels
-		.filter((model) => model.id.endsWith("-fast") && model.policyState !== "disabled")
-		.map((model) => model.id);
+	// One usability rule for every model, fast or not: the account must mark it selectable, or (on the
+	// Individual endpoint that reports no selectable models at all) explicitly enable it by policy.
+	const usableModelIds = usePolicyFallback
+		? accountModels.filter((model) => model.policyState === "enabled").map((model) => model.id)
+		: pickerModelIds;
+	const availableModelIds = usePolicyFallback
+		? usableModelIds.filter((id) => !id.endsWith("-fast"))
+		: usableModelIds;
+	const fastModelIds = usableModelIds.filter((id) => id.endsWith("-fast"));
 	const policyModelIds = accountModels
 		.filter(
 			(model) =>
@@ -483,28 +483,39 @@ async function loginGitHubCopilot(interaction: ProviderAuthInteraction): Promise
 		enterpriseDomain ?? undefined,
 		interaction.signal,
 	);
-	const models = await fetchGitHubCopilotModels(
+	const loginRetryPolicy = { maxRetries: 2, maxElapsedMs: 5000 };
+	let models = await fetchGitHubCopilotModels(
 		credentials.access,
 		enterpriseDomain ?? undefined,
 		interaction.signal,
-		{
-			maxRetries: 2,
-			maxElapsedMs: 5000,
-		},
+		loginRetryPolicy,
 	);
-	let enabledModelIds: string[] = [];
 	if (models.policyModelIds.length > 0) {
 		interaction.notify({ type: "progress", message: "Enabling models..." });
-		enabledModelIds = await enableGitHubCopilotModels(
+		const enabledModelIds = await enableGitHubCopilotModels(
 			credentials.access,
 			models.policyModelIds,
 			enterpriseDomain ?? undefined,
 			interaction.signal,
 		);
+		// A successful policy update does not prove the model is usable from this client: offer it
+		// only if the re-read model list marks it usable. Keep the first list when the re-read fails.
+		if (enabledModelIds.length > 0) {
+			try {
+				models = await fetchGitHubCopilotModels(
+					credentials.access,
+					enterpriseDomain ?? undefined,
+					interaction.signal,
+					loginRetryPolicy,
+				);
+			} catch (error) {
+				if (interaction.signal.aborted) throw error;
+			}
+		}
 	}
 	return {
 		...credentials,
-		availableModelIds: [...new Set([...models.availableModelIds, ...enabledModelIds])],
+		availableModelIds: models.availableModelIds,
 		fastModelIds: models.fastModelIds,
 	};
 }
