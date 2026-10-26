@@ -3,9 +3,9 @@ import { ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
-import { terminateRpcClientProcess } from "../src/modes/rpc/rpc-client-process.ts";
+import { afterEach, describe, test } from "vitest";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { terminateRpcClientProcess } from "../src/modes/rpc/rpc-client-process.js";
 
 /**
  * How late a terminated child's exit is reported. On Windows both SIGTERM and
@@ -43,7 +43,7 @@ process.stdin.resume();
 
 		await client.start();
 
-		await expect(client.getCommands()).rejects.toThrow(/Agent process exited \(code=43 signal=null\)/);
+		await assert.rejects(client.getCommands(), /Agent process exited \(code=43 signal=null\)/);
 	});
 
 	test("shares concurrent stop teardown and makes repeat stop a no-op", async () => {
@@ -73,6 +73,6 @@ process.stdin.resume();
 
 		await terminateRpcClientProcess(child, false);
 
-		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+		assert.deepStrictEqual(signals, ["SIGTERM", "SIGKILL"]);
 	});
 });
