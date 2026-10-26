@@ -12,6 +12,7 @@ import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/rate\s*limit/i,
 	/too\s*many\s*requests/i,
+	/\bthrottl(?:ing|ed)\b/i,
 	/\b429\b/,
 	/quota/i,
 	/usage[\s_-]*limit/i,
@@ -166,7 +167,11 @@ function statusFrom(value: unknown): number | undefined {
 
 function codeFrom(value: unknown): string | number | undefined {
 	const rawCode = field(value, "code");
-	return typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : undefined;
+	if (typeof rawCode === "string" || typeof rawCode === "number") return rawCode;
+	// Provider failure diagnostics (`bedrock_response_failure`) keep the modeled error code in `details.errorCode`,
+	// because the provider's display message replaces the exception name with a readable prefix.
+	const detailsCode = field(field(value, "details"), "errorCode");
+	return typeof detailsCode === "string" ? detailsCode : undefined;
 }
 
 function stopReasonFrom(value: unknown): string | undefined {
@@ -443,7 +448,11 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 		RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message)) ||
 		messageLooksLikeModelUnavailable(message);
 	if (!hasRetryablePattern) return undefined;
-	if (/rate\s*limit|too\s*many\s*requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message))
+	if (
+		/rate\s*limit|too\s*many\s*requests|\bthrottl(?:ing|ed)\b|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(
+			message,
+		)
+	)
 		return "rate_limit";
 	if (
 		/auth|unauthori[sz]ed|\b40[13]\b|api[_\s-]*key|token[_\s-]*(?:expired|revoked|invalidated|rejected)|forbidden|invalid[_\s-]*key/i.test(

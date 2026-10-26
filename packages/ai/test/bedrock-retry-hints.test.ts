@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it, vi } from "vitest";
 
-const bedrockMock = vi.hoisted(() => ({
-	error: undefined as Error | undefined,
-	ServiceException: undefined as unknown as new (message?: string) => Error,
-}));
+const bedrockMock = vi.hoisted(() => {
+	/** Stands in for the SDK's service exception base class until the mocked module defines the real one. */
+	class PendingServiceException extends Error {}
+	const state: { error: Error | undefined; ServiceException: new (message?: string) => Error } = {
+		error: undefined,
+		ServiceException: PendingServiceException,
+	};
+	return state;
+});
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	class BedrockRuntimeServiceException extends Error {}
