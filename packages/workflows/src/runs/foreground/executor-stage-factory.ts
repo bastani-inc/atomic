@@ -44,6 +44,7 @@ import {
 	type InternalStageContext,
 	type StageAdapters,
 } from "./stage-runner.js";
+import { stageError } from "./stage-runner-session.js";
 import { createStageSessionHeartbeat } from "./stage-session-heartbeat.js";
 
 export function createWorkflowStageFactory(input: {
@@ -339,7 +340,7 @@ export function createWorkflowStageFactory(input: {
 		const throwIfStageMutationBlocked = (): void => {
 			if (state.stageClosedByWorkflowExit) {
 				input.exit.throwIfWorkflowExitSelected();
-				throw new Error(`atomic-workflows: stage "${name}" skipped by workflow exit`);
+				throw stageError(name, "skipped by workflow exit");
 			}
 			input.exit.throwIfWorkflowExitSelected();
 			if (input.signal.aborted) {

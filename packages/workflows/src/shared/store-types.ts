@@ -79,6 +79,25 @@ export interface ToolNodeSnapshot {
 export type WorkflowFailureKind = "auth" | "rate_limit" | "provider" | "cancelled" | "unknown";
 export type WorkflowFailureRecoverability = "recoverable" | "non_recoverable" | "unknown";
 export type WorkflowFailureDisposition = "active_blocked" | "terminal_killed" | "terminal_failed";
+/**
+ * How a failed run's failure was classified. A parent workflow classifies a failed child from it, so the
+ * child's own failure decides whether the parent fails or blocks resumably, never the workflow names in
+ * the parent's error message (#4031).
+ */
+export interface RunFailureClassification {
+	readonly kind: WorkflowFailureKind;
+	readonly code?: WorkflowFailureCode;
+	/** Whether retrying the same work can succeed, as for a rate limit or an outage. */
+	readonly retryable: boolean;
+	/** Whether the run can be resumed after this failure. */
+	readonly resumable: boolean;
+	readonly recoverability?: WorkflowFailureRecoverability;
+	/** Absent when the run failed outside any stage; the parent then applies the kind's usual disposition. */
+	readonly disposition?: WorkflowFailureDisposition;
+	/** Server retry hint of a rate limit or outage, in milliseconds. */
+	readonly retryAfterMs?: number;
+}
+
 export type WorkflowFailureCode =
 	| "login_required"
 	| "auth_timeout"

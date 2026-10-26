@@ -3,6 +3,7 @@ import type { Store } from "../../shared/store.js";
 import { isTerminalRunStatus } from "../../shared/store-internal.js";
 import type {
 	RunBudgetState,
+	RunFailureClassification,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
@@ -13,6 +14,7 @@ import type {
 } from "../../shared/store-types.js";
 import type { WorkflowOutputValues, WorkflowPersistencePort } from "../../shared/types.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
+import { runFailureClassification } from "../../shared/workflow-failures-classifier.js";
 import { safeExecutorAggregateErrorItems } from "./executor-abort.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 
@@ -51,7 +53,31 @@ export async function appendRunEndWhenRecorded(
 	await appendRunEnd(persistence, payload);
 }
 
+/** A run or stage's recorded failure classification, when it recorded one (#4031). */
+export function recordedFailureClassification(source: {
+	readonly failureKind?: WorkflowFailureKind;
+	readonly failureCode?: WorkflowFailureCode;
+	readonly failureRecoverability?: WorkflowFailureRecoverability;
+	readonly failureDisposition?: WorkflowFailureDisposition;
+	readonly retryAfterMs?: number;
+}): RunFailureClassification | undefined {
+	if (source.failureKind === undefined) return undefined;
+	return runFailureClassification({
+		kind: source.failureKind,
+		...(source.failureCode !== undefined ? { code: source.failureCode } : {}),
+		...(source.failureRecoverability !== undefined ? { recoverability: source.failureRecoverability } : {}),
+		...(source.failureDisposition !== undefined ? { disposition: source.failureDisposition } : {}),
+		...(source.retryAfterMs !== undefined ? { retryAfterMs: source.retryAfterMs } : {}),
+	});
+}
+
+function failureOf(metadata: Parameters<typeof recordedFailureClassification>[0]): Pick<RunResult, "failure"> {
+	const failure = recordedFailureClassification(metadata);
+	return failure === undefined ? {} : { failure };
+}
+
 export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
+	const failure = recordedFailureClassification(snapshot);
 	return {
 		runId: snapshot.id,
 		status: snapshot.status,
@@ -60,6 +86,7 @@ export function runResultFromSnapshot(snapshot: RunSnapshot): RunResult {
 		...(snapshot.failedToolNodeId !== undefined ? { failedToolNodeId: snapshot.failedToolNodeId } : {}),
 		...(snapshot.exited !== undefined ? { exited: snapshot.exited } : {}),
 		...(snapshot.exitReason !== undefined ? { exitReason: snapshot.exitReason } : {}),
+		...(failure !== undefined ? { failure } : {}),
 		stages: [...snapshot.stages],
 		toolNodes: [...snapshot.toolNodes],
 	};
@@ -432,7 +459,7 @@ export async function finalizeKilledByFailure(
 		runId,
 		runSnapshot,
 		activeStore,
-		{ status: "killed", error: metadata.errorMessage },
+		{ status: "killed", error: metadata.errorMessage, ...failureOf(metadata) },
 		onRunEnd,
 	);
 }
@@ -477,11 +504,13 @@ export async function recordActiveBlockedFailure(
 			ts: blockedAt,
 		});
 	}
+	const failure = recordedFailureClassification({ ...metadata, failureRecoverability: "recoverable" });
 	return {
 		runId,
 		status: "running",
 		...(metadata.result !== undefined ? { result: metadata.result } : {}),
 		error: metadata.errorMessage,
+		...(failure !== undefined ? { failure } : {}),
 		stages: [...runSnapshot.stages],
 		toolNodes: [...runSnapshot.toolNodes],
 	};

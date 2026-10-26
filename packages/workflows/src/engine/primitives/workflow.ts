@@ -10,6 +10,7 @@ import {
 	workflowDefinitionRequirementMessage,
 } from "../../runs/foreground/executor-child-helpers.js";
 import { resolveAndValidateInputs } from "../../runs/foreground/executor-inputs.js";
+import { recordedFailureClassification } from "../../runs/foreground/executor-lifecycle.js";
 import { selectWorkflowOutputs } from "../../runs/foreground/executor-outputs.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../../runs/foreground/executor-types.js";
 import type { WorkflowChildRunRef } from "../../shared/store-types.js";
@@ -21,8 +22,7 @@ import type {
 	WorkflowRunChildArgs,
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
-import { classifyWorkflowFailure } from "../../shared/workflow-failures-classifier.js";
-import { WORKFLOW_CHILD_FAILED_CODE } from "../../shared/workflow-failures-decisions.js";
+import { classifyFailureAsRecorded, classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import { childWorkerDispatcher } from "../../workers/dispatch.js";
 import type { EngineRuntime } from "../runtime.js";
 import {
@@ -30,6 +30,19 @@ import {
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
 	WorkflowGracefulQuitError,
 } from "../workflow-tool-abort.js";
+
+const CHILD_WORKFLOW_PREFIX =
+	/^atomic-workflows: child workflow "(?:[^"\\]|\\.)*" \([^)]*\) failed with status \w+(?:: )?/;
+
+/** A child's error text without the prefixes its own child-workflow failures added, which name workflows. */
+function withoutChildWorkflowPrefixes(text: string): string {
+	let current = text;
+	for (let previous = ""; previous !== current; ) {
+		previous = current;
+		current = current.replace(CHILD_WORKFLOW_PREFIX, "");
+	}
+	return current;
+}
 
 export function createChildWorkflowRunner(input: {
 	readonly runtime: EngineRuntime;
@@ -164,20 +177,19 @@ export function createChildWorkflowRunner(input: {
 			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				const message = `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`;
-				// #4031: the parent's failure is classified from the child's own failure, never from the workflow names
-				// in this message. When neither the child's failed stage nor its error text says why it failed, the
-				// innermost cause makes it an ordinary failure.
-				const unexplained =
-					failedChildStage === undefined &&
-					classifyWorkflowFailure(new Error(childRun.error ?? "")).kind === "unknown";
 				const cause = {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
-					...(failedChildStage !== undefined || unexplained
-						? { cause: { code: WORKFLOW_CHILD_FAILED_CODE } }
-						: {}),
 				};
-				throw new Error(message, { cause });
+				// #4031: the parent's failure is the child's own failure: the classification the child recorded, else its
+				// failed stage's, else its error text without the wrapper prefixes that name workflows. This message,
+				// which names them, never decides it.
+				const failure = new Error(message, { cause });
+				const recorded =
+					childRun.failure ??
+					(failedChildStage === undefined ? undefined : recordedFailureClassification(failedChildStage));
+				if (recorded !== undefined) throw classifyFailureAsRecorded(failure, recorded);
+				throw classifyFailureFrom(failure, new Error(withoutChildWorkflowPrefixes(childRun.error ?? "")));
 			}
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);

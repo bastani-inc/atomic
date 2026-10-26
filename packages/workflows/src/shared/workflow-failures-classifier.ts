@@ -1,4 +1,5 @@
 import type {
+	RunFailureClassification,
 	WorkflowFailureCode,
 	WorkflowFailureDisposition,
 	WorkflowFailureKind,
@@ -20,6 +21,7 @@ import {
 	isClearLocalLoginMessage,
 	isRecoverableActiveBlocked,
 	STATUS_MESSAGE_REFINEMENT_CODES,
+	strongDecisionFromNormalizedCode,
 	unknownDecision,
 } from "./workflow-failures-decisions.js";
 import {
@@ -40,6 +42,76 @@ import {
 	type WorkflowFailureClassificationSource,
 	type WorkflowFailureDecision,
 } from "./workflow-failures-signals.js";
+
+/**
+ * Classifications fixed when an error was made: a wrapper whose message names workflows or stages is
+ * classified as the failure it wraps, and never by its own text (#4031).
+ */
+const preclassified = new WeakMap<object, WorkflowFailureDecision>();
+
+function decisionOfFailure(failure: WorkflowFailure): WorkflowFailureDecision {
+	return {
+		kind: failure.kind,
+		code: failure.code ?? "unknown",
+		retryable: failure.retryable,
+		resumable: failure.resumable,
+		recoverability: failure.recoverability,
+		disposition: failure.disposition,
+		// Only a decision's own user message, such as login advice; the wrapper keeps its text otherwise.
+		...(failure.userMessage !== redactSensitiveText(failure.message) ? { userMessage: failure.userMessage } : {}),
+		...(failure.retryAfterMs !== undefined ? { retryAfterMs: failure.retryAfterMs } : {}),
+	};
+}
+
+/**
+ * The decision a recorded run or stage classification stands for: the usual decision for its code, else
+ * for its kind. A failure neither one names keeps the recorded recoverability and disposition.
+ */
+function decisionOfRecorded(recorded: RecordedFailure): WorkflowFailureDecision {
+	const code = recorded.code;
+	const canonical =
+		code === "login_required" || code === "auth_timeout"
+			? authDecision(code)
+			: (strongDecisionFromNormalizedCode(code, recorded.retryAfterMs) ??
+				strongDecisionFromNormalizedCode(recorded.kind, recorded.retryAfterMs));
+	const decision =
+		canonical ??
+		({
+			...unknownDecision(),
+			...(recorded.recoverability !== undefined ? { recoverability: recorded.recoverability } : {}),
+			...(recorded.disposition !== undefined ? { disposition: recorded.disposition } : {}),
+		} satisfies WorkflowFailureDecision);
+	return {
+		...decision,
+		...(recorded.retryable !== undefined ? { retryable: recorded.retryable } : {}),
+		...(recorded.resumable !== undefined ? { resumable: recorded.resumable } : {}),
+	};
+}
+
+/** A recorded failure, before or after its retry and resume flags were derived. */
+type RecordedFailure = Omit<RunFailureClassification, "retryable" | "resumable"> &
+	Partial<Pick<RunFailureClassification, "retryable" | "resumable">>;
+
+/** A run's recorded failure as a full classification, with the retry and resume flags its code or kind implies. */
+export function runFailureClassification(recorded: RecordedFailure): RunFailureClassification {
+	const decision = decisionOfRecorded(recorded);
+	return { ...recorded, retryable: decision.retryable, resumable: decision.resumable };
+}
+
+/**
+ * Classify `error` as `source` classifies: by the failure's own codes and the text its failing component
+ * produced, so names and identifiers in `error`'s message never decide it. Returns `error`.
+ */
+export function classifyFailureFrom<T extends object>(error: T, source: unknown): T {
+	preclassified.set(error, decisionOfFailure(classifyWorkflowFailure(source)));
+	return error;
+}
+
+/** Classify `error` as a failure a run or stage already recorded. Returns `error`. */
+export function classifyFailureAsRecorded<T extends object>(error: T, recorded: RunFailureClassification): T {
+	preclassified.set(error, decisionOfRecorded(recorded));
+	return error;
+}
 
 function makeWorkflowFailure(
 	kind: WorkflowFailureKind,
@@ -166,6 +238,8 @@ function structuredClassification(
 ): WorkflowFailureClassification | undefined {
 	if (error === undefined || error === null || seen.has(error)) return undefined;
 	if (typeof error === "object") seen.add(error);
+	const fixed = typeof error === "object" ? preclassified.get(error) : undefined;
+	if (fixed !== undefined) return classificationForDecision(fixed, source, undefined, "strong_signal");
 
 	const signal = structuredSignal(error);
 	const signalMessage = signal.message ?? (typeof error === "string" ? error : undefined);
