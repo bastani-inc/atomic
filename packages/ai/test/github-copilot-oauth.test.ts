@@ -555,9 +555,10 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect(credentials.availableModelIds).toEqual([enabledModelId, confirmedModelId]);
 	});
 
-	it("offers no catalog models for a stored login without a model list until it is re-read (#3998)", async () => {
+	it("keeps the catalog for a stored login without a model list until a networked refresh re-reads it (#3998)", async () => {
 		const provider = githubCopilotProvider();
 		const modelId = requireModelId(provider.getModels(), 0);
+		const catalogIds = provider.getModels().map((model) => model.id);
 		const store = new InMemoryCredentialStore();
 		await store.modify("github-copilot", async () => ({
 			type: "oauth",
@@ -567,7 +568,6 @@ describe("GitHub Copilot OAuth device flow", () => {
 		}));
 		const models = createModels({ credentials: store });
 		models.setProvider(provider);
-		expect(await models.getAvailable("github-copilot")).toEqual([]);
 
 		let catalogRequestCount = 0;
 		vi.stubGlobal(
@@ -587,6 +587,11 @@ describe("GitHub Copilot OAuth device flow", () => {
 			}),
 		);
 
+		// Offline, an older login is never left without Copilot models.
+		await models.refresh({ allowNetwork: false });
+		expect(catalogRequestCount).toBe(0);
+		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(catalogIds);
+
 		const result = await models.refresh();
 		expect(result.errors.size).toBe(0);
 		expect(catalogRequestCount).toBe(1);
@@ -595,6 +600,36 @@ describe("GitHub Copilot OAuth device flow", () => {
 		// A stored list is not fetched again.
 		await models.refresh();
 		expect(catalogRequestCount).toBe(1);
+	});
+
+	it("stays logged out when a networked refresh follows logout of a login without a model list (#3998)", async () => {
+		const provider = githubCopilotProvider();
+		const store = new InMemoryCredentialStore();
+		await store.modify("github-copilot", async () => ({
+			type: "oauth",
+			access: testCopilotAccessToken,
+			refresh: "ghu_refresh_token",
+			expires: Date.now() + 60 * 60_000,
+		}));
+		const models = createModels({ credentials: store });
+		models.setProvider(provider);
+		const requestedUrls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown): Promise<Response> => {
+				requestedUrls.push(getUrl(input));
+				throw new Error("A logged-out provider must not make requests");
+			}),
+		);
+
+		await models.logout("github-copilot");
+		const result = await models.refresh();
+
+		expect(result.errors.size).toBe(0);
+		expect(requestedUrls).toEqual([]);
+		expect(await store.read("github-copilot")).toBeUndefined();
+		expect(await models.checkAuth("github-copilot")).toBeUndefined();
+		expect(await models.getAvailable("github-copilot")).toEqual([]);
 	});
 
 	it("retries a throttled policy update after Retry-After", async () => {

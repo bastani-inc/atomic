@@ -241,6 +241,52 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 		assert.deepEqual(runtime.getProviderAuthStatus(PROVIDER), { configured: true, source: "stored" });
 	});
 
+	test("an offline Copilot login without a model list still offers Copilot models (#3998)", async () => {
+		await AuthStorage.create(authPath).modify("github-copilot", async () => ({
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "copilot-refresh",
+			expires: Number.MAX_SAFE_INTEGER,
+		}));
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
+		await runtime.refresh({ allowNetwork: false });
+
+		assert.ok(copilotAvailable(runtime).length > 0);
+	});
+
+	test("logout followed by a networked refresh leaves a Copilot login without a model list logged out (#3998)", async () => {
+		await AuthStorage.create(authPath).modify("github-copilot", async () => ({
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "copilot-refresh",
+			expires: Number.MAX_SAFE_INTEGER,
+		}));
+		const runtime = await ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath: null });
+		await runtime.refresh({ allowNetwork: false });
+		assert.ok(copilotAvailable(runtime).length > 0);
+		const requestedUrls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request): Promise<Response> => {
+				requestedUrls.push(input instanceof Request ? input.url : String(input));
+				throw new Error("A logged-out provider must not make requests");
+			}),
+		);
+
+		try {
+			await runtime.logout("github-copilot");
+			const result = await runtime.refresh({ providers: ["github-copilot"], allowNetwork: true });
+
+			assert.equal(result.errors.size, 0);
+			assert.deepEqual(requestedUrls, []);
+			assert.equal(runtime.hasConfiguredAuth("github-copilot"), false);
+			assert.deepEqual(copilotAvailable(runtime), []);
+			assert.equal(await AuthStorage.create(authPath).read("github-copilot"), undefined);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	test("an older availability refresh cannot restore auth another process removed (#3620)", async () => {
 		const gatedProvider = "gated-auth";
 		const model: Model<Api> = {

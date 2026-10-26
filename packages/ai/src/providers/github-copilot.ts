@@ -42,11 +42,10 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 				// entitles. Fast-ness comes from the explicit route metadata, never from the `-fast` suffix:
 				// a Copilot-owned model that merely ends in `-fast` is an ordinary picker model.
 				if (model.fastRoute !== undefined) return entitledFastModelIds?.has(model.id) === true;
-				// An OAuth login without a stored model list offers nothing until `Models.refresh()` re-reads
-				// it; the catalog includes models this account or client cannot use. A token supplied
-				// without a login carries no list, so it keeps the catalog.
-				if (oauth !== undefined) return availableModelIds?.has(model.id) === true;
-				return true;
+				// A login without a stored model list (an older login) keeps the catalog so it is never left
+				// with no models; `Models.refresh()` with network access re-reads the list once (see
+				// `needsRefresh`), and the account list applies from then on.
+				return availableModelIds?.has(model.id) ?? true;
 			});
 		},
 		api: {
