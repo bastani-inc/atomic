@@ -248,6 +248,13 @@ export interface OAuthAuth {
 	refresh(credential: OAuthCredential, signal: AbortSignal): Promise<OAuthCredential>;
 
 	/**
+	 * Optional: whether an unexpired stored credential still lacks data that only `refresh`
+	 * restores, such as an account model list an older login never saved. `Models.refresh()` with
+	 * network access refreshes such a credential once per call; request auth is unaffected.
+	 */
+	needsRefresh?(credential: OAuthCredential): boolean;
+
+	/**
 	 * Side-effect-free derivation of request auth from a valid credential.
 	 * Covers per-credential baseUrl (GitHub Copilot). Async so lazy wrappers
 	 * can load the implementation on first use.

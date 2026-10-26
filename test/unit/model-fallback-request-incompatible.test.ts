@@ -139,4 +139,22 @@ describe("request/context incompatibility fallback (#1580)", () => {
 		const wrapperWithRetryableCause = { errorMessage: "bad request", cause: { message: "rate limit exceeded" } };
 		assert.equal(isRetryableModelFailure(wrapperWithRetryableCause), true);
 	});
+
+	test("a structured 400 for a model unavailable to the client integration is model_unavailable (#3998)", () => {
+		const failure = Object.assign(new Error("400 invalid request"), {
+			status: 400,
+			code: "model_not_available_for_integrator",
+		});
+		const plain = { status: 400, code: "model_not_available_for_integrator", message: "localized" };
+
+		for (const error of [failure, plain]) {
+			assert.equal(normalizeModelFailureSignal(error).kind, "model_unavailable");
+			assert.equal(isRetryableModelFailure(error), true);
+		}
+		// The specific code wins over the 400 status only for this code.
+		assert.equal(
+			normalizeModelFailureSignal({ status: 400, code: "invalid_request_error", message: "localized" }).kind,
+			"request_incompatible",
+		);
+	});
 });
