@@ -36,6 +36,14 @@ export const PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS = 10_000;
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
+/** #3904: retries of a connection the kernel refused before it reached the broker (a full listen backlog). */
+const BROKER_BACKLOG_RETRIES = 6;
+const BROKER_BACKLOG_RETRY_BASE_MS = 25;
+
+function isBacklogRefusal(error: Error): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "ECONNREFUSED" || code === "EAGAIN";
+}
 /** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
 const HELD_SEND_GRACE_MS = 5000;
 
@@ -354,7 +362,32 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(
+  /**
+   * Connect and register. A connection the operating system refuses before it reaches the broker (`ECONNREFUSED`,
+   * `EAGAIN`) is retried a few times with a short jittered backoff: when many sessions start at once (a large pooled
+   * fan-out) the broker socket's listen backlog fills and the kernel refuses connections the broker would accept a
+   * moment later (#3904). Every other failure, and a refusal that persists past the retries, rejects as before.
+   */
+  async connect(
+    session: Omit<SessionInfo, "id">,
+    supervisor?: SupervisorRegistration,
+    supervisorOwnerToken?: string,
+    messageSource?: Message["source"],
+    registrationGroup?: string,
+  ): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.connectOnce(session, supervisor, supervisorOwnerToken, messageSource, registrationGroup);
+        return;
+      } catch (error) {
+        if (!(error instanceof Error) || !isBacklogRefusal(error) || attempt >= BROKER_BACKLOG_RETRIES) throw error;
+        const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** attempt;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, backoff * (0.5 + Math.random() / 2)));
+      }
+    }
+  }
+
+  private connectOnce(
     session: Omit<SessionInfo, "id">,
     supervisor?: SupervisorRegistration,
     supervisorOwnerToken?: string,
