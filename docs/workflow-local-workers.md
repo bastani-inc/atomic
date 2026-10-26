@@ -45,7 +45,7 @@ The coordinator still rebuilds the root through `hydrateWorkflow` before enqueue
 
 ### Admission defaults
 
-A public pool without `admission` still passes `{}` to the coordinator and workers, so each opens `SqlResourceAdmission`. This is intentional. A limit-less admission writes no limit rows, but every managed tool process still takes a process permit bound to its Unix process group. When a worker exits, the coordinator's `releaseStoppedSessions(worker)` reconciles those groups and quarantines live ones instead of replaying the child while the old process tree may still run. Attempt fencing (`assertCurrentAttempt`) also refuses new sessions and processes from a stale attempt, and grants wait while the root is paused. Without the admission, a worker's permits would be no-ops without `bindProcess`, and a dead worker's orphaned tool processes could overlap with its replay.
+A public pool without `admission` still passes `{}` to the coordinator and workers, so each opens `SqlResourceAdmission`. This is intentional. A limit-less admission writes no limit rows, but every managed tool process still takes a process permit bound to its Unix process group. When a worker exits, the coordinator's `releaseStoppedSessions(worker)` reconciles those groups. Live groups left by the exited worker belong to its fenced attempt, so the coordinator reaps them with `reapStoppedProcesses(worker)` (SIGKILL to each bound group on this host) and replays that worker's child only after reconciliation confirms the groups are gone and releases their permits. One worker's leftover groups never fail the rest of the pool. Permits never bound to a process group stay quarantined, and on pool close any unconfirmed cleanup is still reported. Attempt fencing (`assertCurrentAttempt`) also refuses new sessions and processes from a stale attempt, and grants wait while the root is paused. Without the admission, a worker's permits would be no-ops without `bindProcess`, and a dead worker's orphaned tool processes could overlap with its replay.
 
 ## Control and routing
 
@@ -75,6 +75,7 @@ The root reconstructs committed child checkpoints and pending messages from the 
 - `test/unit/durable-journal-catch-up.test.ts` checks that a backend opened for no runs reads no events, that catch-up reads only from the last folded event and matches a fresh fold, and that a replaced history is rebuilt.
 - `test/unit/workflow-public-pool.test.ts` checks that an invalid `startupTimeoutMs` is rejected before root admission and that changing it does not block resume.
 - `test/unit/workflow-resource-admission.test.ts` checks that a limit-less admission still binds and quarantines a live worker process group until it stops.
+- `test/integration/workflow-local-pool-orphan-process.test.ts` kills a protocol stub worker while its bound tool process group is still running. The child must replay on a replacement only after that group is reaped, and its permit must be released as `process group cleanup confirmed` instead of failing the pool.
 
 ## Public placement and admission
 

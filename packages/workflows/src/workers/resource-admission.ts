@@ -359,4 +359,32 @@ export class SqlResourceAdmission {
 			).changes;
 		});
 	}
+	/**
+	 * Kills the process groups that an exited holder's granted process permits are bound to on this host, then
+	 * reconciles, so each permit is released once its group is confirmed gone. Returns how many of the holder's
+	 * bound process permits are still unconfirmed. Permits without a process identity cannot be reaped and stay
+	 * quarantined; they are not counted. Call it only for a holder whose process has exited: its groups are orphans.
+	 */
+	async reapStoppedProcesses(holder: string): Promise<number> {
+		if (process.platform === "win32") return 0;
+		const bound = `FROM ${this.permits} p JOIN ${this.owners} o ON o.id = p.owner WHERE p.root = ? AND p.holder = ? AND p.kind = 'process' AND p.state = 'granted' AND p.process_identity IS NOT NULL AND o.host = ?`;
+		const permits = await this.storage.transaction((tx) =>
+			tx.all<PermitRow>(`SELECT p.* ${bound}`, this.options.root, holder, admissionHost),
+		);
+		for (const permit of permits) {
+			const identity = JSON.parse(permit.process_identity!) as ResourceProcessIdentity;
+			if (identity.kind !== "unix-process-group" || !Number.isSafeInteger(identity.id) || identity.id <= 0) continue;
+			if (admissionProcessStopped(-identity.id)) continue;
+			try {
+				process.kill(-identity.id, "SIGKILL");
+			} catch {
+				// Already gone, or not ours to signal; reconciliation decides whether the permit is released.
+			}
+		}
+		await this.reconcile();
+		const remaining = await this.storage.transaction((tx) =>
+			tx.get(`SELECT COUNT(*) AS count ${bound}`, this.options.root, holder, admissionHost),
+		);
+		return Number(remaining?.count);
+	}
 }

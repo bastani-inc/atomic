@@ -50,6 +50,8 @@ const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const TICK_INTERVAL_MS = 100;
 const STALL_THRESHOLD_MS = 500;
+/** Pause between reaping an exited worker's orphaned tool process groups and checking that they are gone. */
+const ORPHAN_REAP_POLL_MS = 25;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
@@ -705,7 +707,17 @@ export class PoolCoordinator {
 					.then(() => serial)
 					.then(async () => {
 						try {
-							if (await this.admission?.releaseStoppedSessions(worker))
+							const admission = this.admission;
+							if (!admission) return;
+							const unconfirmed = await admission.releaseStoppedSessions(worker);
+							// The exited worker's tool process groups belong to its fenced attempt. Reap them and wait until
+							// reconciliation confirms they are gone, so its child replays without overlapping them; this
+							// worker's leftovers never fail the rest of the pool. Close still reports unconfirmed cleanup.
+							while (unconfirmed > 0 && !this.closed) {
+								if ((await admission.reapStoppedProcesses(worker)) === 0) break;
+								await delay(ORPHAN_REAP_POLL_MS);
+							}
+							if (this.closed && (await admission.releaseStoppedSessions(worker)))
 								throw new Error("Local worker process cleanup unconfirmed; permits quarantined");
 						} catch (error) {
 							this.cleanupFailure = error instanceof Error ? error : new Error(String(error));

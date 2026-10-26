@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
+- A local-worker pool no longer fails every in-flight child with `Local worker process cleanup unconfirmed; permits quarantined` when one worker exits while its tool process groups are still running. The coordinator now reaps that worker's orphaned process groups, releases their permits once reconciliation confirms the groups are gone, and replays only that worker's child on a replacement ([#3986](https://github.com/bastani-inc/atomic/issues/3986))
 
 ## [0.9.45] - 2026-10-25
 
