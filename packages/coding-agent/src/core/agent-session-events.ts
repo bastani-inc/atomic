@@ -21,6 +21,7 @@ import {
 	replacementAbortContent,
 } from "./agent-session-types.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
+import { formatCopilotProviderError } from "./copilot-errors.ts";
 import type {
 	MessageEndEvent,
 	MessageStartEvent,
@@ -404,7 +405,10 @@ export function _applyProviderErrorGuidance(this: AgentSession, event: AgentEven
 	const assistantMessage = event.message as AssistantMessage;
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return;
 
-	assistantMessage.errorMessage = formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage);
+	assistantMessage.errorMessage = formatCopilotProviderError(
+		assistantMessage.model,
+		formatCodexProviderError(assistantMessage.provider, assistantMessage.errorMessage),
+	);
 }
 
 /** Resolve the pending retry promise */

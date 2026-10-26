@@ -13,6 +13,11 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 	const source = forwardWorkflowStageDeliveries(this, requestedTarget);
 	if (source === undefined) return;
 	const next = resolveWorkflowStageDeliveryTarget(requestedTarget);
+	// #3982: the stage runner re-sends its prompt to a replacement after retiring into it. Like a
+	// fresh stage (#3919), turn-starting input that reaches it first is context for that prompt's
+	// turn; a turn of its own would reject the runner's prompt with "Agent is already processing".
+	if (next._activePromptCount === 0 && !next.isStreaming && !next._isPreparingRun)
+		next._workflowStageAwaitingFirstPrompt = true;
 	const sourcePaused = source._queuedMessagesPaused;
 	const targetPaused = next._queuedMessagesPaused;
 	const sourceInterruptQueue = source._interruptDeliveryQueue;

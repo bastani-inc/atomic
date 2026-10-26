@@ -853,7 +853,8 @@ export class PoolCoordinator {
 					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
 						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
-						this.noteUsage(await this.usageLedger!.total(root));
+						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
+						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}
 					if (message.kind === "usage") {
