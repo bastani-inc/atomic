@@ -38,7 +38,7 @@ const REAL_CHILD_SESSION_TIMEOUT_MS = 90_000;
 const PARENT_LAST_MESSAGE = "PARENT_LAST_MESSAGE: the parent's settled answer";
 const CHILD_OUTPUT = "child complete";
 
-type Reply = (context: readonly Message[]) => { text?: string; errorMessage?: string };
+type Reply = (context: readonly Message[]) => { text?: string; errorMessage?: string; readPath?: string };
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -88,23 +88,28 @@ async function forkFixture(reply: Reply) {
 		models: [model],
 		streamSimple: (requestModel, context) => {
 			requests.push([...context.messages]);
-			const { text, errorMessage } = reply(context.messages);
+			const { text, errorMessage, readPath } = reply(context.messages);
 			const stream = createAssistantMessageEventStream();
+			const toolUse = readPath !== undefined;
 			const message: AssistantMessage = {
 				role: "assistant",
-				content: text === undefined ? [] : [{ type: "text", text }],
+				content: toolUse
+					? [{ type: "toolCall", id: `read-${requests.length}`, name: "read", arguments: { path: readPath } }]
+					: text === undefined
+						? []
+						: [{ type: "text", text }],
 				api: model.api,
 				provider: model.provider,
 				model: requestModel.id,
 				usage: usage(),
-				stopReason: errorMessage === undefined ? "stop" : "error",
+				stopReason: errorMessage !== undefined ? "error" : toolUse ? "toolUse" : "stop",
 				...(errorMessage === undefined ? {} : { errorMessage }),
 				timestamp: Date.now(),
 			};
 			if (errorMessage !== undefined) {
 				stream.push({ type: "error", reason: "error", error: message });
 			} else {
-				stream.push({ type: "done", reason: "stop", message });
+				stream.push({ type: "done", reason: toolUse ? "toolUse" : "stop", message });
 			}
 			stream.end(message);
 			return stream;
@@ -194,6 +199,25 @@ test(
 			assert.doesNotMatch(result.finalOutput ?? "", /PARENT_LAST_MESSAGE/);
 			assert.doesNotMatch(JSON.stringify(result), /PARENT_LAST_MESSAGE/);
 			assert.match(result.error ?? "", /400 fixture provider rejection/);
+		}
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a forked child whose successful turns were tool-only stays ok with no output (#3987)",
+	async () => {
+		// Each child reads a file, then ends its turn with an empty final message.
+		const fixture = await forkFixture((context) =>
+			context.at(-1)?.role === "toolResult" ? {} : { readPath: "missing-file.txt" },
+		);
+		const results = await fixture.runForkedChildren();
+
+		assert.equal(fixture.requests.length, 4, "each child runs a tool turn and a final empty turn");
+		for (const result of results) {
+			assert.equal(result.status, "ok", JSON.stringify(result));
+			assert.equal(result.error, undefined);
+			assert.doesNotMatch(JSON.stringify(result), /PARENT_LAST_MESSAGE/);
 		}
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,

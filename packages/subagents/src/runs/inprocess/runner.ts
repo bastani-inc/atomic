@@ -632,11 +632,17 @@ function outputFor(ownMessages: readonly TranscriptMessage[]): string {
 	);
 }
 
-/** Why an attempt that settled without a stop ended with no output of its own. */
-function noOutputCause(ownMessages: readonly TranscriptMessage[]): string {
-	const lastAssistant = ownMessages.findLast((message) => message.role === "assistant");
-	const errorMessage = lastAssistant?.role === "assistant" ? lastAssistant.errorMessage?.trim() : undefined;
-	return errorMessage || "Child ended without producing any assistant output.";
+/**
+ * Why an attempt that settled without a stop failed, or undefined when it did not. It failed
+ * only when it completed no successful assistant turn of its own: every own turn failed, or it
+ * ran none (#3987). A child with a successful turn, even a tool-only one with no final text, did
+ * not fail.
+ */
+function noSuccessfulTurnCause(ownMessages: readonly TranscriptMessage[]): string | undefined {
+	const ownTurns = ownMessages.flatMap((message) => (message.role === "assistant" ? [message] : []));
+	if (ownTurns.some((turn) => turn.stopReason !== "error" && turn.stopReason !== "aborted")) return undefined;
+	const errorMessage = ownTurns.findLast((turn) => turn.errorMessage?.trim())?.errorMessage?.trim();
+	return errorMessage || "Child ended without completing an assistant turn of its own.";
 }
 
 function cancelledEnvelope(
@@ -1286,8 +1292,8 @@ export class SubagentControlRuntime {
 			const sessionFile = session.sessionFile;
 			const producedMessages = ownMessages();
 			const output = outputFor(producedMessages);
-			// A child that settled without a stop and produced nothing of its own failed (#3987).
-			const noOutput = termination === undefined && !output.trim() ? noOutputCause(producedMessages) : undefined;
+			// A child that settled without a stop and completed no successful turn of its own failed (#3987).
+			const noOutput = termination === undefined ? noSuccessfulTurnCause(producedMessages) : undefined;
 			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
