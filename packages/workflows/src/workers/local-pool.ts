@@ -26,7 +26,7 @@ import {
 } from "../shared/external-run-routes.js";
 import type { Store } from "../shared/store.js";
 import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
-import { asWorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
+import { asWorkflowInfrastructureError, WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
 import {
 	type CoordinatorCommandBody,
@@ -196,6 +196,8 @@ export class LocalWorkerPool {
 	private readonly works = new Map<string, PoolWork>();
 	private readonly attempts = new Map<string, PoolWorkToken & { fenced: boolean }>();
 	private readonly results = new Map<string, WorkflowSerializableObject>();
+	/** Children the coordinator failed on their own, without failing the pool. */
+	private readonly workFailures = new Map<string, WorkflowInfrastructureError>();
 	private changed = Promise.withResolvers<void>();
 	private waiting = 0;
 	private ticker?: NodeJS.Timeout;
@@ -521,6 +523,9 @@ export class LocalWorkerPool {
 		try {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
+			// Only this child failed; the pool and its other children keep running.
+			if (error instanceof WorkflowInfrastructureError && [...this.workFailures.values()].includes(error))
+				throw error;
 			try {
 				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.shutdown();
 			} catch (closeError) {
@@ -609,6 +614,8 @@ export class LocalWorkerPool {
 					await this.handoff?.complete(work);
 					return result as unknown as RunResult;
 				}
+				const failed = this.workFailures.get(work.id);
+				if (failed) throw failed;
 				if (this.failure) throw this.failure;
 				if (this.budgetBlocked) await this.rootBudget!.stopAtBoundaryAsync(definition.name);
 				await this.nextChange(options.signal);
@@ -705,6 +712,13 @@ export class LocalWorkerPool {
 			case "result":
 				if (event.usage !== undefined) this.usageTotal = event.usage;
 				this.results.set(event.workId, event.result);
+				this.signalChange();
+				return;
+			case "work-failure":
+				this.workFailures.set(
+					event.workId,
+					new WorkflowInfrastructureError("worker_cleanup_unconfirmed", event.error),
+				);
 				this.signalChange();
 				return;
 			case "failure":
