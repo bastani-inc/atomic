@@ -259,6 +259,8 @@ async function settleOnFakeTimers<T>(
 		settled = true;
 	});
 	for (let step = 0; step < maxSteps && !settled; step++) await vi.advanceTimersByTimeAsync(stepMs);
+	// A prompt that never settles fails here, with this reason, instead of hanging until the Vitest timeout.
+	assert.ok(settled, `the prompt did not settle within ${maxSteps * stepMs} ms of fake time`);
 	return outcome;
 }
 
@@ -709,17 +711,9 @@ test("a chain whose every candidate exhausted its 429 budget waits for the earli
 			stageOptions: { model: "chain-wait-a/model", fallbackModels: ["chain-wait-b/model"] },
 		}),
 	) as InternalStageContext;
-	const outcome = ctx.prompt("go").then(
-		(value) => ({ value }),
-		(error: Error) => ({ error }),
-	);
 	try {
-		let settled = false;
-		void outcome.then(() => {
-			settled = true;
-		});
-		for (let step = 0; step < 50 && !settled; step++) await vi.advanceTimersByTimeAsync(500);
-		assert.deepEqual(await outcome, { value: "ok" });
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"), 500, 50);
+		assert.deepEqual(outcome, { value: "ok" });
 		// Both accounts spent their budget; the next attempt goes to the account whose cooldown ends first.
 		assert.equal(calls.length, 5);
 		assert.equal(calls[4], "chain-wait-b/model");
@@ -855,6 +849,47 @@ test("a 529 overload honors its retry hint like a 503", async () => {
 		await vi.advanceTimersByTimeAsync(1);
 		assert.equal(await pending, "ok");
 		assert.equal(calls, 2);
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a ready candidate recovers a cooling chain even when the other's cooldown exceeds the cap (#3984)", async () => {
+	const calls: string[] = [];
+	const agentSession: AgentSessionAdapter = {
+		async create(options) {
+			const model = String(options.model);
+			return {
+				session: makeMockSession({
+					async prompt() {
+						calls.push(model);
+						const primaryCalls = calls.filter((call) => call === model).length;
+						if (model.startsWith("ready-b/"))
+							throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 2000 });
+						if (primaryCalls <= 2) throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 10 });
+						return "ok";
+					},
+					getLastAssistantText: () => "ok",
+				}).session,
+				settingsManager: {
+					getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0, maxRetryDelayMs: 1000 }),
+				},
+			};
+		},
+	};
+	const ctx = createStageContext(
+		makeOpts({
+			adapters: { agentSession },
+			stageOptions: { model: "ready-a/model", fallbackModels: ["ready-b/model"] },
+		}),
+	) as InternalStageContext;
+	try {
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"));
+		// The fallback's 2 s cooldown exceeds the 1 s cap, so it leaves the walk while the primary still has a
+		// candidate's chance; the primary's 10 ms cooldown is already over, so it recovers without a cooldown wait
+		// instead of the stage failing with 429.
+		assert.deepEqual(outcome, { value: "ok" });
+		assert.deepEqual(calls, ["ready-a/model", "ready-b/model", "ready-a/model", "ready-a/model"]);
 	} finally {
 		await ctx.abort();
 	}
