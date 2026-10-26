@@ -51,3 +51,29 @@ test("fork context rejects a parent without a committed leaf with a typed error"
 		},
 	);
 });
+
+test("fork context keeps a user turn that follows an older unanswered tool call (#3987)", async () => {
+	const parent = await SessionManager.create(new MemorySessionStore(), process.cwd());
+	await parent.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() });
+	await parent.appendMessage({
+		role: "assistant",
+		content: [{ type: "toolCall", id: "interrupted", name: "read", arguments: {} }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "gpt-5.4",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "aborted",
+		timestamp: Date.now(),
+	});
+	await parent.appendMessage({ role: "user", content: "the current request", timestamp: Date.now() });
+	const forked = await createForkContextResolver(parent, "fork").sessionManagerForIndex(0);
+	assert.ok(forked);
+	assert.deepEqual(forked.buildSessionContext().messages, parent.buildSessionContext().messages);
+});
