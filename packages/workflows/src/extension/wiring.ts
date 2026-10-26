@@ -685,6 +685,8 @@ export function buildRuntimeAdapters(
  */
 export function createAgentSessionAdapter(
 	baseOptions: Omit<CreateAgentSessionOptions, "sessionManager"> = {},
+	/** Where stages created by this adapter raise their custom UI; the process's broker by default. */
+	stageUiBroker?: StageUiBroker,
 ): AgentSessionAdapter {
 	const { agentSession } = buildRuntimeAdapters(
 		{
@@ -707,6 +709,7 @@ export function createAgentSessionAdapter(
 				}
 				return createPiSdkAgentSession(options, prepareOptions);
 			},
+			...(stageUiBroker === undefined ? {} : { stageUiBroker }),
 		},
 	);
 	// Session managers are created before this adapter sees a stage, so the runner applies the cwd first.

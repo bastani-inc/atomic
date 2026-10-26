@@ -389,7 +389,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						attempt: work,
 					})
 				: undefined;
-			const baseAdapter = createAgentSessionAdapter({ cwd: String(work.execution.cwd) });
+			// A stage's questions (ask_user_question) wait in this attempt's broker, where the root reads them (#3996).
+			const baseAdapter = createAgentSessionAdapter({ cwd: String(work.execution.cwd) }, stageUiBroker);
 			const adapter: AgentSessionAdapter = {
 				async create(options, meta) {
 					if (!meta) throw new Error("Worker stage identity is required");
