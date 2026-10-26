@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
+- A direct Intercom send to a live stage in a local worker pool no longer routinely fails with `The recipient did not confirm that it saved the message in time` while the pool is busy. Saving a message to a pooled stage's session no longer waits for the worker to re-read the root workflow's journal or for a usage-total transaction; it is confirmed once the coordinator has committed it ([#3983](https://github.com/bastani-inc/atomic/issues/3983))
 
 ## [0.9.45] - 2026-10-25
 
