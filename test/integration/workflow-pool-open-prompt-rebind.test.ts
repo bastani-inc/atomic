@@ -17,6 +17,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
+import { toolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createStore } from "../../packages/workflows/src/index.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
@@ -626,6 +627,105 @@ test.skipIf(process.platform === "win32")(
 			intercepted.mockRestore();
 			publications.mockRestore();
 			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: a root resumed after its pooled child completed on a replacement that asked a different question replays the cached child without running it again",
+	async () => {
+		const directory = makeTempDirectory("pool-open-prompt-changed-resume-");
+		const path = join(directory, "journal.sqlite");
+		createReaskGate(path);
+		const exportName = "gatedChangedChild";
+		const child = await loadWorkerDefinition({
+			path: promptChildPath,
+			exportName,
+			digest: await definitionDigest(promptChildPath),
+		});
+		const rootRunId = testRunId("pool-open-prompt-changed-resume");
+		const parent = workflow({
+			name: "pool-open-prompt-resume-root",
+			description: "",
+			inputs: {},
+			outputs: { branch: Type.String(), note: Type.String() },
+			async run(ctx) {
+				const result = await ctx.workflow(child, { inputs: { journalPath: path } });
+				// The root waits on a prompt of its own after the child completed, so it can be quit there.
+				const note = await ctx.ui.input("Root note after the child");
+				return { branch: String(result.outputs.branch), note };
+			},
+		});
+		const open = async () => {
+			const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+			const pool = new LocalWorkerPool(backend, {
+				journalPath: path,
+				workers: 1,
+				definitions: [{ definition: child, path: promptChildPath, exportName }],
+			});
+			const store = createStore();
+			const execution = engineRun(
+				parent,
+				{},
+				{ runId: rootRunId, cwd: directory, store, durableBackend: backend, usePromptNodesForUi: true },
+			);
+			return {
+				store,
+				pool,
+				execution,
+				async close() {
+					await pool.close();
+					await execution.catch(() => {});
+					await backend.close();
+				},
+			};
+		};
+		const rootPrompt = (store: ReturnType<typeof createStore>) => {
+			const stage = store
+				.runs()
+				.find((candidate) => candidate.id === rootRunId)
+				?.stages.find((candidate) => candidate.pendingPrompt?.message === "Root note after the child");
+			return stage?.pendingPrompt === undefined
+				? undefined
+				: { stageId: stage.id, promptId: stage.pendingPrompt.id };
+		};
+		let first: Awaited<ReturnType<typeof open>> | undefined;
+		let resumed: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			first = await open();
+			const opened = first;
+			const asked = await untilValue(() => pendingPrompt(opened.store), opened.execution);
+			const [worker] = opened.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await untilValue(() => (reaskGateStarts(path) > 1 ? true : undefined), opened.execution);
+			releaseReaskGate(path);
+			// The replacement asks a different question; answering it completes the child.
+			const again = await untilValue(() => {
+				const prompt = pendingPrompt(opened.store);
+				return prompt !== undefined && prompt.generation > asked.generation ? prompt : undefined;
+			}, opened.execution);
+			assert.equal(opened.store.resolveStagePendingPrompt(again.runId, again.stageId, again.promptId, "v2.0"), true);
+			await untilValue(() => rootPrompt(opened.store), opened.execution);
+			await toolControlRegistry.runControl(rootRunId)!.quit();
+			assert.equal((await opened.execution).status, "paused");
+			await first.close();
+			first = undefined;
+
+			const starts = reaskGateStarts(path);
+			resumed = await open();
+			const reopened = resumed;
+			const note = await untilValue(() => rootPrompt(reopened.store), reopened.execution);
+			assert.equal(reopened.store.resolveStagePendingPrompt(rootRunId, note.stageId, note.promptId, "done"), true);
+			const outcome = await settled(reopened.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "v2.0", note: "done" });
+			assert.equal(reaskGateStarts(path), starts, "the completed child was replayed, not run again");
+		} finally {
+			await first?.close();
+			await resumed?.close();
+			removeTempDirectory(directory);
 		}
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,

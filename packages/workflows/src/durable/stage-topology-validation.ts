@@ -82,17 +82,18 @@ export function directChildTopologyErrorFromRecords(
 	const immutableError = immutableStageGroupError(direct);
 	if (immutableError !== undefined) return immutableError;
 
-	const candidates: { readonly topology: DurableStageTopology; readonly unanswered: boolean }[] = [];
-	for (const group of groupByDurableStageKey(direct).values()) {
+	const superseded = supersededPromptGroupKeys(direct);
+	const merged: DurableStageTopology[] = [];
+	for (const [key, group] of groupByDurableStageKey(direct)) {
+		if (superseded.has(key)) continue;
 		const topology = group.find((stage) => stage.topology?.run?.runId === expectedRun.runId)?.topology;
 		if (topology === undefined) return "direct child stage group lacks owning-run topology";
 		if (topology.version !== DURABLE_STAGE_TOPOLOGY_VERSION || topology.sourceOrder === undefined) {
 			return "direct child stage topology lacks current source identity";
 		}
 		if (topology.stageId.length === 0) return "direct child stage id is empty";
-		candidates.push({ topology, unanswered: isUnansweredPromptGroup(group) });
+		merged.push(topology);
 	}
-	const merged = withoutSupersededPrompts(candidates);
 
 	const ids = new Set<string>(allowedNodeIds);
 	const stageIds = new Set<string>();
@@ -206,32 +207,36 @@ const UNANSWERED_PROMPT_STATUSES: ReadonlySet<DurableStageLifecycleStatus> = new
 ]);
 
 /**
- * Drops prompts an attempt asked and never got answered that a later ask at the same source
- * position replaced (#4022). A replacement attempt of a child re-runs its code and asks again at the
- * same position; when the prompt's text depends on data, the new ask is a different durable prompt.
- * The unanswered one is superseded, not a second node at that position: the run never got past it.
- * Groups arrive in checkpoint order, so among unanswered prompts alone at one position the latest
- * ask stands. Any other collision stays a source-order conflict.
+ * The durable group keys ({@link durableStageGroupKey}) of prompts an attempt asked and never got
+ * answered that a later ask at the same source position of the same run replaced (#4022). A
+ * replacement attempt of a child re-runs its code and asks again at the same position; when the
+ * prompt's text depends on data, the new ask is a different durable prompt. The unanswered one is
+ * superseded, not a second node at that position: the run never got past it. Among unanswered
+ * prompts alone at one position, the latest ask (in record order) stands. Any other collision stays
+ * a source-order conflict. Every check of saved stages (live checkpoint validation, completed-run
+ * rebuild, cached-child replay, inspection) leaves these groups out, so they agree.
  */
-function withoutSupersededPrompts(
-	candidates: readonly { readonly topology: DurableStageTopology; readonly unanswered: boolean }[],
-): DurableStageTopology[] {
-	const byOrder = new Map<number, (typeof candidates)[number][]>();
-	for (const candidate of candidates) {
-		const order = candidate.topology.sourceOrder;
-		if (order === undefined) continue;
-		byOrder.set(order, [...(byOrder.get(order) ?? []), candidate]);
+export function supersededPromptGroupKeys(stages: readonly DurableStageCheckpoint[]): ReadonlySet<string> {
+	const byPosition = new Map<string, { readonly key: string; readonly unanswered: boolean }[]>();
+	for (const [key, group] of groupByDurableStageKey(stages)) {
+		const topology = group.find((stage) => stage.topology !== undefined)?.topology;
+		if (topology?.sourceOrder === undefined) continue;
+		const position = JSON.stringify([topology.run?.runId ?? null, topology.sourceOrder]);
+		const atPosition = byPosition.get(position) ?? [];
+		atPosition.push({ key, unanswered: isUnansweredPromptGroup(group) });
+		byPosition.set(position, atPosition);
 	}
-	const superseded = new Set<(typeof candidates)[number]>();
-	for (const atOrder of byOrder.values()) {
-		if (atOrder.length < 2 || !atOrder.some((candidate) => candidate.unanswered)) continue;
-		const answered = atOrder.filter((candidate) => !candidate.unanswered);
-		// Two answered stages at one position remain a conflict; unanswered asks give way to the stage
-		// that replaced them, or to the latest unanswered ask.
-		const kept = answered.length > 0 ? answered : [atOrder[atOrder.length - 1]!];
-		for (const candidate of atOrder) if (candidate.unanswered && !kept.includes(candidate)) superseded.add(candidate);
+	const superseded = new Set<string>();
+	for (const atPosition of byPosition.values()) {
+		if (atPosition.length < 2 || !atPosition.some((candidate) => candidate.unanswered)) continue;
+		const answered = atPosition.filter((candidate) => !candidate.unanswered);
+		// Answered stages at one position are kept (two of them remain a conflict); unanswered asks give way
+		// to the stage that replaced them, or to the latest unanswered ask.
+		const kept = answered.length > 0 ? answered : [atPosition[atPosition.length - 1]!];
+		for (const candidate of atPosition)
+			if (candidate.unanswered && !kept.includes(candidate)) superseded.add(candidate.key);
 	}
-	return candidates.filter((candidate) => !superseded.has(candidate)).map((candidate) => candidate.topology);
+	return superseded;
 }
 
 /** Group prompt occurrences by replay + occurrence while retaining strict non-prompt replay grouping. */
