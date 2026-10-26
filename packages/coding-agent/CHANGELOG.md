@@ -4,7 +4,7 @@
 
 ### Added
 
-- GPT-6.1 Terra is available as `openai/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra` and `azure/gpt-6.1-terra`, with a derived `openai/gpt-6.1-terra-fast` choice. It supports `off` through `max` (not `minimal`), and ChatGPT sign-in gives it a 500K context window ([pi 363ad78b](https://github.com/earendil-works/pi/commit/363ad78bf0625e1dfbe848429782f5e07bb1584e))
+- GPT-6.1 Terra is available as `openai/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra` and `azure/gpt-6.1-terra`, with a derived `openai/gpt-6.1-terra-fast` choice. It supports `off` through `max` (not `minimal`), and `openai-codex/gpt-6.1-terra` has a 500K context window ([pi 363ad78b](https://github.com/earendil-works/pi/commit/363ad78bf0625e1dfbe848429782f5e07bb1584e))
 - `@bastani/atomic` exports `observeProviderRateLimits()`, `providerRateLimitObservations()` and `applyProviderRateLimitObservation()` with the `ProviderRateLimitObservation` type, so another process on the same host can apply the provider and model cooldowns and quota-exhausted marks this process recorded. An applied limit only ever extends the matching provider or model limit and counts no failure ([#4023](https://github.com/bastani-inc/atomic/issues/4023))
 
 ### Fixed

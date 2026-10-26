@@ -173,7 +173,7 @@ Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-code
 
 Select `openai/gpt-6.1-terra` with either API-key authentication or ChatGPT subscription sign-in, `openai-codex/gpt-6.1-terra` with a ChatGPT subscription, or `azure/gpt-6.1-terra`. All accept text and images and support `off`, `low`, `medium`, `high`, `xhigh`, and `max`. Terra rejects the `minimal` effort; Codex offers a `minimal` UI alias that sends `low`.
 
-With ChatGPT subscription sign-in, `openai/gpt-6.1-terra` and `openai-codex/gpt-6.1-terra` use a 500,000-token context and a 128,000-token output limit. With API-key authentication, `openai/gpt-6.1-terra` and `openai-api/gpt-6.1-terra` use a 272,000-token default context. Unlike GPT-6.1 Sol, Terra keeps the whole-request long-context prices with either sign-in:
+`openai-codex/gpt-6.1-terra` uses a 500,000-token context. `openai/gpt-6.1-terra`, `openai-api/gpt-6.1-terra`, and `azure/gpt-6.1-terra` use a 272,000-token default context with either sign-in method. All use a 128,000-token output limit. Unlike GPT-6.1 Sol, Terra keeps the whole-request long-context prices on every provider, including Codex:
 
 | Aggregate input | Input | Cached input | Cache write | Output |
 | --- | ---: | ---: | ---: | ---: |
