@@ -118,6 +118,8 @@ export type SubagentChildRestoreOutcome =
 			readonly kind: "restored";
 			readonly record: SubagentChildRecord;
 			readonly taskId: string;
+			/** The child had not started and has no session: it started fresh on its launch, with its task. */
+			readonly fresh?: true;
 			/** Whether the child re-registered with Intercom; undefined when the child has no Intercom identity. */
 			readonly intercomLive: boolean | undefined;
 	  }
@@ -307,7 +309,8 @@ async function relaunchChild(
 	});
 	const host = ctx.getAgentTaskHost?.();
 	const queued = record.taskId && host ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
-	if (queued && host) return startQueuedChild(deps, ctx, host, record, queued, hold, release, resume);
+	if (queued && host)
+		return startedFresh(await startQueuedChild(deps, ctx, host, record, queued, hold, release, resume));
 	const queuedOwnerless = record.taskId && !host ? takeStoppedQueuedOwnerlessChild(record.taskId) : undefined;
 	// Without a task host nothing else stops the resumed child with its owner: closing the session stops it, restorably.
 	const ownerSignal = host ? undefined : (ctx.getCurrentSessionSignal?.() ?? ctx.sessionSignal);
@@ -321,7 +324,9 @@ async function relaunchChild(
 			...(resume?.message ? { message: resume.message } : {}),
 			...(supervisorAuthorization ? { supervisorAuthorization } : {}),
 		});
-		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
+		return startedFresh(
+			await ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx),
+		);
 	}
 	if (!existsSync(record.cwd)) return unrestorable(`its working directory no longer exists: ${record.cwd}`);
 	// A child that never started has no session to reopen; its records say how its launch starts it fresh.
@@ -450,7 +455,17 @@ async function relaunchChild(
 			...(schedule ? { schedule } : {}),
 			runSync: (task, childOptions) => runtime.runSync(ctx.cwd, [agent], agent.name, task, childOptions),
 		});
-		return ownerlessRelaunched(deps, record, launched, recordChild, release, hold, supervisorAuthorization, ctx);
+		const outcome = await ownerlessRelaunched(
+			deps,
+			record,
+			launched,
+			recordChild,
+			release,
+			hold,
+			supervisorAuthorization,
+			ctx,
+		);
+		return fresh ? startedFresh(outcome) : outcome;
 	}
 	const response = await runAgentTask({
 		host,
@@ -472,7 +487,21 @@ async function relaunchChild(
 			void hold?.release();
 		},
 	});
-	return relaunched(deps, record, response, recordChild, release, supervisorAuthorization, intercomGroup);
+	const outcome = await relaunched(
+		deps,
+		record,
+		response,
+		recordChild,
+		release,
+		supervisorAuthorization,
+		intercomGroup,
+	);
+	return fresh ? startedFresh(outcome) : outcome;
+}
+
+/** A restored child that had no session started fresh on its launch rather than resuming one. */
+function startedFresh(outcome: SubagentChildRestoreOutcome): SubagentChildRestoreOutcome {
+	return outcome.kind === "restored" ? { ...outcome, fresh: true } : outcome;
 }
 
 /** Start a child that pause or quit stopped while it was still queued, on its original launch (#3760). */
@@ -827,12 +856,15 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
 				`${childLabel(outcome.record, outcome.childId)} did not survive the restart and could not be restored: ${outcome.reason}. It is gone: do not send it Intercom messages or wait for its result. Launch a fresh subagent if its work is still needed.`,
 			];
 		const label = childLabel(outcome.record, outcome.record.childId);
+		const how = outcome.fresh
+			? "started fresh with its task, since it had not started before the restart,"
+			: "relaunched from its own session";
 		if (outcome.intercomLive === false)
 			return [
-				`${label} was relaunched from its own session as task ${outcome.taskId}, but it did not reconnect to Intercom. Treat it as unreachable until it reconnects; its result will still arrive as a task completion.`,
+				`${label} was ${how} as task ${outcome.taskId}, but it did not reconnect to Intercom. Treat it as unreachable until it reconnects; its result will still arrive as a task completion.`,
 			];
 		return [
-			`${label} was interrupted by the restart and has been relaunched from its own session as task ${outcome.taskId}${outcome.intercomLive ? "; it is live on Intercom under the same name" : ""}.`,
+			`${label} was interrupted by the restart and has been ${how} as task ${outcome.taskId}${outcome.intercomLive ? "; it is live on Intercom under the same name" : ""}.`,
 		];
 	});
 }

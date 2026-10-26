@@ -33,6 +33,7 @@ import {
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
 	type SubagentReleaseRestoringChildRequest,
 	type SubagentReserveRestoringChildRequest,
+	subagentChildRestoreNotices,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
@@ -2771,6 +2772,8 @@ test("a child paused while it waits for its run's capacity, before its session e
 
 	const resumed = await h.call({ action: "resume", id: "capwait:1" });
 	assert.notEqual(resumed.isError, true, text(resumed));
+	assert.match(text(resumed), /^Started worker \(capwait:1, subagent-worker-capwait\) fresh with its task as task /);
+	assert.doesNotMatch(text(resumed), /from its own session|delivered after its task/, "it had no session to resume");
 	// It waits for a slot in its run, as its launch did; pausing the child holding the other slot gives it one.
 	assert.notEqual((await h.call({ action: "pause", id: "capwait:2" })).isError, true);
 	const [, relaunch] = await runsOf(h, "capwait", 1, 2);
@@ -2789,10 +2792,13 @@ test("a queued child stopped while it waits for its run's capacity is restored w
 	assert.deepEqual(kept.heldMessages?.messages, [ORIGINAL_TASK]);
 
 	const outcomes = await restoreSubagentChildren(h.deps, h.ctx);
-	assert.ok(
-		outcomes.some((outcome) => outcome.kind === "restored" && outcome.record.childId === "capqueued:2"),
-		JSON.stringify(outcomes),
+	const restoredOutcome = outcomes.find(
+		(outcome) => outcome.kind === "restored" && outcome.record.childId === "capqueued:2",
 	);
+	assert.ok(restoredOutcome, JSON.stringify(outcomes));
+	const [notice] = subagentChildRestoreNotices([restoredOutcome]);
+	assert.match(notice ?? "", /started fresh with its task/);
+	assert.doesNotMatch(notice ?? "", /from its own session/);
 	const [, restored] = await runsOf(h, "capqueued", 2, 2);
 	assert.equal(restored?.task, ORIGINAL_TASK);
 	assert.equal(restored?.options.resumeFollowUps, undefined, "its held task is its launch task, not sent again");

@@ -337,8 +337,22 @@ async function resumeChild(
 			: outcome.intercomLive === false
 				? " It has not reconnected to Intercom yet; its result still arrives as a task completion."
 				: "";
+	const heldMessages =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	if (outcome.fresh) {
+		// It never started, so there is no session to resume: it starts on its launch, its task first (#4029).
+		const sent = heldMessages[0] === record.launch?.task ? heldMessages.slice(1) : heldMessages;
+		return controlResult(
+			`Started ${label(record)} fresh with its task as task ${outcome.taskId}, since it stopped before it began${message ? ", with your message added to its task" : ""}.${sent.length > 0 ? " The messages it was sent and had not yet read are delivered after its task, once." : ""}${intercom}`,
+			{
+				action,
+				children: [childDetails(record, "running", outcome.taskId)],
+				...(message ? { message } : {}),
+			},
+		);
+	}
 	const held =
-		record.heldMessages?.taskId === record.taskId
+		heldMessages.length > 0
 			? " The messages it had queued and not yet read when it stopped are delivered first, once."
 			: "";
 	return controlResult(
