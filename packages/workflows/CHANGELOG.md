@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
 - A workflow stage that has sent its first prompt no longer reads `startup first-dispatch (0s total, 0s on current step; dispatched)` in the workflow tool's `stages` and `stage` output, which looked like a stalled stage for the whole run. The line now reads `startup complete (dispatched after 2s)` ([#3967](https://github.com/bastani-inc/atomic/issues/3967))
+- Resuming a quit or crashed root whose children run in `workflows.localWorkers` no longer fails in-flight children with `Session not found`. Resume used to make the previous run's pooled children claimable before the resumed root had enqueued them again, so workers crashed on `Stale work lease`, the pool failed with `Local worker retry limit`, and later children ran in the root process, which cannot see pooled stage sessions. A pooled child is now claimed only after the resumed root enqueues it, and a child started after the pool has failed gets the pool's error instead of running in the root process ([#3979](https://github.com/bastani-inc/atomic/issues/3979))
 
 ## [0.9.45] - 2026-10-25
 

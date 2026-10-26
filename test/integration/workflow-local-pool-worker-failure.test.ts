@@ -22,6 +22,7 @@ import {
 	readTextSync,
 	removeTempDirectory,
 	spawnProcess,
+	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
 const WORKER_FAILURE_ROOT_TIMEOUT_MS = 150_000;
@@ -319,6 +320,78 @@ test.skipIf(process.platform === "win32")(
 				assert.equal(error.code, "worker_retry_limit");
 				assert.match(error.message, /Local worker retry limit/);
 			}
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	WORKER_FAILURE_ROOT_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a child started after the pool failed gets the pool's fault instead of running in the host (#3979)",
+	async () => {
+		const directory = makeTempDirectory("pool-fault-no-host-fallback-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const crashingPath = fileURLToPath(new URL("../fixtures/pool-crashing-child.ts", import.meta.url));
+		const crashing = await loadWorkerDefinition({
+			path: crashingPath,
+			exportName: "crashingChild",
+			digest: await definitionDigest(crashingPath),
+		});
+		const laterPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
+		const later = await loadWorkerDefinition({
+			path: laterPath,
+			exportName: "resumedChild",
+			digest: await definitionDigest(laterPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [
+				{ definition: crashing, path: crashingPath, exportName: "crashingChild" },
+				{ definition: later, path: laterPath, exportName: "resumedChild" },
+			],
+		});
+		await writeFileEnsuringDir(join(directory, "release"), "");
+		let first: unknown;
+		let afterFault: unknown;
+		let laterOutputs: unknown;
+		const parent = workflow({
+			name: "pool-fault-no-host-fallback-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				await ctx.workflow(crashing).catch((error: Error) => {
+					first = error;
+				});
+				try {
+					laterOutputs = (await ctx.workflow(later, { inputs: { directory, index: 0 } })).outputs;
+				} catch (error) {
+					afterFault = error;
+				}
+				return {};
+			},
+		});
+		try {
+			await run(
+				parent,
+				{},
+				{
+					runId: "pool-fault-no-host-fallback-root",
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+				},
+			);
+			assert.ok(first instanceof WorkflowInfrastructureError, String(first));
+			assert.equal(first.code, "worker_retry_limit");
+			assert.equal(laterOutputs, undefined, "the later child ran in the host process");
+			assert.ok(afterFault instanceof WorkflowInfrastructureError, String(afterFault));
+			assert.equal(afterFault.code, "worker_retry_limit");
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();

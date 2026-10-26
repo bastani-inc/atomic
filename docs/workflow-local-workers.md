@@ -18,6 +18,8 @@ The pool gives the coordinator lease three root-heartbeat intervals, leaving roo
 
 Worker exit triggers a bounded replacement. Expired work becomes claimable only after the local worker has exited. Each child has a three-attempt limit; successful recovery of one child does not exhaust retries for later children. Replacement workers replay the child from acknowledged checkpoints, including completed stages and nested children. An unfinished agent stage resumes its SQL session. External effects that precede a checkpoint can still repeat.
 
+Resuming a root releases the work its previous incarnation leased, but a released child becomes claimable only when the resumed root enqueues it again; until then its row keeps the previous root epoch, and claims select only rows of the current epoch. The root accepts activity only for work it has enqueued, so an earlier claim would be rejected as a stale lease. A pool that has failed or quit stays bound to its root until its owner closes it: a child the root starts afterwards gets the pool's failure (or suspends after a quit) and never runs in the root process, whose session store cannot see pooled stage sessions.
+
 ## Compatibility boundary
 
 The internal inventory accepts definitions loaded through the shared workflow-module loader, with an absolute module path, export name and SHA-256 content digest. Unregistered closures, changed entry modules and process-bound run adapter overrides fail before a worker starts. Child invocation budget overrides are also rejected before enqueueing; they are not silently dropped. The entry-module digest is not a deployment system or a transitive dependency snapshot. All workers still use the coordinator's local installation and filesystem.

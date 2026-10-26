@@ -307,7 +307,7 @@ export class LocalWorkerPool {
 		try {
 			if (this.coordinator !== undefined) await this.command({ kind: "control", state });
 		} finally {
-			if (state === "quit") await this.close();
+			if (state === "quit") await this.shutdown();
 		}
 	}
 	validateOptions(options: RunOpts): void {
@@ -423,7 +423,7 @@ export class LocalWorkerPool {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
 			try {
-				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.close();
+				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.shutdown();
 			} catch (closeError) {
 				throw asWorkflowInfrastructureError(closeError) ?? closeError;
 			}
@@ -436,6 +436,7 @@ export class LocalWorkerPool {
 		options: RunOpts,
 	): Promise<RunResult> {
 		if (options.budget !== undefined) throw new Error("Local workers refuse process-bound override: budget");
+		if (this.closed) throw this.closedError(options.parentRun?.rootRunId);
 		const source = workerDefinitionSources.get(definition);
 		const index = this.options.definitions.findIndex(
 			(binding) =>
@@ -501,11 +502,7 @@ export class LocalWorkerPool {
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
-				if (this.closed) {
-					if (this.failure) throw this.failure;
-					if (this.desiredControl === "quit") throw new WorkflowGracefulQuitError(root, "worker pool teardown");
-					throw new Error("Local worker pool is closed");
-				}
+				if (this.closed) throw this.closedError(root);
 				const result = this.results.get(work.id);
 				if (result) {
 					await this.inbound;
@@ -697,8 +694,26 @@ export class LocalWorkerPool {
 			},
 		);
 	}
+	/** Why a closed pool refuses a child; a failed or quit pool keeps refusing until its owner closes it. */
+	private closedError(root: string | undefined): Error {
+		if (this.failure) return this.failure;
+		if (this.desiredControl === "quit" && root !== undefined)
+			return new WorkflowGracefulQuitError(root, "worker pool teardown");
+		return new Error("Local worker pool is closed");
+	}
 	private closing?: Promise<void>;
+	/** The owner's close: stops the pool and detaches it, so later roots on this backend may bind their own. */
 	close(): Promise<void> {
+		const closing = this.shutdown();
+		this.releaseBinding();
+		return closing;
+	}
+	/**
+	 * Stops the pool but keeps it bound to its root. A child the root starts afterwards then fails with the pool's
+	 * failure, or suspends after a quit, instead of running in the host, whose session store cannot see the pool's
+	 * stage sessions (#3979).
+	 */
+	private shutdown(): Promise<void> {
 		this.closing ??= this.dispose();
 		return this.closing;
 	}
@@ -706,7 +721,6 @@ export class LocalWorkerPool {
 		this.closed = true;
 		clearInterval(this.ticker);
 		this.ticker = undefined;
-		this.releaseBinding();
 		if (this.options.rootId === undefined) workflowResourceAdmission.delete(this.backend);
 		this.signalChange();
 		let failure: unknown;
