@@ -42,7 +42,11 @@ import type {
 	WorkflowSerializableValue,
 	WorkflowUIAdapter,
 } from "../shared/types.js";
-import { asWorkflowInfrastructureError, WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
+import {
+	asWorkflowInfrastructureError,
+	WorkflowInfrastructureError,
+	workflowInfrastructureFault,
+} from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
 import {
 	type CoordinatorCommandBody,
@@ -1131,7 +1135,10 @@ export class LocalWorkerPool {
 					return result as unknown as RunResult;
 				}
 				const failed = this.workFailures.get(work.id);
-				if (failed) throw failed;
+				if (failed) {
+					this.endFailedChild(work, failed);
+					throw failed;
+				}
 				if (this.failure) throw this.failure;
 				if (this.budgetBlocked) await this.rootBudget!.stopAtBoundaryAsync(definition.name);
 				await this.nextChange(options.signal);
@@ -1142,6 +1149,29 @@ export class LocalWorkerPool {
 				this.ticker = undefined;
 			}
 		}
+	}
+	/**
+	 * A child that failed alone, while the pool keeps running, shows failed with its nested runs rather than
+	 * running forever, and views still waiting to reconnect to its stages end with what never arrived (#3996).
+	 */
+	private endFailedChild(work: PoolWork, error: Error): void {
+		const store = this.store;
+		if (store !== undefined)
+			store.batch(() => {
+				const runs = store.runs();
+				const byId = new Map(runs.map((run) => [run.id, run]));
+				const inChild = (run: (typeof runs)[number]): boolean => {
+					for (let current: typeof run | undefined = run; current !== undefined; ) {
+						if (current.id === work.childRunId) return true;
+						current = current.parentRunId === undefined ? undefined : byId.get(current.parentRunId);
+					}
+					return false;
+				};
+				for (const run of runs)
+					if (run.endedAt === undefined && inChild(run))
+						store.recordRunEnd(run.id, "failed", undefined, error.message);
+			});
+		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 	}
 	/** One budget decision for every waiting child; the coordinator refuses claims while it blocks. */
 	private evaluateBudget(): void {
@@ -1251,7 +1281,10 @@ export class LocalWorkerPool {
 			case "work-failure":
 				this.workFailures.set(
 					event.workId,
-					new WorkflowInfrastructureError("worker_cleanup_unconfirmed", event.error),
+					new WorkflowInfrastructureError(
+						workflowInfrastructureFault(event.error) ?? "worker_cleanup_unconfirmed",
+						event.error,
+					),
 				);
 				this.signalChange();
 				return;

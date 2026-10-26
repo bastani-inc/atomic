@@ -448,6 +448,34 @@ test("a new coordinator epoch releases every attempt leased by the previous inca
 	}
 });
 
+test("work a closed pool left unfinished, or failed, is unclaimable until a resumed root enqueues it again (#3996)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "worker", [work], 60_000))!;
+		assert.equal(await pool.failExited(f.lease, held), true);
+		assert.equal((await pool.inspect("root"))[0]?.state, "failed");
+		assert.equal(await pool.claim(f.lease, "worker", [work], 60_000), undefined, "no worker claims failed work");
+		assert.equal(await pool.releaseClosed(f.lease), 0);
+		await f.database.run("UPDATE wf_leases SET renewed_at = 0");
+		const takeover = await f.journal.takeoverExpired("root", "resumed-coordinator", 60_000);
+		if (takeover.status !== "acquired") assert.fail("takeover failed");
+		await pool.enqueue(takeover.lease, work, boundary);
+		const replay = await pool.claim(takeover.lease, "resumed-worker", [work], 60_000);
+		assert.equal(replay?.generation, held.generation + 1);
+		// A pool closing without a quit settles what its root left unfinished, claimed or not.
+		assert.equal(await pool.releaseClosed(takeover.lease), 1);
+		assert.deepEqual(
+			(await pool.inspect("root")).map((item) => item.state),
+			["failed"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
 test("extending a live worker's lease survives a coordinator stall past expiry but not reassignment (#3888)", async () => {
 	const f = await fixture();
 	try {
