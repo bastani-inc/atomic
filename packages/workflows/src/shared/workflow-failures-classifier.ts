@@ -20,8 +20,11 @@ import {
 	fallbackDecisionFromMessage,
 	isClearLocalLoginMessage,
 	isRecoverableActiveBlocked,
+	providerUnavailableDecision,
+	rateLimitDecision,
 	STATUS_MESSAGE_REFINEMENT_CODES,
 	strongDecisionFromNormalizedCode,
+	terminalProviderConfigDecision,
 	unknownDecision,
 } from "./workflow-failures-decisions.js";
 import {
@@ -63,6 +66,34 @@ function decisionOfFailure(failure: WorkflowFailure): WorkflowFailureDecision {
 	};
 }
 
+/** The usual decision for a recorded failure code; `unknown` and codes without one fall back to the kind. */
+function decisionOfRecordedCode(
+	code: WorkflowFailureCode,
+	retryAfterMs: number | undefined,
+): WorkflowFailureDecision | undefined {
+	switch (code) {
+		case "login_required":
+		case "auth_timeout":
+		case "missing_api_key":
+		case "invalid_api_key":
+			return authDecision(code);
+		case "rate_limited":
+		case "quota_limited":
+			return rateLimitDecision(code, retryAfterMs);
+		case "provider_unavailable":
+			return providerUnavailableDecision(retryAfterMs);
+		case "forbidden_config":
+		case "unknown_model":
+			return terminalProviderConfigDecision(code);
+		case "cancelled":
+			return cancelledDecision();
+		case "pending_stage_delivery_failed":
+			return strongDecisionFromNormalizedCode(code, retryAfterMs);
+		case "unknown":
+			return undefined;
+	}
+}
+
 /**
  * The decision a recorded run or stage classification stands for: the usual decision for its code, else
  * for its kind. A failure neither one names keeps the recorded recoverability and disposition.
@@ -70,10 +101,8 @@ function decisionOfFailure(failure: WorkflowFailure): WorkflowFailureDecision {
 function decisionOfRecorded(recorded: RecordedFailure): WorkflowFailureDecision {
 	const code = recorded.code;
 	const canonical =
-		code === "login_required" || code === "auth_timeout"
-			? authDecision(code)
-			: (strongDecisionFromNormalizedCode(code, recorded.retryAfterMs) ??
-				strongDecisionFromNormalizedCode(recorded.kind, recorded.retryAfterMs));
+		(code === undefined ? undefined : decisionOfRecordedCode(code, recorded.retryAfterMs)) ??
+		strongDecisionFromNormalizedCode(recorded.kind, recorded.retryAfterMs);
 	const decision =
 		canonical ??
 		({

@@ -5,6 +5,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { bindChildWorkerDispatcher } from "../../packages/workflows/src/workers/dispatch.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { makeMockSession, type StageSessionCreateOptions } from "./stage-runner-helpers.js";
 
 afterEach(closeMemoryTestBackends);
 
@@ -138,5 +139,87 @@ test.each([
 		} finally {
 			release();
 		}
+	},
+);
+
+/** A failure a component can throw with a code its message alone does not explain. */
+function signInRequired(): Error {
+	return Object.assign(new Error("Please sign in"), { code: "auth_required" });
+}
+
+test("a child whose stage needs sign-in keeps the root login-blocked, whatever the message says (#4031)", async () => {
+	const child = workflow({
+		name: "plain-child",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await ctx.stage("work").prompt("Do the work");
+			return {};
+		},
+	});
+	const store = createStore();
+	const adapters = {
+		agentSession: {
+			async create(options: StageSessionCreateOptions) {
+				return makeMockSession({
+					model: options.model,
+					async prompt() {
+						throw signInRequired();
+					},
+				}).session;
+			},
+		},
+	};
+	const result = await run(parentOf("root", child), {}, { runId: "sign-in", store, adapters });
+	const childStage = store
+		.runs()
+		.find((snapshot) => snapshot.id !== "sign-in")
+		?.stages.find((stage) => stage.name === "work");
+	assert.equal(childStage?.failureCode, "login_required");
+	assert.equal(childStage?.failureDisposition, "active_blocked");
+	assert.equal(result.status, "running", JSON.stringify(result));
+	const snapshot = store.runs().find((entry) => entry.id === "sign-in");
+	assert.equal(snapshot?.failureKind, "auth");
+	assert.equal(snapshot?.failureCode, "login_required");
+	assert.equal(snapshot?.failureDisposition, "active_blocked");
+	assert.equal(snapshot?.resumable, true);
+});
+
+const CHILD_ERRORS = [
+	["503", () => new Error("503 Service Unavailable"), "provider", "running"],
+	["ENOENT", () => new Error(ORDINARY), "unknown", "failed"],
+	["auth_required", signInRequired, "auth", "running"],
+] as const;
+
+test.each(CHILD_ERRORS)(
+	"a child failing on %s gives the root the same outcome whatever the child is named (#4031)",
+	async (label, error, failureKind, status) => {
+		const outcomes = [];
+		for (const name of ["plain-child", "cancelled-child", "rate-limit-child", "auth-child"]) {
+			const child = workflow({
+				name,
+				description: "",
+				inputs: {},
+				outputs: {},
+				async run(ctx) {
+					await ctx.tool("fail", {}, async () => {
+						throw error();
+					});
+					return {};
+				},
+			});
+			const runId = `matrix-${label}-${name}`;
+			const { result, snapshot } = await runRoot(parentOf("root", child), runId);
+			outcomes.push({
+				status: result.status,
+				failureKind: snapshot?.failureKind,
+				failureCode: snapshot?.failureCode,
+				disposition: snapshot?.failureDisposition,
+			});
+		}
+		assert.equal(outcomes[0]!.status, status, JSON.stringify(outcomes));
+		assert.equal(outcomes[0]!.failureKind, failureKind, JSON.stringify(outcomes));
+		for (const outcome of outcomes) assert.deepEqual(outcome, outcomes[0]);
 	},
 );
