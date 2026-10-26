@@ -16,6 +16,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
@@ -496,7 +497,181 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(handle.isReconnecting, false);
 			assert.equal(handle.placement.reconnecting, undefined);
 			assert.ok((handle.placement.undelivered ?? 0) >= 1, observe());
+			assert.deepEqual(
+				handle.queuedUserMessages().steering.filter((text) => text === "never-arrives"),
+				["never-arrives"],
+				"the undelivered text stays listed",
+			);
 			lease.release();
+			// A failed stage on a local worker reopens for post-mortem chat, as a failed in-process stage does.
+			const failedStage = agentStages(live.store)[0]!;
+			assert.equal(
+				live.store.runs().find((run) => run.id === failedStage.runId)?.status,
+				"failed",
+				"the child shows its outcome instead of running forever",
+			);
+			const postMortem = await createPostMortemHandleResolver({
+				adapters: { agentSession: { create: async () => assert.fail("not opened") } },
+				resolveDefaultStageSessionDir: () => undefined,
+				store: live.store,
+				stageControlRegistry: createStageControlRegistry(),
+			})(failedStage.runId, failedStage.stage.id);
+			assert.equal(postMortem?.ok, true, `${failedStage.stage.status}: ${JSON.stringify(postMortem)}`);
+		} finally {
+			await live.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a stage killed twice reconnects each time, and each message reaches it once, in its mode, mid-turn (#3996)",
+	async () => {
+		const live = await livePool("pool-stage-kill-twice-", 1, 1);
+		try {
+			await live.held();
+			const [target] = agentStages(live.store);
+			assert.ok(target !== undefined);
+			const lease = await acquirePooledStage(live.store, target.runId, target.stage.id);
+			assert.ok(lease !== undefined);
+			const handle = lease.handle as PooledStageHandle;
+			const observe = () =>
+				JSON.stringify({
+					placement: handle.placement,
+					streaming: handle.isStreaming,
+					queued: handle.queuedUserMessages(),
+					generation: agentStages(live.store)[0]?.stage.workerExecution?.generation,
+				});
+			const reconnects: number[] = [];
+			const nextReconnect = () => {
+				const reconnected = Promise.withResolvers<void>();
+				const stop = handle.onRebind((count) => {
+					reconnects.push(count);
+					stop();
+					reconnected.resolve();
+				});
+				return reconnected.promise;
+			};
+			const queuedInMode = (steer: string, follow: string) => {
+				const ready = Promise.withResolvers<void>();
+				const check = () => {
+					const queued = handle.queuedUserMessages();
+					if (queued.steering.includes(steer) && queued.followUp.includes(follow) && !handle.isReconnecting)
+						ready.resolve();
+				};
+				const stop = handle.subscribe(check);
+				check();
+				return ready.promise.finally(stop);
+			};
+			const kill = () => {
+				const [worker] = live.pool.workerPids;
+				assert.ok(worker !== undefined);
+				process.kill(worker, "SIGKILL");
+			};
+
+			await step("first steer", handle.steer("first-steer"), live.execution, observe);
+			await step("first follow-up", handle.followUp("first-follow-up"), live.execution, observe);
+			const first = nextReconnect();
+			kill();
+			await step("first reconnect", first, live.execution, observe);
+			await step(
+				"first redelivery in mode",
+				queuedInMode("first-steer", "first-follow-up"),
+				live.execution,
+				observe,
+			);
+
+			await step("second steer", handle.steer("second-steer"), live.execution, observe);
+			const second = nextReconnect();
+			kill();
+			await step("second reconnect", second, live.execution, observe);
+			await step(
+				"second redelivery in mode",
+				queuedInMode("second-steer", "first-follow-up"),
+				live.execution,
+				observe,
+			);
+			assert.ok(handle.placement.generation >= 3, observe());
+			lease.release();
+
+			setGate(live.path, 1);
+			const outcome = await step(
+				"run completion after release",
+				live.execution,
+				new Promise<never>(() => {}),
+				observe,
+			);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			const finished = agentStages(live.store)[0]!.stage;
+			const sessions = await poolSessionStore(live.backend);
+			assert.ok(sessions !== undefined);
+			const users = (await SessionManager.open(sessions, finished.sessionId!))
+				.buildSessionContext()
+				.messages.filter((message) => message.role === "user")
+				.map(textOf);
+			await sessions.close();
+			assert.deepEqual(
+				users.filter((text) => text.startsWith("first-") || text.startsWith("second-")),
+				["first-steer", "second-steer", "first-follow-up"],
+				"each reached the last attempt once: steers in the turn, the follow-up after it",
+			);
+		} finally {
+			await live.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a chat closed and reopened while its stage reconnects shows the pending messages and goes live (#3996)",
+	async () => {
+		const live = await livePool("pool-stage-reopen-reconnecting-", 1, 1);
+		try {
+			await live.held();
+			const [target] = agentStages(live.store);
+			assert.ok(target !== undefined);
+			const first = await acquirePooledStage(live.store, target.runId, target.stage.id);
+			assert.ok(first !== undefined);
+			const handle = first.handle as PooledStageHandle;
+			const observe = () => JSON.stringify({ placement: handle.placement, queued: handle.queuedUserMessages() });
+			await step("steer", handle.steer("reopen-steer"), live.execution, observe);
+			const [worker] = live.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await step(
+				"reconnecting",
+				(async () => {
+					while (!handle.isReconnecting) await sleep(5);
+				})(),
+				live.execution,
+				observe,
+			);
+			first.release();
+			// Sent while reconnecting: refused for now, kept for the replacement.
+			const reopened = await acquirePooledStage(live.store, target.runId, target.stage.id);
+			assert.ok(reopened !== undefined, "the view reopens while the stage reconnects");
+			assert.ok(reopened.handle.queuedUserMessages?.().steering.includes("reopen-steer"), observe());
+			await step(
+				"live again with the steer queued in the replacement",
+				(async () => {
+					for (;;) {
+						const reopenedHandle = reopened.handle as PooledStageHandle;
+						if (
+							!reopenedHandle.isReconnecting &&
+							reopenedHandle.placement.generation > 1 &&
+							reopenedHandle.queuedUserMessages().steering.includes("reopen-steer")
+						)
+							return;
+						await sleep(25);
+					}
+				})(),
+				live.execution,
+				observe,
+			);
+			reopened.release();
+			setGate(live.path, 1);
+			const outcome = await step("run completion", live.execution, new Promise<never>(() => {}), observe);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 		} finally {
 			await live.close();
 		}

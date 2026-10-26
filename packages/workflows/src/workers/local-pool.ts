@@ -1038,6 +1038,21 @@ export class LocalWorkerPool {
 		clearInterval(this.ticker);
 		this.ticker = undefined;
 		this.releaseStageSource?.();
+		// A pool that failed takes its unfinished children with it: show them failed rather than
+		// running forever (#3996). A graceful quit leaves them resumable.
+		const poolFailure = this.failure;
+		const store = this.store;
+		if (poolFailure !== undefined && store !== undefined)
+			store.batch(() => {
+				for (const run of store.runs())
+					if (
+						run.endedAt === undefined &&
+						run.rootRunId === this.root &&
+						run.id !== this.root &&
+						run.stages.some((stage) => stage.workerExecution !== undefined)
+					)
+						store.recordRunEnd(run.id, "failed", undefined, poolFailure.message);
+			});
 		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
 		this.stageWatches.clear();

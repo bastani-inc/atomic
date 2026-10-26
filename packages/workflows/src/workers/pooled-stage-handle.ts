@@ -31,6 +31,9 @@ import type {
 type AgentMessage = AgentSession["messages"][number];
 type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
 
+/** Mirrors the worker's `DELIVERY_RECEIPT_EVENT`, without loading worker code in the root. */
+const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
+
 /** Watch ends after which the stage may continue on another attempt; the handle reconnects. */
 const RECONNECTABLE = new Set<WatchEndReason>(["attempt_fenced", "worker_exited", "resync"]);
 
@@ -202,8 +205,26 @@ export class PooledStageHandle implements StageControlHandle {
 	pendingToolExecutionEvents(): readonly AgentSessionEvent[] {
 		return this.toolExecutions.replayEvents();
 	}
+	/**
+	 * The stage's queues as the attempt reports them, plus outbox text the current attempt has not
+	 * admitted (sent while reconnecting, or waiting behind a redelivery), so a chat shows every
+	 * message that has not arrived, including in a view reopened mid-reconnect.
+	 */
 	queuedUserMessages() {
-		return this.queued.snapshot();
+		const queued = this.queued.snapshot();
+		// Between attempts or after the end, nothing in the outbox is known to have arrived.
+		const waiting =
+			this.reconnecting || this.ended !== undefined
+				? this.outbound
+				: this.outbound.filter((entry) => !this.admitted(entry));
+		if (waiting.length === 0) return queued;
+		const steering = [...queued.steering];
+		const followUp = [...queued.followUp];
+		for (const entry of waiting) {
+			const queue = entry.intent === "steer" ? steering : followUp;
+			if (!queue.includes(entry.text)) queue.push(entry.text);
+		}
+		return { steering, followUp };
 	}
 
 	/** Observes rebinding to a replacement attempt, with the number of messages redelivered. */
@@ -235,7 +256,7 @@ export class PooledStageHandle implements StageControlHandle {
 		for (const { seq, event } of message.events) {
 			if (seq <= this.seq) continue;
 			this.seq = seq;
-			this.apply(event);
+			if (!this.apply(event)) continue;
 			for (const listener of [...this.listeners]) listener(event);
 		}
 	}
@@ -357,11 +378,11 @@ export class PooledStageHandle implements StageControlHandle {
 
 	/** Ends the handle for good: nothing reconnects, and text that never arrived is reported. */
 	private end(reason: WatchEndReason): void {
-		// After a worker died, nothing it admitted is known to have arrived: no later session showed it.
-		const unconfirmed = this.reconnecting ? this.outbound : this.outbound.filter((entry) => !this.admitted(entry));
+		// Receipts prune the outbox as text arrives, so whatever is left never reached the stage.
 		this.ended ??= reason;
 		this.reconnecting = false;
-		const undelivered = unconfirmed.length;
+		const undelivered = this.outbound.length;
+		this.queued = new StageQueuedUserMessageBuffer();
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
 			if (this.admitted(entry)) continue;
@@ -528,7 +549,11 @@ export class PooledStageHandle implements StageControlHandle {
 		} as AgentSessionEvent);
 	}
 
-	private apply(event: AgentSessionEvent): void {
+	private apply(event: AgentSessionEvent): boolean {
+		if ((event.type as string) === DELIVERY_RECEIPT_EVENT) {
+			this.forget((event as never as { readonly op: DeliveryOpId }).op);
+			return false;
+		}
 		this.applyEvent(event);
 		const turnUnderway =
 			TURN_EVENTS.has(event.type) ||
@@ -537,6 +562,7 @@ export class PooledStageHandle implements StageControlHandle {
 			this.awaitingTurn = false;
 			this.pump();
 		}
+		return true;
 	}
 
 	private applyEvent(event: AgentSessionEvent): void {

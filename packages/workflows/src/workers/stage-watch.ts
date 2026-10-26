@@ -52,7 +52,12 @@ export async function admitStageUserMessage(
 		await handle.followUp(text);
 		return { action: "followUp" };
 	};
+	// A turn under way, whether or not the stage handle reports it (a replayed turn may not), takes
+	// the text in its mode directly: through the stage's message admission it would wait for the
+	// whole turn to end before steering it.
+	const busy = handle.isStreaming || handle.agentSession?.isStreaming === true;
 	const delivery = (async (): Promise<StageCommandResult> => {
+		if (busy) return queue();
 		try {
 			if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
 			await handle.prompt(text);
@@ -79,6 +84,9 @@ export async function admitStageUserMessage(
  * replacement attempt does not hold (#3996).
  */
 export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+
+/** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
+export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
 /** What a session says when asked to start a turn while one is running. */
 const BUSY_SESSION = /already processing/i;
@@ -192,7 +200,7 @@ export class WorkerStageWatches {
 
 	/** Ops the stage's session holds receipts for: its live entries and its committed ones. */
 	private deliveredOps(handle: StageControlHandle): Set<DeliveryOpId> | Promise<Set<DeliveryOpId>> {
-		const live = deliveredOps(handle.agentSession?.sessionManager.getEntries() ?? []);
+		const live = deliveredOps(handle.agentSession?.sessionManager?.getEntries() ?? []);
 		const load = this.options.entries;
 		if (handle.sessionId === undefined || load === undefined) return new Set(live);
 		return load(handle.sessionId).then(
@@ -279,6 +287,10 @@ export class WorkerStageWatches {
 		if (receipts === undefined) {
 			receipts = new StageDeliveryReceipts(handle, (op) => {
 				void handle.agentSession?.sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
+				// Watchers learn it arrived, so their outbox stops carrying it.
+				for (const [id, watch] of this.watches)
+					if (watch.handle === handle)
+						this.record(id, { type: DELIVERY_RECEIPT_EVENT, op } as never as AgentSessionEvent);
 			});
 			this.receipts.set(handle, receipts);
 		}
