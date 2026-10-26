@@ -56,6 +56,24 @@ for (const outcome of ["completed", "failed", "interrupted", "cancelled"] as con
 					entered.resolve();
 					await release.promise;
 					if (outcome === "failed") throw new Error("fixture failure");
+					// A completed child's reply is in its own transcript, as a real session persists it.
+					await options.sessionManager?.appendMessage({
+						role: "assistant",
+						content: [{ type: "text", text: "result" }],
+						api: "openai-responses",
+						provider: "openai",
+						model: "gpt-5.4",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					});
 				},
 				abort: async () => {
 					release.resolve();
