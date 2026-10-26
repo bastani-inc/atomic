@@ -21,6 +21,8 @@ import type {
 	WorkflowRunChildArgs,
 	WorkflowRunChildOptions,
 } from "../../shared/types.js";
+import { classifyWorkflowFailure } from "../../shared/workflow-failures-classifier.js";
+import { WORKFLOW_CHILD_FAILED_CODE } from "../../shared/workflow-failures-decisions.js";
 import { childWorkerDispatcher } from "../../workers/dispatch.js";
 import type { EngineRuntime } from "../runtime.js";
 import {
@@ -162,9 +164,18 @@ export function createChildWorkflowRunner(input: {
 			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
 				const message = `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`;
+				// #4031: the parent's failure is classified from the child's own failure, never from the workflow names
+				// in this message. When neither the child's failed stage nor its error text says why it failed, the
+				// innermost cause makes it an ordinary failure.
+				const unexplained =
+					failedChildStage === undefined &&
+					classifyWorkflowFailure(new Error(childRun.error ?? "")).kind === "unknown";
 				const cause = {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
+					...(failedChildStage !== undefined || unexplained
+						? { cause: { code: WORKFLOW_CHILD_FAILED_CODE } }
+						: {}),
 				};
 				throw new Error(message, { cause });
 			}

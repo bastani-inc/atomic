@@ -180,6 +180,9 @@ const MODEL_PROVIDER_CONTEXT = new Set(["unavailable", "overloaded", "temporaril
 
 const PROVIDER_CONTEXT = new Set(["error", "failure", "failed", "overloaded", "unavailable", "temporarily", "service"]);
 
+/** Marks a child workflow's failure whose own failure no code or text classified (#4031). */
+export const WORKFLOW_CHILD_FAILED_CODE = "workflow_child_failed";
+
 export function authDecision(code: WorkflowFailureCode): WorkflowFailureDecision {
 	if (code === "invalid_api_key") {
 		return {
@@ -299,6 +302,9 @@ export function strongDecisionFromNormalizedCode(
 	if (normalized === "atomic_durable_admission_rejected") {
 		return { ...unknownDecision(), resumable: false, recoverability: "non_recoverable" };
 	}
+	// #4031: a child workflow's failure that no code or text in the child classified. Without it, the wrapper
+	// error's text, which includes workflow names, would decide the parent's failure.
+	if (normalized === WORKFLOW_CHILD_FAILED_CODE) return unknownDecision();
 	if (normalized === "pending_stage_delivery_failed") {
 		return {
 			...unknownDecision(),
