@@ -681,6 +681,23 @@ export class SqlPoolQueue {
 			return true;
 		});
 	}
+	/**
+	 * Releases the work this root incarnation's workers still hold when its pool closes (#3996), except the
+	 * `retained` work ids, which stay leased. Their workers are stopped, so no attempt holds that work any more.
+	 */
+	async releaseClosed(lease: Lease, retained: readonly string[] = []): Promise<number> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const released = await tx.run(
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE root = ? AND state = 'leased' AND epoch = ? AND id NOT IN (SELECT value FROM json_each(?))`,
+				lease.runId,
+				lease.epoch,
+				JSON.stringify(retained),
+			);
+			return released.changes;
+		});
+	}
 	/** Releases work leased by earlier root incarnations, except the `retained` work ids, which stay leased. */
 	async releasePreviousIncarnations(lease: Lease, retained: readonly string[] = []): Promise<number> {
 		lease = snapshotLease(lease);

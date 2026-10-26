@@ -14,7 +14,7 @@ import {
 	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
-import type { Lease, RunJournal } from "../durable/journal/types.js";
+import { type Lease, type RunJournal, StaleLeaseError } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
@@ -1483,6 +1483,14 @@ export class PoolCoordinator {
 				for (const group of await unconfirmedProcessGroups(this.journal!, this.root!, scope))
 					if (!alive.includes(group)) alive.push(group);
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
+			// Every worker is stopped: work they still held is no attempt's any more, so it does not stay leased
+			// after the root ends (#3996). A quit keeps it leased for the root's resume, and quarantined work keeps
+			// its lease while its process groups may still run.
+			if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
+				// A root that no longer holds its lease has handed its work to its next incarnation.
+				await this.queue.releaseClosed(this.lease, [...this.quarantined]).catch((error: Error) => {
+					if (!(error instanceof StaleLeaseError)) throw error;
+				});
 		} catch (error) {
 			failure = error;
 		}
