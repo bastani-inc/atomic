@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, test, vi } from "vitest";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -488,12 +489,13 @@ describeModelRegistry((context) => {
 				}));
 				await getModelRuntime(registry).refresh({ allowNetwork: false });
 
-				expect(
+				assert.deepEqual(
 					registry
 						.getAvailable()
 						.filter((model) => model.provider === "github-copilot")
 						.map((model) => model.id),
-				).toEqual([allowed.id, "custom-copilot-model"]);
+					[allowed.id, "custom-copilot-model"],
+				);
 			});
 
 			test("a superseded availability pass leaves credential filtering in place", async () => {
