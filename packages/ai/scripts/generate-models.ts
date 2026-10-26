@@ -559,8 +559,8 @@ const OPENAI_FAST_COSTS: Record<string, ModelCost> = {
 	o3: { input: 3.5, output: 14, cacheRead: 0.875, cacheWrite: 0 },
 	"o4-mini": { input: 2, output: 8, cacheRead: 0.5, cacheWrite: 0 },
 };
-// GPT-6 Astra and GPT-6.1 Sol Ultrafast input and output rates are published ($12/$60 for Sol 6.1); Sol 6.1's
-// cache rates are derived at the same 6x-Standard ratio. GPT-5.6 Sol Ultrafast is a preview without published
+// GPT-6 Astra and GPT-6.1 Sol Ultrafast rates are published, at 6x Standard for input, cached input, cache write and
+// output (https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast). GPT-5.6 Sol Ultrafast is a preview without published
 // rates, so it follows the 6x-Standard convention.
 const OPENAI_ULTRAFAST_COSTS: Record<string, ModelCost> = {
 	"gpt-6-astra": { input: 60, output: 300, cacheRead: 6, cacheWrite: 75 },
