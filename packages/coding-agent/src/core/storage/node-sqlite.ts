@@ -294,20 +294,22 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Takes the write lock without blocking the event loop. Nothing has run yet when `BEGIN IMMEDIATE` reports
 	 * SQLITE_BUSY, so the attempt is retried after a timer. A refused writer queues with writers in other processes
 	 * and attempts the lock only when no earlier writer is still waiting, so none starves (#3978). The wait ends only
-	 * when the lock has been held for `lockWaitMs` with no other connection committing in that time; every other
-	 * failure rejects at once with its cause.
+	 * when no other connection has committed for `lockWaitMs`, whether this writer is still queued or already trying
+	 * the lock: a queued writer counts only real commits as progress, not older tickets ahead of it. Every other
+	 * failure, including a writers' queue that cannot be used, rejects at once with its cause.
 	 */
 	private async begin(): Promise<void> {
 		let ticket: SqliteWriteTicket | undefined;
 		try {
 			// Writers already waiting in other processes go first.
-			if (this.writeQueue?.othersWaiting()) ticket = this.writeQueue.join();
-			// Read only once the lock is refused, so an uncontended transaction pays nothing for it.
-			let version: number | undefined;
+			if (this.queueOp(() => this.writeQueue?.othersWaiting())) ticket = this.queueOp(() => this.writeQueue?.join());
+			// Read only once this writer waits, so an uncontended transaction pays nothing for it.
+			let version = ticket === undefined ? undefined : this.dataVersion();
 			let stalledSince = Date.now();
 			let backoff = LOCK_RETRY_BASE_DELAY_MS;
+			let lastCause: unknown;
 			for (;;) {
-				const behind = ticket?.behindOthers() === true;
+				const behind = ticket !== undefined && this.queueOp(() => ticket!.behindOthers());
 				if (!behind) {
 					try {
 						this.tryBegin();
@@ -315,31 +317,43 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					} catch (error) {
 						const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
 						if (!isSqliteBusy(cause)) throw error;
-						ticket ??= this.writeQueue?.join();
-						const current = this.dataVersion();
-						if (version === undefined) version = current;
-						else if (current !== version) {
-							version = current;
-							stalledSince = Date.now();
-						}
-						const stalledMs = Date.now() - stalledSince;
-						if (stalledMs >= this.lockWaitMs)
-							throw unavailable(
-								this.descriptor,
-								cause,
-								`${sqliteFailureDetail(cause)}; gave up after ${stalledMs} ms waiting for the write lock, held all that time with no other connection committing`,
-							);
+						lastCause = cause;
+						ticket ??= this.queueOp(() => this.writeQueue?.join());
 					}
-				} else {
-					// Writers ahead of this one are committing through the lock: that is progress, not a stall.
+				}
+				// Only another connection's commit is progress; a queued writer measures its stall the same way.
+				const current = this.dataVersion();
+				if (version === undefined) version = current;
+				else if (current !== version) {
+					version = current;
 					stalledSince = Date.now();
 				}
+				const stalledMs = Date.now() - stalledSince;
+				if (stalledMs >= this.lockWaitMs)
+					throw unavailable(
+						this.descriptor,
+						lastCause,
+						`${sqliteFailureDetail(lastCause) ?? "database is locked"}; gave up after ${stalledMs} ms waiting for the write lock${behind ? " in the writers' queue" : ""}, held all that time with no other connection committing`,
+					);
 				const delay = ticket !== undefined && !behind ? Math.min(backoff, LOCK_RETRY_HEAD_MAX_DELAY_MS) : backoff;
 				backoff = Math.min(LOCK_RETRY_MAX_DELAY_MS, backoff * 2);
 				await new Promise((resolve) => setTimeout(resolve, delay * (0.5 + Math.random() / 2)));
 			}
 		} finally {
 			ticket?.leave();
+		}
+	}
+
+	/** Runs a writers'-queue file operation; a failure (an unwritable queue directory, say) is a storage failure. */
+	private queueOp<T>(operation: () => T): T {
+		try {
+			return operation();
+		} catch (cause) {
+			throw unavailable(
+				this.descriptor,
+				cause,
+				`the writers' queue next to the database is unusable: ${cause instanceof Error ? cause.message : String(cause)}`,
+			);
 		}
 	}
 
