@@ -59,6 +59,8 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	/** The attachment whose pooled view may remount the chat when it reconnects. */
+	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
 	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -203,8 +205,11 @@ export class WorkflowAttachPane implements Component {
 		this._disposeChatView();
 		// A pooled stage's view rebinds to a replacement attempt after its worker dies: the chat
 		// remounts on the replacement's transcript, keeping the composer draft (#3996).
+		// Identity of this attachment: hiding and showing the pane keeps it, detaching ends it.
+		const attachment = Symbol("pooled-stage-attachment");
+		this.pooledAttachment = attachment;
 		const stopWatchingReconnects = onReconnected?.(() => {
-			if (generation !== this.attachmentGeneration || this.chatView === null) return;
+			if (this.pooledAttachment !== attachment || this.chatView === null) return;
 			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
 			this.chatView.dispose();
 			this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
@@ -262,6 +267,7 @@ export class WorkflowAttachPane implements Component {
 		this.hostRequestRender?.();
 	}
 	private _disposeChatView(): void {
+		this.pooledAttachment = undefined;
 		this.chatView?.dispose();
 		const release = this.releaseChatHandle;
 		this.releaseChatHandle = null;

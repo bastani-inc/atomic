@@ -3,8 +3,10 @@
  * redelivers what the replacement attempt does not hold (#3996).
  */
 import assert from "node:assert/strict";
+import type { AgentSessionEvent } from "@bastani/atomic";
 import { test } from "vitest";
 import {
+	type OutboundEntry,
 	openPooledStageHandle,
 	type PooledStageTransport,
 	reconnectPooledStageHandle,
@@ -38,14 +40,21 @@ function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly s
 	const started = Promise.withResolvers<void>();
 	const listeners: ((message: PooledStageWatchMessage) => void)[] = [];
 	let generation = 0;
+	let watches = 0;
+	/** A new attempt runs the stage only after the current one ended. */
+	let replaced = true;
 	const transport: PooledStageTransport = {
 		async watch(_ref, listener) {
 			listeners.push(listener);
-			generation++;
+			watches++;
+			if (replaced) {
+				generation++;
+				replaced = false;
+			}
 			return {
 				ok: true,
 				watch: {
-					id: `watch-${generation}` as WatchId,
+					id: `watch-${watches}` as WatchId,
 					attempt: { workId: "work", generation },
 					snapshot: snapshot(generation === 1 ? [] : present(deliveries)),
 				},
@@ -78,7 +87,11 @@ function pool(present: (delivered: readonly PooledStageDelivery[]) => readonly s
 			hold = until;
 		},
 		end(reason: "worker_exited" | "stage_finished") {
+			replaced = true;
 			listeners.at(-1)?.({ kind: "ended", reason });
+		},
+		events(seq: number, event: AgentSessionEvent) {
+			listeners.at(-1)?.({ kind: "events", events: [{ seq, event }] });
 		},
 	};
 }
@@ -189,4 +202,140 @@ test("a stage that finishes while reconnecting no longer reads as reconnecting (
 	assert.equal(opened.handle.isReconnecting, false);
 	assert.equal(opened.handle.placement.reconnecting, undefined);
 	assert.equal(opened.handle.endReason, "stage_finished");
+});
+
+/** A transport whose replacement attempt opens with the snapshot fields the test gives it. */
+function replacementPool(replacement: Partial<PooledStageChatSnapshot>) {
+	const fake = pool(() => []);
+	const watch = fake.transport.watch;
+	let opened = 0;
+	fake.transport.watch = async (ref, listener) => {
+		const result = await watch(ref, listener);
+		opened++;
+		return result.ok && opened > 1
+			? { ok: true, watch: { ...result.watch, snapshot: { ...result.watch.snapshot, ...replacement } } }
+			: result;
+	};
+	return fake;
+}
+
+test.each([
+	["already mid-turn without a new agent_start", { isStreaming: false, turnStarted: true }],
+	["idle after its turn", { isStreaming: false, turnStarted: true }],
+] as const)("a replacement %s gets its redelivery at once (#3996)", async (_label, replacement) => {
+	const fake = replacementPool(replacement);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await opened.handle.steer("STEER");
+	await opened.handle.followUp("FOLLOW");
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(opened.handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.slice(2).map(({ watch, text, intent }) => `${watch}:${text}:${intent}`),
+		["watch-2:STEER:steer", "watch-2:FOLLOW:followUp"],
+	);
+	assert.equal(opened.handle.isReconnecting, false);
+});
+
+test("a replacement that has not started its turn gets the redelivery once its turn is under way (#3996)", async () => {
+	const fake = replacementPool({ isStreaming: false, turnStarted: false });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await opened.handle.steer("STEER");
+	fake.end("worker_exited");
+	const reconnecting = reconnectPooledStageHandle(opened.handle, fake.transport);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.deliveries.length, 1, "nothing is redelivered before the replay's own prompt");
+	assert.equal(opened.handle.placement.reconnecting, true);
+	// A tool call of the replay's turn, without a fresh agent_start.
+	fake.events(1, { type: "tool_execution_start", toolCallId: "t1", toolName: "bash", args: {} } as never);
+	assert.equal(await reconnecting, true);
+	assert.deepEqual(
+		fake.deliveries.slice(1).map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:STEER"],
+	);
+});
+
+test("text waiting in a stage's outbox survives a closed view and reaches the stage once (#3996)", async () => {
+	const fake = pool(() => []);
+	const outbox: OutboundEntry[] = [];
+	const first = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(first.ok);
+	await first.handle.steer("STEER");
+	fake.end("worker_exited");
+	// Sent while reconnecting: refused for now, kept for the replacement.
+	await assert.rejects(first.handle.followUp("FOLLOW"), /sent again when it reconnects/);
+	first.handle.dispose();
+	assert.equal(outbox.length, 2, "closing the view keeps the text");
+	const reopened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(reopened.ok);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:STEER", "watch-2:STEER", "watch-2:FOLLOW"],
+	);
+	const sameAttempt = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+	);
+	assert.ok(sameAttempt.ok);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(fake.deliveries.length, 3, "an attempt that admitted the text does not get it again");
+});
+
+test("a stage that fails while reconnecting ends the reconnect and reports the text it never got (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await opened.handle.steer("STEER");
+	await opened.handle.followUp("FOLLOW");
+	fake.end("worker_exited");
+	opened.handle.receive({ kind: "ended", reason: "stage_finished" });
+	assert.equal(opened.handle.isReconnecting, false);
+	assert.deepEqual(opened.handle.placement, {
+		kind: "local-worker",
+		workId: "work",
+		generation: 1,
+		undelivered: 2,
+	});
+	await assert.rejects(opened.handle.steer("late"), /finished first/);
+});
+
+test("a send whose transport rejects fails its caller at once, and the next attempt gets it exactly once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	let refuseNext = true;
+	fake.transport.deliver = async (delivery) => {
+		if (refuseNext) {
+			refuseNext = false;
+			fake.deliveries.push(delivery);
+			throw new Error("coordinator went away mid-send");
+		}
+		return deliver(delivery);
+	};
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.steer("UNSURE"), /coordinator went away/);
+	assert.equal(await opened.handle.followUp("NEXT"), undefined, "the queue keeps moving past it");
+	fake.end("worker_exited");
+	assert.equal(await reconnectPooledStageHandle(opened.handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:UNSURE", "watch-1:NEXT", "watch-2:UNSURE", "watch-2:NEXT"],
+	);
 });

@@ -312,25 +312,51 @@ export async function resumeRun(
 		);
 	});
 	// A paused stage on a local worker has no handle here; a live view reaches it (#3996).
-	const pooled =
-		hasPausedState && opts?.stageId !== undefined && registry.get(runId, opts.stageId) === undefined
-			? await acquirePooledStage(activeStore, runId, opts.stageId)
-			: undefined;
+	const pooledTargets = !hasPausedState
+		? []
+		: opts?.stageId !== undefined
+			? registry.get(runId, opts.stageId) === undefined
+				? [{ controlRunId: runId, stageId: opts.stageId }]
+				: []
+			: controlRunIds.flatMap((controlRunId) =>
+					(runs.find((candidate) => candidate.id === controlRunId)?.stages ?? [])
+						.filter(
+							(stage) =>
+								stage.status === "paused" &&
+								stage.workerExecution !== undefined &&
+								registry.get(controlRunId, stage.id) === undefined,
+						)
+						.map((stage) => ({ controlRunId, stageId: stage.id })),
+				);
+	const pooled = (
+		await Promise.all(
+			pooledTargets.map(async ({ controlRunId, stageId }) => ({
+				controlRunId,
+				lease: await acquirePooledStage(activeStore, controlRunId, stageId),
+			})),
+		)
+	).flatMap(({ controlRunId, lease }) => (lease === undefined ? [] : [{ controlRunId, lease }]));
 	try {
 		if (hasPausedState) {
+			const pausedPooled = pooled
+				.filter(({ lease }) => lease.handle.status === "paused")
+				.map(({ controlRunId, lease }) => ({ controlRunId, handle: lease.handle }));
 			const handles = opts?.stageId
-				? [pooled?.handle ?? registry.get(runId, opts.stageId)]
+				? [registry.get(runId, opts.stageId)]
 						.filter(
 							(handle): handle is NonNullable<typeof handle> =>
 								handle !== undefined && handle.status === "paused",
 						)
 						.map((handle) => ({ controlRunId: runId, handle }))
-				: controlRunIds.flatMap((controlRunId) =>
-						registry
-							.run(controlRunId)
-							.pausedStages()
-							.map((handle) => ({ controlRunId, handle })),
-					);
+						.concat(pausedPooled)
+				: controlRunIds
+						.flatMap((controlRunId) =>
+							registry
+								.run(controlRunId)
+								.pausedStages()
+								.map((handle) => ({ controlRunId, handle })),
+						)
+						.concat(pausedPooled);
 			const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
 			acknowledgedTargets = acknowledgements.acknowledged;
 			resumed.push(...acknowledgements.resumed);
@@ -390,7 +416,7 @@ export async function resumeRun(
 			}
 		}
 	} finally {
-		pooled?.release();
+		for (const { lease } of pooled) lease.release();
 	}
 
 	await waitForResumeReconciliation(acknowledgedTargets);

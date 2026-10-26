@@ -463,3 +463,44 @@ test("an idle prompt is receipted once, even when template expansion changes its
 	stage.endPrompt();
 	assert.deepEqual(stage.receipts(), ["op-prompt"]);
 });
+
+test("a replacement whose replayed session already holds an op reports it and admits it at most once (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 2 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => "running",
+		{
+			// The committed session of the replaced attempt, before this attempt attached its own.
+			entries: async () => [
+				{ type: "custom", customType: "atomic-pooled-delivery-op", data: { op: "op-before-kill" } } as never,
+			],
+		},
+	);
+	const stage = deliverableStage(true);
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		sessionId: "replayed-session",
+	});
+	watches.serve({
+		kind: "stage-command",
+		commandId: 1,
+		attempt: { workId: "work", generation: 2 },
+		op: "watch",
+		watch: "watch-1" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	await untilSent(sent, "stage-command-result");
+	const opened = sent[0];
+	assert.ok(opened?.kind === "stage-command-result");
+	assert.deepEqual(opened.snapshot?.deliveredOps, ["op-before-kill"]);
+	const again = await deliver(sent, watches, 2, "op-before-kill", "steer", 2);
+	assert.deepEqual(again, { action: "handled", refusal: undefined }, "the op is not admitted a second time");
+	assert.deepEqual(stage.admitted, []);
+});

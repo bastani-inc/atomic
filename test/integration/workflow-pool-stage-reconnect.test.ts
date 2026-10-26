@@ -28,7 +28,7 @@ import { acquirePooledStage } from "../../packages/workflows/src/workers/pooled-
 import type { DeliveryOpId } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { LIVE_STAGE_FIRST_DELTA } from "../fixtures/pool-live-stage-child.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator process, worker processes, real agent stages, and a worker replacement. */
@@ -349,6 +349,154 @@ test.skipIf(process.platform === "win32")(
 				["steer-from-root", "follow-up-from-root"],
 				"each message reached the replacement attempt exactly once, in send order",
 			);
+		} finally {
+			await live.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"text pending when the chat closes and the worker dies reaches the replacement once, and the reopened chat shows it (#3996)",
+	async () => {
+		const live = await livePool("pool-stage-detached-redelivery-", 1, 1);
+		try {
+			await live.held();
+			const [target] = agentStages(live.store);
+			assert.ok(target !== undefined);
+			const lease = await acquirePooledStage(live.store, target.runId, target.stage.id);
+			assert.ok(lease !== undefined);
+			const observe = () =>
+				JSON.stringify(
+					agentStages(live.store).map(({ stage }) => ({
+						status: stage.status,
+						generation: stage.workerExecution?.generation,
+						queued: stage.queuedUserMessageCount,
+					})),
+				);
+			assert.equal(
+				await step(
+					"steer",
+					lease.handle.sendUserMessage!("detached-steer", { deliverAs: "steer" }),
+					live.execution,
+					observe,
+				),
+				"steer",
+			);
+			assert.equal(
+				await step(
+					"follow-up",
+					lease.handle.sendUserMessage!("detached-follow-up", { deliverAs: "followUp" }),
+					live.execution,
+					observe,
+				),
+				"followUp",
+			);
+			// The chat closes before the worker dies: no chat is open to reconnect.
+			lease.release();
+			const [worker] = live.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+
+			// The replacement gets both from the stage's outbox, each in its mode, while its turn is held.
+			const reopened = await step(
+				"reopen on the replacement with the text queued again",
+				(async () => {
+					for (;;) {
+						const stage = agentStages(live.store)[0]?.stage;
+						if ((stage?.workerExecution?.generation ?? 0) > 1) {
+							const view = await acquirePooledStage(live.store, target.runId, target.stage.id);
+							if (view !== undefined) {
+								const queued = view.handle.queuedUserMessages?.();
+								if (
+									queued?.steering.includes("detached-steer") === true &&
+									queued.followUp.includes("detached-follow-up")
+								)
+									return view;
+								view.release();
+							}
+						}
+						await sleep(25);
+					}
+				})(),
+				live.execution,
+				observe,
+			);
+			reopened.release();
+
+			setGate(live.path, 1);
+			const outcome = await step(
+				"run completion after release",
+				live.execution,
+				new Promise<never>(() => {}),
+				observe,
+			);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			const finished = agentStages(live.store)[0]!.stage;
+			const sessions = await poolSessionStore(live.backend);
+			assert.ok(sessions !== undefined);
+			const users = (await SessionManager.open(sessions, finished.sessionId!))
+				.buildSessionContext()
+				.messages.filter((message) => message.role === "user")
+				.map(textOf);
+			await sessions.close();
+			assert.deepEqual(
+				users.filter((text) => text.startsWith("detached-")),
+				["detached-steer", "detached-follow-up"],
+				"each reached the replacement exactly once, in send order",
+			);
+		} finally {
+			await live.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a run that fails while its watched stage reconnects ends the reconnect and reports the undelivered text (#3996)",
+	async () => {
+		const live = await livePool("pool-stage-reconnect-failed-", 1, 1);
+		try {
+			await live.held();
+			const [target] = agentStages(live.store);
+			assert.ok(target !== undefined);
+			const lease = await acquirePooledStage(live.store, target.runId, target.stage.id);
+			assert.ok(lease !== undefined);
+			const handle = lease.handle as PooledStageHandle;
+			const observe = () =>
+				JSON.stringify({
+					placement: handle.placement,
+					ended: handle.endReason,
+					generation: agentStages(live.store)[0]?.stage.workerExecution?.generation,
+				});
+			await step("steer", handle.steer("never-arrives"), live.execution, observe);
+			// Kill every attempt the pool starts until it gives up on the child.
+			const failed = (async () => {
+				for (let killed = 0; ; ) {
+					const generation = agentStages(live.store)[0]?.stage.workerExecution?.generation ?? 0;
+					const [worker] = live.pool.workerPids;
+					if (generation > killed && worker !== undefined) {
+						process.kill(worker, "SIGKILL");
+						killed = generation;
+					}
+					await sleep(25);
+				}
+			})();
+			failed.catch(() => {});
+			const outcome = await step("run failure", live.execution, new Promise<never>(() => {}), observe);
+			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			await step(
+				"the view ends",
+				(async () => {
+					while (handle.endReason === undefined) await sleep(25);
+				})(),
+				new Promise<never>(() => {}),
+				observe,
+			);
+			assert.equal(handle.isReconnecting, false);
+			assert.equal(handle.placement.reconnecting, undefined);
+			assert.ok((handle.placement.undelivered ?? 0) >= 1, observe());
+			lease.release();
 		} finally {
 			await live.close();
 		}

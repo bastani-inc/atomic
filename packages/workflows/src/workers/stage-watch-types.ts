@@ -47,6 +47,11 @@ export interface PooledStageChatSnapshot {
 	 * after a fence redelivers only what the replacement attempt does not have.
 	 */
 	readonly deliveredOps?: readonly DeliveryOpId[];
+	/**
+	 * Whether the stage started a turn in this attempt. A replacement that has not redelivers
+	 * nothing until it does, so the replay's own prompt comes first.
+	 */
+	readonly turnStarted?: boolean;
 	/** Seq of the last event folded into this snapshot; the stream continues after it. */
 	readonly seq: number;
 }
