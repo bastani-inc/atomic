@@ -4728,3 +4728,151 @@ test("an interrupted run stays addressable before resume and yields to the proce
 		dormant.dispose();
 	}
 });
+
+test("the launching session steers its own run's stages while an unrelated session must join first (#4006)", async () => {
+	const runId = "a4006a40-0600-4006-8006-400640064006";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	configureTestStoreBackend(store, backend);
+	// The launcher is an ordinary chat session in `default` that hosts the run in-process.
+	const launcher = extensionFixture("issue-4006-launcher", "issue-4006-launcher", undefined, "default");
+	intercom(launcher.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(launcher.pi as never, store);
+	const outsider = extensionFixture("issue-4006-outsider", "issue-4006-outsider", undefined, "default");
+	intercomHeavy(outsider.pi as never);
+	let liveStage: ReturnType<typeof extensionFixture> | undefined;
+	try {
+		await launcher.start();
+		await outsider.start();
+		store.recordRunStart({
+			id: runId,
+			name: "issue-4006",
+			inputs: {},
+			status: "running",
+			possibleStages: ["work-*"],
+			toolNodes: [],
+			stages: [
+				{
+					id: "work-1-id",
+					name: "work-1",
+					status: "running",
+					sessionId: "issue-4006-live-stage",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+				{
+					id: "work-3-id",
+					name: "work-3",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "issue-4006",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await launcher.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		const liveDelivery = createWorkflowPendingStageDelivery(store, runId, "work-1-id", "work-1");
+		liveStage = extensionFixture("issue-4006-live-stage", "work-1", liveDelivery, group, {
+			intercomGroup: group,
+			kind: "workflow-stage",
+			workflowRunId: runId,
+			workflowStageId: "work-1-id",
+			workflowStageName: "work-1",
+			pendingStageDelivery: liveDelivery,
+		});
+		intercom(liveStage.pi as never);
+		await liveStage.start();
+
+		// The launcher never joined the invocation group, yet it is the run's invocation session.
+		const exactLive = await executeIntercom(launcher, {
+			action: "send",
+			to: `${group}/work-1`,
+			message: "launcher exact live",
+		});
+		assert.equal(exactLive.isError, false, exactLive.content[0]?.text);
+		assert.equal(exactLive.details.delivered, true);
+		const exactPending = await executeIntercom(launcher, {
+			action: "send",
+			to: `${group}/work-3`,
+			message: "launcher exact pending",
+		});
+		assert.equal(exactPending.isError, false, exactPending.content[0]?.text);
+		assert.equal(exactPending.details.queued, true);
+		const pattern = await executeIntercom(launcher, {
+			action: "send",
+			to: `${group}/**`,
+			message: "launcher pattern",
+		});
+		assert.equal(pattern.isError, false, pattern.content[0]?.text);
+		assert.equal(pattern.details.queued, true);
+		await liveStage.waitForInjectedCount(2);
+		const liveTexts = injectedTexts(liveStage);
+		assert.equal(liveTexts.filter((text) => text.includes("launcher exact live")).length, 1);
+		assert.equal(liveTexts.filter((text) => text.includes("launcher pattern")).length, 1);
+		assert.equal(store.pendingStageMessagesFor(runId, "work-3").length, 1);
+		const launcherList = await executeIntercom(launcher, { action: "list" });
+		assert.match(launcherList.content[0]?.text ?? "", new RegExp(`${group}/work-3-id\` \\[PENDING\\]`));
+
+		// Security: an unrelated session that did not join is refused and told what to join.
+		const refusedExact = await executeIntercom(outsider, {
+			action: "send",
+			to: `${group}/work-3`,
+			message: "outsider exact",
+		});
+		assert.equal(refusedExact.isError, true);
+		assert.ok(refusedExact.content[0]?.text.includes(`join ${group}`), refusedExact.content[0]?.text);
+		const refusedPattern = await executeIntercom(outsider, {
+			action: "send",
+			to: `${group}/**`,
+			message: "outsider pattern",
+		});
+		assert.equal(refusedPattern.isError, true);
+		assert.ok(refusedPattern.content[0]?.text.includes(`join ${group}`), refusedPattern.content[0]?.text);
+		const outsiderList = await executeIntercom(outsider, { action: "list" });
+		assert.doesNotMatch(outsiderList.content[0]?.text ?? "", new RegExp(`${group}/work`));
+		assert.equal(store.pendingStageMessagesFor(runId, "work-3").length, 1);
+		assert.equal(injectedTexts(liveStage).filter((text) => text.includes("outsider")).length, 0);
+		// The run's stages gain no route to the launcher: it is not a member of their group.
+		const stageToLauncher = await executeIntercom(liveStage, {
+			action: "send",
+			to: "issue-4006-launcher",
+			message: "stage to launcher",
+		});
+		assert.equal(stageToLauncher.isError, true);
+		assert.equal(launcher.injectedMessages.length, 0);
+
+		// Joining the documented group grants the same authority.
+		const joined = await executeIntercom(outsider, { action: "join", group });
+		assert.equal(joined.isError, false);
+		const joinedList = await executeIntercom(outsider, { action: "list" });
+		assert.match(joinedList.content[0]?.text ?? "", new RegExp(`${group}/work-3-id\` \\[PENDING\\]`));
+		const joinedPattern = await executeIntercom(outsider, {
+			action: "send",
+			to: `${group}/**`,
+			message: "joined pattern",
+		});
+		assert.equal(joinedPattern.isError, false, joinedPattern.content[0]?.text);
+		assert.equal(joinedPattern.details.queued, true);
+		await liveStage.waitForInjectedCount(3);
+		assert.equal(injectedTexts(liveStage).filter((text) => text.includes("joined pattern")).length, 1);
+	} finally {
+		if (liveStage !== undefined) await liveStage.shutdown();
+		await outsider.shutdown();
+		disposeBridge();
+		await launcher.shutdown();
+	}
+});
+
+function injectedTexts(fixture: ReturnType<typeof extensionFixture>): string[] {
+	return fixture.injectedMessages.map((message) => message.content ?? "");
+}

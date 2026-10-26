@@ -667,7 +667,10 @@ test("invocation roster control is directional across owned subgroups", async ()
 	] as const) {
 		const result = await sender.send(`workflow:${runId}/b`, { messageId, text: "must stay isolated" });
 		assert.equal(result.delivered, false);
-		assert.equal(result.reason, "Target workflow run is in a different intercom group");
+		assert.equal(
+			result.reason,
+			`Target workflow run is in a different intercom group; join workflow:${runId} to send to its stages`,
+		);
 	}
 
 	await memberB.registerLiveWorkflowStageRoute(runId, ["b"], capability);
@@ -681,7 +684,10 @@ test("invocation roster control is directional across owned subgroups", async ()
 			expectsReply: true,
 		});
 		assert.equal(result.delivered, false);
-		assert.equal(result.reason, "Target session is in a different intercom group");
+		assert.equal(
+			result.reason,
+			`Target workflow run is in a different intercom group; join workflow:${runId} to send to its stages`,
+		);
 	}
 });
 
@@ -2776,4 +2782,58 @@ test("an interrupted run's dormant route yields to the process that resumes it a
 		type: "registration_failed",
 		reason: "Pending-stage route is not authorized",
 	});
+});
+
+test("only the holder of a run's route capability gains launcher control without joining (#4006)", async () => {
+	const runId = "b4006b40-0600-4006-8006-400640064006";
+	const group = `workflow:${runId}`;
+	const capability = "issue-4006-route-capability";
+	const owner = new WireClient();
+	const launcher = new WireClient();
+	const guesser = new WireClient();
+	await register(owner, "issue-4006-route-owner", group);
+	await register(launcher, "issue-4006-launcher", "default");
+	await register(guesser, "issue-4006-guesser", "default");
+	owner.send({ type: "register_pending_stage_route", runId, group, capability });
+	assert.equal(await registrationOutcome(owner, "issue-4006-route-registered"), "acknowledged");
+
+	guesser.send({ type: "claim_workflow_invocation", requestId: "guess", runId, capability: "guessed-capability" });
+	assert.equal((await guesser.next("workflow_invocation_claimed")).claimed, false);
+	guesser.send({
+		type: "send",
+		to: `${group}/**`,
+		message: { id: "issue-4006-guessed", timestamp: 1, content: { text: "guessed" } },
+	});
+	assert.deepEqual(await guesser.next("delivery_failed"), {
+		type: "delivery_failed",
+		messageId: "issue-4006-guessed",
+		reason: `Target workflow run is in a different intercom group; join ${group} to send to its stages`,
+	});
+
+	launcher.send({ type: "claim_workflow_invocation", requestId: "claim", runId, capability });
+	assert.equal((await launcher.next("workflow_invocation_claimed")).claimed, true);
+	launcher.send({
+		type: "send",
+		to: `${group}/**`,
+		message: { id: "issue-4006-launched", timestamp: 2, content: { text: "launcher" } },
+	});
+	const routed = await owner.next("pending_stage_message");
+	assert.equal(routed.message.id, "issue-4006-launched");
+	assert.equal(routed.invocationControl, true);
+	assert.equal(
+		owner.received.some(
+			(frame) => frame.type === "pending_stage_message" && frame.message.id === "issue-4006-guessed",
+		),
+		false,
+	);
+
+	// A claim lapses with the route capability it proved.
+	owner.send({ type: "register_pending_stage_route", runId, group, capability: "issue-4006-rotated-capability" });
+	assert.equal(await registrationOutcome(owner, "issue-4006-route-rotated"), "acknowledged");
+	launcher.send({
+		type: "send",
+		to: `${group}/**`,
+		message: { id: "issue-4006-stale", timestamp: 3, content: { text: "stale" } },
+	});
+	assert.equal((await launcher.next("delivery_failed")).messageId, "issue-4006-stale");
 });

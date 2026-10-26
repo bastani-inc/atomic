@@ -245,6 +245,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
   const inboundDeliveries = new InboundMessageAdmission();
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
+  /** #4006: the run capability this session's current client has proven it launched, per run. */
+  const launchedRunClaims = new Map<string, { readonly client: IntercomClient; readonly capability: string }>();
   const pendingStageRouteClients = new Map<string, PendingStageRouteClientState>();
   // #3904: the routes of every run in one invocation group share one connection, not one per run.
   const pendingStageRouteConnections = new Map<string, PendingStageRouteConnection>();
@@ -1185,6 +1187,24 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     await ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) });
+    // Stage startup waits on the route alone; a lost claim is made again when this session reconnects.
+    await claimLaunchedRun(activeClient, runId, route).catch(() => {});
+  }
+  /**
+   * #4006: a run whose route lives on its own connection is still this session's run. Prove it with the
+   * route capability so this session can steer the run's stages without joining `workflow:<rootRunId>`.
+   * Membership is unchanged, so the run's stages gain no route back to this session.
+   */
+  async function claimLaunchedRun(
+    activeClient: IntercomClient,
+    runId: string,
+    route: PendingStageRouteRegistration,
+  ): Promise<void> {
+    const claimed = launchedRunClaims.get(runId);
+    if (claimed?.client === activeClient && claimed.capability === route.capability) return;
+    if (await activeClient.claimWorkflowInvocation(runId, route.capability)) {
+      launchedRunClaims.set(runId, { client: activeClient, capability: route.capability });
+    }
   }
   /** A dormant route always gets its own connection so a revocation can close it alone (#3760). */
   function registersOnMainClient(route: PendingStageRouteRegistration): boolean {
@@ -1271,7 +1291,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 continue;
               }
               // A run's own connection recovers on that run's own backoff; it must not decide this client's fate.
-              void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) }).catch(() => {});
+              void ensurePendingStageRouteClient(runId, { ...route, group: normalizeGroup(route.group) })
+                .then(() => claimLaunchedRun(nextClient, runId, route))
+                .catch(() => {});
             }
             const orchestration = contextAtStart.orchestrationContext;
             if (orchestration?.kind === "workflow-stage" && orchestration.pendingStageDelivery !== undefined) {

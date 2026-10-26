@@ -3,7 +3,11 @@ import { durableWorkflowRunSnapshots } from "../durable/completed-catalog.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS, isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { canonicalDirectory } from "../durable/sdk-recovery-scope.js";
-import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
+import {
+	pendingStageSenderGroup,
+	workflowInvocationGroupRefusal,
+	workflowInvocationIntercomGroup,
+} from "../shared/intercom-group.js";
 import { queueStageMessage, queueStickyStageMessage } from "../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { isAddressableStageStatus } from "../shared/pending-stage-status.js";
@@ -59,6 +63,8 @@ interface DormantMessageEvent {
 	handled: boolean;
 	completion?: Promise<unknown>;
 	readonly live?: boolean;
+	/** #4006: the broker authorized the sender as the session that launched the run. */
+	readonly invocationControl?: boolean;
 	readonly runId: string;
 	readonly target: string;
 	readonly from: PendingStageSender;
@@ -287,6 +293,7 @@ export function registerDormantRunIntercomRoutes(
 			target: event.target,
 			from: event.from,
 			message: event.message,
+			...(event.invocationControl === true ? { invocationControl: true } : {}),
 			...(event.senderRegistrationName === undefined
 				? {}
 				: { senderRegistrationName: event.senderRegistrationName }),
@@ -358,7 +365,7 @@ async function writeDormantMessage(run: DormantRun, event: DormantMessageEvent):
 		const current = pendingStageMessagesForDurableRun(run.backend, run.runId);
 		const receipt = await run.backend.readSettledPendingStageMessage?.(run.runId, event.message.id);
 		const existing = receipt === undefined ? current : [...current, receipt];
-		const senderGroup = event.from.groups?.includes(run.group) === true ? run.group : event.from.group;
+		const senderGroup = pendingStageSenderGroup(event, run.group);
 		const input: PendingStageMessageInput = {
 			runId: run.runId,
 			stageKey: event.target,
@@ -379,7 +386,7 @@ async function writeDormantMessage(run: DormantRun, event: DormantMessageEvent):
 						...(stage.replayKey === undefined ? {} : { replayKey: stage.replayKey }),
 						aliases: stage.id === stage.name ? [stage.id] : [stage.id, stage.name],
 					});
-		if (!result.ok) return queueRefusal(result, event.target);
+		if (!result.ok) return queueRefusal(result, event.target, run.group);
 		if (!result.deduplicated) {
 			const persisted = result.messages.filter((entry: PendingStageMessage) => entry !== receipt);
 			if (!(await run.backend.persistPendingStageMessages(run.runId, persisted)))
@@ -406,7 +413,11 @@ function interruptedStage(run: DormantRun, target: string): StageSnapshot | unde
 	return matches.length === 1 ? matches[0] : undefined;
 }
 
-function queueRefusal(result: Extract<PendingStageQueueResult, { ok: false }>, target: string): DormantMessageResult {
+function queueRefusal(
+	result: Extract<PendingStageQueueResult, { ok: false }>,
+	target: string,
+	runGroup: string,
+): DormantMessageResult {
 	if (result.reason === "capacity")
 		return {
 			outcome: "refused",
@@ -418,7 +429,7 @@ function queueRefusal(result: Extract<PendingStageQueueResult, { ok: false }>, t
 			reason: `Intercom message ID '${result.messageId}' was already queued for ${target} with a different target, sender, or payload`,
 			reasonCode: "message_id_conflict",
 		};
-	return { outcome: "refused", reason: "Target workflow run is in a different intercom group" };
+	return { outcome: "refused", reason: workflowInvocationGroupRefusal(runGroup) };
 }
 
 function isAddressableStage(stage: StageSnapshot): boolean {
