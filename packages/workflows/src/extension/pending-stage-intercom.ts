@@ -778,10 +778,15 @@ async function deliverStickyTarget(
 			reason: `Workflow run ${rootRunId} terminated with status ${rootRun.status} before any stage matching ${event.target} started`,
 		};
 	}
-	const notInKnownSet = targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? [])
-		? undefined
-		: true;
 	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
+	// The static scan cannot see inside dynamically loaded (pooled) children, so a target that
+	// matches a materialized live or pending stage is known even when the scan misses it.
+	const notInKnownSet =
+		targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? []) ||
+		liveMatches.length > 0 ||
+		matchingLiveStages(runs, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
+			? undefined
+			: true;
 	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = pendingStageSenderGroup(event, runGroup);
@@ -925,11 +930,15 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	);
 }
 
-/** Live stages of the invocation whose depth-faithful path (per D5 hop spellings) matches the target segments. */
+/**
+ * Live stages of the invocation whose depth-faithful path (per D5 hop spellings) matches the target segments.
+ * `includePending` also returns addressable stages that have no session yet.
+ */
 function matchingLiveStages(
 	runs: ReturnType<Store["runs"]>,
 	rootRunId: string,
 	patternSegments: readonly string[],
+	options: { readonly includePending?: boolean } = {},
 ): {
 	readonly run: ReturnType<Store["runs"]>[number];
 	readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
@@ -948,7 +957,7 @@ function matchingLiveStages(
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			const live = stage.sessionId !== undefined || stage.sessionFile !== undefined;
-			if (!live || stage.pendingStageDeliveryAvailable !== true) continue;
+			if ((!live && options.includePending !== true) || stage.pendingStageDeliveryAvailable !== true) continue;
 			if (
 				stage.status !== "pending" &&
 				stage.status !== "running" &&
