@@ -402,31 +402,49 @@ async function deliverPendingStageMessages(
 		const releaseClaim = claimPendingDelivery(activeStore, claimOwner, entry.stageKey, entry.id);
 		if (releaseClaim === undefined) continue;
 		try {
-			if (
-				entry.sticky === true &&
-				(recipient === undefined || recipient.receivedMessageIds.includes(entry.message.id))
-			) {
+			// This stage's (and session's) receipt for a sticky entry. It is written only after the session admitted
+			// the entry, so its presence, in the entry's live ledger or archived by the durable owner, means the entry
+			// was already delivered here.
+			const stickyReceipt = {
+				runId,
+				stageId,
+				...(recipient === undefined ? {} : { sessionId: recipient.sessionId, admission: "context" as const }),
+			};
+			const hasStickyReceipt = async (): Promise<boolean> =>
+				(activeStore
+					.runs()
+					.find((run) => run.id === entry.runId)
+					?.pendingStageMessages?.find((candidate) => candidate.id === entry.id)
+					?.deliveries?.some(
+						(delivery) =>
+							delivery.runId === runId &&
+							delivery.stageId === stageId &&
+							(recipient === undefined ||
+								(delivery.sessionId === recipient.sessionId && delivery.admission === "context")),
+					) ??
+					false) ||
+				(await durableBackendForRun(rootBackend, activeStore.runs(), entry.runId)?.hasPendingStageDeliveryReceipt?.(
+					entry.runId,
+					entry.id,
+					stickyReceipt,
+				)) === true;
+			// The receipt is checked even when the recipient's transcript lacks the entry: that snapshot can predate an
+			// append still in flight (a slow pooled session write, #3980), and redelivering an already-receipted entry
+			// would duplicate it and could only fail, since its receipt is already recorded.
+			if (entry.sticky === true && (await hasStickyReceipt())) {
 				const entryBackend = durableBackendForRun(rootBackend, activeStore.runs(), entry.runId);
-				if (
-					await entryBackend?.hasPendingStageDeliveryReceipt?.(entry.runId, entry.id, {
-						runId,
-						stageId,
-						...(recipient === undefined ? {} : { sessionId: recipient.sessionId, admission: "context" as const }),
-					})
-				) {
-					if (entryBackend !== undefined) {
-						await commit(() =>
-							activeStore.recordPendingStageMessageDeliveries(
-								entry.runId,
-								entry.id,
-								[],
-								new Date().toISOString(),
-								entryBackend,
-							),
-						);
-					}
-					continue;
+				if (entryBackend !== undefined) {
+					await commit(() =>
+						activeStore.recordPendingStageMessageDeliveries(
+							entry.runId,
+							entry.id,
+							[],
+							new Date().toISOString(),
+							entryBackend,
+						),
+					);
 				}
+				continue;
 			}
 			if (!recipient?.receivedMessageIds.includes(entry.message.id))
 				await deliver(toPendingStageSender(entry), entry.message);
@@ -439,26 +457,18 @@ async function deliverPendingStageMessages(
 						`atomic-workflows: workflow run ${entry.runId} has no durable owner for sticky pending-stage delivery`,
 					);
 				}
-				if (
-					!(await commit(() =>
-						activeStore.recordPendingStageMessageDeliveries(
-							entry.runId,
-							entry.id,
-							[
-								{
-									runId,
-									stageId,
-									...(stageName === stageId ? {} : { stageName }),
-									...(recipient === undefined
-										? {}
-										: { sessionId: recipient.sessionId, admission: "context" as const }),
-								},
-							],
-							new Date().toISOString(),
-							entryBackend,
-						),
-					))
-				) {
+				const recorded = await commit(() =>
+					activeStore.recordPendingStageMessageDeliveries(
+						entry.runId,
+						entry.id,
+						[{ ...stickyReceipt, ...(stageName === stageId ? {} : { stageName }) }],
+						new Date().toISOString(),
+						entryBackend,
+					),
+				);
+				// Nothing new recorded is success when this stage's receipt already exists (written concurrently):
+				// the delivery is idempotent, so only a vanished or settled entry is a real change.
+				if (!recorded && !(await hasStickyReceipt())) {
 					throw new Error(`atomic-workflows: pending-stage message ${entry.id} changed during delivery`);
 				}
 				continue;
