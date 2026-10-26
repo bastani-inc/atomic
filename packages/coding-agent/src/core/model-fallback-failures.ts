@@ -330,6 +330,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "rate_limit":
 		case "rate_limit_exceeded":
 		case "too_many_requests":
+		case "throttlingexception":
 			return "rate_limit";
 		case "quota_exceeded":
 		case "insufficient_quota":
@@ -337,6 +338,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "usage_limit_reached":
 		case "usage_limit_exceeded":
 		case "payment_required":
+		case "servicequotaexceededexception":
 			return "quota_exhausted";
 		case "aborterror":
 		case "aborted":
@@ -408,8 +410,10 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 // HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
 // Codes that also appear as free-text wording for short limits ("quota exceeded", "usage limit reached")
 // count only as a JSON `code`/`type` value, as in a raw error body some providers put in the message.
+// A service-quota exception and a per-day quota violation in a JSON error body (`"quotaId": "...PerDay..."`)
+// also last until the quota resets.
 const QUOTA_EXHAUSTED_FAILURE_PATTERN =
-	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
+	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
 
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
