@@ -178,7 +178,7 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow <name> [key=value ...]
 /workflow connect [run-id]
 /workflow attach [run-id] [stage-id-or-name]
-/workflow pause [run-id|--all]
+/workflow pause [run-id|--all] [stage-id-or-name]
 /workflow status [run-id]
 /workflow status --all
 /workflow quit <run-id|--all>
@@ -194,6 +194,7 @@ Common controls:
 /workflow connect <run-id>             # graph viewer, including terminal runs
 /workflow attach <run-id> <stage>      # chat with a single stage
 /workflow pause <run-id>               # pause resumably
+/workflow pause <run-id> <stage>       # pause one stage; the others keep running
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflows [run-id]                    # retained alias for /workflow resume (history picker)
@@ -213,7 +214,7 @@ Surface behavior:
 - **Footer context** - An attached live stage chat shows its own current folder and Git branch and mirrors live extension status lines such as the MCP server indicator. Branch changes trigger a repaint through the host's cached footer provider. The compact `/tasks` picker retains this context and the stage's model and reasoning level even while its foreground turn streams; detail, transcript, input, and confirmation pages remain fullscreen.
 - **Working indicator** - Stage chat shows `∀` during accepted prompt startup and active work, including retained-session follow-ups. Retry, fallback, compaction, cancellation, and errors take precedence. `NO_COLOR` removes foreground colors; `ATOMIC_REDUCED_MOTION=1` makes the indicator static.
 - **Subagent statusline** - If a subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors its summary so the run remains visible; hide the graph with `h`, leave it with `ctrl+x`, or reconnect later to return to the full below-editor widget.
-- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. Use the workflow tool's `stageId` for stage or tool-node targeting.
+- **Run control** - Use `pause` and `resume` for resumable live work. Pause holds a stage's queued steering and follow-up items in place without dequeuing them or starting continuation; `resume` releases those items once in their existing per-queue order, but queue release alone does not start a model turn. `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. `/workflow pause` selects the active run by default, accepts a full run id or `--all`, and does not open a stage picker. `/workflow pause <run-id> <stage>` pauses only that stage, named by id, name or unique prefix as `/workflow attach` resolves it, and `/workflow resume <run-id> <stage>` resumes it. The workflow tool's `stageId` does the same and also targets tool nodes.
 - **Rediscovery** - Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process ([Reloading workflow resources](/workflows/operations#reloading-workflow-resources)).
 - **Status listing** - `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 - **Status times** - `/workflow status <run-id>` displays `started` and `ended` in the system local timezone as `HH:mm:ss`. If they differ from your expected clock, check the timezone of the machine or container running Atomic and any inherited `TZ` environment setting. Elapsed durations and raw timestamps in structured results are unchanged.
