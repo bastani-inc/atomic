@@ -18,6 +18,10 @@ type StageCommandResult = Omit<Extract<Outbound, { kind: "stage-command-result" 
 /**
  * The one way user text from the root enters a pooled stage's session (#3996): through the
  * stage's own idle-aware delivery, so it reports the same action an in-process stage does.
+ *
+ * It settles once the text is admitted. A steer or follow-up is admitted when it is queued;
+ * a prompt to an idle stage is admitted when its user message starts the turn, not when the
+ * turn ends, so a reply never waits on the model and the door stays free for the next text.
  */
 export async function admitStageUserMessage(
 	handle: StageControlHandle,
@@ -29,17 +33,38 @@ export async function admitStageUserMessage(
 		...(intent === "auto" ? {} : { deliverAs: intent }),
 		...(expandPromptTemplates === undefined ? {} : { expandPromptTemplates }),
 	};
-	if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
-	if (intent === "steer" && handle.isStreaming) {
-		await handle.steer(text);
-		return { action: "steer" };
+	// Only an idle stage starts a turn with this text; a streaming one queues it and says so.
+	const startedTurn = Promise.withResolvers<StageCommandResult>();
+	const unsubscribe = handle.isStreaming
+		? () => {}
+		: handle.subscribe((event) => {
+				if (
+					event.type === "message_start" &&
+					event.message.role === "user" &&
+					messageText(event.message).includes(text)
+				)
+					startedTurn.resolve({ action: "prompt" });
+			});
+	const delivery = (async (): Promise<StageCommandResult> => {
+		if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
+		if (intent === "steer" && handle.isStreaming) {
+			await handle.steer(text);
+			return { action: "steer" };
+		}
+		if (intent !== "steer" && handle.isStreaming) {
+			await handle.followUp(text);
+			return { action: "followUp" };
+		}
+		await handle.prompt(text);
+		return { action: "prompt" };
+	})();
+	try {
+		return await Promise.race([delivery, startedTurn.promise]);
+	} finally {
+		unsubscribe();
+		// A turn this delivery started reports its own failure through the stage; the door has answered.
+		delivery.catch(() => {});
 	}
-	if (intent !== "steer" && handle.isStreaming) {
-		await handle.followUp(text);
-		return { action: "followUp" };
-	}
-	await handle.prompt(text);
-	return { action: "prompt" };
 }
 
 /**

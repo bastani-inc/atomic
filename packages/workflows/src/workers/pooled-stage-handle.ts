@@ -104,6 +104,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private redelivered?: number;
 	private disposed = false;
 	private session: string | undefined;
+	/** Set while a rebind waits for the replacement attempt to start its own turn. */
+	private whenStarted?: () => void;
 
 	constructor(
 		readonly runId: string,
@@ -176,6 +178,7 @@ export class PooledStageHandle implements StageControlHandle {
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
 			this.streamingNow = false;
+			this.started();
 			if (RECONNECTABLE.has(message.reason) && !this.disposed) this.reconnecting = true;
 			else this.ended ??= message.reason;
 			return;
@@ -202,6 +205,14 @@ export class PooledStageHandle implements StageControlHandle {
 		const present = new Set(watch.snapshot.deliveredOps ?? []);
 		const outstanding = this.outbound.filter((entry) => !present.has(entry.op));
 		this.outbound.splice(0, this.outbound.length, ...outstanding);
+		// The replay sends the stage's own prompt first; redelivered text joins its turn, as it did.
+		// The replay's session may already hold earlier messages, so only a streaming turn counts.
+		if (outstanding.length > 0 && !this.streamingNow) {
+			const started = Promise.withResolvers<void>();
+			this.whenStarted = started.resolve;
+			await started.promise;
+			if (this.disposed || this.watchId !== watch.id || !this.streamingNow) return 0;
+		}
 		let redelivered = 0;
 		for (const entry of outstanding) {
 			// `auto`: the replay may be at a different point than the original send.
@@ -277,6 +288,7 @@ export class PooledStageHandle implements StageControlHandle {
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.started();
 		this.listeners.clear();
 		this.rebindListeners.clear();
 		this.close(this.watchId);
@@ -342,6 +354,18 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 
 	private apply(event: AgentSessionEvent): void {
+		this.applyEvent(event);
+		if (this.streamingNow) this.started();
+	}
+
+	/** Releases a rebind waiting for the replacement's turn; it then checks why it woke. */
+	private started(): void {
+		const resolve = this.whenStarted;
+		this.whenStarted = undefined;
+		resolve?.();
+	}
+
+	private applyEvent(event: AgentSessionEvent): void {
 		this.toolExecutions.record(event);
 		this.queued.record(event);
 		switch (event.type) {

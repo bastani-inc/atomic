@@ -79,6 +79,32 @@ function agentStages(store: Store): { readonly runId: string; readonly stage: St
 		);
 }
 
+/**
+ * Waits for one step of a test on its own signal. When the step does not happen, the error
+ * names the step and what the test could see, instead of a bare test timeout.
+ */
+async function step<T>(
+	label: string,
+	signal: Promise<T>,
+	execution: Promise<{ readonly status: string; readonly error?: string }>,
+	observe: () => string,
+): Promise<T> {
+	const stalled = AbortSignal.timeout(CONDITION_TIMEOUT_MS);
+	const gaveUp = new Promise<never>((_resolve, reject) =>
+		stalled.addEventListener("abort", () => reject(new Error(`stalled at "${label}": ${observe()}`)), {
+			once: true,
+		}),
+	);
+	const ended = execution.then((outcome): never => {
+		throw new Error(
+			`the run ended (${outcome.status}${outcome.error ? `: ${outcome.error}` : ""}) at "${label}": ${observe()}`,
+		);
+	});
+	gaveUp.catch(() => {});
+	ended.catch(() => {});
+	return await Promise.race([signal, gaveUp, ended]);
+}
+
 function setGate(path: string, released: 0 | 1): void {
 	const database = new TestSqliteDatabase(path);
 	try {
@@ -109,6 +135,7 @@ async function livePool(prefix: string, workers: number, children: number) {
 	});
 	const store = createStore();
 	bindStoreDurableBackend(store, backend);
+	const controller = new AbortController();
 	const execution = run(
 		workflow({
 			name: `${prefix}root`,
@@ -123,7 +150,7 @@ async function livePool(prefix: string, workers: number, children: number) {
 			},
 		}),
 		{},
-		{ runId: testRunId(prefix), cwd: directory, store, durableBackend: backend },
+		{ runId: testRunId(prefix), cwd: directory, store, durableBackend: backend, signal: controller.signal },
 	);
 	/** Waits until every child's stage streams its held turn, through a live view of each. */
 	const held = async (): Promise<void> => {
@@ -146,6 +173,8 @@ async function livePool(prefix: string, workers: number, children: number) {
 	};
 	const close = async () => {
 		setGate(path, 1);
+		// A test that failed part-way leaves the run waiting; aborting it bounds the cleanup.
+		controller.abort(new Error("test cleanup"));
 		await execution.catch(() => {});
 		await pool.close();
 		await backend.close();
@@ -221,36 +250,74 @@ test.skipIf(process.platform === "win32")(
 			const lease = await acquirePooledStage(live.store, target.runId, target.stage.id);
 			assert.ok(lease !== undefined);
 			const handle = lease.handle as PooledStageHandle;
+			const observe = () =>
+				JSON.stringify({
+					placement: handle.placement,
+					streaming: handle.isStreaming,
+					workers: live.pool.workerPids.length,
+					stage: agentStages(live.store).map(({ stage }) => ({
+						status: stage.status,
+						generation: stage.workerExecution?.generation,
+					})),
+				});
 			const reconnected = Promise.withResolvers<number>();
 			lease.onReconnected?.((count) => reconnected.resolve(count));
-			assert.equal(await handle.sendUserMessage("steer-from-root", { deliverAs: "steer" }), "steer");
-			assert.equal(await handle.sendUserMessage("follow-up-from-root", { deliverAs: "followUp" }), "followUp");
+			assert.equal(
+				await step(
+					"steer while held",
+					handle.sendUserMessage("steer-from-root", { deliverAs: "steer" }),
+					live.execution,
+					observe,
+				),
+				"steer",
+			);
+			assert.equal(
+				await step(
+					"follow-up while held",
+					handle.sendUserMessage("follow-up-from-root", { deliverAs: "followUp" }),
+					live.execution,
+					observe,
+				),
+				"followUp",
+			);
 			const oldWatch = handle.watch;
 			const firstGeneration = handle.placement.generation;
 
 			const [worker] = live.pool.workerPids;
 			assert.ok(worker !== undefined);
 			process.kill(worker, "SIGKILL");
-			const redelivered = await Promise.race([
+			const redelivered = await step(
+				"reconnect and redelivery after the kill",
 				reconnected.promise,
-				live.execution.then(() => assert.fail("the run ended before the stage reconnected")),
-			]);
+				live.execution,
+				observe,
+			);
 			assert.equal(redelivered, 2, "both queued messages were lost with the worker and sent again");
 			assert.ok(handle.placement.generation > firstGeneration);
 			assert.equal(handle.placement.reconnecting, undefined);
 
 			// The old attempt's watch is fenced: nothing reaches the session through it.
-			const stale = await live.pool.deliverToPooledStage({
-				watch: oldWatch,
-				op: "stale-op" as DeliveryOpId,
-				text: "stale-from-root",
-				intent: "steer",
-			});
+			const stale = await step(
+				"delivery through the fenced watch",
+				live.pool.deliverToPooledStage({
+					watch: oldWatch,
+					op: "stale-op" as DeliveryOpId,
+					text: "stale-from-root",
+					intent: "steer",
+				}),
+				live.execution,
+				observe,
+			);
 			assert.deepEqual(stale, { ok: false, refusal: "StaleAttempt" });
 			lease.release();
 
 			setGate(live.path, 1);
-			const outcome = await live.execution;
+			const outcome = await step(
+				"run completion after release",
+				live.execution,
+				new Promise<never>(() => {}),
+				observe,
+			);
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const finished = agentStages(live.store)[0]!.stage;
 			const sessions = await poolSessionStore(live.backend);
