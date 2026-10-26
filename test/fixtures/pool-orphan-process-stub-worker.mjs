@@ -67,13 +67,21 @@ function groupAlive(group) {
 	}
 }
 
-async function orphanProcessGroup(work) {
-	// Loading the admission module can outlast a short lease: keep it renewed, as a real worker's heartbeat does.
-	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+// jiti transpiles these TypeScript sources synchronously, which blocks this process's event loop, and so its lease
+// renewals, for seconds under load. Loading them inside a claimed attempt let a short lease expire before the attempt
+// took its permit: recovery then replaced the silent worker and the replay never orphaned a group. They load once,
+// before this worker claims work, so an attempt holds its lease only while it can renew it.
+async function loadAdmission() {
 	const jiti = createJiti(import.meta.url, { fsCache: false });
 	const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 	const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");
 	const { SqlResourceAdmission } = await load("../../packages/workflows/src/workers/resource-admission.ts");
+	return { resolveRunJournal, SqlResourceAdmission };
+}
+
+async function orphanProcessGroup(work, { resolveRunJournal, SqlResourceAdmission }) {
+	// Keep the lease renewed while the permit is taken, as a real worker's heartbeat does.
+	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
 	const journal = await resolveRunJournal({ journal: { path: start.journalPath } });
 	const admission = await SqlResourceAdmission.open(journal, {
 		...start.admission,
@@ -117,6 +125,7 @@ async function complete(work) {
 
 try {
 	await request({ kind: "ready" });
+	const admission = await loadAdmission();
 	for (;;) {
 		const control = await observeControl();
 		if (control.state !== "running") {
@@ -129,7 +138,7 @@ try {
 			continue;
 		}
 		if (work.inputs.index < orphanChildren && !existsSync(orphanMarker(work.inputs.index)))
-			await orphanProcessGroup(work);
+			await orphanProcessGroup(work, admission);
 		await complete(work);
 	}
 } catch (error) {
