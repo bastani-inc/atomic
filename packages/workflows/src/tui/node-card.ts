@@ -154,6 +154,23 @@ function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
 	return wrapIdentifierLines(child.runId, Math.max(1, width), "run ", "").map((row) => `${row.prefix}${row.chunk}`);
 }
 
+/** Wrapped child-run id row counts by width and run id; sizing asks per node on every layout (#4009). */
+const childRunRowCounts = new Map<string, number>();
+const CHILD_RUN_ROW_COUNTS_LIMIT = 4096;
+
+function workflowChildRunRowCount(stage: StageSnapshot, width: number): number {
+	const child = stage.workflowChild ?? stage.workflowChildRun;
+	if (child === undefined) return 0;
+	const key = `${width}\0${child.runId}`;
+	let count = childRunRowCounts.get(key);
+	if (count === undefined) {
+		count = workflowChildRunRows(stage, width).length;
+		if (childRunRowCounts.size >= CHILD_RUN_ROW_COUNTS_LIMIT) childRunRowCounts.clear();
+		childRunRowCounts.set(key, count);
+	}
+	return count;
+}
+
 function workflowChildMetaText(stage: StageSnapshot): string | undefined {
 	const completed = stage.workflowChild;
 	if (completed !== undefined) {
@@ -185,7 +202,7 @@ export function nodeCardHeight(
 		bodyRows = 2 + modelRows + queuedRows;
 	} else if (stage.workflowChild !== undefined || stage.workflowChildRun !== undefined) {
 		const innerWidth = Math.max(2, (opts.width ?? NODE_W) - 2);
-		bodyRows = workflowChildRunRows(stage, innerWidth).length + 1 + queuedRows;
+		bodyRows = workflowChildRunRowCount(stage, innerWidth) + 1 + queuedRows;
 	} else {
 		bodyRows = 2 + modelRows + queuedRows;
 	}

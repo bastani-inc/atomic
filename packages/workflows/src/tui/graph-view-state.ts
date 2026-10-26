@@ -121,6 +121,10 @@ export abstract class GraphViewState {
 	protected _intervalId: ReturnType<typeof setInterval> | null = null;
 	protected _lastGTime: number | null = null;
 	protected _unsubscribe: (() => void) | null = null;
+	/** A store change arrived since the layout was last built. */
+	private storeChanged = false;
+	/** `invalidate()` was called since the layout was last built. */
+	private layoutInvalidated = false;
 
 	constructor(opts: GraphViewOpts) {
 		this.mode = opts.mode;
@@ -139,9 +143,9 @@ export abstract class GraphViewState {
 		this.footerData = opts.footerData;
 		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
 
+		// Store changes only mark the layout stale; it is rebuilt once when next read (#4009).
 		this._unsubscribe = subscribeStoreInvalidation(this.store, () => {
-			this.currentSnapshot = readGraphStoreSnapshot(this.store);
-			this._rebuildLayout();
+			this.storeChanged = true;
 		});
 		this.currentSnapshot = readGraphStoreSnapshot(this.store);
 		this._rebuildLayout();
@@ -170,7 +174,23 @@ export abstract class GraphViewState {
 	}
 
 	protected _needsAnimationTick(): boolean {
+		this._syncLayout();
 		return this.hasAnimatingStages;
+	}
+
+	/**
+	 * Brings the layout up to the store's current snapshot, if a store change or an invalidation
+	 * arrived since it was last built. A pooled fan-out publishes hundreds of store changes in one
+	 * turn of the event loop; rebuilding the layout for each of them made every change cost the
+	 * whole graph (#4009), so the layout is rebuilt only where it is read: rendering, input, the
+	 * animation tick and the test seams.
+	 */
+	protected _syncLayout(): void {
+		if (!this.storeChanged && !this.layoutInvalidated) return;
+		if (this.storeChanged) this.currentSnapshot = readGraphStoreSnapshot(this.store);
+		this.storeChanged = false;
+		this.layoutInvalidated = false;
+		this._rebuildLayout();
 	}
 
 	private _nodeHeight(stage: StageSnapshot): number {
@@ -543,6 +563,6 @@ export abstract class GraphViewState {
 	}
 
 	invalidate(): void {
-		this._rebuildLayout();
+		this.layoutInvalidated = true;
 	}
 }

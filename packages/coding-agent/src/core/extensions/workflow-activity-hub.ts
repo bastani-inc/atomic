@@ -31,6 +31,8 @@ export class WorkflowActivityHub {
 	private disposed = false;
 	private dispatch?: (event: WorkflowEvent, isCurrent: () => boolean) => Promise<void>;
 	private pendingDispatches: (() => void)[] = [];
+	/** Publishes root changes the current publisher has coalesced but not yet published. */
+	private pendingPublications?: () => void;
 	bindDispatcher(dispatch: (event: WorkflowEvent, isCurrent: () => boolean) => Promise<void>): void {
 		if (this.disposed) return;
 		this.dispatch = dispatch;
@@ -49,6 +51,7 @@ export class WorkflowActivityHub {
 	}
 
 	getSnapshotFrame(): WorkflowActivitySnapshotFrame {
+		this.pendingPublications?.();
 		return this.availability === "ready"
 			? {
 					kind: "snapshot",
@@ -110,6 +113,7 @@ export class WorkflowActivityHub {
 		let active = !this.disposed;
 		if (active) {
 			this.cursor = { epoch: randomUUID(), revision: 0 };
+			this.pendingPublications = undefined;
 			this.availability = "unavailable";
 			this.roots.clear();
 			this.record("SourceUnavailable");
@@ -159,6 +163,13 @@ export class WorkflowActivityHub {
 			},
 			publishHeartbeat: (event) => {
 				if (admitted()) this.emit(event, isCurrent);
+			},
+			bindPendingPublications: (flush) => {
+				if (!isCurrent()) return;
+				const pending = () => {
+					if (isCurrent()) flush();
+				};
+				this.pendingPublications = pending;
 			},
 			dispose: () => {
 				if (!active) return;

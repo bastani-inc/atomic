@@ -1,7 +1,7 @@
 import { type AgentSessionEvent, ChatSessionHost, classifyChatCommand } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
-import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { readGraphStoreRun, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { createPromptCardState } from "./prompt-card.js";
@@ -387,7 +387,8 @@ function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | un
 }
 
 export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
-	return readGraphStoreSnapshot(ctx.store).runs.find((r) => r.id === ctx.runId);
+	// Read on every store change: project only this run, not the whole store (#4009).
+	return readGraphStoreRun(ctx.store, ctx.runId);
 }
 
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {

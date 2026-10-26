@@ -349,6 +349,11 @@ export interface Store {
 	 * direct mutation of values returned by `runs()` would leave this cache stale.
 	 */
 	graphSnapshot(): StoreSnapshot;
+	/**
+	 * The run of `graphSnapshot()` with this id, without projecting the other runs of a store
+	 * version that has no graph snapshot yet (#4009).
+	 */
+	graphRun(runId: string): RunSnapshot | undefined;
 	subscribe(fn: (snap: StoreSnapshot) => void): () => void;
 	/** Subscribe synchronously to store invalidation without constructing a full snapshot. */
 	subscribeInvalidation(fn: () => void): () => void;

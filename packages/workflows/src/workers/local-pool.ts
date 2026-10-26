@@ -225,6 +225,7 @@ export class LocalWorkerPool {
 	private rootBudget?: RunOpts["rootBudget"];
 	private budgetBlocked = false;
 	private rootSignature?: string;
+	private rootFlush?: Promise<void>;
 	private starting?: Promise<void>;
 	private failure?: Error;
 	private closed = false;
@@ -545,7 +546,27 @@ export class LocalWorkerPool {
 		this.rootSignature = JSON.stringify(rootRun);
 		return { rootRun };
 	}
-	/** Keeps the coordinator's view of the root's boundaries current, at the summary rate. */
+	/**
+	 * Sends the coordinator the root's boundaries, once for every change in the same turn of the
+	 * event loop (#4009): each enqueue and each published batch changes the root, and projecting
+	 * and serializing the whole root run for each of them made a fan-out quadratic in its width.
+	 * The notice precedes every command sent after this resolves, so the coordinator still sees
+	 * a child's boundary before its enqueue.
+	 */
+	private flushRootRun(): Promise<void> {
+		this.rootFlush ??= new Promise<void>((resolve) => {
+			setImmediate(() => {
+				this.rootFlush = undefined;
+				try {
+					if (!this.closed) this.refreshRootRun();
+				} finally {
+					resolve();
+				}
+			});
+		});
+		return this.rootFlush;
+	}
+	/** Keeps the coordinator's view of the root's boundaries current. */
 	private refreshRootRun(): void {
 		const rootRun = this.rootProjection();
 		if (rootRun === undefined) return;
@@ -616,6 +637,7 @@ export class LocalWorkerPool {
 			}),
 		) as WorkflowSerializableObject;
 		this.evaluateBudget();
+		await this.flushRootRun();
 		const enqueued = (await this.command({
 			kind: "enqueue",
 			descriptor: {
@@ -628,7 +650,6 @@ export class LocalWorkerPool {
 				execution,
 			},
 			boundary,
-			...this.rootRun(),
 		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
 		this.works.set(work.id, work);
@@ -817,7 +838,7 @@ export class LocalWorkerPool {
 			}
 		}
 		this.notice({ kind: "published", batch, rejected });
-		this.refreshRootRun();
+		void this.flushRootRun();
 	}
 	/** The full work of an attempt token, recording the attempt as current when it is newer. */
 	private track(attempt: PoolWorkToken): PoolWork | undefined {
