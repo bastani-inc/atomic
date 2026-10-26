@@ -283,6 +283,13 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			await (await controller.ensureSession()).followUp(text);
 		},
 
+		async __queueUserText(text, kind, options) {
+			if (effectiveStageOptions?.model === "auto") await controller.preparePrompt(text);
+			const session = await controller.ensureSession();
+			if (kind === "steer") await session.steer(text, undefined, options);
+			else await session.followUp(text, undefined, options);
+		},
+
 		subscribe(listener) {
 			return controller.subscribe(listener);
 		},
@@ -413,12 +420,12 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.generationClosedUnderStage();
 		},
 
-		async __queueIntoLiveTurn(text, kind) {
+		async __queueIntoLiveTurn(text, kind, options) {
 			// The stage's current session, without waiting for a creation still in flight (#3996).
 			const session = controller.currentSession;
 			if (session?.isStreaming !== true) return false;
-			if (kind === "steer") await session.steer(text);
-			else await session.followUp(text);
+			if (kind === "steer") await session.steer(text, undefined, options);
+			else await session.followUp(text, undefined, options);
 			return true;
 		},
 

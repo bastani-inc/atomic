@@ -29,7 +29,7 @@ import type { AgentSession, AgentSessionEvent, SessionStore } from "@bastani/ato
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
-import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -114,10 +114,13 @@ export interface StageControlHandle {
 
 	/** Send a prompt. Use only when the stage is idle / not streaming. */
 	prompt(text: string): Promise<void>;
-	/** Steer the current streaming operation (interrupt mid-turn). */
-	steer(text: string): Promise<void>;
-	/** Queue a follow-up after the current operation completes. */
-	followUp(text: string): Promise<void>;
+	/**
+	 * Steer the current streaming operation (interrupt mid-turn). Without `options` the text is
+	 * expanded like typed input; pass them to choose `sendUserMessage()`'s semantics.
+	 */
+	steer(text: string, options?: StageQueuedTextOptions): Promise<void>;
+	/** Queue a follow-up after the current operation completes; `options` as for `steer()`. */
+	followUp(text: string, options?: StageQueuedTextOptions): Promise<void>;
 	/**
 	 * True controlled pause. Aborts the current Pi op without finalizing
 	 * the stage as failed; the original `prompt()` awaiter is held until

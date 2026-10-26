@@ -20,6 +20,9 @@ import type {
 	WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
+/** How queued text is read: literal unless `expandPromptTemplates` asks for command/template expansion. */
+export type StageQueuedTextOptions = Pick<StageSendUserMessageOptions, "expandPromptTemplates">;
+
 type WorkflowPendingStageDelivery = NonNullable<
 	CreateAgentSessionOptions["orchestrationContext"]
 >["pendingStageDelivery"];
@@ -72,8 +75,16 @@ export interface StageSessionRuntime {
 	startPendingRecovery?(reason: SessionRecoveryReason): Promise<SessionRecoveryReport>;
 	/** Reopen launches only; cancelled executions must never restart. */
 	resumeTasks?(): void;
-	steer(text: string): Promise<void> | Promise<"handled" | "queued">;
-	followUp(text: string): Promise<void> | Promise<"handled" | "queued">;
+	steer(
+		text: string,
+		images?: undefined,
+		options?: StageQueuedTextOptions,
+	): Promise<void> | Promise<"handled" | "queued">;
+	followUp(
+		text: string,
+		images?: undefined,
+		options?: StageQueuedTextOptions,
+	): Promise<void> | Promise<"handled" | "queued">;
 	subscribe(listener: (event: StageSessionEvent) => void): () => void;
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
@@ -242,7 +253,9 @@ export interface InternalStageContext extends StageContext {
 	 * Internal: queues text into the turn the stage's current session is running, without waiting
 	 * for the stage's session to be ready; false when no turn runs.
 	 */
-	__queueIntoLiveTurn?(text: string, kind: "steer" | "followUp"): Promise<boolean>;
+	__queueIntoLiveTurn?(text: string, kind: "steer" | "followUp", options?: StageQueuedTextOptions): Promise<boolean>;
+	/** Internal: `steer()`/`followUp()` with explicit text semantics (see `StageQueuedTextOptions`). */
+	__queueUserText?(text: string, kind: "steer" | "followUp", options?: StageQueuedTextOptions): Promise<void>;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */
