@@ -326,6 +326,12 @@ export function createTrackedStageCaller(input: {
 			} finally {
 				runtime.signal.removeEventListener("abort", abortSession);
 			}
+			// A generation closed under the running stage refused every tool call after it: the stage
+			// cannot have done its work, so it fails rather than completing (#3996).
+			if (runtime.innerCtx.__generationClosedUnderStage?.() === true)
+				throw new Error(
+					`atomic-workflows: stage "${runtime.name}" generation closed before the stage finished; its tool calls were refused`,
+				);
 			if (runtime.budget.enabled) stageResultBeforeBudget ??= runtime.innerCtx.__getLastAssistantText();
 			runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
 			const afterBudget = runtime.budget.checkpoint(runtime.name);

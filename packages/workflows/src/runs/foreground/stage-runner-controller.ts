@@ -633,9 +633,14 @@ export class StageSessionController {
 		sessionId: string,
 		consumer: AgentSessionConsumer = "prompt",
 	): Promise<StageSessionRuntime> {
-		if (!this.sessionShutdownPromise && !this.sessionPromise && !this.session) this.reattachSessionId = sessionId;
+		// Only a session this call reopens is an archived transcript whose generation ends here. A
+		// live session, or one still being created (a pool worker records its id first, #3996), is the
+		// stage's running generation: closing it would refuse every later tool call of the stage.
+		const joinsLiveGeneration =
+			!this.sessionShutdownPromise && (this.sessionPromise !== undefined || this.session !== undefined);
+		if (!this.sessionShutdownPromise && !joinsLiveGeneration) this.reattachSessionId = sessionId;
 		const session = await this.ensureSession(consumer);
-		await session.closeWorkflowStageGeneration?.();
+		if (!joinsLiveGeneration || this.generationSealed) await session.closeWorkflowStageGeneration?.();
 		return session;
 	}
 
@@ -704,6 +709,13 @@ export class StageSessionController {
 		return this.deliveryActivity.subscribe(listener);
 	}
 
+	/**
+	 * Whether the stage's generation closed while the stage still ran: closed, but not by the stage's own
+	 * seal or close. Its tool calls were refused from then on, so it cannot have done its work (#3996).
+	 */
+	generationClosedUnderStage(): boolean {
+		return !this.generationSealed && this.sharedOrchestrationContext?.messageAdmission?.isOpen() === false;
+	}
 	/** With `closedForGood`, the stage finished or its run ended: its subagent children end with it, not resumable. */
 	sealGeneration(closedForGood = false): void {
 		if (closedForGood)
