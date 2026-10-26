@@ -34,7 +34,7 @@ The result starts with `Script completed` or `Script failed`, the wall time, and
 | `exit()` | End the script successfully. |
 | `store(key, value)` / `load(key)` | Keep small JSON values across `codemode` calls. See [Store values](#store-values). |
 | `ALL_TOOLS` | Every script-callable tool as `{ name, description }`, including tools the description does not list. [Model-only tools](#model-only-tools) are excluded. |
-| `searchTools(query, { limit?, namespace? })` | Rank script-callable tools by relevance (BM25, default limit 8). Resolves to `{ name, description }[]`. A query that names an active model-only tool exactly returns it first with a hint to call it directly. |
+| `searchTools(query, { limit?, namespace? })` | Rank script-callable tools by relevance (BM25, default limit 8). Resolves to `{ name, description }[]`. A query that is a tool's name, or the part after a `__` separator such as `thread_read` for `mcp__app__thread_read`, ranks that tool first. A query that names an active model-only tool exactly returns it first with a hint to call it directly. |
 | `describeTool(name)` | Resolves to a script-callable tool's description and TypeScript declaration, a hint for an active model-only tool, or `undefined`. |
 | `describeNamespace(name)` | Resolves to `{ name, description?, instructions?, tools }` for a namespace such as an MCP server, or `undefined`. |
 | `models` | List and run non-LLM models. See [Models](#models). |
