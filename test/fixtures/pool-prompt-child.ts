@@ -1,6 +1,7 @@
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { passReaskGate } from "./pool-reask-gate.js";
+import { poolStageOptions } from "./pool-stage-options.js";
 
 /** A pooled child that asks its user a question through `ctx.ui` and returns the answer. */
 export const child = workflow({
@@ -76,5 +77,22 @@ export const gatedChangedChild = workflow({
 		const replacement = await passReaskGate(ctx.inputs.journalPath);
 		const target = replacement ? "tag" : "branch";
 		return { branch: await ctx.ui.input(`Which ${target} should the worker use?`) };
+	},
+});
+
+/**
+ * A pooled child whose replacement attempt runs an agent stage where the replaced attempt asked a
+ * prompt (#4022): a different path through the child, which the pool must refuse.
+ */
+export const gatedDivergentChild = workflow({
+	name: "pool-gated-divergent-child",
+	description: "Local worker fixture whose replacement takes a different step than the replaced attempt",
+	inputs: { journalPath: Type.String() },
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const replacement = await passReaskGate(ctx.inputs.journalPath);
+		if (!replacement) return { branch: await ctx.ui.input("Which branch should the worker use?") };
+		const options = await poolStageOptions(ctx.cwd!, false, process.pid);
+		return { branch: await ctx.stage("build", options as never).complete("Build it") };
 	},
 });

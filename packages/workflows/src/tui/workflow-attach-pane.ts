@@ -446,6 +446,15 @@ export class WorkflowAttachPane implements Component {
 		if (!visible) this.attachmentGeneration += 1;
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
+			// Updates while hidden only track input keys: a prompt a replacement attempt superseded
+			// meanwhile is followed now, or the chat would show the stage it removed (#4022).
+			if (visible) {
+				const run = findSnapshotRun(readGraphStoreSnapshot(this.store).runs, this.attachedRunId);
+				this._followSupersedingPrompt(
+					run,
+					run === undefined ? undefined : findSnapshotStage(run.stages, this.lastAttachedStageId),
+				);
+			}
 		}
 	}
 	wantsFocusForAwaitingInput(snapshot: StoreSnapshot): boolean {

@@ -863,3 +863,80 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"#4022: a replacement that runs an agent stage where the replaced attempt asked a prompt is refused as a different path, in plain words",
+	async () => {
+		const run = await openRun("pool-open-prompt-divergent-", promptChildPath, "gatedDivergentChild", true);
+		try {
+			await untilValue(() => pendingPrompt(run.store), run.execution);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			assert.match(
+				JSON.stringify(outcome.error),
+				/took different steps when it ran again on a replacement worker \(direct child source orders are not unique\)/,
+			);
+		} finally {
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: a stage chat hidden while the replacement asks a different question shows that question when shown again, and its answer reaches the child once",
+	async () => {
+		// Once the replacement's question is pending, the root applies no more publications, so only
+		// showing the chat can move it to that question (no later store activity does it instead).
+		let frozen = false;
+		const publish = PoolStageHandoff.prototype.publishBatch;
+		const publications = vi.spyOn(PoolStageHandoff.prototype, "publishBatch").mockImplementation(async function (
+			this: PoolStageHandoff,
+			batch: readonly PoolStagePublication[],
+		) {
+			return frozen ? batch.map(() => undefined) : publish.call(this, batch);
+		});
+		const run = await openRun("pool-open-prompt-hidden-", promptChildPath, "gatedChangedChild", true);
+		try {
+			const first = await untilValue(() => pendingPrompt(run.store), run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which branch should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			run.pane.setVisible(false);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			// Explicit signal: the replacement's different question is pending while the chat is hidden.
+			await untilValue(() => {
+				const prompt = pendingPrompt(run.store);
+				return prompt !== undefined && prompt.generation > first.generation ? prompt : undefined;
+			}, run.execution);
+			frozen = true;
+			run.pane.setVisible(true);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which tag should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			frozen = false;
+			run.advance();
+			for (const key of "v3.0") run.pane.handleInput(key);
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "v3.0" });
+		} finally {
+			publications.mockRestore();
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);

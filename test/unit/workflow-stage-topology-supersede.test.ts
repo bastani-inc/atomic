@@ -74,3 +74,32 @@ test("#4022: two answered steps at one position are still refused as a different
 		"direct child source orders are not unique",
 	);
 });
+
+test("#4022: an unanswered prompt whose position a different agent stage took is a source-order conflict, not superseded", () => {
+	// The replacement ran an ordinary stage where the replaced attempt asked: a different path, refused.
+	assert.equal(
+		directChildTopologyError(
+			[prompt("first", "which-branch", "awaiting_input"), stage("b", "build", "completed")],
+			SCOPE,
+			RUN,
+		),
+		"direct child source orders are not unique",
+	);
+	assert.equal(
+		directChildTopologyError(
+			[prompt("first", "which-branch", "awaiting_input"), stage("b", "build", "running")],
+			SCOPE,
+			RUN,
+		),
+		"direct child source orders are not unique",
+	);
+	// A stage the replaced attempt left unfinished where the replacement asks a prompt is refused too.
+	assert.equal(
+		directChildTopologyError(
+			[stage("a", "plan", "running"), prompt("second", "which-tag", "awaiting_input")],
+			SCOPE,
+			RUN,
+		),
+		"direct child source orders are not unique",
+	);
+});

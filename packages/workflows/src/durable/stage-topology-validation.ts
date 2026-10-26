@@ -188,6 +188,11 @@ export function promptOccurrenceIdentityError(stages: readonly DurableStageCheck
  * A prompt occurrence that was asked but never answered, failed or skipped: the run waited on it
  * and went no further, so nothing in the run depends on it.
  */
+/** A prompt node's records (a `ctx.ui` prompt occurrence), not an agent stage or a child boundary. */
+function isPromptGroup(group: readonly DurableStageCheckpoint[]): boolean {
+	return group.every((stage) => stage.topology?.occurrenceKey !== undefined && stage.topology.boundary === undefined);
+}
+
 function isUnansweredPromptGroup(group: readonly DurableStageCheckpoint[]): boolean {
 	return group.every(
 		(stage) =>
@@ -217,21 +222,27 @@ const UNANSWERED_PROMPT_STATUSES: ReadonlySet<DurableStageLifecycleStatus> = new
  * rebuild, cached-child replay, inspection) leaves these groups out, so they agree.
  */
 export function supersededPromptGroupKeys(stages: readonly DurableStageCheckpoint[]): ReadonlySet<string> {
-	const byPosition = new Map<string, { readonly key: string; readonly unanswered: boolean }[]>();
+	const byPosition = new Map<
+		string,
+		{ readonly key: string; readonly prompt: boolean; readonly unanswered: boolean }[]
+	>();
 	for (const [key, group] of groupByDurableStageKey(stages)) {
 		const topology = group.find((stage) => stage.topology !== undefined)?.topology;
 		if (topology?.sourceOrder === undefined) continue;
 		const position = JSON.stringify([topology.run?.runId ?? null, topology.sourceOrder]);
 		const atPosition = byPosition.get(position) ?? [];
-		atPosition.push({ key, unanswered: isUnansweredPromptGroup(group) });
+		atPosition.push({ key, prompt: isPromptGroup(group), unanswered: isUnansweredPromptGroup(group) });
 		byPosition.set(position, atPosition);
 	}
 	const superseded = new Set<string>();
 	for (const atPosition of byPosition.values()) {
 		if (atPosition.length < 2 || !atPosition.some((candidate) => candidate.unanswered)) continue;
+		// Only a prompt replaces a prompt: an agent stage where a prompt was (or a prompt where a stage
+		// was) is a different path through the child, and stays a source-order conflict.
+		if (!atPosition.every((candidate) => candidate.prompt)) continue;
 		const answered = atPosition.filter((candidate) => !candidate.unanswered);
-		// Answered stages at one position are kept (two of them remain a conflict); unanswered asks give way
-		// to the stage that replaced them, or to the latest unanswered ask.
+		// Answered prompts at one position are kept (two of them remain a conflict); unanswered asks give
+		// way to the prompt that replaced them, or to the latest unanswered ask.
 		const kept = answered.length > 0 ? answered : [atPosition[atPosition.length - 1]!];
 		for (const candidate of atPosition)
 			if (candidate.unanswered && !kept.includes(candidate)) superseded.add(candidate.key);
