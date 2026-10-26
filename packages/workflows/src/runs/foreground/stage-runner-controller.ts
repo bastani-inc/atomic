@@ -1183,13 +1183,14 @@ export class StageSessionController {
 			walk.rateLimited.add(index);
 		}
 		walk.remaining.delete(index);
-		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Wait for the
-		// earliest recorded cooldown (it must fit the retry-hint cap) and give each throttled candidate a fresh
-		// budget, at most `retry.maxRetries` times per walk, instead of failing the stage.
+		// #3984: when every candidate left is throttled, the chain is not exhausted but cooling. Give each
+		// throttled candidate a fresh budget and wait for the earliest cooldown (none when one is already
+		// ready), if it fits the retry-hint cap, at most `retry.maxRetries` times per walk.
 		if (!rateLimited || walk.remaining.size > 0 || walk.cooldownRounds >= retries) return;
-		const cooldowns = [...walk.rateLimited]
-			.map((limited) => providerCooldownMs(workflowProviderId(candidates[limited]?.value)))
-			.filter((delay) => delay > 0);
+		// A candidate whose cooldown already ended counts as zero: it is ready now and needs no wait.
+		const cooldowns = [...walk.rateLimited].map((limited) =>
+			providerCooldownMs(workflowProviderId(candidates[limited]?.value)),
+		);
 		if (cooldowns.length === 0) return;
 		const maxWaitMs = settings?.maxRetryDelayMs || settings?.maxAgentDelayMs || 60_000;
 		if (Math.min(...cooldowns) > maxWaitMs) return;
