@@ -15,22 +15,21 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { POOL_COLD_START_BUDGET_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";
+import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const WORKERS = 2;
 const childPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
-/** One pool cold start, plus the wait for its workers to meet the released lease. */
-const ROOT_LEASE_LOST_TIMEOUT_MS = poolTestBudgetMs(2).timeoutMs;
+/** One pool cold start, the child's work, and the wait for its workers to meet the released lease. */
+const BUDGET = poolTestBudgetMs(3);
 
 function startedChildren(directory: string): number {
 	return readdirSync(directory).filter((name) => name.startsWith("started-")).length;
 }
 
-async function waitUntil(predicate: () => boolean, what: string): Promise<void> {
-	const deadline = Date.now() + POOL_COLD_START_BUDGET_MS;
+async function waitUntil(predicate: () => boolean, what: string, budget: AbortSignal): Promise<void> {
 	while (!predicate()) {
-		if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${what}`);
+		if (budget.aborted) throw new Error(`Timed out waiting for ${what}`);
 		await sleep(20);
 	}
 }
@@ -93,6 +92,8 @@ test.skipIf(process.platform === "win32")(
 				throw error;
 			}
 		});
+		// Every wait shares the test's budget.
+		const budget = AbortSignal.timeout(BUDGET.waitMs);
 		try {
 			const running = run(
 				parent,
@@ -102,10 +103,10 @@ test.skipIf(process.platform === "win32")(
 					cwd: directory,
 					store: createStore(),
 					durableBackend: backend,
-					signal: AbortSignal.timeout(ROOT_LEASE_LOST_TIMEOUT_MS),
+					signal: budget,
 				},
 			);
-			await waitUntil(() => startedChildren(directory) === 1, "the child to start");
+			await waitUntil(() => startedChildren(directory) === 1, "the child to start", budget);
 			await writeFileEnsuringDir(join(directory, "release"), "");
 			const result = await running;
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -113,10 +114,11 @@ test.skipIf(process.platform === "win32")(
 			const workers = [...pool.workerPids];
 			assert.equal(workers.length, WORKERS);
 			const spawnedBefore = spawns;
-			await waitUntil(() => staleClaims > 0, "a claim to meet the released root lease");
+			await waitUntil(() => staleClaims > 0, "a claim to meet the released root lease", budget);
 			await waitUntil(
 				() => workers.every((pid) => exits.some((exit) => exit.pid === pid)),
 				"every worker to end after the root lease is gone",
+				budget,
 			);
 			for (const pid of workers)
 				assert.equal(
@@ -135,5 +137,5 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	ROOT_LEASE_LOST_TIMEOUT_MS,
+	BUDGET.timeoutMs,
 );
