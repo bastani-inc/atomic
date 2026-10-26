@@ -236,6 +236,11 @@ export interface InternalStageContext extends StageContext {
 	__idleForRelease(): boolean;
 	/** Internal: true while a message, the stage's own prompt included, holds or waits for the turn loop. */
 	__turnLoopBusy?(): boolean;
+	/**
+	 * Internal: queues text into the turn the stage's current session is running, without waiting
+	 * for the stage's session to be ready; false when no turn runs.
+	 */
+	__queueIntoLiveTurn?(text: string, kind: "steer" | "followUp"): Promise<boolean>;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */

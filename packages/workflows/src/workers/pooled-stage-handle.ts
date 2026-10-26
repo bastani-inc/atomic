@@ -434,10 +434,13 @@ export class PooledStageHandle implements StageControlHandle {
 		const present = new Set(snapshot.deliveredOps ?? []);
 		for (const entry of [...this.outbound]) if (present.has(entry.op)) this.forget(entry.op);
 		// The replay sends the stage's own prompt first; redelivered text follows it.
+		// A replacement attempt re-runs the stage from its own prompt; text sent before that prompt
+		// starts would start the turn itself and leave the stage's prompt waiting behind it.
 		this.awaitingTurn =
 			snapshot.turnStarted !== true &&
 			!this.streamingNow &&
-			this.outbound.some((entry) => entry.admittedBy !== undefined && !this.admitted(entry));
+			(this.attempt.generation > 1 ||
+				this.outbound.some((entry) => entry.admittedBy !== undefined && !this.admitted(entry)));
 		tracePooledWatch("root.handle.reconcile", {
 			stage: this.stageId,
 			watch: this.watchId,

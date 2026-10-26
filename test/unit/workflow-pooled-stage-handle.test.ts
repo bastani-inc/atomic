@@ -465,3 +465,24 @@ test("the same text sent twice while reconnecting shows as two pending rows, and
 		["watch-2:run the tests", "watch-2:run the tests"],
 	);
 });
+
+test("text first sent to a replacement attempt before its own prompt starts waits for that prompt's turn (#3996)", async () => {
+	const fake = replacementPool({ isStreaming: false, turnStarted: false });
+	// The chat opens on the replacement (generation 2), whose stage has not re-run its prompt yet.
+	const first = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(first.ok);
+	fake.end("worker_exited");
+	first.handle.dispose();
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	assert.equal(opened.handle.placement.generation, 2);
+	const sent = opened.handle.steer("STEER");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(fake.deliveries, [], "nothing goes before the stage's own prompt");
+	fake.events(1, { type: "agent_start" } as never);
+	await sent;
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:STEER"],
+	);
+});
