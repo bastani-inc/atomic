@@ -1,4 +1,4 @@
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
+import type { CreateAgentSessionOptions, ProviderRateLimitObservation } from "@bastani/atomic";
 import type { PoolControl, PoolMutation, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsageReport } from "../durable/journal/sql-pool-usage.js";
 import type { RunResult } from "../runs/foreground/executor-types.js";
@@ -66,6 +66,8 @@ export type WorkerRequest = { readonly id: number } & (
 	  }
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
+	/** One-way: limits this worker recorded, for the rest of the pool (#4023). */
+	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] }
 );
 export interface WorkerReply {
 	readonly id: number;
@@ -100,5 +102,11 @@ export type WorkerStageCommand = {
 	  }
 );
 
-/** Everything a worker receives over IPC: replies to its requests, and stage commands. */
-export type WorkerInbound = WorkerReply | WorkerStageCommand;
+/** Coordinator -> worker push: provider and model limits recorded elsewhere in the pool (#4023). */
+export interface WorkerRateLimits {
+	readonly kind: "rate-limits";
+	readonly observations: readonly ProviderRateLimitObservation[];
+}
+
+/** Everything a worker receives over IPC: replies to its requests, stage commands, and shared limits. */
+export type WorkerInbound = WorkerReply | WorkerStageCommand | WorkerRateLimits;

@@ -11,6 +11,7 @@ import {
 } from "../shared/pending-stage-route-capability.js";
 import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-readiness.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalRunStatus } from "../shared/store-internal.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 
@@ -237,7 +238,12 @@ export class PoolStageHandoff {
 				...(known.get(run.id)?.pendingStageMessages ??
 					pendingStageMessagesForDurableRun(this.backend, run.id, root)),
 			],
-			stages: run.stages.map((stage) => ({ ...stage, workerExecution: execution })),
+			stages: withReconnectingStages(
+				known.get(run.id),
+				run,
+				run.stages.map((stage) => ({ ...stage, workerExecution: execution })),
+				work.generation,
+			),
 		}));
 		const changed = published.some((run) => activity(known.get(run.id)) !== activity(run));
 		for (const run of published) this.claimRun?.(run.id);
@@ -382,6 +388,53 @@ function isLive(stage: StageSnapshot): boolean {
 		stage.status !== "failed" &&
 		stage.status !== "skipped"
 	);
+}
+
+/**
+ * A replacement attempt replays its child from the start, so its first publications can carry
+ * fewer stages than the store knows from the attempt before it. Until the replacement
+ * republishes them (by id or, as replay may assign new ids, by replay key) or the run ends, the
+ * stages of earlier attempts stay as last known, marked as reconnecting, instead of the run
+ * briefly showing no stages (#4009).
+ */
+function withReconnectingStages(
+	previous: RunSnapshot | undefined,
+	run: RunSnapshot,
+	stages: StageSnapshot[],
+	generation: number,
+): StageSnapshot[] {
+	if (previous === undefined || run.endedAt !== undefined || isTerminalRunStatus(run.status)) return stages;
+	const ids = new Set(stages.map((stage) => stage.id));
+	const replayKeys = new Set(stages.flatMap((stage) => (stage.replayKey === undefined ? [] : [stage.replayKey])));
+	const reconnecting = previous.stages.filter(
+		(stage) =>
+			!ids.has(stage.id) &&
+			(stage.replayKey === undefined || !replayKeys.has(stage.replayKey)) &&
+			stage.workerExecution !== undefined &&
+			stage.workerExecution.generation < generation,
+	);
+	if (reconnecting.length === 0) return stages;
+	// A stage republished under a new id with the same replay key keeps its edges: retained
+	// stages that hung from its old id hang from the new one.
+	const replacementIdByReplayKey = new Map(
+		stages.flatMap((stage) => (stage.replayKey === undefined ? [] : [[stage.replayKey, stage.id] as const])),
+	);
+	const renamed = new Map<string, string>();
+	for (const stage of previous.stages) {
+		const replacement = stage.replayKey === undefined ? undefined : replacementIdByReplayKey.get(stage.replayKey);
+		if (replacement !== undefined && replacement !== stage.id && !ids.has(stage.id))
+			renamed.set(stage.id, replacement);
+	}
+	return [
+		...stages,
+		...reconnecting.map((stage) => {
+			const parentIds = stage.parentIds.some((id) => renamed.has(id))
+				? stage.parentIds.map((id) => renamed.get(id) ?? id)
+				: stage.parentIds;
+			if (stage.workerExecution?.reconnecting === true && parentIds === stage.parentIds) return stage;
+			return { ...stage, parentIds, workerExecution: { ...stage.workerExecution!, reconnecting: true as const } };
+		}),
+	];
 }
 
 function activity(run: RunSnapshot | undefined): string | undefined {

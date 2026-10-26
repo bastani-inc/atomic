@@ -104,8 +104,16 @@ export class Bm25Ranker implements ToolRanker {
 		this.b = options.b ?? 0.75;
 	}
 	rank(query: string, documents: readonly ToolSearchDocument[], limit: number): ToolSearchMatch[] {
+		if (!documents.length || limit <= 0) return [];
 		const terms = [...new Set(tokenize(query))];
-		if (!terms.length || !documents.length || limit <= 0) return [];
+		// A query made only of stop words has no BM25 terms, but can still name a tool exactly (`is`).
+		if (!terms.length) {
+			const nameQuery = normalizeName(query);
+			return documents
+				.filter((document) => isNameQuery(nameQuery, document.name))
+				.slice(0, limit)
+				.map((document) => ({ name: document.name, score: 0 }));
+		}
 		const counts = documents.map((document) => {
 			const result = new Map<string, number>();
 			for (const term of tokenize(document.text)) result.set(term, (result.get(term) ?? 0) + 1);

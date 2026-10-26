@@ -252,6 +252,7 @@ const store: Store = {
 	recordRunResumed: () => false,
 	snapshot: () => snap,
 	graphSnapshot: () => snap,
+	graphRun: (runId) => snap.runs.find((run) => run.id === runId),
 	clear: () => {},
 	subscribe: () => () => {},
 	subscribeInvalidation: () => () => {},

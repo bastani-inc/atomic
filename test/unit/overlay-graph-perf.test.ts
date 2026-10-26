@@ -92,22 +92,32 @@ class InstrumentedGraphView extends GraphView {
 	}
 
 	layoutForTest() {
+		// Store changes and invalidations rebuild the layout where it is read (#4009).
+		this._syncLayout();
 		return this.cachedLayout;
 	}
 
 	expandedTargetsForTest() {
+		// Store changes and invalidations rebuild the layout where it is read (#4009).
+		this._syncLayout();
 		return this.expandedGraph.targets;
 	}
 
 	expandedGraphForTest() {
+		// Store changes and invalidations rebuild the layout where it is read (#4009).
+		this._syncLayout();
 		return this.expandedGraph;
 	}
 
 	renderGeometryForTest() {
+		// Store changes and invalidations rebuild the layout where it is read (#4009).
+		this._syncLayout();
 		return this.cachedRenderGeometry;
 	}
 
 	focusedIndexForTest(): number {
+		// Store changes and invalidations rebuild the layout where it is read (#4009).
+		this._syncLayout();
 		return this.focusedIndex;
 	}
 

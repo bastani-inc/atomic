@@ -110,17 +110,57 @@ function projectedToolStatus(tool: ToolNodeSnapshot): StageSnapshot["status"] {
 	return tool.status;
 }
 
+/** A leaf child run's expansion, reused while the same frozen run is expanded in the same place. */
+interface LeafExpansion {
+	readonly depth: number;
+	readonly incomingParentIds: readonly string[];
+	readonly result: ExpandedRunResult;
+	readonly targets: readonly (readonly [string, ExpandedWorkflowStageTarget])[];
+}
+
+/**
+ * Expansions of leaf child runs (no stage owning a nested workflow), keyed by the frozen run
+ * projection of a graph snapshot (#4009). Graph snapshots share the frozen projection of an
+ * unchanged run across store versions, so a pooled fan-out re-expands only the children that
+ * changed. A leaf's expansion depends on nothing but the run, its depth and the parent ids it
+ * hangs from, all of which are checked; mutable snapshots are never cached.
+ */
+const leafExpansions = new WeakMap<RunSnapshot, LeafExpansion>();
+
+function isLeafRun(run: RunSnapshot): boolean {
+	return run.stages.every((stage) => authoritativeWorkflowChildRunId(stage) === undefined);
+}
+
 export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string): ExpandedWorkflowGraph {
 	return createWorkflowGraphExpander(snapshot)(rootRunId);
 }
+
+/**
+ * Expansions of frozen graph snapshots by root run id. The graph view, the attach pane and the
+ * activity bridge all expand the same snapshot on each store change (#4009); they share one
+ * expansion, which none of them mutates.
+ */
+const snapshotExpansions = new WeakMap<StoreSnapshot, Map<string, ExpandedWorkflowGraph>>();
 
 /** Share one snapshot's run index across expansions; create anew for each render pass. */
 export function createWorkflowGraphExpander(snapshot: StoreSnapshot): (rootRunId: string) => ExpandedWorkflowGraph {
 	// Terminal-only surfaces need no expansion preparation.
 	let runById: ReadonlyMap<string, RunSnapshot> | undefined;
+	let expansions: Map<string, ExpandedWorkflowGraph> | undefined;
+	if (Object.isFrozen(snapshot)) {
+		expansions = snapshotExpansions.get(snapshot);
+		if (expansions === undefined) {
+			expansions = new Map();
+			snapshotExpansions.set(snapshot, expansions);
+		}
+	}
 	return (rootRunId) => {
+		const known = expansions?.get(rootRunId);
+		if (known !== undefined) return known;
 		runById ??= new Map(snapshot.runs.map((run) => [run.id, run]));
-		return expandIndexedWorkflowGraph(runById, rootRunId);
+		const graph = expandIndexedWorkflowGraph(runById, rootRunId);
+		expansions?.set(rootRunId, graph);
+		return graph;
 	};
 }
 
@@ -143,8 +183,17 @@ function expandIndexedWorkflowGraph(
 
 	const expandRun = (run: RunSnapshot, depth: number, incomingParentIds: readonly string[]): ExpandedRunResult => {
 		if (visiting.has(run.id)) return { stages: [], tools: [], nodes: [], terminalIds: [] };
-		visiting.add(run.id);
 		const isRootRun = run.id === rootRunId;
+		const memoizable = !isRootRun && Object.isFrozen(run) && isLeafRun(run);
+		if (memoizable) {
+			const known = leafExpansions.get(run);
+			if (known !== undefined && known.depth === depth && sameIds(known.incomingParentIds, incomingParentIds)) {
+				for (const [id, target] of known.targets) targets.set(id, target);
+				return known.result;
+			}
+		}
+		const runTargets: [string, ExpandedWorkflowStageTarget][] = [];
+		visiting.add(run.id);
 		const items = localItems(run);
 		const stages: ExpandedWorkflowStage[] = [];
 		const tools: ExpandedWorkflowTool[] = [];
@@ -160,7 +209,7 @@ function expandIndexedWorkflowGraph(
 			if (
 				childRun === undefined ||
 				expandedChildren.has(childRun.id) ||
-				localItems(childRun).length === 0 ||
+				childRun.stages.length + toolNodesFor(childRun).length === 0 ||
 				childRun.parentRunId !== run.id ||
 				childRun.parentStageId !== stage.id ||
 				runRoot === undefined ||
@@ -234,6 +283,7 @@ function expandIndexedWorkflowGraph(
 					workflowGraphTarget: projectionTarget,
 				};
 				targets.set(id, projectionTarget);
+				runTargets.push([id, projectionTarget]);
 				tools.push(tool);
 				stages.push(projection);
 				nodes.push({ kind: "tool", tool });
@@ -255,6 +305,7 @@ function expandIndexedWorkflowGraph(
 				depth,
 			};
 			targets.set(id, target);
+			runTargets.push([id, target]);
 			const stage: ExpandedWorkflowStage = {
 				...item.stage,
 				id,
@@ -273,7 +324,10 @@ function expandIndexedWorkflowGraph(
 				: [virtualNodeId(run.id, sourceId, isRootRun)];
 		});
 		visiting.delete(run.id);
-		return { stages, tools, nodes, terminalIds };
+		const result = { stages, tools, nodes, terminalIds };
+		if (memoizable)
+			leafExpansions.set(run, { depth, incomingParentIds: [...incomingParentIds], result, targets: runTargets });
+		return result;
 	};
 
 	const expanded = expandRun(root, 0, []);

@@ -1,7 +1,7 @@
 import { type AgentSessionEvent, ChatSessionHost, classifyChatCommand } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
-import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
+import { readGraphStoreRun, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { createPromptCardState } from "./prompt-card.js";
@@ -224,15 +224,19 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				}
 				await handle.prompt(text);
 			},
+			// Queued text keeps `sendUserMessage()`'s literal semantics, as Enter on an idle stage does;
+			// `steer()`/`followUp()` would expand templates and refuse registered commands instead.
 			steer: async (text) => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
-				await handle.steer(text);
+				if (handle.sendUserMessage !== undefined) await handle.sendUserMessage(text, { deliverAs: "steer" });
+				else await handle.steer(text);
 			},
 			followUp: async (text) => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
-				await handle.followUp(text);
+				if (handle.sendUserMessage !== undefined) await handle.sendUserMessage(text, { deliverAs: "followUp" });
+				else await handle.followUp(text);
 			},
 			interrupt: async () => {
 				const handle = liveHandle(ctx);
@@ -387,7 +391,8 @@ function absorbStageNotices(ctx: StageChatViewContext, stage: StageSnapshot | un
 }
 
 export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
-	return readGraphStoreSnapshot(ctx.store).runs.find((r) => r.id === ctx.runId);
+	// Read on every store change: project only this run, not the whole store (#4009).
+	return readGraphStoreRun(ctx.store, ctx.runId);
 }
 
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {
