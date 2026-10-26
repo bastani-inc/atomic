@@ -120,13 +120,16 @@ describe("StageChatView", () => {
 		// The streaming follow-up path can await session attachment or creation,
 		// so hold it open across the next submission instead of using a timer.
 		let releaseFollowUp = (): void => {};
+		const recordDelivery = handle.sendUserMessage!;
 		const followUpEntered = new Promise<void>((resolveEntered) => {
-			handle.followUp = async (text: string) => {
-				state.followUpCalls.push(text);
+			handle.sendUserMessage = async (text, options, beforeDelivery) => {
+				const action = await recordDelivery(text, options, beforeDelivery);
+				if (options?.deliverAs !== "followUp") return action;
 				resolveEntered();
 				await new Promise<void>((resolveGate) => {
 					releaseFollowUp = resolveGate;
 				});
+				return action;
 			};
 		});
 		const view = new StageChatView(stageChatViewOpts(store, handle));
@@ -134,7 +137,7 @@ describe("StageChatView", () => {
 		for (const ch of "after this turn") view.handleInput(ch);
 		view.handleInput("\x06");
 		await followUpEntered;
-		assert.deepEqual(state.followUpCalls, ["after this turn"]);
+		assert.deepEqual(sendUserMessageCalls, [{ text: "after this turn", deliverAs: "followUp" }]);
 
 		// The stage stops streaming while that follow-up is still in flight.
 		state.isStreaming = false;
@@ -143,7 +146,7 @@ describe("StageChatView", () => {
 		await flush();
 		await flush();
 
-		assert.deepEqual(sendUserMessageCalls, [{ text: "redirect now", deliverAs: "steer" }]);
+		assert.deepEqual(sendUserMessageCalls.slice(1), [{ text: "redirect now", deliverAs: "steer" }]);
 		releaseFollowUp();
 		await flush();
 		view.dispose();
