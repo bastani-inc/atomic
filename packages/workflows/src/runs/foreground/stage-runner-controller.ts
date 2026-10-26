@@ -1263,7 +1263,7 @@ export class StageSessionController {
 	/** Longest cooldown worth waiting for: the retry-hint cap the same-model retry policy uses. */
 	private maxCooldownWaitMs(): number {
 		const settings = this.retrySettings();
-		return settings?.maxRetryDelayMs || settings?.maxAgentDelayMs || 60_000;
+		return settings?.maxRetryDelayMs || (settings?.maxAgentDelayMs ?? 60_000);
 	}
 
 	private candidateUnavailable(value: WorkflowModelValue | undefined): boolean {
