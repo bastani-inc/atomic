@@ -5,6 +5,8 @@ import {
 	isProviderLimitFailure,
 	isProviderRateLimit,
 	markProviderRateLimitObserved,
+	type ProviderLimitScope,
+	providerLimitScope,
 	recordProviderRateLimit,
 	recordProviderRetryHint,
 	recordProviderSuccess,
@@ -23,6 +25,8 @@ const FETCH_APIS = new Set([
 interface StreamAdmissionState {
 	observedRateLimit: boolean;
 	observedQuotaExhaustion: boolean;
+	/** The limit the observed 429/402 response was recorded against. */
+	observedScope?: ProviderLimitScope;
 }
 
 const streamAdmission = new AsyncLocalStorage<StreamAdmissionState>();
@@ -50,6 +54,7 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 		if (state) {
 			state.observedRateLimit = false;
 			state.observedQuotaExhaustion = false;
+			state.observedScope = undefined;
 		}
 		const response = await originalFetch(input, init);
 		if (response.status === 429 || response.status === 402) {
@@ -57,6 +62,7 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 			const body = await responseText(response);
 			const failure = { status: response.status, headers: response.headers, message: body, body };
 			recordProviderRateLimit(provider, failure, model);
+			if (state) state.observedScope = providerLimitScope(provider, failure, model);
 			if (state && response.status === 429) state.observedRateLimit = true;
 			if (state && response.status === 402) state.observedQuotaExhaustion = true;
 		} else if (response.ok) recordProviderSuccess(provider, model);
@@ -115,10 +121,12 @@ export async function admitProviderStream(
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
 			}
 			if (!isProviderLimitFailure(error)) return;
-			if (!state.observedRateLimit && !state.observedQuotaExhaustion)
+			let scope = state.observedScope;
+			if (scope === undefined) {
 				recordProviderRateLimit(model.provider, error, model.id);
-			else recordProviderRetryHint(model.provider, error, model.id);
-			markProviderRateLimitObserved(error);
+				scope = providerLimitScope(model.provider, error, model.id);
+			} else recordProviderRetryHint(model.provider, error, scope);
+			markProviderRateLimitObserved(error, scope);
 		},
 	};
 }

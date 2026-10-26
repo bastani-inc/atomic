@@ -22,16 +22,22 @@ interface ProviderLimit {
 	requests: number[];
 }
 
+/** The limit a failure was recorded against: the whole provider or one of its models. */
+export interface ProviderLimitScope {
+	readonly key: string;
+}
+
 interface ProviderLimitState {
 	readonly providers: Map<string, ProviderLimit>;
-	readonly observedFailures: WeakSet<object>;
+	/** Failures already recorded, with the limit (provider or model) they were recorded against. */
+	readonly observedFailures: WeakMap<object, ProviderLimitScope>;
 }
 
 const stateKey = Symbol.for("atomic-coding-agent/provider-rate-limits@1");
 const globals = globalThis as typeof globalThis & { [stateKey]?: ProviderLimitState };
 const state = globals[stateKey] ?? {
 	providers: new Map<string, ProviderLimit>(),
-	observedFailures: new WeakSet<object>(),
+	observedFailures: new WeakMap<object, ProviderLimitScope>(),
 };
 globals[stateKey] = state;
 
@@ -161,8 +167,8 @@ function failureObjects(error: unknown): object[] {
 	return [...seen];
 }
 
-export function markProviderRateLimitObserved(error: object): void {
-	state.observedFailures.add(error);
+export function markProviderRateLimitObserved(error: object, scope: ProviderLimitScope): void {
+	state.observedFailures.set(error, scope);
 }
 
 /**
@@ -180,9 +186,11 @@ export function recordProviderRateLimit(
 	const remaining = () =>
 		kind === "quota_exhausted" ? providerUnavailableMs(provider, model) : providerCooldownMs(provider, model);
 	for (const value of failureObjects(error)) {
-		if (state.observedFailures.delete(value)) {
+		const scope = state.observedFailures.get(value);
+		if (scope !== undefined) {
+			state.observedFailures.delete(value);
 			// Already counted; a server hint on this later view of the failure can still extend the limit.
-			recordProviderRetryHint(provider, error, model);
+			recordProviderRetryHint(provider, error, scope);
 			return remaining();
 		}
 	}
@@ -196,9 +204,12 @@ export function recordProviderRateLimit(
 }
 
 function scopedLimit(provider: string, error: unknown, model: string | undefined): ProviderLimit {
-	return model !== undefined && failureNamesModel(error, model)
-		? providerLimit(modelLimitKey(provider, model))
-		: providerLimit(provider);
+	return providerLimit(providerLimitScope(provider, error, model).key);
+}
+
+/** The limit a failure belongs to: its model when the failure names that model, else the whole provider. */
+export function providerLimitScope(provider: string, error: unknown, model?: string): ProviderLimitScope {
+	return { key: model !== undefined && failureNamesModel(error, model) ? modelLimitKey(provider, model) : provider };
 }
 
 function extendLimit(limit: ProviderLimit, kind: "rate_limit" | "quota_exhausted", delay: number): void {
@@ -208,22 +219,15 @@ function extendLimit(limit: ProviderLimit, kind: "rate_limit" | "quota_exhausted
 }
 
 /**
- * Apply the server retry hint of a failure that was already recorded, without counting it again. A limit
- * only ever grows, so a guess made before the hint was known cannot shorten it.
+ * Apply the server retry hint of a failure that was already recorded against `scope`, without counting it
+ * again. A limit only ever grows, so a guess made before the hint was known cannot shorten it.
  */
-export function recordProviderRetryHint(provider: string | undefined, error: unknown, model?: string): void {
+export function recordProviderRetryHint(provider: string | undefined, error: unknown, scope: ProviderLimitScope): void {
 	if (provider === undefined) return;
 	const kind = normalizeModelFailureSignal(error)?.kind;
 	if (kind !== "rate_limit" && kind !== "quota_exhausted") return;
 	const retryAfterMs = providerRetryHint(error).retryAfterMs;
-	if (retryAfterMs === undefined) return;
-	// Keep the scope chosen when the failure was first recorded, even if this view no longer names the model.
-	const modelEntry = model === undefined ? undefined : state.providers.get(modelLimitKey(provider, model));
-	const now = Date.now();
-	const modelScoped =
-		modelEntry !== undefined &&
-		(kind === "quota_exhausted" ? modelEntry.unavailableUntil : modelEntry.cooldownUntil) > now;
-	extendLimit(modelScoped ? modelEntry : scopedLimit(provider, error, model), kind, retryAfterMs);
+	if (retryAfterMs !== undefined) extendLimit(providerLimit(scope.key), kind, retryAfterMs);
 }
 
 export function recordProviderSuccess(provider: string, model?: string): void {

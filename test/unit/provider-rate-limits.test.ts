@@ -204,3 +204,27 @@ test("a later retry hint for an already observed failure extends its cooldown wi
 	assert.equal(recordProviderRateLimit("late-hint", failure, model.id), 45_000);
 	assert.equal(providerRateLimitSnapshot("late-hint")?.rateLimitCount, 1);
 });
+
+test("a late retry hint keeps the model scope its response was recorded with after that cooldown ends (#3984)", async () => {
+	const fetcher: typeof fetch = Object.assign(
+		async () =>
+			new Response(JSON.stringify({ error: { message: "Rate limit exceeded for limited-claude" } }), {
+				status: 429,
+				headers: { "Retry-After": "1" },
+			}),
+		globalThis.fetch,
+	);
+	const model = { ...anthropicModel, provider: "late-scoped" };
+	const admission = await admitProviderStream(model, { fetch: fetcher }, false);
+	await admission.run(() => admission.options.fetch!("https://example.invalid"));
+	assert.equal(providerCooldownMs("late-scoped", "limited-claude"), 1000);
+	assert.equal(providerCooldownMs("late-scoped", "other-claude"), 0);
+	vi.advanceTimersByTime(1100);
+	const failure = assistantFailure("429 Too Many Requests", 1000);
+	admission.observeFailure(failure);
+	assert.equal(providerCooldownMs("late-scoped", "other-claude"), 0);
+	assert.equal(providerCooldownMs("late-scoped", "limited-claude"), 1000);
+	recordProviderRateLimit("late-scoped", failure, model.id);
+	assert.equal(providerCooldownMs("late-scoped", "other-claude"), 0);
+	assert.equal(providerRateLimitSnapshot("late-scoped")?.rateLimitCount, 1);
+});
