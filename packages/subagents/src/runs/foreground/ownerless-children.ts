@@ -9,8 +9,10 @@ import {
 	unparkRunWorktree,
 } from "./run-worktrees.js";
 import {
+	pendingMessagesOfResult,
 	requestSubagentChildStop,
 	type SubagentChildLaunch,
+	type SubagentChildPendingMessages,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	type SubagentChildStopStatus,
@@ -118,7 +120,7 @@ export function runOwnerlessChild(input: {
 	const record = (
 		state: SubagentChildRecordInput["state"],
 		terminalStatus?: string,
-		held?: readonly string[],
+		held?: SubagentChildPendingMessages,
 		queuedLaunch?: SubagentChildLaunch,
 	) => {
 		const worktree = runWorktreeRecord(runId, index);
@@ -140,7 +142,7 @@ export function runOwnerlessChild(input: {
 				: {}),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
-			...(held?.length ? { heldMessages: { taskId: launchId, messages: held } } : {}),
+			...(held?.messages.length ? { heldMessages: { taskId: launchId, ...held } } : {}),
 			...(queuedLaunch ? { launch: queuedLaunch } : {}),
 			inherited: subagentChildInheritance(input.options),
 		});
@@ -222,14 +224,14 @@ export function runOwnerlessChild(input: {
 			if (ownerClosed) {
 				// Its owner closed, which ends nothing: it stays restorable, with its worktree and unread messages.
 				parkRunWorktree(runId, index);
-				record("running", undefined, child.pendingMessages);
+				record("running", undefined, pendingMessagesOfResult(child));
 				return child;
 			}
 			// A child that stays resumable keeps what it had queued and not read, for its resume.
 			record(
 				"terminal",
 				stoppedByControl ? stopped : child.status,
-				stoppedByControl ? child.pendingMessages : undefined,
+				stoppedByControl ? pendingMessagesOfResult(child) : undefined,
 			);
 			return child;
 		} catch (error) {

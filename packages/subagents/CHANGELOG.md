@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A resumed subagent child now receives its resume message and the messages it had queued and not read exactly as written. They used to go through `prompt()` or `followUp()` depending on whether the child had held messages, so `/review …` was replaced by a prompt template's contents, a registered command such as `/workflow` either ran or failed the child with `Extension command "/workflow" cannot be queued`, and text the child had already received was expanded a second time. Only an original task the child never read is still prompted the way a fresh launch prompts it ([#4027](https://github.com/bastani-inc/atomic/pull/4027)).
+
 ## [0.9.44] - 2026-10-25
 
 ### Changed

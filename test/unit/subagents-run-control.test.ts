@@ -2674,3 +2674,68 @@ test("resumeInFlight stops resuming once its session is no longer current (#3827
 	assert.equal(h.runs.length, runsBefore);
 	assert.equal(h.latest(quit.childId)?.terminalStatus, "quit");
 });
+
+test("a resume's message is delivered as written, whether or not the child had held messages (#4027)", async () => {
+	const h = harness();
+	const { record } = await h.launch("literal1");
+	await h.call({ action: "pause", id: record.childId });
+	await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
+	const message = "/review src/app.ts";
+	const resumed = await h.call({ action: "resume", id: record.childId, message });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await settled(h, resumedTaskId(resumed));
+	const relaunch = h.runs.at(-1)!;
+	assert.equal(relaunch.task, message);
+	assert.equal(relaunch.options.resumeTaskLiteral, true, "a resume's own message is never expanded or run");
+
+	const live = Promise.withResolvers<TestSessionQueue>();
+	h.onSession = (session) => live.resolve(session);
+	const held = (await h.launch("literal2")).record;
+	h.onSession = undefined;
+	const session = await live.promise;
+	const steer = "/workflow attach run-1";
+	await session.steer(steer);
+	await h.closeOwnerAndReopen("session-close");
+	await h.waitForLatest(held.childId, (candidate) => candidate.heldMessages !== undefined);
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.ok(outcome?.kind === "restored", JSON.stringify(outcome));
+	await settled(h, outcome.taskId);
+	const restored = h.runs.at(-1)!;
+	assert.equal(restored.task, steer, "the held steer comes first");
+	assert.equal(
+		restored.options.resumeTaskLiteral,
+		true,
+		"a message the child had already received is delivered as written, not prompted as a new task",
+	);
+});
+
+test("a held original task the child never read is prompted as its launch would prompt it (#4027)", async () => {
+	for (const taskExpands of [true, false]) {
+		const h = harness();
+		const runId = `heldtask-${taskExpands}`;
+		const { record } = await h.launch(runId);
+		await h.call({ action: "pause", id: record.childId });
+		const paused = await h.waitForLatest(record.childId, (candidate) => candidate.terminalStatus === "paused");
+		// The record a child stopped before its prompt ran leaves: its unread task, then a follow-up. (The harness's own
+		// ORIGINAL_TASK never settles, so the unread task here is another original task text.)
+		const unreadTask = "/review src/unread-task.ts";
+		await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+			...paused,
+			heldMessages: {
+				taskId: paused.taskId,
+				messages: [unreadTask, "/review src/held.ts"],
+				...(taskExpands ? { taskExpands: true as const } : {}),
+			},
+		});
+		const resumed = await h.call({ action: "resume", id: record.childId });
+		assert.notEqual(resumed.isError, true, text(resumed));
+		await settled(h, resumedTaskId(resumed));
+		const relaunch = h.runs.at(-1)!;
+		assert.equal(relaunch.task, unreadTask);
+		assert.equal(relaunch.options.resumeTaskLiteral, taskExpands ? undefined : true);
+		assert.deepEqual(relaunch.options.resumeFollowUps, [
+			"/review src/held.ts",
+			SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+		]);
+	}
+});

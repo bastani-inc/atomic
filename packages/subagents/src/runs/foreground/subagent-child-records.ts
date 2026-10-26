@@ -35,6 +35,32 @@ export type SubagentChildOwner =
  * (`stage-paused`); an explicit `resume` also reopens a settled child unless its `terminalStatus` is
  * non-resumable (`killed`, `stage-closed`, `gone`).
  */
+/**
+ * What a stopped child had queued and not read, as a record keeps it. Resume delivers each message as written, except
+ * that a first message flagged `taskExpands` is the child's original task it never read, prompted as a fresh launch
+ * prompts it (prompt templates expanded, commands run).
+ */
+export interface SubagentChildHeldMessages {
+	readonly taskId: string;
+	readonly messages: readonly string[];
+	readonly taskExpands?: true;
+}
+
+/** The held messages a finished child attempt reports, in the form `recordChild` takes them. */
+export interface SubagentChildPendingMessages {
+	readonly messages: readonly string[];
+	readonly taskExpands?: true;
+}
+
+/** A child result's unread messages, if it has any. */
+export function pendingMessagesOfResult(result: {
+	readonly pendingMessages?: readonly string[];
+	readonly pendingTaskExpands?: boolean;
+}): SubagentChildPendingMessages | undefined {
+	if (!result.pendingMessages?.length) return undefined;
+	return { messages: result.pendingMessages, ...(result.pendingTaskExpands ? { taskExpands: true } : {}) };
+}
+
 export interface SubagentChildRecord {
 	readonly version: 1;
 	readonly childId: string;
@@ -75,7 +101,7 @@ export interface SubagentChildRecord {
 	 * Steering and follow-up messages the child had queued but not read when pause, quit or its stage's pause stopped
 	 * task `taskId`, in order. Resume delivers them once, before its own message; a later task's record supersedes them.
 	 */
-	readonly heldMessages?: { readonly taskId: string; readonly messages: readonly string[] };
+	readonly heldMessages?: SubagentChildHeldMessages;
 	/** How a child admitted while it waited for a slot in its run was launched, so it can start fresh after a restart. */
 	readonly launch?: SubagentChildLaunch;
 	/**

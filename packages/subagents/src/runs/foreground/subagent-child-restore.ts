@@ -209,26 +209,33 @@ function ownSessionModelCandidate(
 	return resolveCandidateModel(candidate)?.model ? candidate : undefined;
 }
 
+/** What a restored child is prompted with: its task, then follow-ups delivered as written. */
+interface ResumePrompts {
+	readonly task: string;
+	readonly followUps: readonly string[];
+	/** The task is delivered as written rather than as a fresh launch's task. */
+	readonly taskLiteral: boolean;
+}
+
 /**
  * What the reopened child is prompted with, in order: the messages it had queued and not read when it was stopped,
  * once, then the resume prompt and its continuation. A continuation it had queued is not repeated.
  */
-function resumedPrompts(
-	record: SubagentChildRecord,
-	resume: SubagentChildResumeRequest | undefined,
-): { readonly task: string; readonly followUps: readonly string[] } {
+function resumedPrompts(record: SubagentChildRecord, resume: SubagentChildResumeRequest | undefined): ResumePrompts {
 	const prompt = resume?.prompt ?? SUBAGENT_RESUME_CONTINUATION_PROMPT;
 	const continuations = new Set([
 		SUBAGENT_RESUME_CONTINUATION_PROMPT,
 		resume?.continuation,
 		resume?.message ? undefined : prompt,
 	]);
-	const held =
-		record.heldMessages && record.heldMessages.taskId === record.taskId
-			? record.heldMessages.messages.filter((message) => !continuations.has(message))
-			: [];
+	const recorded =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages : undefined;
+	const held = recorded ? recorded.messages.filter((message) => !continuations.has(message)) : [];
+	// Only an original task the child never read keeps a fresh launch's handling; a held message it already received,
+	// or the resume's own message, is delivered as written whether or not anything was held (#4027).
+	const taskExpands = recorded?.taskExpands === true && held.length > 0 && held[0] === recorded.messages[0];
 	const [task = prompt, ...followUps] = [...held, prompt, ...(resume?.continuation ? [resume.continuation] : [])];
-	return { task, followUps };
+	return { task, followUps, taskLiteral: !taskExpands };
 }
 
 /**
@@ -239,9 +246,14 @@ function freshPrompts(
 	record: SubagentChildRecord,
 	launch: SubagentChildLaunch,
 	resume: SubagentChildResumeRequest | undefined,
-): { readonly task: string; readonly followUps: readonly string[] } {
+): ResumePrompts {
 	const held = record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
-	return { task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task, followUps: held };
+	// The child never started: its task is prompted as its original launch would have prompted it.
+	return {
+		task: resume?.message ? `${launch.task}\n\n${resume.message}` : launch.task,
+		followUps: held,
+		taskLiteral: false,
+	};
 }
 
 /**
@@ -396,6 +408,7 @@ async function relaunchChild(
 		...(fresh?.maxOutput ? { maxOutput: fresh.maxOutput } : {}),
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
+		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),
 		workflowStageSubagentGuard: isWorkflowStageOrchestrationContext(ctx),
