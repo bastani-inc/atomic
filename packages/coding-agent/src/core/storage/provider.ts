@@ -105,9 +105,10 @@ export function storageSelectionKey(selection: StorageSelection, agentDir?: stri
 const ADAPTER_IMPORTS = "atomic:storage-adapter-imports";
 /**
  * Appended to every module the adapter loader transforms. The hoisted declaration replaces the `jitiImport` that jiti
- * passes each module, so the module's static and dynamic imports reach {@link createAdapterImports} with its own loader.
+ * passes each module, so the module's static and dynamic imports reach {@link createAdapterImports} with its own loader
+ * and the importing module's filename.
  */
-const ADAPTER_IMPORT_HOOK = `\nfunction jitiImport(id, options) { return require(${JSON.stringify(ADAPTER_IMPORTS)}).import(require, id, options); }\n`;
+const ADAPTER_IMPORT_HOOK = `\nfunction jitiImport(id, options) { return require(${JSON.stringify(ADAPTER_IMPORTS)}).import(require, id, options, __filename); }\n`;
 
 /** Whether Node loads a file as ESM: jiti imports such files natively, outside the loader's host modules. */
 function isNativeEsm(filename: string): boolean {
@@ -123,22 +124,47 @@ function isNativeEsm(filename: string): boolean {
 	}
 }
 
+interface AdapterImports {
+	import(jiti: Jiti, id: string, options: JitiResolveOptions | undefined, importer: string): Promise<object>;
+}
+
 /**
  * Evaluates the ESM files an adapter module imports by path through the adapter loader, once per load, so their own
- * imports get the host modules too. Package imports, such as an adapter's driver, load as jiti loads them.
+ * imports get the host modules too. Package imports, such as an adapter's driver, load as jiti loads them. A module
+ * imported again waits for its evaluation, top-level `await` included, unless the importer is part of that evaluation:
+ * an import cycle gets the partly evaluated module, as it would natively. Filenames are jiti's resolved paths, the keys
+ * of its module cache.
  */
-function createAdapterImports(): { import(jiti: Jiti, id: string, options?: JitiResolveOptions): Promise<object> } {
-	const evaluated = new Set<string>();
+function createAdapterImports(): AdapterImports {
+	const evaluations = new Map<string, Promise<object>>();
+	const awaiting = new Map<string, Set<string>>();
+	const awaits = (importer: string, filename: string, seen = new Set<string>()): boolean => {
+		if (importer === filename) return true;
+		if (seen.has(importer)) return false;
+		seen.add(importer);
+		return [...(awaiting.get(importer) ?? [])].some((next) => awaits(next, filename, seen));
+	};
+	const wait = (importer: string, filename: string, evaluation: Promise<object>): Promise<object> => {
+		const pending = awaiting.get(importer) ?? new Set<string>();
+		awaiting.set(importer, pending.add(filename));
+		return evaluation.finally(() => pending.delete(filename));
+	};
 	return {
-		import(jiti, id, options) {
+		import(jiti, id, options, importer) {
 			const byPath = id.startsWith(".") || id.startsWith("file:") || isAbsolute(id);
-			const filename = byPath ? fileURLToPath(jiti.esmResolve(id)) : undefined;
-			if (filename === undefined || evaluated.has(filename) || !isNativeEsm(filename)) {
-				return jiti.import<object>(id, options);
+			const filename = byPath ? jiti.resolve(id) : undefined;
+			if (filename === undefined || !isNativeEsm(filename)) return jiti.import<object>(id, options);
+			const evaluation = evaluations.get(filename);
+			if (evaluation === undefined) {
+				const source = readFileSync(filename, "utf8");
+				const started = Promise.resolve().then(
+					() => jiti.evalModule(source, { filename, async: true, forceTranspile: true }) as Promise<object>,
+				);
+				evaluations.set(filename, started);
+				return wait(importer, filename, started);
 			}
-			evaluated.add(filename);
-			const source = readFileSync(filename, "utf8");
-			return jiti.evalModule(source, { filename, async: true, forceTranspile: true }) as Promise<object>;
+			if (awaits(filename, importer)) return jiti.import<object>(id, options);
+			return wait(importer, filename, evaluation);
 		},
 	};
 }

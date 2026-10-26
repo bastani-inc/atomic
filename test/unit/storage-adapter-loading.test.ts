@@ -240,6 +240,76 @@ test("modules a type:module adapter imports get the host's @bastani/atomic/workf
 	}
 });
 
+test("concurrent imports of a type:module helper both wait for its top-level await (#3972)", async () => {
+	const agentDir = makeTempDirectory("storage-module-type-concurrent-");
+	const adapterDir = join(agentDir, "adapter");
+	await writeFileEnsuringDir(join(adapterDir, "package.json"), JSON.stringify({ type: "module" }));
+	await writeFileEnsuringDir(
+		join(adapterDir, "adapter.js"),
+		[
+			"export default {",
+			"\tatomicStorageAdapter: 1,",
+			'\tasync openRunJournal() { return (await import("./helper.js")).readRun(); },',
+			"};",
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(
+		join(adapterDir, "helper.js"),
+		["await new Promise((resolve) => setTimeout(resolve, 50));", 'export const readRun = () => "run";', ""].join(
+			"\n",
+		),
+	);
+	try {
+		const adapter = (await loadStorageAdapter(
+			join(adapterDir, "adapter.js"),
+			{ agentDir, domain: "journal" },
+			{ "@bastani/atomic/workflows": {} },
+		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
+		assert.deepEqual(await Promise.all([adapter.openRunJournal(), adapter.openRunJournal()]), ["run", "run"]);
+	} finally {
+		removeTempDirectory(agentDir);
+	}
+});
+
+test("type:module adapter modules that import each other load without waiting on themselves (#3972)", async () => {
+	const agentDir = makeTempDirectory("storage-module-type-cycle-");
+	const adapterDir = join(agentDir, "adapter");
+	await writeFileEnsuringDir(join(adapterDir, "package.json"), JSON.stringify({ type: "module" }));
+	await writeFileEnsuringDir(
+		join(adapterDir, "adapter.js"),
+		[
+			'import { ping } from "./ping.js";',
+			"export default { atomicStorageAdapter: 1, async openRunJournal() { return ping(2); } };",
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(
+		join(adapterDir, "ping.js"),
+		[
+			'import { pong } from "./pong.js";',
+			'export function ping(count) { return count === 0 ? "done" : pong(count - 1); }',
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(
+		join(adapterDir, "pong.js"),
+		['import * as cycle from "./ping.js";', "export function pong(count) { return cycle.ping(count); }", ""].join(
+			"\n",
+		),
+	);
+	try {
+		const adapter = (await loadStorageAdapter(
+			join(adapterDir, "adapter.js"),
+			{ agentDir, domain: "journal" },
+			{ "@bastani/atomic/workflows": {} },
+		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
+		assert.equal(await adapter.openRunJournal(), "done");
+	} finally {
+		removeTempDirectory(agentDir);
+	}
+});
+
 /**
  * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
  * beside it whose workflows module lacks the host's `MARK`.
