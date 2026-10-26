@@ -227,8 +227,21 @@ function extendLimit(key: string, kind: "rate_limit" | "quota_exhausted", delay:
 	const until = Math.ceil(Date.now() + Math.max(1, delay));
 	const observation = raiseLimit(key, kind === "quota_exhausted" ? "unavailable" : "cooldown", until);
 	if (observation === undefined || state.observers === undefined) return;
-	for (const observer of state.observers) observer(observation);
+	for (const observer of state.observers) {
+		// An observer must never change how the request that hit the limit is handled, nor starve the others.
+		try {
+			observer(observation);
+		} catch (error) {
+			if (!observerFailureReported) {
+				observerFailureReported = true;
+				console.debug("Provider rate-limit observer failed", error);
+			}
+		}
+	}
 }
+
+/** Observer failures are reported once per process. */
+let observerFailureReported = false;
 
 /** Raise one limit to `until`; returns the limit as an observation when it grew, and nothing otherwise. */
 function raiseLimit(

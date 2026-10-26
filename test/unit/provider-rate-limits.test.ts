@@ -321,3 +321,38 @@ test("observers hear limits this process records or extends, not remote ones it 
 		{ provider: "heard", kind: "unavailable", untilEpochMs: now + 60_000 },
 	]);
 });
+
+test("a throwing limit observer changes no request handling and does not block other observers (#4023)", async () => {
+	vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+	const now = Date.now();
+	const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+	const heard: ProviderRateLimitObservation[] = [];
+	const stopThrowing = observeProviderRateLimits(() => {
+		throw new Error("observer failed");
+	});
+	const stopHeard = observeProviderRateLimits((observation) => heard.push(observation));
+	try {
+		const fetcher: typeof fetch = Object.assign(
+			async () =>
+				new Response(JSON.stringify({ error: { message: "Rate limit exceeded for limited-claude" } }), {
+					status: 429,
+					headers: { "Retry-After": "9" },
+				}),
+			globalThis.fetch,
+		);
+		const admission = await admitProviderStream(anthropicModel, { fetch: fetcher }, false);
+		const response = await admission.run(() => admission.options.fetch!("https://example.invalid"));
+		assert.equal(response.status, 429);
+		assert.equal(recordProviderRateLimit("observed-quota", { status: 402, retryAfterMs: 60_000 }), 60_000);
+	} finally {
+		stopThrowing();
+		stopHeard();
+	}
+	assert.equal(providerCooldownMs("anthropic-hints", "limited-claude"), 9000);
+	assert.equal(providerUnavailableMs("observed-quota"), 60_000);
+	assert.deepEqual(heard, [
+		{ provider: "anthropic-hints", model: "limited-claude", kind: "cooldown", untilEpochMs: now + 9000 },
+		{ provider: "observed-quota", kind: "unavailable", untilEpochMs: now + 60_000 },
+	]);
+	assert.equal(debug.mock.calls.length, 1);
+});
