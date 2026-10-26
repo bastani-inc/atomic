@@ -6,6 +6,7 @@ import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
+import { PromptReservationState, type PromptReservationToken } from "../durable/prompt-reservation-state.js";
 import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
@@ -16,7 +17,8 @@ import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { createStageControlRegistry, type StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
-import { createStore } from "../shared/store.js";
+import { StageUiBroker } from "../shared/stage-ui-broker.js";
+import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
@@ -150,6 +152,18 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		"hydrateWorkflow",
 		"promptReservationScope",
 	]);
+	// Pending-prompt reservations of pooled children live in this process: a prompt left pending
+	// when the worker dies is asked again by the replay, and an answered one replays from the UI
+	// response checkpoint this worker committed (#3996).
+	const reservations = new Map<string, PromptReservationState>();
+	const reservationsOf = (workflowId: string): PromptReservationState => {
+		let state = reservations.get(workflowId);
+		if (state === undefined) {
+			state = new PromptReservationState(0);
+			reservations.set(workflowId, state);
+		}
+		return state;
+	};
 	const backend = new Proxy(reader, {
 		get(target, key) {
 			if (
@@ -161,6 +175,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			if (key === "persistent") return true;
 			if (key === "workflowOwnership") return () => "local";
 			if (key === "persistPendingStageMessages") return async () => false;
+			if (key === "reservePendingPrompt")
+				return async (workflowId: string, reservationId: string) =>
+					reservationsOf(workflowId).reserve(reservationId);
+			if (key === "pendingPromptToken")
+				return async (workflowId: string, reservationId: string) => reservationsOf(workflowId).claim(reservationId);
+			if (key === "releasePendingPrompt")
+				return async (workflowId: string, reservationId: string, token: PromptReservationToken) =>
+					reservationsOf(workflowId).release(reservationId, token);
 			if (key === "commitCheckpoint" || key === "commitAdditiveCheckpointBestEffort")
 				return async (
 					checkpoint: Parameters<DurableWorkflowBackend["commitCheckpoint"]>[0],
@@ -187,11 +209,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		const toolControls = createToolControlRegistry();
 		const stageControls = createStageControlRegistry();
 		let heldAttempt: PoolWork | undefined;
+		let prompts: { readonly store: Store; readonly broker: StageUiBroker } | undefined;
 		stageWatches = new WorkerStageWatches(
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
 			(message) => process.send?.({ ...message, id: 0 }),
 			() => controlState,
+			() => prompts,
 		);
 		const observeControl = async () => {
 			const control = (await request({ kind: "control" })) as PoolControl;
@@ -239,6 +263,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			heldAttempt = work;
 			const store = createStore();
 			currentStore = store;
+			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
+			const stageUiBroker = new StageUiBroker(store);
+			prompts = { store, broker: stageUiBroker };
 			let publication: Promise<void> | undefined;
 			let activityDirty = false;
 			const publish = () => {
@@ -359,6 +386,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				const result = await withResourceAdmission(resourceAdmission, () =>
 					run(definitions[index]!, work.inputs, {
 						...(work.execution as RunOpts),
+						...(start.promptNodes === true ? { usePromptNodesForUi: true } : {}),
 						runId: work.childRunId,
 						durableBackend: backend,
 						durableRootBackend: backend,
@@ -367,6 +395,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						store,
 						toolControlRegistry: toolControls,
 						stageControlRegistry: stageControls,
+						stageUiBroker,
 						adapters: {
 							agentSession: admitted,
 							sessionStore: workerSessionStore({
@@ -402,6 +431,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				unsubscribe();
 				stageWatches?.clear();
 				heldAttempt = undefined;
+				prompts = undefined;
 				activeController = undefined;
 			}
 			if (attemptFenced) {

@@ -146,15 +146,27 @@ test("child budget overrides fail before launching workers (#3869)", async () =>
 	}
 });
 
-test("local workers accept a caller stage-control registry and still refuse every other process-bound option (#3996)", async () => {
+test("local workers accept a caller stage-control registry and ui, and still refuse every other process-bound option (#3996)", async () => {
 	const journal = await resolveRunJournal({ journal: { memory: true } });
 	const backend = await JournalDurableBackend.open(journal);
 	const pool = new LocalWorkerPool(backend, { journalPath: "/unused", workers: 1, definitions: [] });
 	try {
 		assert.doesNotThrow(() => pool.validateOptions({ stageControlRegistry: createStageControlRegistry() }));
+		assert.doesNotThrow(() =>
+			pool.validateOptions({
+				ui: {
+					input: async () => "",
+					confirm: async () => false,
+					select: async (_message, options) => options[0]!,
+					editor: async () => "",
+					custom: async () => {
+						throw new Error("unused");
+					},
+				},
+			}),
+		);
 		const refused = [
 			"adapters",
-			"ui",
 			"persistence",
 			"mcp",
 			"overlay",

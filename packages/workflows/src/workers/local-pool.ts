@@ -26,7 +26,13 @@ import {
 	pendingStageMessageRouter,
 } from "../shared/external-run-routes.js";
 import type { Store } from "../shared/store.js";
-import type { WorkflowDefinition, WorkflowSerializableObject } from "../shared/types.js";
+import type { PendingPrompt, RunSnapshot } from "../shared/store-types.js";
+import type {
+	WorkflowDefinition,
+	WorkflowSerializableObject,
+	WorkflowSerializableValue,
+	WorkflowUIAdapter,
+} from "../shared/types.js";
 import { asWorkflowInfrastructureError, WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import { workflowResourceAdmission } from "./admission-binding.js";
 import {
@@ -61,9 +67,11 @@ import type {
 	ControlResult,
 	DeliveryOpId,
 	DeliveryResult,
+	PooledPromptAnswer,
 	PooledStageDelivery,
 	PooledStageRef,
 	PooledStageWatchMessage,
+	PromptResult,
 	WatchEndReason,
 	WatchId,
 	WatchResult,
@@ -250,6 +258,10 @@ export class LocalWorkerPool {
 	/** Views whose watch ended with their attempt; each reconnects once a replacement runs the stage. */
 	private readonly reconnectingViews = new Set<StageView>();
 	private releaseStageSource?: () => void;
+	/** An SDK caller's `ui`, which answers the `ctx.ui` prompts of pooled children. */
+	private promptUi?: WorkflowUIAdapter;
+	/** Prompts of pooled stages the root is routing an answer for, by run, stage and prompt id. */
+	private readonly routedPrompts = new Set<string>();
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
 	constructor(
@@ -357,7 +369,6 @@ export class LocalWorkerPool {
 		if (options[hostWorkerBindings]) return;
 		for (const key of [
 			"adapters",
-			"ui",
 			"persistence",
 			"mcp",
 			"overlay",
@@ -374,7 +385,7 @@ export class LocalWorkerPool {
 		] as const)
 			if (options[key] !== undefined) throw new Error(`Local workers refuse process-bound override: ${key}`);
 	}
-	private async start(root: string): Promise<void> {
+	private async start(root: string, promptNodes: boolean): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
 		if (!this.queue || !this.lease || this.lease.runId !== root)
 			throw new Error("Local worker pool requires root preparation");
@@ -412,6 +423,7 @@ export class LocalWorkerPool {
 			};
 			this.releaseStageSource = registerPooledStageSource(store, {
 				acquire: (runId, stageId) => this.acquirePooledStage(runId, stageId),
+				answer: (runId, stageId, answer) => this.answerPooledStagePrompt(runId, stageId, answer),
 			});
 			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) => {
 				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
@@ -422,6 +434,7 @@ export class LocalWorkerPool {
 			sources: this.sources,
 			cwd,
 			publish: store !== undefined,
+			...(promptNodes ? { promptNodes } : {}),
 			...this.rootRun(),
 		});
 	}
@@ -471,6 +484,46 @@ export class LocalWorkerPool {
 			}
 		}
 		return { ok: false, refusal: "Unconfirmed" };
+	}
+	/**
+	 * Answers a human-input prompt a pooled stage raised (#3996), bound to its prompt id:
+	 * a workflow `ctx.ui` prompt node or a stage's brokered question such as `ask_user_question`.
+	 */
+	async answerPooledStagePrompt(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({ kind: "stage-answer", runId, stageId, answer })) as PromptResult;
+	}
+	/**
+	 * Carries answers to `ctx.ui` prompts of pooled stages back to their workers. The root's store
+	 * holds each prompt as published, so every root answer path (stage chat, `workflow answer`)
+	 * resolves it there; an SDK caller's `ui` is asked instead when one was given.
+	 */
+	private routePrompts(publications: readonly { readonly runs: readonly RunSnapshot[] }[]): void {
+		const store = this.store;
+		for (const { runs } of publications)
+			for (const run of runs)
+				for (const stage of run.stages) {
+					const prompt = stage.pendingPrompt;
+					if (prompt === undefined) continue;
+					const key = JSON.stringify([run.id, stage.id, prompt.id]);
+					if (this.routedPrompts.has(key)) continue;
+					const answered =
+						this.promptUi !== undefined
+							? askPromptUi(this.promptUi, prompt)
+							: store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id);
+					if (answered === undefined) continue;
+					this.routedPrompts.add(key);
+					void answered
+						.then((response) =>
+							this.answerPooledStagePrompt(run.id, stage.id, {
+								kind: "prompt",
+								promptId: prompt.id,
+								response: response as WorkflowSerializableValue,
+							}),
+						)
+						.catch(() => {})
+						.finally(() => this.routedPrompts.delete(key));
+				}
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
@@ -669,7 +722,10 @@ export class LocalWorkerPool {
 			throw new Error("Local workers require a durable child boundary");
 		this.rootBudget = options.rootBudget;
 		const root = options.parentRun.rootRunId;
-		this.starting ??= this.start(root);
+		// A pooled child's `ctx.ui` prompts wait for the root to answer them when the root can:
+		// through prompt nodes in the host, or through an SDK caller's `ui` (#3996). This is the
+		// pool's setting, not part of a child's work, so a resume re-enqueues identical work.
+		this.starting ??= this.start(root, options.usePromptNodesForUi === true || options.ui !== undefined);
 		await this.starting;
 		if (this.lease!.runId !== root) throw new Error("Local worker pool belongs to another root");
 		const selectedSource = this.sources[index]!;
@@ -694,6 +750,7 @@ export class LocalWorkerPool {
 				executionMode: options.executionMode,
 			}),
 		) as WorkflowSerializableObject;
+		if (options.ui !== undefined && options.usePromptNodesForUi !== true) this.promptUi ??= options.ui;
 		this.evaluateBudget();
 		const enqueued = (await this.command({
 			kind: "enqueue",
@@ -877,6 +934,7 @@ export class LocalWorkerPool {
 				if (error !== undefined)
 					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
 			});
+			this.routePrompts(publications.filter((_, index) => outcomes[index] === undefined));
 			const registry = this.options.stageControlRegistry;
 			if (registry !== undefined) {
 				const accepted = publications.filter((_, index) => outcomes[index] === undefined);
@@ -1008,5 +1066,21 @@ export class LocalWorkerPool {
 			failure ??= error;
 		}
 		if (failure !== undefined) throw failure;
+	}
+}
+
+/** Asks an SDK caller's `ui` a pooled stage's prompt; undefined for a custom prompt it cannot render. */
+function askPromptUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<WorkflowSerializableValue> | undefined {
+	switch (prompt.kind) {
+		case "input":
+			return ui.input(prompt.message);
+		case "confirm":
+			return ui.confirm(prompt.message);
+		case "select":
+			return ui.select(prompt.message, prompt.choices ?? []);
+		case "editor":
+			return ui.editor(prompt.initial);
+		default:
+			return undefined;
 	}
 }

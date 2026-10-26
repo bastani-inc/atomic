@@ -890,6 +890,8 @@ A stage that runs on a local worker opens from the workflow graph or `/workflow 
 
 If the worker running an open stage dies or loses its lease, the chat header shows `RECONNECTING` until the stage runs again on a replacement worker. The chat then reloads from the replacement's transcript and sends again, once each, in the order and the mode you sent them (a steer still steers the running turn, a follow-up still waits for it), the messages the replacement does not have, such as messages that were still queued. The header then shows how many were redelivered.
 
+A child on a local worker can ask for input. A `ctx.ui` prompt (`input`, `confirm`, `select`, `editor`) shows on its stage like any workflow prompt: answer it in the stage chat or with the workflow tool's `answer` action, and the answer goes to the worker. A question a stage asks with `ask_user_question` marks the stage as awaiting input; answer it with the workflow tool's `answer` action (ask the main agent), since the stage chat does not show that form for stages on local workers yet. Custom `ctx.ui.custom` prompts from children on local workers cannot be answered.
+
 Only the stages you have open stream to the root process. A pool with many workers sends nothing extra for stages nobody is watching.
 
 When the stage finishes, close the chat and open the stage again to continue in post-mortem chat. A finished stage that ran on a local worker reopens for post-mortem chat in the same session and after a restart.

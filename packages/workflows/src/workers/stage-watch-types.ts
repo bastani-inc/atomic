@@ -2,7 +2,8 @@ import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
-import type { StageSendUserMessageOptions } from "../shared/types.js";
+import type { StageInputAnswer } from "../shared/stage-prompt.js";
+import type { StageSendUserMessageOptions, WorkflowSerializableValue } from "../shared/types.js";
 
 /**
  * Identity and payload types of a pooled stage watch: a live, attempt-bound view of one
@@ -102,6 +103,23 @@ export type ControlRefusal = "StaleAttempt" | "StageNotLive" | "PoolPausedOrQuit
 export type ControlResult =
 	| { readonly ok: true; readonly action?: StageUserMessageDeliveryAction }
 	| { readonly ok: false; readonly refusal: ControlRefusal };
+
+/**
+ * An answer to a human-input prompt a pooled stage raised (#3996): a workflow `ctx.ui` prompt
+ * node (`prompt`), or a stage's brokered question such as `ask_user_question` (`input`).
+ * Bound to the prompt id, so an answer meant for one prompt never resolves another.
+ */
+export type PooledPromptAnswer =
+	| { readonly kind: "prompt"; readonly promptId: string; readonly response: WorkflowSerializableValue }
+	| { readonly kind: "input"; readonly promptId: string; readonly answer: StageInputAnswer };
+
+/**
+ * Why an answer was not applied.
+ * - `PromptNotPending`: the stage has no pending prompt with that id (already answered or replaced).
+ */
+export type PromptRefusal = "StaleAttempt" | "StageNotLive" | "PromptNotPending";
+
+export type PromptResult = { readonly ok: true } | { readonly ok: false; readonly refusal: PromptRefusal };
 
 /** One user delivery through a watch. */
 export interface PooledStageDelivery {

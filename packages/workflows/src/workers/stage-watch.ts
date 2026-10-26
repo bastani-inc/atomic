@@ -1,6 +1,8 @@
 import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
+import type { Store } from "../shared/store.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
@@ -110,12 +112,19 @@ export class WorkerStageWatches {
 		private readonly send: (message: DistributiveOmit<Outbound, "id">) => void,
 		/** Pool-wide control as the worker last observed it. */
 		private readonly control: () => string = () => "running",
+		/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
+		private readonly prompts: () => { readonly store: Store; readonly broker: StageUiBroker } | undefined = () =>
+			undefined,
 	) {}
 
 	serve(command: WorkerStageCommand): void {
 		if (command.op === "unwatch") {
 			this.close(command.watch);
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
+			return;
+		}
+		if (command.op === "answer") {
+			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.answer(command) });
 			return;
 		}
 		if (command.op === "deliver" || command.op === "pause" || command.op === "resume") {
@@ -172,6 +181,43 @@ export class WorkerStageWatches {
 			this.flush(id);
 			this.close(id);
 		}
+	}
+
+	/**
+	 * Applies an answer to the prompt it names, and only to that prompt, on the attempt this worker
+	 * holds: a workflow `ctx.ui` prompt node waiting in the attempt's store, or a stage's brokered
+	 * question waiting in its stage UI broker.
+	 */
+	private answer(command: Extract<WorkerStageCommand, { op: "answer" }>): StageCommandResult {
+		const held = this.attempt();
+		const prompts = this.prompts();
+		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !prompts)
+			return { refusal: "StaleAttempt" };
+		const stage = prompts.store
+			.runs()
+			.find((run) => run.id === command.runId)
+			?.stages.find((candidate) => candidate.id === command.stageId);
+		if (stage === undefined || TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
+		const { answer } = command;
+		if (answer.kind === "prompt")
+			return prompts.store.resolveStagePendingPrompt(
+				command.runId,
+				command.stageId,
+				answer.promptId,
+				answer.response,
+				{
+					answerSource: "workflow_ui",
+				},
+			)
+				? {}
+				: { refusal: "PromptNotPending" };
+		if (prompts.broker.peekStagePrompt(command.runId, command.stageId)?.id !== answer.promptId)
+			return { refusal: "PromptNotPending" };
+		return prompts.broker.answerStagePrompt(command.runId, command.stageId, answer.answer, {
+			answerSource: "workflow_ui",
+		})
+			? {}
+			: { refusal: "PromptNotPending" };
 	}
 
 	/** The watched handle when the command is for the attempt this worker holds; otherwise the refusal. */

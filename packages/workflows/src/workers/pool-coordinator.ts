@@ -58,8 +58,11 @@ import type {
 	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
+	PooledPromptAnswer,
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
+	PromptRefusal,
+	PromptResult,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -332,7 +335,7 @@ interface WorkerSlot {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal;
+	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
 	readonly error?: string;
 }
@@ -376,6 +379,7 @@ export class PoolCoordinator {
 	private readonly watches = new Map<WatchId, StageWatch>();
 	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
 	private stageCommandSequence = 0;
+	private promptNodes = false;
 	private lastTick = performance.now();
 	private stalledMs = 0;
 	private readonly ticker: NodeJS.Timeout;
@@ -480,6 +484,7 @@ export class PoolCoordinator {
 			case "control":
 				return this.control(command.state);
 			case "start":
+				this.promptNodes = command.promptNodes === true;
 				this.starting ??= this.start(command.sources, command.cwd, command.publish, command.rootRun);
 				return this.starting;
 			case "enqueue":
@@ -496,6 +501,8 @@ export class PoolCoordinator {
 				return;
 			case "stage-deliver":
 				return this.stageDeliver(command);
+			case "stage-answer":
+				return this.stageAnswer(command.runId, command.stageId, command.answer);
 			case "stage-pause":
 				return this.stageControl(command.watch, { op: "pause" });
 			case "stage-resume":
@@ -858,6 +865,22 @@ export class PoolCoordinator {
 		};
 	}
 
+	/** Answers a prompt through the airlock of the worker whose attempt published the stage's run. */
+	private async stageAnswer(runId: string, stageId: string, answer: PooledPromptAnswer): Promise<PromptResult> {
+		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		if (slot?.work === undefined) return { ok: false, refusal: "StaleAttempt" };
+		const attempt = { workId: slot.work.id, generation: slot.work.generation };
+		const result = await this.stageCommand(slot, { attempt, op: "answer", runId, stageId, answer });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === undefined) return { ok: true };
+		return {
+			ok: false,
+			refusal: refusal === "StageNotLive" || refusal === "PromptNotPending" ? refusal : "StaleAttempt",
+		};
+	}
+
 	/** Pauses or resumes one watched stage through its worker's airlock; pool control is untouched. */
 	private async stageControl(
 		id: WatchId,
@@ -968,6 +991,7 @@ export class PoolCoordinator {
 					root,
 					definitions: this.sources,
 					admission: options.admission,
+					...(this.promptNodes ? { promptNodes: true } : {}),
 				}),
 			],
 			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
