@@ -3,10 +3,10 @@
 // LocalWorkerPool's internal `workerEntry` option and speaks the real worker IPC protocol
 // (packages/workflows/src/workers/protocol.ts).
 //
-// First attempt: take a real process permit from the worker's SqlResourceAdmission, bind it to a
+// First attempt of the child with input index 0: take a real process permit from the worker's SqlResourceAdmission, bind it to a
 // detached `sleep` process group, record that group, then SIGKILL itself so the group outlives it.
-// Replayed attempt: record whether the orphaned group was still alive when the replay was claimed,
-// then complete the child.
+// Its replayed attempt records whether the orphaned group was still alive when the replay was claimed.
+// Every other attempt completes its child at once.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -64,6 +64,8 @@ function groupAlive(group) {
 }
 
 async function orphanProcessGroup(work) {
+	// Loading the admission module can outlast a short lease: keep it renewed, as a real worker's heartbeat does.
+	setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
 	const jiti = createJiti(import.meta.url, { fsCache: false });
 	const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 	const { resolveRunJournal } = await load("../../packages/workflows/src/durable/journal/resolution.ts");
@@ -86,8 +88,10 @@ async function orphanProcessGroup(work) {
 }
 
 async function complete(work) {
-	const group = Number(readFileSync(orphanMarker, "utf8"));
-	writeFileSync(replayMarker, JSON.stringify({ group, orphanAliveAtReplay: groupAlive(group) }));
+	if (work.inputs.index === 0) {
+		const group = Number(readFileSync(orphanMarker, "utf8"));
+		writeFileSync(replayMarker, JSON.stringify({ group, orphanAliveAtReplay: groupAlive(group) }));
+	}
 	const journal = new DatabaseSync(start.journalPath, { readOnly: true, timeout: 60_000 });
 	const row = journal
 		.prepare("SELECT payload FROM wf_events WHERE run_id = ? AND key = ?")
@@ -115,15 +119,12 @@ try {
 			await delay(25);
 			continue;
 		}
-		if (existsSync(orphanMarker)) {
-			await complete(work);
-			break;
-		}
-		await orphanProcessGroup(work);
+		if (work.inputs.index === 0 && !existsSync(orphanMarker)) await orphanProcessGroup(work);
+		await complete(work);
 	}
-	// Stay connected and idle, as a worker with no work left would, until the pool closes.
-	await new Promise(() => {});
 } catch (error) {
-	process.stderr.write(`orphan stub worker failed: ${error?.stack ?? error}\n`);
-	process.exit(1);
+	// Once the root finishes, its lease is released and later polls are refused as stale. The worker reports
+	// the error and stays connected and idle, as a worker with no work left would, until the pool closes.
+	process.stderr.write(`orphan stub worker stopped: ${error?.stack ?? error}\n`);
+	await new Promise(() => {});
 }

@@ -7,9 +7,22 @@ import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
-import { admissionBootIdentity, admissionHost, admissionProcessStopped } from "./admission-host.js";
+import {
+	admissionBootIdentity,
+	admissionHost,
+	admissionProcessStopped,
+	processGroupState,
+	reapPause,
+	signalProcessGroup,
+} from "./admission-host.js";
 
 const OWNER_LEASE_MS = 30_000;
+/** How long an exited worker's orphaned process groups get to exit after SIGTERM, before SIGKILL. */
+export const REAP_TERM_GRACE_MS = 5_000;
+/** How long a SIGKILLed process group may take to disappear before its permits stay quarantined. */
+export const REAP_KILL_GRACE_MS = 10_000;
+/** Pause between probes of a process group being reaped. */
+const REAP_POLL_MS = 50;
 
 type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
@@ -360,31 +373,51 @@ export class SqlResourceAdmission {
 		});
 	}
 	/**
-	 * Kills the process groups that an exited holder's granted process permits are bound to on this host, then
-	 * reconciles, so each permit is released once its group is confirmed gone. Returns how many of the holder's
-	 * bound process permits are still unconfirmed. Permits without a process identity cannot be reaped and stay
-	 * quarantined; they are not counted. Call it only for a holder whose process has exited: its groups are orphans.
+	 * Reaps the process groups that an exited holder's granted process permits are bound to on this host: SIGTERM,
+	 * then SIGKILL after {@link REAP_TERM_GRACE_MS}, then at most {@link REAP_KILL_GRACE_MS} more. A group that is gone,
+	 * or holds only zombies (which hold no resources), has its permit released. Returns the groups still alive when the
+	 * bound expires; their permits stay granted, so they remain quarantined. Permits without a process identity cannot
+	 * be reaped and stay quarantined; they are not reported. Call it only for a holder whose process has exited.
 	 */
-	async reapStoppedProcesses(holder: string): Promise<number> {
-		if (process.platform === "win32") return 0;
-		const bound = `FROM ${this.permits} p JOIN ${this.owners} o ON o.id = p.owner WHERE p.root = ? AND p.holder = ? AND p.kind = 'process' AND p.state = 'granted' AND p.process_identity IS NOT NULL AND o.host = ?`;
+	async reapStoppedProcesses(holder: string): Promise<readonly number[]> {
+		if (process.platform === "win32") return [];
 		const permits = await this.storage.transaction((tx) =>
-			tx.all<PermitRow>(`SELECT p.* ${bound}`, this.options.root, holder, admissionHost),
+			tx.all<PermitRow>(
+				`SELECT p.* FROM ${this.permits} p JOIN ${this.owners} o ON o.id = p.owner WHERE p.root = ? AND p.holder = ? AND p.kind = 'process' AND p.state = 'granted' AND p.process_identity IS NOT NULL AND o.host = ?`,
+				this.options.root,
+				holder,
+				admissionHost,
+			),
 		);
+		const groups = new Map<number, string[]>();
 		for (const permit of permits) {
 			const identity = JSON.parse(permit.process_identity!) as ResourceProcessIdentity;
 			if (identity.kind !== "unix-process-group" || !Number.isSafeInteger(identity.id) || identity.id <= 0) continue;
-			if (admissionProcessStopped(-identity.id)) continue;
-			try {
-				process.kill(-identity.id, "SIGKILL");
-			} catch {
-				// Already gone, or not ours to signal; reconciliation decides whether the permit is released.
-			}
+			groups.set(identity.id, [...(groups.get(identity.id) ?? []), permit.operation]);
 		}
-		await this.reconcile();
-		const remaining = await this.storage.transaction((tx) =>
-			tx.get(`SELECT COUNT(*) AS count ${bound}`, this.options.root, holder, admissionHost),
-		);
-		return Number(remaining?.count);
+		const alive = () => [...groups.keys()].filter((group) => processGroupState(group) === "alive");
+		const settle = async (grace: number) => {
+			let remaining = alive();
+			for (let waited = 0; remaining.length > 0 && waited < grace; waited += REAP_POLL_MS) {
+				await reapPause(REAP_POLL_MS);
+				remaining = alive();
+			}
+			return remaining;
+		};
+		for (const group of alive()) signalProcessGroup(group, "SIGTERM");
+		let remaining = await settle(REAP_TERM_GRACE_MS);
+		for (const group of remaining) signalProcessGroup(group, "SIGKILL");
+		remaining = await settle(REAP_KILL_GRACE_MS);
+		await this.storage.transaction(async (tx) => {
+			for (const [group, operations] of groups) {
+				if (remaining.includes(group)) continue;
+				for (const operation of operations)
+					await tx.run(
+						`UPDATE ${this.permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
+						operation,
+					);
+			}
+		});
+		return remaining;
 	}
 }

@@ -148,6 +148,8 @@ export type CoordinatorEvent =
 			readonly usage?: PoolUsage;
 	  }
 	| { readonly kind: "failure"; readonly error: string }
+	/** One child failed without failing the pool. */
+	| { readonly kind: "work-failure"; readonly workId: string; readonly error: string }
 	| { readonly kind: "request"; readonly id: number; readonly request: CoordinatorRequestBody };
 
 /** Main thread answer to a coordinator `request`. */

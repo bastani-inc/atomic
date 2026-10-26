@@ -50,8 +50,6 @@ const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const TICK_INTERVAL_MS = 100;
 const STALL_THRESHOLD_MS = 500;
-/** Pause between reaping an exited worker's orphaned tool process groups and checking that they are gone. */
-const ORPHAN_REAP_POLL_MS = 25;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
@@ -344,6 +342,10 @@ export class PoolCoordinator {
 	private recovering?: Promise<void>;
 	private nextRecoveryAt = 0;
 	private cleanupFailure?: Error;
+	/** Work of exited workers whose leases recovery extends instead of expiring, while their process groups are reaped. */
+	private readonly held = new Set<string>();
+	/** Held work whose process groups survived reaping; its child failed and it is never released for replay. */
+	private readonly quarantined = new Set<string>();
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
@@ -703,25 +705,39 @@ export class PoolCoordinator {
 				for (const delivery of slot.deliveries.values())
 					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
 				slot.deliveries.clear();
+				// The exited worker's work stays leased until its process groups are reaped, so no other worker can
+				// claim it and replay alongside them.
+				const held = slot.work;
+				if (held) this.held.add(held.id);
 				const cleanup = disconnected
 					.then(() => serial)
 					.then(async () => {
 						try {
 							const admission = this.admission;
-							if (!admission) return;
-							const unconfirmed = await admission.releaseStoppedSessions(worker);
-							// The exited worker's tool process groups belong to its fenced attempt. Reap them and wait until
-							// reconciliation confirms they are gone, so its child replays without overlapping them; this
-							// worker's leftovers never fail the rest of the pool. Close still reports unconfirmed cleanup.
-							while (unconfirmed > 0 && !this.closed) {
-								if ((await admission.reapStoppedProcesses(worker)) === 0) break;
-								await delay(ORPHAN_REAP_POLL_MS);
+							if (!admission || (await admission.releaseStoppedSessions(worker)) === 0) return;
+							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded;
+							// groups that survive it fail only that worker's child, and never the rest of the pool.
+							const alive = await admission.reapStoppedProcesses(worker);
+							// Close still reports any cleanup left unconfirmed, including permits never bound to a group.
+							if (this.closed && (alive.length > 0 || (await admission.releaseStoppedSessions(worker)) > 0))
+								throw new Error(
+									`Local worker process cleanup unconfirmed; ${alive.length > 0 ? `process groups ${alive.join(", ")} still running after SIGKILL; ` : ""}permits quarantined`,
+								);
+							if (alive.length === 0) return;
+							const error = new Error(
+								`Local worker process cleanup unconfirmed; process groups ${alive.join(", ")} still running after SIGKILL; permits quarantined`,
+							);
+							if (held && (await this.queue!.result(this.root!, held.id)) === undefined) {
+								// Its lease stays held for the pool's lifetime: the child never replays alongside those groups.
+								this.quarantined.add(held.id);
+								slot.work = undefined;
+								this.port.send({ kind: "work-failure", workId: held.id, error: error.message });
 							}
-							if (this.closed && (await admission.releaseStoppedSessions(worker)))
-								throw new Error("Local worker process cleanup unconfirmed; permits quarantined");
 						} catch (error) {
 							this.cleanupFailure = error instanceof Error ? error : new Error(String(error));
 							throw this.cleanupFailure;
+						} finally {
+							if (held && !this.quarantined.has(held.id)) this.held.delete(held.id);
 						}
 					})
 					.then(async () => {
@@ -899,6 +915,12 @@ export class PoolCoordinator {
 			const expiredBefore = Date.now();
 			for (const work of await queue.inspect(root)) {
 				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
+				if (this.held.has(work.id)) {
+					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
+						if (error.message !== STALE_WORK_LEASE) throw error;
+					});
+					continue;
+				}
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child && work.worker !== null && this.isLive(work.worker, child)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {

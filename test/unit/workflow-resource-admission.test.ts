@@ -7,7 +7,11 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
-import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import {
+	REAP_KILL_GRACE_MS,
+	REAP_TERM_GRACE_MS,
+	SqlResourceAdmission,
+} from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -252,6 +256,81 @@ test.skipIf(process.platform === "win32")(
 				group.kill("SIGKILL");
 				await exited;
 			}
+			await f.close();
+		}
+	},
+);
+
+async function boundProcessPermit(f: Awaited<ReturnType<typeof fixture>>, group: number) {
+	const admission = await SqlResourceAdmission.open(f.journals[0]!, { root: "root", holder: "worker" });
+	const release = await admission.acquire("process");
+	await release.bindProcess!({ kind: "unix-process-group", id: group });
+	return admission;
+}
+
+test.skipIf(process.platform === "win32")(
+	"reaping a group that never disappears escalates SIGTERM to SIGKILL, gives up after a bounded wait and keeps its permit quarantined (#3986)",
+	async () => {
+		const f = await fixture();
+		const group = 2_147_000_001;
+		const signals: [number, NodeJS.Signals][] = [];
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation((target, name) => {
+			signals.push([target, name]);
+		});
+		try {
+			const admission = await boundProcessPermit(f, group);
+			vi.useFakeTimers({ toFake: ["setTimeout"] });
+			let settled = false;
+			const reaping = admission.reapStoppedProcesses("worker").finally(() => {
+				settled = true;
+			});
+			await vi.advanceTimersByTimeAsync(REAP_TERM_GRACE_MS - 1);
+			assert.deepEqual(signals, [[group, "SIGTERM"]], "SIGKILL waits for the SIGTERM grace");
+			await vi.advanceTimersByTimeAsync(1);
+			assert.deepEqual(signals, [
+				[group, "SIGTERM"],
+				[group, "SIGKILL"],
+			]);
+			await vi.advanceTimersByTimeAsync(REAP_KILL_GRACE_MS - 1);
+			assert.equal(settled, false, "the reap waits out the SIGKILL grace");
+			await vi.advanceTimersByTimeAsync(1);
+			assert.deepEqual(await reaping, [group], "the surviving group is reported");
+			vi.useRealTimers();
+			assert.deepEqual(
+				(await admission.inspect()).map((row) => row.state),
+				["granted"],
+				"the permit of a live group stays quarantined",
+			);
+		} finally {
+			vi.useRealTimers();
+			probe.mockRestore();
+			signal.mockRestore();
+			await f.close();
+		}
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a reaped group holding only zombies releases its permit without waiting (#3986)",
+	async () => {
+		const f = await fixture();
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("zombie");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause");
+		try {
+			const admission = await boundProcessPermit(f, 2_147_000_002);
+			assert.deepEqual(await admission.reapStoppedProcesses("worker"), []);
+			assert.equal(signal.mock.calls.length, 0, "zombies hold no resources and need no signal");
+			assert.equal(pause.mock.calls.length, 0);
+			assert.deepEqual(
+				(await admission.inspect()).map((row) => [row.state, row.reason]),
+				[["released", "process group cleanup confirmed"]],
+			);
+		} finally {
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
 			await f.close();
 		}
 	},
