@@ -730,3 +730,136 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
+
+/**
+ * Delays the first answer of `kind` the root sends to a pooled stage until `release` settles, so
+ * a test can send it while the replacement attempt runs but has not yet recreated the stage.
+ */
+function delayFirstAnswer(kind: PooledPromptAnswer["kind"], release: Promise<void>) {
+	const answer = LocalWorkerPool.prototype.answerPooledStagePrompt;
+	const sent = Promise.withResolvers<void>();
+	const results: PromptResult[] = [];
+	let delayed = false;
+	const spy = vi.spyOn(LocalWorkerPool.prototype, "answerPooledStagePrompt").mockImplementation(async function (
+		this: LocalWorkerPool,
+		runId: string,
+		stageId: string,
+		reply: PooledPromptAnswer,
+	): Promise<PromptResult> {
+		if (reply.kind !== kind || delayed) return answer.call(this, runId, stageId, reply);
+		delayed = true;
+		sent.resolve();
+		await release;
+		const result = await answer.call(this, runId, stageId, reply);
+		results.push(result);
+		return result;
+	});
+	return { sent: sent.promise, results, restore: () => spy.mockRestore() };
+}
+
+test.skipIf(process.platform === "win32")(
+	"#4022: a ctx.ui answer that reaches the replacement before it recreated the prompt's stage is held and answers its prompt once",
+	async () => {
+		const window = Promise.withResolvers<void>();
+		const delayed = delayFirstAnswer("prompt", window.promise);
+		const run = await openRun("pool-open-prompt-window-", promptChildPath, "gatedChild", true);
+		try {
+			const first = await untilValue(() => pendingPrompt(run.store), run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which branch should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			run.advance();
+			for (const key of "window-answer") run.pane.handleInput(key);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			run.pane.handleInput("\r");
+			await delayed.sent;
+			// Explicit signal: the replacement runs the child and waits at the gate, before its prompt stage exists.
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			window.resolve();
+			await untilValue(() => (delayed.results.length > 0 ? true : undefined), run.execution);
+			assert.equal(delayed.results[0]?.ok, false, "the replacement had no such prompt yet");
+			releaseReaskGate(run.path);
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "window-answer" });
+		} finally {
+			window.resolve();
+			delayed.restore();
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an ask_user_question answer that reaches the replacement before it recreated the stage is held and answers the re-asked form once",
+	async () => {
+		const window = Promise.withResolvers<void>();
+		const delayed = delayFirstAnswer("input", window.promise);
+		const run = await openRun("pool-open-prompt-window-question-", questionChildPath, "gatedNoReaskChild", true);
+		try {
+			const asked = () => {
+				for (const candidate of run.store.runs())
+					for (const stage of candidate.stages)
+						if (run.broker.peekStageQuestionnaire(candidate.id, stage.id) !== undefined)
+							return { runId: candidate.id, stageId: stage.id };
+				return undefined;
+			};
+			const first = await untilValue(asked, run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Ship the release from the worker?") ? true : undefined),
+				run.execution,
+			);
+			run.advance();
+			run.pane.handleInput(DOWN);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			run.pane.handleInput("\r");
+			await delayed.sent;
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			window.resolve();
+			await untilValue(() => (delayed.results.length > 0 ? true : undefined), run.execution);
+			assert.equal(delayed.results[0]?.ok, false, "the replacement had no such stage yet");
+			let reshown = 0;
+			const stop = run.broker.onStageRequestRegistered(() => {
+				const current = asked();
+				if (
+					current !== undefined &&
+					JSON.stringify(run.broker.peekStageQuestionnaire(current.runId, current.stageId)?.params).includes(
+						"Ship the release from the worker?",
+					)
+				)
+					reshown++;
+			});
+			try {
+				releaseReaskGate(run.path);
+				await untilValue(
+					() =>
+						plain(run.pane.render(120)).includes("Are you ready to move on to the next stage?")
+							? true
+							: undefined,
+					run.execution,
+				);
+				assert.equal(reshown, 0, "the held answer answered the re-asked question; it was not shown again");
+			} finally {
+				stop();
+			}
+			run.advance();
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.branch), /answered: .*no/s);
+		} finally {
+			window.resolve();
+			delayed.restore();
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
