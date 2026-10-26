@@ -115,72 +115,29 @@ Atomic advertises PDF only where its runtime can serialize a document block: Ant
 
 `"pdf"` means PDF specifically. A document block's media type must be `application/pdf`; other values are rejected by name.
 
-### GPT-6-Astra Built-in Models
+### OpenAI Built-in Models
 
-Atomic ships `openai/gpt-6-astra` and `openai-codex/gpt-6-astra`. Both accept text and image input, expose tool search and additional tools, and offer exactly `low`, `medium`, `high`, `xhigh`, and `max` reasoning. `off`, `minimal`, and Codex's client-side `ultra` orchestration preset are not API reasoning levels and do not appear in Atomic's selector.
+Prices are in dollars per million tokens, as input / cached input / cache write / output. An empty cell means the fact does not apply or OpenAI has not published it.
 
-The built-in OpenAI and Codex entries use a 272,000-token default input/context limit and a 128,000-token maximum output. OpenAI documents a 1,050,000-token API maximum, but requests above 272,000 aggregate input tokens enter the long-context price tier for the whole request. Override `contextWindow` only when the larger window and its price are intentional.
+| Model | Provider IDs | Context window | Standard, up to 272,000 input | Standard, above 272,000 input | Fast | Ultrafast | Reasoning levels | `off` | `minimal` | Tool search | Additional tools | Mid-conversation effort |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GPT-6 Astra | `openai/gpt-6-astra`, `openai-api/gpt-6-astra`, `openai-codex/gpt-6-astra`, `github-copilot/gpt-6-astra` | 272,000 on `openai`, `openai-api` and `openai-codex`; 1,000,000 on `github-copilot` | $10 / $1 / $12.50 / $50 | $20 / $2 / $25 / $75 | `-fast` on `openai`, `openai-api` and `openai-codex`: $20 / $2 / $25 / $100, above 272,000 $40 / $4 / $50 / $150 | `-ultrafast` on `openai`, `openai-api` and `openai-codex`: $60 / $6 / $75 / $300, above 272,000 $120 / $12 / $150 / $450 | `low`, `medium`, `high`, `xhigh`, `max` | No | No | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with an API key |
+| GPT-6 Astra on Amazon Bedrock | `amazon-bedrock/openai.gpt-6-astra`, `amazon-bedrock/global.openai.gpt-6-astra`, `amazon-bedrock/us.openai.gpt-6-astra` | 1,050,000 | `global.`: $10 / $1 / $12.50 / $50; `openai.` and `us.`: $11 / $1.10 / $13.75 / $55 | `global.`: $20 / $2 / $25 / $75; `openai.` and `us.`: $22 / $2.20 / $27.50 / $82.50 | | | `low`, `medium`, `high`, `xhigh`, `max` | No | No | No | No | No |
+| GPT-6.1 Sol | `openai/gpt-6.1-sol`, `openai-api/gpt-6.1-sol`, `openai-codex/gpt-6.1-sol`, `azure/gpt-6.1-sol`, `github-copilot/gpt-6.1-sol` | 500,000 on `openai-codex` and on `openai` with ChatGPT sign-in; 272,000 on `openai` and `openai-api` with an API key, and on `azure`; 1,050,000 on `github-copilot` (922,000 input) | $2 / $0.10 / $2.50 / $10 | $4 / $0.20 / $5 / $15 with an API key; none with ChatGPT sign-in | `-fast` on `openai`, `openai-api` and `openai-codex`: $4 / $0.20 / $5 / $20, above 272,000 with an API key $8 / $0.40 / $10 / $30 | `-ultrafast` on `openai`, `openai-api` and `openai-codex`: $12 input, $60 output | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex`, `github-copilot` | `openai` and `openai-api` with an API key |
+| GPT-6.1 Terra | `openai/gpt-6.1-terra`, `openai-api/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra`, `azure/gpt-6.1-terra` | 500,000 on `openai-codex`; 272,000 on `openai`, `openai-api` and `azure` with either sign-in method | $1 / $0.05 / $1.25 / $5 | $2 / $0.10 / $2.50 / $7.50, including on Codex | `-fast` on `openai` and `openai-api`: $2 / $0.10 / $2.50 / $10, above 272,000 $4 / $0.20 / $5 / $15 | | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Yes, sends `none` | Codex UI alias that sends `low`; no elsewhere | `openai`, `openai-api`, `openai-codex` | `openai`, `openai-api`, `openai-codex` | `openai` and `openai-api` with an API key |
 
-| Aggregate input | Input | Cached input | Cache write | Output |
-| --- | ---: | ---: | ---: | ---: |
-| Up to 272,000 | $10 | $1 | $12.50 | $50 |
-| Above 272,000 | $20 | $2 | $25 | $75 |
+Notes for every row:
 
-Rates are per million tokens. `openai/gpt-6-astra-fast` and `openai-codex/gpt-6-astra-fast` are derived canonical choices. They send upstream ID `gpt-6-astra` with `service_tier: priority` while Atomic records `gpt-6-astra-fast`. Usage is priced at OpenAI's published Fast rates when Fast serves the request:
-
-| Aggregate input | Input | Cached input | Cache write | Output |
-| --- | ---: | ---: | ---: | ---: |
-| Up to 272,000 | $20 | $2 | $25 | $100 |
-| Above 272,000 | $40 | $4 | $50 | $150 |
-
-`openai/gpt-6-astra-ultrafast` and `openai-codex/gpt-6-astra-ultrafast` send the same upstream ID with `service_tier: "ultrafast"` and are priced at OpenAI's published Ultrafast rates, six times Standard:
-
-| Aggregate input | Input | Cached input | Cache write | Output |
-| --- | ---: | ---: | ---: | ---: |
-| Up to 272,000 | $60 | $6 | $75 | $300 |
-| Above 272,000 | $120 | $12 | $150 | $450 |
-
-GPT-6 Astra and GPT-6.1 Sol have an Ultrafast choice on Codex and the OpenAI API; GPT-5.6 Sol has one on the OpenAI API only. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. Base-model evaluations are reused through explicit route metadata, with no separate Ultrafast benchmark or latency score. See [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers).
-
-Amazon Bedrock exposes `openai.gpt-6-astra`, `global.openai.gpt-6-astra`, and `us.openai.gpt-6-astra` through the `amazon-bedrock` provider. These entries keep the same 272,000 input and 128,000 output limits, text and image input, and five reasoning levels; Atomic sends the selected effort as Bedrock's OpenAI `reasoning_effort` field. They do not get Fast or OpenAI tool-search metadata. Atomic sends each Bedrock ID unchanged and records all four price fields as zero because AWS had not published Astra pricing. Zero means unknown here, not free.
-
-Atomic does not synthesize Azure OpenAI Astra entries. Live-provider catalogs remain authoritative: the current OpenRouter catalog publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, while the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`. Atomic imports those exact IDs and their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
-
-On OpenAI Responses, Astra uses the newer prompt-cache payload. `cacheRetention: "long"` sends `prompt_cache_options.ttl: "30m"` instead of the legacy `prompt_cache_retention: "24h"`; `none` sends explicit mode without a cache key, and `short` sends neither cache option. Earlier Responses models keep the 24-hour field for long retention.
-
-<a id="gpt-6-1-sol" />
-
-### GPT-6.1 Sol
-
-Select `openai/gpt-6.1-sol` with either API-key authentication or ChatGPT subscription sign-in, or `openai-codex/gpt-6.1-sol` with a ChatGPT subscription. Both accept text and images and support `low`, `medium`, `high`, `xhigh`, and `max`. Reasoning cannot be turned off. Codex also offers a `minimal` UI alias that sends `low`, not a separate API effort.
-
-With ChatGPT subscription sign-in, `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol` use a 500,000-token context and a 128,000-token output limit. Account aliases inherit the limits for their own login method. Subscription usage has no long-context price tier on Standard, Fast, or Ultrafast.
-
-With API-key authentication, `openai/gpt-6.1-sol` and `openai-api/gpt-6.1-sol` use a 272,000-token default context and a 128,000-token output limit. Increase `contextWindow` through a model override only when you intend to use the larger API window and its whole-request long-context prices:
-
-| Aggregate input | Input | Cached input | Cache write | Output |
-| --- | ---: | ---: | ---: | ---: |
-| Up to 272,000 | $2 | $0.10 | $2.50 | $10 |
-| Above 272,000 | $4 | $0.20 | $5 | $15 |
-
-Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-codex/gpt-6.1-sol-fast` choices send the same upstream model with priority routing. Fast costs twice the applicable rates; do not pre-multiply catalog costs. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast measurements.
-
-`openai/gpt-6.1-sol-ultrafast` (also `openai-api/` and `openai-codex/`) sends `service_tier: "ultrafast"`. It uses OpenAI's published Ultrafast rates of $12 input and $60 output per million tokens. OpenAI has not listed Sol Ultrafast cache rates, so Atomic derives them at the same six-times-Standard ratio: $0.60 cached input and $15 cache write. With an API key, the usual long-context multipliers apply above 272,000 input tokens. Subscription sign-in keeps flat rates across the 500,000-token window. See [provider tier caveats](/providers#fast-models).
-
-<a id="gpt-6-1-terra" />
-
-### GPT-6.1 Terra
-
-Select `openai/gpt-6.1-terra` with either API-key authentication or ChatGPT subscription sign-in, `openai-codex/gpt-6.1-terra` with a ChatGPT subscription, or `azure/gpt-6.1-terra`. All accept text and images and support `off`, `low`, `medium`, `high`, `xhigh`, and `max`. Terra rejects the `minimal` effort; Codex offers a `minimal` UI alias that sends `low`.
-
-`openai-codex/gpt-6.1-terra` uses a 500,000-token context. `openai/gpt-6.1-terra`, `openai-api/gpt-6.1-terra`, and `azure/gpt-6.1-terra` use a 272,000-token default context with either sign-in method. All use a 128,000-token output limit. Unlike GPT-6.1 Sol, Terra keeps the whole-request long-context prices on every provider, including Codex:
-
-| Aggregate input | Input | Cached input | Cache write | Output |
-| --- | ---: | ---: | ---: | ---: |
-| Up to 272,000 | $1 | $0.05 | $1.25 | $5 |
-| Above 272,000 | $2 | $0.10 | $2.50 | $7.50 |
-
-Rates are per million tokens. The derived `openai/gpt-6.1-terra-fast` choice (also `openai-api/`) sends the same upstream model with priority routing at twice the applicable rates. Codex does not list a Fast tier for Terra yet, so there is no `openai-codex/gpt-6.1-terra-fast` choice, and Terra has no Ultrafast choice.
+- All entries accept text and image input and have a 128,000-token output limit.
+- Above 272,000 aggregate input tokens, the long-context price applies to the whole request. OpenAI documents a 1,050,000-token API maximum for Astra and Terra. Increase `contextWindow` through a model override only when you intend to use the larger window and its prices.
+- With ChatGPT subscription sign-in, GPT-6.1 Sol has no long-context price on Standard, Fast, or Ultrafast. Account aliases inherit the limits for their own login method.
+- A `-fast` choice sends the base upstream ID with `service_tier: priority`, and an `-ultrafast` choice sends it with `service_tier: "ultrafast"`; Atomic records the suffixed ID. Do not pre-multiply catalog costs. OpenAI has not published GPT-6.1 Sol's Ultrafast cache rates or above-272,000 Ultrafast rates; Atomic's cost display prices those at six times Standard. Codex does not list a Fast tier for Terra yet. Auto routing requires an Ultrafast choice's exact ID in `modelConstraints.allowedModels`. [Published evaluations](/models/evals) describe base-model results and measured efforts, not separate Fast or Ultrafast measurements. See [Fast and Ultrafast tiers](/providers#fast-and-ultrafast-tiers) and [provider tier caveats](/providers#fast-models).
+- Codex's `minimal` UI alias is not a separate API effort, and Codex's client-side `ultra` orchestration preset is not an API reasoning level; neither appears as its own effort in Atomic's selector.
+- Mid-conversation effort changes are explained in [Changing GPT-6 thinking levels](#changing-gpt-6-thinking-levels).
+- On Amazon Bedrock, Atomic sends each ID unchanged and sends the selected effort as Bedrock's OpenAI `reasoning_effort` field.
+- On GitHub Copilot, requests use Copilot's Responses endpoint, and account policy controls availability. Copilot Fast choices require exact account advertisement, and Codex's Ultrafast tier does not apply. The table lists no Copilot rates.
+- Atomic does not synthesize Azure OpenAI Astra entries. Other catalogs are imported as published: OpenRouter publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, and the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`, with their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
+- On OpenAI Responses, these models use the newer prompt-cache payload. `cacheRetention: "long"` sends `prompt_cache_options.ttl: "30m"` instead of the legacy `prompt_cache_retention: "24h"`; `none` sends explicit mode without a cache key, and `short` sends neither cache option. Earlier Responses models keep the 24-hour field for long retention.
 
 ### Image Input Limits
 

@@ -1072,9 +1072,10 @@ for (const block of response.content) {
 
 `xhigh` and `max` are model-specific, opt-in levels. Use `getSupportedThinkingLevels(model)` to determine whether a concrete model exposes either level; models such as GPT-5.6 can expose both.
 
-GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh` and `max` on OpenAI and Azure Responses. It does not support `off`. The Codex provider also exposes a `minimal` UI alias that sends `low` to the API.
-
-GPT-6.1 Terra supports `off`, `low`, `medium`, `high`, `xhigh` and `max` on OpenAI, Azure and Codex Responses; `off` sends reasoning effort `none`. It does not support `minimal`, apart from the same Codex `minimal` UI alias.
+| Model | Providers | Levels | `off` | `minimal` |
+| --- | --- | --- | --- | --- |
+| GPT-6.1 Sol | OpenAI, Azure and Codex Responses | `low`, `medium`, `high`, `xhigh`, `max` | No | Codex UI alias that sends `low` |
+| GPT-6.1 Terra | OpenAI, Azure and Codex Responses | `off`, `low`, `medium`, `high`, `xhigh`, `max` | Sends reasoning effort `none` | Codex UI alias that sends `low` |
 
 ### Provider-Specific Options (stream/complete)
 
