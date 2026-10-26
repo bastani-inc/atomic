@@ -1,5 +1,5 @@
 /**
- * Local-worker pool load gate (#3903, #3996), shared by the gate's test files.
+ * Local-worker pool load gate (#3903, #3996), run by test/integration/workflow-pool-load-gate.test.ts.
  *
  * A root host drives a LocalWorkerPool with 150 concurrent protocol stub workers
  * (test/fixtures/pool-load-stub-worker.mjs). Every stub claims one pooled child
@@ -82,7 +82,6 @@ const HEARTBEAT_GROWTH_BYTES_PER_WORKER = 256;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const WORKER_STARTUP_TIMEOUT_MS = 120_000;
 const ACTIVATION_TIMEOUT_MS = 120_000;
-const LOAD_GATE_TIMEOUT_MS = 900_000;
 
 /** A watched stage's stream: a batch every STAGE_EVENT_BATCH_MS, as a real worker's stage watch sends. */
 const STAGE_EVENT_BATCH_MS = 50;
@@ -419,6 +418,3 @@ export async function runPoolLoadGate(watches: 0 | 1): Promise<void> {
 		removeTempDirectory(directory);
 	}
 }
-
-/** Structural: an Intercom broker, 150 worker processes, sustained windows and completion. */
-export const POOL_LOAD_GATE_TIMEOUT_MS = LOAD_GATE_TIMEOUT_MS;

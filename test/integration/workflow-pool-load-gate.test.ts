@@ -1,5 +1,7 @@
 /**
- * Local-worker pool load gate (#3903): 150 busy local workers, no stage watched.
+ * Local-worker pool load gate (#3903, #3996): 150 busy local workers with no stage watched,
+ * then with one pooled stage watched for the whole traffic window. The two gates run one
+ * after the other in this file, because two 150-worker pools at once measure each other.
  * The gate itself, its bounds and what it measures are in test/helpers/pool-load-gate.ts.
  *
  * Run alone:
@@ -10,10 +12,23 @@
  * shell, add `--reporter=default`: vitest's agent reporter hides passing output.
  */
 import { test } from "vitest";
-import { POOL_LOAD_GATE_TIMEOUT_MS, runPoolLoadGate } from "../helpers/pool-load-gate.js";
+import { runPoolLoadGate } from "../helpers/pool-load-gate.js";
+
+/** Structural: an Intercom broker, 150 worker processes, then sustained windows and completion. */
+const LOAD_GATE_TIMEOUT_MS = 900_000;
 
 test.skipIf(process.platform === "win32")(
 	"the root main thread stays responsive and heartbeats stay bounded under 150 busy local workers (#3903)",
-	() => runPoolLoadGate(0),
-	POOL_LOAD_GATE_TIMEOUT_MS,
+	async () => {
+		await runPoolLoadGate(0);
+	},
+	LOAD_GATE_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"the root main thread stays responsive under 150 busy local workers while one pooled stage is watched (#3996)",
+	async () => {
+		await runPoolLoadGate(1);
+	},
+	LOAD_GATE_TIMEOUT_MS,
 );
