@@ -30,19 +30,7 @@ import {
 	WORKFLOW_GRACEFUL_QUIT_EXIT_REASON,
 	WorkflowGracefulQuitError,
 } from "../workflow-tool-abort.js";
-
-const CHILD_WORKFLOW_PREFIX =
-	/^atomic-workflows: child workflow "(?:[^"\\]|\\.)*" \([^)]*\) failed with status \w+(?:: )?/;
-
-/** A child's error text without the prefixes its own child-workflow failures added, which name workflows. */
-function withoutChildWorkflowPrefixes(text: string): string {
-	let current = text;
-	for (let previous = ""; previous !== current; ) {
-		previous = current;
-		current = current.replace(CHILD_WORKFLOW_PREFIX, "");
-	}
-	return current;
-}
+import { childWorkflowFailureMessage, withoutChildWorkflowFailurePrefixes } from "./child-workflow-failure-message.js";
 
 export function createChildWorkflowRunner(input: {
 	readonly runtime: EngineRuntime;
@@ -176,7 +164,7 @@ export function createChildWorkflowRunner(input: {
 				(childRun.status === "failed" && childRun.exited !== true)
 			) {
 				const failedChildStage = childRun.stages.find((stage) => stage.failureKind !== undefined);
-				const message = `atomic-workflows: child workflow "${childName}" (${child.name}) failed with status ${childRun.status}${childRun.error !== undefined ? `: ${childRun.error}` : ""}`;
+				const message = childWorkflowFailureMessage(childName, child.name, childRun.status, childRun.error);
 				const cause = {
 					...(failedChildStage?.failureKind !== undefined ? { code: failedChildStage.failureKind } : {}),
 					...(failedChildStage?.failureMessage !== undefined ? { message: failedChildStage.failureMessage } : {}),
@@ -189,7 +177,7 @@ export function createChildWorkflowRunner(input: {
 					childRun.failure ??
 					(failedChildStage === undefined ? undefined : recordedFailureClassification(failedChildStage));
 				if (recorded !== undefined) throw classifyFailureAsRecorded(failure, recorded);
-				throw classifyFailureFrom(failure, new Error(withoutChildWorkflowPrefixes(childRun.error ?? "")));
+				throw classifyFailureFrom(failure, new Error(withoutChildWorkflowFailurePrefixes(childRun.error ?? "")));
 			}
 
 			const outputs = selectWorkflowOutputs(child, childRun.result);

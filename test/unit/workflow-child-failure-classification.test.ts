@@ -272,3 +272,56 @@ test("a parent of a child that failed on a non-resumable topology error does not
 	assert.equal(result.failure?.resumable, false, JSON.stringify(result.failure));
 	assert.equal(store.runs().find((snapshot) => snapshot.id === "topology-root")?.resumable, false);
 });
+
+/** The child-workflow failure text earlier releases stored, spelled out so it cannot drift with the code. */
+function storedWrapper(alias: string, displayName: string, inner: string): string {
+	return `atomic-workflows: child workflow "${alias}" (${displayName}) failed with status failed: ${inner}`;
+}
+
+test.each([
+	["an ordinary error", ORDINARY, "failed", "unknown"],
+	["a 429", RATE_LIMITED, "running", "rate_limit"],
+] as const)(
+	"stored nested failures under display names with parentheses, quotes and colons classify from %s alone (#4031)",
+	async (_label, inner, status, failureKind) => {
+		const backend = await createMemoryTestBackend();
+		const child = workflow({
+			name: "Rate Limit (legacy)",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run() {
+				return {};
+			},
+		});
+		let dispatched = 0;
+		const release = bindChildWorkerDispatcher(backend, {
+			validateOptions() {},
+			async run(_definition, _inputs, options) {
+				dispatched += 1;
+				return {
+					runId: options.runId ?? "child",
+					status: "failed",
+					// Two levels of wrappers whose names read as limits, with parentheses, quotes and colons in them.
+					error: storedWrapper(
+						"overloaded-grandchild",
+						'Overloaded (v2) "quota": 429 retry',
+						storedWrapper("rate-limit-leaf", "Rate (limit) exceeded: (529)", inner),
+					),
+					stages: [],
+					toolNodes: [],
+				};
+			},
+		});
+		try {
+			const store = createStore();
+			const runId = `stored-display-${status}`;
+			const result = await run(parentOf("root", child), {}, { runId, store, durableBackend: backend });
+			assert.equal(dispatched, 1);
+			assert.equal(result.status, status, JSON.stringify(result));
+			assert.equal(store.runs().find((snapshot) => snapshot.id === runId)?.failureKind, failureKind);
+		} finally {
+			release();
+		}
+	},
+);
