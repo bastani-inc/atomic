@@ -39,10 +39,10 @@ export function questionIdentity(question: PooledStageQuestion): string {
  * to the same question on a later attempt.
  */
 export class HeldPromptAnswers {
-	private readonly held = new Map<string, HeldAnswer>();
+	private readonly held = new Map<string, HeldAnswer & { readonly runId: string }>();
 
 	hold(runId: string, stageId: string, answer: HeldAnswer): void {
-		this.held.set(JSON.stringify([runId, stageId]), answer);
+		this.held.set(JSON.stringify([runId, stageId]), { ...answer, runId });
 	}
 
 	/** Discards a held answer the stage's latest publication, by attempt `generation`, shows is no longer wanted. */
@@ -69,6 +69,19 @@ export class HeldPromptAnswers {
 				: stage.pendingPrompt !== undefined ||
 					(stage.inputRequest !== undefined && stage.inputRequest.id !== held.promptId);
 		if (asksOther) this.held.delete(key);
+	}
+
+	/**
+	 * Discards the held answers of `runId` whose stage a later attempt's publication no longer has
+	 * while it asks something else: a replacement that asks a different question at the same point
+	 * publishes it as a new prompt stage, and the question the held answer was for is gone.
+	 */
+	settleRun(runId: string, stages: readonly StageSnapshot[], generation: number): void {
+		const asking = stages.some((stage) => stage.pendingPrompt !== undefined || stage.inputRequest !== undefined);
+		if (!asking) return;
+		const present = new Set(stages.map((stage) => JSON.stringify([runId, stage.id])));
+		for (const [key, held] of this.held)
+			if (held.runId === runId && generation > held.generation && !present.has(key)) this.held.delete(key);
 	}
 
 	/** The held response for `prompt`, asked again by attempt `generation`; it is handed out once. */

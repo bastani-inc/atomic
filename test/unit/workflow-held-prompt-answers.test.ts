@@ -49,3 +49,19 @@ test("#4022: a held ctx.ui answer is never given to a prompt of the attempt that
 	held.settle("run", stage(1, {}), 1);
 	assert.equal(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 2), undefined);
 });
+
+test("#4022: a held answer is discarded when a later attempt asks a different question on a new stage", () => {
+	const held = holding();
+	// The first publication of the replacement has not reached any prompt yet: the answer stays held.
+	held.settleRun("run", [], 2);
+	const other: PendingPrompt = { id: "hil-other", kind: "input", message: "Which tag?", createdAt: 2 };
+	held.settleRun("run", [{ ...stage(2, { pendingPrompt: other }), id: "new-stage" }], 2);
+	assert.equal(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 3), undefined);
+});
+
+test("#4022: a held answer survives a later attempt's publication that has not asked anything yet", () => {
+	const held = holding();
+	held.settleRun("run", [], 2);
+	held.settleRun("run", [{ ...stage(2, {}), id: "other-stage", status: "running" }], 2);
+	assert.deepEqual(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 2), { response: "gap-answer" });
+});

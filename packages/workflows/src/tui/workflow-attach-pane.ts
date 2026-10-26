@@ -71,6 +71,8 @@ export class WorkflowAttachPane implements Component {
 	private storeUpdatePending = false;
 	/** When the latest deferred publication arrived, by this pane's clock. */
 	private storeUpdateAt = 0;
+	/** Where the attached pooled prompt stage sits in its run, and the attempt that published it. */
+	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
 	/** The attachment whose pooled view may remount the chat when it reconnects. */
 	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
@@ -395,7 +397,46 @@ export class WorkflowAttachPane implements Component {
 				attachedRun === undefined ? undefined : findSnapshotStage(attachedRun.stages, this.lastAttachedStageId);
 			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
 				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
+			this._followSupersedingPrompt(attachedRun, stage);
 		}
+	}
+	/**
+	 * Keeps an open chat on the prompt a pooled child is waiting on (#4022). A replacement attempt
+	 * that asks a different question at the same point of the child (its text depends on data)
+	 * publishes it as a new prompt stage at the same position, and the dead attempt's unanswered
+	 * prompt is gone: the chat moves to the new prompt instead of staying on a stage that no longer
+	 * exists.
+	 */
+	private _followSupersedingPrompt(
+		run: StoreSnapshot["runs"][number] | undefined,
+		stage: StageSnapshot | undefined,
+	): void {
+		const runId = this.attachedRunId;
+		if (run === undefined || runId === null || this.chatView === null) return;
+		if (stage !== undefined) {
+			const index = run.stages.indexOf(stage);
+			this.attachedPromptPosition =
+				stage.promptFootprint !== undefined && stage.workerExecution !== undefined && index >= 0
+					? { index, generation: stage.workerExecution.generation }
+					: null;
+			return;
+		}
+		const position = this.attachedPromptPosition;
+		if (position === null) return;
+		const successor = run.stages[position.index];
+		if (
+			successor === undefined ||
+			successor.pendingPrompt === undefined ||
+			(successor.workerExecution?.generation ?? 0) <= position.generation
+		)
+			return;
+		this.attachedPromptPosition = null;
+		const generation = this.attachmentGeneration;
+		// Attaching rereads the store; do it after this update is handled.
+		queueMicrotask(() => {
+			if (generation !== this.attachmentGeneration || this.mode !== "stage-chat" || !this.visible) return;
+			void this._attachToStage(runId, successor.id);
+		});
 	}
 	private _syncAwaitingInputKeys(snapshot: StoreSnapshot): void {
 		const runId = this._resolveRunId();

@@ -1,6 +1,7 @@
 import {
 	DURABLE_STAGE_TOPOLOGY_VERSION,
 	type DurableStageCheckpoint,
+	type DurableStageLifecycleStatus,
 	type DurableStageRunTopology,
 	type DurableStageTopology,
 } from "./types.js";
@@ -81,7 +82,7 @@ export function directChildTopologyErrorFromRecords(
 	const immutableError = immutableStageGroupError(direct);
 	if (immutableError !== undefined) return immutableError;
 
-	const merged: DurableStageTopology[] = [];
+	const candidates: { readonly topology: DurableStageTopology; readonly unanswered: boolean }[] = [];
 	for (const group of groupByDurableStageKey(direct).values()) {
 		const topology = group.find((stage) => stage.topology?.run?.runId === expectedRun.runId)?.topology;
 		if (topology === undefined) return "direct child stage group lacks owning-run topology";
@@ -89,8 +90,9 @@ export function directChildTopologyErrorFromRecords(
 			return "direct child stage topology lacks current source identity";
 		}
 		if (topology.stageId.length === 0) return "direct child stage id is empty";
-		merged.push(topology);
+		candidates.push({ topology, unanswered: isUnansweredPromptGroup(group) });
 	}
+	const merged = withoutSupersededPrompts(candidates);
 
 	const ids = new Set<string>(allowedNodeIds);
 	const stageIds = new Set<string>();
@@ -179,6 +181,57 @@ export function promptOccurrenceIdentityError(stages: readonly DurableStageCheck
 		stageByReplayOccurrence.set(replayOccurrence, topology.stageId);
 	}
 	return undefined;
+}
+
+/**
+ * A prompt occurrence that was asked but never answered, failed or skipped: the run waited on it
+ * and went no further, so nothing in the run depends on it.
+ */
+function isUnansweredPromptGroup(group: readonly DurableStageCheckpoint[]): boolean {
+	return group.every(
+		(stage) =>
+			stage.topology?.occurrenceKey !== undefined &&
+			stage.topology.boundary === undefined &&
+			stage.topology.status !== undefined &&
+			UNANSWERED_PROMPT_STATUSES.has(stage.topology.status),
+	);
+}
+
+const UNANSWERED_PROMPT_STATUSES: ReadonlySet<DurableStageLifecycleStatus> = new Set([
+	"pending",
+	"running",
+	"awaiting_input",
+	"paused",
+	"blocked",
+]);
+
+/**
+ * Drops prompts an attempt asked and never got answered that a later ask at the same source
+ * position replaced (#4022). A replacement attempt of a child re-runs its code and asks again at the
+ * same position; when the prompt's text depends on data, the new ask is a different durable prompt.
+ * The unanswered one is superseded, not a second node at that position: the run never got past it.
+ * Groups arrive in checkpoint order, so among unanswered prompts alone at one position the latest
+ * ask stands. Any other collision stays a source-order conflict.
+ */
+function withoutSupersededPrompts(
+	candidates: readonly { readonly topology: DurableStageTopology; readonly unanswered: boolean }[],
+): DurableStageTopology[] {
+	const byOrder = new Map<number, (typeof candidates)[number][]>();
+	for (const candidate of candidates) {
+		const order = candidate.topology.sourceOrder;
+		if (order === undefined) continue;
+		byOrder.set(order, [...(byOrder.get(order) ?? []), candidate]);
+	}
+	const superseded = new Set<(typeof candidates)[number]>();
+	for (const atOrder of byOrder.values()) {
+		if (atOrder.length < 2 || !atOrder.some((candidate) => candidate.unanswered)) continue;
+		const answered = atOrder.filter((candidate) => !candidate.unanswered);
+		// Two answered stages at one position remain a conflict; unanswered asks give way to the stage
+		// that replaced them, or to the latest unanswered ask.
+		const kept = answered.length > 0 ? answered : [atOrder[atOrder.length - 1]!];
+		for (const candidate of atOrder) if (candidate.unanswered && !kept.includes(candidate)) superseded.add(candidate);
+	}
+	return candidates.filter((candidate) => !superseded.has(candidate)).map((candidate) => candidate.topology);
 }
 
 /** Group prompt occurrences by replay + occurrence while retaining strict non-prompt replay grouping. */

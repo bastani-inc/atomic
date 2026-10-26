@@ -62,3 +62,19 @@ export const gatedChild = workflow({
 		return { branch: await ctx.ui.input("Which branch should the worker use?") };
 	},
 });
+
+/**
+ * Like {@link gatedChild}, but its prompt text depends on data the attempt reads: the replacement
+ * attempt asks a different question at the same point of the same code (#4022).
+ */
+export const gatedChangedChild = workflow({
+	name: "pool-gated-changed-prompt-child",
+	description: "Local worker gated ctx.ui prompt fixture whose question text depends on the attempt",
+	inputs: { journalPath: Type.String() },
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const replacement = await passReaskGate(ctx.inputs.journalPath);
+		const target = replacement ? "tag" : "branch";
+		return { branch: await ctx.ui.input(`Which ${target} should the worker use?`) };
+	},
+});

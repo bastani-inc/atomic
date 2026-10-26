@@ -541,6 +541,7 @@ export class LocalWorkerPool {
 		for (const { work, runs } of publications)
 			for (const run of runs) {
 				this.ownedRuns.add(run.id);
+				this.heldAnswers.settleRun(run.id, run.stages, work.generation);
 				for (const stage of run.stages) {
 					// The attempt that published this stage; a worker's own snapshot does not carry it.
 					const generation = work.generation;

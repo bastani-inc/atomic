@@ -324,6 +324,84 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"#4022: a stage chat open on a pooled prompt follows the replacement when it asks a different question at the same point, and its answer reaches the child once",
+	async () => {
+		const run = await openRun("pool-open-prompt-changed-", promptChildPath, "gatedChangedChild", true);
+		try {
+			const first = await untilValue(() => pendingPrompt(run.store), run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which branch should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			// The replacement's different question shows in the chat that is still open.
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which tag should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			run.advance();
+			for (const key of "v2.0") run.pane.handleInput(key);
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "v2.0" });
+		} finally {
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an answer held across a worker death is discarded when the replacement asks a different question, which is still asked and answered once",
+	async () => {
+		const run = await openRun("pool-open-prompt-gap-changed-", promptChildPath, "gatedChangedChild", true);
+		try {
+			const first = await untilValue(() => pendingPrompt(run.store), run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which branch should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			run.advance();
+			for (const key of "stale-answer") run.pane.handleInput(key);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// Submitted in the same tick as the kill: the answer can only reach the dead attempt.
+			run.pane.handleInput("\r");
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			releaseReaskGate(run.path);
+			// The replacement's different question is asked, and the held answer does not answer it.
+			const again = await untilValue(() => {
+				const prompt = pendingPrompt(run.store);
+				return prompt !== undefined && prompt.generation > first.generation ? prompt : undefined;
+			}, run.execution);
+			run.pane.retarget(run.rootRunId, again.stageId, again.runId);
+			await untilValue(
+				() => (plain(run.pane.render(120)).includes("Which tag should the worker use?") ? true : undefined),
+				run.execution,
+			);
+			assert.equal(pendingPrompt(run.store)?.promptId, again.promptId, "the held answer did not answer it");
+			run.advance();
+			for (const key of "v2.0") run.pane.handleInput(key);
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "v2.0" });
+		} finally {
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
 	"#4022: an ask_user_question answer submitted after the worker died but before the replacement asks reaches the re-asked form once, without showing it again",
 	async () => {
 		const run = await openRun("pool-open-prompt-gap-question-", questionChildPath, "gatedNoReaskChild", true);
