@@ -706,15 +706,22 @@ export class SqlPoolQueue {
 
 /**
  * Whether the checkpoint serialized as `payload` is the one already stored as `stored`, so re-recording it keeps the first write.
- * Only the record time may differ: a later work generation that replays a cached stage re-records its
- * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time.
+ * Only its times may differ: a later work generation that replays a cached stage re-records its
+ * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time,
+ * and one that replays a human-input prompt still pending when its worker died re-records that
+ * prompt's stage checkpoint with the time the replay asked it again (#3996).
  * Any other difference is a different checkpoint and still conflicts.
  */
 function isRecordedCheckpoint(stored: string, payload: string): boolean {
 	if (stored === payload) return true;
-	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: number };
+	const { completedAt, startedAt } = JSON.parse(stored) as {
+		readonly completedAt?: number;
+		readonly startedAt?: number;
+	};
 	if (typeof completedAt !== "number") return false;
-	return serializeJson({ ...(JSON.parse(payload) as { readonly completedAt: number }), completedAt }) === stored;
+	const next = JSON.parse(payload) as { readonly completedAt: number; readonly startedAt?: number };
+	if ((startedAt === undefined) !== (next.startedAt === undefined)) return false;
+	return serializeJson({ ...next, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }) === stored;
 }
 
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {

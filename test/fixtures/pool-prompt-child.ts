@@ -25,3 +25,16 @@ export const customChild = workflow({
 		return { branch };
 	},
 });
+
+/** A pooled child that asks two questions in turn and returns both answers. */
+export const twoPromptChild = workflow({
+	name: "pool-two-prompt-child",
+	description: "Local worker ctx.ui two-prompt fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const first = await ctx.ui.input("Which branch should the worker use?");
+		const second = await ctx.ui.input("Which remote should the worker push to?");
+		return { branch: `${first}@${second}` };
+	},
+});

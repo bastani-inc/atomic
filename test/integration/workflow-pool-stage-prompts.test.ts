@@ -204,7 +204,7 @@ async function hostRun(prefix: string, store: ReturnType<typeof createStore>, ex
 		await backend.close();
 		removeTempDirectory(directory);
 	};
-	return { execution, close };
+	return { execution, close, pool };
 }
 
 /** The pending prompt of a pooled stage in `store` whose run is not one of `seen`. */
@@ -336,6 +336,131 @@ test.skipIf(process.platform === "win32")(
 			);
 		} finally {
 			await custom.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a ctx.ui prompt pending when its worker dies is asked again by the replacement, and the answer reaches it once (#3996)",
+	async () => {
+		const store = createStore();
+		const run = await hostRun("pool-stage-prompt-kill-", store);
+		try {
+			let first: ReturnType<typeof pooledPrompt>;
+			await untilOrRunEnds(
+				async () => {
+					first = pooledPrompt(store);
+					return first !== undefined;
+				},
+				run.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(first !== undefined);
+			const generationOf = () =>
+				store
+					.runs()
+					.find((candidate) => candidate.id === first!.runId)
+					?.stages.find((stage) => stage.id === first!.stageId)?.workerExecution?.generation ?? 0;
+			const killed = generationOf();
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// The replacement asks the same question again.
+			let again: ReturnType<typeof pooledPrompt>;
+			await untilOrRunEnds(
+				async () => {
+					again = generationOf() > killed ? pooledPrompt(store) : undefined;
+					return again !== undefined;
+				},
+				run.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(again !== undefined);
+			assert.equal(store.resolveStagePendingPrompt(again.runId, again.stageId, again.promptId, "after-kill"), true);
+			const outcome = await run.execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "after-kill" });
+		} finally {
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a ctx.ui answer given before its worker dies reaches the child once: the replacement replays it instead of asking again (#3996)",
+	async () => {
+		const store = createStore();
+		const asked = new Map<string, string>();
+		const unsubscribe = store.subscribe(() => {
+			for (const candidate of store.runs())
+				for (const stage of candidate.stages)
+					if (stage.pendingPrompt !== undefined && stage.workerExecution !== undefined)
+						asked.set(stage.pendingPrompt.id, stage.pendingPrompt.message);
+		});
+		const run = await hostRun("pool-stage-prompt-kill-answered-", store, "twoPromptChild");
+		try {
+			const pendingWith = (message: string) => {
+				for (const candidate of store.runs())
+					for (const stage of candidate.stages)
+						if (stage.pendingPrompt?.message === message && stage.workerExecution !== undefined)
+							return {
+								runId: candidate.id,
+								stageId: stage.id,
+								promptId: stage.pendingPrompt.id,
+								generation: stage.workerExecution.generation,
+							};
+				return undefined;
+			};
+			let first: ReturnType<typeof pendingWith>;
+			await untilOrRunEnds(
+				async () => {
+					first = pendingWith("Which branch should the worker use?");
+					return first !== undefined;
+				},
+				run.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(first !== undefined);
+			assert.equal(store.resolveStagePendingPrompt(first.runId, first.stageId, first.promptId, "before-kill"), true);
+			// The child received the first answer: it asks its second question.
+			let second: ReturnType<typeof pendingWith>;
+			await untilOrRunEnds(
+				async () => {
+					second = pendingWith("Which remote should the worker push to?");
+					return second !== undefined;
+				},
+				run.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(second !== undefined);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// The replacement asks only the unanswered question again.
+			let again: ReturnType<typeof pendingWith>;
+			await untilOrRunEnds(
+				async () => {
+					again = pendingWith("Which remote should the worker push to?");
+					return again !== undefined && again.generation > second!.generation;
+				},
+				run.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(again !== undefined);
+			assert.equal(store.resolveStagePendingPrompt(again.runId, again.stageId, again.promptId, "origin"), true);
+			const outcome = await run.execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "before-kill@origin" });
+			assert.deepEqual(
+				[...asked.values()].filter((message) => message === "Which branch should the worker use?"),
+				["Which branch should the worker use?"],
+				"the answered question is not asked again",
+			);
+		} finally {
+			unsubscribe();
+			await run.close();
 		}
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
