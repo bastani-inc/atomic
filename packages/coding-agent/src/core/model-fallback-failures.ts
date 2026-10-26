@@ -12,6 +12,7 @@ import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/rate\s*limit/i,
 	/too\s*many\s*requests/i,
+	/\bthrottl(?:ing|ed)\b/i,
 	/\b429\b/,
 	/quota/i,
 	/usage[\s_-]*limit/i,
@@ -166,7 +167,11 @@ function statusFrom(value: unknown): number | undefined {
 
 function codeFrom(value: unknown): string | number | undefined {
 	const rawCode = field(value, "code");
-	return typeof rawCode === "string" || typeof rawCode === "number" ? rawCode : undefined;
+	if (typeof rawCode === "string" || typeof rawCode === "number") return rawCode;
+	// Provider failure diagnostics (`bedrock_response_failure`) keep the modeled error code in `details.errorCode`,
+	// because the provider's display message replaces the exception name with a readable prefix.
+	const detailsCode = field(field(value, "details"), "errorCode");
+	return typeof detailsCode === "string" ? detailsCode : undefined;
 }
 
 function stopReasonFrom(value: unknown): string | undefined {
@@ -330,6 +335,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "rate_limit":
 		case "rate_limit_exceeded":
 		case "too_many_requests":
+		case "throttlingexception":
 			return "rate_limit";
 		case "quota_exceeded":
 		case "insufficient_quota":
@@ -337,6 +343,7 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "usage_limit_reached":
 		case "usage_limit_exceeded":
 		case "payment_required":
+		case "servicequotaexceededexception":
 			return "quota_exhausted";
 		case "aborterror":
 		case "aborted":
@@ -408,8 +415,10 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 // HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
 // Codes that also appear as free-text wording for short limits ("quota exceeded", "usage limit reached")
 // count only as a JSON `code`/`type` value, as in a raw error body some providers put in the message.
+// A service-quota exception and a per-day quota violation in a JSON error body (`"quotaId": "...PerDay..."`)
+// also last until the quota resets.
 const QUOTA_EXHAUSTED_FAILURE_PATTERN =
-	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
+	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
 
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
@@ -439,7 +448,11 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 		RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message)) ||
 		messageLooksLikeModelUnavailable(message);
 	if (!hasRetryablePattern) return undefined;
-	if (/rate\s*limit|too\s*many\s*requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message))
+	if (
+		/rate\s*limit|too\s*many\s*requests|\bthrottl(?:ing|ed)\b|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(
+			message,
+		)
+	)
 		return "rate_limit";
 	if (
 		/auth|unauthori[sz]ed|\b40[13]\b|api[_\s-]*key|token[_\s-]*(?:expired|revoked|invalidated|rejected)|forbidden|invalid[_\s-]*key/i.test(

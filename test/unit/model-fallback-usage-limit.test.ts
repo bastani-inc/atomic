@@ -204,6 +204,45 @@ describe("quota exhaustion and overload responses", () => {
 		assert.equal(isRetryableSameModelFailure(failure), false);
 	});
 
+	test("a per-day quota violation in a Google error body is an exhausted quota, a per-minute one a rate limit", () => {
+		const body = (quotaId: string) =>
+			JSON.stringify({
+				error: {
+					code: 429,
+					message: "Resource has been exhausted (e.g. check quota).",
+					status: "RESOURCE_EXHAUSTED",
+					details: [
+						{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId }] },
+						{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "17s" },
+					],
+				},
+			});
+		const daily = { stopReason: "error", errorMessage: body("GenerateRequestsPerDayPerProjectPerModel-FreeTier") };
+		assert.equal(workflowsNormalize(daily).kind, "quota_exhausted");
+		assert.equal(isRetryableSameModelFailure(daily), false);
+		const perMinute = { stopReason: "error", errorMessage: body("GenerateRequestsPerMinutePerProjectPerModel") };
+		assert.equal(workflowsNormalize(perMinute).kind, "rate_limit");
+		assert.equal(isRetryableSameModelFailure(perMinute), true);
+	});
+
+	test("a Bedrock service-quota exception is an exhausted quota, a throttling exception a rate limit", () => {
+		const quota = {
+			stopReason: "error",
+			errorMessage: "ServiceQuotaExceededException: Your request exceeds the service quota for your account.",
+		};
+		assert.equal(workflowsNormalize(quota).kind, "quota_exhausted");
+		assert.equal(subagentsNormalize(quota).kind, "quota_exhausted");
+		assert.equal(isRetryableSameModelFailure(quota), false);
+		const named = Object.assign(new Error("Your request exceeds the service quota for your account."), {
+			name: "ServiceQuotaExceededException",
+		});
+		assert.equal(workflowsNormalize(named).kind, "quota_exhausted");
+		const throttled = Object.assign(new Error("Too many requests, please wait before trying again."), {
+			name: "ThrottlingException",
+		});
+		assert.equal(workflowsNormalize(throttled).kind, "rate_limit");
+	});
+
 	test("a 529 assistant error is a retryable overload even without overload wording (#3984)", () => {
 		const failure = { stopReason: "error", errorMessage: '529 {"type":"error","error":{"message":"try later"}}' };
 		assert.equal(workflowsNormalize(failure).kind, "provider_unavailable");

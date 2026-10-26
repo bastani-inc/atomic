@@ -464,6 +464,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 
 		const opencodeIdsWithoutLongRetention: readonly string[] = [
 			"deepseek-v4-flash",
+			"deepseek-v4.1-flash",
 			"deepseek-v4-pro",
 			"kimi-k2.5",
 			"kimi-k2.6",

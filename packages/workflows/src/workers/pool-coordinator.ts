@@ -44,7 +44,8 @@ import type {
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
-import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
+import type { DistributiveOmit, WorkerRateLimits, WorkerRequest, WorkerStageCommand } from "./protocol.js";
+import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
 import {
 	type ProcessPermitScope,
 	reapProcessGroups,
@@ -383,6 +384,11 @@ export class PoolCoordinator {
 	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
 	private stageCommandSequence = 0;
 	private promptNodes = false;
+	/** Provider and model limits recorded anywhere in the pool, sent to every worker and the root (#4023). */
+	private readonly rateLimits = new RateLimitObservationSet();
+	private readonly rateLimitOutbox = new RateLimitObservationOutbox((observations) =>
+		this.shareRateLimits(observations),
+	);
 	private lastTick = performance.now();
 	private stalledMs = 0;
 	private readonly ticker: NodeJS.Timeout;
@@ -467,6 +473,7 @@ export class PoolCoordinator {
 		if (notice.kind === "stage-events-applied") this.stageEventsApplied(notice.watch);
 		else if (notice.kind === "budget") this.budgetBlocked = notice.blocked;
 		else if (notice.kind === "root") this.routes?.updateRoot(notice.rootRun);
+		else if (notice.kind === "rate-limits") this.observeRateLimits(notice.observations);
 		else {
 			const batch = this.batches.get(notice.batch);
 			this.batches.delete(notice.batch);
@@ -1026,6 +1033,21 @@ export class PoolCoordinator {
 		for (const [id, watch] of [...this.watches]) if (match(watch)) this.endStageWatch(id, reason);
 	}
 
+	/** Merges limits one process recorded; those that extend the pool's limits are sent on, coalesced. */
+	private observeRateLimits(observations: WorkerRateLimits["observations"]): void {
+		if (!Array.isArray(observations)) return;
+		for (const observation of observations)
+			if (this.rateLimits.merge(observation)) this.rateLimitOutbox.offer(observation);
+	}
+
+	private shareRateLimits(observations: WorkerRateLimits["observations"]): void {
+		const message: WorkerRateLimits = { kind: "rate-limits", observations };
+		// A worker that is not ready yet receives every current limit when it reports ready.
+		for (const slot of this.slots)
+			if (this.readyWorkers.has(slot.worker) && slot.child.connected) slot.child.send(message, () => {});
+		this.port.send(message);
+	}
+
 	private fence(work: PoolWork): void {
 		this.endStageWatches(
 			(watch) => watch.attempt.workId === work.id && watch.attempt.generation <= work.generation,
@@ -1210,6 +1232,10 @@ export class PoolCoordinator {
 					if (this.watches.get(message.watch)?.slot === slot) this.endStageWatch(message.watch, message.reason);
 					return;
 				}
+				if (message.kind === "rate-limits") {
+					this.observeRateLimits(message.observations);
+					return;
+				}
 				if (message.kind === "delivery-ack") {
 					const pending = slot.deliveries.get(message.deliveryId);
 					slot.deliveries.delete(message.deliveryId);
@@ -1224,6 +1250,10 @@ export class PoolCoordinator {
 					if (message.kind === "ready") {
 						if (terminated) return;
 						ready = true;
+						// Sent before the readiness reply, so the worker holds them before it claims any work.
+						const limits = this.rateLimits.current();
+						if (limits.length > 0)
+							child.send({ kind: "rate-limits", observations: limits } satisfies WorkerRateLimits, replied);
 						this.readyWorkers.add(worker);
 						clearTimeout(startup);
 						resolve();
@@ -1469,6 +1499,7 @@ export class PoolCoordinator {
 		this.closed = true;
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
+		this.rateLimitOutbox.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
 		try {

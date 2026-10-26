@@ -1,3 +1,4 @@
+import type { ProviderRateLimitObservation } from "@bastani/atomic";
 import type { PoolControl, PoolWork, PoolWorkDescriptor } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease } from "../durable/journal/types.js";
@@ -125,6 +126,8 @@ export type CoordinatorNotice =
 	| { readonly kind: "root"; readonly rootRun: PoolRootProjection }
 	/** The root applied the last `stage-events` batch of this watch; the next one may follow. */
 	| { readonly kind: "stage-events-applied"; readonly watch: WatchId }
+	/** Provider and model limits the root process recorded, for the pool's workers (#4023). */
+	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] }
 	| {
 			readonly kind: "published";
 			readonly batch: number;
@@ -189,7 +192,9 @@ export type CoordinatorEvent =
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	/** The last event of a watch. */
 	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
-	| { readonly kind: "request"; readonly id: number; readonly request: CoordinatorRequestBody };
+	| { readonly kind: "request"; readonly id: number; readonly request: CoordinatorRequestBody }
+	/** Provider and model limits a worker recorded, for the root process (#4023). */
+	| { readonly kind: "rate-limits"; readonly observations: readonly ProviderRateLimitObservation[] };
 
 /** Main thread answer to a coordinator `request`. */
 export interface CoordinatorRequestReply {

@@ -540,7 +540,13 @@ test.each(["", "/worker"])(
 			for (const target of [`${groupB}/**`, `${groupB}/review-*`, `${groupB}/future`, stageTarget]) {
 				const sent = await worker.execute({ action: "send", to: target, message: "must not gain control" });
 				assert.equal(sent.isError, true, `worker gained control of ${target}: ${sent.content[0]?.text}`);
-				assert.match(sent.content[0]?.text ?? "", /different intercom group/);
+				// A workflow stage can't gain control by joining, so the refusal says so instead of suggesting a join (#4006).
+				assert.match(
+					sent.content[0]?.text ?? "",
+					new RegExp(
+						`A workflow stage in ${homeGroup} cannot send to stages of ${groupB}; joining that group does not grant it control`,
+					),
+				);
 			}
 			const listed = await worker.execute({ action: "list", group: `${groupB}/isolated` });
 			assert.ok(!listed.content[0]?.text.includes(stageTarget), listed.content[0]?.text);
