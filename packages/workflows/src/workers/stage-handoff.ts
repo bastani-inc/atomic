@@ -414,13 +414,26 @@ function withReconnectingStages(
 			stage.workerExecution.generation < generation,
 	);
 	if (reconnecting.length === 0) return stages;
+	// A stage republished under a new id with the same replay key keeps its edges: retained
+	// stages that hung from its old id hang from the new one.
+	const replacementIdByReplayKey = new Map(
+		stages.flatMap((stage) => (stage.replayKey === undefined ? [] : [[stage.replayKey, stage.id] as const])),
+	);
+	const renamed = new Map<string, string>();
+	for (const stage of previous.stages) {
+		const replacement = stage.replayKey === undefined ? undefined : replacementIdByReplayKey.get(stage.replayKey);
+		if (replacement !== undefined && replacement !== stage.id && !ids.has(stage.id))
+			renamed.set(stage.id, replacement);
+	}
 	return [
 		...stages,
-		...reconnecting.map((stage) =>
-			stage.workerExecution?.reconnecting === true
-				? stage
-				: { ...stage, workerExecution: { ...stage.workerExecution!, reconnecting: true as const } },
-		),
+		...reconnecting.map((stage) => {
+			const parentIds = stage.parentIds.some((id) => renamed.has(id))
+				? stage.parentIds.map((id) => renamed.get(id) ?? id)
+				: stage.parentIds;
+			if (stage.workerExecution?.reconnecting === true && parentIds === stage.parentIds) return stage;
+			return { ...stage, parentIds, workerExecution: { ...stage.workerExecution!, reconnecting: true as const } };
+		}),
 	];
 }
 
