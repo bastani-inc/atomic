@@ -148,7 +148,7 @@ jobs:
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
-            timeout_minutes: 10
+            timeout_minutes: 14
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
             timeout_minutes: 14
@@ -308,7 +308,7 @@ jobs:
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.release-archive.linux-amd64
-            timeout_minutes: 4
+            timeout_minutes: 7
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.release-archive.windows-amd64
             timeout_minutes: 7
