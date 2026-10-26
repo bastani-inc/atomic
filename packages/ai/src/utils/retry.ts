@@ -37,8 +37,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"rate.?limit",
 	"too many requests",
 	// Status codes must not be part of a longer word or number, e.g. a request id or byte count (#11057).
-	// 521-523 are Cloudflare origin errors (#3623).
-	"(?<![a-z0-9])(?:429|500|502|503|504|52[0-4])(?![a-z0-9])",
+	// 521-523 are Cloudflare origin errors (#3623); 529 is an overload response.
+	"(?<![a-z0-9])(?:429|500|502|503|504|52[0-4]|529)(?![a-z0-9])",
 	// Also matches "The service is temporarily unavailable" (#10965).
 	"service.?(?:is.?)?(?:temporarily.?)?unavailable",
 	"server.?error",

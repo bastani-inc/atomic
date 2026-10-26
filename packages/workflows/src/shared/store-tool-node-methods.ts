@@ -21,7 +21,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 			if (nodes.some((candidate) => candidate.id === node.id)) return false;
 			if (node.executionOrder === undefined) node.executionOrder = nextExecutionOrder(run);
 			nodes.push(node);
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, toolNodeId: node.id });
 			return true;
 		},
 		recordToolNodeRunning(runId, nodeId, startedAt): boolean {
@@ -31,7 +31,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 			node.startedAt = startedAt;
 			if (context.observation.liveRunIds.has(runId))
 				context.observation.executingToolNodeIds.add(workflowActivityNodeKey(runId, nodeId));
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, toolNodeId: nodeId });
 			return true;
 		},
 		recordToolNodeEnd(runId, nodeId, update): boolean {
@@ -55,7 +55,7 @@ export function createToolNodeStoreMethods(context: StoreContext): ToolNodeStore
 			if (update.result !== undefined) node.result = boundedToolPayload(update.result);
 			if (update.resultSummary !== undefined) node.resultSummary = update.resultSummary;
 			if (update.error !== undefined) node.error = update.error;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, toolNodeId: nodeId });
 			return true;
 		},
 	};

@@ -722,6 +722,138 @@ test("a chain whose every candidate exhausted its 429 budget waits for the earli
 	}
 });
 
+function fallbackChainContext(
+	models: readonly [string, ...string[]],
+	fail: (model: string, call: number) => Error | undefined,
+	calls: string[],
+): InternalStageContext {
+	const agentSession: AgentSessionAdapter = {
+		async create(options) {
+			const model = String(options.model);
+			return {
+				session: makeMockSession({
+					async prompt() {
+						calls.push(model);
+						const failure = fail(model, calls.length);
+						if (failure) throw failure;
+						return "ok";
+					},
+					getLastAssistantText: () => "ok",
+				}).session,
+				settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 2, baseDelayMs: 0 }) },
+			};
+		},
+	};
+	const [model, ...fallbackModels] = models;
+	return createStageContext(
+		makeOpts({ adapters: { agentSession }, stageOptions: { model, fallbackModels } }),
+	) as InternalStageContext;
+}
+
+test("an exhausted quota whose reset is hours away moves straight to the fallback without waiting (#3984)", async () => {
+	const calls: string[] = [];
+	const reset = new Date(Date.now() + 5 * 60 * 60 * 1000).toUTCString();
+	const ctx = fallbackChainContext(
+		["quota-a/model", "quota-b/model"],
+		(model) =>
+			model === "quota-a/model"
+				? Object.assign(new Error("402 Payment Required"), {
+						status: 402,
+						headers: new Headers({ "Retry-After": reset }),
+					})
+				: undefined,
+		calls,
+	);
+	const pending = ctx.prompt("go");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(await pending, "ok");
+		assert.deepEqual(calls, ["quota-a/model", "quota-b/model"]);
+		assert.ok(ctx.__modelFallbackMeta().rateLimits?.every((limit) => limit.waitingUntil === undefined));
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a 429 naming the limited model does not delay another model on the same provider (#3984)", async () => {
+	const calls: string[] = [];
+	const ctx = fallbackChainContext(
+		["scoped-account/model-a", "scoped-account/model-b"],
+		(model) =>
+			model === "scoped-account/model-a"
+				? Object.assign(new Error("429 Rate limit reached for model-a in your organization"), {
+						status: 429,
+						headers: new Headers({ "Retry-After": "30" }),
+					})
+				: undefined,
+		calls,
+	);
+	const pending = ctx.prompt("go");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(await pending, "ok");
+		assert.deepEqual(calls, ["scoped-account/model-a", "scoped-account/model-b"]);
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a 429 that does not name a model still cools every model on the provider (#3984)", async () => {
+	const calls: string[] = [];
+	const ctx = fallbackChainContext(
+		["unscoped-account/model-a", "unscoped-account/model-b"],
+		(model) =>
+			model === "unscoped-account/model-a"
+				? Object.assign(new Error("429 Too Many Requests"), {
+						status: 429,
+						headers: new Headers({ "Retry-After": "30" }),
+					})
+				: undefined,
+		calls,
+	);
+	const pending = ctx.prompt("go");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(calls, ["unscoped-account/model-a"]);
+		await vi.advanceTimersByTimeAsync(29_999);
+		assert.deepEqual(calls, ["unscoped-account/model-a"]);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(await pending, "ok");
+		assert.equal(calls.length, 2);
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a 529 overload honors its retry hint like a 503 (#3984)", async () => {
+	let calls = 0;
+	const ctx = limitedContext("overloaded-account", async () => {
+		calls += 1;
+		if (calls === 1) {
+			throw Object.assign(new Error('529 {"type":"error","error":{"type":"unknown_error","message":"try later"}}'), {
+				retryAfterMs: 3000,
+			});
+		}
+		return "ok";
+	});
+	const pending = ctx.prompt("go");
+	void pending.catch(() => {});
+	try {
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(calls, 1);
+		await vi.advanceTimersByTimeAsync(2999);
+		assert.equal(calls, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(await pending, "ok");
+		assert.equal(calls, 2);
+	} finally {
+		await ctx.abort();
+	}
+});
+
 test("a ready candidate recovers a cooling chain even when the other's cooldown exceeds the cap (#3984)", async () => {
 	const calls: string[] = [];
 	const agentSession: AgentSessionAdapter = {
@@ -753,11 +885,11 @@ test("a ready candidate recovers a cooling chain even when the other's cooldown 
 	) as InternalStageContext;
 	try {
 		const outcome = await settleOnFakeTimers(ctx.prompt("go"));
-		// Both spend their budget; the primary's 10 ms cooldown ends during the fallback's 2 s wait, and the
-		// fallback's next 2 s cooldown exceeds the 1 s cap. The ready primary recovers without a cooldown wait
+		// The fallback's 2 s cooldown exceeds the 1 s cap, so it leaves the walk while the primary still has a
+		// candidate's chance; the primary's 10 ms cooldown is already over, so it recovers without a cooldown wait
 		// instead of the stage failing with 429.
 		assert.deepEqual(outcome, { value: "ok" });
-		assert.deepEqual(calls, ["ready-a/model", "ready-b/model", "ready-a/model", "ready-b/model", "ready-a/model"]);
+		assert.deepEqual(calls, ["ready-a/model", "ready-b/model", "ready-a/model", "ready-a/model"]);
 	} finally {
 		await ctx.abort();
 	}

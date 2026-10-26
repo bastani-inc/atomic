@@ -41,6 +41,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/timed\s*out/i,
 	/\b50[0-4]\b/,
 	/\b52[0-4]\b/,
+	/\b529\b/,
 	/provider.?returned.?error/i,
 	/server.?error/i,
 	/internal.?error/i,
@@ -89,6 +90,7 @@ const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [
 export type ModelFallbackFailureKind =
 	| "auth_on_candidate_provider"
 	| "rate_limit"
+	| "quota_exhausted"
 	| "provider_unavailable"
 	| "network_timeout"
 	| "transport_error"
@@ -118,6 +120,7 @@ export interface ModelFallbackFailureSignal {
 const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Set([
 	"auth_on_candidate_provider",
 	"rate_limit",
+	"quota_exhausted",
 	"provider_unavailable",
 	"network_timeout",
 	"transport_error",
@@ -240,6 +243,8 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 			return "network_timeout";
 		case 404:
 			return "model_unavailable";
+		case 402:
+			return "quota_exhausted";
 		case 429:
 			return "rate_limit";
 		default:
@@ -325,12 +330,14 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "rate_limit":
 		case "rate_limit_exceeded":
 		case "too_many_requests":
+			return "rate_limit";
 		case "quota_exceeded":
 		case "insufficient_quota":
 		case "usage_limit":
 		case "usage_limit_reached":
 		case "usage_limit_exceeded":
-			return "rate_limit";
+		case "payment_required":
+			return "quota_exhausted";
 		case "aborterror":
 		case "aborted":
 		case "cancelled":
@@ -398,6 +405,12 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bstream\s+deadline\s+exceeded\b/i,
 ];
 
+// HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
+// Codes that also appear as free-text wording for short limits ("quota exceeded", "usage limit reached")
+// count only as a JSON `code`/`type` value, as in a raw error body some providers put in the message.
+const QUOTA_EXHAUSTED_FAILURE_PATTERN =
+	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
+
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
 		? "transport_error"
@@ -421,6 +434,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
+	if (QUOTA_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
 	const hasRetryablePattern =
 		RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message)) ||
 		messageLooksLikeModelUnavailable(message);
@@ -515,6 +529,8 @@ function nestedSignalPriority(signal: ModelFallbackFailureSignal): number {
 			return 85;
 		case "model_unavailable":
 			return 80;
+		case "quota_exhausted":
+			return 75;
 		case "rate_limit":
 			return 70;
 		case "provider_unavailable":

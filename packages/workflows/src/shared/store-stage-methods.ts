@@ -44,7 +44,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (stage.status === "running" && context.observation.liveRunIds.has(runId)) {
 				context.observation.executingStageIds.add(workflowActivityNodeKey(runId, stage.id));
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId: stage.id });
 		},
 
 		recordStageWorkflowChildRun(runId: string, stageId: string, ref: WorkflowChildRunRef): boolean {
@@ -59,11 +59,11 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				stage.workflowChildRun.alias === ref.alias &&
 				stage.workflowChildRun.workflow === ref.workflow
 			) {
-				if (released) context.bumpAndNotify();
+				if (released) context.bumpAndNotify({ runId, stageId });
 				return false;
 			}
 			stage.workflowChildRun = { ...ref };
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -76,7 +76,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (!exists) {
 				stage.toolEvents.push(evt);
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 		},
 
 		recordToolEnd(runId: string, stageId: string, evt: ToolEvent): void {
@@ -89,7 +89,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				existing.endedAt = evt.endedAt;
 				existing.output = evt.output;
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 		},
 
 		recordStageEnd(runId: string, stage: StageSnapshot): void {
@@ -138,7 +138,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			delete existing.awaitingInputSince;
 			delete existing.inputRequest;
 			context.rejectStagePrompt(runId, existing, `atomic-workflows: stage ${stage.id} ended before prompt resolved`);
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId: stage.id });
 		},
 
 		recordStageSession(runId: string, stageId: string, session: { sessionId: string }): boolean {
@@ -147,7 +147,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			const stage = context.findStage(run, stageId);
 			if (!stage || stage.sessionId === session.sessionId) return false;
 			stage.sessionId = session.sessionId;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -163,7 +163,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			} else {
 				stage.attachable = next;
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -179,7 +179,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			} else {
 				stage.attached = next;
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -200,7 +200,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				stage.status = "running";
 				delete stage.awaitingInputSince;
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -213,7 +213,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (isTerminalStageStatus(stage.status)) return false;
 			if (stage.inputRequest?.id === request.id) return false;
 			stage.inputRequest = { ...request };
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -223,7 +223,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			const stage = context.findStage(run, stageId);
 			if (!stage || stage.inputRequest === undefined) return false;
 			delete stage.inputRequest;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -242,7 +242,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				stage.blockedByStageId = blockedBy;
 				delete stage.awaitingInputSince;
 			}
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -254,7 +254,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			stage.status = "pending";
 			delete stage.blockedByStageId;
 			delete stage.awaitingInputSince;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -265,7 +265,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			if (!stage) return false;
 			if (!stage.notices) stage.notices = [];
 			stage.notices.push(notice);
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -281,7 +281,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				if (stage.status !== "paused" || metadata?.actor === undefined) return false;
 				if (stage.pauseActor === metadata.actor) return false;
 				stage.pauseActor = metadata.actor;
-				context.bumpAndNotify();
+				context.bumpAndNotify({ runId, stageId });
 				return false;
 			}
 			context.observation.executingStageIds.delete(workflowActivityNodeKey(runId, stageId));
@@ -292,7 +292,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			delete stage.resumeActor;
 			if (metadata?.actor === undefined) delete stage.pauseActor;
 			else stage.pauseActor = metadata.actor;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 
@@ -309,7 +309,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 				}
 				if (stage.resumeActor === metadata.actor) return false;
 				stage.resumeActor = metadata.actor;
-				context.bumpAndNotify();
+				context.bumpAndNotify({ runId, stageId });
 				return false;
 			}
 			const resumedTs = nextControlTimestamp(resumedAt, stage.pausedAt);
@@ -326,7 +326,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			delete stage.pauseActor;
 			if (metadata?.actor === undefined) delete stage.resumeActor;
 			else stage.resumeActor = metadata.actor;
-			context.bumpAndNotify();
+			context.bumpAndNotify({ runId, stageId });
 			return true;
 		},
 	};

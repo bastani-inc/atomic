@@ -42,7 +42,9 @@ import {
 	isWorkflowRateLimit,
 	providerCooldownMs,
 	providerRateLimitSnapshot,
+	providerUnavailableMs,
 	recordProviderRateLimit,
+	workflowModelName,
 	workflowProviderId,
 	workflowRetryHint,
 } from "../shared/provider-rate-limits.js";
@@ -129,6 +131,14 @@ type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"
  * worth a fresh session, first on the same candidate and then on the next. A
  * deterministic one fails identically for every candidate, so it ends the stage.
  */
+function candidateCooldownMs(value: WorkflowModelValue | undefined): number {
+	return providerCooldownMs(workflowProviderId(value), workflowModelName(value));
+}
+
+function candidateUnavailableMs(value: WorkflowModelValue | undefined): number {
+	return providerUnavailableMs(workflowProviderId(value), workflowModelName(value));
+}
+
 function isRetryableSameCandidateFailure(error: unknown): boolean {
 	if (isExtensionStartupFailure(error)) return isTransientExtensionStartupFailure(error);
 	return isRetryableSameModelFailure(error);
@@ -1176,7 +1186,11 @@ export class StageSessionController {
 		this.sessionInternalRetries = 0;
 		const settings = this.retrySettings();
 		const retries = settings?.enabled === false ? 0 : (settings?.maxRetries ?? 2);
-		const rateLimited = isWorkflowRateLimit(error);
+		// A limit that resets beyond the retry-delay cap is exhausted for this walk, like a spent quota:
+		// when another candidate is left, move on at once and never wait for it.
+		const rateLimited =
+			isWorkflowRateLimit(error) &&
+			!([...walk.remaining].some((other) => other !== index) && this.candidateUnavailable(candidates[index]?.value));
 		if (rateLimited) {
 			walk.rateLimitFailures.set(index, failures);
 			if (failures <= retries) return;
@@ -1188,12 +1202,9 @@ export class StageSessionController {
 		// ready), if it fits the retry-hint cap, at most `retry.maxRetries` times per walk.
 		if (!rateLimited || walk.remaining.size > 0 || walk.cooldownRounds >= retries) return;
 		// A candidate whose cooldown already ended counts as zero: it is ready now and needs no wait.
-		const cooldowns = [...walk.rateLimited].map((limited) =>
-			providerCooldownMs(workflowProviderId(candidates[limited]?.value)),
-		);
+		const cooldowns = [...walk.rateLimited].map((limited) => candidateCooldownMs(candidates[limited]?.value));
 		if (cooldowns.length === 0) return;
-		const maxWaitMs = settings?.maxRetryDelayMs || (settings?.maxAgentDelayMs ?? 60_000);
-		if (Math.min(...cooldowns) > maxWaitMs) return;
+		if (Math.min(...cooldowns) > this.maxCooldownWaitMs()) return;
 		walk.cooldownRounds += 1;
 		for (const limited of walk.rateLimited) {
 			walk.remaining.add(limited);
@@ -1210,15 +1221,24 @@ export class StageSessionController {
 		while (walk.remaining.size > 0) {
 			this.opts.signal?.throwIfAborted();
 			let earliest: { index: number; delay: number } | undefined;
+			let earliestUnavailable: { index: number; delay: number } | undefined;
 			for (let offset = 0; offset < candidates.length; offset += 1) {
 				const index = (start + offset) % candidates.length;
 				if (!walk.remaining.has(index)) continue;
 				const candidate = candidates[index]!;
-				const delay = providerCooldownMs(workflowProviderId(candidate.value));
+				const delay = candidateCooldownMs(candidate.value);
+				// An exhausted quota or a reset beyond the wait cap is used only when nothing else is left.
+				if (this.candidateUnavailable(candidate.value)) {
+					if (earliestUnavailable === undefined || delay < earliestUnavailable.delay)
+						earliestUnavailable = { index, delay };
+					continue;
+				}
 				if (delay === 0) return index;
 				if (earliest === undefined || delay < earliest.delay) earliest = { index, delay };
 			}
+			earliest ??= earliestUnavailable;
 			if (earliest === undefined) return undefined;
+			if (earliest.delay === 0) return earliest.index;
 			try {
 				await this.sleepForRateLimit(workflowProviderId(candidates[earliest.index]!.value), earliest.delay);
 			} catch (error) {
@@ -1233,7 +1253,23 @@ export class StageSessionController {
 	}
 
 	private currentProvider(): string | undefined {
-		return workflowProviderId(this.session?.model ?? this.selectedModel ?? this.effectiveStageOptions?.model);
+		return workflowProviderId(this.currentModelValue());
+	}
+
+	private currentModelValue(): WorkflowModelValue | undefined {
+		return this.session?.model ?? this.selectedModel ?? this.effectiveStageOptions?.model;
+	}
+
+	/** Longest cooldown worth waiting for: the retry-hint cap the same-model retry policy uses. */
+	private maxCooldownWaitMs(): number {
+		const settings = this.retrySettings();
+		return settings?.maxRetryDelayMs || (settings?.maxAgentDelayMs ?? 60_000);
+	}
+
+	private candidateUnavailable(value: WorkflowModelValue | undefined): boolean {
+		if (candidateUnavailableMs(value) > 0) return true;
+		const cooldown = candidateCooldownMs(value);
+		return cooldown > 0 && cooldown > this.maxCooldownWaitMs();
 	}
 
 	private async sleepForRateLimit(provider: string | undefined, delay: number): Promise<void> {
@@ -1249,11 +1285,12 @@ export class StageSessionController {
 		}
 	}
 
-	private async waitForProvider(provider: string | undefined): Promise<void> {
-		let delay = providerCooldownMs(provider);
+	private async waitForProvider(value: WorkflowModelValue | undefined): Promise<void> {
+		const provider = workflowProviderId(value);
+		let delay = candidateCooldownMs(value);
 		while (delay > 0) {
 			await this.sleepForRateLimit(provider, delay);
-			delay = providerCooldownMs(provider);
+			delay = candidateCooldownMs(value);
 		}
 	}
 
@@ -1292,7 +1329,7 @@ export class StageSessionController {
 		const state: ThrownErrorRetryState = { controller: new AbortController() };
 		this.thrownErrorRetryStates.add(state);
 		try {
-			await this.waitForProvider(this.currentProvider());
+			await this.waitForProvider(this.currentModelValue());
 			await continuationSession._runAgentContinue();
 		} catch (error) {
 			const resume = state.pauseResume ?? this.pauseControl.currentResume();
@@ -1375,7 +1412,7 @@ export class StageSessionController {
 				const retryableFailure = isRetryableModelFailure(error);
 				const sameCandidateRetryable =
 					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
-				recordProviderRateLimit(this.currentProvider(), error);
+				recordProviderRateLimit(this.currentProvider(), error, workflowModelName(this.currentModelValue()));
 				if (this.hasExplicitModelFallbackConfig && isWorkflowRateLimit(error)) {
 					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);
 					throw error;
@@ -1712,7 +1749,8 @@ export class StageSessionController {
 							isRetryableSameCandidateFailure(error),
 							workflowRetryHint(error),
 						);
-				recordProviderRateLimit(workflowProviderId(candidate?.value ?? candidate?.id), error);
+				const candidateModel = candidate?.value ?? candidate?.id;
+				recordProviderRateLimit(workflowProviderId(candidateModel), error, workflowModelName(candidateModel));
 				if (candidate !== undefined && isWorkflowRateLimit(error)) throw error;
 				if (
 					decision === undefined ||
@@ -2067,7 +2105,7 @@ export class StageSessionController {
 				this.reportStartupPhase("first-dispatch");
 				// A live resume loops here without returning through the outer retry guard.
 				this.checkedSession(activeSession);
-				await this.waitForProvider(this.currentProvider());
+				await this.waitForProvider(this.currentModelValue());
 				await activeSession.prompt(nextText, sdkOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
@@ -2107,7 +2145,11 @@ export class StageSessionController {
 	): Promise<boolean> {
 		if (!this.resumeCurrentSession || this.session === undefined) return false;
 		const currentIndex = this.activeCandidateIndex ?? 0;
-		if (!walk.remaining.has(currentIndex) || providerCooldownMs(this.currentProvider()) > 0) {
+		if (
+			!walk.remaining.has(currentIndex) ||
+			candidateCooldownMs(this.currentModelValue()) > 0 ||
+			this.candidateUnavailable(this.currentModelValue())
+		) {
 			const start = walk.rateLimitFailures.has(currentIndex) ? 0 : currentIndex;
 			const index = await this.selectReadyCandidate(candidates, walk, start);
 			if (index === undefined) return true;

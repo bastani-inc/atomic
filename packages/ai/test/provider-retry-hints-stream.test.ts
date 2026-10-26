@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
+import { stream as streamAnthropicMessages } from "../src/api/anthropic-messages.ts";
+import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
+import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import type { Model } from "../src/types.ts";
+import { assistantRetryDelayMs } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const cloudflare520Body = JSON.stringify({
@@ -54,6 +58,40 @@ const codexModel: Model<"openai-codex-responses"> = {
 	api: "openai-codex-responses",
 	provider: "openai-codex",
 	baseUrl: "https://chatgpt.com/backend-api",
+};
+
+const anthropicModel: Model<"anthropic-messages"> = {
+	...modelBase,
+	id: "test-claude",
+	api: "anthropic-messages",
+	provider: "anthropic",
+	baseUrl: "https://api.anthropic.test",
+};
+
+function anthropicError(status: number, headers: Record<string, string>, type: string): typeof globalThis.fetch {
+	return vi.fn(
+		async () =>
+			new Response(JSON.stringify({ type: "error", error: { type, message: "try again later" } }), {
+				status,
+				headers: { "content-type": "application/json", ...headers },
+			}),
+	);
+}
+
+const mistralModel: Model<"mistral-conversations"> = {
+	...modelBase,
+	id: "test-mistral",
+	api: "mistral-conversations",
+	provider: "mistral",
+	baseUrl: "https://api.mistral.test",
+};
+
+const piMessagesModel: Model<"pi-messages"> = {
+	...modelBase,
+	id: "test-pi",
+	api: "pi-messages",
+	provider: "pi-test",
+	baseUrl: "https://api.pi.test/v1",
 };
 
 function codexToken(): string {
@@ -150,4 +188,69 @@ test("openai-codex-responses ignores a non-JSON 520 page without a hint (#3623)"
 	}).result();
 	assert.equal(result.stopReason, "error");
 	assert.equal(result.retryAfterMs, undefined);
+});
+
+test("anthropic-messages reports a 429 Retry-After in seconds as retryAfterMs (#3984)", async () => {
+	const result = await streamAnthropicMessages(anthropicModel, context, {
+		apiKey: "k",
+		maxRetries: 0,
+		fetch: anthropicError(429, { "retry-after": "7" }, "rate_limit_error"),
+	}).result();
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.retryAfterMs, 7000);
+});
+
+test("anthropic-messages reports a 402 HTTP-date reset as retryAfterMs (#3984)", async () => {
+	const reset = new Date(Date.now() + 3 * 60 * 60 * 1000).toUTCString();
+	const result = await streamAnthropicMessages(anthropicModel, context, {
+		apiKey: "k",
+		maxRetries: 2,
+		fetch: anthropicError(402, { "retry-after": reset }, "quota_error"),
+	}).result();
+	assert.equal(result.stopReason, "error");
+	assert.ok(result.retryAfterMs !== undefined && result.retryAfterMs > 2.9 * 60 * 60 * 1000);
+});
+
+test("an anthropic-messages 529 retry waits for its Retry-After like a 503 (#3984)", async () => {
+	const result = await streamAnthropicMessages(anthropicModel, context, {
+		apiKey: "k",
+		maxRetries: 0,
+		fetch: anthropicError(529, { "retry-after": "4" }, "unknown_error"),
+	}).result();
+	assert.equal(result.retryAfterMs, 4000);
+	assert.equal(assistantRetryDelayMs({ enabled: true, maxRetries: 3, baseDelayMs: 2000 }, 1, result), 4000);
+});
+
+test("a provider retry hint beyond maxRetryDelayMs stays on the failure that rejects it (#3984)", async () => {
+	const result = await streamAnthropicMessages(anthropicModel, context, {
+		apiKey: "k",
+		maxRetries: 2,
+		maxRetryDelayMs: 60_000,
+		fetch: anthropicError(429, { "retry-after": "7200" }, "rate_limit_error"),
+	}).result();
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.retryAfterMs, 7_200_000);
+});
+
+test.each([
+	[
+		"mistral-conversations",
+		(fetch: typeof globalThis.fetch) => streamMistral(mistralModel, context, { apiKey: "k", maxRetries: 0, fetch }),
+	],
+	[
+		"pi-messages",
+		(fetch: typeof globalThis.fetch) =>
+			streamPiMessages(piMessagesModel, context, { apiKey: "k", maxRetries: 0, fetch }),
+	],
+] as const)("%s reports a 429 Retry-After as retryAfterMs (#3984)", async (_api, run) => {
+	const fetch = vi.fn(
+		async () =>
+			new Response(JSON.stringify({ error: { message: "slow down" } }), {
+				status: 429,
+				headers: { "content-type": "application/json", "retry-after": "7" },
+			}),
+	);
+	const result = await run(fetch).result();
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.retryAfterMs, 7000);
 });

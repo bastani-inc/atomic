@@ -11,6 +11,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Fixed
 
 - GitHub Copilot offers fewer models its account can't use: a model enabled during login is offered only if the model list re-read afterwards marks it usable, and an OAuth login without a stored model list re-reads the list on the next `Models.refresh()` with network access (until then it keeps offering the catalog) ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
+- Anthropic Messages, Azure OpenAI Responses, Mistral and pi-messages failures now report the server retry hint (`Retry-After-Ms`, `Retry-After` in seconds or as an HTTP date, or a body `retry_after`) as `AssistantMessage.retryAfterMs`, as the OpenAI providers already did. A hint longer than `maxRetryDelayMs` stays on the failure that rejects it, and HTTP 529 overload responses are retryable like 503 ([#3984](https://github.com/bastani-inc/atomic/issues/3984))
 
 ## [0.9.44] - 2026-10-25
 

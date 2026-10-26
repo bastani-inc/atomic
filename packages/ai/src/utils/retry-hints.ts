@@ -40,13 +40,21 @@ export function getRetryAfterMs(headers?: HeaderReader, body?: string, now = Dat
 	return hints.length ? Math.max(...hints) : undefined;
 }
 
-/** Server retry hint carried by a provider SDK error (`headers` plus parsed body `error`), or an explicit `retryAfterMs`. */
+/**
+ * Server retry hint carried by a provider error (`headers` plus a parsed body `error` or raw string `body`),
+ * or an explicit `retryAfterMs`.
+ */
 export function getProviderRetryAfterMs(error: object): number | undefined {
 	if ("retryAfterMs" in error && typeof error.retryAfterMs === "number") return positiveDelay(error.retryAfterMs);
 	const headers =
 		"headers" in error && typeof error.headers === "object" && isHeaderReader(error.headers)
 			? error.headers
 			: undefined;
-	const body = "error" in error ? JSON.stringify(error.error) : undefined;
+	const body =
+		"body" in error && typeof error.body === "string"
+			? error.body
+			: "error" in error
+				? JSON.stringify(error.error)
+				: undefined;
 	return getRetryAfterMs(headers, body);
 }
