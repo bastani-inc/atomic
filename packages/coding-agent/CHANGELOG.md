@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a `.ts` storage adapter that serves both `sessions.storage` and `workflows.journal` failing to import `@bastani/atomic/workflows` when sessions loaded first; the journal now gets the running Atomic's workflows module ([#3973](https://github.com/bastani-inc/atomic/issues/3973))
+
 ## [0.9.45] - 2026-10-25
 
 Custom storage adapters now plug into workflow journals as first-class citizens, and large local worker pools start reliably on busy machines.
