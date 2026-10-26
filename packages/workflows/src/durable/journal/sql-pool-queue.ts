@@ -355,7 +355,10 @@ export class SqlPoolQueue {
 			);
 			if (previous) {
 				if (previous.fingerprint !== fingerprint) throw new Error("Pool boundary identity conflict");
-				return fromRow(previous);
+				if (previous.state !== "ready" || previous.epoch === lease.epoch) return fromRow(previous);
+				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979).
+				await tx.run(`UPDATE ${this.work} SET epoch = ? WHERE id = ?`, lease.epoch, previous.id);
+				return fromRow({ ...previous, epoch: lease.epoch });
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
 				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
@@ -365,12 +368,13 @@ export class SqlPoolQueue {
 				throw new Error("Pool work scopes overlap");
 			const id = randomUUID();
 			await tx.run(
-				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, ready_at) VALUES (?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO ${this.work}(id, root, boundary, descriptor, fingerprint, epoch, ready_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				lease.runId,
 				boundaryId,
 				json,
 				fingerprint,
+				lease.epoch,
 				now,
 			);
 			const seq = await tx.get<SqliteRow & { seq: number }>(
@@ -415,9 +419,12 @@ export class SqlPoolQueue {
 			const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
 			if (control && control.state !== "running") return undefined;
 			if (status !== "running" || compatibleDefinitions.length === 0) return undefined;
+			// Only work this root incarnation enqueued: the root cannot accept an attempt of a child it has not
+			// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
 			const row = await tx.get<WorkRow>(
-				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND ready_at <= ? AND (${compatible}) ORDER BY ready_at, rowid LIMIT 1`,
+				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ? AND (${compatible}) ORDER BY ready_at, rowid LIMIT 1`,
 				lease.runId,
+				lease.epoch,
 				now,
 				...compatibleDefinitions,
 			);

@@ -395,6 +395,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
+	private readonly attemptBase = new Map<string, number>();
 
 	constructor(private readonly port: CoordinatorPort<CoordinatorEvent, CoordinatorInbound>) {
 		port.onMessage((message) => this.receive(message));
@@ -571,6 +573,7 @@ export class PoolCoordinator {
 			throw new Error("Local worker pool requires root preparation");
 		if (command.rootRun !== undefined) this.routes?.updateRoot(command.rootRun);
 		const work = await this.queue.enqueue(this.lease, command.descriptor, command.boundary);
+		if (!this.attemptBase.has(work.id)) this.attemptBase.set(work.id, work.state === "ready" ? work.generation : 0);
 		const result = await this.queue.result(this.root, work.id);
 		return { work, ...(result === undefined ? {} : { result }) };
 	}
@@ -963,8 +966,12 @@ export class PoolCoordinator {
 							this.replacements = 0;
 						}
 						if (this.closed) return;
-						if (work) await this.queue!.releaseExited(this.lease!, work);
-						const exhausted = work ? work.generation >= 3 : ++this.replacements > 3;
+						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
+						const superseded =
+							work !== undefined &&
+							!(await this.queue!.releaseExited(this.lease!, work)) &&
+							(await this.superseded(work));
+						const exhausted = superseded ? false : work ? this.attempts(work) >= 3 : ++this.replacements > 3;
 						if (exhausted) this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
@@ -1014,6 +1021,16 @@ export class PoolCoordinator {
 					const queue = this.queue!;
 					const lease = this.lease!;
 					if (message.kind === "control") return queue.control(lease);
+					if (message.kind === "fenced") {
+						const fenced = slot.work;
+						slot.work = undefined;
+						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
+						// not replaced: it is released for replay and counts as a failed attempt, so refusals stay bounded.
+						if (fenced && !(await this.superseded(fenced)) && (await queue.releaseExited(lease, fenced)))
+							if (this.attempts(fenced) >= 3)
+								this.fail(new Error("Local worker retry limit: the root refused every attempt as stale"));
+						return;
+					}
 					if (message.kind === "controlled") {
 						const control = await queue.control(lease);
 						if (message.revision > control.revision) throw new Error("Unknown control revision");
@@ -1124,10 +1141,29 @@ export class PoolCoordinator {
 					);
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) => child.send({ id: message.id, error: error.message }, replied),
+					(error: Error) =>
+						child.send(
+							{
+								id: message.id,
+								error: error.message,
+								...(error.message === STALE_WORK_LEASE ? { fenced: true } : {}),
+							},
+							replied,
+						),
 				);
 			});
 		});
+	}
+
+	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
+	private attempts(work: PoolWork): number {
+		return work.generation - (this.attemptBase.get(work.id) ?? 0);
+	}
+
+	/** Whether a newer attempt, or completion, replaced this one. */
+	private async superseded(work: PoolWork): Promise<boolean> {
+		const current = (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id);
+		return current === undefined || current.generation !== work.generation || current.state === "completed";
 	}
 
 	private assertPublished(work: PoolWork): void {

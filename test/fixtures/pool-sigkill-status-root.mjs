@@ -1,8 +1,14 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
+
+function writeJsonAtomically(path, value) {
+	writeFileSync(`${path}.tmp`, JSON.stringify(value));
+	renameSync(`${path}.tmp`, path);
+}
+
 
 // Root host whose pooled children journal stage transcripts before it is killed.
 // Arguments: mode directory rootId children failing finishing. `start` runs until the test
@@ -45,9 +51,9 @@ const pool = new LocalWorkerPool(backend, {
 	definitions: [{ definition: child, path: childPath, exportName }],
 });
 const reportWorkers = setInterval(() => {
-	writeFileSync(join(directory, `workers-${mode}.json`), JSON.stringify(pool.workerPids));
+	writeJsonAtomically(join(directory, `workers-${mode}.json`), pool.workerPids);
 	if (pool.coordinatorPid !== undefined)
-		writeFileSync(join(directory, `coordinator-${mode}.json`), JSON.stringify(pool.coordinatorPid));
+		writeJsonAtomically(join(directory, `coordinator-${mode}.json`), pool.coordinatorPid);
 }, 50);
 const parent = workflow({
 	name: "pool-sigkill-status-root",
@@ -93,7 +99,7 @@ try {
 	if (!resumed.ok) throw new Error(`Resume rejected: ${resumed.message}`);
 	await completion;
 	const record = store.runs().find((candidate) => candidate.id === root);
-	writeFileSync(join(directory, "outcome.json"), JSON.stringify({ status: record?.status, error: record?.error ?? null }));
+	writeJsonAtomically(join(directory, "outcome.json"), { status: record?.status, error: record?.error ?? null });
 } finally {
 	clearInterval(reportWorkers);
 	await pool.close();
