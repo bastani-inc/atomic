@@ -22,6 +22,7 @@ import type {
 	TranscriptContext,
 } from "../types.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { collapseSystemMessages, withoutInitialSystemMessage } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
@@ -559,7 +560,11 @@ export function retryGoogleRequest<T>(
 				return await request();
 			} catch (error) {
 				if (error instanceof Error && "status" in error && !("headers" in error)) {
-					(error as { headers?: Headers }).headers = undefined;
+					// The body's `RetryInfo.retryDelay` is the server's retry hint; expose it as a header so the
+					// shared policy honors it like any other provider's `Retry-After`.
+					const retryAfterMs = getProviderRetryAfterMs(error);
+					(error as { headers?: Headers }).headers =
+						retryAfterMs === undefined ? undefined : new Headers({ "retry-after-ms": String(retryAfterMs) });
 				}
 				throw error;
 			}

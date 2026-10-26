@@ -471,9 +471,12 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 							statusText: response.statusText,
 						});
 						const info = await parseErrorResponse(fakeResponse);
-						throw Object.assign(new Error(info.friendlyMessage || info.message), {
-							retryAfterMs: getRetryAfterMs(response.headers, errorText),
-						});
+						// Keep the HTTP status in the text, as the other providers' `<status>: <body>` does, so a 402
+						// (exhausted quota) or 5xx is still recognizable once only the message survives.
+						throw Object.assign(
+							new Error(info.friendlyMessage || `${response.status}: ${info.message}`),
+							{ status: response.status, retryAfterMs: getRetryAfterMs(response.headers, errorText) },
+						);
 					} catch (error) {
 						if (error instanceof Error) {
 							if (error.name === "AbortError" || error.message === "Request was aborted") {
