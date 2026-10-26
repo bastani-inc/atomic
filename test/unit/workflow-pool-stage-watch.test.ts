@@ -744,3 +744,58 @@ test("a replacement mid-turn admits a redelivered follow-up and then a steer as 
 	assert.deepEqual(await deliver(sent, watches, 3, "op-steer", "steer", 2), { action: "steer", refusal: undefined });
 	assert.deepEqual(queues, { steering: ["text-op-steer"], followUp: ["text-op-follow"] });
 });
+
+test("a resume message whose turn starts after resume() returns is still receipted once it enters the session (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 1 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+	);
+	const stage = streamingStage("agent");
+	const entries: { type: string; customType?: string; data?: { op: string } }[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		isStreaming: false,
+		// As a resume that waits for a provider cooldown: it answers before the turn starts.
+		async resume(message?: string) {
+			return message === undefined ? undefined : "prompt";
+		},
+		agentSession: {
+			sessionManager: {
+				getEntries: () => entries,
+				async appendCustomEntry(customType: string, data: { op: string }) {
+					entries.push({ type: "custom", customType, data });
+					return "entry";
+				},
+			},
+		} as never,
+	});
+	openWatch(watches);
+	watches.serve({
+		kind: "stage-command",
+		commandId: 2,
+		attempt: { workId: "work", generation: 1 },
+		op: "resume",
+		watch: "watch-1" as WatchId,
+		message: { deliveryOp: "op-resume" as DeliveryOpId, text: "carry on" },
+	} as Parameters<WorkerStageWatches["serve"]>[0]);
+	// The resume answers before its turn starts.
+	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
+	assert.deepEqual(entries, [], "nothing is receipted before the message enters the session");
+	const user = (type: "message_start" | "message_end") =>
+		stage.emit({
+			type,
+			message: { role: "user", content: [{ type: "text", text: "carry on" }], timestamp: 1 },
+		} as never);
+	user("message_start");
+	user("message_end");
+	assert.deepEqual(
+		entries.map((entry: { data?: { op: string } }) => entry.data?.op),
+		["op-resume"],
+	);
+});

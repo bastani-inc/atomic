@@ -4,7 +4,11 @@ import { Type } from "typebox";
 import { test } from "vitest";
 import { createCodemodeDescription } from "../src/extensions/codemode/tool.js";
 import { createToolSearchExtension } from "../src/extensions/tool-search/index.js";
-import { createToolSearchDescription } from "../src/extensions/tool-search/tool.js";
+import {
+	Bm25Ranker,
+	createToolSearchDescription,
+	createToolSearchDocument,
+} from "../src/extensions/tool-search/tool.js";
 import { createHarness, getMessageText } from "./suite/harness.js";
 
 test("tool search activates matching deferred tools for the next model call", async () => {
@@ -84,4 +88,46 @@ test("codemode describes all lookup helpers as async (#10555)", () => {
 	assert(description.includes("await searchTools(query, {limit?, namespace?})"));
 	assert(description.includes("await describeTool(name)"));
 	assert(description.includes("await describeNamespace(name)"));
+});
+
+test("tool search ranks a tool first when the query is its name (pi#11331)", () => {
+	const documents = [
+		{ name: "mcp__app__queue_read", description: "Read a queued message of this thread." },
+		{
+			name: "mcp__dev-app__thread_read",
+			description:
+				"Read durable state and a paginated timeline from any thread. The default view returns user messages, assistant messages and plans. Continue with afterPosition until hasMore is false.",
+		},
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	const ranker = new Bm25Ranker();
+	for (const query of [
+		"thread_read",
+		"dev_app__thread_read",
+		"mcp__dev-app__thread_read",
+		"Thread_Read",
+		"thread read",
+	]) {
+		assert.deepEqual(
+			ranker.rank(query, documents, 1).map((match) => match.name),
+			["mcp__dev-app__thread_read"],
+			query,
+		);
+	}
+	// Partial names still rank by BM25.
+	assert.deepEqual(
+		ranker.rank("read", documents, 1).map((match) => match.name),
+		["mcp__app__queue_read"],
+	);
+	// A lowercase query naming a camelCase tool shares no BM25 term with it, but still names it.
+	const camel = [
+		{ name: "mcp__app__queue_read", description: "Read a queued message of this thread." },
+		{ name: "mcp__app__readThread", description: "Read a thread" },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	for (const query of ["readthread", "app__readthread"]) {
+		assert.deepEqual(
+			ranker.rank(query, camel, 1).map((match) => match.name),
+			["mcp__app__readThread"],
+			query,
+		);
+	}
 });

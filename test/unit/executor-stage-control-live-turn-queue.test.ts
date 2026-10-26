@@ -32,16 +32,12 @@ test("a stage still starting up queues steers and follow-ups into the turn its l
 				return false;
 			},
 			subscribe: () => () => {},
-			// The replayed turn's live session.
-			__agentSession: () => ({
-				isStreaming: true,
-				async steer(text: string) {
-					queued.push(`steer:${text}`);
-				},
-				async followUp(text: string) {
-					queued.push(`followUp:${text}`);
-				},
-			}),
+			// The replayed turn's live session, reached without waiting for the stage's session startup.
+			__agentSession: () => ({ isStreaming: true }),
+			async __queueIntoLiveTurn(text: string, kind: "steer" | "followUp") {
+				queued.push(`${kind}:${text}`);
+				return true;
+			},
 		},
 		throwIfStageMutationBlocked() {},
 		captureStageSessionMeta() {},

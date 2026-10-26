@@ -465,3 +465,75 @@ test("the same text sent twice while reconnecting shows as two pending rows, and
 		["watch-2:run the tests", "watch-2:run the tests"],
 	);
 });
+
+test("text first sent to a replacement attempt before its own prompt starts waits for that prompt's turn (#3996)", async () => {
+	const fake = replacementPool({ isStreaming: false, turnStarted: false });
+	// The chat opens on the replacement (generation 2), whose stage has not re-run its prompt yet.
+	const first = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(first.ok);
+	fake.end("worker_exited");
+	first.handle.dispose();
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	assert.equal(opened.handle.placement.generation, 2);
+	const sent = opened.handle.steer("STEER");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(fake.deliveries, [], "nothing goes before the stage's own prompt");
+	fake.events(1, { type: "agent_start" } as never);
+	await sent;
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-2:STEER"],
+	);
+});
+
+test("text left unconfirmed when its chat closes is retried by the stage's next view and delivered once (#3996)", async () => {
+	const fake = pool(() => []);
+	const deliver = fake.transport.deliver;
+	let answering = false;
+	fake.transport.deliver = (delivery) => {
+		if (answering) return deliver(delivery);
+		fake.deliveries.push(delivery);
+		return new Promise(() => {});
+	};
+	const outbox: OutboundEntry[] = [];
+	const first = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+		5,
+	);
+	assert.ok(first.ok);
+	await assert.rejects(first.handle.followUp("FOLLOW"), /already arrived/);
+	assert.equal(first.handle.placement.undelivered, 1, "unconfirmed on this attempt");
+	// The chat closes while the text is unconfirmed; its retry timer goes with it.
+	first.handle.dispose();
+	answering = true;
+	// Later activity reopens the stage's outbox on the same attempt, as the pool does.
+	const second = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		outbox,
+		5,
+	);
+	assert.ok(second.ok);
+	// Nobody holds this view: like the pool, it closes as soon as nothing is pending.
+	const closeWhenDrained = () => {
+		if (!second.handle.hasPending) second.handle.dispose();
+	};
+	second.handle.onDrained(closeWhenDrained);
+	closeWhenDrained();
+	while (fake.deliveries.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.deepEqual(
+		fake.deliveries.map(({ text }) => text),
+		["FOLLOW", "FOLLOW"],
+		"tried again under the same op",
+	);
+	assert.equal(fake.deliveries[0]!.op, fake.deliveries[1]!.op);
+	while (outbox[0]?.admittedBy === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.equal(outbox[0]?.admittedBy, 1, "and admitted");
+});

@@ -37,12 +37,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	 * pooled replacement attempt still starting up lasts until that turn ends (#3996).
 	 */
 	const queueIntoLiveTurn = async (text: string, kind: "steer" | "followUp"): Promise<void> => {
-		const live = runtime.innerCtx.__agentSession();
-		if (live?.isStreaming === true) {
-			if (kind === "steer") await live.steer(text);
-			else await live.followUp(text);
-			return;
-		}
+		if ((await runtime.innerCtx.__queueIntoLiveTurn?.(text, kind)) === true) return;
 		if (kind === "steer") await runtime.innerCtx.steer(text);
 		else await runtime.innerCtx.followUp(text);
 	};

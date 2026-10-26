@@ -409,6 +409,15 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.isTurnLoopBusy();
 		},
 
+		async __queueIntoLiveTurn(text, kind) {
+			// The stage's current session, without waiting for a creation still in flight (#3996).
+			const session = controller.currentSession;
+			if (session?.isStreaming !== true) return false;
+			if (kind === "steer") await session.steer(text);
+			else await session.followUp(text);
+			return true;
+		},
+
 		__modelFallbackMeta() {
 			return controller.currentModelFallbackMeta();
 		},
