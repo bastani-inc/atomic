@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed a `.ts` storage adapter that serves both `sessions.storage` and `workflows.journal` failing to import `@bastani/atomic/workflows` when sessions loaded first; the journal now gets the running Atomic's workflows module ([#3973](https://github.com/bastani-inc/atomic/issues/3973))
+- ES module and TypeScript files a storage adapter imports by relative path now get the running Atomic's `@bastani/atomic/workflows`, `@bastani/atomic/storage`, and `@bastani/atomic`, as the adapter's entry file does. Before, a `.mjs` file or a `.js` file in a `"type": "module"` adapter package could resolve these imports from `node_modules` instead, so errors such as `StaleLeaseError` thrown from it failed Atomic's `instanceof` checks. CommonJS files other than the entry file still resolve these imports from `node_modules` ([#3972](https://github.com/bastani-inc/atomic/issues/3972))
 
 ## [0.9.45] - 2026-10-25
 
