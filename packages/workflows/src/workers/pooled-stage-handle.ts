@@ -215,8 +215,9 @@ export class PooledStageHandle implements StageControlHandle {
 		this.queued.record(event);
 		switch (event.type) {
 			case "agent_start":
+				// A turn only starts on a running stage, including one resumed after it paused.
 				this.streamingNow = true;
-				if (this.currentStatus !== "paused") this.currentStatus = "running";
+				this.currentStatus = "running";
 				return;
 			case "agent_end":
 				this.streamingNow = false;

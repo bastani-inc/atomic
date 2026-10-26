@@ -135,18 +135,26 @@ async function settle<T>(pending: Promise<T>): Promise<{ value: T } | { error: u
 	void settled.then(() => {
 		done = true;
 	});
-	for (let i = 0; i < 100 && !done; i++) await vi.advanceTimersByTimeAsync(5_000);
+	// Bounded in fake time: a prompt that never settles fails here instead of hanging the test.
+	for (let i = 0; i < 1_000 && !done; i++) await vi.advanceTimersByTimeAsync(5_000);
+	assert.ok(done, "the prompt settles within the bounded cooldown budget");
 	return settled;
 }
 
-test("a real AgentSession's rate-limited candidates get maxRetries+1 provider calls each, not one cycle per revisit (#3864)", async () => {
+// Each provider wait is capped at 60 s, so a walk of N provider calls never waits longer than N minutes.
+const MAX_COOLDOWN_MS = 60_000;
+
+test("a real AgentSession's rate-limited candidates get maxRetries+1 provider calls per cooldown round, not one cycle per revisit (#3864, #3984)", async () => {
 	const calls: Record<string, number> = {};
 	const { ctx, sessions } = realSessionContext(3, calls, true, true);
+	const started = Date.now();
 	try {
 		const result = await settle(ctx.prompt("go"));
-		assert.ok("error" in result, "every candidate is limited, so the 429 surfaces");
+		assert.ok("error" in result, "every candidate stays limited, so the 429 surfaces once the rounds are spent");
 		assert.match(String(result.error), /429/);
-		assert.deepEqual(calls, { limited: 4, spare: 4 });
+		// maxRetries+1 calls per candidate per round; the first round plus maxRetries whole-chain cooldown rounds.
+		assert.deepEqual(calls, { limited: 16, spare: 16 });
+		assert.ok(Date.now() - started <= 32 * MAX_COOLDOWN_MS);
 	} finally {
 		await ctx.abort();
 		for (const session of sessions) await session.dispose();
@@ -166,14 +174,16 @@ test("a real AgentSession's fallback takes over after the primary spends maxRetr
 	}
 });
 
-test("a real AgentSession without fallbacks stops at maxRetries+1 provider calls and surfaces the 429 (#3864)", async () => {
+test("a real AgentSession without fallbacks stops after its cooldown rounds and surfaces the 429 (#3864, #3984)", async () => {
 	const calls: Record<string, number> = {};
 	const { ctx, sessions } = realSessionContext(3, calls, false);
+	const started = Date.now();
 	try {
 		const result = await settle(ctx.prompt("go"));
 		assert.ok("error" in result);
 		assert.match(String(result.error), /429/);
-		assert.deepEqual(calls, { limited: 4 });
+		assert.deepEqual(calls, { limited: 16 });
+		assert.ok(Date.now() - started <= 16 * MAX_COOLDOWN_MS);
 	} finally {
 		await ctx.abort();
 		for (const session of sessions) await session.dispose();

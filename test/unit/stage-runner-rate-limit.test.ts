@@ -245,7 +245,26 @@ test("resuming a cooldown without a replacement cancels the pending prompt (#386
 	assert.equal(calls, 1);
 });
 
-test("persistent 429 responses stop at the configured retry count (#3864)", async () => {
+async function settleOnFakeTimers<T>(
+	pending: Promise<T>,
+	stepMs = 500,
+	maxSteps = 200,
+): Promise<{ value: T } | { error: unknown }> {
+	const outcome = pending.then(
+		(value) => ({ value }),
+		(error: unknown) => ({ error }),
+	);
+	let settled = false;
+	void outcome.then(() => {
+		settled = true;
+	});
+	for (let step = 0; step < maxSteps && !settled; step++) await vi.advanceTimersByTimeAsync(stepMs);
+	// A prompt that never settles fails here, with this reason, instead of hanging until the Vitest timeout.
+	assert.ok(settled, `the prompt did not settle within ${maxSteps * stepMs} ms of fake time`);
+	return outcome;
+}
+
+test("persistent 429 responses stop after the configured retry count and cooldown rounds (#3864, #3984)", async () => {
 	let calls = 0;
 	const ctx = limitedContext(
 		"bounded-cooldown",
@@ -256,12 +275,15 @@ test("persistent 429 responses stop at the configured retry count (#3864)", asyn
 		undefined,
 		2,
 	);
-	const pending = ctx.prompt("go");
-	const rejected = assert.rejects(pending, /429/);
-	await vi.advanceTimersByTimeAsync(3000);
-	await rejected;
-	assert.equal(calls, 3);
-	assert.equal(ctx.__modelFallbackMeta().modelAttempts?.length, 3);
+	const started = Date.now();
+	const outcome = await settleOnFakeTimers(ctx.prompt("go"));
+	assert.ok("error" in outcome);
+	assert.match(String(outcome.error), /429/);
+	// maxRetries+1 calls per round, and at most maxRetries whole-chain cooldown rounds after the first.
+	assert.equal(calls, 9);
+	assert.equal(ctx.__modelFallbackMeta().modelAttempts?.length, 9);
+	// Every wait is one recorded 1 s cooldown: eight of them between nine calls.
+	assert.equal(Date.now() - started <= 8_500, true);
 });
 
 test.each(["eager", "completed"])(
@@ -485,7 +507,7 @@ test.each([false, true])(
 	},
 );
 
-test("a rate-limited follow-up exhausts its retry budget without restarting the conversation (#3864)", async () => {
+test("a rate-limited follow-up exhausts its retry budget and cooldown rounds without restarting the conversation (#3864, #3984)", async () => {
 	let creates = 0;
 	let followUps = 0;
 	const ctx = createStageContext(
@@ -511,13 +533,15 @@ test("a rate-limited follow-up exhausts its retry budget without restarting the 
 		}),
 	) as InternalStageContext;
 	assert.equal(await ctx.prompt("first"), "ok");
-	const pending = ctx.prompt("second");
-	const rejected = assert.rejects(pending, /429/);
+	const started = Date.now();
 	try {
-		await vi.advanceTimersByTimeAsync(5000);
-		await rejected;
-		assert.equal(followUps, 2);
+		const outcome = await settleOnFakeTimers(ctx.prompt("second"));
+		assert.ok("error" in outcome);
+		assert.match(String(outcome.error), /429/);
+		// Two calls per round (maxRetries 1), and one whole-chain cooldown round.
+		assert.equal(followUps, 4);
 		assert.equal(creates, 1);
+		assert.equal(Date.now() - started <= 3_500, true);
 	} finally {
 		await ctx.abort();
 	}
@@ -569,7 +593,7 @@ test("a follow-up revisits an earlier account after its cooldown (#3864)", async
 	}
 });
 
-test("a follow-up keeps each model's retry budget across resumed and fallback sessions (#3864)", async () => {
+test("a follow-up keeps each model's retry budget across resumed and fallback sessions (#3864, #3984)", async () => {
 	const calls: string[] = [];
 	const ctx = createStageContext(
 		makeOpts({
@@ -594,12 +618,15 @@ test("a follow-up keeps each model's retry budget across resumed and fallback se
 		}),
 	) as InternalStageContext;
 	assert.equal(await ctx.prompt("first"), "ok");
-	const rejected = assert.rejects(ctx.prompt("second"), /429/);
+	const started = Date.now();
 	try {
-		await vi.advanceTimersByTimeAsync(200);
-		await rejected;
-		assert.equal(calls.filter((model) => model === "follow-up-budget/a").length, 2);
-		assert.equal(calls.filter((model) => model === "follow-up-budget/b").length, 2);
+		const outcome = await settleOnFakeTimers(ctx.prompt("second"), 20);
+		assert.ok("error" in outcome);
+		assert.match(String(outcome.error), /429/);
+		// maxRetries+1 calls per model per round, with one whole-chain cooldown round.
+		assert.equal(calls.filter((model) => model === "follow-up-budget/a").length, 4);
+		assert.equal(calls.filter((model) => model === "follow-up-budget/b").length, 4);
+		assert.equal(Date.now() - started <= 400, true);
 	} finally {
 		await ctx.abort();
 	}
@@ -654,5 +681,84 @@ test("a cooled follow-up on a successful fallback does not reopen rejected earli
 		await ctx.abort();
 		await seed.abort();
 		await pending.catch(() => {});
+	}
+});
+
+test("a chain whose every candidate exhausted its 429 budget waits for the earliest cooldown instead of failing (#3984)", async () => {
+	const calls: string[] = [];
+	const agentSession: AgentSessionAdapter = {
+		async create(options) {
+			const model = String(options.model);
+			return {
+				session: makeMockSession({
+					async prompt() {
+						calls.push(model);
+						if (calls.length <= 4)
+							throw Object.assign(new Error("429 Too Many Requests"), {
+								retryAfterMs: model.startsWith("chain-wait-a/") ? 3000 : 1000,
+							});
+						return "ok";
+					},
+					getLastAssistantText: () => "ok",
+				}).session,
+				settingsManager: { getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0 }) },
+			};
+		},
+	};
+	const ctx = createStageContext(
+		makeOpts({
+			adapters: { agentSession },
+			stageOptions: { model: "chain-wait-a/model", fallbackModels: ["chain-wait-b/model"] },
+		}),
+	) as InternalStageContext;
+	try {
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"), 500, 50);
+		assert.deepEqual(outcome, { value: "ok" });
+		// Both accounts spent their budget; the next attempt goes to the account whose cooldown ends first.
+		assert.equal(calls.length, 5);
+		assert.equal(calls[4], "chain-wait-b/model");
+	} finally {
+		await ctx.abort();
+	}
+});
+
+test("a ready candidate recovers a cooling chain even when the other's cooldown exceeds the cap (#3984)", async () => {
+	const calls: string[] = [];
+	const agentSession: AgentSessionAdapter = {
+		async create(options) {
+			const model = String(options.model);
+			return {
+				session: makeMockSession({
+					async prompt() {
+						calls.push(model);
+						const primaryCalls = calls.filter((call) => call === model).length;
+						if (model.startsWith("ready-b/"))
+							throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 2000 });
+						if (primaryCalls <= 2) throw Object.assign(new Error("429 Too Many Requests"), { retryAfterMs: 10 });
+						return "ok";
+					},
+					getLastAssistantText: () => "ok",
+				}).session,
+				settingsManager: {
+					getRetrySettings: () => ({ enabled: true, maxRetries: 1, baseDelayMs: 0, maxRetryDelayMs: 1000 }),
+				},
+			};
+		},
+	};
+	const ctx = createStageContext(
+		makeOpts({
+			adapters: { agentSession },
+			stageOptions: { model: "ready-a/model", fallbackModels: ["ready-b/model"] },
+		}),
+	) as InternalStageContext;
+	try {
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"));
+		// Both spend their budget; the primary's 10 ms cooldown ends during the fallback's 2 s wait, and the
+		// fallback's next 2 s cooldown exceeds the 1 s cap. The ready primary recovers without a cooldown wait
+		// instead of the stage failing with 429.
+		assert.deepEqual(outcome, { value: "ok" });
+		assert.deepEqual(calls, ["ready-a/model", "ready-b/model", "ready-a/model", "ready-b/model", "ready-a/model"]);
+	} finally {
+		await ctx.abort();
 	}
 });

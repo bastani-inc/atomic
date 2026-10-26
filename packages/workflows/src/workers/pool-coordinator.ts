@@ -45,7 +45,7 @@ import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
-import { appendCoalesced } from "./stage-watch-coalesce.js";
+import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
 	DeliveryRefusal,
@@ -332,9 +332,7 @@ interface StageWatch {
 	readonly attempt: AttemptRef;
 	open: boolean;
 	inFlight: boolean;
-	readonly pending: SeqEvent[];
-	readonly sizes: number[];
-	bytes: number;
+	readonly pending: StageEventBacklog;
 }
 
 /**
@@ -673,7 +671,13 @@ export class PoolCoordinator {
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
 		if (slot?.work === undefined) return { ok: false, refusal: "StageNotOnWorker" };
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
-		const watch: StageWatch = { slot, attempt, open: false, inFlight: false, pending: [], sizes: [], bytes: 0 };
+		const watch: StageWatch = {
+			slot,
+			attempt,
+			open: false,
+			inFlight: false,
+			pending: new StageEventBacklog({ events: STAGE_WATCH_BACKLOG_EVENTS, bytes: STAGE_WATCH_BACKLOG_BYTES }),
+		};
 		this.watches.set(id, watch);
 		const result = await this.stageCommand(slot, { attempt, op: "watch", watch: id, runId, stageId });
 		if (this.watches.get(id) !== watch) {
@@ -763,16 +767,7 @@ export class PoolCoordinator {
 			this.port.send({ kind: "stage-events", watch: id, events });
 			return;
 		}
-		for (const event of events) {
-			const before = watch.pending.length;
-			appendCoalesced(watch.pending, event);
-			if (watch.pending.length === before) watch.bytes -= watch.sizes.pop() ?? 0;
-			const size = JSON.stringify(watch.pending.at(-1)).length;
-			watch.sizes.push(size);
-			watch.bytes += size;
-		}
-		if (watch.pending.length > STAGE_WATCH_BACKLOG_EVENTS || watch.bytes > STAGE_WATCH_BACKLOG_BYTES)
-			this.endStageWatch(id, "resync");
+		if (!watch.pending.push(events)) this.endStageWatch(id, "resync");
 	}
 
 	private stageEventsApplied(id: WatchId): void {
@@ -780,9 +775,7 @@ export class PoolCoordinator {
 		if (watch === undefined) return;
 		watch.inFlight = false;
 		if (watch.pending.length === 0) return;
-		const events = watch.pending.splice(0);
-		watch.sizes.length = 0;
-		watch.bytes = 0;
+		const events = watch.pending.drain();
 		watch.inFlight = true;
 		this.port.send({ kind: "stage-events", watch: id, events });
 	}
@@ -798,11 +791,10 @@ export class PoolCoordinator {
 		if (reason === "resync") {
 			// The watcher reopens for a fresh snapshot; the backlog it fell behind on is dropped.
 			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });
-			watch.pending.length = 0;
+			watch.pending.drain();
 		}
 		if (!watch.open) return;
-		if (watch.pending.length > 0)
-			this.port.send({ kind: "stage-events", watch: id, events: watch.pending.splice(0) });
+		if (watch.pending.length > 0) this.port.send({ kind: "stage-events", watch: id, events: watch.pending.drain() });
 		this.port.send({ kind: "stage-watch-ended", watch: id, reason });
 	}
 
@@ -1064,7 +1056,8 @@ export class PoolCoordinator {
 					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
 						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
-						this.noteUsage(await this.usageLedger!.total(root));
+						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
+						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}
 					if (message.kind === "usage") {

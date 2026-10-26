@@ -225,7 +225,7 @@ describe("executor.run", () => {
 		assert.equal(replayed.replayedFromStageId, completed.id);
 	});
 
-	test("rate-limited fallback attempts are recorded on the active-blocked stage snapshot (#3864)", async () => {
+	test("rate-limited fallback attempts are recorded on the active-blocked stage snapshot (#3864, #3984)", async () => {
 		const def = workflow({
 			name: "failed-fallback-metadata",
 			description: "",
@@ -272,13 +272,14 @@ describe("executor.run", () => {
 		assert.equal(result.stages[0]?.status, "failed");
 		assert.equal(result.stages[0]?.failureDisposition, "active_blocked");
 		assert.equal(result.stages[0]?.failureRecoverability, "recoverable");
+		// maxRetries 1: two calls per model per round, the first round plus one whole-chain cooldown round (#3984).
 		const attempted = result.stages[0]?.attemptedModels ?? [];
-		assert.equal(attempted.length, 4);
-		assert.equal(attempted.filter((model) => model === "anthropic/primary").length, 2);
-		assert.equal(attempted.filter((model) => model === "openai/fallback").length, 2);
+		assert.equal(attempted.length, 8);
+		assert.equal(attempted.filter((model) => model === "anthropic/primary").length, 4);
+		assert.equal(attempted.filter((model) => model === "openai/fallback").length, 4);
 		assert.deepEqual(
 			result.stages[0]?.modelAttempts?.map((attempt) => attempt.success),
-			[false, false, false, false],
+			Array.from({ length: 8 }, () => false),
 		);
 	});
 
