@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
-import { type BedrockOptions, stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
+import {
+	type BedrockOptions,
+	stream as streamBedrock,
+	streamSimple as streamSimpleBedrock,
+} from "../src/api/bedrock-converse-stream.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Context, Model } from "../src/types.ts";
 import { hasBedrockCredentials } from "./bedrock-utils.ts";
@@ -327,9 +331,9 @@ describe("Bedrock OpenAI reasoning payload", () => {
 		assert.deepEqual(payload.additionalModelRequestFields, { reasoning: { effort: "max" } });
 	});
 
-	it("sends no reasoning fields when reasoning is off", async () => {
+	async function captureOffPayload(model: Model<"bedrock-converse-stream">): Promise<BedrockThinkingPayload> {
 		let captured: BedrockThinkingPayload | undefined;
-		const s = streamBedrock(getModel("amazon-bedrock", "global.openai.gpt-6-sol"), normalizeContext(makeContext()), {
+		const s = streamSimpleBedrock(model, normalizeContext(makeContext()), {
 			onPayload: (payload) => {
 				captured = payload as BedrockThinkingPayload;
 				throw new PayloadCaptured();
@@ -339,8 +343,24 @@ describe("Bedrock OpenAI reasoning payload", () => {
 			if (event.type === "error") break;
 		}
 		assert.ok(captured);
-		assert.equal(captured.additionalModelRequestFields, undefined);
-	});
+		return captured;
+	}
+
+	it.each(["global.openai.gpt-6-sol", "us.openai.gpt-6-luna"] as const)(
+		"sends the mapped off effort (none) when reasoning is off for %s",
+		async (id) => {
+			const payload = await captureOffPayload(getModel("amazon-bedrock", id));
+			assert.deepEqual(payload.additionalModelRequestFields, { reasoning: { effort: "none" } });
+		},
+	);
+
+	it.each(["global.openai.gpt-6-astra", "us.openai.gpt-6.1-sol", "global.openai.gpt-5.6-sol"] as const)(
+		"sends no reasoning fields when reasoning is off and %s maps off to nothing",
+		async (id) => {
+			const payload = await captureOffPayload(getModel("amazon-bedrock", id));
+			assert.equal(payload.additionalModelRequestFields, undefined);
+		},
+	);
 });
 
 describe.skipIf(!hasBedrockCredentials())("Bedrock Claude max tokens E2E", () => {

@@ -227,6 +227,35 @@ describe("getSupportedThinkingLevels", () => {
 		}
 	});
 
+	it("matches the direct OpenAI efforts on every built-in Bedrock GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna route", () => {
+		for (const id of ["openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol"] as const) {
+			expect(getSupportedThinkingLevels(getModel("amazon-bedrock", id)), id).toEqual([
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max",
+			]);
+		}
+		for (const id of [
+			"openai.gpt-6-sol",
+			"global.openai.gpt-6-sol",
+			"us.openai.gpt-6-sol",
+			"openai.gpt-6-luna",
+			"global.openai.gpt-6-luna",
+			"us.openai.gpt-6-luna",
+		] as const) {
+			expect(getSupportedThinkingLevels(getModel("amazon-bedrock", id)), id).toEqual([
+				"off",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max",
+			]);
+		}
+	});
+
 	it.each([
 		["gpt-6-sol", { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, 272000],
 		["gpt-6-luna", { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 }, 272000],
