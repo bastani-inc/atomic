@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Opening a running stage that runs on a local worker (`workflows.localWorkers`) from the workflow graph or `/workflow attach` now shows its live chat: the transcript so far, the reply as it streams, and tool calls, with `on local worker` in the chat header. It no longer shows "Post-mortem chat is available only after the stage completes". Only stages you have open stream to the root, so pools with many workers send nothing extra for stages nobody watches. ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
 - Enter (steer) and Ctrl+F (follow-up) in the chat of a stage that runs on a local worker now reach that stage and report the same delivery as an in-process stage. Each message is admitted at most once, even when a reply is lost and the send is retried. The stage's graph node shows `✉ N queued` with no chat open. SDK runs with `localWorkers` now accept `stageControlRegistry`, whose handles for pooled stages steer, queue follow-ups and stream events the same way ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+- Added a GPT-6.1 Terra reference to the prompt-engineering skill, based on OpenAI's updated GPT-6 guide, covering when to choose Terra, effort selection, migration from GPT-5.6 Terra, computer-use and writing prompts, and selective use of the shared templates observed on Astra.
 
 ### Fixed
 
