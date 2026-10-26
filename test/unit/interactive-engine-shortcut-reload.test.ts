@@ -427,7 +427,7 @@ serialTest(
 		writeFileSync(shortcutConfig, "ctrl+u,ctrl+y");
 		writeFileSync(keybindingsPath, JSON.stringify({ "app.tools.expand": "ctrl+u" }));
 		const driver = new InteractiveModeDriver(fixtureArgs(extension), {
-			ATOMIC_BLOCKING_EXTENSION_INIT: "1",
+			ATOMIC_BLOCKING_EXTENSION_INIT_MS: "1000",
 			ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 			ATOMIC_CODING_AGENT_DIR: agentDir,
 			ATOMIC_KEYBINDINGS_SHORTCUT_CONFIG_FILE: shortcutConfig,
