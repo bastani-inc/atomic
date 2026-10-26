@@ -14,7 +14,7 @@ import {
 	STALE_WORK_LEASE,
 } from "../durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
-import type { Lease, RunJournal } from "../durable/journal/types.js";
+import { type Lease, type RunJournal, StaleLeaseError } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
@@ -87,6 +87,11 @@ export const STAGE_WATCH_BACKLOG_BYTES = 8 * 1024 * 1024;
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+
+/** The root's own lease is gone (released at teardown, or taken by another incarnation): not a worker fault (#3979). */
+function isRootLeaseLost(error: Error): boolean {
+	return error instanceof StaleLeaseError || error.message.startsWith("Stale lease for run ");
+}
 
 type RouteOwner = ReturnType<typeof import("../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 type Bridge = ReturnType<typeof registerPendingStageIntercomBridge>;
@@ -417,6 +422,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
+	private rootLeaseLost = false;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
 	private readonly attemptBase = new Map<string, number>();
 
@@ -1043,7 +1050,7 @@ export class PoolCoordinator {
 						}
 					})
 					.then(async () => {
-						if (this.closed || !ready || this.desiredControl === "quit") return;
+						if (this.closed || !ready || this.desiredControl === "quit" || this.rootLeaseLost) return;
 						let work = slot.work;
 						if (work && (await this.sendResult(work.id))) {
 							work = undefined;
@@ -1232,15 +1239,19 @@ export class PoolCoordinator {
 					);
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) =>
+					(error: Error) => {
+						const rootLeaseLost = isRootLeaseLost(error);
+						if (rootLeaseLost) this.rootLeaseLost = true;
 						child.send(
 							{
 								id: message.id,
 								error: error.message,
 								...(error.message === STALE_WORK_LEASE ? { fenced: true } : {}),
+								...(rootLeaseLost ? { rootLeaseLost: true } : {}),
 							},
 							replied,
-						),
+						);
+					},
 				);
 			});
 		});
