@@ -102,7 +102,7 @@ async function runStage(
 	return { result, stage, toolResults, status };
 }
 
-test("a user message sent while the stage's session starts leaves the stage's tools working", async () => {
+test("a user message sent while the stage's session starts leaves the stage's tools working (#3996)", async () => {
 	let sent: Promise<unknown> | undefined;
 	const fixture = await runStage((handle) => {
 		// Queued, so the stage's own prompt takes it into its turn, as the pooled stage did.
@@ -117,7 +117,7 @@ test("a user message sent while the stage's session starts leaves the stage's to
 	assert.equal(fixture.status, "completed");
 });
 
-test("a stage whose generation closed before it finished fails instead of completing", async () => {
+test("a stage whose generation closed before it finished fails instead of completing (#3996)", async () => {
 	let closed = false;
 	const fixture = await runStage(
 		() => {},

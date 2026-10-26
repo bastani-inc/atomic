@@ -25,7 +25,7 @@ vi.mock("../../packages/workflows/src/tui/run-identity-rows.js", async (importOr
 
 const CHILDREN = 60;
 
-test("a publish that changes one workflow-child card re-wraps O(1) run ids, not one per card", () => {
+test("a publish that changes one workflow-child card re-wraps O(1) run ids, not one per card (#3996)", () => {
 	const store = createStore();
 	store.recordRunStart({
 		id: "root",
