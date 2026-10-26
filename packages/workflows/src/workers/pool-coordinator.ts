@@ -43,6 +43,7 @@ import type {
 } from "./coordinator-protocol.js";
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import {
 	type ProcessPermitScope,
@@ -522,6 +523,7 @@ export class PoolCoordinator {
 		this.root = root;
 		this.options = options;
 		this.desiredControl ??= control;
+		configurePooledWatchTrace(options.journalPath, "coordinator");
 		this.journal ??= await resolveRunJournal({ journal: { path: options.journalPath } });
 		this.usageLedger ??= await openSqlPoolUsage(this.journal);
 		this.usageTotal = await this.usageLedger.total(root);
@@ -785,6 +787,17 @@ export class PoolCoordinator {
 	private async stageWatch(id: WatchId, runId: string, stageId: string): Promise<WatchResult> {
 		if (this.closed) return { ok: false, refusal: "PoolClosed" };
 		const slot = [...this.slots].find((candidate) => candidate.work !== undefined && candidate.runs.has(runId));
+		tracePooledWatch("coordinator.watch.open", {
+			watch: id,
+			runId,
+			stageId,
+			worker: slot?.worker,
+			workId: slot?.work?.id,
+			generation: slot?.work?.generation,
+			slots: [...this.slots].map(
+				(candidate) => `${candidate.worker}:${candidate.work?.generation ?? "-"}:${candidate.runs.has(runId)}`,
+			),
+		});
 		if (slot?.work === undefined) return { ok: false, refusal: "StageNotOnWorker" };
 		const attempt = { workId: slot.work.id, generation: slot.work.generation };
 		const watch: StageWatch = {
@@ -796,6 +809,13 @@ export class PoolCoordinator {
 		};
 		this.watches.set(id, watch);
 		const result = await this.stageCommand(slot, { attempt, op: "watch", watch: id, runId, stageId });
+		tracePooledWatch("coordinator.watch.opened", {
+			watch: id,
+			generation: attempt.generation,
+			snapshot: result?.snapshot !== undefined,
+			refusal: result?.refusal,
+			current: this.watches.get(id) === watch,
+		});
 		if (this.watches.get(id) !== watch) {
 			if (result?.snapshot !== undefined) this.stageCommand(slot, { attempt, op: "unwatch", watch: id });
 			return { ok: false, refusal: this.closed ? "PoolClosed" : "AttemptChanging" };
@@ -890,10 +910,30 @@ export class PoolCoordinator {
 		slot: WorkerSlot,
 		command: DistributiveOmit<WorkerStageCommand, "kind" | "commandId">,
 	): Promise<StageCommandResult | undefined> {
-		if (!this.incarnations.has(slot.worker)) return Promise.resolve(undefined);
+		if (!this.incarnations.has(slot.worker)) {
+			tracePooledWatch("coordinator.command.no-worker", { op: command.op, worker: slot.worker });
+			return Promise.resolve(undefined);
+		}
 		const commandId = ++this.stageCommandSequence;
+		tracePooledWatch("coordinator.command.send", {
+			commandId,
+			op: command.op,
+			worker: slot.worker,
+			generation: command.attempt.generation,
+			watch: "watch" in command ? command.watch : undefined,
+		});
 		return new Promise((resolve) => {
-			slot.stageCommands.set(commandId, resolve);
+			slot.stageCommands.set(commandId, (result) => {
+				tracePooledWatch("coordinator.command.settled", {
+					commandId,
+					op: command.op,
+					answered: result !== undefined,
+					refusal: result?.refusal,
+					action: result?.action,
+					error: result?.error,
+				});
+				resolve(result);
+			});
 			slot.child.send({ kind: "stage-command", commandId, ...command } as WorkerStageCommand, (error) => {
 				if (!error) return;
 				slot.stageCommands.delete(commandId);
@@ -926,6 +966,11 @@ export class PoolCoordinator {
 
 	/** Ends a watch for the root; no further events of it are forwarded. */
 	private endStageWatch(id: WatchId, reason: WatchEndReason): void {
+		tracePooledWatch("coordinator.watch.end", {
+			watch: id,
+			reason,
+			generation: this.watches.get(id)?.attempt.generation,
+		});
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
 		this.watches.delete(id);

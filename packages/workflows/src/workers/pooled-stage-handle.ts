@@ -10,6 +10,7 @@ import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-us
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
+import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type {
 	ControlRefusal,
 	ControlResult,
@@ -384,6 +385,18 @@ export class PooledStageHandle implements StageControlHandle {
 			snapshot.turnStarted !== true &&
 			!this.streamingNow &&
 			this.outbound.some((entry) => entry.admittedBy !== undefined && !this.admitted(entry));
+		tracePooledWatch("root.handle.reconcile", {
+			stage: this.stageId,
+			watch: this.watchId,
+			generation: this.attempt.generation,
+			turnStarted: snapshot.turnStarted,
+			streaming: this.streamingNow,
+			awaitingTurn: this.awaitingTurn,
+			deliveredOps: [...present],
+			outbox: this.outbound.map(
+				(entry) => `${entry.op}:${entry.intent}:${entry.admittedBy ?? "-"}:${entry.failedOn ?? "-"}`,
+			),
+		});
 	}
 
 	/** Ends the handle for good: nothing reconnects, and text that never arrived is reported. */
@@ -472,10 +485,14 @@ export class PooledStageHandle implements StageControlHandle {
 				);
 				if (entry === undefined) break;
 				// The first new send also waits behind the replay's own prompt, keeping send order.
-				if (this.awaitingTurn) return;
+				if (this.awaitingTurn) {
+					tracePooledWatch("root.outbox.awaiting-turn", { stage: this.stageId, watch: this.watchId });
+					return;
+				}
 				const watch = this.watchId;
 				const generation = this.attempt.generation;
 				const redelivery = entry.admittedBy !== undefined;
+				tracePooledWatch("root.outbox.send", { op: entry.op, watch, generation, intent: entry.intent, redelivery });
 				let result: Awaited<ReturnType<PooledStageHandle["sendEntry"]>>;
 				try {
 					// A send whose watch ended or was replaced is sent again to the next one, by its op.
@@ -491,6 +508,13 @@ export class PooledStageHandle implements StageControlHandle {
 					entry.waiter = undefined;
 					continue;
 				}
+				tracePooledWatch("root.outbox.settled", {
+					op: entry.op,
+					watch,
+					ok: result.ok,
+					action: result.ok ? result.action : undefined,
+					refusal: result.ok ? undefined : result.refusal,
+				});
 				const waiter = entry.waiter;
 				entry.waiter = undefined;
 				if (result.ok) {
@@ -543,6 +567,12 @@ export class PooledStageHandle implements StageControlHandle {
 		const rebinding = this.rebinding;
 		if (rebinding === undefined) return;
 		this.rebinding = undefined;
+		tracePooledWatch("root.handle.rebind-finished", {
+			stage: this.stageId,
+			drained,
+			sameWatch: rebinding.watch === this.watchId,
+			redelivered: rebinding.redelivered,
+		});
 		if (drained && rebinding.watch === this.watchId && !this.disposed && this.ended === undefined) {
 			this.reconnecting = false;
 			this.redelivered = rebinding.redelivered;
@@ -578,6 +608,7 @@ export class PooledStageHandle implements StageControlHandle {
 			TURN_EVENTS.has(event.type) ||
 			((event.type === "message_start" || event.type === "message_update") && event.message.role === "assistant");
 		if (turnUnderway && this.awaitingTurn) {
+			tracePooledWatch("root.handle.turn-released", { stage: this.stageId, event: event.type });
 			this.awaitingTurn = false;
 			this.pump();
 		}

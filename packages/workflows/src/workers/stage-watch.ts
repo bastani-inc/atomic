@@ -1,6 +1,7 @@
 import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
+import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
@@ -150,6 +151,15 @@ export class WorkerStageWatches {
 	) {}
 
 	serve(command: WorkerStageCommand): void {
+		const held = this.attempt();
+		tracePooledWatch("worker.command", {
+			commandId: command.commandId,
+			op: command.op,
+			watch: "watch" in command ? command.watch : undefined,
+			generation: command.attempt.generation,
+			heldGeneration: held?.generation,
+			heldWorkId: held?.workId === command.attempt.workId,
+		});
 		if (command.op === "unwatch") {
 			this.close(command.watch);
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
@@ -181,10 +191,17 @@ export class WorkerStageWatches {
 	): void {
 		const held = this.attempt();
 		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation) {
+			tracePooledWatch("worker.watch.refused", { watch: command.watch, refusal: "AttemptChanging" });
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "AttemptChanging" });
 			return;
 		}
 		if (handle === undefined || isTerminal(handle) || this.registry.get(command.runId, command.stageId) !== handle) {
+			tracePooledWatch("worker.watch.refused", {
+				watch: command.watch,
+				refusal: "StageNotOnWorker",
+				handle: handle !== undefined,
+				terminal: handle === undefined ? undefined : isTerminal(handle),
+			});
 			this.send({ kind: "stage-command-result", commandId: command.commandId, refusal: "StageNotOnWorker" });
 			return;
 		}
@@ -198,6 +215,16 @@ export class WorkerStageWatches {
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
 		this.watches.set(command.watch, watch);
+		tracePooledWatch("worker.watch.opened", {
+			watch: command.watch,
+			status: handle.status,
+			streaming: handle.isStreaming,
+			sessionStreaming: handle.agentSession?.isStreaming,
+			turnLoopBusy: handle.isTurnLoopBusy,
+			turnStarted: this.options.turnStarted?.(handle),
+			session: handle.agentSession !== undefined,
+			delivered: [...delivered],
+		});
 		this.send({
 			kind: "stage-command-result",
 			commandId: command.commandId,
@@ -225,12 +252,23 @@ export class WorkerStageWatches {
 
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
 	sweep(): void {
-		for (const [id, watch] of this.watches)
+		for (const [id, watch] of this.watches) {
+			// The stage registered another handle (it moved from replaying to running live, say): this
+			// watch would see nothing more, so the root opens a new one on the current handle.
+			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
+			if (current !== undefined && current !== watch.handle && !isTerminal(current)) {
+				tracePooledWatch("worker.watch.handle-replaced", { watch: id });
+				this.flush(id);
+				this.close(id);
+				this.send({ kind: "stage-watch-ended", watch: id, reason: "resync" });
+				continue;
+			}
 			if (isTerminal(watch.handle)) {
 				this.flush(id);
 				this.close(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "stage_finished" });
 			}
+		}
 	}
 
 	/** Ends every watch when the attempt ends; the coordinator tells the root. */
@@ -321,9 +359,25 @@ export class WorkerStageWatches {
 			held?.workId !== command.attempt.workId ||
 			held.generation !== command.attempt.generation ||
 			watch === undefined
-		)
+		) {
+			tracePooledWatch("worker.deliver.refused", {
+				op: command.deliveryOp,
+				refusal: "StaleAttempt",
+				watched: watch !== undefined,
+			});
 			return refuse("StaleAttempt");
+		}
 		if (isTerminal(watch.handle)) return refuse("StageNotLive");
+		tracePooledWatch("worker.deliver.admit", {
+			op: command.deliveryOp,
+			watch: command.watch,
+			intent: command.intent,
+			status: watch.handle.status,
+			streaming: watch.handle.isStreaming,
+			sessionStreaming: watch.handle.agentSession?.isStreaming,
+			turnLoopBusy: watch.handle.isTurnLoopBusy,
+			current: this.registry.get(watch.handle.runId, watch.handle.stageId) === watch.handle,
+		});
 		const admitted = Promise.resolve(this.deliveredOps(watch.handle))
 			.then((delivered) =>
 				// The session already holds this op, e.g. from before a replay: admit it at most once.
@@ -337,6 +391,14 @@ export class WorkerStageWatches {
 				(error: Error): StageCommandResult =>
 					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
 			);
+		void admitted.then((outcome) =>
+			tracePooledWatch("worker.deliver.settled", {
+				op: command.deliveryOp,
+				action: outcome.action,
+				refusal: outcome.refusal,
+				error: outcome.error,
+			}),
+		);
 		this.ledger.set(command.deliveryOp, admitted);
 		return admitted;
 	}

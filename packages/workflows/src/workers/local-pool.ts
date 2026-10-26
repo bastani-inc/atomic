@@ -54,6 +54,7 @@ import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
+import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
@@ -293,6 +294,7 @@ export class LocalWorkerPool {
 			readonly stageControlRegistry?: StageControlRegistry;
 		},
 	) {
+		configurePooledWatchTrace(options.journalPath, "root");
 		if (!Number.isSafeInteger(options.workers) || options.workers < 1) throw new Error("Invalid local worker count");
 		if (
 			options.startupTimeoutMs !== undefined &&
@@ -537,6 +539,7 @@ export class LocalWorkerPool {
 					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
 			const created: StageView = { key, holders: 0, opening: Promise.resolve(undefined) };
 			const transport = this.stageTransport((reason) => {
+				tracePooledWatch("root.view.watch-ended", { key, reason, current: this.stageViews.get(key) === created });
 				if (this.stageViews.get(key) !== created) return;
 				if (reason === "attempt_fenced" || reason === "worker_exited" || reason === "resync")
 					this.reconnectingViews.add(created);
@@ -622,6 +625,7 @@ export class LocalWorkerPool {
 			if (view.reconnect === undefined || view.handle === undefined) continue;
 			const handle = view.handle;
 			if (ended(view.key)) {
+				tracePooledWatch("root.reconnect.stage-ended", { key: view.key });
 				this.reconnectingViews.delete(view);
 				handle.receive({ kind: "ended", reason: "stage_finished" });
 				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
@@ -632,6 +636,7 @@ export class LocalWorkerPool {
 				// Still opening; give up on it once it is clearly stuck, and try a fresh watch.
 				view.reconnectAge = (view.reconnectAge ?? 0) + 1;
 				if (handle.isReconnecting && view.reconnectAge > RECONNECT_ATTEMPT_PUBLICATIONS) {
+					tracePooledWatch("root.reconnect.abandon", { key: view.key, age: view.reconnectAge });
 					view.reconnectAttempt = undefined;
 					view.reconnecting = undefined;
 				} else continue;
@@ -639,9 +644,17 @@ export class LocalWorkerPool {
 			const attempt = Symbol("reconnect");
 			view.reconnectAttempt = attempt;
 			view.reconnectAge = 0;
+			tracePooledWatch("root.reconnect.start", { key: view.key, generation: handle.placement.generation });
 			view.reconnecting = view
 				.reconnect(() => view.reconnectAttempt === attempt)
 				.then((bound) => {
+					tracePooledWatch("root.reconnect.settled", {
+						key: view.key,
+						bound,
+						reconnecting: handle.isReconnecting,
+						pending: handle.hasPending,
+						generation: handle.placement.generation,
+					});
 					// A watch that ended again after this rebind queued the view anew; keep it queued.
 					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
 					if (bound && view.holders === 0 && !handle.hasPending) handle.dispose();
