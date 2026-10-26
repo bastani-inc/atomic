@@ -132,8 +132,9 @@ interface AdapterImports {
  * Evaluates the ESM files an adapter module imports by path through the adapter loader, once per load, so their own
  * imports get the host modules too. Package imports, such as an adapter's driver, load as jiti loads them. A module
  * imported again waits for its evaluation, top-level `await` included, unless the importer is part of that evaluation:
- * an import cycle gets the partly evaluated module, as it would natively. Filenames are jiti's resolved paths, the keys
- * of its module cache.
+ * an import cycle gets the partly evaluated module, as it would natively. Other files imported by path load as jiti
+ * loads them, but still count as part of their importer's evaluation, so cycles through them are detected too.
+ * Filenames are jiti's resolved paths, the keys of its module cache.
  */
 function createAdapterImports(): AdapterImports {
 	const evaluations = new Map<string, Promise<object>>();
@@ -144,16 +145,21 @@ function createAdapterImports(): AdapterImports {
 		seen.add(importer);
 		return [...(awaiting.get(importer) ?? [])].some((next) => awaits(next, filename, seen));
 	};
-	const wait = (importer: string, filename: string, evaluation: Promise<object>): Promise<object> => {
+	const wait = async (importer: string, filename: string, load: () => Promise<object>): Promise<object> => {
 		const pending = awaiting.get(importer) ?? new Set<string>();
 		awaiting.set(importer, pending.add(filename));
-		return evaluation.finally(() => pending.delete(filename));
+		try {
+			return await load();
+		} finally {
+			pending.delete(filename);
+		}
 	};
 	return {
 		import(jiti, id, options, importer) {
 			const byPath = id.startsWith(".") || id.startsWith("file:") || isAbsolute(id);
 			const filename = byPath ? jiti.resolve(id) : undefined;
-			if (filename === undefined || !isNativeEsm(filename)) return jiti.import<object>(id, options);
+			if (filename === undefined) return jiti.import<object>(id, options);
+			if (!isNativeEsm(filename)) return wait(importer, filename, () => jiti.import<object>(id, options));
 			const evaluation = evaluations.get(filename);
 			if (evaluation === undefined) {
 				const source = readFileSync(filename, "utf8");
@@ -161,10 +167,10 @@ function createAdapterImports(): AdapterImports {
 					() => jiti.evalModule(source, { filename, async: true, forceTranspile: true }) as Promise<object>,
 				);
 				evaluations.set(filename, started);
-				return wait(importer, filename, started);
+				return wait(importer, filename, () => started);
 			}
 			if (awaits(filename, importer)) return jiti.import<object>(id, options);
-			return wait(importer, filename, evaluation);
+			return wait(importer, filename, () => evaluation);
 		},
 	};
 }

@@ -310,6 +310,46 @@ test("type:module adapter modules that import each other load without waiting on
 	}
 });
 
+test("a type:module helper and a TypeScript module that import each other load without hanging (#3972)", async () => {
+	const agentDir = makeTempDirectory("storage-module-type-mixed-cycle-");
+	const adapterDir = join(agentDir, "adapter");
+	await writeFileEnsuringDir(join(adapterDir, "package.json"), JSON.stringify({ type: "module" }));
+	await writeFileEnsuringDir(
+		join(adapterDir, "adapter.js"),
+		[
+			'import { ping } from "./helper.mjs";',
+			"export default { atomicStorageAdapter: 1, async openRunJournal() { return ping(2); } };",
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(
+		join(adapterDir, "helper.mjs"),
+		[
+			'import { pong } from "./bridge.ts";',
+			'export function ping(count) { return count === 0 ? "done" : pong(count - 1); }',
+			"",
+		].join("\n"),
+	);
+	await writeFileEnsuringDir(
+		join(adapterDir, "bridge.ts"),
+		[
+			'import * as cycle from "./helper.mjs";',
+			"export function pong(count: number): string { return cycle.ping(count); }",
+			"",
+		].join("\n"),
+	);
+	try {
+		const adapter = (await loadStorageAdapter(
+			join(adapterDir, "adapter.js"),
+			{ agentDir, domain: "journal" },
+			{ "@bastani/atomic/workflows": {} },
+		)) as Awaited<ReturnType<typeof loadStorageAdapter>> & { openRunJournal(): Promise<string> };
+		assert.equal(await adapter.openRunJournal(), "done");
+	} finally {
+		removeTempDirectory(agentDir);
+	}
+});
+
 /**
  * The type:module adapter loaded by the built `@bastani/atomic/storage`, with a resolvable installed copy of Atomic
  * beside it whose workflows module lacks the host's `MARK`.
