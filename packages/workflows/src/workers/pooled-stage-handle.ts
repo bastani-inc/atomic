@@ -212,11 +212,10 @@ export class PooledStageHandle implements StageControlHandle {
 	 */
 	queuedUserMessages() {
 		const queued = this.queued.snapshot();
-		// Between attempts or after the end, nothing in the outbox is known to have arrived.
-		const waiting =
-			this.reconnecting || this.ended !== undefined
-				? this.outbound
-				: this.outbound.filter((entry) => !this.admitted(entry));
+		// After the end nothing is pending: the header counts what never arrived.
+		if (this.ended !== undefined) return queued;
+		// Between attempts, nothing in the outbox is known to have arrived.
+		const waiting = this.reconnecting ? this.outbound : this.outbound.filter((entry) => !this.admitted(entry));
 		if (waiting.length === 0) return queued;
 		const steering = [...queued.steering];
 		const followUp = [...queued.followUp];
@@ -382,7 +381,12 @@ export class PooledStageHandle implements StageControlHandle {
 		this.ended ??= reason;
 		this.reconnecting = false;
 		const undelivered = this.outbound.length;
+		// Nothing runs any more: no reply streams, no tool is still running, nothing is queued. The
+		// header reports what never arrived.
 		this.queued = new StageQueuedUserMessageBuffer();
+		this.toolExecutions = new StageToolExecutionBuffer();
+		this.streaming = undefined;
+		this.streamingNow = false;
 		if (undelivered > 0) this.undelivered = undelivered;
 		for (const entry of this.outbound) {
 			if (this.admitted(entry)) continue;

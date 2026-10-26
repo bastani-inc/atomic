@@ -72,6 +72,11 @@ export interface StageControlHandle {
 	readonly sessionStore?: import("@bastani/atomic").SessionStore;
 	readonly sessionFile: string | undefined;
 	readonly isStreaming: boolean;
+	/**
+	 * True while the stage's own turn loop runs, between turns included, so a message sent now
+	 * waits behind it unless it is queued into the session (#3996). Undefined when unknown.
+	 */
+	readonly isTurnLoopBusy?: boolean;
 	/** True after the executor has released the live SDK session behind this handle. */
 	readonly isDisposed?: boolean;
 	readonly messages: AgentSession["messages"];

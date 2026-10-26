@@ -1002,6 +1002,11 @@ export class StageSessionController {
 	}
 
 	/** True when no message, turn, creation, retry, pause, or queue work still needs the live session. */
+	/** True while a message, the stage's own prompt included, holds or waits for the turn loop. */
+	isTurnLoopBusy(): boolean {
+		return this.messageAdmission.isBusy();
+	}
+
 	isIdleForRelease(): boolean {
 		const session = this.session;
 		if (session === undefined || this.disposed || this.pendingDisposal || this.disposalPromise !== undefined)

@@ -22,6 +22,7 @@ import { type StageControlRegistry, stageControlRegistry } from "../runs/foregro
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { type Store, store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 
 export interface PostMortemResolverDeps {
 	readonly adapters: StageAdapters;
@@ -70,11 +71,19 @@ export function postMortemDepsForRun(runId: string, deps: PostMortemResolverDeps
 export function createPostMortemHandleResolver(
 	deps: PostMortemResolverDeps,
 ): (runId: string, stageId: string) => Promise<EnsurePostMortemStageHandleResult | undefined> {
-	return async (runId, stageId) => {
+	return async (requestedRunId, requestedStageId) => {
 		const snapshot = readGraphStoreSnapshot(deps.store ?? store);
+		const requested = snapshot.runs
+			.find((candidate) => candidate.id === requestedRunId)
+			?.stages.find((candidate) => candidate.id === requestedStageId);
+		if (requested === undefined) return undefined;
+		// A failed child-workflow boundary collapses its child in the graph. When the child ran on a
+		// local worker, its one agent stage is the session behind it, and reopens for it (#3996).
+		const pooledChild = failedBoundaryPooledStage(snapshot.runs, requestedRunId, requested);
+		const runId = pooledChild?.runId ?? requestedRunId;
+		const stageId = pooledChild?.stage.id ?? requestedStageId;
 		const run = snapshot.runs.find((candidate) => candidate.id === runId);
-		const found = run?.stages.find((candidate) => candidate.id === stageId);
-		if (found === undefined) return undefined;
+		const found = pooledChild?.stage ?? requested;
 		// A stage on a local worker whose run ended without settling it (its pool gave up on the
 		// child) failed with its run; its retained session reopens like any failed pooled stage (#3996).
 		const root =
@@ -118,4 +127,19 @@ function pooledStageSessionId(runStore: Store, runId: string, stageId: string): 
 	} catch {
 		return undefined;
 	}
+}
+
+/** The one stage of a failed boundary's child run that ran on a local worker, if there is exactly one. */
+function failedBoundaryPooledStage(
+	runs: readonly RunSnapshot[],
+	runId: string,
+	boundary: StageSnapshot,
+): { readonly runId: string; readonly stage: StageSnapshot } | undefined {
+	if (boundary.status !== "failed") return undefined;
+	// A failed boundary drops its child reference; the child run still names its boundary.
+	const children = runs.filter((run) => run.parentRunId === runId && run.parentStageId === boundary.id);
+	const pooled = children.flatMap((run) =>
+		run.stages.filter((stage) => stage.workerExecution !== undefined).map((stage) => ({ runId: run.id, stage })),
+	);
+	return pooled.length === 1 ? pooled[0] : undefined;
 }
