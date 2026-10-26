@@ -1,6 +1,6 @@
 # GPT-6.1 Sol prompting and migration
 
-Use this reference when targeting `gpt-6.1-sol` or migrating from `gpt-6-sol`. Distilled from [OpenAI's GPT-6 Astra and GPT-6.1 Sol guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#gpt-6-astra-gpt-61-sol), checked September 30, 2026; the Sol section was rechecked October 26, 2026. OpenAI describes Sol 6.1 as delivering near-Astra performance at a lower cost for complex coding, computer use, and professional work. Compare models on your own tasks; this positioning is not a measured improvement for your workload. For GPT-6.1 Terra, see [gpt_6_1_terra.md](gpt_6_1_terra.md).
+Use this reference when targeting `gpt-6.1-sol` or migrating from `gpt-6-sol`. Distilled from [OpenAI's GPT-6 Astra and GPT-6.1 Sol guide](https://developers.openai.com/api/docs/guides/prompt-guidance#gpt-61-sol), checked September 30, 2026; the Sol section was rechecked October 26, 2026. OpenAI describes Sol 6.1 as delivering near-Astra performance at a lower cost for complex coding, computer use, and professional work. Compare models on your own tasks; this positioning is not a measured improvement for your workload. For GPT-6.1 Terra, see [gpt_6_1_terra.md](gpt_6_1_terra.md).
 
 The source separates Sol 6.1 specifications and migration guidance from shared prompt templates. Those templates address behavior observed with Astra, not independently established Sol 6.1 behavior. Apply them only to failures you observe on Sol 6.1. The snippets below are adaptations, not verbatim OpenAI quotations.
 
@@ -59,7 +59,7 @@ Sol 6.1 tool calling requires the Responses API; Chat Completions supports reque
 
 The official guide also describes shared GPT-6 async tool calling, mid-turn steering, and changing reasoning effort while preserving the prompt cache. These require application support. Do not assume Atomic or another host implements each feature because a prompt names it. Check the relevant [async tool calling](https://developers.openai.com/api/docs/guides/async-tool-calling), [steering](https://developers.openai.com/api/docs/guides/steering), or [reasoning configuration](https://developers.openai.com/api/docs/guides/reasoning#change-reasoning-mid-conversation) contract before relying on it.
 
-For application migration details, consult the source's [API and model parameters checklist](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra#gpt-6-astra-migration-quickstart). It covers unsupported sampling and logprob parameters during reasoning, cache configuration changes, and feature compatibility. Those are host changes, not extra prompt instructions. Astra's monitoring and speed-availability descriptions are not Sol 6.1-specific prompting recommendations.
+For application migration details, consult the source's [API and model parameters checklist](https://developers.openai.com/api/docs/guides/prompt-guidance#update-api-and-model-parameters). It covers unsupported sampling and logprob parameters during reasoning, cache configuration changes, and feature compatibility. Those are host changes, not extra prompt instructions. Astra's monitoring and speed-availability descriptions are not Sol 6.1-specific prompting recommendations.
 
 ## Validate one adjustment
 
