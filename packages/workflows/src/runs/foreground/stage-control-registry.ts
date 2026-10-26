@@ -43,6 +43,13 @@ export type StageControlStatus =
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
+/** Where a stage's session runs when it is not this process: a local worker's attempt. */
+export interface StagePlacement {
+	readonly kind: "local-worker";
+	readonly workId: string;
+	readonly generation: number;
+}
+
 /**
  * Per-stage interactive surface exposed to the attached chat pane.
  *
@@ -66,6 +73,13 @@ export interface StageControlHandle {
 	readonly agentSession?: AgentSession;
 	/** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
 	pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
+	/**
+	 * The assistant message still streaming, for a handle without an `agentSession` (a stage
+	 * on a local worker). Handles with a session expose it through the session instead.
+	 */
+	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
+	/** Set when the stage's session runs in another process. */
+	readonly placement?: StagePlacement;
 	/**
 	 * Pending steering/follow-up text on this stage's session, kept current from
 	 * `queue_update` for the handle's whole lifetime so a detached graph node and
