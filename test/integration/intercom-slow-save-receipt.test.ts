@@ -50,11 +50,21 @@ async function startBroker(): Promise<void> {
 	}
 }
 
+/** Waits for the broker to exit: Windows cannot remove its database files while the process still holds them. */
+async function stopBroker(): Promise<void> {
+	const running = broker;
+	if (running === undefined || running.exitCode !== null || running.signalCode !== null) return;
+	await new Promise<void>((resolveExit) => {
+		running.once("exit", () => resolveExit());
+		running.kill("SIGTERM");
+	});
+}
+
 afterAll(async () => {
-	broker?.kill("SIGTERM");
+	await stopBroker();
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
-	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true, maxRetries: 5 });
 });
 
 async function client(name: string, acknowledgesReceipt: boolean) {
