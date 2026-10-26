@@ -1,5 +1,10 @@
+import "../helpers/provider-rate-limit-isolation.js";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
+import {
+	providerRateLimitSnapshot,
+	providerUnavailableMs,
+} from "../../packages/coding-agent/src/core/provider-rate-limits.js";
 import { workflowModelCatalogFromContext } from "../../packages/workflows/src/extension/workflow-model-catalog.js";
 import {
 	RoutingProvider,
@@ -61,7 +66,17 @@ async function routedStageFailure(stageName: string, behavior: RoutingProviderBe
 	assert.ok(result.ok, "the workflow run threw");
 	const stage = result.value.stages.find((candidate) => candidate.name === stageName);
 	assert.match(stage?.error ?? "", new RegExp(`stage "${stageName}" failed during startup phase model-resolution`));
-	return { status: result.value.status, failureKind: stage?.failureKind, disposition: stage?.failureDisposition };
+	return {
+		limitedAt: provider.limitedAt,
+		status: result.value.status,
+		failureKind: stage?.failureKind,
+		failureCode: stage?.failureCode,
+		disposition: stage?.failureDisposition,
+		runFailureKind: result.value.failure?.kind,
+		runFailureCode: result.value.failure?.code,
+		runResumable: result.value.failure?.resumable,
+		retryAfterMs: stage?.retryAfterMs,
+	};
 }
 
 test("a stage named like a rate limit whose routing times out fails like any other stage (#4031)", async () => {
@@ -72,9 +87,36 @@ test("a stage named like a rate limit whose routing times out fails like any oth
 });
 
 test("a stage whose router answers 429 stays resumable whatever the stage is named (#4031)", async () => {
-	const plain = await routedStageFailure("plain", { kind: "rate-limit" });
-	// The router reports the 429 as a failed provider request, which blocks the run for resume.
+	const { limitedAt: _plainAt, ...plain } = await routedStageFailure("plain", { kind: "rate-limit" });
 	assert.equal(plain.disposition, "active_blocked");
 	assert.equal(plain.status, "running");
-	assert.deepEqual(await routedStageFailure("rate-limit-overloaded", { kind: "rate-limit" }), plain);
+	const { limitedAt: _namedAt, ...named } = await routedStageFailure("rate-limit-overloaded", { kind: "rate-limit" });
+	assert.deepEqual(named, plain);
+});
+
+const ROUTER_RETRY_AFTER_MS = 5_000;
+
+test("a router 429 with Retry-After reaches the stage and root as a resumable rate limit with that cooldown (#4031)", async () => {
+	const limited = await routedStageFailure("plain", { kind: "rate-limit", retryAfterMs: ROUTER_RETRY_AFTER_MS });
+	const { limitedAt, ...outcome } = limited;
+	assert.deepEqual(outcome, {
+		status: "running",
+		failureKind: "rate_limit",
+		failureCode: "rate_limited",
+		disposition: "active_blocked",
+		runFailureKind: "rate_limit",
+		runFailureCode: "rate_limited",
+		runResumable: true,
+		retryAfterMs: ROUTER_RETRY_AFTER_MS,
+	});
+	// The router's provider cools down for exactly the hint, from the last 429 it sent.
+	assert.equal(providerRateLimitSnapshot(ROUTER_MODEL.provider)?.cooldownUntil, limitedAt + ROUTER_RETRY_AFTER_MS);
+});
+
+test("a router 402 reaches the stage and root as an exhausted quota (#4031)", async () => {
+	const exhausted = await routedStageFailure("plain", { kind: "quota", retryAfterMs: 3_600_000 });
+	assert.equal(exhausted.failureKind, "rate_limit");
+	assert.equal(exhausted.failureCode, "quota_limited");
+	assert.equal(exhausted.runFailureCode, "quota_limited");
+	assert.equal(providerUnavailableMs(ROUTER_MODEL.provider) > 0, true);
 });
