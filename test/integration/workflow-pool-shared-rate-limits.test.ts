@@ -14,6 +14,7 @@ import { JournalDurableBackend } from "../../packages/workflows/src/durable/jour
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createAgentSessionAdapter } from "../../packages/workflows/src/extension/wiring.js";
+import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { hostWorkerBindings } from "../../packages/workflows/src/workers/host-options.js";
@@ -22,6 +23,7 @@ import {
 	EARLY_PROVIDER,
 	LIMITED_MODEL,
 	LIMITED_PROVIDER,
+	type LimitsSentStatus,
 	limitedStageOptions,
 	QUOTA_MODEL,
 	SPARE_MODEL,
@@ -59,18 +61,28 @@ interface ProviderRequest {
 	readonly status: number;
 }
 
-/** A stand-in for one HTTP provider: the first request to the limited model gets a 429, the quota model a 402. */
-function fakeProvider() {
+/**
+ * A stand-in for one HTTP provider: the first request to the limited model gets a 429, the quota model a 402.
+ * With `dropLimited`, the limited model's connection closes without any response instead.
+ */
+function fakeProvider(options: { readonly dropLimited?: boolean } = {}) {
 	const requests: ProviderRequest[] = [];
 	let limitedSent = false;
+	/** What the first worker reported once its stages were done. */
+	let firstDone: string | undefined;
 	const chunk = (model: string, body: object) =>
 		`data: ${JSON.stringify({ id: "chatcmpl_test", object: "chat.completion.chunk", created: 1, model, ...body })}\n\n`;
 	const server = createServer((request: IncomingMessage, response: ServerResponse) => {
 		if (request.method === "GET" && request.url?.endsWith("/limits-sent")) {
-			// The second worker's signal that both limits are out, so it never races the first worker's stages.
-			const sent = requests.some((entry) => entry.status === 429) && requests.some((entry) => entry.status === 402);
+			// The second worker's signal that both limits are out, so it never races the first worker's stages,
+			// or that the first worker finished without them, so it stops waiting.
+			const status: LimitsSentStatus = {
+				sent429: requests.some((entry) => entry.status === 429),
+				sent402: requests.some((entry) => entry.status === 402),
+				...(firstDone === undefined ? {} : { firstDone }),
+			};
 			response.writeHead(200, { "content-type": "application/json" });
-			response.end(JSON.stringify({ sent }));
+			response.end(JSON.stringify(status));
 			return;
 		}
 		let raw = "";
@@ -79,6 +91,12 @@ function fakeProvider() {
 			raw += data;
 		});
 		request.on("end", () => {
+			if (request.method === "POST" && request.url?.endsWith("/first-done")) {
+				firstDone = raw;
+				response.writeHead(204);
+				response.end();
+				return;
+			}
 			const body = JSON.parse(raw) as { model: string };
 			const label = /label:(\w+)/.exec(raw)?.[1] ?? "unknown";
 			const at = Date.now();
@@ -93,6 +111,11 @@ function fakeProvider() {
 					{ "content-type": "application/json", "retry-after": "3600" },
 					JSON.stringify({ error: { message: `Quota exhausted for ${QUOTA_MODEL}` } }),
 				);
+			if (body.model === LIMITED_MODEL && options.dropLimited) {
+				requests.push({ sequence: requests.length, label, model: body.model, at, status: 0 });
+				request.socket.destroy();
+				return;
+			}
 			if (body.model === LIMITED_MODEL && !limitedSent) {
 				limitedSent = true;
 				return respond(
@@ -116,6 +139,11 @@ function fakeProvider() {
 	return { server, requests };
 }
 
+async function listen(server: ReturnType<typeof fakeProvider>["server"]): Promise<string> {
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+}
+
 const provider = fakeProvider();
 let baseUrl = "";
 
@@ -124,8 +152,7 @@ beforeAll(async () => {
 		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
 	);
 	assert.ok(await fileExists(workerEntry), "packaged worker missing; run npm run build first");
-	await new Promise<void>((resolve) => provider.server.listen(0, "127.0.0.1", resolve));
-	baseUrl = `http://127.0.0.1:${(provider.server.address() as AddressInfo).port}/v1`;
+	baseUrl = await listen(provider.server);
 });
 afterAll(async () => {
 	await new Promise<void>((resolve) => provider.server.close(() => resolve()));
@@ -135,7 +162,7 @@ async function withPool(
 	name: string,
 	workers: number,
 	body: (child: Awaited<ReturnType<typeof loadWorkerDefinition>>) => Parameters<typeof workflow>[0]["run"],
-): Promise<void> {
+): Promise<RunResult> {
 	const directory = makeTempDirectory(`${name}-`);
 	const path = join(directory, "journal.sqlite");
 	const journal = await resolveRunJournal({ journal: { path } });
@@ -166,9 +193,11 @@ async function withPool(
 				[hostWorkerBindings]: true,
 			},
 		);
-		assert.equal(result.status, "completed", JSON.stringify(result));
+		return result;
 	} finally {
 		await pool.close();
+		// Cleanup finished: the pool's workers are gone.
+		assert.deepEqual(pool.workerPids, []);
 		await backend.close();
 		removeTempDirectory(directory);
 	}
@@ -178,7 +207,7 @@ test(
 	"a 429 or exhausted quota one local worker meets holds back the other workers and the root (#4023)",
 	async () => {
 		let cooldownEnd = 0;
-		await withPool("shared-limits-root", 2, (child) => async (ctx) => {
+		const result = await withPool("shared-limits-root", 2, (child) => async (ctx) => {
 			const [first, second] = await Promise.all(
 				["first", "second"].map((role) => ctx.workflow(child, { inputs: { role, baseUrl } })),
 			);
@@ -193,6 +222,7 @@ test(
 			await ctx.stage("root-walk", rootOptions as never).complete("label:root");
 			return {};
 		});
+		assert.equal(result.status, "completed", JSON.stringify(result));
 		const limited = provider.requests.find((request) => request.status === 429);
 		assert.ok(limited, JSON.stringify(provider.requests));
 		assert.equal(limited.label, "first");
@@ -221,12 +251,41 @@ test(
 	"a newly started local worker receives the limits the pool already holds (#4023)",
 	async () => {
 		recordProviderRateLimit(EARLY_PROVIDER, { status: 429, retryAfterMs: 60_000 });
-		await withPool("shared-limits-early", 1, (child) => async (ctx) => {
+		const result = await withPool("shared-limits-early", 1, (child) => async (ctx) => {
 			const early = await ctx.workflow(child, { inputs: { role: "early", baseUrl } });
 			assert.equal(early.status, "completed", JSON.stringify(early));
 			assert.ok(Number(early.outputs.earlyCooldownMs) > 50_000, JSON.stringify(early.outputs));
 			return {};
 		});
+		assert.equal(result.status, "completed", JSON.stringify(result));
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"a worker waiting for another worker's limits stops when that worker ends without them (#4023)",
+	async () => {
+		const dropping = fakeProvider({ dropLimited: true });
+		const droppingUrl = await listen(dropping.server);
+		try {
+			const result = await withPool("shared-limits-missing", 2, (child) => async (ctx) => {
+				const [first, second] = await Promise.all(
+					["first", "second"].map((role) => ctx.workflow(child, { inputs: { role, baseUrl: droppingUrl } })),
+				);
+				assert.equal(first!.status, "completed", JSON.stringify(first));
+				return { second: second!.status };
+			});
+			// The run settles with the second worker's failure, which names the response that never came.
+			assert.notEqual(result.status, "completed", JSON.stringify(result));
+			assert.match(result.error ?? "", /The provider never sent the 429 rate-limit response/);
+			// The second worker sent no model request: it failed while still waiting for the limits.
+			assert.deepEqual(
+				dropping.requests.filter((request) => request.label === "second"),
+				[],
+			);
+		} finally {
+			await new Promise<void>((resolve) => dropping.server.close(() => resolve()));
+		}
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
