@@ -120,9 +120,8 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	async pause(): Promise<void> {
 		await this.use((handle) => handle.pause());
 	}
-	async resume(): Promise<undefined> {
-		await this.use((handle) => handle.resume());
-		return undefined;
+	resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
+		return this.use((handle) => handle.resume(message, beforeResume));
 	}
 
 	dispose(): void {

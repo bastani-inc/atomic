@@ -2,6 +2,7 @@ import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
+import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
@@ -38,11 +39,8 @@ export async function admitStageUserMessage(
 	const unsubscribe = handle.isStreaming
 		? () => {}
 		: handle.subscribe((event) => {
-				if (
-					event.type === "message_start" &&
-					event.message.role === "user" &&
-					messageText(event.message).includes(text)
-				)
+				// The idle stage's next user message is this one, as sent or after template expansion.
+				if (event.type === "message_start" && event.message.role === "user")
 					startedTurn.resolve({ action: "prompt" });
 			});
 	const delivery = (async (): Promise<StageCommandResult> => {
@@ -104,6 +102,7 @@ export class WorkerStageWatches {
 	private readonly watches = new Map<WatchId, Watch>();
 	/** Deliveries of the current attempt by op, so a retried op is admitted at most once. */
 	private readonly ledger = new Map<DeliveryOpId, Promise<StageCommandResult>>();
+	private readonly receipts = new Map<StageControlHandle, StageDeliveryReceipts>();
 
 	constructor(
 		private readonly registry: StageControlRegistry,
@@ -167,6 +166,8 @@ export class WorkerStageWatches {
 	/** Ends every watch when the attempt ends; the coordinator tells the root. */
 	clear(): void {
 		this.ledger.clear();
+		for (const receipts of this.receipts.values()) receipts.dispose();
+		this.receipts.clear();
 		for (const id of [...this.watches.keys()]) {
 			this.flush(id);
 			this.close(id);
@@ -202,33 +203,35 @@ export class WorkerStageWatches {
 		// A retried resume whose message this attempt already admitted is answered from the ledger.
 		const recorded = message === undefined ? undefined : this.ledger.get(message.deliveryOp);
 		if (recorded !== undefined) return recorded;
-		const unmark =
-			message === undefined ? () => {} : this.markDelivered(watch.handle, message.deliveryOp, message.text);
-		const resumed = (async (): Promise<StageCommandResult> => {
+		const resumeWith = async (): Promise<StageCommandResult> => {
 			const action = await watch.handle.resume(message?.text);
 			return action === undefined ? {} : { action };
-		})().catch((error: Error): StageCommandResult => {
-			unmark();
-			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message };
-		});
+		};
+		const resumed = (
+			message === undefined
+				? resumeWith()
+				: this.receiptsFor(watch.handle).track(message.deliveryOp, watch.handle.isStreaming, resumeWith)
+		).catch(
+			(error: Error): StageCommandResult =>
+				isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
+		);
 		if (message !== undefined) this.ledger.set(message.deliveryOp, resumed);
 		return resumed;
 	}
 
 	/**
-	 * Records the op in the stage's session once its text enters the session as a user message,
-	 * so a replacement attempt that replays the session knows the text arrived.
+	 * The receipt book of a stage: it records an op in the stage's session once that delivery's
+	 * user message is in it, so a replacement attempt that replays the session knows it arrived.
 	 */
-	private markDelivered(handle: StageControlHandle, op: DeliveryOpId, text: string): () => void {
-		const sessionManager = handle.agentSession?.sessionManager;
-		if (sessionManager === undefined) return () => {};
-		const unsubscribe = handle.subscribe((event) => {
-			if (event.type !== "message_end" || event.message.role !== "user") return;
-			if (!messageText(event.message).includes(text)) return;
-			unsubscribe();
-			void sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
-		});
-		return unsubscribe;
+	private receiptsFor(handle: StageControlHandle): StageDeliveryReceipts {
+		let receipts = this.receipts.get(handle);
+		if (receipts === undefined) {
+			receipts = new StageDeliveryReceipts(handle, (op) => {
+				void handle.agentSession?.sessionManager.appendCustomEntry(DELIVERY_OP_ENTRY, { op }).catch(() => {});
+			});
+			this.receipts.set(handle, receipts);
+		}
+		return receipts;
 	}
 
 	private async deliver(command: Extract<WorkerStageCommand, { op: "deliver" }>): Promise<StageCommandResult> {
@@ -244,16 +247,14 @@ export class WorkerStageWatches {
 		)
 			return refuse("StaleAttempt");
 		if (isTerminal(watch.handle)) return refuse("StageNotLive");
-		const unmark = this.markDelivered(watch.handle, command.deliveryOp, command.text);
-		const admitted = admitStageUserMessage(
-			watch.handle,
-			command.text,
-			command.intent,
-			command.expandPromptTemplates,
-		).catch((error: Error): StageCommandResult => {
-			unmark();
-			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message };
-		});
+		const admitted = this.receiptsFor(watch.handle)
+			.track(command.deliveryOp, watch.handle.isStreaming, () =>
+				admitStageUserMessage(watch.handle, command.text, command.intent, command.expandPromptTemplates),
+			)
+			.catch(
+				(error: Error): StageCommandResult =>
+					isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
+			);
 		this.ledger.set(command.deliveryOp, admitted);
 		return admitted;
 	}
@@ -282,17 +283,6 @@ export class WorkerStageWatches {
 		clearTimeout(watch.timer);
 		watch.unsubscribe();
 	}
-}
-
-function messageText(message: object): string {
-	const content = "content" in message ? message.content : undefined;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((block: { readonly type?: string; readonly text?: string }) =>
-			block.type === "text" ? (block.text ?? "") : "",
-		)
-		.join("");
 }
 
 function deliveredOps(entries: readonly SessionEntry[]): DeliveryOpId[] {

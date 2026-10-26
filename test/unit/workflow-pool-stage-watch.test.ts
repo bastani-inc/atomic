@@ -369,14 +369,35 @@ test("per-stage pause and resume go through the airlock, and wait while the pool
 	assert.deepEqual(calls, ["pause", "resume:carry on"]);
 });
 
-test("a delivered op is recorded in the session once its text arrives, and a snapshot reports it (#3996)", async () => {
-	const { registry, sent, watches } = airlock();
-	const stage = deliverableStage(true);
+/**
+ * A worker-side stage whose session queues steers and follow-ups and publishes each queue
+ * change, as a real session does, and whose test consumes queued items on demand.
+ */
+function queuingStage(streaming: boolean) {
+	const stage = streamingStage("agent");
+	const queues = { steering: [] as string[], followUp: [] as string[] };
 	const entries: { type: string; customType?: string; data?: { op: string } }[] = [];
+	const publish = () =>
+		stage.emit({ type: "queue_update", steering: [...queues.steering], followUp: [...queues.followUp] } as never);
+	const userMessage = (type: "message_start" | "message_end", text: string) =>
+		stage.emit({ type, message: { role: "user", content: [{ type: "text", text }], timestamp: 1 } } as never);
 	const handle: StageControlHandle = {
 		...stage.handle,
 		get status() {
 			return stage.handle.status;
+		},
+		isStreaming: streaming,
+		queuedUserMessages: () => ({ steering: [...queues.steering], followUp: [...queues.followUp] }),
+		async sendUserMessage(text, options) {
+			if (!streaming) {
+				// An idle prompt starts the turn with its user message: here a template expansion that drops the sent text.
+				userMessage("message_start", "Please review the staged change");
+				return "prompt";
+			}
+			const queue = options?.deliverAs === "steer" ? "steering" : "followUp";
+			queues[queue].push(text);
+			publish();
+			return options?.deliverAs ?? "followUp";
 		},
 		agentSession: {
 			sessionManager: {
@@ -388,15 +409,36 @@ test("a delivered op is recorded in the session once its text arrives, and a sna
 			},
 		} as never,
 	};
-	registry.register(handle);
+	return {
+		stage,
+		handle,
+		receipts: () => entries.map((entry) => entry.data?.op),
+		/** The session takes the next item of one queue into its transcript. */
+		consume(queue: "steering" | "followUp") {
+			const text = queues[queue].shift()!;
+			publish();
+			userMessage("message_start", text);
+			userMessage("message_end", text);
+		},
+		endPrompt() {
+			userMessage("message_end", "Please review the staged change");
+		},
+	};
+}
+
+test("a delivery is receipted by where it went, not by its text: only the consumed one of two similar texts (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = queuingStage(true);
+	registry.register(stage.handle);
 	openWatch(watches);
-	await deliver(sent, watches, 2, "op-steer", "steer");
-	assert.deepEqual(entries, [], "nothing is recorded while the text is only queued");
-	stage.emit({
-		type: "message_end",
-		message: { role: "user", content: [{ type: "text", text: "text-op-steer" }], timestamp: 1 },
-	} as never as AgentSessionEvent);
-	assert.deepEqual(entries, [{ type: "custom", customType: "atomic-pooled-delivery-op", data: { op: "op-steer" } }]);
+	await deliver(sent, watches, 2, "fix", "followUp");
+	await deliver(sent, watches, 3, "fix-the-bug", "steer");
+	assert.deepEqual(stage.receipts(), [], "nothing is receipted while it is only queued");
+	// The steer's text `text-fix-the-bug` contains the follow-up's `text-fix`; only the steer is consumed.
+	stage.consume("steering");
+	assert.deepEqual(stage.receipts(), ["fix-the-bug"], "the follow-up still waits and must be redelivered");
+	stage.consume("followUp");
+	assert.deepEqual(stage.receipts(), ["fix-the-bug", "fix"]);
 	watches.serve({
 		kind: "stage-command",
 		commandId: 9,
@@ -408,5 +450,16 @@ test("a delivered op is recorded in the session once its text arrives, and a sna
 	});
 	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
 	assert.ok(reopened?.kind === "stage-command-result");
-	assert.deepEqual(reopened.snapshot?.deliveredOps, ["op-steer"]);
+	assert.deepEqual(reopened.snapshot?.deliveredOps, ["fix-the-bug", "fix"]);
+});
+
+test("an idle prompt is receipted once, even when template expansion changes its text (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = queuingStage(false);
+	registry.register(stage.handle);
+	openWatch(watches);
+	assert.equal((await deliver(sent, watches, 2, "op-prompt", "auto")).action, "prompt");
+	assert.deepEqual(stage.receipts(), [], "receipted only when its user message ends");
+	stage.endPrompt();
+	assert.deepEqual(stage.receipts(), ["op-prompt"]);
 });

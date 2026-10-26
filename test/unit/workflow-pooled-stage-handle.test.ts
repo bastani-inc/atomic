@@ -129,3 +129,64 @@ test("a stage that finished ends the handle instead of reconnecting it (#3996)",
 	assert.equal(opened.handle.endReason, "stage_finished");
 	assert.equal(await reconnectPooledStageHandle(opened.handle, fake.transport), false);
 });
+
+test("text sent while a rebind redelivers waits behind the redelivery, so the replacement gets it in send order (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await handle.steer("A");
+	await handle.followUp("B");
+	fake.end("worker_exited");
+	const gate = Promise.withResolvers<void>();
+	fake.holdDeliveries(gate.promise);
+	const reconnecting = reconnectPooledStageHandle(handle, fake.transport);
+	await fake.deliveryStarted;
+	const sentDuringRebind = handle.steer("C");
+	gate.resolve();
+	assert.equal(await reconnecting, true);
+	await sentDuringRebind;
+	assert.deepEqual(
+		fake.deliveries.slice(2).map(({ watch, text, intent }) => ({ watch, text, intent })),
+		[
+			{ watch: "watch-2", text: "A", intent: "steer" },
+			{ watch: "watch-2", text: "B", intent: "followUp" },
+			{ watch: "watch-2", text: "C", intent: "steer" },
+		],
+	);
+});
+
+test("a replacement that dies mid-rebind leaves the handle reconnecting, and the next attempt gets the rest (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	await handle.steer("A");
+	fake.end("worker_exited");
+	const gate = Promise.withResolvers<void>();
+	fake.holdDeliveries(gate.promise);
+	const second = reconnectPooledStageHandle(handle, fake.transport);
+	await fake.deliveryStarted;
+	fake.end("worker_exited");
+	gate.resolve();
+	assert.equal(await second, false, "the second attempt ended before the rebind finished");
+	assert.equal(handle.isReconnecting, true);
+	assert.equal(await reconnectPooledStageHandle(handle, fake.transport), true);
+	assert.deepEqual(
+		fake.deliveries.map(({ watch, text }) => `${watch}:${text}`),
+		["watch-1:A", "watch-2:A", "watch-3:A"],
+	);
+	assert.equal(handle.isReconnecting, false);
+});
+
+test("a stage that finishes while reconnecting no longer reads as reconnecting (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	fake.end("worker_exited");
+	assert.equal(opened.handle.placement.reconnecting, true);
+	opened.handle.receive({ kind: "ended", reason: "stage_finished" });
+	assert.equal(opened.handle.isReconnecting, false);
+	assert.equal(opened.handle.placement.reconnecting, undefined);
+	assert.equal(opened.handle.endReason, "stage_finished");
+});

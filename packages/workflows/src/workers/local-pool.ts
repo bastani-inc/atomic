@@ -586,7 +586,8 @@ export class LocalWorkerPool {
 			view.reconnecting = view
 				.reconnect()
 				.then((bound) => {
-					if (bound) this.reconnectingViews.delete(view);
+					// A watch that ended again after this rebind queued the view anew; keep it queued.
+					if (bound && !handle.isReconnecting) this.reconnectingViews.delete(view);
 				})
 				.catch(() => {})
 				.finally(() => {

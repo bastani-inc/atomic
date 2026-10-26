@@ -68,13 +68,28 @@ export class PooledStageDeliveryError extends Error {
 	}
 }
 
-/** A delivery made through this handle, kept until a reconnected attempt's session shows it arrived. */
+/**
+ * User text sent through this handle, kept in send order until a reconnected attempt's
+ * session shows it arrived. Every send goes through this one queue, so redelivered text and
+ * text sent while a rebind is in flight reach the replacement in the order the user sent it.
+ */
 interface OutboundEntry {
 	readonly op: DeliveryOpId;
 	readonly text: string;
 	/** How the text was sent; a redelivery keeps it, so a steer still steers. */
 	readonly intent: DeliveryIntent;
 	readonly options?: PooledStageDelivery["options"];
+	/** Sent as a resume message rather than a delivery, the first time. */
+	readonly resume: boolean;
+	/** Sent to the current attempt. */
+	sent: boolean;
+	/** Sent to an earlier attempt that ended; a send now is a redelivery. */
+	resend: boolean;
+	/** The caller waiting for the first send's outcome. */
+	waiter?: {
+		readonly resolve: (action: StageUserMessageDeliveryAction | undefined) => void;
+		readonly reject: (error: Error) => void;
+	};
 }
 
 /**
@@ -106,8 +121,15 @@ export class PooledStageHandle implements StageControlHandle {
 	private redelivered?: number;
 	private disposed = false;
 	private session: string | undefined;
-	/** Set while a rebind waits for the replacement attempt to start its own turn. */
-	private whenStarted?: () => void;
+	/** The outbound queue's sender while it runs; one at a time keeps send order. */
+	private pumping?: Promise<void>;
+	/** A rebind in flight: redelivery waits for the replacement's own turn, then drains. */
+	private rebinding?: {
+		readonly watch: WatchId;
+		awaitingTurn: boolean;
+		redelivered: number;
+		readonly done: (redelivered: number) => void;
+	};
 
 	constructor(
 		readonly runId: string,
@@ -180,9 +202,14 @@ export class PooledStageHandle implements StageControlHandle {
 	receive(message: PooledStageWatchMessage): void {
 		if (message.kind === "ended") {
 			this.streamingNow = false;
-			this.started();
 			if (RECONNECTABLE.has(message.reason) && !this.disposed) this.reconnecting = true;
-			else this.ended ??= message.reason;
+			else {
+				// Ended for good: nothing will reconnect, so the chat must not say it is reconnecting.
+				this.ended ??= message.reason;
+				this.reconnecting = false;
+			}
+			// A rebind cut short by this end leaves the rest for the next attempt.
+			this.finishRebind(false);
 			return;
 		}
 		for (const { seq, event } of message.events) {
@@ -194,47 +221,37 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 
 	/**
-	 * Binds the handle to a watch of the replacement attempt, then redelivers in send order
-	 * every message whose op the replacement's session does not hold. Returns how many.
+	 * Binds the handle to a watch of the replacement attempt, then redelivers in send order, each
+	 * in its original mode, every message whose op the replacement's session does not hold.
+	 * The handle reads as reconnecting until that is done. Resolves with how many were sent.
 	 */
-	async rebind(watch: PooledStageWatch): Promise<number> {
+	rebind(watch: PooledStageWatch): Promise<number> {
 		const previous = this.watchId;
+		this.finishRebind(false);
 		this.watchId = watch.id;
 		this.attempt = watch.attempt;
 		this.adopt(watch.snapshot);
-		// Still `reconnecting` until redelivery is done, so the chat shows it for the whole rebind.
 		if (previous !== watch.id) this.close(previous);
 		const present = new Set(watch.snapshot.deliveredOps ?? []);
-		const outstanding = this.outbound.filter((entry) => !present.has(entry.op));
-		this.outbound.splice(0, this.outbound.length, ...outstanding);
-		// The replay sends the stage's own prompt first; redelivered text joins its turn, as it did.
-		// The replay's session may already hold earlier messages, so only a streaming turn counts.
-		if (outstanding.length > 0 && !this.streamingNow) {
-			const started = Promise.withResolvers<void>();
-			this.whenStarted = started.resolve;
-			await started.promise;
-			if (this.disposed || this.watchId !== watch.id || !this.streamingNow) return 0;
+		for (const entry of [...this.outbound]) {
+			if (present.has(entry.op)) this.forget(entry.op);
+			else if (entry.sent) {
+				entry.sent = false;
+				entry.resend = true;
+			}
 		}
-		if (this.watchId !== watch.id) return 0;
-		let redelivered = 0;
-		for (const entry of outstanding) {
-			// The original mode: a steer joins the replacement's turn, a follow-up waits for its end.
-			const result = await this.transport.deliver({
-				watch: this.watchId,
-				op: entry.op,
-				text: entry.text,
-				intent: entry.intent,
-				...(entry.options === undefined ? {} : { options: entry.options }),
-			});
-			if (result.ok) redelivered++;
-			else if (result.refusal === "StageNotLive") this.forget(entry.op);
-			else break;
-		}
-		if (this.watchId !== watch.id) return redelivered;
-		this.reconnecting = false;
-		this.redelivered = redelivered;
-		for (const listener of [...this.rebindListeners]) listener(redelivered);
-		return redelivered;
+		const done = Promise.withResolvers<number>();
+		this.rebinding = {
+			watch: watch.id,
+			// The replay sends the stage's own prompt first; redelivered text joins its turn, as it did.
+			// The replay's session may already hold earlier messages, so only a streaming turn counts.
+			awaitingTurn: !this.streamingNow && this.outbound.some((entry) => !entry.sent),
+			redelivered: 0,
+			done: done.resolve,
+		};
+		this.reconnecting = true;
+		this.pump();
+		return done.promise;
 	}
 
 	subscribe(listener: AgentSessionEventListener): () => void {
@@ -276,25 +293,24 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	async resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
 		this.throwIfClosed();
-		const entry =
-			message === undefined || message.trim().length === 0 ? undefined : this.record(message, undefined, "auto");
-		beforeResume?.();
-		const result = await this.transport.resume(
-			this.watchId,
-			entry === undefined ? undefined : { op: entry.op, text: entry.text },
-		);
-		if (!result.ok) {
-			if (entry !== undefined && result.refusal !== "StaleAttempt") this.forget(entry.op);
-			throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		if (message === undefined || message.trim().length === 0) {
+			beforeResume?.();
+			const result = await this.transport.resume(this.watchId);
+			if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
+			this.currentStatus = "running";
+			return result.action;
 		}
+		beforeResume?.();
+		const action = await this.send(message, "auto", undefined, true);
 		this.currentStatus = "running";
-		return result.action;
+		return action;
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
-		this.started();
+		for (const entry of this.outbound) entry.waiter?.reject(new Error(`Stage chat "${this.stageName}" is closed.`));
+		this.finishRebind(false);
 		this.listeners.clear();
 		this.rebindListeners.clear();
 		this.close(this.watchId);
@@ -302,17 +318,6 @@ export class PooledStageHandle implements StageControlHandle {
 
 	private throwIfClosed(): void {
 		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
-	}
-
-	private record(text: string, options: PooledStageDelivery["options"], intent: DeliveryIntent): OutboundEntry {
-		const entry = {
-			op: randomUUID() as DeliveryOpId,
-			text,
-			intent,
-			...(options === undefined ? {} : { options }),
-		};
-		this.outbound.push(entry);
-		return entry;
 	}
 
 	private forget(op: DeliveryOpId): void {
@@ -326,26 +331,114 @@ export class PooledStageHandle implements StageControlHandle {
 		options?: StageSendUserMessageOptions,
 	): Promise<StageUserMessageDeliveryAction> {
 		this.throwIfClosed();
-		const entry = this.record(
+		const action = await this.send(
 			text,
+			intent,
 			options?.expandPromptTemplates === undefined
 				? undefined
 				: { expandPromptTemplates: options.expandPromptTemplates },
-			intent,
+			false,
 		);
-		const result = await this.transport.deliver({
-			watch: this.watchId,
-			op: entry.op,
+		return action ?? "prompt";
+	}
+
+	/** Queues text behind everything sent before it and resolves with its first send's outcome. */
+	private send(
+		text: string,
+		intent: DeliveryIntent,
+		options: PooledStageDelivery["options"],
+		resume: boolean,
+	): Promise<StageUserMessageDeliveryAction | undefined> {
+		const outcome = Promise.withResolvers<StageUserMessageDeliveryAction | undefined>();
+		this.outbound.push({
+			op: randomUUID() as DeliveryOpId,
 			text,
 			intent,
+			...(options === undefined ? {} : { options }),
+			resume,
+			sent: false,
+			resend: false,
+			waiter: { resolve: outcome.resolve, reject: outcome.reject },
+		});
+		// While the watch's attempt is gone the text waits for the replacement; say so now.
+		if (this.reconnecting && this.rebinding === undefined) {
+			const waiting = this.outbound.at(-1)!;
+			waiting.waiter = undefined;
+			outcome.reject(new PooledStageDeliveryError("StaleAttempt", this.stageName));
+		}
+		this.pump();
+		return outcome.promise;
+	}
+
+	/** Sends unsent text in order to the current attempt, one message at a time. */
+	private pump(): void {
+		if (this.pumping !== undefined) return;
+		this.pumping = (async () => {
+			for (;;) {
+				if (this.disposed || (this.reconnecting && this.rebinding === undefined)) return;
+				if (this.rebinding?.awaitingTurn === true) return;
+				const entry = this.outbound.find((candidate) => !candidate.sent);
+				if (entry === undefined) break;
+				const watch = this.watchId;
+				entry.sent = true;
+				const result = await this.sendEntry(entry, watch);
+				const waiter = entry.waiter;
+				entry.waiter = undefined;
+				if (result.ok) {
+					if (entry.resend && this.rebinding?.watch === watch) this.rebinding.redelivered++;
+					waiter?.resolve(result.action);
+					continue;
+				}
+				// A stale or unconfirmed send stays queued and is sent again on reconnect.
+				if (result.refusal === "StageNotLive") this.forget(entry.op);
+				else entry.sent = false;
+				waiter?.reject(new PooledStageDeliveryError(result.refusal, this.stageName));
+				if (result.refusal !== "StageNotLive") return;
+			}
+			this.finishRebind(true);
+		})().finally(() => {
+			this.pumping = undefined;
+		});
+	}
+
+	private async sendEntry(
+		entry: OutboundEntry,
+		watch: WatchId,
+	): Promise<
+		| { readonly ok: true; readonly action: StageUserMessageDeliveryAction | undefined }
+		| { readonly ok: false; readonly refusal: DeliveryRefusal | ControlRefusal }
+	> {
+		if (entry.resume && !entry.resend) {
+			const result = await this.transport.resume(watch, { op: entry.op, text: entry.text });
+			return result.ok ? { ok: true, action: result.action } : result;
+		}
+		// The original mode: a steer joins the replacement's turn, a follow-up waits for its end.
+		return this.transport.deliver({
+			watch,
+			op: entry.op,
+			text: entry.text,
+			intent: entry.intent,
 			...(entry.options === undefined ? {} : { options: entry.options }),
 		});
-		if (!result.ok) {
-			// A stale or unconfirmed delivery stays in the ledger and is redelivered on reconnect.
-			if (result.refusal === "StageNotLive") this.forget(entry.op);
-			throw new PooledStageDeliveryError(result.refusal, this.stageName);
+	}
+
+	/** Ends a rebind: the outbound queue drained (`drained`), or the replacement's watch ended first. */
+	private finishRebind(drained: boolean): void {
+		const rebinding = this.rebinding;
+		if (rebinding === undefined) return;
+		this.rebinding = undefined;
+		if (
+			drained &&
+			rebinding.watch === this.watchId &&
+			!this.disposed &&
+			this.ended === undefined &&
+			this.outbound.every((entry) => entry.sent)
+		) {
+			this.reconnecting = false;
+			this.redelivered = rebinding.redelivered;
+			for (const listener of [...this.rebindListeners]) listener(rebinding.redelivered);
 		}
-		return result.action;
+		rebinding.done(rebinding.redelivered);
 	}
 
 	private adopt(snapshot: PooledStageChatSnapshot): void {
@@ -367,14 +460,10 @@ export class PooledStageHandle implements StageControlHandle {
 
 	private apply(event: AgentSessionEvent): void {
 		this.applyEvent(event);
-		if (this.streamingNow) this.started();
-	}
-
-	/** Releases a rebind waiting for the replacement's turn; it then checks why it woke. */
-	private started(): void {
-		const resolve = this.whenStarted;
-		this.whenStarted = undefined;
-		resolve?.();
+		if (this.streamingNow && this.rebinding?.awaitingTurn === true) {
+			this.rebinding.awaitingTurn = false;
+			this.pump();
+		}
 	}
 
 	private applyEvent(event: AgentSessionEvent): void {

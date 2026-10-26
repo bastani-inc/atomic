@@ -63,14 +63,14 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const placement = ctx.handle?.placement;
 	const onLocalWorker = placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
 	const redelivered = placement?.redelivered ?? 0;
-	const meta = [
+	const status = [
 		onLocalWorker ? "on local worker" : "",
 		placement?.reconnecting === true ? "RECONNECTING" : "",
 		redelivered > 0 ? `redelivered ${redelivered} message${redelivered === 1 ? "" : "s"}` : "",
-		sid ? `session ${sid}` : "",
 	]
 		.filter(Boolean)
 		.join(" · ");
+	const meta = [status, sid ? `session ${sid}` : ""].filter(Boolean).join(" · ");
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 
@@ -90,9 +90,10 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 		lines.push(`${" ".repeat(Math.max(0, width - visibleWidth(meta) - 1))}${paint(meta, t.dim)} `);
 		return lines;
 	}
-	if (onLocalWorker) {
-		const placement = `   ${paint("on local worker", t.dim)}`;
-		lines.push(placement + " ".repeat(Math.max(0, width - visibleWidth(placement))));
+	// Worker status keeps its own row, so a narrow chat still shows reconnects and redelivery.
+	if (status) {
+		const row = `   ${paint(truncateToWidth(status, Math.max(1, width - 3), "…"), t.dim)}`;
+		lines.push(row + " ".repeat(Math.max(0, width - visibleWidth(row))));
 	}
 	for (const row of wrapIdentifierLines(sid, width, "   ", "   ")) {
 		const value = `${row.prefix}${paint(row.chunk, t.dim)}`;
