@@ -521,13 +521,19 @@ test("text left unconfirmed when its chat closes is retried by the stage's next 
 		5,
 	);
 	assert.ok(second.ok);
-	while (second.handle.hasPending || fake.deliveries.length < 2)
-		await new Promise((resolve) => setTimeout(resolve, 1));
+	// Nobody holds this view: like the pool, it closes as soon as nothing is pending.
+	const closeWhenDrained = () => {
+		if (!second.handle.hasPending) second.handle.dispose();
+	};
+	second.handle.onDrained(closeWhenDrained);
+	closeWhenDrained();
+	while (fake.deliveries.length < 2) await new Promise((resolve) => setTimeout(resolve, 1));
 	assert.deepEqual(
 		fake.deliveries.map(({ text }) => text),
 		["FOLLOW", "FOLLOW"],
 		"tried again under the same op",
 	);
 	assert.equal(fake.deliveries[0]!.op, fake.deliveries[1]!.op);
-	assert.equal(second.handle.placement.undelivered, undefined, "and admitted");
+	while (outbox[0]?.admittedBy === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
+	assert.equal(outbox[0]?.admittedBy, 1, "and admitted");
 });
