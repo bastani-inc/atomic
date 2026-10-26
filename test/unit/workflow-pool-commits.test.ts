@@ -591,6 +591,8 @@ test("database reopen recovers attempts, receipts, sessions and results without 
 			const takeover = await journal.takeoverExpired("root", "replacement-coordinator", 60_000);
 			if (takeover.status !== "acquired") assert.fail("No takeover");
 			await peer.expire(takeover.lease, f.attempt);
+			// The resumed root re-enqueues its child before any worker may claim it (#3979).
+			await peer.enqueue(takeover.lease, work, boundary);
 			const next = await peer.claim(takeover.lease, "replacement-worker", [work], 60_000);
 			assert.ok(next);
 			assert.equal(next.generation, f.attempt.generation + 1);
@@ -702,6 +704,8 @@ test("a version 1 pool journal migrates: renewal rows go, requests become digest
 			const takeover = await journal.takeoverExpired("root", "replacement-coordinator", 60_000);
 			if (takeover.status !== "acquired") assert.fail("No takeover");
 			assert.equal(await resumed.releasePreviousIncarnations(takeover.lease), 1);
+			// The resumed root re-enqueues its child before any worker may claim it (#3979).
+			await resumed.enqueue(takeover.lease, work, boundary);
 			const next = await resumed.claim(takeover.lease, "replacement-worker", [work], 60_000);
 			assert.equal(next?.generation, f.attempt.generation + 1);
 			const append = {

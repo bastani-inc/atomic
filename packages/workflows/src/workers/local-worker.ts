@@ -34,6 +34,14 @@ import { workerSessionStore } from "./session-store.js";
 import { WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
 
+/** A reply fenced the worker's attempt: another attempt owns the work, or none does. Not a worker fault. */
+class WorkAttemptFencedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "WorkAttemptFencedError";
+	}
+}
+
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
@@ -48,6 +56,8 @@ export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart):
 
 async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
+	/** Set once any reply fences the current attempt; the attempt then ends without failing the worker (#3979). */
+	let attemptFenced = false;
 	const pending = new Map<
 		number,
 		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
@@ -75,7 +85,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			return;
 		}
 		pending.delete(reply.id);
-		if (reply.error) receiver?.reject(new Error(reply.error));
+		if (reply.error && reply.fenced) {
+			attemptFenced = true;
+			receiver?.reject(new WorkAttemptFencedError(reply.error));
+		} else if (reply.error) receiver?.reject(new Error(reply.error));
 		else receiver?.resolve(reply.value);
 	});
 	process.on("disconnect", () => process.exit(1));
@@ -198,6 +211,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			}
 			await reader.catchUpWorkflow(start.root);
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
+			attemptFenced = false;
 			if (!work) {
 				await delay(25 + Math.random() * 25);
 				continue;
@@ -295,7 +309,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			let controlPulse: Promise<void> | undefined;
 			const failPulse = (error: Error) => {
 				controller.abort(error);
-				process.exitCode = 1;
+				if (!(error instanceof WorkAttemptFencedError)) process.exitCode = 1;
 			};
 			const heartbeat = setInterval(() => {
 				stageWatches?.sweep();
@@ -363,12 +377,22 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					return;
 				}
 				await request({ kind: "complete", result });
+			} catch (error) {
+				if (!attemptFenced) throw error;
+				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.
+				controller.abort(error);
 			} finally {
 				clearInterval(heartbeat);
 				unsubscribe();
 				stageWatches?.clear();
 				heldAttempt = undefined;
 				activeController = undefined;
+			}
+			if (attemptFenced) {
+				await renewal;
+				await report;
+				await controlPulse;
+				await request({ kind: "fenced" });
 			}
 		}
 	} finally {

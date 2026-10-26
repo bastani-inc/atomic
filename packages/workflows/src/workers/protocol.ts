@@ -33,6 +33,8 @@ export interface WorkerStart {
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }
+	/** The worker ended its attempt because a reply reported it fenced; it is not a worker fault. */
+	| { readonly kind: "fenced" }
 	| { readonly kind: "controlled"; readonly revision: number }
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }
@@ -62,6 +64,8 @@ export interface WorkerReply {
 	readonly id: number;
 	readonly value?: WorkflowSerializableValue | PoolWork | PoolControl;
 	readonly error?: string;
+	/** The refusal fences the worker's attempt: the work has another owner, or none, and the attempt must end. */
+	readonly fenced?: true;
 	readonly delivery?: {
 		readonly id: string;
 		readonly from: Parameters<WorkerDeliver>[0];
