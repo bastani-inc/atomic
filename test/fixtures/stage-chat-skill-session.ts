@@ -2,11 +2,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildSkillCatalog, createSyntheticSourceInfo, initTheme, SessionManager, type Skill } from "@bastani/atomic";
+import {
+	buildSkillCatalog,
+	createSyntheticSourceInfo,
+	initTheme,
+	type PromptTemplate,
+	SessionManager,
+	type Skill,
+} from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
-import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import type { ExtensionFactory } from "../../packages/coding-agent/src/core/extensions/index.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -18,7 +26,14 @@ import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.
 import type { StageChatViewOpts } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
 
-export async function createStageSkillFixture() {
+export interface StageSkillFixtureOptions {
+	/** Prompt templates the stage session can expand. */
+	readonly prompts?: readonly PromptTemplate[];
+	/** Extensions loaded into the stage session. */
+	readonly extensionFactories?: readonly ExtensionFactory[];
+}
+
+export async function createStageSkillFixture(options: StageSkillFixtureOptions = {}) {
 	initTheme("dark", false);
 	const directory = mkdtempSync(join(tmpdir(), "atomic-stage-skills-"));
 	async function skill(source: string, scope: "project" | "user", body: string): Promise<Skill> {
@@ -34,12 +49,19 @@ export async function createStageSkillFixture() {
 	const userSkill = await skill("stage-user", "user", "STAGE USER ALTERNATIVE.");
 	const mainSkill = await skill("main-project", "project", "MAIN SKILL BODY MUST NOT REACH STAGE.");
 	let catalog = buildSkillCatalog([stageSkill, userSkill], [stageSkill]);
-	let resources = createTestResourceLoader();
+	const createResources = async () =>
+		options.extensionFactories === undefined
+			? createTestResourceLoader()
+			: createTestResourceLoader({
+					extensionsResult: await createTestExtensionsResult([...options.extensionFactories], directory),
+				});
+	let resources = await createResources();
 	const loader = {
 		...resources,
 		getExtensions: () => resources.getExtensions(),
+		getPrompts: () => ({ prompts: [...(options.prompts ?? [])], diagnostics: [] }),
 		// #3105: reload retires the old runtime; discovery must publish a fresh generation.
-		reload: async () => { resources = createTestResourceLoader(); },
+		reload: async () => { resources = await createResources(); },
 		getSkills: () => ({ skills: [stageSkill], diagnostics: [] }),
 		getSkillCatalog: () => catalog,
 	};

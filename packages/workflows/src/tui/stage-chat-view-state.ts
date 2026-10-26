@@ -224,15 +224,19 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				}
 				await handle.prompt(text);
 			},
+			// Queued text keeps `sendUserMessage()`'s literal semantics, as Enter on an idle stage does;
+			// `steer()`/`followUp()` would expand templates and refuse registered commands instead.
 			steer: async (text) => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
-				await handle.steer(text);
+				if (handle.sendUserMessage !== undefined) await handle.sendUserMessage(text, { deliverAs: "steer" });
+				else await handle.steer(text);
 			},
 			followUp: async (text) => {
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
-				await handle.followUp(text);
+				if (handle.sendUserMessage !== undefined) await handle.sendUserMessage(text, { deliverAs: "followUp" });
+				else await handle.followUp(text);
 			},
 			interrupt: async () => {
 				const handle = liveHandle(ctx);
