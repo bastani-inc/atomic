@@ -218,7 +218,7 @@ export async function runSinglePath(
 		);
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
-			getChildSessionOptions: ctx.getChildSessionOptions,
+			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
 			signal,
@@ -301,6 +301,9 @@ export async function runSinglePath(
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
 		} else {
+			// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
+			// context throws on every read. The working directory is fixed at launch.
+			const launchCwd = ctx.cwd;
 			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
 			r = await runOwnerlessChild({
 				agent: params.agent!,
@@ -310,7 +313,7 @@ export async function runSinglePath(
 				options: runOptions,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
-				runSync: (childTask, options) => deps.runtime.runSync(ctx.cwd, agents, params.agent!, childTask, options),
+				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
 			}).result;
 		}
 	} catch (error) {

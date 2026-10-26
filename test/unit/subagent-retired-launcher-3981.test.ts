@@ -13,7 +13,11 @@ import { resolveSubagentIntercomTarget } from "../../packages/subagents/src/inte
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import registerSubagentNotify from "../../packages/subagents/src/runs/foreground/notify.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
-import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
+import {
+	BURST_EXECUTION_SCHEDULE,
+	type ExecutorDeps,
+	type SubagentExecutorRuntimeDeps,
+} from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import {
 	INTERCOM_DETACH_REQUEST_EVENT,
@@ -68,7 +72,9 @@ function retirableStageContext(root: string, boundary: WorkflowStageAdmissionBou
 		messageAdmission: { boundary, extensionState: new Map(), isOpen: () => boundary.isOpen() },
 	};
 	const ctx = {
-		cwd: root,
+		get cwd() {
+			return live(root);
+		},
 		mode: "tui",
 		hasUI: false,
 		ui: {},
@@ -100,21 +106,12 @@ function retirableStageContext(root: string, boundary: WorkflowStageAdmissionBou
 	};
 }
 
-test("a detached subagent that exits after model fallback retired its launching session still reports its completion (#3981)", async () => {
-	const root = makeTempDirectory("atomic-detached-exit-retired-3981-");
-	roots.push(root);
-	const rejections: unknown[] = [];
-	const onRejection = (reason: unknown) => rejections.push(reason);
-	process.on("unhandledRejection", onRejection);
-	const emitter = new EventEmitter();
-	const bus = eventBus(emitter);
-	const boundary = new WorkflowStageAdmissionBoundary();
-	const gate = Promise.withResolvers<void>();
-	const launch = Promise.withResolvers<RunSyncOptions>();
-	const detachedResults: SingleResult[] = [];
+type RunSync = SubagentExecutorRuntimeDeps["runSync"];
+
+function stageExecutor(root: string, emitter: EventEmitter, runtimeRunSync: RunSync) {
 	const notifications: string[] = [];
 	const pi = {
-		events: bus,
+		events: eventBus(emitter),
 		getSessionName: () => "stage-parent",
 		sendMessage(message: { content?: string }) {
 			notifications.push(message.content ?? "");
@@ -137,21 +134,47 @@ test("a detached subagent that exits after model fallback retired its launching 
 		getSubagentSessionRoot: () => join(root, "sessions"),
 		expandTilde: (value) => value,
 		discoverAgents: () => ({ agents: [worker] }),
-		runtime: {
-			runSync: async (cwd, agents, agentName, task, options) => {
-				launch.resolve(options);
-				const onDetachedExit = options.onDetachedExit;
-				return runSync(cwd, agents, agentName, task, {
-					...options,
-					testSession: { output: `${task} result`, promptGate: gate.promise },
-					onDetachedExit(result) {
-						detachedResults.push(result);
-						onDetachedExit?.(result);
-					},
-				});
-			},
-		},
+		runtime: { runSync: runtimeRunSync },
 	});
+	return { executor, notifications, unregisterNotify };
+}
+
+function captureRejections() {
+	const rejections: unknown[] = [];
+	const onRejection = (reason: unknown) => rejections.push(reason);
+	process.on("unhandledRejection", onRejection);
+	return {
+		stale: () => rejections.filter(isStaleExtensionContextError),
+		stop: () => process.off("unhandledRejection", onRejection),
+	};
+}
+
+test("a detached subagent that exits after model fallback retired its launching session still reports its completion (#3981)", async () => {
+	const root = makeTempDirectory("atomic-detached-exit-retired-3981-");
+	roots.push(root);
+	const rejections = captureRejections();
+	const emitter = new EventEmitter();
+	const bus = eventBus(emitter);
+	const boundary = new WorkflowStageAdmissionBoundary();
+	const gate = Promise.withResolvers<void>();
+	const launch = Promise.withResolvers<RunSyncOptions>();
+	const detachedResults: SingleResult[] = [];
+	const { executor, notifications, unregisterNotify } = stageExecutor(
+		root,
+		emitter,
+		async (cwd, agents, agentName, task, options) => {
+			launch.resolve(options);
+			const onDetachedExit = options.onDetachedExit;
+			return runSync(cwd, agents, agentName, task, {
+				...options,
+				testSession: { output: `${task} result`, promptGate: gate.promise },
+				onDetachedExit(result) {
+					detachedResults.push(result);
+					onDetachedExit?.(result);
+				},
+			});
+		},
+	);
 	const stage = retirableStageContext(root, boundary);
 	try {
 		const execution = executor.execute(
@@ -182,12 +205,53 @@ test("a detached subagent that exits after model fallback retired its launching 
 
 		for (let attempt = 0; attempt < 100 && notifications.length === 0; attempt++) await sleep(5);
 		assert.equal(detachedResults.length, 1);
-		assert.deepEqual(rejections.filter(isStaleExtensionContextError), []);
+		assert.deepEqual(rejections.stale(), []);
 		assert.equal(notifications.length, 1, "the parent still learns that its detached child finished");
 		assert.match(notifications[0]!, /single result/);
 	} finally {
 		gate.resolve();
 		unregisterNotify();
-		process.off("unhandledRejection", onRejection);
+		rejections.stop();
+	}
+});
+
+test("a queued subagent without a task host starts in its launch directory after model fallback retired its launching session (#3981)", async () => {
+	const root = makeTempDirectory("atomic-queued-ownerless-retired-3981-");
+	roots.push(root);
+	const rejections = captureRejections();
+	const stage = retirableStageContext(root, new WorkflowStageAdmissionBoundary());
+	const started: string[] = [];
+	const { executor, unregisterNotify } = stageExecutor(
+		root,
+		new EventEmitter(),
+		async (cwd, agents, agentName, task, options) => {
+			started.push(cwd);
+			return runSync(cwd, agents, agentName, task, { ...options, testSession: { output: `${task} result` } });
+		},
+	);
+	// The launch waits for a slot, as one queued behind its burst's concurrency limit does.
+	const queued = Promise.withResolvers<() => Promise<void>>();
+	try {
+		const execution = executor
+			.execute(
+				"tool-call",
+				{ agent: "worker", task: "queued", artifacts: false, [BURST_EXECUTION_SCHEDULE]: queued.resolve },
+				new AbortController().signal,
+				undefined,
+				stage.ctx,
+			)
+			.catch(() => undefined);
+		const dispatch = await queued.promise;
+
+		// Model fallback replaces the session that launched it before a slot frees.
+		stage.retire();
+		await dispatch();
+		await execution;
+
+		assert.deepEqual(started, [root]);
+		assert.deepEqual(rejections.stale(), []);
+	} finally {
+		unregisterNotify();
+		rejections.stop();
 	}
 });

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A subagent that waited for a free slot (`concurrency`, or a burst of launches) or was restored, and that starts after its parent workflow stage's session was replaced by model fallback, now launches instead of failing with `This extension ctx is stale after session replacement or reload`. It takes its settings from the replacement session, and starts in the directory it was launched for ([#3981](https://github.com/bastani-inc/atomic/issues/3981))
 - A detached subagent that exits after its parent workflow stage's session was replaced by model fallback still sends its completion notice. Before, the notice was lost and the workflow run failed with `This extension ctx is stale after session replacement or reload` ([#3981](https://github.com/bastani-inc/atomic/issues/3981))
 
 ## [0.9.44] - 2026-10-25

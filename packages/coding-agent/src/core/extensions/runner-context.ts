@@ -217,6 +217,12 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 			source.assertAction?.();
 			return source.getChildSessionOptions?.(options) ?? options;
 		},
+		getChildSessionOptionsResolver: () => {
+			source.assertActive();
+			source.assertAction?.();
+			const resolve = source.getChildSessionOptions;
+			return (options) => resolve?.(options) ?? options;
+		},
 		getExtensionPaths: () => {
 			source.assertActive();
 			return source.getExtensionPaths?.() ?? [];

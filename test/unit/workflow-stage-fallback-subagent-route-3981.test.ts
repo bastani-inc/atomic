@@ -15,12 +15,14 @@ import { isStaleExtensionContextError } from "../../packages/coding-agent/src/co
 import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /** Structural cost, not a slow test: a real stage session, its fallback replacement, and a real child session. */
 const REAL_SESSIONS_TIMEOUT_MS = 120_000;
+const SECOND_TASK = "Second queued fixture task.";
+/** How long the replacement session waits for a child's step before the stage moves on without it. */
+const CHILD_BOUND_MS = 20_000;
 const SAFETY_NET_LOG = "ignored a stale extension-context rejection";
-const CHILD_TASK = "Inspect the fixture and report.";
 /** Distinct from any routed text: auto routing refuses a task that contains a configured credential. */
 const PROVIDER_KEY = "local-provider-key-3981";
 
@@ -84,135 +86,208 @@ function callerOf(messages: readonly Message[]): Caller {
 	return "child";
 }
 
+interface ChildCall {
+	readonly provider: string;
+	readonly task: string;
+}
+
+/**
+ * Run one schema stage whose first turn launches background subagents with `launch`, after which every stage call is
+ * rate limited, so stage fallback replaces the launching session. Children stay mid-turn until that has happened, then
+ * are rate limited too.
+ */
+async function runStageThatLaunchesSubagents(
+	launch: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"],
+	hooks: {
+		/** Holds the replacement session's model calls, keeping the stage open until a child has done its part. */
+		readonly replacementHold?: () => Promise<void>;
+		readonly onChildCall?: (call: ChildCall) => void;
+	} = {},
+) {
+	const directory = makeTempDirectory("stage-fallback-subagent-3981-");
+	directories.push(directory);
+	// `fallback-worker` is `worker` with a fallback model of its own, so its fallback walk consults its route's gate.
+	const agentDir = join(directory, "agent-home");
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+	const worker = readFileSync(join(moduleDir(import.meta.url), "../../packages/subagents/agents/worker.md"), "utf8");
+	writeFileSync(
+		join(agentDir, "agents", "fallback-worker.md"),
+		worker
+			.replace("name: worker", "name: fallback-worker")
+			.replace("model: auto", "model: auto\nfallbackModels: spare/m"),
+	);
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+	// Subagent children are test doubles under NODE_ENV=test; these must be real sessions.
+	vi.stubEnv("NODE_ENV", "development");
+
+	const rejections: unknown[] = [];
+	const onRejection = (reason: unknown) => rejections.push(reason);
+	process.on("unhandledRejection", onRejection);
+	const consoleError = vi.spyOn(console, "error");
+
+	const launchingSessionRetired = Promise.withResolvers<void>();
+	const childCalls: ChildCall[] = [];
+	let stageCalls = 0;
+	const modelRuntime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory({
+			limited: { type: "api_key", key: PROVIDER_KEY },
+			spare: { type: "api_key", key: PROVIDER_KEY },
+		}),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	for (const provider of ["limited", "spare"]) {
+		modelRuntime.registerProvider(provider, {
+			api: "openai-completions",
+			baseUrl: "https://example.invalid",
+			apiKey: PROVIDER_KEY,
+			models: [spec],
+			streamSimple: (model, context) => {
+				const stream = createAssistantMessageEventStream();
+				const caller = callerOf(context.messages);
+				if (caller === "stage" && provider === "spare") launchingSessionRetired.resolve();
+				if (caller === "child") {
+					const call = { provider, task: firstUserText(context.messages) };
+					childCalls.push(call);
+					hooks.onChildCall?.(call);
+				}
+				const launches = caller === "stage" && provider === "limited" && stageCalls++ === 0;
+				void (async () => {
+					if (caller === "child") await launchingSessionRetired.promise;
+					if (caller === "stage" && provider === "spare") await hooks.replacementHold?.();
+					const message =
+						caller === "router"
+							? reply(model, [], "400 router unavailable")
+							: launches
+								? reply(model, [
+										{ type: "toolCall", id: "launch-children", name: "subagent", arguments: launch },
+									])
+								: reply(model, [], "429 rate limit exceeded");
+					stream.push({ type: "start", partial: message });
+					if (message.stopReason === "error") stream.push({ type: "error", reason: "error", error: message });
+					else stream.push({ type: "done", reason: "toolUse", message });
+					stream.end(message);
+				})();
+				return stream;
+			},
+		});
+	}
+
+	let stageError: unknown;
+	const definition = workflow({
+		name: "stage-fallback-subagents",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			try {
+				await ctx.task("design-and-implement", {
+					prompt: "go",
+					model: modelRuntime.getModel("limited", "m")!,
+					fallbackModels: ["spare/m"],
+					modelRuntime,
+					agentDir: join(directory, "stage-agent"),
+					settingsManager: SettingsManager.inMemory({
+						// No same-model retries: each candidate is spent at once, so no cooldown round waits.
+						retry: { enabled: true, maxRetries: 0, baseDelayMs: 10 },
+						compaction: { enabled: false },
+					}),
+					builtins: { workflows: false, subagents: true, intercom: false, mcp: false, "web-access": false },
+					schema: Type.Object({ done: Type.Boolean() }),
+				});
+			} catch (error) {
+				stageError = error;
+			}
+			return {};
+		},
+	});
+	try {
+		const result = await run(definition, {}, { cwd: directory, journal: { memory: true }, store: createStore() });
+		return {
+			result,
+			stageError,
+			childCalls,
+			staleRejections: rejections.filter(isStaleExtensionContextError),
+			safetyNetReported: consoleError.mock.calls.some((args) => String(args[0]).includes(SAFETY_NET_LOG)),
+		};
+	} finally {
+		process.off("unhandledRejection", onRejection);
+	}
+}
+
 test(
 	"a background subagent outlives the stage session that model fallback retires, without a stale-context rejection (#3981)",
 	async () => {
-		const directory = makeTempDirectory("stage-fallback-subagent-route-3981-");
-		directories.push(directory);
-		// The child is `worker` with a fallback model of its own, so its fallback walk consults its route's gate.
-		const agentDir = join(directory, "agent-home");
-		mkdirSync(join(agentDir, "agents"), { recursive: true });
-		const worker = readFileSync(
-			join(moduleDir(import.meta.url), "../../packages/subagents/agents/worker.md"),
-			"utf8",
-		);
-		writeFileSync(
-			join(agentDir, "agents", "fallback-worker.md"),
-			worker
-				.replace("name: worker", "name: fallback-worker")
-				.replace("model: auto", "model: auto\nfallbackModels: spare/m"),
-		);
-		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
-		// Subagent children are test doubles under NODE_ENV=test; this one must be a real session with a fallback chain.
-		vi.stubEnv("NODE_ENV", "development");
-
-		const rejections: unknown[] = [];
-		const onRejection = (reason: unknown) => rejections.push(reason);
-		process.on("unhandledRejection", onRejection);
-		const consoleError = vi.spyOn(console, "error");
-
-		// The child stays mid-turn until the stage has replaced the session that launched it.
-		const launchingSessionRetired = Promise.withResolvers<void>();
-		const childCalls: string[] = [];
-		let stageCalls = 0;
-		const modelRuntime = await ModelRuntime.create({
-			credentials: AuthStorage.inMemory({
-				limited: { type: "api_key", key: PROVIDER_KEY },
-				spare: { type: "api_key", key: PROVIDER_KEY },
-			}),
-			modelsPath: null,
-			refreshOnCreate: false,
-		});
-		for (const provider of ["limited", "spare"]) {
-			modelRuntime.registerProvider(provider, {
-				api: "openai-completions",
-				baseUrl: "https://example.invalid",
-				apiKey: PROVIDER_KEY,
-				models: [spec],
-				streamSimple: (model, context) => {
-					const stream = createAssistantMessageEventStream();
-					const caller = callerOf(context.messages);
-					if (caller === "stage" && provider === "spare") launchingSessionRetired.resolve();
-					if (caller === "child") childCalls.push(provider);
-					const launch = caller === "stage" && provider === "limited" && stageCalls++ === 0;
-					void (async () => {
-						if (caller === "child") await launchingSessionRetired.promise;
-						const message =
-							caller === "router"
-								? reply(model, [], "400 router unavailable")
-								: launch
-									? reply(model, [
-											{
-												type: "toolCall",
-												id: "launch-child",
-												name: "subagent",
-												arguments: {
-													agent: "fallback-worker",
-													task: CHILD_TASK,
-													context: "fresh",
-													output: false,
-													progress: false,
-													wait: { kind: "background" },
-												},
-											},
-										])
-									: reply(model, [], "429 rate limit exceeded");
-						stream.push({ type: "start", partial: message });
-						if (message.stopReason === "error") stream.push({ type: "error", reason: "error", error: message });
-						else stream.push({ type: "done", reason: "toolUse", message });
-						stream.end(message);
-					})();
-					return stream;
-				},
-			});
-		}
-
-		let stageError: unknown;
-		const definition = workflow({
-			name: "stage-fallback-subagent-route",
-			description: "",
-			inputs: {},
-			outputs: {},
-			async run(ctx) {
-				try {
-					await ctx.task("design-and-implement", {
-						prompt: "go",
-						model: modelRuntime.getModel("limited", "m")!,
-						fallbackModels: ["spare/m"],
-						modelRuntime,
-						agentDir: join(directory, "stage-agent"),
-						settingsManager: SettingsManager.inMemory({
-							retry: { enabled: true, maxRetries: 1, baseDelayMs: 10 },
-							compaction: { enabled: false },
-						}),
-						builtins: { workflows: false, subagents: true, intercom: false, mcp: false, "web-access": false },
-						schema: Type.Object({ done: Type.Boolean() }),
-					});
-				} catch (error) {
-					stageError = error;
-				}
-				return {};
+		// The replacement stays open until the child has moved on to its fallback model, or long enough to show it never
+		// will.
+		const fallbackReached = Promise.withResolvers<void>();
+		const childProviders = new Set<string>();
+		const run = await runStageThatLaunchesSubagents(
+			{
+				agent: "fallback-worker",
+				task: "Inspect the fixture and report.",
+				context: "fresh",
+				output: false,
+				progress: false,
+				wait: { kind: "background" },
 			},
-		});
+			{
+				onChildCall: (call) => {
+					childProviders.add(call.provider);
+					if (childProviders.size === 2) fallbackReached.resolve();
+				},
+				replacementHold: () => Promise.race([fallbackReached.promise, sleep(CHILD_BOUND_MS)]),
+			},
+		);
 
-		try {
-			const result = await run(definition, {}, { cwd: directory, journal: { memory: true }, store: createStore() });
+		assert.deepEqual(run.staleRejections, []);
+		assert.equal(run.safetyNetReported, false, "the run boundary's stale-context safety net has nothing to report");
+		// The stage's real failure stays the outcome.
+		assert.equal(run.result.status, "completed", run.result.error);
+		assert.match(String(run.stageError), /429/);
+		// The child's own fallback walk reached its next model after its launching session was gone.
+		const providers = run.childCalls.map((call) => call.provider);
+		assert.ok(providers.includes("limited"), `child calls: ${providers.join(",")}`);
+		assert.ok(providers.includes("spare"), `child calls: ${providers.join(",")}`);
+	},
+	REAL_SESSIONS_TIMEOUT_MS,
+);
 
-			assert.deepEqual(rejections.filter(isStaleExtensionContextError), []);
-			assert.equal(
-				consoleError.mock.calls.some((args) => String(args[0]).includes(SAFETY_NET_LOG)),
-				false,
-				"the run boundary's stale-context safety net has nothing to report",
-			);
-			// The stage's real failure stays the outcome.
-			assert.equal(result.status, "completed", result.error);
-			assert.match(String(stageError), /429/);
-			// The child's own fallback walk reached its next model after its launching session was gone.
-			assert.ok(childCalls.includes("limited"), `child calls: ${childCalls.join(",")}`);
-			assert.ok(childCalls.includes("spare"), `child calls: ${childCalls.join(",")}`);
-		} finally {
-			process.off("unhandledRejection", onRejection);
-		}
+test(
+	"a queued subagent that starts after model fallback retired its launching stage session still launches (#3981)",
+	async () => {
+		// One slot: the second child waits until the first ends, which is after its launching session is replaced. The
+		// replacement stays open until the second child reaches its model, or long enough to show it never will.
+		const secondReached = Promise.withResolvers<void>();
+		const run = await runStageThatLaunchesSubagents(
+			{
+				tasks: [
+					{ agent: "worker", task: "First queued fixture task." },
+					{ agent: "worker", task: SECOND_TASK },
+				],
+				concurrency: 1,
+				context: "fresh",
+				output: false,
+				progress: false,
+				wait: { kind: "background" },
+			},
+			{
+				onChildCall: (call) => {
+					if (call.task.includes(SECOND_TASK)) secondReached.resolve();
+				},
+				replacementHold: () => Promise.race([secondReached.promise, sleep(CHILD_BOUND_MS)]),
+			},
+		);
+
+		const tasks = run.childCalls.map((call) => call.task);
+		assert.ok(
+			tasks.some((task) => task.includes(SECOND_TASK)),
+			`the queued child reached its model; child calls: ${JSON.stringify(tasks)}`,
+		);
+		assert.deepEqual(run.staleRejections, []);
+		assert.equal(run.safetyNetReported, false);
+		assert.equal(run.result.status, "completed", run.result.error);
+		assert.match(String(run.stageError), /429/);
 	},
 	REAL_SESSIONS_TIMEOUT_MS,
 );
