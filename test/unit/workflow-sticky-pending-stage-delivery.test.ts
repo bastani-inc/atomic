@@ -494,6 +494,39 @@ describe("pre-start sticky drain", () => {
 		assert.equal(restored.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, count);
 	});
 
+	test("a drain whose transcript snapshot predates a slow append does not redeliver or fail the stage (#3980)", async () => {
+		const { store, backend } = await rootFixture(baseStage({ status: "running" }));
+		await store.queueStickyStageMessage(
+			stickyInput("slow-append", `workflow:${ROOT_RUN_ID}/**`),
+			GROUP,
+			GROUP,
+			backend,
+		);
+		const delivery = createWorkflowPendingStageDelivery(store, ROOT_RUN_ID, "orch-3-id", "orchestrator-3");
+		// The session's transcript, which only shows the message once its (pooled) append returns.
+		const branch: string[] = [];
+		const appendGate = Promise.withResolvers<void>();
+		const appendStarted = Promise.withResolvers<void>();
+		let admissions = 0;
+		const deliver: Parameters<typeof delivery.deliverPending>[0] = async (_from, msg) => {
+			admissions += 1;
+			if (admissions > 1) return;
+			appendStarted.resolve();
+			await appendGate.promise;
+			branch.push(msg.id);
+		};
+		const first = delivery.deliverPending(deliver, { sessionId: "pooled", receivedMessageIds: [...branch] });
+		await appendStarted.promise;
+		// The second startup drain reads the transcript while the first append is still in flight.
+		const second = delivery.deliverPending(deliver, { sessionId: "pooled", receivedMessageIds: [...branch] });
+		appendGate.resolve();
+		await first;
+		await second;
+		assert.equal(admissions, 1);
+		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		assert.equal(await delivery.ready("pooled"), undefined);
+	});
+
 	test("deduplicates archived no-recipient sticky delivery after failed-stage retry and cold hydration (#3467)", async () => {
 		const { store } = await rootFixture([]);
 		const backend = await JournalTestBackend.create();
