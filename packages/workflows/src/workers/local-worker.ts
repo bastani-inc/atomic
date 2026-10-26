@@ -7,7 +7,7 @@ import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
-import type { PoolCommitReceipt, PoolControl, PoolMutation, PoolWork } from "../durable/journal/sql-pool-queue.js";
+import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
 import { createToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
@@ -19,6 +19,7 @@ import { createStore } from "../shared/store.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
+import { poolWorkerCommit } from "./pool-commit.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
 	type WorkerDeliver,
@@ -104,15 +105,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(journal)!.tables.runs}_pool_` },
 		{ agentDir: "", domain: "sessions" },
 	);
-	const commit = async (mutation: PoolMutation): Promise<PoolCommitReceipt> => {
-		const receipt = (await request({
-			kind: "commit",
-			operation: randomUUID(),
-			mutation,
-		})) as unknown as PoolCommitReceipt;
-		await reader.catchUpWorkflow(start.root);
-		return receipt;
-	};
+	const commit = poolWorkerCommit({
+		send: async (mutation) =>
+			(await request({ kind: "commit", operation: randomUUID(), mutation })) as unknown as PoolCommitReceipt,
+		catchUp: () => reader.catchUpWorkflow(start.root),
+	});
 	const reads = new Set([
 		"getToolOutput",
 		"getToolCheckpoint",
