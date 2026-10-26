@@ -1,9 +1,10 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { RemoteQueuePause } from "../src/modes/interactive-engine/remote-queue-pause.ts";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
+import { RemoteQueuePause } from "../src/modes/interactive-engine/remote-queue-pause.js";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
 
 const tempDirs: string[] = [];
 
@@ -125,20 +126,24 @@ describe("RpcClient request timeout policy", () => {
 		const unhandled: unknown[] = [];
 		const recordUnhandled = (reason: unknown) => unhandled.push(reason);
 		process.on("unhandledRejection", recordUnhandled);
-		await client.start();
 		try {
-			// The child never acknowledges the prompt, so only promptAndWait's own
-			// timeout can end the wait, and it must surface as this call's rejection.
-			await expect(client.promptAndWait("never acknowledged", undefined, 50)).rejects.toThrow(
-				/Timeout collecting events/,
-			);
+			await client.start();
+			try {
+				// The child never acknowledges the prompt, so only promptAndWait's own
+				// timeout can end the wait, and it must surface as this call's rejection.
+				await assert.rejects(
+					client.promptAndWait("never acknowledged", undefined, 50),
+					/Timeout collecting events/,
+				);
+			} finally {
+				await client.stop();
+				// Let a rejection orphaned by stop() reach the unhandled-rejection hook.
+				await new Promise((resolve) => setImmediate(resolve));
+			}
 		} finally {
-			await client.stop();
-			// Let a rejection orphaned by stop() reach the unhandled-rejection hook.
-			await new Promise((resolve) => setImmediate(resolve));
 			process.off("unhandledRejection", recordUnhandled);
 		}
-		expect(unhandled).toEqual([]);
+		assert.deepEqual(unhandled, []);
 	});
 
 	test("waits for a queue resume that outlasts the deadline and clears the paused state (#3493)", async () => {
