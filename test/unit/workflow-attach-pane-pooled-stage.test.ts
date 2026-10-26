@@ -16,9 +16,11 @@ import {
 	openPooledStageHandle,
 	type PooledStageTransport,
 } from "../../packages/workflows/src/workers/pooled-stage-handle.js";
+import { RegisteredPooledStageHandle } from "../../packages/workflows/src/workers/pooled-stage-registry.js";
 import { registerPooledStageSource } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
 import type {
 	PooledStageChatSnapshot,
+	PooledStageDelivery,
 	PooledStageWatchMessage,
 	WatchId,
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
@@ -51,8 +53,9 @@ function assistant(text: string) {
 }
 
 /** The watch doors of a pool, answered in memory: one open watch whose events the test sends. */
-function fakeTransport() {
+function fakeTransport(overrides: Partial<PooledStageChatSnapshot> = {}) {
 	const unwatched: WatchId[] = [];
+	const deliveries: PooledStageDelivery[] = [];
 	let listener: ((message: PooledStageWatchMessage) => void) | undefined;
 	const snapshot: PooledStageChatSnapshot = {
 		sessionId: "pooled-session",
@@ -63,6 +66,7 @@ function fakeTransport() {
 		pendingToolExecutionEvents: [],
 		queued: { steering: [], followUp: [] },
 		seq: 7,
+		...overrides,
 	};
 	const transport: PooledStageTransport = {
 		async watch(_ref, receive) {
@@ -72,10 +76,15 @@ function fakeTransport() {
 		async unwatch(watch) {
 			unwatched.push(watch);
 		},
+		async deliver(delivery) {
+			deliveries.push(delivery);
+			return { ok: true, action: delivery.intent === "followUp" ? "followUp" : "steer" };
+		},
 	};
 	return {
 		transport,
 		unwatched,
+		deliveries,
 		send(seq: number, event: AgentSessionEvent) {
 			listener?.({ kind: "events", events: [{ seq, event }] });
 		},
@@ -93,7 +102,7 @@ function visible(lines: readonly string[]): string {
 		.replace(/\s+/g, " ");
 }
 
-test("attaching to a running pooled stage renders its streaming text, not SESSION UNAVAILABLE (#3996)", async () => {
+test("attaching to a running pooled stage renders its streaming text, not SESSION UNAVAILABLE, and Enter steers it (#3996)", async () => {
 	const store = createStore();
 	store.recordRunStart({
 		id: "child",
@@ -153,9 +162,138 @@ test("attaching to a running pooled stage renders its streaming text, not SESSIO
 		} as never as AgentSessionEvent);
 		await until(() => visible(pane.render(100)).includes(FIRST + SECOND));
 
+		for (const character of "look at the tests") pane.handleInput(character);
+		pane.handleInput("\r");
+		await until(() => pool.deliveries.length === 1);
+		assert.deepEqual(
+			pool.deliveries.map(({ watch, text, intent }) => ({ watch, text, intent })),
+			[{ watch: "watch-1", text: "look at the tests", intent: "steer" }],
+			"Enter in a pooled stage's chat steers it through the delivery door",
+		);
+
 		pane.handleInput("\x18");
 		assert.equal(pane._mode, "graph");
 		assert.deepEqual(pool.unwatched, ["watch-1"], "leaving the chat closes the watch");
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});
+
+test("the graph shows a pooled stage's queued messages with no chat open (#3996)", () => {
+	const store = createStore();
+	store.recordRunStart({
+		id: "child",
+		name: "pooled-child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	store.recordStageStart("child", {
+		id: "agent",
+		name: "agent",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+		sessionId: "pooled-session",
+		workerExecution: { worker: "worker-1", generation: 1, renewedAt: 1, expiresAt: 2 },
+		queuedUserMessageCount: 1,
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		onClose: () => {},
+	});
+	try {
+		assert.equal(pane._mode, "graph");
+		assert.match(visible(pane.render(100)), /✉ 1 queued/);
+	} finally {
+		pane.dispose();
+	}
+});
+
+test("a stage registered in an SDK registry attaches with its transcript, reply in flight and running tool, and keeps its published queue (#3996)", async () => {
+	const store = createStore();
+	store.recordRunStart({
+		id: "child",
+		name: "pooled-child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	const stage = {
+		id: "agent",
+		name: "agent",
+		status: "running" as const,
+		parentIds: [],
+		toolEvents: [],
+		sessionId: "pooled-session",
+		workerExecution: { worker: "worker-1", generation: 1, renewedAt: 1, expiresAt: 2 },
+		queuedUserMessageCount: 3,
+	};
+	store.recordStageStart("child", stage);
+	const pool = fakeTransport({
+		messages: [{ role: "user", content: "Earlier question from the transcript", timestamp: 1 }],
+		pendingToolExecutionEvents: [
+			{
+				type: "tool_execution_start",
+				toolCallId: "call-1",
+				toolName: "bash",
+				args: { command: "echo running-tool-marker" },
+			} as never as AgentSessionEvent,
+		],
+	});
+	const registry = createStageControlRegistry();
+	// What an SDK caller's registry holds for a pooled stage: a proxy that has not opened a watch.
+	registry.register(
+		new RegisteredPooledStageHandle(
+			"child",
+			stage,
+			{ kind: "local-worker", workId: "work", generation: 1 },
+			async () => undefined,
+		),
+	);
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			return { handle: opened.handle, release: () => opened.handle.dispose() };
+		},
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: registry,
+		onClose: () => {},
+	});
+	try {
+		assert.match(visible(pane.render(100)), /✉ 3 queued/, "the published queue shows with no chat open");
+		pane.retarget("child", "agent", "child");
+		await until(() => visible(pane.render(100)).includes(FIRST));
+		const opened = visible(pane.render(100));
+		assert.match(opened, /Earlier question from the transcript/);
+		assert.match(opened, /running-tool-marker/);
+		pool.send(8, {
+			type: "message_update",
+			message: assistant(FIRST + SECOND),
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: SECOND,
+				partial: assistant(FIRST + SECOND),
+			},
+		} as never as AgentSessionEvent);
+		await until(() => visible(pane.render(100)).includes(FIRST + SECOND));
+		pane.handleInput("\x18");
+		assert.equal(pane._mode, "graph");
+		assert.match(visible(pane.render(100)), /✉ 3 queued/, "and again after the chat closes");
 	} finally {
 		pane.dispose();
 		unregister();

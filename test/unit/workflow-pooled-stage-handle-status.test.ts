@@ -31,6 +31,9 @@ test("a stage watched while paused reads running once it is resumed (#3996)", as
 				};
 			},
 			async unwatch() {},
+			async deliver() {
+				return { ok: false, refusal: "StageNotLive" };
+			},
 		},
 		{ runId: "child", stageId: "agent" },
 		"agent",

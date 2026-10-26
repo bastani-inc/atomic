@@ -8,6 +8,7 @@ import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { admissionBootIdentity } from "./admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
+import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
 import type { WorkflowExecutionResources } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
@@ -112,6 +113,10 @@ export async function activatePublicPool(
 		admission: resources.admission ?? {},
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
+		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
+		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]
+			? {}
+			: { stageControlRegistry: options.stageControlRegistry }),
 	});
 	try {
 		pool.validateOptions(options);

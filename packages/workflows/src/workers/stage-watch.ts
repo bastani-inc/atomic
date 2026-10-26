@@ -3,7 +3,44 @@ import type { StageControlHandle, StageControlRegistry } from "../runs/foregroun
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
-import type { AttemptRef, PooledStageChatSnapshot, SeqEvent, WatchId } from "./stage-watch-types.js";
+import type {
+	AttemptRef,
+	DeliveryIntent,
+	DeliveryOpId,
+	DeliveryRefusal,
+	PooledStageChatSnapshot,
+	SeqEvent,
+	WatchId,
+} from "./stage-watch-types.js";
+
+type StageCommandResult = Omit<Extract<Outbound, { kind: "stage-command-result" }>, "id" | "kind" | "commandId">;
+
+/**
+ * The one way user text from the root enters a pooled stage's session (#3996): through the
+ * stage's own idle-aware delivery, so it reports the same action an in-process stage does.
+ */
+export async function admitStageUserMessage(
+	handle: StageControlHandle,
+	text: string,
+	intent: DeliveryIntent,
+	expandPromptTemplates: boolean | undefined,
+): Promise<StageCommandResult> {
+	const options = {
+		...(intent === "auto" ? {} : { deliverAs: intent }),
+		...(expandPromptTemplates === undefined ? {} : { expandPromptTemplates }),
+	};
+	if (handle.sendUserMessage !== undefined) return { action: await handle.sendUserMessage(text, options) };
+	if (intent === "steer" && handle.isStreaming) {
+		await handle.steer(text);
+		return { action: "steer" };
+	}
+	if (intent !== "steer" && handle.isStreaming) {
+		await handle.followUp(text);
+		return { action: "followUp" };
+	}
+	await handle.prompt(text);
+	return { action: "prompt" };
+}
 
 /** A watched stage's events leave the worker at most this often, as one batch. */
 export const STAGE_EVENT_BATCH_INTERVAL_MS = 50;
@@ -33,6 +70,8 @@ function isTerminal(handle: StageControlHandle): boolean {
  */
 export class WorkerStageWatches {
 	private readonly watches = new Map<WatchId, Watch>();
+	/** Deliveries of the current attempt by op, so a retried op is admitted at most once. */
+	private readonly ledger = new Map<DeliveryOpId, Promise<StageCommandResult>>();
 
 	constructor(
 		private readonly registry: StageControlRegistry,
@@ -44,6 +83,12 @@ export class WorkerStageWatches {
 		if (command.op === "unwatch") {
 			this.close(command.watch);
 			this.send({ kind: "stage-command-result", commandId: command.commandId });
+			return;
+		}
+		if (command.op === "deliver") {
+			void this.deliver(command).then((result) =>
+				this.send({ kind: "stage-command-result", commandId: command.commandId, ...result }),
+			);
 			return;
 		}
 		const held = this.attempt();
@@ -81,10 +126,37 @@ export class WorkerStageWatches {
 
 	/** Ends every watch when the attempt ends; the coordinator tells the root. */
 	clear(): void {
+		this.ledger.clear();
 		for (const id of [...this.watches.keys()]) {
 			this.flush(id);
 			this.close(id);
 		}
+	}
+
+	private async deliver(command: Extract<WorkerStageCommand, { op: "deliver" }>): Promise<StageCommandResult> {
+		const recorded = this.ledger.get(command.deliveryOp);
+		if (recorded !== undefined) return recorded;
+		const held = this.attempt();
+		const watch = this.watches.get(command.watch);
+		const refuse = (refusal: DeliveryRefusal): Promise<StageCommandResult> => Promise.resolve({ refusal });
+		if (
+			held?.workId !== command.attempt.workId ||
+			held.generation !== command.attempt.generation ||
+			watch === undefined
+		)
+			return refuse("StaleAttempt");
+		if (isTerminal(watch.handle)) return refuse("StageNotLive");
+		const admitted = admitStageUserMessage(
+			watch.handle,
+			command.text,
+			command.intent,
+			command.expandPromptTemplates,
+		).catch(
+			(error: Error): StageCommandResult =>
+				isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: error.message },
+		);
+		this.ledger.set(command.deliveryOp, admitted);
+		return admitted;
 	}
 
 	private record(id: WatchId, event: AgentSessionEvent): void {

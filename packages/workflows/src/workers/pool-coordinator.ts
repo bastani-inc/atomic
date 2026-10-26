@@ -16,6 +16,7 @@ import {
 import { openSqlPoolUsage, type PoolUsage, type SqlPoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease, RunJournal } from "../durable/journal/types.js";
 import { registerPendingStageIntercomBridge } from "../extension/pending-stage-intercom.js";
+import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import {
@@ -52,7 +53,10 @@ import {
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
+	DeliveryRefusal,
+	DeliveryResult,
 	PooledStageChatSnapshot,
+	PooledStageDelivery,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -325,8 +329,13 @@ interface WorkerSlot {
 
 interface StageCommandResult {
 	readonly snapshot?: PooledStageChatSnapshot;
-	readonly refusal?: WatchRefusal;
+	readonly refusal?: WatchRefusal | DeliveryRefusal;
+	readonly action?: StageUserMessageDeliveryAction;
+	readonly error?: string;
 }
+
+/** How many ended watches the coordinator remembers, to refuse late deliveries truthfully. */
+const ENDED_WATCHES_REMEMBERED = 1_024;
 
 /** One open stage watch: bound to the attempt it opened on, with at most one batch awaiting the root. */
 interface StageWatch {
@@ -362,6 +371,7 @@ export class PoolCoordinator {
 	private readonly inflight = new Set<Promise<unknown>>();
 	private readonly slots = new Set<WorkerSlot>();
 	private readonly watches = new Map<WatchId, StageWatch>();
+	private readonly endedWatches = new Map<WatchId, WatchEndReason>();
 	private stageCommandSequence = 0;
 	private lastTick = performance.now();
 	private stalledMs = 0;
@@ -479,7 +489,10 @@ export class PoolCoordinator {
 				return this.stageWatch(command.watch, command.runId, command.stageId);
 			case "stage-unwatch":
 				this.stageUnwatch(command.watch);
+				this.endedWatches.delete(command.watch);
 				return;
+			case "stage-deliver":
+				return this.stageDeliver(command);
 			case "close":
 				this.closing ??= this.close();
 				return this.closing;
@@ -777,7 +790,16 @@ export class PoolCoordinator {
 		}
 		if (result?.snapshot === undefined) {
 			this.watches.delete(id);
-			return { ok: false, refusal: result?.refusal ?? (this.closed ? "PoolClosed" : "AttemptChanging") };
+			const refusal = result?.refusal;
+			return {
+				ok: false,
+				refusal:
+					refusal === "StageNotOnWorker" || refusal === "AttemptChanging" || refusal === "PoolClosed"
+						? refusal
+						: this.closed
+							? "PoolClosed"
+							: "AttemptChanging",
+			};
 		}
 		watch.open = true;
 		return { ok: true, watch: { id, attempt, snapshot: result.snapshot } };
@@ -789,6 +811,39 @@ export class PoolCoordinator {
 		this.watches.delete(id);
 		if (watch.slot.work?.id === watch.attempt.workId && watch.slot.work.generation === watch.attempt.generation)
 			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });
+	}
+
+	/** Admits user text through the airlock of the worker that holds the watch's attempt. */
+	private async stageDeliver(delivery: PooledStageDelivery): Promise<DeliveryResult> {
+		const watch = this.watches.get(delivery.watch);
+		if (watch === undefined || !watch.open)
+			return {
+				ok: false,
+				refusal: this.endedWatches.get(delivery.watch) === "stage_finished" ? "StageNotLive" : "StaleAttempt",
+			};
+		const { slot, attempt } = watch;
+		if (slot.work?.id !== attempt.workId || slot.work.generation !== attempt.generation)
+			return { ok: false, refusal: "StaleAttempt" };
+		const result = await this.stageCommand(slot, {
+			attempt,
+			op: "deliver",
+			watch: delivery.watch,
+			deliveryOp: delivery.op,
+			text: delivery.text,
+			intent: delivery.intent,
+			...(delivery.options?.expandPromptTemplates === undefined
+				? {}
+				: { expandPromptTemplates: delivery.options.expandPromptTemplates }),
+		});
+		// The worker exited with the command in flight: it may have admitted the text.
+		if (result === undefined) return { ok: false, refusal: "Unconfirmed" };
+		if (result.error !== undefined) throw new Error(result.error);
+		if (result.action !== undefined) return { ok: true, action: result.action };
+		const refusal = result.refusal;
+		return {
+			ok: false,
+			refusal: refusal === "StageNotLive" || refusal === "Unconfirmed" ? refusal : "StaleAttempt",
+		};
 	}
 
 	private stageCommand(
@@ -834,6 +889,9 @@ export class PoolCoordinator {
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
 		this.watches.delete(id);
+		this.endedWatches.set(id, reason);
+		if (this.endedWatches.size > ENDED_WATCHES_REMEMBERED)
+			this.endedWatches.delete(this.endedWatches.keys().next().value!);
 		if (reason === "resync") {
 			// The watcher reopens for a fresh snapshot; the backlog it fell behind on is dropped.
 			void this.stageCommand(watch.slot, { attempt: watch.attempt, op: "unwatch", watch: id });

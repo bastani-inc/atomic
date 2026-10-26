@@ -7,6 +7,8 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
+import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -141,5 +143,40 @@ test("child budget overrides fail before launching workers (#3869)", async () =>
 		await pool.close();
 		await backend.close();
 		removeTempDirectory(directory);
+	}
+});
+
+test("local workers accept a caller stage-control registry and still refuse every other process-bound option (#3996)", async () => {
+	const journal = await resolveRunJournal({ journal: { memory: true } });
+	const backend = await JournalDurableBackend.open(journal);
+	const pool = new LocalWorkerPool(backend, { journalPath: "/unused", workers: 1, definitions: [] });
+	try {
+		assert.doesNotThrow(() => pool.validateOptions({ stageControlRegistry: createStageControlRegistry() }));
+		const refused = [
+			"adapters",
+			"ui",
+			"persistence",
+			"mcp",
+			"overlay",
+			"models",
+			"registry",
+			"stageUiBroker",
+			"toolAdmissionBoundary",
+			"onStageStart",
+			"onStageEnd",
+			"onStageSession",
+			"onStageSessionEvent",
+			"confirmStageReadiness",
+			"rootBudget",
+		] as const;
+		for (const key of refused)
+			assert.throws(
+				() => pool.validateOptions({ [key]: {} } as RunOpts),
+				new RegExp(`process-bound override: ${key}$`),
+				key,
+			);
+	} finally {
+		await pool.close();
+		await backend.close();
 	}
 });

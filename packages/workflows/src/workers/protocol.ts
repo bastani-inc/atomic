@@ -2,12 +2,16 @@ import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type { PoolControl, PoolMutation, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsageReport } from "../durable/journal/sql-pool-usage.js";
 import type { RunResult } from "../runs/foreground/executor-types.js";
+import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type {
 	AttemptRef,
+	DeliveryIntent,
+	DeliveryOpId,
+	DeliveryRefusal,
 	PooledStageChatSnapshot,
 	SeqEvent,
 	WatchEndReason,
@@ -55,7 +59,10 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly kind: "stage-command-result";
 			readonly commandId: number;
 			readonly snapshot?: PooledStageChatSnapshot;
-			readonly refusal?: WatchRefusal;
+			readonly refusal?: WatchRefusal | DeliveryRefusal;
+			readonly action?: StageUserMessageDeliveryAction;
+			/** The stage refused the text for another reason; the message says why. */
+			readonly error?: string;
 	  }
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	| { readonly kind: "stage-watch-ended"; readonly watch: WatchId; readonly reason: WatchEndReason }
@@ -81,6 +88,14 @@ export type WorkerStageCommand = {
 } & (
 	| { readonly op: "watch"; readonly watch: WatchId; readonly runId: string; readonly stageId: string }
 	| { readonly op: "unwatch"; readonly watch: WatchId }
+	| {
+			readonly op: "deliver";
+			readonly watch: WatchId;
+			readonly deliveryOp: DeliveryOpId;
+			readonly text: string;
+			readonly intent: DeliveryIntent;
+			readonly expandPromptTemplates?: boolean;
+	  }
 );
 
 /** Everything a worker receives over IPC: replies to its requests, and stage commands. */

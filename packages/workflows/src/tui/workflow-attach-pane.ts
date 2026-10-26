@@ -144,7 +144,13 @@ export class WorkflowAttachPane implements Component {
 	 * deliberately does not claim a provisional detached handle.
 	 */
 	private _stageQueuedMessageCount(runId: string, stageId: string): number {
-		return stageQueuedUserMessageCount(this.registry?.peek(runId, stageId)?.queuedUserMessages?.());
+		const handle = this.registry?.peek(runId, stageId);
+		const count = stageQueuedUserMessageCount(handle?.queuedUserMessages?.());
+		// A stage on a local worker has no handle here, or one that sees its queue only while it
+		// watches the stage; its worker publishes the count with its activity (#3996).
+		if (handle?.queuedUserMessages === undefined || (handle.placement?.kind === "local-worker" && count === 0))
+			return this._stageSnapshot(runId, stageId)?.queuedUserMessageCount ?? 0;
+		return count;
 	}
 	private _resolveRunId(): string | null {
 		if (this.runId) return this.runId;

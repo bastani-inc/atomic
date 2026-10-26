@@ -885,7 +885,7 @@ The root's existing `/workflow status`, `/workflow stages`, steering, pause, qui
 
 ### Watching stages on local workers
 
-A stage that runs on a local worker opens from the workflow graph or `/workflow attach` like any other stage. While it runs, its chat shows the transcript so far and the reply as it streams, with tool calls. The chat header reads `on local worker`. Sending messages to such a stage from its chat (Enter, Ctrl+F) is not available yet; Intercom sends to the stage still reach it.
+A stage that runs on a local worker opens from the workflow graph or `/workflow attach` like any other stage. While it runs, its chat shows the transcript so far and the reply as it streams, with tool calls. The chat header reads `on local worker`. Enter steers the running turn and Ctrl+F queues a follow-up, as for any stage. Queued messages show on the stage's graph node (`✉ N queued`) even when its chat is closed. Pausing a single stage on a local worker is not available yet.
 
 Only the stages you have open stream to the root process. A pool with many workers sends nothing extra for stages nobody is watching.
 

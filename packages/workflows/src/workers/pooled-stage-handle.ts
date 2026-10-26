@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
@@ -6,9 +7,16 @@ import type {
 	StagePlacement,
 } from "../runs/foreground/stage-control-registry.js";
 import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-user-messages.js";
+import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
+import type { StageSendUserMessageOptions } from "../shared/types.js";
 import type {
+	DeliveryIntent,
+	DeliveryOpId,
+	DeliveryRefusal,
+	DeliveryResult,
 	PooledStageChatSnapshot,
+	PooledStageDelivery,
 	PooledStageRef,
 	PooledStageWatchMessage,
 	WatchEndReason,
@@ -28,6 +36,25 @@ export interface PooledStageTransport {
 	 */
 	watch(ref: PooledStageRef, listener: (message: PooledStageWatchMessage) => void): Promise<WatchResult>;
 	unwatch(watch: WatchId): Promise<void>;
+	/** The one door for user text into the watched stage; at most once per op. */
+	deliver(delivery: PooledStageDelivery): Promise<DeliveryResult>;
+}
+
+/** User text a pooled stage did not admit, with the reason. */
+export class PooledStageDeliveryError extends Error {
+	constructor(
+		readonly refusal: DeliveryRefusal,
+		stageName: string,
+	) {
+		super(
+			refusal === "StageNotLive"
+				? `Stage "${stageName}" finished before the message was delivered; open it again to continue in post-mortem chat.`
+				: refusal === "StaleAttempt"
+					? `Stage "${stageName}" moved to another worker attempt; the message was not delivered.`
+					: `The connection to stage "${stageName}" was lost; the message may not have been delivered.`,
+		);
+		this.name = "PooledStageDeliveryError";
+	}
 }
 
 /**
@@ -35,7 +62,7 @@ export interface PooledStageTransport {
  *
  * It mirrors the worker's real handle from one watch: the snapshot the watch opened with,
  * then its ordered events. Consumers read it like an in-process handle. It has no
- * `agentSession`; steering a pooled stage is not available through it yet.
+ * `agentSession`; user text goes through the pool's single delivery door.
  */
 export class PooledStageHandle implements StageControlHandle {
 	readonly sessionFile = undefined;
@@ -59,6 +86,7 @@ export class PooledStageHandle implements StageControlHandle {
 		snapshot: PooledStageChatSnapshot,
 		attempt: { readonly workId: string; readonly generation: number },
 		private readonly close: () => void,
+		private readonly deliverDoor: (delivery: PooledStageDelivery) => Promise<DeliveryResult>,
 		readonly sessionId = snapshot.sessionId,
 	) {
 		this.placement = { kind: "local-worker", workId: attempt.workId, generation: attempt.generation };
@@ -128,14 +156,26 @@ export class PooledStageHandle implements StageControlHandle {
 
 	async ensureAttached(): Promise<void> {}
 
-	async prompt(): Promise<void> {
-		throw unsupported(this.stageName);
+	/**
+	 * Delivers through the worker's idle-aware stage delivery and reports its action.
+	 * `beforeDelivery` runs here, immediately before the text is sent to the worker.
+	 */
+	async sendUserMessage(
+		text: string,
+		options?: StageSendUserMessageOptions,
+		beforeDelivery?: () => void,
+	): Promise<StageUserMessageDeliveryAction> {
+		beforeDelivery?.();
+		return this.deliver(text, options?.deliverAs ?? "auto", options);
 	}
-	async steer(): Promise<void> {
-		throw unsupported(this.stageName);
+	async prompt(text: string): Promise<void> {
+		await this.deliver(text, "auto");
 	}
-	async followUp(): Promise<void> {
-		throw unsupported(this.stageName);
+	async steer(text: string): Promise<void> {
+		await this.deliver(text, "steer");
+	}
+	async followUp(text: string): Promise<void> {
+		await this.deliver(text, "followUp");
 	}
 	async pause(): Promise<void> {
 		throw unsupported(this.stageName);
@@ -149,6 +189,25 @@ export class PooledStageHandle implements StageControlHandle {
 		this.disposed = true;
 		this.listeners.clear();
 		this.close();
+	}
+
+	private async deliver(
+		text: string,
+		intent: DeliveryIntent,
+		options?: StageSendUserMessageOptions,
+	): Promise<StageUserMessageDeliveryAction> {
+		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
+		const result = await this.deliverDoor({
+			watch: this.watchId,
+			op: randomUUID() as DeliveryOpId,
+			text,
+			intent,
+			...(options?.expandPromptTemplates === undefined
+				? {}
+				: { options: { expandPromptTemplates: options.expandPromptTemplates } }),
+		});
+		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		return result.action;
 	}
 
 	private apply(event: AgentSessionEvent): void {
@@ -177,7 +236,7 @@ export class PooledStageHandle implements StageControlHandle {
 }
 
 function unsupported(stageName: string): Error {
-	return new Error(`Stage "${stageName}" runs on a local worker; sending it messages is not available yet.`);
+	return new Error(`Stage "${stageName}" runs on a local worker; pausing it is not available yet.`);
 }
 
 /** Opens a watch through `transport` and returns the handle that mirrors it. */
@@ -197,10 +256,19 @@ export async function openPooledStageHandle(
 	});
 	if (!result.ok) return result;
 	const { watch } = result;
-	handle = new PooledStageHandle(ref.runId, ref.stageId, stageName, watch.id, watch.snapshot, watch.attempt, () => {
-		onClose();
-		void transport.unwatch(watch.id);
-	});
+	handle = new PooledStageHandle(
+		ref.runId,
+		ref.stageId,
+		stageName,
+		watch.id,
+		watch.snapshot,
+		watch.attempt,
+		() => {
+			onClose();
+			void transport.unwatch(watch.id);
+		},
+		(delivery) => transport.deliver(delivery),
+	);
 	for (const message of early.splice(0)) handle.receive(message);
 	return { ok: true, handle };
 }
