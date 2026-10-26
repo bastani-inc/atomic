@@ -1,6 +1,7 @@
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
+import { passReaskGate } from "./pool-reask-gate.js";
 import { poolStageOptions } from "./pool-stage-options.js";
 
 /** The question the stage asks, with a preview: the form must carry its exact parameters. */
@@ -36,13 +37,15 @@ export const FOLLOW_UP_MARKER = "follow-up:";
  * re-ask an interrupted question does. With `replyToFollowUps`, a user message carrying
  * {@link FOLLOW_UP_MARKER} gets `heard <count>x: <text>`, counting that text's user messages.
  */
-function questionChild(name: string, afterAnyResult: boolean, replyToFollowUps = false) {
+function questionChild(name: string, afterAnyResult: boolean, replyToFollowUps = false, gated = false) {
 	return workflow({
 		name,
 		description: "Local worker ask_user_question fixture",
-		inputs: {},
+		inputs: { journalPath: Type.Optional(Type.String()) },
 		outputs: { text: Type.String() },
 		async run(ctx) {
+			// A replacement attempt waits here, before its stage resumes and asks again (#4022).
+			if (gated && ctx.inputs.journalPath !== undefined) await passReaskGate(ctx.inputs.journalPath);
 			const options = await poolStageOptions(ctx.cwd!, false, process.pid);
 			options.modelRuntime.registerProvider("pool-fixture", {
 				api: "openai-completions",
@@ -123,3 +126,6 @@ export const noReaskChild = questionChild("pool-question-no-reask-child", true);
 
 /** Asks again after each user message, except a follow-up, which it answers. */
 export const chatChild = questionChild("pool-question-chat-child", false, true);
+
+/** Like {@link noReaskChild}, but its replacement attempt waits at a gate before it asks again (#4022). */
+export const gatedNoReaskChild = questionChild("pool-question-gated-child", true, false, true);

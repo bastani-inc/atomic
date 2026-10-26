@@ -115,11 +115,12 @@ export class WorkflowAttachPane implements Component {
 				this.storeUpdateAt = this.now();
 				return;
 			}
-			this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
+			// The burst starts before the update is handled: a store write the update makes joins it.
 			this.storeBurst = setImmediate(() => {
 				this.storeBurst = undefined;
 				this._flushStoreUpdate();
 			});
+			this._handleStoreUpdate(readGraphStoreSnapshot(this.store));
 		});
 		this.graphView = this._buildGraphView();
 		const target =
@@ -386,6 +387,14 @@ export class WorkflowAttachPane implements Component {
 			}
 			this.lastStageAwaitingInputKey = key;
 			this.lastGraphAwaitingInputKey = this._runAwaitingInputKey(snapshot, runId);
+			// Whether this chat is attached is the pane's own state. A pooled stage republished by a
+			// replacement attempt (or released by a fenced one) arrives without the mark; the open chat
+			// marks it again, or the re-asked prompt it shows could never be submitted (#4022).
+			const attachedRun = findSnapshotRun(snapshot.runs, this.attachedRunId);
+			const stage =
+				attachedRun === undefined ? undefined : findSnapshotStage(attachedRun.stages, this.lastAttachedStageId);
+			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
+				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
 		}
 	}
 	private _syncAwaitingInputKeys(snapshot: StoreSnapshot): void {

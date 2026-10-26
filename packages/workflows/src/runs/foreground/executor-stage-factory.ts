@@ -1,11 +1,11 @@
-import { runCallback, runSynchronousCallback } from "@bastani/atomic";
+import { type QuestionParams, runCallback, runSynchronousCallback } from "@bastani/atomic";
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
 import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
-import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
+import { provideStageQuestion } from "../../shared/stage-question-form.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
@@ -265,13 +265,14 @@ export function createWorkflowStageFactory(input: {
 				state.askUserQuestionObservedThisTurn = true;
 				if (toolEvent.callId !== undefined) activeAskUserQuestionCalls.add(toolEvent.callId);
 				else state.activeAskUserQuestionAnonymousCalls += 1;
-				const adapter = buildStagePromptAdapter(
+				provideStageQuestion(
+					input.stageUiBroker,
+					input.runId,
+					stageId,
 					toolEvent.callId ?? `ask-user-question-${stageId}`,
 					"ask_user_question",
-					toolEvent.args,
-					Date.now(),
+					toolEvent.args as QuestionParams,
 				);
-				if (adapter) input.stageUiBroker.provideStagePrompt(input.runId, stageId, adapter);
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, true);
 				return;
 			}

@@ -582,6 +582,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	readonly _entryIdsByMessage: WeakMap<object, string>;
 	readonly _boundaryDispatchedMessages: WeakSet<object>;
 	readonly _messagesAwaitingPersistence: WeakSet<object>;
+	readonly _reissuedToolCallIds: Set<string>;
 	_lastAssistantToolResults: AgentMessage[];
 	_lastActivityOutcome: AgentActivityOutcome;
 	_isBeforeSettle: boolean;
