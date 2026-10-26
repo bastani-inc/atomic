@@ -1,4 +1,4 @@
-import { normalizeModelFailureSignal } from "../model-fallback-failures.js";
+import { normalizeModelFailureSignal } from "../model-fallback-failures.ts";
 import { providerRetryHint } from "../provider-rate-limits.js";
 
 /**
