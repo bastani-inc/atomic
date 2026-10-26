@@ -65,8 +65,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
 	/** Render to string lines. width = terminal columns. */
 	render(width: number): string[] {
+		this._syncLayout();
 		if (this.mode === "widget") return this._renderWidget(width);
-		this._refreshStaleLayout();
 		this._refreshQueuedNodeHeights();
 		return this._renderOverlay(width);
 	}

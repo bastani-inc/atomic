@@ -37,7 +37,7 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
-import { resolveEffectiveThinking, splitKnownThinkingSuffix } from "../../shared/model-info.js";
+import { resolveEffectiveThinking, splitKnownThinkingSuffix, taskRecordModel } from "../../shared/model-info.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -1230,7 +1230,8 @@ export class SubagentControlRuntime {
 			const reportModel = () =>
 				taskHooks?.reportActivity({
 					reportId: `${activityPrefix}:model-${++activitySequence}`,
-					change: { kind: "model", model: effectiveModelId, thinking: effectiveThinking },
+					// Task records name the model alone; its thinking level is reported beside it (#4009).
+					change: { kind: "model", model: taskRecordModel(effectiveModelId), thinking: effectiveThinking },
 				});
 			reportModel();
 			unsubscribe = session.subscribe((event) => {

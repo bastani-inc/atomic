@@ -205,3 +205,43 @@ test("a selected child model without known reasoning does not borrow the parent'
 		assert.doesNotMatch(receiptText(receipt), /fixture\/inherited|thinking high/);
 	});
 });
+
+test("a child that reaches its session before the receipt is read still reports the selected model without its thinking suffix (#4009)", async () => {
+	initTheme("dark");
+	const cwd = makeTempDirectory("subagent-launch-model-session-");
+	const runId = randomUUID();
+	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: runId }, authorizeLaunch() {} });
+	const gate = Promise.withResolvers<void>();
+	const launched = Promise.withResolvers<void>();
+	try {
+		const response = await runAgentTask({
+			host,
+			cwd,
+			agents: [{ ...worker, model: "fixture/pinned:low", thinking: "medium" }],
+			agent: "worker",
+			task: "Inspect",
+			options: {
+				runId,
+				index: 0,
+				currentModel: "fixture/inherited",
+				currentThinkingLevel: "high",
+				resolveCandidateModel: createCandidateModelResolver(lookup),
+				// No session model: the child's own session reports nothing better than its selection.
+				testSession: { promptGate: gate.promise },
+				onChildLaunch: () => launched.resolve(),
+			},
+			runtime: { runSync },
+		});
+		assert.equal(response.kind, "admitted");
+		await launched.promise;
+		const receipt = taskToolResult(response, host);
+		assert.equal(receipt.details?.taskRecords?.[0]?.model, "fixture/pinned");
+		assert.equal(receipt.details?.taskRecords?.[0]?.thinking, "low");
+	} finally {
+		gate.resolve();
+		await host.close("session-close");
+		const control = findSubagentControl(runId);
+		if (control) unregisterSubagentControl(control);
+		removeTempDirectory(cwd);
+	}
+});

@@ -82,9 +82,6 @@ export abstract class GraphViewState {
 	protected initialFocusedRunId?: string;
 	protected piTui?: GraphViewOpts["piTui"];
 	protected requestRender?: () => void;
-	/** A publication arrived since the last layout (overlay mode coalesces them). */
-	protected layoutStale = false;
-	private staleLayoutTimer?: NodeJS.Immediate;
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
 	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
@@ -124,6 +121,10 @@ export abstract class GraphViewState {
 	protected _intervalId: ReturnType<typeof setInterval> | null = null;
 	protected _lastGTime: number | null = null;
 	protected _unsubscribe: (() => void) | null = null;
+	/** A store change arrived since the layout was last built. */
+	private storeChanged = false;
+	/** `invalidate()` was called since the layout was last built. */
+	private layoutInvalidated = false;
 
 	constructor(opts: GraphViewOpts) {
 		this.mode = opts.mode;
@@ -142,21 +143,9 @@ export abstract class GraphViewState {
 		this.footerData = opts.footerData;
 		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
 
+		// Store changes only mark the layout stale; it is rebuilt once when next read (#4009).
 		this._unsubscribe = subscribeStoreInvalidation(this.store, () => {
-			// The overlay lays out the first publication of a task at once and coalesces the rest
-			// of a burst (a fan-out starts hundreds of stages in one task) into one more layout,
-			// built before the next frame or keypress needs it (#3996).
-			if (this.mode === "overlay" && this.staleLayoutTimer !== undefined) {
-				this.layoutStale = true;
-				return;
-			}
-			this.currentSnapshot = readGraphStoreSnapshot(this.store);
-			this._rebuildLayout();
-			if (this.mode === "overlay")
-				this.staleLayoutTimer = setImmediate(() => {
-					this.staleLayoutTimer = undefined;
-					if (this._refreshStaleLayout()) this.requestRender?.();
-				});
+			this.storeChanged = true;
 		});
 		this.currentSnapshot = readGraphStoreSnapshot(this.store);
 		this._rebuildLayout();
@@ -184,17 +173,24 @@ export abstract class GraphViewState {
 		}
 	}
 
-	/** Brings a coalesced layout up to date; true when it was stale. */
-	protected _refreshStaleLayout(): boolean {
-		if (!this.layoutStale) return false;
-		this.layoutStale = false;
-		this.currentSnapshot = readGraphStoreSnapshot(this.store);
-		this._rebuildLayout();
-		return true;
+	protected _needsAnimationTick(): boolean {
+		this._syncLayout();
+		return this.hasAnimatingStages;
 	}
 
-	protected _needsAnimationTick(): boolean {
-		return this.hasAnimatingStages;
+	/**
+	 * Brings the layout up to the store's current snapshot, if a store change or an invalidation
+	 * arrived since it was last built. A pooled fan-out publishes hundreds of store changes in one
+	 * turn of the event loop; rebuilding the layout for each of them made every change cost the
+	 * whole graph (#4009), so the layout is rebuilt only where it is read: rendering, input, the
+	 * animation tick and the test seams.
+	 */
+	protected _syncLayout(): void {
+		if (!this.storeChanged && !this.layoutInvalidated) return;
+		if (this.storeChanged) this.currentSnapshot = readGraphStoreSnapshot(this.store);
+		this.storeChanged = false;
+		this.layoutInvalidated = false;
+		this._rebuildLayout();
 	}
 
 	private _nodeHeight(stage: StageSnapshot): number {
@@ -556,8 +552,6 @@ export abstract class GraphViewState {
 	}
 
 	dispose(): void {
-		if (this.staleLayoutTimer !== undefined) clearImmediate(this.staleLayoutTimer);
-		this.staleLayoutTimer = undefined;
 		if (this._intervalId != null) {
 			clearInterval(this._intervalId);
 			this._intervalId = null;
@@ -569,6 +563,6 @@ export abstract class GraphViewState {
 	}
 
 	invalidate(): void {
-		this._rebuildLayout();
+		this.layoutInvalidated = true;
 	}
 }

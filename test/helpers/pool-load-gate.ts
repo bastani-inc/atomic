@@ -30,9 +30,14 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
+import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import {
+	installStoreWidget,
+	installToolExecutionHooks,
+} from "../../packages/workflows/src/tui/store-widget-installer.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
@@ -299,6 +304,38 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 					onClose: () => {},
 				})
 			: undefined;
+	// The interactive root also keeps the BACKGROUND widget, the tool-execution hooks and the
+	// workflow activity bridge subscribed to the same store (#4009); the pane variant mounts them too.
+	let activityChanges = 0;
+	const disposeRootSurfaces =
+		options.pane === true
+			? (() => {
+					const disposeWidget = installStoreWidget(
+						{ ui: { setWidget: () => {}, requestRender: () => {} } },
+						store,
+					);
+					installToolExecutionHooks({ events: { on: () => {} } }, store);
+					const observation = createWorkflowObservation(
+						store,
+						{
+							publishSnapshot: (input) => void structuredClone(input),
+							publishChanged: (root) => {
+								structuredClone(root);
+								activityChanges++;
+							},
+							publishRemoved: () => {},
+							publishLifecycle: (event) => void structuredClone(event),
+							publishHeartbeat: () => {},
+							dispose: () => {},
+						},
+						"pool-load-gate",
+					);
+					return () => {
+						observation.dispose();
+						disposeWidget();
+					};
+				})()
+			: undefined;
 	let frames = 0;
 	let slowestFrameMs = 0;
 	const frameTimer =
@@ -381,9 +418,12 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 		const quietLag = stopQuietLag();
 		writeTextSync(phaseFile, "settle");
 		const after = journalFootprint(path);
+		const stopCompletionLag = measureLag();
 		writeTextSync(phaseFile, "finish");
 
 		const outcome = await execution;
+		// Every child completes within moments of the others: the run-end burst of #4009.
+		const completionLag = stopCompletionLag();
 		makeDirectorySync(statsDirectory, { recursive: true });
 		const stats = readDirectorySync(statsDirectory).map(
 			(name) => JSON.parse(readTextSync(join(statsDirectory, name), "utf8")) as StubStats,
@@ -395,14 +435,14 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 			watches,
 			pane:
 				options.pane === true
-					? { frames, widthColumns: PANE_WIDTH, slowestFrameMs: Math.round(slowestFrameMs) }
+					? { frames, widthColumns: PANE_WIDTH, slowestFrameMs: Math.round(slowestFrameMs), activityChanges }
 					: undefined,
 			watchedEventsReceived: watch?.events ?? 0,
 			stubsStreamingStageEvents: stats.filter((entry) => entry.stageEvents > 0).length,
 			stageEventsSent: total("stageEvents"),
 			activation,
 			windows: { sustainedTrafficMs: SUSTAINED_TRAFFIC_MS, quietHeartbeatMs: QUIET_HEARTBEAT_MS },
-			mainThreadLag: { startup: startupLag, traffic: trafficLag, quiet: quietLag },
+			mainThreadLag: { startup: startupLag, traffic: trafficLag, quiet: quietLag, completion: completionLag },
 			heartbeatGrowth,
 			traffic: {
 				stubsReporting: stats.length,
@@ -425,6 +465,7 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 		assertLag("worker startup window", startupLag);
 		assertLag("sustained traffic window", trafficLag);
 		assertLag("heartbeat-only window", quietLag);
+		assertLag("completion window", completionLag);
 		assert.ok(
 			heartbeatGrowth.renewals > WORKERS * HEARTBEAT_GROWTH_ROWS_PER_WORKER,
 			`the quiet window carried only ${heartbeatGrowth.renewals} renewals, too few to tell per-renewal rows from per-worker state`,
@@ -451,6 +492,7 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 	} finally {
 		clearInterval(frameTimer);
 		pane?.dispose();
+		disposeRootSurfaces?.();
 		writeTextSync(phaseFile, "finish");
 		await pool.close();
 		await backend.close();
