@@ -64,6 +64,12 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	queuedUserMessages(): StageQueuedUserMessages {
 		return this.current()?.queuedUserMessages?.() ?? EMPTY_STAGE_QUEUED_USER_MESSAGES;
 	}
+	streamingMessage(): ReturnType<NonNullable<StageControlHandle["streamingMessage"]>> {
+		return this.current()?.streamingMessage?.();
+	}
+	pendingToolExecutionEvents(): readonly AgentSessionEvent[] {
+		return this.current()?.pendingToolExecutionEvents?.() ?? [];
+	}
 
 	/** Keeps the published stage current. */
 	update(stage: StageSnapshot): void {

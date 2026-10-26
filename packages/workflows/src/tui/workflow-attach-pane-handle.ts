@@ -22,17 +22,19 @@ export function resolveAttachedStageHandle(
 	resolvePooledStage?: () => Promise<PooledStageLease | undefined> | undefined,
 ): AttachedStageHandleResolution | Promise<AttachedStageHandleResolution> {
 	const liveHandle = registry?.claim(runId, stageId);
-	if (liveHandle !== undefined) return { handle: liveHandle };
+	// A registered handle of a stage on a local worker (an SDK caller's registry) proxies a watch
+	// it opens only while used, so it has no transcript to mount a chat from. The pooled view
+	// opens with the stage's snapshot: the transcript, the reply in flight and running tools.
+	if (liveHandle !== undefined && liveHandle.placement?.kind !== "local-worker") return { handle: liveHandle };
+	const fallback = () =>
+		liveHandle === undefined ? postMortemResolution(resolvePostMortemHandle, runId, stageId) : { handle: liveHandle };
 	const pooled = resolvePooledStage?.();
 	if (pooled !== undefined)
 		return pooled.then(
-			(lease) =>
-				lease === undefined
-					? postMortemResolution(resolvePostMortemHandle, runId, stageId)
-					: { handle: lease.handle, release: lease.release },
-			() => postMortemResolution(resolvePostMortemHandle, runId, stageId),
+			(lease) => (lease === undefined ? fallback() : { handle: lease.handle, release: lease.release }),
+			fallback,
 		);
-	return postMortemResolution(resolvePostMortemHandle, runId, stageId);
+	return fallback();
 }
 
 function postMortemResolution(
