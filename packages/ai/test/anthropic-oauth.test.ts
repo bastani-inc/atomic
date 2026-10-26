@@ -304,7 +304,11 @@ describe.sequential("Anthropic OAuth", () => {
 		const blocker = createServer();
 		await new Promise<void>((resolve, reject) => {
 			blocker.once("error", (error: NodeJS.ErrnoException) => {
-				if (error.code === "EADDRINUSE") resolve();
+				// Either another listener holds the port, or the OS refuses it outright:
+				// Windows reserves excluded port ranges (`netsh int ipv4 show
+				// excludedportrange`) that fail every bind with EACCES. Both leave the
+				// preferred port unbindable, which is the precondition under test.
+				if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve();
 				else reject(error);
 			});
 			blocker.listen(53692, "127.0.0.1", resolve);
