@@ -583,6 +583,14 @@ function structuredSignal(
 		}
 	}
 
+	// This code names the exact cause, so the generic 400 status and its request-error text must not outrank it.
+	if (
+		directRefusalSignal === undefined &&
+		directCancellationSignal === undefined &&
+		normalizeCode(codeFrom(value)) === "model_not_available_for_integrator"
+	)
+		return makeSignal("model_unavailable", value, source);
+
 	const directSignals = [
 		directRefusalSignal,
 		directCancellationSignal,

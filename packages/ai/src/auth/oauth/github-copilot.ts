@@ -118,15 +118,16 @@ function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boole
 		.filter((model) => model.pickerEnabled && model.policyState !== "disabled")
 		.map((model) => model.id);
 	const usePolicyFallback = allowPolicyFallback && pickerModelIds.length === 0;
-	// One usability rule for every model, fast or not: the account must mark it selectable, or (on the
-	// Individual endpoint that reports no selectable models at all) explicitly enable it by policy.
-	const usableModelIds = usePolicyFallback
-		? accountModels.filter((model) => model.policyState === "enabled").map((model) => model.id)
-		: pickerModelIds;
-	const availableModelIds = usePolicyFallback
-		? usableModelIds.filter((id) => !id.endsWith("-fast"))
-		: usableModelIds;
-	const fastModelIds = usableModelIds.filter((id) => id.endsWith("-fast"));
+	const availableModelIds =
+		pickerModelIds.length > 0 || !allowPolicyFallback
+			? pickerModelIds
+			: accountModels
+					.filter((model) => !model.id.endsWith("-fast") && model.policyState === "enabled")
+					.map((model) => model.id);
+	// Fast siblings are not picker entries: a fast ID the account lists is entitled unless its policy is disabled.
+	const fastModelIds = accountModels
+		.filter((model) => model.id.endsWith("-fast") && model.policyState !== "disabled")
+		.map((model) => model.id);
 	const policyModelIds = accountModels
 		.filter(
 			(model) =>

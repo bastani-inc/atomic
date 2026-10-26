@@ -176,12 +176,19 @@ describe("GitHub Copilot OAuth device flow", () => {
 		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual([pickerModelId]);
 	});
 
-	it("offers neither a non-selectable fast model nor a non-selectable regular model (#3998)", async () => {
+	it("offers only fast models the account lists with a policy that isn't disabled (#3998)", async () => {
 		const provider = githubCopilotProvider();
 		const regularModel = provider.getModels()[0];
 		const hiddenRegularModel = provider.getModels()[1];
 		if (!regularModel || !hiddenRegularModel) throw new Error("Expected GitHub Copilot catalog models");
-		const hiddenFastModelId = `${regularModel.id}-fast`;
+		const fastModel = (id: string) => ({
+			...regularModel,
+			id,
+			fastRoute: { baseModelId: regularModel.id, upstreamModelId: id },
+		});
+		const entitledFast = fastModel(`${regularModel.id}-fast`);
+		const disabledFast = fastModel(`${regularModel.id}-disabled-fast`);
+		const unlistedFast = fastModel(`${regularModel.id}-unlisted-fast`);
 
 		const credentials = await refreshGitHubCopilotModelsForTest([
 			{
@@ -196,24 +203,29 @@ describe("GitHub Copilot OAuth device flow", () => {
 				policy: { state: "enabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
+			// Fast siblings are not picker entries; a listed one is entitled unless its policy is disabled.
 			{
-				id: hiddenFastModelId,
+				id: entitledFast.id,
 				model_picker_enabled: false,
 				policy: { state: "enabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
+			{
+				id: disabledFast.id,
+				model_picker_enabled: false,
+				policy: { state: "disabled" },
+				capabilities: { supports: { tool_calls: true } },
+			},
 		]);
 
-		const hiddenFastModel = {
-			...regularModel,
-			id: hiddenFastModelId,
-			fastRoute: { baseModelId: regularModel.id, upstreamModelId: hiddenFastModelId },
-		};
 		assert.deepEqual(
 			provider
-				.filterModels?.([regularModel, hiddenRegularModel, hiddenFastModel], { ...credentials, type: "oauth" })
+				.filterModels?.([regularModel, hiddenRegularModel, entitledFast, disabledFast, unlistedFast], {
+					...credentials,
+					type: "oauth",
+				})
 				.map((model) => model.id),
-			[regularModel.id],
+			[regularModel.id, entitledFast.id],
 		);
 	});
 
@@ -226,19 +238,19 @@ describe("GitHub Copilot OAuth device flow", () => {
 			},
 			{
 				id: "claude-opus-4.8-fast",
-				model_picker_enabled: true,
+				model_picker_enabled: false,
 				policy: { state: "enabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
 			{
 				id: "claude-opus-4.7-fast",
-				model_picker_enabled: true,
+				model_picker_enabled: false,
 				policy: { state: "disabled" },
 				capabilities: { supports: { tool_calls: true } },
 			},
 		]);
 
-		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8", "claude-opus-4.8-fast"]);
+		assert.deepEqual(credentials.availableModelIds, ["claude-opus-4.8"]);
 		assert.deepEqual(credentials.fastModelIds, ["claude-opus-4.8-fast"]);
 
 		const provider = githubCopilotProvider();

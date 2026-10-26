@@ -10,7 +10,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
-- GitHub Copilot offers only models the account's `/models` response marks usable: a `-fast` model needs the same selectable signal as any other model, a model enabled during login is offered only if the re-read model list marks it usable, and an OAuth login without a stored model list offers no catalog models until `Models.refresh()` re-reads the list ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
+- GitHub Copilot offers fewer models its account can't use: a model enabled during login is offered only if the model list re-read afterwards marks it usable, and an OAuth login without a stored model list offers no catalog models until `Models.refresh()` re-reads the list ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
 
 ## [0.9.44] - 2026-10-25
 
