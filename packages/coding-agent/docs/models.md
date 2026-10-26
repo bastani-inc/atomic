@@ -42,8 +42,7 @@ Each System One service takes images in its own request format, which the model'
 - [Supported APIs](/models/reference#supported-apis)
 - [Provider Configuration](/models/reference#provider-configuration)
 - [Model Configuration](/models/reference#model-configuration)
-- [GPT-6-Astra Built-in Models](/models/reference#gpt-6-astra-built-in-models)
-- [GPT-6.1 Sol](/models/reference#gpt-6-1-sol)
+- [OpenAI Built-in Models](/models/reference#openai-built-in-models)
 - [Request-wide Cost Tiers](/models/reference#request-wide-cost-tiers)
 - [Overriding Built-in Providers](/models/reference#overriding-built-in-providers)
 - [Per-model Overrides](/models/reference#per-model-overrides)
@@ -241,6 +240,6 @@ Moved to [Model configuration reference](/models/reference#constrained-tool-samp
 
 Moved to [Model configuration reference](/models/reference#catalog-freshness-and-precedence).
 
-## GPT-6-Astra Built-in Models
+## OpenAI Built-in Models
 
-Moved to [Model configuration reference](/models/reference#gpt-6-astra-built-in-models).
+Moved to [Model configuration reference](/models/reference#openai-built-in-models).
