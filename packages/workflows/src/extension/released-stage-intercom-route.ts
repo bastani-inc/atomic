@@ -1,4 +1,5 @@
 import { durableRootRunIdForRun } from "../durable/run-owner-backend.js";
+import { isSessionClosedError } from "../engine/session-closed-error.js";
 import type { ReleasedStage, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
@@ -82,7 +83,13 @@ export function registerReleasedStageIntercomRoutes(
 		const announcement = announcementFor(store, released, (content) =>
 			answerAsCompletedStage(released.runId, released.stageId, content),
 		);
-		if (announcement !== undefined) pi.events?.emit?.(RELEASED_STAGE_EVENT, announcement);
+		if (announcement === undefined) return;
+		try {
+			pi.events?.emit?.(RELEASED_STAGE_EVENT, announcement);
+		} catch (error) {
+			if (!(error instanceof Error && isSessionClosedError(error))) throw error;
+			disposed = true;
+		}
 	});
 	return () => {
 		disposed = true;

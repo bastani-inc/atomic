@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Disposing an SDK session right after a workflow run reports `completed`, without awaiting `session.workflows.waitForSettled(runId)`, no longer prints one `atomic-workflows: released stage listener failed Error: SessionClosed` warning per stage ([#3966](https://github.com/bastani-inc/atomic/issues/3966))
+
 ## [0.9.45] - 2026-10-25
 
 ### Fixed

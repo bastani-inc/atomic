@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
 import { registerReleasedStageIntercomRoutes } from "../../packages/workflows/src/extension/released-stage-intercom-route.js";
@@ -26,13 +26,14 @@ afterEach(async () => {
 /** Runs a workflow of one prompt per stage and collects what the host announces to Intercom. */
 async function runAndCollectAnnouncements(
 	stages: ReadonlyArray<{ name: string; options?: { builtins: { intercom: false } } }>,
+	emit?: (event: string, payload: Announcement) => void,
 ) {
 	const registry = createStageControlRegistry();
 	const store = createStore();
 	const fixture = createPersistedStageFixture({ reply: (text) => `answer: ${text}` });
 	const announcements: Announcement[] = [];
 	const dispose = registerReleasedStageIntercomRoutes(
-		{ events: { emit: (_event, payload) => announcements.push(payload) } },
+		{ events: { emit: emit ?? ((_event, payload) => announcements.push(payload)) } },
 		registry,
 		store,
 		createPostMortemHandleResolver({
@@ -92,4 +93,32 @@ test("a released stage answers an ask by reopening its saved conversation, and r
 
 	dispose();
 	await assert.rejects(reviewer.answer("still there?"), /its owning session has closed/);
+});
+
+test("a host that closed its session mid-teardown does not warn per released stage, but other emit failures still do (#3966)", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	cleanups.push(() => warn.mockRestore());
+	const emitFailures: string[] = [];
+	const failWith = (error: Error) => () => {
+		emitFailures.push(error.message);
+		throw error;
+	};
+	const stages = [{ name: "one" }, { name: "two" }, { name: "three" }];
+
+	await runAndCollectAnnouncements(
+		stages,
+		failWith(Object.assign(new Error("SessionClosed"), { code: "SessionClosed" })),
+	);
+	assert.equal(emitFailures.length, 1, "a closed session stops further announcements");
+	assert.deepEqual(
+		warn.mock.calls.filter(([message]) => String(message).includes("released stage listener failed")),
+		[],
+	);
+
+	await runAndCollectAnnouncements(stages, failWith(new Error("boom")));
+	assert.equal(
+		warn.mock.calls.filter(([message]) => String(message).includes("released stage listener failed")).length,
+		3,
+		"an unrelated emit failure is still reported for each stage",
+	);
 });
