@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `@bastani/atomic` exports `observeProviderRateLimits()`, `providerRateLimitObservations()` and `applyProviderRateLimitObservation()` with the `ProviderRateLimitObservation` type, so another process on the same host can apply the provider and model cooldowns and quota-exhausted marks this process recorded. An applied limit only ever extends the matching provider or model limit and counts no failure ([#4023](https://github.com/bastani-inc/atomic/issues/4023))
+
 ### Fixed
 
 - Provider cooldowns now honor `Retry-After` on every provider path, including Anthropic-format models, instead of guessing an exponential backoff. HTTP 402 and quota-exhaustion codes (`insufficient_quota`, `quota_exceeded`, `usage_limit*`) are classified as the new `quota_exhausted` failure kind: the account counts as unavailable until its reset, and the turn moves to a configured fallback model instead of retrying the same model. When a rate-limit response names the model that hit the limit, only that model cools down; other models on the provider stay usable. Limits that do not name a model still cool the whole provider ([#3984](https://github.com/bastani-inc/atomic/issues/3984))

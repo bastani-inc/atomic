@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { type ResourceAdmission, withResourceAdmission } from "@bastani/atomic";
+import {
+	applyProviderRateLimitObservation,
+	observeProviderRateLimits,
+	type ResourceAdmission,
+	withResourceAdmission,
+} from "@bastani/atomic";
 import { StorageProvider } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -31,6 +36,7 @@ import {
 	type WorkerStageDelivery,
 	type WorkerStart,
 } from "./protocol.js";
+import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { WorkerStageWatches } from "./stage-watch.js";
@@ -75,7 +81,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
 	>();
 	let stageWatches: WorkerStageWatches | undefined;
+	// #4023: limits this worker records reach the rest of the pool, and theirs reach it, through the coordinator.
+	const rateLimitOutbox = new RateLimitObservationOutbox((observations) =>
+		process.send?.({ id: 0, kind: "rate-limits", observations } satisfies WorkerRequest, () => {}),
+	);
+	observeProviderRateLimits((observation) => rateLimitOutbox.offer(observation));
 	process.on("message", (message: WorkerInbound) => {
+		if ("kind" in message && message.kind === "rate-limits") {
+			for (const observation of message.observations) applyProviderRateLimitObservation(observation);
+			return;
+		}
 		if ("kind" in message) {
 			stageWatches?.serve(message);
 			return;
