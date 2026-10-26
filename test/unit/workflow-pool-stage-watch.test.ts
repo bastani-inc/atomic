@@ -666,3 +666,35 @@ test.each([
 		assert.deepEqual(calls, ["sendUserMessage", expectedCall]);
 	},
 );
+
+test("between two turns of the stage's own loop, a steer and a follow-up are queued in their mode, not held until the loop ends (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		// The loop is between turns: no turn streams, but the stage's own prompt holds admission.
+		isStreaming: false,
+		isTurnLoopBusy: true,
+		sendUserMessage() {
+			calls.push("sendUserMessage");
+			return new Promise(() => {});
+		},
+		async steer() {
+			calls.push("steer");
+		},
+		async followUp() {
+			calls.push("followUp");
+		},
+	});
+	openWatch(watches);
+	assert.deepEqual(await deliver(sent, watches, 2, "op-steer", "steer"), { action: "steer", refusal: undefined });
+	assert.deepEqual(await deliver(sent, watches, 3, "op-follow", "followUp"), {
+		action: "followUp",
+		refusal: undefined,
+	});
+	assert.deepEqual(calls, ["steer", "followUp"]);
+});

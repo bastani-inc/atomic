@@ -234,6 +234,8 @@ export interface InternalStageContext extends StageContext {
 	__persistedSessionStore(): SessionStore | undefined;
 	/** Internal: synchronous; true when no message, turn, retry, pause, or queue work needs the live session. */
 	__idleForRelease(): boolean;
+	/** Internal: true while a message, the stage's own prompt included, holds or waits for the turn loop. */
+	__turnLoopBusy?(): boolean;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */

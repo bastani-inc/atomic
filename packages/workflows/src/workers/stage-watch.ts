@@ -57,7 +57,9 @@ export async function admitStageUserMessage(
 	// A turn under way, whether or not the stage handle reports it (a replayed turn may not, and
 	// holds the stage's message admission until it ends), takes the text in its mode directly:
 	// through that admission a steer would wait for the whole turn instead of steering it.
-	const busy = handle.isStreaming || handle.agentSession?.isStreaming === true;
+	// So does the stage's own turn loop between two of its turns: its admission would hold the text
+	// until the whole loop ends, after the stage's work instead of during it.
+	const busy = turnUnderway(handle);
 	const delivery = (async (): Promise<StageCommandResult> => {
 		if (busy) return queue();
 		try {
@@ -96,6 +98,15 @@ export interface WorkerStagePrompts {
 	readonly broker: StageUiBroker;
 	/** Rejects a pending `ctx.ui` prompt with `error`; false when that prompt is not pending. */
 	fail(runId: string, stageId: string, promptId: string, error: Error): boolean;
+}
+
+/**
+ * Whether the stage's turn loop runs: a turn streams (reported by the handle or only by its session,
+ * as a replayed turn may be), or the loop holds the stage's message admission between two turns.
+ * Text sent now joins that loop; it never starts a turn of its own.
+ */
+function turnUnderway(handle: StageControlHandle): boolean {
+	return handle.isStreaming || handle.agentSession?.isStreaming === true || handle.isTurnLoopBusy === true;
 }
 
 /** What a session says when asked to start a turn while one is running. */
@@ -389,7 +400,7 @@ export class WorkerStageWatches {
 				// The session already holds this op, e.g. from before a replay: admit it at most once.
 				delivered.has(command.deliveryOp)
 					? { action: "handled" as const }
-					: this.receiptsFor(watch.handle).track(command.deliveryOp, watch.handle.isStreaming, () =>
+					: this.receiptsFor(watch.handle).track(command.deliveryOp, turnUnderway(watch.handle), () =>
 							admitStageUserMessage(watch.handle, command.text, command.intent, command.expandPromptTemplates),
 						),
 			)

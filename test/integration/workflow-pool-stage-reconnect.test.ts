@@ -17,6 +17,7 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
+import { resolveStageTarget } from "../../packages/workflows/src/extension/workflow-targets.js";
 import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
@@ -500,10 +501,12 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(handle.placement.reconnecting, undefined);
 			assert.ok((handle.placement.undelivered ?? 0) >= 1, observe());
 			assert.deepEqual(
-				handle.queuedUserMessages().steering.filter((text) => text === "never-arrives"),
-				["never-arrives"],
-				"the undelivered text stays listed",
+				handle.queuedUserMessages(),
+				{ steering: [], followUp: [] },
+				"nothing reads as pending once the stage ended; the header counts what never arrived",
 			);
+			assert.deepEqual(handle.pendingToolExecutionEvents(), [], "no tool reads as still running");
+			assert.equal(handle.isStreaming, false);
 			lease.release();
 			// A failed stage on a local worker reopens for post-mortem chat, as a failed in-process stage does.
 			const failedStage = agentStages(live.store)[0]!;
@@ -519,6 +522,24 @@ test.skipIf(process.platform === "win32")(
 				stageControlRegistry: createStageControlRegistry(),
 			})(failedStage.runId, failedStage.stage.id);
 			assert.equal(postMortem?.ok, true, `${failedStage.stage.status}: ${JSON.stringify(postMortem)}`);
+			// The graph collapses the failed child to its boundary; Enter on it, and `/workflow attach`
+			// by the child stage's name, both still reach the failed pooled stage.
+			const childRun = live.store.runs().find((run) => run.id === failedStage.runId)!;
+			const root = live.store.runs().find((run) => run.id === childRun.parentRunId)!;
+			const boundary = root.stages.find((stage) => stage.id === childRun.parentStageId)!;
+			assert.equal(boundary.status, "failed");
+			const throughBoundary = await createPostMortemHandleResolver({
+				adapters: { agentSession: { create: async () => assert.fail("not opened") } },
+				resolveDefaultStageSessionDir: () => undefined,
+				store: live.store,
+				stageControlRegistry: createStageControlRegistry(),
+			})(root.id, boundary.id);
+			assert.equal(throughBoundary?.ok, true, JSON.stringify(throughBoundary));
+			assert.deepEqual(resolveStageTarget(root.id, "agent", live.store), {
+				ok: true,
+				runId: failedStage.runId,
+				stageId: failedStage.stage.id,
+			});
 		} finally {
 			await live.close();
 		}

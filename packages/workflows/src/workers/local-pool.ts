@@ -1193,7 +1193,8 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
-		for (const { controller } of this.routedQuestions.values()) controller.abort(new Error("Local worker pool is closed"));
+		for (const { controller } of this.routedQuestions.values())
+			controller.abort(new Error("Local worker pool is closed"));
 		this.routedQuestions.clear();
 		clearInterval(this.ticker);
 		this.ticker = undefined;

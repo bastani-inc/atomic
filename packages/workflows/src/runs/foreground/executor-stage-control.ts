@@ -87,6 +87,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		get isStreaming() {
 			return runtime.innerCtx.isStreaming;
 		},
+		get isTurnLoopBusy() {
+			return runtime.innerCtx.__turnLoopBusy?.() === true;
+		},
 		get isDisposed() {
 			return runtime.state.liveHandleReleased;
 		},
@@ -151,7 +154,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			// drainResumeContinuations injects RESUME_CONTINUATION_PROMPT after the
 			// tracked call resolves. Idle deliveries start a fresh user turn and
 			// need no continuation nudge, so only arm while streaming.
-			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
+			// Between turns of the stage's own loop counts too: the loop takes the message next.
+			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
 				await runtime.innerCtx.steer(text);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
@@ -164,7 +168,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			await ensureMessagingSession();
 			runtime.throwIfStageMutationBlocked();
 			// Same in-flight continuation arming as steer(): see comment above.
-			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
+			// Between turns of the stage's own loop counts too: the loop takes the message next.
+			const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
 				await runtime.innerCtx.followUp(text);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";

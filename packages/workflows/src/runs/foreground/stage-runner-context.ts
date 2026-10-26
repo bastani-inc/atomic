@@ -405,6 +405,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
 			return controller.isIdleForRelease();
 		},
 
+		__turnLoopBusy() {
+			return controller.isTurnLoopBusy();
+		},
+
 		__modelFallbackMeta() {
 			return controller.currentModelFallbackMeta();
 		},
