@@ -48,4 +48,23 @@ describe("openai provider GPT-6.1 Sol auth-aware limits", () => {
 		assert.equal(stale.contextWindow, 272_000);
 		assert.ok(stale.cost.tiers);
 	});
+
+	it("gives GPT-6.1 Terra the 500K subscription context but keeps its long-context pricing", () => {
+		const provider = openaiProvider();
+		const models = provider.getModels();
+		const apiTerra = provider.filterModels?.(models, apiKey)?.find((model) => model.id === "gpt-6.1-terra");
+		assert.equal(apiTerra?.contextWindow, 272_000);
+		assert.ok(apiTerra?.cost.tiers);
+
+		const terra = provider.filterModels?.(models, oauth)?.find((model) => model.id === "gpt-6.1-terra");
+		assert.equal(terra?.contextWindow, 500_000);
+		assert.deepEqual(terra?.cost, apiTerra?.cost);
+		assert.deepEqual(terra?.serviceTiers, apiTerra?.serviceTiers);
+
+		const codexTerra = openaiCodexProvider()
+			.getModels()
+			.find((model) => model.id === "gpt-6.1-terra");
+		assert.equal(codexTerra?.contextWindow, 500_000);
+		assert.ok(codexTerra?.cost.tiers);
+	});
 });

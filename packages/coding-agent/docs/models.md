@@ -44,6 +44,7 @@ Each System One service takes images in its own request format, which the model'
 - [Model Configuration](/models/reference#model-configuration)
 - [GPT-6-Astra Built-in Models](/models/reference#gpt-6-astra-built-in-models)
 - [GPT-6.1 Sol](/models/reference#gpt-6-1-sol)
+- [GPT-6.1 Terra](/models/reference#gpt-6-1-terra)
 - [Request-wide Cost Tiers](/models/reference#request-wide-cost-tiers)
 - [Overriding Built-in Providers](/models/reference#overriding-built-in-providers)
 - [Per-model Overrides](/models/reference#per-model-overrides)

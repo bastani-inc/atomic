@@ -1074,6 +1074,8 @@ for (const block of response.content) {
 
 GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh` and `max` on OpenAI and Azure Responses. It does not support `off`. The Codex provider also exposes a `minimal` UI alias that sends `low` to the API.
 
+GPT-6.1 Terra supports `off`, `low`, `medium`, `high`, `xhigh` and `max` on OpenAI, Azure and Codex Responses; `off` sends reasoning effort `none`. It does not support `minimal`, apart from the same Codex `minimal` UI alias.
+
 ### Provider-Specific Options (stream/complete)
 
 `models.stream()`/`complete()` accept the owning API's full option set. Use `hasApi()` to narrow a dynamically looked-up model to its API for full option typing:

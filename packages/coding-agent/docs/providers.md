@@ -98,6 +98,8 @@ GPT-6 Sol and GPT-6 Luna are selectable as `openai/gpt-6-sol`, `openai/gpt-6-lun
 
 GPT-6.1 Sol is selectable as `openai/gpt-6.1-sol` and `openai-codex/gpt-6.1-sol`, with derived `-fast` siblings. For example, `atomic --model openai-codex/gpt-6.1-sol-fast:high` selects priority routing at high effort. Sol 6.1 supports `low`, `medium`, `high`, `xhigh`, and `max`; Codex's `minimal` UI alias also sends `low`. `off` is unavailable. See [Sol 6.1 limits and pricing](/models/reference#gpt-6-1-sol).
 
+GPT-6.1 Terra is selectable as `openai/gpt-6.1-terra` and `openai-codex/gpt-6.1-terra`. Unlike Sol, it supports `off`; it rejects `minimal`, which Codex's UI alias sends as `low`. ChatGPT sign-in gives it a 500,000-token context with long-context pricing. A derived `openai/gpt-6.1-terra-fast` choice is available on the OpenAI API. See [Terra limits and pricing](/models/reference#gpt-6-1-terra).
+
 GPT-6.1 Sol also has an `-ultrafast` choice on `openai/*`, `openai-api/*` and `openai-codex/*`, for example `openai/gpt-6.1-sol-ultrafast`.
 
 ChatGPT sign-in through either `openai` or `openai-codex` gives GPT-6.1 Sol a 500,000-token context on Standard, Fast, and Ultrafast, without long-context fees. API-key sign-in through `openai` or `openai-api` keeps the 272,000-token default and API long-context pricing. Account aliases follow their own authentication method. Fast and Ultrafast choices work with either authentication method when the account supports the requested tier.

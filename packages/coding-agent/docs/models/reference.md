@@ -167,6 +167,21 @@ Rates are per million tokens. Derived `openai/gpt-6.1-sol-fast` and `openai-code
 
 `openai/gpt-6.1-sol-ultrafast` (also `openai-api/` and `openai-codex/`) sends `service_tier: "ultrafast"`. It uses OpenAI's published Ultrafast rates of $12 input and $60 output per million tokens. OpenAI has not listed Sol Ultrafast cache rates, so Atomic derives them at the same six-times-Standard ratio: $0.60 cached input and $15 cache write. With an API key, the usual long-context multipliers apply above 272,000 input tokens. Subscription sign-in keeps flat rates across the 500,000-token window. See [provider tier caveats](/providers#fast-models).
 
+<a id="gpt-6-1-terra" />
+
+### GPT-6.1 Terra
+
+Select `openai/gpt-6.1-terra` with either API-key authentication or ChatGPT subscription sign-in, `openai-codex/gpt-6.1-terra` with a ChatGPT subscription, or `azure/gpt-6.1-terra`. All accept text and images and support `off`, `low`, `medium`, `high`, `xhigh`, and `max`. Terra rejects the `minimal` effort; Codex offers a `minimal` UI alias that sends `low`.
+
+With ChatGPT subscription sign-in, `openai/gpt-6.1-terra` and `openai-codex/gpt-6.1-terra` use a 500,000-token context and a 128,000-token output limit. With API-key authentication, `openai/gpt-6.1-terra` and `openai-api/gpt-6.1-terra` use a 272,000-token default context. Unlike GPT-6.1 Sol, Terra keeps the whole-request long-context prices with either sign-in:
+
+| Aggregate input | Input | Cached input | Cache write | Output |
+| --- | ---: | ---: | ---: | ---: |
+| Up to 272,000 | $1 | $0.05 | $1.25 | $5 |
+| Above 272,000 | $2 | $0.10 | $2.50 | $7.50 |
+
+Rates are per million tokens. The derived `openai/gpt-6.1-terra-fast` choice (also `openai-api/`) sends the same upstream model with priority routing at twice the applicable rates. Codex does not list a Fast tier for Terra yet, so there is no `openai-codex/gpt-6.1-terra-fast` choice, and Terra has no Ultrafast choice.
+
 ### Image Input Limits
 
 Use `inputLimits.images.resize` to configure how new images are encoded before they enter conversation history:
