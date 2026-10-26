@@ -179,8 +179,12 @@ export async function routeExecutionModel(input: {
 				({ model }) => `${model.provider}/${model.id}`,
 			),
 		);
+	// #3981: the returned route's `allowsModel` and `assertCurrent` outlive the caller's context: a subagent child
+	// uses `allowsModel` as its fallback gate after model fallback retired the session that launched it, and a
+	// retired extension context throws on every read. The registry is the session-independent model runtime's.
+	const { modelRegistry } = ctx;
 	const permittedModels = () => {
-		const models = ctx.modelRegistry.getAvailable();
+		const models = modelRegistry.getAvailable();
 		const allowed = allowedModels.length ? matching(allowedModels, models) : undefined;
 		const excluded = matching(excludedModels, models);
 		return models.filter((model) => {

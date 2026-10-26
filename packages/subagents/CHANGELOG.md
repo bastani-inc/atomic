@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A detached subagent that exits after its parent workflow stage's session was replaced by model fallback still sends its completion notice. Before, the notice was lost and the workflow run failed with `This extension ctx is stale after session replacement or reload` ([#3981](https://github.com/bastani-inc/atomic/issues/3981))
+
 ## [0.9.44] - 2026-10-25
 
 ### Changed

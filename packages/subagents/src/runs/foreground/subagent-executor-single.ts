@@ -206,6 +206,9 @@ export async function runSinglePath(
 
 	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
+	// #3981: a detached child can exit after model fallback retired the stage session that launched it, whose
+	// context then throws on every read. Its stage admission outlives that session, so read it now.
+	const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 	let r: SingleResult;
 	try {
 		const supervisorAuthorization = await requestSupervisorAuthorization(
@@ -250,7 +253,7 @@ export async function runSinglePath(
 			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
-				if (result && workflowStageAcceptsDetachedNotification(ctx)) {
+				if (result && workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
 				}
 			},

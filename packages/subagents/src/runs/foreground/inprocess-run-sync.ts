@@ -408,34 +408,39 @@ export async function runSingleInProcess(
 	if (winner.kind === "continued") {
 		detachCleanup();
 		parentAskCleanup();
-		void running.promise.then(async (continuedOutcome) => {
-			const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths);
-			await control.deliverChildResult(
-				{
-					path: continuedOutcome.path,
-					status: continuedOutcome.status,
-					...(continuedOutcome.status === "error" ||
-					(continuedOutcome.status === "interrupted" && continuedOutcome.cause)
-						? { cause: continuedOutcome.cause }
-						: {}),
-					stats: continuedOutcome.stats,
-					envelope: continuedOutcome.envelope,
-					...(recovered.model === undefined ? {} : { model: recovered.model }),
-					...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
-					sessionFile: continuedOutcome.sessionFile,
-					timestamp: Date.now(),
-					artifactsDir: options.artifactsDir,
-				},
-				{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
-			);
-			const delivered = control.getDeliveredResult(continuedOutcome.path);
-			if (delivered) {
-				recovered.envelope = delivered.envelope;
-				recovered.finalOutput = delivered.envelope;
-			}
-			persistRequestedOutput(recovered, options, outputSnapshot);
-			options.onDetachedExit?.(recovered);
-		});
+		void running.promise
+			.then(async (continuedOutcome) => {
+				const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths);
+				await control.deliverChildResult(
+					{
+						path: continuedOutcome.path,
+						status: continuedOutcome.status,
+						...(continuedOutcome.status === "error" ||
+						(continuedOutcome.status === "interrupted" && continuedOutcome.cause)
+							? { cause: continuedOutcome.cause }
+							: {}),
+						stats: continuedOutcome.stats,
+						envelope: continuedOutcome.envelope,
+						...(recovered.model === undefined ? {} : { model: recovered.model }),
+						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
+						sessionFile: continuedOutcome.sessionFile,
+						timestamp: Date.now(),
+						artifactsDir: options.artifactsDir,
+					},
+					{ artifactsDir: options.artifactsDir, artifactPaths, artifactsDisabled, maxOutput: options.maxOutput },
+				);
+				const delivered = control.getDeliveredResult(continuedOutcome.path);
+				if (delivered) {
+					recovered.envelope = delivered.envelope;
+					recovered.finalOutput = delivered.envelope;
+				}
+				persistRequestedOutput(recovered, options, outputSnapshot);
+				options.onDetachedExit?.(recovered);
+			})
+			.catch((error: unknown) => {
+				// #3981: nothing awaits a detached child's exit, and a run's async scope fails on any unhandled rejection.
+				console.error("atomic-subagents: detached child exit handling failed", error);
+			});
 		const continuedModel = running.currentModel ?? candidate;
 		const continuedThinking = running.currentThinking;
 		const continuedResult: SingleResult = {
