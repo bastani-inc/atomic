@@ -10,6 +10,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { WorkflowOutputValues } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import {
@@ -358,7 +359,7 @@ test.skipIf(process.platform === "win32")(
 		await writeFileEnsuringDir(join(directory, "release"), "");
 		let first: unknown;
 		let afterFault: unknown;
-		let laterOutputs: unknown;
+		let laterOutputs: WorkflowOutputValues | undefined;
 		const parent = workflow({
 			name: "pool-fault-no-host-fallback-root",
 			description: "",
