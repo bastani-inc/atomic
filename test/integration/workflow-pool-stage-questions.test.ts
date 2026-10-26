@@ -192,19 +192,18 @@ test.skipIf(process.platform === "win32")(
 			clock += 1_000;
 			pane.handleInput("\r");
 			assert.equal(broker.peekStagePrompt(target.runId, target.stageId), undefined, "Enter answered the form");
-			// The stage then asks whether to move on, as an interactive stage does; that form answers the same way.
+			// The stage then asks whether to move on, as an interactive stage does; answer it as `workflow answer` would.
 			const ready = target;
 			await untilOrRunEnds(
-				async () => plain(shown.render(120)).includes("Are you ready to move on to the next stage?"),
+				async () => broker.peekStagePrompt(ready.runId, ready.stageId)?.kind === "readiness_gate",
 				execution,
 				CONDITION_TIMEOUT_MS,
 			);
-			clock += 1_000;
-			shown.handleInput("\r");
 			assert.equal(
-				broker.peekStagePrompt(ready.runId, ready.stageId),
-				undefined,
-				"Enter answered the readiness form",
+				broker.answerStagePrompt(ready.runId, ready.stageId, {
+					optionLabels: ["I'm ready to move on to the next workflow stage."],
+				}),
+				true,
 			);
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
