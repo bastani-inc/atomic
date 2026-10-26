@@ -216,7 +216,12 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-luna": ["priority"],
 		"gpt-6-sol": ["priority"],
 		"gpt-6.1-sol": ["priority", "ultrafast"],
+		"gpt-6.1-terra": [],
 	});
+	// The API publishes GPT-6.1 Terra Fast at 2x Standard; Codex does not list a Terra service tier yet.
+	assert.deepEqual(catalogs.openai["gpt-6.1-terra"]?.serviceTiers, [
+		{ id: "priority", cost: withLongContext(2, 10, 0.1, 2.5) },
+	]);
 });
 
 test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and leaves every other entry alone", () => {
@@ -266,6 +271,7 @@ test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and le
 		"gpt-6-astra": { contextWindow: 272_000, tiered: true },
 		"gpt-6-luna": { contextWindow: 272_000, tiered: true },
 		"gpt-6-sol": { contextWindow: 272_000, tiered: true },
+		"gpt-6.1-terra": { contextWindow: 500_000, tiered: true },
 	});
 });
 

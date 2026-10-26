@@ -6,6 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Added
 
+- Added GPT-6.1 Terra to the OpenAI, Azure OpenAI Responses, and OpenAI Codex providers with official pricing ($1 input, $0.05 cached input, $1.25 cache writes, $5 output, long-context tier above 272k), Fast at twice those rates on the OpenAI API, tool search, and mid-conversation effort changes. Unlike GPT-6.1 Sol it supports `off` (reasoning effort `none`); it rejects `minimal`. Codex serves it with a 500K context window ([pi 363ad78b](https://github.com/earendil-works/pi/commit/363ad78bf0625e1dfbe848429782f5e07bb1584e))
 - `OAuthAuth.needsRefresh()` (optional) reports that an unexpired stored credential lacks data only a refresh restores; `Models.refresh()` with network access then refreshes it once for providers without a model source ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
 
 ### Fixed
