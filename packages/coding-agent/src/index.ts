@@ -315,13 +315,17 @@ export type {
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
 export {
+	applyProviderRateLimitObservation,
 	configureProviderRequestBudget,
 	isProviderRateLimit,
 	modelIdForModel,
+	observeProviderRateLimits,
+	type ProviderRateLimitObservation,
 	type ProviderRateLimitSnapshot,
 	type ProviderRequestBudget,
 	providerCooldownMs,
 	providerIdForModel,
+	providerRateLimitObservations,
 	providerRateLimitSnapshot,
 	providerRetryHint,
 	providerUnavailableMs,
