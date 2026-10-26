@@ -3,7 +3,11 @@ import { isTerminalStage } from "./executor-scheduler.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import type { AgentSessionEventListener, StageControlHandle } from "./stage-control-registry.js";
 import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
-import type { StageUserMessageDeliveryAction, StageUserMessagePreparation } from "./stage-runner-types.js";
+import type {
+	StageQueuedTextOptions,
+	StageUserMessageDeliveryAction,
+	StageUserMessagePreparation,
+} from "./stage-runner-types.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
@@ -36,9 +40,15 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	 * queue: the stage context's queueing first waits for the stage's session to be ready, which on a
 	 * pooled replacement attempt still starting up lasts until that turn ends (#3996).
 	 */
-	const queueIntoLiveTurn = async (text: string, kind: "steer" | "followUp"): Promise<void> => {
-		if ((await runtime.innerCtx.__queueIntoLiveTurn?.(text, kind)) === true) return;
-		if (kind === "steer") await runtime.innerCtx.steer(text);
+	const queueIntoLiveTurn = async (
+		text: string,
+		kind: "steer" | "followUp",
+		options: StageQueuedTextOptions | undefined,
+	): Promise<void> => {
+		if ((await runtime.innerCtx.__queueIntoLiveTurn?.(text, kind, options)) === true) return;
+		if (options !== undefined && runtime.innerCtx.__queueUserText !== undefined)
+			await runtime.innerCtx.__queueUserText(text, kind, options);
+		else if (kind === "steer") await runtime.innerCtx.steer(text);
 		else await runtime.innerCtx.followUp(text);
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
@@ -155,7 +165,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			}
 			if (action !== "handled") runtime.throwIfStageMutationBlocked();
 		},
-		async steer(text: string) {
+		async steer(text: string, options?: StageQueuedTextOptions) {
 			runtime.throwIfStageMutationBlocked();
 			// A live turn needs no reattached session: the text goes into that turn.
 			if (runtime.innerCtx.__agentSession()?.isStreaming !== true) await ensureMessagingSession();
@@ -171,13 +181,13 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				runtime.innerCtx.__agentSession()?.isStreaming === true ||
 				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await queueIntoLiveTurn(text, "steer");
+				await queueIntoLiveTurn(text, "steer", options);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();
 			}
 		},
-		async followUp(text: string) {
+		async followUp(text: string, options?: StageQueuedTextOptions) {
 			runtime.throwIfStageMutationBlocked();
 			// A live turn needs no reattached session: the text goes into that turn.
 			if (runtime.innerCtx.__agentSession()?.isStreaming !== true) await ensureMessagingSession();
@@ -189,7 +199,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				runtime.innerCtx.__agentSession()?.isStreaming === true ||
 				runtime.innerCtx.__turnLoopBusy?.() === true;
 			try {
-				await queueIntoLiveTurn(text, "followUp");
+				await queueIntoLiveTurn(text, "followUp", options);
 				if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
 			} finally {
 				void runtime.captureStageSessionMeta();
@@ -328,8 +338,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	handle.sendUserMessage = (text, options, beforeDelivery) =>
 		tracked(() => sendUserMessage(text, options, beforeDelivery));
 	handle.prompt = (text) => tracked(() => prompt(text));
-	handle.steer = (text) => tracked(() => steer(text));
-	handle.followUp = (text) => tracked(() => followUp(text));
+	handle.steer = (text, options) => tracked(() => steer(text, options));
+	handle.followUp = (text, options) => tracked(() => followUp(text, options));
 	handle.pause = () => tracked(pause);
 	handle.resume = (message, beforeResume) => tracked(() => resume(message, beforeResume));
 	return handle;

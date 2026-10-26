@@ -66,9 +66,11 @@ export async function admitStageUserMessage(
 		// The stage queues into a turn its live session already runs directly, and arms its own
 		// continuation for it (see the stage control handle).
 		const direct = handle.agentSession?.isStreaming === true;
+		// Queued text keeps `sendUserMessage()`'s semantics: literal unless expansion was asked for.
+		const textOptions = { expandPromptTemplates: expandPromptTemplates ?? false };
 		const call = (async (): Promise<StageCommandResult> => {
-			if (intent === "steer") await handle.steer(text);
-			else await handle.followUp(text);
+			if (intent === "steer") await handle.steer(text, textOptions);
+			else await handle.followUp(text, textOptions);
 			return queuedAction;
 		})();
 		tracePooledWatch("worker.deliver.queueing", { intent, before, direct });

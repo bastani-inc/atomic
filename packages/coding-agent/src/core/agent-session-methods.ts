@@ -250,12 +250,12 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	steer(
 		text: string,
 		images?: ImageContent[],
-		options?: Pick<PromptOptions, "source">,
+		options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 	): Promise<QueuedInputDisposition>;
 	followUp(
 		text: string,
 		images?: ImageContent[],
-		options?: Pick<PromptOptions, "source">,
+		options?: Pick<PromptOptions, "source" | "expandPromptTemplates">,
 	): Promise<QueuedInputDisposition>;
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
