@@ -200,6 +200,10 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 					queued: handle?.queuedUserMessages(),
 					generation: live.generation(),
 					status: live.stage()?.stage.status,
+					childStages: live.store
+						.runs()
+						.filter((run) => run.parentRunId !== undefined)
+						.map((run) => run.stages.map((stage) => `${stage.name}:${stage.status}`)),
 				});
 			let lease: Awaited<ReturnType<typeof acquirePooledStage>>;
 			const attach = async () => {
@@ -239,6 +243,16 @@ for (const scenario of ["chat closed at the first kill", "chat open throughout"]
 				}
 				// The second kill: the text was admitted by the replacement but not consumed yet.
 				await rebound(live, handle!, live.kill(), targets, observe);
+				// The view rebinds from the watch, while the root's store learns the replacement's stage from
+				// its activity: right after a kill the store holds the replayed child run without its stage
+				// until that activity is applied. Wait for the store to show the stage on the attempt the
+				// view watches, so the status read below is the replacement's, not the gap's.
+				await step(
+					"the store shows the replacement's stage",
+					() => live.generation() === handle!.placement.generation,
+					live.execution,
+					observe,
+				);
 				assert.equal(live.stage()?.stage.status, "running", "the stage still works its rounds");
 				writeFileSync(join(live.directory, ROUNDS_RELEASE_FILE), "");
 				await step(
