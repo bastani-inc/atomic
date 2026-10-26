@@ -19,6 +19,7 @@ import { createStore, loadWorkerWorkflow, run } from "../../packages/workflows/s
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { answerPooledStage } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
@@ -176,6 +177,159 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			await backend.close();
 			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+/** A host-mode root (prompt nodes) whose children run on a pool of its own over `store`. */
+async function hostRun(prefix: string, store: ReturnType<typeof createStore>, exportName = "child") {
+	const directory = makeTempDirectory(prefix);
+	const path = join(directory, "journal.sqlite");
+	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+	const child = await loadWorkerDefinition({ path: childPath, exportName, digest: await definitionDigest(childPath) });
+	const pool = new LocalWorkerPool(backend, {
+		journalPath: path,
+		workers: 1,
+		definitions: [{ definition: child, path: childPath, exportName }],
+	});
+	const execution = engineRun(
+		parentOf(child),
+		{},
+		{ runId: testRunId(prefix), cwd: directory, store, durableBackend: backend, usePromptNodesForUi: true },
+	);
+	const close = async () => {
+		await execution.catch(() => {});
+		await pool.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	};
+	return { execution, close };
+}
+
+/** The pending prompt of a pooled stage in `store` whose run is not one of `seen`. */
+function pooledPrompt(store: ReturnType<typeof createStore>, seen: readonly string[] = []) {
+	for (const candidate of store.runs())
+		for (const stage of candidate.stages)
+			if (stage.pendingPrompt !== undefined && stage.workerExecution !== undefined && !seen.includes(candidate.id))
+				return { runId: candidate.id, stageId: stage.id, promptId: stage.pendingPrompt.id };
+	return undefined;
+}
+
+test.skipIf(process.platform === "win32")(
+	"with two pools on one store, an answer for the second pool's stage passes the first pool and reaches its worker (#3996)",
+	async () => {
+		const store = createStore();
+		const first = await hostRun("pool-stage-prompt-first-", store);
+		let second: Awaited<ReturnType<typeof hostRun>> | undefined;
+		try {
+			let firstPrompt: ReturnType<typeof pooledPrompt>;
+			await untilOrRunEnds(
+				async () => (firstPrompt = pooledPrompt(store)) !== undefined,
+				first.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(firstPrompt !== undefined);
+			// The second pool registers on the store after the first.
+			second = await hostRun("pool-stage-prompt-second-", store);
+			let secondPrompt: ReturnType<typeof pooledPrompt>;
+			await untilOrRunEnds(
+				async () => (secondPrompt = pooledPrompt(store, [firstPrompt!.runId])) !== undefined,
+				second.execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(secondPrompt !== undefined);
+			const answered = await answerPooledStage(store, secondPrompt.runId, secondPrompt.stageId, {
+				kind: "prompt",
+				promptId: secondPrompt.promptId,
+				response: "second-branch",
+			});
+			assert.deepEqual(answered, { ok: true });
+			const secondOutcome = await second.execution;
+			assert.deepEqual(secondOutcome.result, { branch: "second-branch" }, JSON.stringify(secondOutcome.error));
+			assert.equal(
+				store.resolveStagePendingPrompt(
+					firstPrompt.runId,
+					firstPrompt.stageId,
+					firstPrompt.promptId,
+					"first-branch",
+				),
+				true,
+			);
+			const firstOutcome = await first.execution;
+			assert.deepEqual(firstOutcome.result, { branch: "first-branch" }, JSON.stringify(firstOutcome.error));
+		} finally {
+			await first.close();
+			await second?.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"an SDK ui that rejects fails the pooled child with that error, and the root settles (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-prompt-sdk-reject-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerWorkflow(childPath, "child");
+		let asked = 0;
+		const ui: WorkflowUIAdapter = {
+			async input() {
+				asked++;
+				throw new Error("the caller's prompt window was closed");
+			},
+			async confirm() {
+				return false;
+			},
+			async select(_message, options) {
+				return options[0]!;
+			},
+			async editor(initial) {
+				return initial ?? "";
+			},
+			async custom() {
+				throw new Error("not used");
+			},
+		};
+		try {
+			const outcome = await run(
+				parentOf(child),
+				{},
+				{
+					runId: testRunId("pool-stage-prompt-sdk-reject"),
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					ui,
+					localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
+				},
+			);
+			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			assert.match(JSON.stringify(outcome.error), /the caller's prompt window was closed/);
+			assert.equal(asked, 1, "a rejecting ui is not asked again");
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"ctx.ui.custom in a pooled child fails the child with an error naming the limitation, instead of waiting (#3996)",
+	async () => {
+		const store = createStore();
+		const custom = await hostRun("pool-stage-prompt-custom-", store, "customChild");
+		try {
+			const outcome = await custom.execution;
+			assert.equal(outcome.status, "failed", JSON.stringify(outcome));
+			assert.match(
+				JSON.stringify(outcome.error),
+				/ctx\.ui\.custom is not available in a child workflow running on a local worker/,
+			);
+		} finally {
+			await custom.close();
 		}
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,

@@ -527,7 +527,7 @@ test("an answer reaches only the prompt it names, on the attempt the worker hold
 		() => held,
 		(message) => sent.push({ ...message, id: 0 } as Sent),
 		() => "running",
-		{ prompts: () => ({ store, broker }) },
+		{ prompts: () => ({ store, broker, fail: () => false }) },
 	);
 	store.recordRunStart({
 		id: "child",

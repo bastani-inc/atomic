@@ -11,3 +11,17 @@ export const child = workflow({
 		return { branch: await ctx.ui.input("Which branch should the worker use?") };
 	},
 });
+
+/** A pooled child that asks through `ctx.ui.custom`, whose component exists only in its worker. */
+export const customChild = workflow({
+	name: "pool-prompt-custom-child",
+	description: "Local worker ctx.ui.custom fixture",
+	inputs: {},
+	outputs: { branch: Type.String() },
+	async run(ctx) {
+		const branch = await ctx.ui.custom<string>(() => {
+			throw new Error("the component is never rendered outside the worker");
+		});
+		return { branch };
+	},
+});

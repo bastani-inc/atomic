@@ -90,6 +90,14 @@ export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
 /** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
 export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
+/** Where the current attempt's stages wait for human input. */
+export interface WorkerStagePrompts {
+	readonly store: Store;
+	readonly broker: StageUiBroker;
+	/** Rejects a pending `ctx.ui` prompt with `error`; false when that prompt is not pending. */
+	fail(runId: string, stageId: string, promptId: string, error: Error): boolean;
+}
+
 /** What a session says when asked to start a turn while one is running. */
 const BUSY_SESSION = /already processing/i;
 
@@ -138,7 +146,7 @@ export class WorkerStageWatches {
 			/** Whether the stage started a turn in this attempt. */
 			readonly turnStarted?: (handle: StageControlHandle) => boolean;
 			/** Where the current attempt's stages wait for human input: its store and stage UI broker. */
-			readonly prompts?: () => { readonly store: Store; readonly broker: StageUiBroker } | undefined;
+			readonly prompts?: () => WorkerStagePrompts | undefined;
 		} = {},
 	) {}
 
@@ -254,6 +262,10 @@ export class WorkerStageWatches {
 			?.stages.find((candidate) => candidate.id === command.stageId);
 		if (stage === undefined || TERMINAL.has(stage.status)) return { refusal: "StageNotLive" };
 		const { answer } = command;
+		if (answer.kind === "failed")
+			return prompts.fail(command.runId, command.stageId, answer.promptId, new Error(answer.error))
+				? {}
+				: { refusal: "PromptNotPending" };
 		if (answer.kind === "prompt")
 			return prompts.store.resolveStagePendingPrompt(
 				command.runId,

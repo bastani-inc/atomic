@@ -12,7 +12,9 @@ import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journa
 import { run } from "../engine/run.js";
 import { createToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
+import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../extension/wiring.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
+import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import {
 	createStageControlRegistry,
@@ -28,6 +30,7 @@ import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
+import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
 	type WorkerDeliver,
@@ -39,7 +42,7 @@ import {
 } from "./protocol.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
-import { WorkerStageWatches } from "./stage-watch.js";
+import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
@@ -85,6 +88,56 @@ function trackTurnStarts(registry: StageControlRegistry, started: WeakSet<StageC
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
+}
+
+/**
+ * A worker's stage UI broker. A stage's brokered question (`ask_user_question`) waits here for the
+ * root's answer; a `ctx.ui.custom` prompt node fails at once, since its component cannot be shown
+ * outside this process (#3996).
+ */
+class WorkerStageUiBroker extends StageUiBroker {
+	constructor(private readonly workerStore: Store) {
+		super(workerStore);
+	}
+	override requestCustomUi<T>(
+		runId: string,
+		stageId: string,
+		factory: PiCustomOverlayFactory<T>,
+		options?: PiCustomOverlayOptions,
+		signal?: AbortSignal,
+		sessionId?: string,
+		humanInput?: StageQuestionnaireInput,
+	): Promise<T> {
+		const stage = this.workerStore
+			.runs()
+			.find((run) => run.id === runId)
+			?.stages.find((candidate) => candidate.id === stageId);
+		if (stage?.promptFootprint?.kind === "custom") return Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE));
+		return super.requestCustomUi<T>(runId, stageId, factory, options, signal, sessionId, humanInput);
+	}
+}
+
+/**
+ * Lets the root fail a pending `ctx.ui` prompt of this attempt (#3996): its waiter rejects with
+ * the root's error, so the prompt fails in the child as an in-process `ui` rejection would.
+ */
+function failablePrompts(store: Store): WorkerStagePrompts["fail"] {
+	const failures = new Map<string, (error: Error) => void>();
+	const awaitPrompt = store.awaitStagePendingPrompt.bind(store);
+	store.awaitStagePendingPrompt = (runId, stageId, promptId) => {
+		const failed = Promise.withResolvers<never>();
+		const key = JSON.stringify([runId, stageId, promptId]);
+		failures.set(key, failed.reject);
+		return Promise.race([awaitPrompt(runId, stageId, promptId), failed.promise]).finally(() => failures.delete(key));
+	};
+	return (runId, stageId, promptId, error) => {
+		const fail = failures.get(JSON.stringify([runId, stageId, promptId]));
+		if (fail === undefined) return false;
+		fail(error);
+		// Clear the prompt without an answer; the waiter already failed.
+		store.resolveStagePendingPrompt(runId, stageId, promptId, undefined, { recordAnswer: false });
+		return true;
+	};
 }
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
@@ -243,7 +296,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		const turnStarted = new WeakSet<StageControlHandle>();
 		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
 		let heldAttempt: PoolWork | undefined;
-		let prompts: { readonly store: Store; readonly broker: StageUiBroker } | undefined;
+		let prompts: WorkerStagePrompts | undefined;
 		stageWatches = new WorkerStageWatches(
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
@@ -302,8 +355,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			const store = createStore();
 			currentStore = store;
 			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
-			const stageUiBroker = new StageUiBroker(store);
-			prompts = { store, broker: stageUiBroker };
+			const stageUiBroker = new WorkerStageUiBroker(store);
+			prompts = { store, broker: stageUiBroker, fail: failablePrompts(store) };
 			let publication: Promise<void> | undefined;
 			let activityDirty = false;
 			const publish = () => {

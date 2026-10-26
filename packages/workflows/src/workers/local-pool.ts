@@ -57,6 +57,7 @@ import {
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
+import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
@@ -266,6 +267,8 @@ export class LocalWorkerPool {
 	private promptUi?: WorkflowUIAdapter;
 	/** Prompts of pooled stages the root is routing an answer for, by run, stage and prompt id. */
 	private readonly routedPrompts = new Set<string>();
+	/** Runs this pool's workers published, so answers for another pool's runs pass it by. */
+	private readonly ownedRuns = new Set<string>();
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
 	private registrations?: Promise<PooledStageRegistrations>;
 	constructor(
@@ -427,7 +430,11 @@ export class LocalWorkerPool {
 			};
 			this.releaseStageSource = registerPooledStageSource(store, {
 				acquire: (runId, stageId) => this.acquirePooledStage(runId, stageId),
-				answer: (runId, stageId, answer) => this.answerPooledStagePrompt(runId, stageId, answer),
+				// Another pool sharing this store may own the run: only this pool's runs are answered here.
+				answer: (runId, stageId, answer) =>
+					this.ownedRuns.has(runId)
+						? this.answerPooledStagePrompt(runId, stageId, answer)
+						: Promise.resolve(undefined),
 			});
 			this.handoff = new PoolStageHandoff(this.backend, store, this.queueView(), this.lease, (runId) => {
 				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
@@ -505,29 +512,47 @@ export class LocalWorkerPool {
 	private routePrompts(publications: readonly { readonly runs: readonly RunSnapshot[] }[]): void {
 		const store = this.store;
 		for (const { runs } of publications)
-			for (const run of runs)
+			for (const run of runs) {
+				this.ownedRuns.add(run.id);
 				for (const stage of run.stages) {
 					const prompt = stage.pendingPrompt;
 					if (prompt === undefined) continue;
 					const key = JSON.stringify([run.id, stage.id, prompt.id]);
 					if (this.routedPrompts.has(key)) continue;
-					const answered =
-						this.promptUi !== undefined
-							? askPromptUi(this.promptUi, prompt)
-							: store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id);
-					if (answered === undefined) continue;
 					this.routedPrompts.add(key);
-					void answered
-						.then((response) =>
+					const fail = (error: Error) =>
+						this.answerPooledStagePrompt(run.id, stage.id, {
+							kind: "failed",
+							promptId: prompt.id,
+							error: error.message,
+						});
+					// A custom prompt renders a component that exists only in the worker: fail it at once.
+					const answered =
+						prompt.kind === "custom"
+							? Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE))
+							: this.promptUi !== undefined
+								? askPromptUi(this.promptUi, prompt)
+								: (store?.awaitStagePendingPrompt(run.id, stage.id, prompt.id) ??
+									Promise.reject(new Error("No workflow store answers this prompt.")));
+					const answer = answered.then(
+						(response) =>
 							this.answerPooledStagePrompt(run.id, stage.id, {
 								kind: "prompt",
 								promptId: prompt.id,
 								response: response as WorkflowSerializableValue,
 							}),
-						)
-						.catch(() => {})
-						.finally(() => this.routedPrompts.delete(key));
+						// A `ui` that rejects fails the prompt in the child; it is never asked again silently.
+						(error: Error) => (this.promptUi !== undefined || prompt.kind === "custom" ? fail(error) : undefined),
+					);
+					// A prompt answered or failed stays routed: asking again would ask the user twice. Only an
+					// answer its attempt never received re-arms it, for the replacement that asks again.
+					void answer
+						.then((result) => {
+							if (result?.ok === false && result.refusal === "StaleAttempt") this.routedPrompts.delete(key);
+						})
+						.catch(() => this.routedPrompts.delete(key));
 				}
+			}
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
@@ -1148,8 +1173,8 @@ export class LocalWorkerPool {
 	}
 }
 
-/** Asks an SDK caller's `ui` a pooled stage's prompt; undefined for a custom prompt it cannot render. */
-function askPromptUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<WorkflowSerializableValue> | undefined {
+/** Asks an SDK caller's `ui` a pooled stage's prompt; custom prompts never reach it. */
+function askPromptUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<WorkflowSerializableValue> {
 	switch (prompt.kind) {
 		case "input":
 			return ui.input(prompt.message);
@@ -1160,6 +1185,6 @@ function askPromptUi(ui: WorkflowUIAdapter, prompt: PendingPrompt): Promise<Work
 		case "editor":
 			return ui.editor(prompt.initial);
 		default:
-			return undefined;
+			return Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE));
 	}
 }
