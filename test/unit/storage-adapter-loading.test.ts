@@ -123,6 +123,60 @@ test("single-file builds give journal adapters the live @bastani/atomic/workflow
 	openJournalAdapterWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
 });
 
+function openJournalAfterSessionsLoadWithBuiltHost(env: Record<string, string | undefined>): void {
+	const agentDir = makeTempDirectory("storage-shared-ts-adapter-");
+	const adapterPath = join(agentDir, "adapter.ts");
+	writeFileSync(
+		adapterPath,
+		[
+			"export default {",
+			"\tatomicStorageAdapter: 1 as const,",
+			"\tasync openRunJournal() {",
+			'\t\tconst workflows = await import("@bastani/atomic/workflows");',
+			'\t\treturn new workflows.MemoryRunJournal({ adapter: "custom", location: ":memory:" });',
+			"\t},",
+			"};",
+			"",
+		].join("\n"),
+	);
+	try {
+		const result = spawnSyncCollect(
+			[
+				process.execPath,
+				"--input-type=module",
+				"-e",
+				`
+			import assert from 'node:assert/strict';
+			import * as storage from '@bastani/atomic/storage';
+			import * as workflows from '@bastani/atomic/workflows';
+			const agentDir = ${JSON.stringify(agentDir)};
+			await storage.loadStorageAdapter('./adapter.ts', { agentDir, domain: 'sessions' });
+			const adapter = await storage.loadStorageAdapter(
+				'./adapter.ts',
+				{ agentDir, domain: 'journal' },
+				{ '@bastani/atomic/workflows': workflows },
+			);
+			const journal = await adapter.openRunJournal();
+			assert.ok(journal instanceof workflows.MemoryRunJournal);
+			await journal.close();
+		`,
+			],
+			{ cwd: join(moduleDir(import.meta.url), "../../packages/coding-agent"), env: { ...process.env, ...env } },
+		);
+		assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
+	} finally {
+		removeTempDirectory(agentDir);
+	}
+}
+
+test("a .ts adapter loaded for sessions first still gets the journal's host modules (#3973)", () => {
+	openJournalAfterSessionsLoadWithBuiltHost({ ATOMIC_BUNDLED_BUILD: undefined });
+});
+
+test("single-file builds give a .ts adapter shared with sessions the journal's host modules (#3973)", () => {
+	openJournalAfterSessionsLoadWithBuiltHost({ ATOMIC_BUNDLED_BUILD: "1" });
+});
+
 test("the standalone broker loads host modules from the app bundle on first import only (#3856)", async () => {
 	const storage = { name: "storage" };
 	const atomic = { name: "atomic" };

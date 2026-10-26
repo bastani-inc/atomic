@@ -121,8 +121,11 @@ export async function loadStorageAdapter(
 		const loader = await createHostModuleJiti(
 			pathToFileURL(join(context.agentDir, "storage-adapter.js")).href,
 			{ ...(await getStorageAdapterHostModules()), ...hostModules },
-			// JS adapters must also pass through virtual host modules, not native-import a second host copy.
-			{ interopDefault: true, tryNative: false },
+			// JS adapters must also pass through virtual host modules, not native-import a second host copy. A load
+			// given extra host modules must not reuse a module another load evaluated without them: the cached
+			// module's imports stay bound to that first loader, so a .ts adapter serving several domains would miss
+			// them. Such loads evaluate afresh, as JS adapters always do.
+			{ interopDefault: true, tryNative: false, moduleCache: Object.keys(hostModules).length === 0 },
 		);
 		const specifier = (await resolvePackageStorageAdapter(module, context.agentDir)) ?? module;
 		const location = loader.esmResolve(specifier);
