@@ -13,7 +13,7 @@ const OWNER_LEASE_MS = 30_000;
 /** Released permits kept for inspection; older ones are pruned so the table cannot grow with run history. */
 export const RELEASED_PERMIT_RETENTION = 256;
 /** Most released permits one reconcile prunes, so catching up on a legacy history never holds the write lock long. */
-const PRUNE_BATCH = 1000;
+export const RELEASED_PERMIT_PRUNE_BATCH = 1000;
 const EXPIRED_REASON = "owner expired; cleanup unconfirmed";
 const UNCONFIRMED_REASON = "cleanup unconfirmed";
 const ANONYMOUS_REASON = "owner identity unavailable; cleanup unconfirmed";
@@ -405,7 +405,7 @@ export class SqlResourceAdmission {
 				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} WHERE +state = 'released'
 				AND ticket <= ${this.prunableBefore} ORDER BY ticket LIMIT ?)`,
 				RELEASED_PERMIT_RETENTION,
-				PRUNE_BATCH,
+				RELEASED_PERMIT_PRUNE_BATCH,
 			);
 		});
 	}

@@ -10,6 +10,7 @@ import type {
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import {
+	RELEASED_PERMIT_PRUNE_BATCH,
 	RELEASED_PERMIT_RETENTION,
 	SqlResourceAdmission,
 } from "../../packages/workflows/src/workers/resource-admission.js";
@@ -137,14 +138,45 @@ test("reconciling with nothing left to fence does not take the journal write loc
 	}
 });
 
-test("reconciling prunes released permits beyond the retained history (#3978)", async () => {
+/** Released permits left over from a journal written before pruning: more than two batches over the retention. */
+const LEGACY_BACKLOG = 2_600;
+
+test("reconciling prunes a released backlog one bounded batch per pass down to the retention (#3978)", async () => {
 	const f = await admissionFixture();
 	try {
-		const live = await f.seed(RELEASED_PERMIT_RETENTION + 10);
+		const live = await f.seed(0);
+		// The backlog lands after every admission is open, so no reconcile has pruned any of it yet.
+		await f.database.run(
+			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+			INSERT INTO wf_runs_resource_permits(operation, root, holder, kind, state, reason, owner)
+			SELECT 'legacy-' || i, 'root', 'history', 'process', 'released', 'resource cleanup confirmed', 'gone' FROM n`,
+			RELEASED_PERMIT_RETENTION + LEGACY_BACKLOG,
+		);
+		const released = async () => (await live[0]!.inspect()).filter((row) => row.state === "released").length;
+		let remaining = await released();
+		assert.equal(remaining, RELEASED_PERMIT_RETENTION + LEGACY_BACKLOG);
+		const drops: number[] = [];
+		while (remaining > RELEASED_PERMIT_RETENTION) {
+			assert.ok(drops.length <= LEGACY_BACKLOG / RELEASED_PERMIT_PRUNE_BATCH, `pruning stalled after ${drops}`);
+			await live[0]!.reconcile();
+			const after = await released();
+			drops.push(remaining - after);
+			assert.ok(
+				after < remaining && remaining - after <= RELEASED_PERMIT_PRUNE_BATCH,
+				`one pass must prune between 1 and ${RELEASED_PERMIT_PRUNE_BATCH} permits, pruned ${remaining - after}`,
+			);
+			remaining = after;
+		}
+		assert.deepEqual(drops, [
+			RELEASED_PERMIT_PRUNE_BATCH,
+			RELEASED_PERMIT_PRUNE_BATCH,
+			LEGACY_BACKLOG - 2 * RELEASED_PERMIT_PRUNE_BATCH,
+		]);
+		assert.equal(remaining, RELEASED_PERMIT_RETENTION);
 		await live[0]!.reconcile();
-		const rows = await live[0]!.inspect();
-		assert.equal(rows.filter((row) => row.state === "released").length, RELEASED_PERMIT_RETENTION);
-		assert.equal(rows.filter((row) => row.state === "granted").length, LIVE_OWNERS, "live grants are never pruned");
+		assert.equal(await released(), RELEASED_PERMIT_RETENTION, "the retained history is never pruned");
+		const granted = (await live[0]!.inspect()).filter((row) => row.state === "granted");
+		assert.equal(granted.length, LIVE_OWNERS, "live grants are never pruned");
 	} finally {
 		await f.close();
 	}
