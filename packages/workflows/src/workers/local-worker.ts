@@ -163,6 +163,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	let sequence = 0;
 	/** Set once any reply fences the current attempt; the attempt then ends without failing the worker (#3979). */
 	let attemptFenced = false;
+	/** Set once a reply reports the root's lease gone; the worker then ends cleanly instead of crashing (#3979). */
+	let rootLeaseLost = false;
 	const pending = new Map<
 		number,
 		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
@@ -199,13 +201,17 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			return;
 		}
 		pending.delete(reply.id);
-		if (reply.error && reply.fenced) {
+		if (reply.error && reply.rootLeaseLost) {
+			rootLeaseLost = true;
+			attemptFenced = true;
+			receiver?.reject(new WorkAttemptFencedError(reply.error));
+		} else if (reply.error && reply.fenced) {
 			attemptFenced = true;
 			receiver?.reject(new WorkAttemptFencedError(reply.error));
 		} else if (reply.error) receiver?.reject(new Error(reply.error));
 		else receiver?.resolve(reply.value);
 	});
-	process.on("disconnect", () => process.exit(1));
+	process.on("disconnect", () => process.exit(rootLeaseLost ? 0 : 1));
 	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
@@ -543,15 +549,22 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				prompts = undefined;
 				activeController = undefined;
 			}
-			if (attemptFenced) {
+			if (attemptFenced && !rootLeaseLost) {
 				await renewal;
 				await report;
 				await controlPulse;
 				await request({ kind: "fenced" });
 			}
+			if (rootLeaseLost) break;
 		}
+	} catch (error) {
+		// The root released its lease (teardown) or lost it to another incarnation: nothing is left to serve, and
+		// this is not a worker fault, so the worker ends cleanly instead of crashing (#3979).
+		if (!rootLeaseLost) throw error;
 	} finally {
 		await reader.close();
 		await sessions.close();
 	}
+	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
+	if (rootLeaseLost) process.disconnect?.();
 }

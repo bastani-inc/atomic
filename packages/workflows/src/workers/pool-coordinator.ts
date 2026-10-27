@@ -81,6 +81,8 @@ const STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
+/** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
+const MAX_CHILD_ATTEMPTS = 3;
 /**
  * Longest a starting stage waits for the broker to hold its run's route before it starts anyway.
  * It covers the route owner's reconnect backoff and its connect and acknowledgement timeouts; past
@@ -96,6 +98,11 @@ export const STAGE_WATCH_BACKLOG_BYTES = 8 * 1024 * 1024;
 const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
+
+/** The root's own lease is gone (released at teardown, or taken by another incarnation): not a worker fault (#3979). */
+function isRootLeaseLost(error: Error): boolean {
+	return error instanceof StaleLeaseError || error.message.startsWith("Stale lease for run ");
+}
 
 type RouteOwner = ReturnType<typeof import("../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 type Bridge = ReturnType<typeof registerPendingStageIntercomBridge>;
@@ -433,6 +440,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
+	private rootLeaseLost = false;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
 	private readonly attemptBase = new Map<string, number>();
 
@@ -729,6 +738,11 @@ export class PoolCoordinator {
 
 	private fail(error: Error): void {
 		this.port.send({ kind: "failure", error: error.message });
+	}
+
+	/** Fails one child without failing the pool. */
+	private failWork(work: PoolWork, error: Error): void {
+		this.port.send({ kind: "work-failure", workId: work.id, error: error.message });
 	}
 
 	/** Records the latest activity of one attempt; the root receives it with the next summary. */
@@ -1186,7 +1200,7 @@ export class PoolCoordinator {
 						}
 					})
 					.then(async () => {
-						if (this.closed || !ready || this.desiredControl === "quit") return;
+						if (this.closed || !ready || this.desiredControl === "quit" || this.rootLeaseLost) return;
 						let work = slot.work;
 						if (work && (await this.sendResult(work.id))) {
 							work = undefined;
@@ -1194,19 +1208,22 @@ export class PoolCoordinator {
 							this.replacements = 0;
 						}
 						if (this.closed) return;
-						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
-						const superseded =
+						// The third lost attempt of one child fails only that child: the pool and its other children keep
+						// running. Its work item ends failed in the same transaction, so no worker claims it again.
+						const exhausted = work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
+						const settled =
 							work !== undefined &&
-							!(await this.queue!.releaseExited(this.lease!, work)) &&
-							(await this.superseded(work));
-						// A quarantined child consumes its own work item, so these replacements are bounded by the children
-						// and never count toward the idle-worker crash limit that fails the whole pool.
-						const exhausted = superseded
-							? false
-							: work
-								? this.attempts(work) >= 3
-								: !childFailed && ++this.replacements > 3;
-						if (exhausted) this.fail(diagnosed("Local worker retry limit"));
+							(exhausted
+								? await this.queue!.failExited(this.lease!, work)
+								: await this.queue!.releaseExited(this.lease!, work));
+						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
+						const superseded = work !== undefined && !settled && (await this.superseded(work));
+						if (work !== undefined && exhausted && !superseded)
+							this.failWork(work, diagnosed(childRetryLimit(work, "lost its worker")));
+						// Workers that crash without work are a pool-wide fault. A quarantined or failed child consumes its
+						// own work item, so those replacements are bounded by the children and never count toward this limit.
+						if (work === undefined && !childFailed && ++this.replacements > 3)
+							this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
 					.catch((error: Error) => {
@@ -1268,9 +1285,14 @@ export class PoolCoordinator {
 						slot.work = undefined;
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// not replaced: it is released for replay and counts as a failed attempt, so refusals stay bounded.
-						if (fenced && !(await this.superseded(fenced)) && (await queue.releaseExited(lease, fenced)))
-							if (this.attempts(fenced) >= 3)
-								this.fail(new Error("Local worker retry limit: the root refused every attempt as stale"));
+						if (fenced && !(await this.superseded(fenced))) {
+							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS) await queue.releaseExited(lease, fenced);
+							else if (await queue.failExited(lease, fenced))
+								this.failWork(
+									fenced,
+									new Error(childRetryLimit(fenced, "was refused by the root as stale on every attempt")),
+								);
+						}
 						return;
 					}
 					if (message.kind === "controlled") {
@@ -1383,15 +1405,19 @@ export class PoolCoordinator {
 					);
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
-					(error: Error) =>
+					(error: Error) => {
+						const rootLeaseLost = isRootLeaseLost(error);
+						if (rootLeaseLost) this.rootLeaseLost = true;
 						child.send(
 							{
 								id: message.id,
 								error: error.message,
 								...(error.message === STALE_WORK_LEASE ? { fenced: true } : {}),
+								...(rootLeaseLost ? { rootLeaseLost: true } : {}),
 							},
 							replied,
-						),
+						);
+					},
 				);
 			});
 		});
@@ -1545,6 +1571,12 @@ export class PoolCoordinator {
 		this.requests.clear();
 		if (failure !== undefined) throw failure;
 	}
+}
+
+/** The retry limit message of one child, naming it by its child run and definition export. */
+function childRetryLimit(work: PoolWork, reason: string): string {
+	const exportName = work.definition.slice(work.definition.lastIndexOf("#") + 1);
+	return `Local worker retry limit: child ${work.childRunId} (${exportName}) ${reason} ${MAX_CHILD_ATTEMPTS} times`;
 }
 
 /** Channel to the root host over this process's IPC. */

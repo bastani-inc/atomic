@@ -902,7 +902,7 @@ Each worker process must report that it is ready within `localWorkers.startupTim
 
 A worker that exits is detected immediately, and its child is replayed from its last committed checkpoint on a replacement worker. A worker that is still running keeps its child as long as it keeps responding, even when the pool is briefly too busy to process its heartbeats. Only a running worker that has not responded for `localWorkers.leaseMs` milliseconds (30000 by default) is stopped and its child replayed. When a root is resumed after its process crashed, children that were held by the crashed process's workers are replayed on the new workers right away.
 
-A worker that exits or is killed while it runs a child does not stop the root. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker, up to three attempts per child.
+A worker that exits or is killed while it runs a child does not stop the root. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker, up to three attempts per child. A child that loses its third worker fails alone with `worker_retry_limit`; the pool and the root's other children keep running.
 
 If the root process exits, even when it is killed, the pool's coordinator and workers exit with it. Resume the root to continue its children. If the coordinator process itself dies, its workers exit with it, and each pooled child the root is waiting on fails with the retryable `worker_lost` fault and the message `Local worker pool coordinator exited (…)`.
 

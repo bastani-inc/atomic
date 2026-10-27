@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
@@ -13,17 +14,29 @@ try {
 	const pool = await openSqlPoolQueue(journal);
 	process.stdout.write("ready\n");
 	await new Promise((resolve) => process.stdin.once("data", resolve));
+	// Report once this process is contending for the write lock: its first `BEGIN IMMEDIATE`, or, when another
+	// writer is already waiting, the ticket it takes in the writers' queue next to the journal (#3978).
 	const exec = DatabaseSync.prototype.exec;
 	let claiming = false;
+	const report = () => {
+		if (claiming) return;
+		claiming = true;
+		process.stdout.write("claiming\n");
+	};
 	DatabaseSync.prototype.exec = function (sql) {
-		// A busy lock retries `BEGIN IMMEDIATE`; report only the first attempt.
-		if (sql === "BEGIN IMMEDIATE" && !claiming) {
-			claiming = true;
-			process.stdout.write("claiming\n");
-		}
+		if (sql === "BEGIN IMMEDIATE") report();
 		return exec.call(this, sql);
 	};
-	const claim = await pool.claim(JSON.parse(leaseJson), worker, [{ definition: "fixture/child", digest: "sha256:child" }], 60_000);
+	const queued = setInterval(() => {
+		try {
+			if (readdirSync(`${path}-writers`).some((name) => name.split("-")[1] === String(process.pid))) report();
+		} catch {
+			// No writer has queued yet.
+		}
+	}, 5);
+	const claim = await pool
+		.claim(JSON.parse(leaseJson), worker, [{ definition: "fixture/child", digest: "sha256:child" }], 60_000)
+		.finally(() => clearInterval(queued));
 	process.stdout.write(`${JSON.stringify(claim ?? null)}\n`);
 } finally {
 	await journal.close();
