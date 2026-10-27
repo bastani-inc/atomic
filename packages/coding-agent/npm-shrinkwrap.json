@@ -562,7 +562,7 @@
 				"@aws-sdk/client-bedrock-runtime": "3.1127.0",
 				"@earendil-works/pi-telemetry": "1.4.0",
 				"@google/genai": "2.21.0",
-				"@smithy/node-http-handler": "4.12.1",
+				"@smithy/node-http-handler": "4.13.0",
 				"http-proxy-agent": "9.1.0",
 				"https-proxy-agent": "9.1.0",
 				"openai": "7.19.0",
@@ -574,6 +574,20 @@
 			},
 			"engines": {
 				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/@bastani/pi-ai/node_modules/@smithy/node-http-handler": {
+			"version": "4.13.0",
+			"resolved": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.13.0.tgz",
+			"integrity": "sha512-/GGcPoNJ2nzGytdAanpbx7mpp9Coa8LP+/Rpmbktr8YeLuIXs9B0SEz+X3AeonHdyzOIFJdKbN7jOZ+Tj+pMGw==",
+			"license": "Apache-2.0",
+			"dependencies": {
+				"@smithy/core": "^3.37.0",
+				"@smithy/types": "^4.19.0",
+				"tslib": "^2.6.2"
+			},
+			"engines": {
+				"node": ">=18.0.0"
 			}
 		},
 		"node_modules/@bastani/pi-ai/node_modules/agent-base": {
@@ -1085,12 +1099,12 @@
 			"license": "Apache-2.0"
 		},
 		"node_modules/@smithy/core": {
-			"version": "3.33.3",
-			"resolved": "https://registry.npmjs.org/@smithy/core/-/core-3.33.3.tgz",
-			"integrity": "sha512-CsOeKq/9kA3y6VJHt+/+VTCtBaxJ4OTFpgrjIUhPpDIKxBci1k2bJaQASF2h/ELWrulGp+t97DZ0mevfAD8idg==",
+			"version": "3.37.0",
+			"resolved": "https://registry.npmjs.org/@smithy/core/-/core-3.37.0.tgz",
+			"integrity": "sha512-97imTcCyiPd8k0e9+ts/Sp0W65Dn9Ti357J7M09Ov4tI8Q1JDJVFSoAJtjEVKqfHEr3Pdo2jfolqKCaaiszH0g==",
 			"license": "Apache-2.0",
 			"dependencies": {
-				"@smithy/types": "^4.17.2",
+				"@smithy/types": "^4.19.0",
 				"tslib": "^2.6.2"
 			},
 			"engines": {
@@ -1154,9 +1168,9 @@
 			}
 		},
 		"node_modules/@smithy/types": {
-			"version": "4.18.0",
-			"resolved": "https://registry.npmjs.org/@smithy/types/-/types-4.18.0.tgz",
-			"integrity": "sha512-CgB6HHWer/vrKps24ulRIbpcpb7K4xAU7SkZ7YHzBPlwHsvsrCJFEXK421s+cJzX+ZrqtA/TuU5w1HzI7k9N8A==",
+			"version": "4.19.0",
+			"resolved": "https://registry.npmjs.org/@smithy/types/-/types-4.19.0.tgz",
+			"integrity": "sha512-r7jh49VJxGerfAcTQA6gXcKc+98zOp/tqRwzYjgOE+iSQsP6cEU1hq2QzbuipmP68QtYdY9wKEhiCQZIzHgZ4Q==",
 			"license": "Apache-2.0",
 			"dependencies": {
 				"tslib": "^2.6.2"
