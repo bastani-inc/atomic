@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -298,8 +298,9 @@ describe("ToolExecutionComponent parity", () => {
 
 	test("bash renderer keeps a long full-output path with spaces whole and linked", async () => {
 		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
-		const longTemp = mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(3)));
-		vi.stubEnv("TMPDIR", longTemp);
+		const longTemp = realpathSync(mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(2))));
+		// os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+		for (const key of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(key, longTemp);
 		try {
 			const operations: BashOperations = {
 				exec: async (_command, _cwd, { onData }) => {
@@ -334,7 +335,7 @@ describe("ToolExecutionComponent parity", () => {
 			expect(plain).toContain(fullOutputPath);
 			// Wider than the terminal, the path still wraps; its link target keeps it whole.
 			const narrow = component.render(40).join("\n");
-			expect(narrow).toContain(`\x1b]8;;${pathToFileURL(fullOutputPath).href}`);
+			expect(narrow).toContain(`\x1b]8;;${pathToFileURL(resolve(fullOutputPath)).href}`);
 		} finally {
 			vi.unstubAllEnvs();
 			rmSync(longTemp, { recursive: true, force: true });

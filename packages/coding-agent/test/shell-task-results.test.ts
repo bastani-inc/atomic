@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -327,8 +327,9 @@ describe("shell task results are friendly (#3828)", () => {
 		"a truncated wait keeps the full-output path intact on its own dim line, however long the temp path (#3828)",
 		async () => {
 			// A long temp directory with spaces (a deep TMPDIR, C:\Users\Jane Doe\AppData\Local\Temp) must not split the path mid-way.
-			const longTemp = mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(3)));
-			vi.stubEnv("TMPDIR", longTemp);
+			const longTemp = realpathSync(mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(2))));
+			// os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+			for (const key of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(key, longTemp);
 			const owner = host();
 			try {
 				const id = await launch(owner, "seq 1 5000");
