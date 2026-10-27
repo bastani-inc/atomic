@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -75,6 +76,25 @@ describe("Coding Agent Tools", () => {
 			// Ensure second match is not present
 			expect(output).not.toContain("match two");
 		});
+		// literal: true takes the ripgrep path, which re-reads the file for context lines; the default takes the native search.
+		for (const literal of [false, true]) {
+			it(`keeps context line numbers aligned with ripgrep when a file contains a lone CR (pi #11398, literal: ${literal})`, async () => {
+				const testFile = join(testDir, "lone-cr.txt");
+				writeFileSync(testFile, "before\rprogress\nneedle\nafter");
+
+				const result = await grepTool.execute("test-call-lone-cr", {
+					pattern: "needle",
+					path: testFile,
+					context: 1,
+					literal,
+				});
+
+				assert.equal(
+					getTextOutput(result),
+					["lone-cr.txt-1- beforeprogress", "lone-cr.txt:2: needle", "lone-cr.txt-3- after"].join("\n"),
+				);
+			});
+		}
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
