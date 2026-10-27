@@ -29,6 +29,7 @@ import {
 	type StickyLiveDeliveredNotice,
 } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
+import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
@@ -459,7 +460,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   /** #3761: save an arriving message, confirm it to the broker, then handle it; a copy already saved is only confirmed. */
   function receiveIncomingMessage(receiver: IntercomClient, from: SessionInfo, message: Message, channel?: "supervisor"): void {
     const generation = runtimeGeneration;
-    void durableInbox.receive(from, message, channel, () => receiver.acknowledgeReceived(message.id)).then((arrival) => {
+    // #3983: a save that waits (a pooled stage's journal commit behind other writers) keeps its sender waiting.
+    const saving = setInterval(() => receiver.reportSaving(message.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+    saving.unref?.();
+    const saved = durableInbox.receive(from, message, channel, () => {
+      clearInterval(saving);
+      receiver.acknowledgeReceived(message.id);
+    });
+    void saved.finally(() => clearInterval(saving)).catch(() => {});
+    void saved.then((arrival) => {
       if (arrival !== "fresh") return;
       const liveContext = getLiveContext(runtimeContext, generation);
       if (liveContext) void handleIncomingMessage(liveContext, from, message, channel);

@@ -2,7 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { normalizeGroup } from "../group.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../recipient-purpose.js";
-import { DELIVERED_MESSAGE_TTL_MS, RECIPIENT_RECEIPT_TIMEOUT_MS } from "../retry-policy.js";
+import {
+	DELIVERED_MESSAGE_TTL_MS,
+	RECIPIENT_RECEIPT_TIMEOUT_MS,
+	RECIPIENT_SAVE_MAX_WAIT_MS,
+} from "../retry-policy.js";
 import {
 	resolveSessionTarget,
 	resolveSessionTargetByHostSessionId,
@@ -27,6 +31,7 @@ import {
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
 	type OutboxClaim,
+	type OutboxReadResult,
 	type OutboxRow,
 	type RecipientPresenceSubject,
 	type RestoringReservationLease,
@@ -66,6 +71,12 @@ export const OFFLINE_SESSION_TARGET = "offline session";
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
+/**
+ * #3983: how long the decision to keep a sender waiting may take before the sender is told to keep waiting while it
+ * finishes. Well inside the sender's own wait past the receipt wait (`SEND_RESPONSE_TIMEOUT_MS` minus
+ * `RECIPIENT_RECEIPT_TIMEOUT_MS`).
+ */
+const HOLD_CHECK_GRACE_MS = 500;
 /** A session that moved here may find its presence lease still held by the broker it just left. */
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
@@ -180,6 +191,12 @@ interface Waiter {
 	/** Told `queued` already: `delivered` follows only while the sender is connected, and it never expires. */
 	readonly queued: boolean;
 	timer: ReturnType<typeof setTimeout> | undefined;
+	/** When the sender started waiting; a recipient's save reports never keep it waiting past the save cap (#3983). */
+	readonly waitingSince: number;
+	/** Ends the wait as uncertain at the save cap, whatever the store does (#3983). */
+	capTimer?: ReturnType<typeof setTimeout>;
+	/** The hold check whose outbox read is in flight; a wait that ends meanwhile reuses it (#3983). */
+	holdCheck?: Promise<void>;
 }
 
 interface TrackedHold {
@@ -423,6 +440,18 @@ export class MultiNodeRouter {
 		const inflight = this.inflight.get(messageId);
 		if (inflight === undefined || inflight.identity !== deliveryTargetIdentity(recipient)) return false;
 		this.settleDelivered(inflight, recipient);
+		return true;
+	}
+
+	/**
+	 * #3983 `saving` from a local recipient: it is still saving a row this broker claimed for it. Recorded on the
+	 * row, so the sender's broker keeps its sender waiting. True when it matches such a row.
+	 */
+	saving(recipient: BrokerConnectedSession, messageId: string): boolean {
+		const inflight = this.inflight.get(messageId);
+		if (inflight === undefined || inflight.identity !== deliveryTargetIdentity(recipient)) return false;
+		const report = this.state.outbox.reportSaving?.(inflight.claim);
+		if (report !== undefined) void report.catch((error: Error) => this.report(error));
 		return true;
 	}
 
@@ -933,23 +962,9 @@ export class MultiNodeRouter {
 			targetIdentity: target.identity,
 			queued: offline,
 			timer: undefined,
+			waitingSince: Date.now(),
 		};
-		waiter.timer = setTimeout(
-			() => {
-				if (this.waiters.get(message.id) !== waiter) return;
-				this.dropWaiter(waiter);
-				if (!offline) {
-					this.host.write(request.socket, {
-						type: "delivery_failed",
-						messageId: message.id,
-						attemptId: request.attemptId,
-						reason: UNCERTAIN_RECEIPT_REASON,
-					});
-				}
-			},
-			offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS,
-		);
-		waiter.timer.unref?.();
+		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
 		if (offline) {
 			const listed = await this.state.outbox.listUndelivered(target.identity);
@@ -1295,9 +1310,115 @@ export class MultiNodeRouter {
 		this.host.write(waiter.socket, { type: "delivered", messageId: waiter.messageId, attemptId: waiter.attemptId });
 	}
 
+	private armWaiter(waiter: Waiter, timeoutMs: number): void {
+		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+		waiter.timer = setTimeout(() => {
+			if (this.waiters.get(waiter.messageId) !== waiter) return;
+			if (waiter.queued) {
+				this.dropWaiter(waiter);
+				return;
+			}
+			// One hold check per waiter: a wait that ends while the previous check's read is still pending reuses it.
+			if (waiter.holdCheck !== undefined) return;
+			waiter.holdCheck = this.expireWaiter(waiter)
+				.catch((error: Error) => {
+					this.report(error);
+					this.expireUncertain(waiter);
+				})
+				.finally(() => {
+					waiter.holdCheck = undefined;
+				});
+		}, timeoutMs);
+		waiter.timer.unref?.();
+		// #3983: the save cap holds from the sender's own start, whatever the store does.
+		if (!waiter.queued && waiter.capTimer === undefined) {
+			waiter.capTimer = setTimeout(
+				() => this.expireUncertain(waiter),
+				Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now()),
+			);
+			waiter.capTimer.unref?.();
+		}
+	}
+
+	/** The sender may wait this much longer under the save cap; 0 once the cap is reached. */
+	private capRemaining(waiter: Waiter): number {
+		return Math.max(0, waiter.waitingSince + RECIPIENT_SAVE_MAX_WAIT_MS - Date.now());
+	}
+
+	/**
+	 * #3983: the sender's receipt wait ended. A recipient on another broker that reported, within the last receipt
+	 * wait, that it is still saving the message keeps its sender waiting another wait (told `send_held`), within the
+	 * save cap; otherwise the sender hears that the outcome is uncertain, as before. The decision reads the outbox
+	 * row, which can wait behind other writes on the shared connection: a read slower than `HOLD_CHECK_GRACE_MS`
+	 * first tells the sender to keep waiting while it finishes (within the cap), and a read that has not answered
+	 * within one receipt wait counts as no evidence, so the sender hears the outcome is uncertain. Only one read per
+	 * waiter is ever in flight, and the cap ends the wait however the store behaves.
+	 */
+	private async expireWaiter(waiter: Waiter): Promise<void> {
+		const provisional = setTimeout(() => {
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, this.capRemaining(waiter));
+			if (this.waiters.get(waiter.messageId) !== waiter || timeoutMs === 0) return;
+			this.armWaiter(waiter, timeoutMs);
+			this.holdSender(waiter, timeoutMs);
+		}, HOLD_CHECK_GRACE_MS);
+		provisional.unref?.();
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		const timedOut = new Promise<"timed-out">((resolveTimeout) => {
+			deadline = setTimeout(() => resolveTimeout("timed-out"), RECIPIENT_RECEIPT_TIMEOUT_MS);
+			deadline.unref?.();
+		});
+		let read: OutboxReadResult | "timed-out";
+		try {
+			read = await Promise.race([this.state.outbox.read(waiter.messageId), timedOut]);
+		} finally {
+			clearTimeout(provisional);
+			clearTimeout(deadline);
+		}
+		if (this.waiters.get(waiter.messageId) !== waiter) return;
+		if (read === "timed-out") {
+			this.expireUncertain(waiter);
+			return;
+		}
+		if (read.status === "found" && read.row.state === "delivered") {
+			await this.finishDelivered(waiter);
+			return;
+		}
+		const remaining = this.capRemaining(waiter);
+		const savingAge = read.status === "found" && read.row.state === "claimed" ? read.row.savingAgeMs : undefined;
+		if (savingAge !== undefined && savingAge < RECIPIENT_RECEIPT_TIMEOUT_MS && remaining > 0) {
+			const timeoutMs = Math.min(RECIPIENT_RECEIPT_TIMEOUT_MS, remaining);
+			this.armWaiter(waiter, timeoutMs);
+			this.holdSender(waiter, timeoutMs);
+			return;
+		}
+		this.expireUncertain(waiter);
+	}
+
+	private holdSender(waiter: Waiter, timeoutMs: number): void {
+		if (this.waiters.get(waiter.messageId) !== waiter) return;
+		this.host.write(waiter.socket, {
+			type: "send_held",
+			messageId: waiter.messageId,
+			...(waiter.attemptId === undefined ? {} : { attemptId: waiter.attemptId }),
+			timeoutMs,
+		});
+	}
+
+	private expireUncertain(waiter: Waiter): void {
+		if (this.waiters.get(waiter.messageId) !== waiter) return;
+		this.dropWaiter(waiter);
+		this.host.write(waiter.socket, {
+			type: "delivery_failed",
+			messageId: waiter.messageId,
+			attemptId: waiter.attemptId,
+			reason: UNCERTAIN_RECEIPT_REASON,
+		});
+	}
+
 	private dropWaiter(waiter: Waiter): void {
 		if (this.waiters.get(waiter.messageId) === waiter) this.waiters.delete(waiter.messageId);
 		if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+		if (waiter.capTimer !== undefined) clearTimeout(waiter.capTimer);
 	}
 
 	// ---------------------------------------------------------------------------------------------------------

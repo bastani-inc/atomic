@@ -13,9 +13,13 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolStageOptions } from "../fixtures/pool-stage-options.js";
+import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-const LOCAL_WORKER_ADMISSION_TIMEOUT_MS = 120_000;
+/** One pool's cold start (its coordinator and workers start together), plus the children's stages and the root's local stage. */
+const SHARED_PERMITS = poolTestBudgetMs(3);
+/** The paused child's worker is replaced once: two worker cold starts, plus the child's work. */
+const REPLACED_WORKER = poolTestBudgetMs(4);
 test.skipIf(process.platform === "win32").each([false, true])(
 	"public worker and non-pooled sessions share two permits, cross-run=%s (#3869)",
 	async (crossRun) => {
@@ -92,6 +96,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
 						budget: { maxTokens: 100 },
 						localWorkers,
 						admission: config,
+						signal: AbortSignal.timeout(SHARED_PERMITS.waitMs),
 					},
 				),
 				crossRun
@@ -104,6 +109,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
 								store: createStore(),
 								durableBackend: ordinary,
 								admission: config,
+								signal: AbortSignal.timeout(SHARED_PERMITS.waitMs),
 							},
 						)
 					: undefined,
@@ -122,7 +128,7 @@ test.skipIf(process.platform === "win32").each([false, true])(
 			removeTempDirectory(directory);
 		}
 	},
-	LOCAL_WORKER_ADMISSION_TIMEOUT_MS,
+	SHARED_PERMITS.timeoutMs,
 );
 
 test.skipIf(process.platform === "win32")(
@@ -165,7 +171,13 @@ test.skipIf(process.platform === "win32")(
 			const result = await engineRun(
 				parent,
 				{},
-				{ runId: "root", cwd: directory, store: createStore(), durableBackend: backend },
+				{
+					runId: "root",
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(REPLACED_WORKER.waitMs),
+				},
 			);
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			const permits = await admission.inspect();
@@ -177,5 +189,5 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	LOCAL_WORKER_ADMISSION_TIMEOUT_MS,
+	REPLACED_WORKER.timeoutMs,
 );

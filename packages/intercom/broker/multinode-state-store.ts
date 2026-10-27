@@ -151,6 +151,11 @@ export interface OutboxRow {
 	readonly claimAttempts: number;
 	/** Present only when `state` is `failed`; verbatim. */
 	readonly failureReason?: string;
+	/**
+	 * #3983: store-clock milliseconds since the claimed row's recipient last reported it is still saving it; absent
+	 * when it never reported, and on rows from a store that does not record it.
+	 */
+	readonly savingAgeMs?: number;
 }
 
 export interface OutboxClaim {
@@ -217,6 +222,11 @@ export interface OutboxStore {
 	 */
 	claim(request: OutboxClaimRequest): Promise<OutboxClaimResult>;
 	renewClaim(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
+	/**
+	 * #3983: the claim's recipient reports it is still saving the row, so the sender's broker keeps its sender
+	 * waiting. Optional: a store without it never extends a sender's wait.
+	 */
+	reportSaving?(claim: OutboxClaim): Promise<OutboxRenewClaimResult>;
 	/** Return the row to `queued`, for example when its recipient disconnected before acknowledging. */
 	releaseClaim(claim: OutboxClaim): Promise<OutboxReleaseClaimResult>;
 	/**
