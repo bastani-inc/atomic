@@ -24,6 +24,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "@babel/parser";
+import { getBindingIdentifiers, isReferenced, type Node, type TraversalAncestors, traverse } from "@babel/types";
 
 /** Emit a warning once a test consumes this share of its effective timeout. */
 export const WARN_RATIO = 0.4;
@@ -187,12 +188,49 @@ type FunctionNode =
 	| Extract<Statement, { type: "FunctionDeclaration" }>
 	| Extract<Expression, { type: "ArrowFunctionExpression" | "FunctionExpression" }>;
 
+/**
+ * One lexical scope: the module, a function (its parameters), a block, a loop
+ * head, a `switch`, or a `catch` clause. Names resolve from a use's innermost
+ * scope outwards and never through a sibling scope.
+ */
+interface LexicalScope {
+	readonly id: number;
+	readonly parent: LexicalScope | undefined;
+	readonly module: ModuleScope;
+	/** Every name bound here, by any declaration kind; it hides that name in outer scopes and globals. */
+	readonly declared: Set<string>;
+	/** `const name = init` bindings; `undefined` marks a name bound here more than once. */
+	readonly constants: Map<string, Expression | undefined>;
+	/** Function declarations; `undefined` marks a name bound here more than once. */
+	readonly functions: Map<string, FunctionNode | undefined>;
+	/** Bindings whose object may change after it was created: a member written, deleted or called. */
+	readonly mutated: Set<string>;
+	/** Member paths of a binding that are passed or aliased elsewhere, where the object could be changed. */
+	readonly escapes: Map<string, Escape[]>;
+}
+
+/** A computed member key whose value is not known statically: it may be any key. */
+const ANY_KEY = Symbol("any key");
+type PathStep = string | typeof ANY_KEY;
+
+/**
+ * A value at `path` inside a binding that leaves the binding's control. It is
+ * harmless while that value is a number; a `shallow` escape (a spread copy) is
+ * also harmless when every entry it copies is a number.
+ */
+interface Escape {
+	readonly path: readonly PathStep[];
+	readonly shallow: boolean;
+}
+
 interface ModuleScope {
 	file: string | undefined;
-	/** `const` initialisers by name; `undefined` marks a name declared more than once. */
-	constants: Map<string, Expression | undefined>;
-	/** Top-level function declarations by name; `undefined` marks a name declared more than once. */
-	functions: Map<string, FunctionNode | undefined>;
+	/** The scope each scope-opening node opens. */
+	scopes: Map<Node, LexicalScope>;
+	/** The innermost scope around each call, where a test declaration's timeout is evaluated. */
+	callScopes: Map<Node, LexicalScope>;
+	/** Every scope in the module; the first is the module scope itself. */
+	all: LexicalScope[];
 	/** Local import bindings to the module and exported name they read. */
 	imports: Map<string, { source: string; name: string }>;
 	/** Exported name to the local binding that provides it. */
@@ -218,11 +256,9 @@ function parseModule(source: string, file: string | undefined): Program | undefi
 function visit(
 	node: Statement | Expression | Argument | Callee | null | undefined,
 	onCall: (call: CallExpression, descend: () => void) => void,
-	onConstant: (name: string, init: Expression) => void,
 ): void {
 	if (!node) return;
-	const walk = (child: Statement | Expression | Argument | Callee | null | undefined): void =>
-		visit(child, onCall, onConstant);
+	const walk = (child: Statement | Expression | Argument | Callee | null | undefined): void => visit(child, onCall);
 	switch (node.type) {
 		case "ExpressionStatement":
 			walk(node.expression);
@@ -251,12 +287,7 @@ function visit(
 			walk(node.declaration);
 			return;
 		case "VariableDeclaration":
-			for (const declarator of node.declarations) {
-				if (!declarator.init) continue;
-				if (node.kind === "const" && declarator.id.type === "Identifier")
-					onConstant(declarator.id.name, declarator.init);
-				walk(declarator.init);
-			}
+			for (const declarator of node.declarations) walk(declarator.init);
 			return;
 		case "AwaitExpression":
 		case "UnaryExpression":
@@ -280,38 +311,176 @@ function visit(
 	}
 }
 
+const FUNCTION_SCOPES = new Set([
+	"FunctionDeclaration",
+	"FunctionExpression",
+	"ArrowFunctionExpression",
+	"ObjectMethod",
+	"ClassMethod",
+	"ClassPrivateMethod",
+]);
+const BLOCK_SCOPES = new Set([
+	"BlockStatement",
+	"ForStatement",
+	"ForInStatement",
+	"ForOfStatement",
+	"CatchClause",
+	"SwitchStatement",
+	"StaticBlock",
+]);
+/** Wrappers that pass their operand through unchanged, so a use through them is a use of the operand. */
+const TRANSPARENT = new Set([
+	"ParenthesizedExpression",
+	"TSAsExpression",
+	"TSSatisfiesExpression",
+	"TSNonNullExpression",
+	"TSTypeAssertion",
+	"TSInstantiationExpression",
+]);
+/** Parents in which a use only reads a value and cannot change or keep the object it came from. */
+const READ_ONLY_PARENTS = new Set([
+	"BinaryExpression",
+	"TemplateLiteral",
+	"ExpressionStatement",
+	"IfStatement",
+	"WhileStatement",
+	"DoWhileStatement",
+	"SwitchCase",
+]);
+
+let nextScopeId = 0;
+
+function rootOf(module: ModuleScope): LexicalScope {
+	const root = module.all[0];
+	if (!root) throw new Error(`no module scope for ${module.file ?? "<source>"}`);
+	return root;
+}
+
+function bindingNames(node: Node): string[] {
+	return Object.keys(getBindingIdentifiers(node));
+}
+
+/**
+ * Build a module's lexical scopes, then record, for every `const` and import
+ * binding, each place its object could change after it was created: a member
+ * written, deleted, incremented or called as a method, or the object (or an
+ * object inside it) passed to a call, stored, returned, aliased or exported.
+ */
 function moduleScope(program: Program, file: string | undefined): ModuleScope {
-	const scope: ModuleScope = {
+	const scopes = new Map<Node, LexicalScope>();
+	const module: ModuleScope = {
 		file,
-		constants: new Map(),
-		functions: new Map(),
+		scopes,
+		callScopes: new Map(),
+		all: [],
 		imports: new Map(),
 		exports: new Map(),
 	};
-	const addFunction = (node: FunctionNode, name: string): void => {
-		scope.functions.set(name, scope.functions.has(name) ? undefined : node);
+	const open = (node: Node, parent: LexicalScope | undefined): LexicalScope => {
+		const scope: LexicalScope = {
+			id: nextScopeId++,
+			parent,
+			module,
+			declared: new Set(),
+			constants: new Map(),
+			functions: new Map(),
+			mutated: new Set(),
+			escapes: new Map(),
+		};
+		scopes.set(node, scope);
+		module.all.push(scope);
+		return scope;
 	};
-	const addConstant = (name: string, init: Expression): void => {
-		scope.constants.set(name, scope.constants.has(name) ? undefined : init);
+	const root = open(program, undefined);
+	const innermost = (ancestors: TraversalAncestors): LexicalScope => {
+		for (let index = ancestors.length - 1; index >= 0; index--) {
+			const scope = scopes.get((ancestors[index] as TraversalAncestors[number]).node);
+			if (scope) return scope;
+		}
+		return root;
 	};
-	for (const statement of program.body) {
-		const declared = statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-		if (declared?.type === "FunctionDeclaration" && declared.id) addFunction(declared, declared.id.name);
-		if (statement.type === "ImportDeclaration") {
-			for (const specifier of statement.specifiers) {
-				if (specifier.type !== "ImportSpecifier") continue;
-				const imported =
-					specifier.imported.type === "Identifier" ? specifier.imported.name : specifier.imported.value;
-				scope.imports.set(specifier.local.name, { source: statement.source.value, name: imported });
+	/** The scope a `var` binds in: the nearest enclosing function, static block or the module. */
+	const varScope = (ancestors: TraversalAncestors): LexicalScope => {
+		for (let index = ancestors.length - 1; index >= 0; index--) {
+			const { node } = ancestors[index] as TraversalAncestors[number];
+			if (FUNCTION_SCOPES.has(node.type) || node.type === "StaticBlock") return scopes.get(node) ?? root;
+		}
+		return root;
+	};
+
+	traverse(program, {
+		enter(node, ancestors) {
+			const around = innermost(ancestors);
+			if (node.type === "CallExpression") module.callScopes.set(node, around);
+			if (FUNCTION_SCOPES.has(node.type) || BLOCK_SCOPES.has(node.type)) {
+				const scope = open(node, around);
+				if (
+					node.type === "FunctionDeclaration" ||
+					node.type === "FunctionExpression" ||
+					node.type === "ArrowFunctionExpression" ||
+					node.type === "ObjectMethod" ||
+					node.type === "ClassMethod" ||
+					node.type === "ClassPrivateMethod"
+				) {
+					for (const param of node.params) for (const name of bindingNames(param)) scope.declared.add(name);
+					if (node.type === "FunctionExpression" && node.id) scope.declared.add(node.id.name);
+				}
+				if (node.type === "CatchClause" && node.param) {
+					for (const name of bindingNames(node.param)) scope.declared.add(name);
+				}
 			}
-		} else if (statement.type === "ExportNamedDeclaration") {
+			switch (node.type) {
+				case "VariableDeclaration": {
+					const target = node.kind === "var" ? varScope(ancestors) : around;
+					for (const declarator of node.declarations) {
+						for (const name of bindingNames(declarator.id)) {
+							if (node.kind === "const" && declarator.id.type === "Identifier" && declarator.init) {
+								target.constants.set(name, target.declared.has(name) ? undefined : declarator.init);
+							} else if (target.constants.has(name)) {
+								target.constants.set(name, undefined);
+							}
+							target.declared.add(name);
+						}
+					}
+					return;
+				}
+				case "FunctionDeclaration":
+					if (node.id) {
+						around.functions.set(node.id.name, around.declared.has(node.id.name) ? undefined : node);
+						around.declared.add(node.id.name);
+					}
+					return;
+				case "ClassDeclaration":
+				case "TSEnumDeclaration":
+					if (node.id) around.declared.add(node.id.name);
+					return;
+				case "TSImportEqualsDeclaration":
+					around.declared.add(node.id.name);
+					return;
+				case "ImportDeclaration":
+					for (const specifier of node.specifiers) {
+						root.declared.add(specifier.local.name);
+						if (specifier.type !== "ImportSpecifier") continue;
+						const imported =
+							specifier.imported.type === "Identifier" ? specifier.imported.name : specifier.imported.value;
+						module.imports.set(specifier.local.name, { source: node.source.value, name: imported });
+					}
+					return;
+				default:
+					return;
+			}
+		},
+	});
+
+	for (const statement of program.body) {
+		if (statement.type === "ExportNamedDeclaration") {
 			if (statement.declaration?.type === "VariableDeclaration") {
 				for (const declarator of statement.declaration.declarations) {
-					if (declarator.id.type === "Identifier") scope.exports.set(declarator.id.name, declarator.id.name);
+					if (declarator.id.type === "Identifier") module.exports.set(declarator.id.name, declarator.id.name);
 				}
 			}
 			if (statement.declaration?.type === "FunctionDeclaration" && statement.declaration.id) {
-				scope.exports.set(statement.declaration.id.name, statement.declaration.id.name);
+				module.exports.set(statement.declaration.id.name, statement.declaration.id.name);
 			}
 			if (!statement.source) {
 				for (const specifier of statement.specifiers) {
@@ -319,7 +488,7 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 					const exported =
 						specifier.exported.type === "Identifier" ? specifier.exported.name : specifier.exported.value;
 					const local = specifier.local.type === "Identifier" ? specifier.local.name : specifier.local.value;
-					scope.exports.set(exported, local);
+					module.exports.set(exported, local);
 				}
 			}
 		}
@@ -336,13 +505,105 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 				for (const property of declarator.id.properties) {
 					if (property.type !== "ObjectProperty" || property.value.type !== "Identifier") continue;
 					const name = propertyKey(property.key, property.computed);
-					if (name !== undefined) scope.imports.set(property.value.name, { source, name });
+					if (name !== undefined) module.imports.set(property.value.name, { source, name });
 				}
 			}
 		}
-		visit(statement, (_call, descend) => descend(), addConstant);
 	}
-	return scope;
+
+	traverse(program, {
+		enter(node, ancestors) {
+			if (node.type !== "Identifier") return;
+			const parent = ancestors.at(-1);
+			if (!parent || !isReferenced(node, parent.node, ancestors.at(-2)?.node)) return;
+			let owner: LexicalScope | undefined = innermost(ancestors);
+			while (owner && !owner.declared.has(node.name)) owner = owner.parent;
+			// Only `const` and import bindings can carry a known value; uses of anything else are irrelevant.
+			if (!owner || !(owner.constants.has(node.name) || (owner === root && module.imports.has(node.name)))) {
+				return;
+			}
+			recordUse(owner, node.name, ancestors);
+		},
+	});
+	return module;
+}
+
+/** How one use of a binding can affect its object. */
+type Use = "read" | "mutate" | "escape" | "shallow-escape";
+
+/**
+ * Record one use of `name` (bound in `owner`): walk out through the member
+ * reads it sits in (`X.a.b`), then classify the place the result is used.
+ */
+function recordUse(owner: LexicalScope, name: string, ancestors: TraversalAncestors): void {
+	const path: PathStep[] = [];
+	let members = 0;
+	let index = ancestors.length - 1;
+	for (; index >= 0; index--) {
+		const { node, key } = ancestors[index] as TraversalAncestors[number];
+		if ((node.type === "MemberExpression" || node.type === "OptionalMemberExpression") && key === "object") {
+			const step = propertyKey(node.property, node.computed);
+			path.push(step ?? ANY_KEY);
+			members++;
+			continue;
+		}
+		if (TRANSPARENT.has(node.type) && key === "expression") continue;
+		break;
+	}
+	const entry = ancestors[index];
+	const use = entry ? classifyUse(entry.node, entry.key, ancestors[index - 1]?.node, members) : "escape";
+	if (use === "read") return;
+	if (use === "mutate") {
+		owner.mutated.add(name);
+		return;
+	}
+	const list = owner.escapes.get(name) ?? [];
+	list.push({ path, shallow: use === "shallow-escape" });
+	owner.escapes.set(name, list);
+}
+
+/** What a use whose value lands in `parent` (under `key`) can do to the object it came from. */
+function classifyUse(parent: Node, key: string, above: Node | undefined, members: number): Use {
+	// Types (`typeof X`, `ReturnType<typeof X>`) are erased and cannot touch the value.
+	if (parent.type.startsWith("TS") && !TRANSPARENT.has(parent.type)) return "read";
+	switch (parent.type) {
+		case "AssignmentExpression":
+			return key === "left" ? "mutate" : "escape";
+		case "UpdateExpression":
+			return "mutate";
+		case "UnaryExpression":
+			return parent.operator === "delete" ? "mutate" : "read";
+		case "CallExpression":
+		case "OptionalCallExpression":
+		case "NewExpression":
+			// A method called on the object, or on an object inside it, may change it.
+			if (key === "callee") return members > 0 ? "mutate" : "read";
+			return "escape";
+		case "ForInStatement":
+		case "ForOfStatement":
+			return key === "left" ? "mutate" : "read";
+		case "ArrayPattern":
+		case "ObjectPattern":
+		case "RestElement":
+			return "mutate";
+		case "AssignmentPattern":
+			return key === "left" ? "mutate" : "escape";
+		case "ObjectProperty":
+			return above?.type === "ObjectPattern" && key === "value" ? "mutate" : "escape";
+		case "MemberExpression":
+		case "OptionalMemberExpression":
+			// The use is a computed index (`STEPS[X]`): only its value is read.
+			return "read";
+		case "ConditionalExpression":
+			return key === "test" ? "read" : "escape";
+		case "SwitchStatement":
+		case "ForStatement":
+			return key === "discriminant" || key === "test" ? "read" : "escape";
+		case "SpreadElement":
+			return above?.type === "ObjectExpression" || above?.type === "ArrayExpression" ? "shallow-escape" : "escape";
+		default:
+			return READ_ONLY_PARENTS.has(parent.type) ? "read" : "escape";
+	}
 }
 
 /** Resolve a relative import specifier to the TypeScript source Bun and vitest would load. */
@@ -363,9 +624,14 @@ function resolveImport(from: string, specifier: string): string | undefined {
 
 /** A statically known value: a number, or an array or object literal whose known entries are values. */
 type ConstValue = number | ConstObject | ConstArray;
+/**
+ * A constant object literal. A field that is present with an `undefined` value
+ * is known to exist with an unknown value; it still overrides earlier values of
+ * that key, as a later spread or property does in JavaScript.
+ */
 interface ConstObject {
 	readonly kind: "object";
-	readonly fields: ReadonlyMap<string, ConstValue>;
+	readonly fields: ReadonlyMap<string, ConstValue | undefined>;
 }
 /** A constant array literal; an element that is not a known value is `undefined`. */
 interface ConstArray {
@@ -392,27 +658,60 @@ function asNumber(value: ConstValue | undefined): number | undefined {
 }
 
 /**
+ * Whether a use that reads `path` inside `value` and lets it go can never let the
+ * object be changed: everything it can reach is a number, or a key that does not
+ * exist. {@link ANY_KEY} stands for a computed key, so every entry must qualify.
+ * A `shallow` use (a spread copy) may also take an object or array whose entries
+ * are all numbers, since the copy shares nothing with it.
+ */
+function harmless(value: ConstValue | undefined, path: readonly PathStep[], shallow: boolean): boolean {
+	if (value === undefined) return false;
+	if (typeof value === "number") return true;
+	const [step, ...rest] = path;
+	if (step === undefined) {
+		const entries = value.kind === "object" ? [...value.fields.values()] : value.elements;
+		return shallow && entries.every((entry) => typeof entry === "number");
+	}
+	if (value.kind === "object") {
+		if (step === ANY_KEY) return [...value.fields.values()].every((field) => harmless(field, rest, shallow));
+		return !value.fields.has(step) || harmless(value.fields.get(step), rest, shallow);
+	}
+	if (step === ANY_KEY) return value.elements.every((element) => harmless(element, rest, shallow));
+	if (step === "length") return true;
+	const index = Number(step);
+	const inRange = Number.isInteger(index) && index >= 0 && index < value.elements.length;
+	return !inRange || harmless(value.elements[index], rest, shallow);
+}
+
+/**
  * Evaluate a timeout expression without executing source: numeric literals,
- * arithmetic, parentheses, TypeScript assertions, `const` bindings declared in
- * the file or imported from a relative module, member reads of constant object
- * literals, deterministic `Math` methods (`min`, `max`, `abs`, `ceil`, `floor`,
- * `round`) of the global `Math`, and calls of pure helpers with constant
- * arguments. A pure helper is a function whose parameters are plain names and
- * whose body is only `const` declarations and a `return` (or an arrow's
- * expression body); it is evaluated from its own constant expressions, as
- * `poolTestBudgetMs(pools)` in `test/helpers/pool-budget.ts` is. Anything else
- * is unresolved.
+ * arithmetic, parentheses, TypeScript assertions, member reads of constant
+ * object and array literals (`.length` and in-range integer indexes included),
+ * deterministic `Math` methods (`min`, `max`, `abs`, `ceil`, `floor`, `round`)
+ * of the global `Math`, and calls of pure helpers with constant arguments. A
+ * pure helper is a function whose parameters are plain names and whose body is
+ * only `const` declarations and a `return` (or an arrow's expression body); it is
+ * evaluated from its own constant expressions, as `poolTestBudgetMs(pools)` in
+ * `test/helpers/pool-budget.ts` is.
+ *
+ * Every name resolves through the lexical scope chain of the place it is used,
+ * up to the module and its relative imports: a `const`, a function declaration,
+ * or an import. Any other binding of that name (`let`, `var`, a parameter, a
+ * class, a default or namespace import) hides outer ones and globals, and makes
+ * the name unknown. An object is only read while nothing in its module may
+ * change it after it was created (see {@link moduleScope}). Anything else is
+ * unresolved: the evaluator never guesses a value.
  */
 class ConstantEvaluator {
 	private readonly modules = new Map<string, ModuleScope | undefined>();
 
-	evaluate(expression: Expression | PropertyValue, scope: ModuleScope): number | undefined {
+	evaluate(expression: Expression | PropertyValue, scope: LexicalScope): number | undefined {
 		return asNumber(this.value(expression, scope, new Set(), NO_LOCALS));
 	}
 
 	private value(
 		expression: Expression | PropertyValue,
-		scope: ModuleScope,
+		scope: LexicalScope,
 		seen: Set<string>,
 		locals: Locals,
 	): ConstValue | undefined {
@@ -473,21 +772,24 @@ class ConstantEvaluator {
 				return { kind: "array", elements };
 			}
 			case "ObjectExpression": {
-				const fields = new Map<string, ConstValue>();
+				// Properties and spreads apply in source order; an unknown value still overrides the key.
+				const fields = new Map<string, ConstValue | undefined>();
 				for (const property of expression.properties) {
 					if (property.type === "SpreadElement") {
 						const spread = this.value(property.argument, scope, seen, locals);
+						// Spreading something unresolvable could set any key, so nothing is known.
 						if (typeof spread !== "object" || spread.kind !== "object") return undefined;
 						for (const [key, field] of spread.fields) fields.set(key, field);
 						continue;
 					}
 					const key = propertyKey(property.key, property.computed);
-					if (key === undefined) return undefined;
-					// A method or an unknown field leaves only that field unknown.
-					fields.delete(key);
-					if (property.type !== "ObjectProperty") continue;
-					const field = this.value(property.value, scope, seen, locals);
-					if (field !== undefined) fields.set(key, field);
+					// An unknown key could be any key; `__proto__` changes what is inherited.
+					if (key === undefined || (key === "__proto__" && !property.computed)) return undefined;
+					// A method, getter or setter is not a known value.
+					fields.set(
+						key,
+						property.type === "ObjectProperty" ? this.value(property.value, scope, seen, locals) : undefined,
+					);
 				}
 				return { kind: "object", fields };
 			}
@@ -537,73 +839,108 @@ class ConstantEvaluator {
 		}
 	}
 
-	private binding(name: string, scope: ModuleScope, seen: Set<string>): ConstValue | undefined {
-		const key = `${scope.file ?? "<source>"}#${name}`;
-		if (seen.has(key)) return undefined;
-		const next = new Set(seen).add(key);
-		const init = scope.constants.get(name);
-		if (init) return this.value(init, scope, next, NO_LOCALS);
-		const target = this.imported(name, scope);
-		return target ? this.binding(target.name, target.scope, next) : undefined;
+	/** The innermost scope from `scope` outwards that binds `name`, if any. */
+	private owner(name: string, scope: LexicalScope): LexicalScope | undefined {
+		let current: LexicalScope | undefined = scope;
+		while (current && !current.declared.has(name)) current = current.parent;
+		return current;
 	}
 
-	/** Whether `name` is declared in `scope` or the helper being evaluated, so it is not the global of that name. */
-	private bound(name: string, scope: ModuleScope, locals: Locals): boolean {
-		return locals.has(name) || scope.constants.has(name) || scope.functions.has(name) || scope.imports.has(name);
-	}
-
-	/** Call a pure helper declared in, or imported into, `scope`. */
-	private call(name: string, args: ConstValue[], scope: ModuleScope, seen: Set<string>): ConstValue | undefined {
-		const key = `${scope.file ?? "<source>"}#call:${name}`;
+	private binding(name: string, scope: LexicalScope, seen: Set<string>): ConstValue | undefined {
+		const owner = this.owner(name, scope);
+		if (!owner) return undefined;
+		const key = `${owner.id}#${name}`;
 		if (seen.has(key)) return undefined;
 		const next = new Set(seen).add(key);
-		const init = scope.constants.get(name);
-		const helper =
-			init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression"
-				? init
-				: scope.constants.has(name)
-					? undefined
-					: scope.functions.get(name);
-		if (helper) return this.apply(helper, args, scope, next);
-		if (scope.constants.has(name) || scope.functions.has(name)) return undefined;
-		const target = this.imported(name, scope);
-		return target ? this.call(target.name, args, target.scope, next) : undefined;
+		let value: ConstValue | undefined;
+		if (owner.constants.has(name)) {
+			const init = owner.constants.get(name);
+			value = init ? this.value(init, owner, next, NO_LOCALS) : undefined;
+		} else {
+			const target = this.imported(name, owner);
+			value = target ? this.binding(target.name, rootOf(target.module), next) : undefined;
+		}
+		return value === undefined ? undefined : this.unchanged(value, owner, name);
+	}
+
+	/**
+	 * `value` as `name` (bound in `owner`) holds it at every use, or `undefined`
+	 * when something in the module may change the object after it was created.
+	 */
+	private unchanged(value: ConstValue, owner: LexicalScope, name: string): ConstValue | undefined {
+		if (typeof value === "number") return value;
+		if (owner.mutated.has(name)) return undefined;
+		const leaks = owner.escapes.get(name) ?? [];
+		return leaks.every((leak) => harmless(value, leak.path, leak.shallow)) ? value : undefined;
+	}
+
+	/** Whether `name` is bound in `scope`'s chain or the helper being evaluated, so it is not the global. */
+	private bound(name: string, scope: LexicalScope, locals: Locals): boolean {
+		return locals.has(name) || this.owner(name, scope) !== undefined;
+	}
+
+	/** Call the pure helper `name` resolves to from `scope`. */
+	private call(name: string, args: ConstValue[], scope: LexicalScope, seen: Set<string>): ConstValue | undefined {
+		const owner = this.owner(name, scope);
+		if (!owner) return undefined;
+		const key = `${owner.id}#call:${name}`;
+		if (seen.has(key)) return undefined;
+		const next = new Set(seen).add(key);
+		if (owner.constants.has(name)) {
+			const init = owner.constants.get(name);
+			const helper =
+				init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression" ? init : undefined;
+			return helper ? this.apply(helper, args, owner.module, next) : undefined;
+		}
+		if (owner.functions.has(name)) {
+			const helper = owner.functions.get(name);
+			return helper ? this.apply(helper, args, owner.module, next) : undefined;
+		}
+		const target = this.imported(name, owner);
+		return target ? this.call(target.name, args, rootOf(target.module), next) : undefined;
 	}
 
 	private apply(
 		helper: FunctionNode,
 		args: ConstValue[],
-		scope: ModuleScope,
+		module: ModuleScope,
 		seen: Set<string>,
 	): ConstValue | undefined {
 		if (helper.async || helper.generator || helper.params.length !== args.length) return undefined;
+		const own = module.scopes.get(helper);
+		const body = helper.body.type === "BlockStatement" ? module.scopes.get(helper.body) : own;
+		if (!own || !body) return undefined;
+		// Every name the helper binds starts unknown, so a use before its `const` never reads an outer value.
 		const locals = new Map<string, ConstValue | undefined>();
+		for (const name of [...own.declared, ...body.declared]) locals.set(name, undefined);
 		for (const [index, param] of helper.params.entries()) {
 			if (param.type !== "Identifier") return undefined;
 			locals.set(param.name, args[index]);
 		}
-		if (helper.body.type !== "BlockStatement") return this.value(helper.body, scope, seen, locals);
+		if (helper.body.type !== "BlockStatement") return this.value(helper.body, body, seen, locals);
 		for (const statement of helper.body.body) {
 			if (statement.type === "ReturnStatement") {
-				return statement.argument ? this.value(statement.argument, scope, seen, locals) : undefined;
+				return statement.argument ? this.value(statement.argument, body, seen, locals) : undefined;
 			}
 			if (statement.type !== "VariableDeclaration" || statement.kind !== "const") return undefined;
 			for (const declarator of statement.declarations) {
 				if (declarator.id.type !== "Identifier" || !declarator.init) return undefined;
-				locals.set(declarator.id.name, this.value(declarator.init, scope, seen, locals));
+				locals.set(declarator.id.name, this.value(declarator.init, body, seen, locals));
 			}
 		}
 		return undefined;
 	}
 
-	/** The module and local name an import binding in `scope` reads. */
-	private imported(name: string, scope: ModuleScope): { scope: ModuleScope; name: string } | undefined {
-		const imported = scope.imports.get(name);
-		if (!imported || !scope.file) return undefined;
-		const path = resolveImport(scope.file, imported.source);
+	/** The module and local name an import binding read from `owner` (the module scope) comes from. */
+	private imported(name: string, owner: LexicalScope): { module: ModuleScope; name: string } | undefined {
+		const { module } = owner;
+		if (owner !== rootOf(module)) return undefined;
+		const imported = module.imports.get(name);
+		if (!imported || !module.file) return undefined;
+		const path = resolveImport(module.file, imported.source);
 		const target = path === undefined ? undefined : this.module(path);
 		const local = target?.exports.get(imported.name);
-		return target && local !== undefined ? { scope: target, name: local } : undefined;
+		return target && local !== undefined ? { module: target, name: local } : undefined;
 	}
 
 	private module(path: string): ModuleScope | undefined {
@@ -718,7 +1055,7 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 	const budgets: DeclaredBudgets = { timeouts: new Map(), unresolved: new Set(), unbudgeted: new Set(), patterns: [] };
 	const program = parseModule(source, file);
 	if (!program) return budgets;
-	const scope = moduleScope(program, file);
+	const module = moduleScope(program, file);
 	const evaluator = new ConstantEvaluator();
 	const aliases = new Map<string, Declarer["kind"]>();
 
@@ -751,23 +1088,29 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 		if (init.type === "LogicalExpression") return aliasKind(init.left) ?? aliasKind(init.right);
 		return declarer(init)?.kind;
 	};
-	for (const [name, init] of scope.constants) {
-		const kind = init ? aliasKind(init) : undefined;
-		if (kind) aliases.set(name, kind);
+	for (const scope of module.all) {
+		for (const [name, init] of scope.constants) {
+			const kind = init ? aliasKind(init) : undefined;
+			if (kind) aliases.set(name, kind);
+		}
 	}
 
-	const evaluateTimeout = (expression: Expression | PropertyValue): DeclaredTimeout | undefined => {
+	// A timeout is evaluated where its declaration sits, so it sees that call's own enclosing scopes.
+	const evaluateTimeout = (
+		expression: Expression | PropertyValue,
+		call: CallExpression,
+	): DeclaredTimeout | undefined => {
 		const chosen = expression.type === "ConditionalExpression" ? platformBranch(expression) : expression;
 		// `cond ? BUDGET : undefined` declares no budget on the branch vitest takes here.
 		if (chosen.type === "Identifier" && chosen.name === "undefined") return undefined;
-		return { value: evaluator.evaluate(chosen, scope) };
+		return { value: evaluator.evaluate(chosen, module.callScopes.get(call) ?? rootOf(module)) };
 	};
 	const callbackNames = new Set<string>();
-	for (const statement of program.body) {
-		if (statement.type === "FunctionDeclaration" && statement.id) callbackNames.add(statement.id.name);
-	}
-	for (const [name, init] of scope.constants) {
-		if (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression") callbackNames.add(name);
+	for (const name of rootOf(module).functions.keys()) callbackNames.add(name);
+	for (const scope of module.all) {
+		for (const [name, init] of scope.constants) {
+			if (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression") callbackNames.add(name);
+		}
 	}
 	const isCallback = (node: Expression): boolean =>
 		node.type === "ArrowFunctionExpression" ||
@@ -782,13 +1125,13 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 				if (property.type !== "ObjectProperty" || property.computed) continue;
 				const key = property.key.type === "Identifier" ? property.key.name : undefined;
 				if (key !== "timeout") continue;
-				return evaluateTimeout(property.value);
+				return evaluateTimeout(property.value, call);
 			}
 			return undefined;
 		}
 		// `test(name, body, timeout)`.
 		const third = unwrapExpression(call.arguments[2]);
-		return third && !isCallback(third) ? evaluateTimeout(third) : undefined;
+		return third && !isCallback(third) ? evaluateTimeout(third, call) : undefined;
 	};
 	const titlesOf = (call: CallExpression, found: Declarer): Title[] | undefined => {
 		const parts = titleParts(call.arguments[0]);
@@ -840,7 +1183,7 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 		if (found.kind === "describe") {
 			scopes.push(titles);
 			suiteTimeouts.push(own);
-			for (const argument of call.arguments) visit(argument, onCall, () => {});
+			for (const argument of call.arguments) visit(argument, onCall);
 			scopes.pop();
 			suiteTimeouts.pop();
 			return;
@@ -861,7 +1204,7 @@ export function declaredBudgets(source: string, file?: string): DeclaredBudgets 
 			}
 		}
 	};
-	for (const statement of program.body) visit(statement, onCall, () => {});
+	for (const statement of program.body) visit(statement, onCall);
 	return budgets;
 }
 

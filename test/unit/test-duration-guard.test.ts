@@ -797,7 +797,16 @@ function scorePoolSuite(
 				[
 					{
 						file: "integration/pool.test.ts",
-						tests: titles.map((title) => ({ title, status: "passed", duration: 40_000 })),
+						// A title written `scope > name` is reported inside that describe scope.
+						tests: titles.map((title) => {
+							const parts = title.split(" > ");
+							return {
+								scopes: parts.slice(0, -1),
+								title: parts.at(-1) ?? title,
+								status: "passed",
+								duration: 40_000,
+							};
+						}),
 					},
 				],
 				directory,
@@ -806,7 +815,10 @@ function scorePoolSuite(
 			directory,
 		);
 		return new Map(
-			scored.samples.map((sample) => [sample.name, { timeoutMs: sample.timeoutMs, unresolved: sample.unresolved }]),
+			scored.samples.map((sample) => [
+				sample.fullName,
+				{ timeoutMs: sample.timeoutMs, unresolved: sample.unresolved },
+			]),
 		);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
@@ -938,6 +950,197 @@ test("a shadowed Math is not treated as the global", () => {
 		["shadowed"],
 	);
 	assert.deepEqual(budgets.get("shadowed"), { timeoutMs: 0, unresolved: true });
+});
+const UNRESOLVED = { timeoutMs: 0, unresolved: true } as const;
+
+// Greptile PRRT_kwDOQHh8ns6whbCu: an object spread whose field is unknown must
+// override earlier values in source order instead of being dropped.
+test("a spread or getter that overrides a field with an unknown value leaves it unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const OVERRIDDEN = { timeoutMs: 90_000, ...{ timeoutMs: rows.length * 1_000 } };",
+			"const UNKNOWN_SPREAD = { timeoutMs: 90_000, ...lookup() };",
+			"const GETTER = { timeoutMs: 90_000, ...{ get timeoutMs() { return 1_000; } } };",
+			"const SPREAD_THEN_SET = { ...{ timeoutMs: rows.length }, timeoutMs: 80_000 };",
+			'test("unknown spread field", async () => {',
+			"}, OVERRIDDEN.timeoutMs);",
+			'test("unresolvable spread", async () => {',
+			"}, UNKNOWN_SPREAD.timeoutMs);",
+			'test("getter spread", async () => {',
+			"}, GETTER.timeoutMs);",
+			'test("later property wins", async () => {',
+			"}, SPREAD_THEN_SET.timeoutMs);",
+		],
+		["unknown spread field", "unresolvable spread", "getter spread", "later property wins"],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["unknown spread field", UNRESOLVED],
+			["unresolvable spread", UNRESOLVED],
+			["getter spread", UNRESOLVED],
+			["later property wins", { timeoutMs: 80_000, unresolved: false }],
+		]),
+	);
+});
+
+// Greptile PRRT_kwDOQHh8ns6whbCx: every kind of binding named `Math` shadows the global.
+test("Math bound by let, var, a parameter, a block const or a default or namespace import is not the global", () => {
+	const shadows: Record<string, string[]> = {
+		let: ["let Math = { min: (a: number, b: number) => a + b };"],
+		var: ["var Math = { min: (a: number, b: number) => a + b };"],
+		"default import": ['import Math from "../helpers/math.js";'],
+		"namespace import": ['import * as Math from "../helpers/math.js";'],
+	};
+	const call = ['test("shadowed", async () => {', "}, Math.min(1_000, 2_000));"];
+	const helpers = { "math.ts": ["export default { min: (a: number, b: number) => a + b };", "export const min = 0;"] };
+	for (const [kind, declaration] of Object.entries(shadows)) {
+		assert.deepEqual(
+			scorePoolSuite([...declaration, ...call], ["shadowed"], helpers).get("shadowed"),
+			UNRESOLVED,
+			kind,
+		);
+	}
+	const nested = scorePoolSuite(
+		[
+			"function suite(Math: { min(a: number, b: number): number }) {",
+			'\ttest("parameter", async () => {',
+			"\t}, Math.min(1_000, 2_000));",
+			"}",
+			"suite(globalThis.Math);",
+			'describe("block", () => {',
+			"\tconst Math = { min: (a: number, b: number) => a + b };",
+			'\ttest("block const", async () => {',
+			"\t}, Math.min(1_000, 2_000));",
+			"});",
+			'test("global", async () => {',
+			"}, Math.min(1_000, 2_000));",
+		],
+		["parameter", "block > block const", "global"],
+	);
+	assert.deepEqual(
+		nested,
+		new Map([
+			["parameter", UNRESOLVED],
+			["block > block const", UNRESOLVED],
+			["global", { timeoutMs: 1_000, unresolved: false }],
+		]),
+	);
+});
+
+// Greptile PRRT_kwDOQHh8ns6whbC1: a `const` binding does not freeze its object.
+test("an object that is written, deleted, assigned into or passed away is not a known budget", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const WRITTEN = { timeoutMs: 90_000 };",
+			"WRITTEN.timeoutMs = 120_000;",
+			"const ALIASED = { timeoutMs: 90_000 };",
+			"const ALIAS = ALIASED;",
+			"ALIAS.timeoutMs = 120_000;",
+			"const NESTED = { inner: { timeoutMs: 90_000 } };",
+			"const INNER = NESTED.inner;",
+			'INNER["timeoutMs"] += 30_000;',
+			"const DELETED = { timeoutMs: 90_000 };",
+			"delete DELETED.timeoutMs;",
+			"const ASSIGNED = { timeoutMs: 90_000 };",
+			"Object.assign(ASSIGNED, { timeoutMs: 120_000 });",
+			"const DEFINED = { timeoutMs: 90_000 };",
+			'Object.defineProperty(DEFINED, "timeoutMs", { value: 120_000 });',
+			"const ESCAPED = { timeoutMs: 90_000 };",
+			"tweak(ESCAPED);",
+			"const INCREMENTED = { timeoutMs: 90_000 };",
+			"INCREMENTED.timeoutMs++;",
+			"const HELPER = poolTestBudgetMs(1);",
+			'test("helper result written in a test body", async () => {',
+			"\tHELPER.timeoutMs = 1;",
+			"}, HELPER.timeoutMs);",
+			"const READ_ONLY = { timeoutMs: 90_000, waitMs: 60_000 };",
+			"AbortSignal.timeout(READ_ONLY.waitMs);",
+			'test("written", async () => {',
+			"}, WRITTEN.timeoutMs);",
+			'test("written through an alias", async () => {',
+			"}, ALIASED.timeoutMs);",
+			'test("nested object written through an alias", async () => {',
+			"}, NESTED.inner.timeoutMs);",
+			'test("deleted", async () => {',
+			"}, DELETED.timeoutMs);",
+			'test("Object.assign", async () => {',
+			"}, ASSIGNED.timeoutMs);",
+			'test("Object.defineProperty", async () => {',
+			"}, DEFINED.timeoutMs);",
+			'test("escaped into a call", async () => {',
+			"}, ESCAPED.timeoutMs);",
+			'test("incremented", async () => {',
+			"}, INCREMENTED.timeoutMs);",
+			'test("only a number field passed on", async () => {',
+			"}, READ_ONLY.timeoutMs);",
+		],
+		[
+			"helper result written in a test body",
+			"written",
+			"written through an alias",
+			"nested object written through an alias",
+			"deleted",
+			"Object.assign",
+			"Object.defineProperty",
+			"escaped into a call",
+			"incremented",
+			"only a number field passed on",
+		],
+	);
+	for (const [name, budget] of budgets) {
+		const expected = name === "only a number field passed on" ? { timeoutMs: 90_000, unresolved: false } : UNRESOLVED;
+		assert.deepEqual(budget, expected, name);
+	}
+	assert.equal(budgets.size, 10);
+});
+
+// Greptile PRRT_kwDOQHh8ns6wiTVI: a name resolves through the call site's own
+// lexical scopes, never through a same-named declaration in a sibling scope.
+test("budget names resolve through the call site's lexical scope chain", () => {
+	const budgets = scorePoolSuite(
+		[
+			"function budget() {",
+			"\treturn 60_000;",
+			"}",
+			"const LIMIT = 70_000;",
+			'test("unrelated body declares its own", async () => {',
+			"\tconst budget = () => 1_000;",
+			"\tconst LIMIT = 1_000;",
+			"\tbudget();",
+			"}, budget());",
+			'test("outer helper", async () => {',
+			"}, budget());",
+			'test("outer constant", async () => {',
+			"}, LIMIT);",
+			'describe("inner scope", () => {',
+			"\tconst budget = () => 5_000;",
+			"\tconst LIMIT = 75_000;",
+			'\ttest("inner helper", async () => {',
+			"\t}, budget());",
+			'\ttest("inner constant", async () => {',
+			"\t}, LIMIT);",
+			"});",
+		],
+		[
+			"unrelated body declares its own",
+			"outer helper",
+			"outer constant",
+			"inner scope > inner helper",
+			"inner scope > inner constant",
+		],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["unrelated body declares its own", { timeoutMs: 60_000, unresolved: false }],
+			["outer helper", { timeoutMs: 60_000, unresolved: false }],
+			["outer constant", { timeoutMs: 70_000, unresolved: false }],
+			["inner scope > inner helper", { timeoutMs: 5_000, unresolved: false }],
+			["inner scope > inner constant", { timeoutMs: 75_000, unresolved: false }],
+		]),
+	);
 });
 
 // intercom-reconnect-recovery's budgets come from `BACKOFF_MS[Math.min(attempt,
