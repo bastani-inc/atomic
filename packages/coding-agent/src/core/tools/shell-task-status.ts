@@ -35,7 +35,8 @@ const CANCEL_CAUSE_TEXT: Record<CancelCause, string> = {
 	"execution-timeout": "timed out",
 	"output-limit": "output limit reached",
 	"parent-handoff": "handed off",
-	pause: "paused · awaiting resume",
+	// A shell cannot resume: a pause stops it, and the resumed work redoes the step.
+	pause: "stopped by a pause",
 	quit: "quit · paused · awaiting resume",
 	shutdown: "Atomic shut down",
 };

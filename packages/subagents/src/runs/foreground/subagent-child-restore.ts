@@ -59,7 +59,7 @@ import {
 
 /** Prompt a restored child receives after its own interrupted session is reopened (#3760). */
 export const SUBAGENT_RESUME_CONTINUATION_PROMPT =
-	"Atomic restarted while you were working, and your session has been restored. Continue where you left off. If you believe you are finished with your original task, stop.";
+	"Atomic restarted while you were working, and your session has been restored. Continue where you left off. If the restart interrupted a command or step you were running, redo or continue that step as needed. If you believe you are finished with your original task, stop.";
 
 /** Event the Intercom extension answers once a restored child is registered with the broker. */
 export const SUBAGENT_AWAIT_INTERCOM_PEER_EVENT = "subagent:await-intercom-peer";

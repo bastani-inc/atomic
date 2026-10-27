@@ -31,7 +31,7 @@ import { isQueuedSubagentChild, stopQueuedSubagentChild } from "./task-execution
 
 /** The prompt a resumed child runs when `resume` carries no message, as a resumed workflow stage receives. */
 export const SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT =
-	"Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.";
+	"Continue where you left off. If a pause interrupted a command or step you were running, redo or continue that step as needed. If you believe you are finished with your original task (or a redefined task if the user told you), stop.";
 
 /** Settled children that can never be resumed: cancelled for good, ended with their workflow stage, or reported gone (#3760). */
 const NON_RESUMABLE_STATUSES: ReadonlyMap<string, string> = new Map([

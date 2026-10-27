@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A paused subagent child resumed without a message, and a child restored after a restart, are now told to redo or continue a command or step the pause or restart interrupted, as a resumed workflow stage is ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+
 ## [0.9.46-alpha.1] - 2026-10-27
 
 ### Fixed
