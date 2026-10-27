@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join, relative } from "node:path";
 import { test } from "vitest";
 import { createVitest } from "vitest/node";
-import { integrationFileDurations } from "../../scripts/integration-file-durations.js";
+import { testFileDurations } from "../../scripts/test-file-durations.js";
 import {
 	DurationSequencer,
 	FILE_OVERHEAD_MS,
@@ -99,9 +99,10 @@ test(
 		try {
 			const sequencer = new vitest.config.sequence.sequencer(vitest);
 			const record = (
-				JSON.parse(
-					await readText(join(vitest.config.root, "test/helpers/integration-file-durations.json")),
-				) as Record<"linux" | "win32", Record<string, number>>
+				JSON.parse(await readText(join(vitest.config.root, "test/helpers/test-file-durations.json"))) as Record<
+					"linux" | "win32",
+					Record<string, number>
+				>
 			)[process.platform === "win32" ? "win32" : "linux"];
 			const weights = (await sequencer.sort([...specifications])).map(
 				(specification) =>
@@ -119,20 +120,29 @@ test(
 	REAL_VITEST_TIMEOUT_MS,
 );
 
-test("recording durations refuses reports that hold no integration file, and averages the rest", () => {
-	assert.throws(() => integrationFileDurations([{ testResults: [] }]), /no integration test file/);
+test("recording durations refuses reports that hold no test file, and averages the rest by repository path", () => {
+	assert.throws(() => testFileDurations([{ testResults: [] }]), /no test file/);
 	assert.throws(
 		() =>
-			integrationFileDurations([
-				{ testResults: [{ name: "/runner/work/atomic/test/unit/a.test.ts", startTime: 0, endTime: 5_000 }] },
+			testFileDurations([
+				{ testResults: [{ name: "/runner/work/atomic/scripts/run-test-suite.ts", startTime: 0, endTime: 5_000 }] },
 			]),
-		/no integration test file/,
+		/no test file/,
 	);
 	assert.deepEqual(
-		integrationFileDurations([
-			{ testResults: [{ name: "/runner/work/atomic/test/integration/a.test.ts", startTime: 0, endTime: 4_000 }] },
-			{ testResults: [{ name: "C:\\work\\atomic\\test\\integration\\a.test.ts", startTime: 10, endTime: 6_010 }] },
+		testFileDurations([
+			{ testResults: [{ name: "/runner/work/atomic/atomic/test/unit/a.test.ts", startTime: 0, endTime: 4_000 }] },
+			{
+				testResults: [
+					{ name: "D:\\a\\atomic\\atomic\\test\\unit\\a.test.ts", startTime: 10, endTime: 6_010 },
+					{
+						name: "D:\\a\\atomic\\atomic\\packages\\coding-agent\\test\\b.test.ts",
+						startTime: 0,
+						endTime: 1_000,
+					},
+				],
+			},
 		]),
-		{ "test/integration/a.test.ts": 5_000 },
+		{ "test/unit/a.test.ts": 5_000, "packages/coding-agent/test/b.test.ts": 1_000 },
 	);
 });

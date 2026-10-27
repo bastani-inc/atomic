@@ -5,7 +5,8 @@
  * splits files by a hash of their path. Both ignore duration, so a five-minute pool file could start last, and one
  * shard could draw several of them. This sequencer starts the longest files first and balances shards by their
  * expected wall time, using the per-file durations measured on CI for the current OS and recorded in
- * `integration-file-durations.json` (refresh it with `scripts/integration-file-durations.ts`; see docs/ci.md).
+ * `test-file-durations.json` (refresh it with `scripts/test-file-durations.ts`; see docs/ci.md). The root suites and
+ * the coding-agent suite share it and its record, which is keyed by repository-relative path.
  *
  * Every shard sees the same file list and computes the same assignment, so each file runs in exactly one shard.
  * A file missing from the record (a new one) is weighted `UNKNOWN_FILE_MS`; a stale record only skews the balance,
@@ -14,13 +15,15 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { BaseSequencer, type TestSpecification } from "vitest/node";
+import { repositoryRoot } from "../../vitest.base.js";
 
 /** Weight of a file with no recorded duration: above most integration files, so a new heavy file is not started last. */
 export const UNKNOWN_FILE_MS = 20_000;
 
 /**
  * What a file costs a worker beyond its tests: collecting it (transform and import). The integration shards of run
- * 40569411594 spent 88 s of worker time importing 44 files, about 2 s each.
+ * 40569411594 spent 88 s of worker time importing 44 files, and its Windows unit run 1,879 s on 1,089 files: about
+ * 2 s each.
  */
 export const FILE_OVERHEAD_MS = 2_000;
 
@@ -36,9 +39,7 @@ export type FileDurations = Readonly<Record<string, number>>;
 /** One record per CI OS: file times differ between them, and many pool files do not run on Windows. */
 export type DurationRecord = Readonly<Record<"linux" | "win32", FileDurations>>;
 
-const record: DurationRecord = JSON.parse(
-	readFileSync(new URL("./integration-file-durations.json", import.meta.url), "utf8"),
-);
+const record: DurationRecord = JSON.parse(readFileSync(new URL("./test-file-durations.json", import.meta.url), "utf8"));
 const recordedDurations = process.platform === "win32" ? record.win32 : record.linux;
 
 function weightOf(path: string, durations: FileDurations): number {
@@ -83,7 +84,7 @@ export function shardByDuration(
 
 export class DurationSequencer extends BaseSequencer {
 	private key(spec: TestSpecification): string {
-		return relative(this.ctx.config.root, spec.moduleId).replaceAll("\\", "/");
+		return relative(repositoryRoot, spec.moduleId).replaceAll("\\", "/");
 	}
 
 	override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {

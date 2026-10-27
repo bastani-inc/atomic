@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { DurationSequencer } from "../../test/helpers/duration-sequencer.js";
 import { sharedAliases } from "../../vitest.base.js";
 
 /**
@@ -63,6 +64,8 @@ const project = (name: string, include: string[], exclude: string[]) => ({
 
 export default defineConfig({
 	test: {
+		// Longest files first, and duration-balanced `--shard` (the CI agent-suite job runs two shards per OS).
+		sequence: { sequencer: DurationSequencer },
 		projects: [
 			project("agent", ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"], skippedSuites),
 		],
