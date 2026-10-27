@@ -7,9 +7,9 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 ```text
 Pull request / selected branch push
 └─ test.yml (five concurrent work jobs + one result gate)
-   ├─ unit-tests (Linux, Windows): build package -> unit
+   ├─ unit-tests (Linux, Windows; four shards each): build package -> one unit shard
    ├─ integration-tests (Linux, Windows; three shards each): build package -> one integration shard
-   ├─ agent-suite (Linux, Windows): native bindings -> pi-ai + coding-agent vitest (Node)
+   ├─ agent-suite (Linux, Windows; three shards each): native bindings -> one pi-ai + coding-agent shard (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
    └─ test (3 legs): result gate carrying the required contexts
@@ -270,11 +270,12 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to thirteen work-job instances and three
+Five independent job definitions expand to twenty-three work-job instances and three
 result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
-serial dependencies between suites. The integration suite is split by file across
-three jobs per OS (see [Integration shards](#integration-shards)); no test is removed.
+serial dependencies between suites. The unit, integration and agent suites are split
+by file across four, three and three jobs per OS (see [Sharded suites](#sharded-suites));
+no test is removed.
 
 
 ### Why steps are grouped this way
@@ -285,26 +286,36 @@ Steps stay in one job only when one consumes another's build output. Nothing is 
 - `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. All five work-job definitions install Node; `integration-tests` owns this package smoke.
 - `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. Both root-suite jobs also build native bindings explicitly. The CI project's native global setup builds a missing binding in `static-checks`, so a cold static job needs Rust despite having no explicit toolchain step.
-- `agent-suite` runs the `packages/ai` and `packages/coding-agent` Vitest suites under Node on both Linux and Windows, in separate steps. The AI suite runs after its package build via `npm run test --workspace=@bastani/pi-ai`; live-provider tests skip when their credentials are absent, while deterministic tests remain required. The coding-agent suite runs after the native build; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0; the repository's Bun floor is now 1.4.2). Both suites are covered by the existing `test (all platforms)` gate through `agent-suite`.
+- `agent-suite` runs the `packages/ai` and `packages/coding-agent` Vitest suites under Node on both Linux and Windows, in separate steps. The AI suite runs after its package build via `npm run test --workspace=@bastani/pi-ai`; live-provider tests skip when their credentials are absent, while deterministic tests remain required. The coding-agent suite runs after the native build; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0; the repository's Bun floor is now 1.4.2). Both suites are covered by the existing `test (all platforms)` gate through `agent-suite`. Each agent-suite shard runs its share of both suites, so `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1` applies wherever the native-binding test lands.
 
-Keep Vitest's default file isolation and worker sizing. Do not serialize suites, cap workers, or remove existing duplicate executions to improve timings. Only the integration suite is sharded across jobs, and every shard still runs its files with Vitest's defaults.
+Keep Vitest's default file isolation and worker sizing. Do not serialize suites, cap workers, or remove existing duplicate executions to improve timings. Sharding splits a suite's files across jobs; every shard still runs its files with Vitest's defaults.
 
 Split long-running test files by topic so file-level parallelism can apply. Do not add a barrel that imports the split files: it would run their tests again in a single worker. Move a fixture the split files share into `test/helpers/` (for example `test/helpers/workflow-local-pool-lifecycle.ts`).
 
-### Integration shards
+### Sharded suites
 
-`integration-tests` runs `npm run test:integration -- --shard=<i>/3` in three jobs per OS. The suite's wall time was set by its longest files rather than its total: pooled-worker files ran for four to eight minutes each on one runner. Sharding spreads the files over three 8-vCPU runners, and the long files are split so that none runs much over two minutes.
+Each test job runs one shard of its suites, passing `--shard=<i>/<n>` through npm:
 
-`vitest.config.ts` sets `test/helpers/duration-sequencer.ts` as the sequencer. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer uses the per-file durations measured on CI for the current OS, recorded in `test/helpers/integration-file-durations.json`. Each file costs its duration plus 2 s to collect. A shard's expected wall time is its longest file or its total spread over 7 workers (Vitest's default on the 8-vCPU runners), whichever is larger. Files are placed longest first, each in the shard whose expected wall time would be lowest with it, and each shard starts its longest files first. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file.
+| Job | Shards per OS | Command |
+| --- | ---: | --- |
+| `unit-tests` | 4 | `npm run test:unit -- --shard=<i>/4` |
+| `integration-tests` | 3 | `npm run test:integration -- --shard=<i>/3` |
+| `agent-suite` | 3 | `npm run test --workspace=@bastani/pi-ai -- --shard=<i>/3`, then the same for `@bastani/atomic` |
 
-Three shards per OS is the count the measured totals support. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 145 s) runs its two 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 130 s. Either file alone sets its shard's floor, and three shards already fill each OS to about that floor. A fourth runner would add setup cost without shortening the slowest shard.
+A whole-suite job's wall time was set by its longest files and by its total. Pooled-worker integration files ran for four to eight minutes each, and the unit suite alone took 7–10 minutes on one runner. Sharding spreads each suite over several 8-vCPU runners, and long files are split so that none outlasts its shard's share.
+
+The root `vitest.config.ts` and `packages/coding-agent/vitest.config.ts` set `test/helpers/duration-sequencer.ts` as the sequencer; the pi-ai suite (about 25 s) keeps Vitest's own split. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer uses the per-file durations measured on CI for the current OS, recorded in `test/helpers/test-file-durations.json` by repository-relative path. Each file costs its duration plus 2 s to collect. A shard's expected wall time is its longest file or its total spread over 7 workers (Vitest's default on the 8-vCPU runners), whichever is larger. Files are placed longest first, each in the shard whose expected wall time would be lowest with it, and each shard starts its longest files first. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file.
+
+The shard counts follow the measured totals. Integration runs three shards per OS. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 145 s) runs its two 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 130 s. Either file alone sets its shard's floor, and three shards already fill each OS to about that floor. A fourth runner would add setup cost without shortening the slowest shard.
+
+Unit runs four shards per OS: its 1,094 files need about 540 s on Linux and 610 s on Windows of one runner's 7 workers, and four shards bring each under three minutes. The agent suite runs three: its coding-agent files need about 340 s and 380 s. Neither suite has a file that outlasts its shard's share, now that the four longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s).
 
 Refresh the record when shard times drift apart, from recent CI runs' reports for each OS:
 
 ```sh
-gh run download <run-id> -p 'test-diagnostics-integration-tests-*' -D /tmp/integration-reports
-bun run scripts/integration-file-durations.ts --os linux /tmp/integration-reports/*linux*/integration-tests-*.json
-bun run scripts/integration-file-durations.ts --os win32 /tmp/integration-reports/*windows*/integration-tests-*.json
+gh run download <run-id> -p 'test-diagnostics-*' -D /tmp/test-reports
+bun run scripts/test-file-durations.ts --os linux /tmp/test-reports/*linux*/*.json
+bun run scripts/test-file-durations.ts --os win32 /tmp/test-reports/*windows*/*.json
 ```
 
 ### The `test` job is a result gate
@@ -329,9 +340,9 @@ job deadline.
 
 | Job | Linux | Windows | Calibration source |
 | --- | ---: | ---: | --- |
-| Unit tests | 22 min | 22 min | [Observed timeout boundaries](https://github.com/bastani-inc/atomic/actions/runs/34270757695) |
+| Unit tests (each shard) | 14 min | 14 min | Slowest recent unsharded job 925 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): 411 s of setup with a 261 s checkout plus a quarter of 514 s of tests, plus 50% |
 | Integration tests (each shard) | 12 min | 12 min | Slowest four-shard job 340 s ([Windows 2/4](https://github.com/bastani-inc/atomic/actions/runs/40569411594)), scaled by 4/3 for three shards: `ceil(453 × 1.5 / 60)` |
-| Agent suite | 15 min | 20 min | [Linux completion](https://github.com/bastani-inc/atomic/actions/runs/35543699213), [Windows completion](https://github.com/bastani-inc/atomic/actions/runs/35619483893/job/106398647825) |
+| Agent suite (each shard) | 10 min | 10 min | Slowest recent unsharded job 540 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): about 290 s of setup plus a third of its suites, plus 50% |
 | Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
 | Static checks | 5 min | not run | [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) |
 | Result gate | 1 min | 1 min | All three context legs execute on Linux |

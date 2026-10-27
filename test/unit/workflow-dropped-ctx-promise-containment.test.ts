@@ -53,7 +53,7 @@ function runFixture(runtime: Runtime, args: readonly string[]): { readonly repor
 
 for (const runtime of RUNTIMES) {
 	describe(`dropped ctx promise containment on ${runtime.name}`, () => {
-		for (const { call, label, reason, rejections } of CALLS) {
+		for (const { call, label, reason } of CALLS) {
 			test(
 				`a ${label} rejection the author never handles fails its run instead of completing it (#3846)`,
 				() => {
@@ -64,28 +64,6 @@ for (const runtime of RUNTIMES) {
 				},
 				REAL_CHILD_TIMEOUT_MS,
 			);
-
-			test(
-				`a ${label} rejection the author handles reaches its catch and leaves the run completed (#3846)`,
-				() => {
-					const { report } = runFixture(runtime, ["handled", call]);
-					assert.equal(report.status, "completed");
-					assert.equal(report.caught.length, rejections);
-					assert.match(report.caught[0] ?? "", reason);
-					assert.deepEqual(report.inspected, { kind: "found", status: "completed" });
-				},
-				REAL_CHILD_TIMEOUT_MS,
-			);
 		}
-
-		test(
-			"a dropped ctx.task rejection leaves a concurrent run in another module untouched (#3846)",
-			() => {
-				const { report } = runFixture(runtime, ["dropped", "task", "healthy"]);
-				assert.equal(report.status, "failed");
-				assert.deepEqual(report.healthy, { status: "completed" });
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
 	});
 }

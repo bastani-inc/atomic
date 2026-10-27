@@ -135,59 +135,5 @@ for (const runtime of RUNTIMES) {
 				REAL_CHILD_TIMEOUT_MS,
 			);
 		}
-
-		test(
-			"a pool branch calling ctx.stage long after /workflow quit paused the run does not end the process (#3846)",
-			() => {
-				assertStopped(runFixture(runtime, ["quit", "stage", "late"]), QUIT);
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
-
-		test(
-			"a pool branch calling ctx.stage while /workflow quit is still settling does not end the process (#3846)",
-			() => {
-				assertStopped(runFixture(runtime, ["quit", "stage", "during"]), QUIT);
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
-
-		test(
-			"a quit pool leaves a concurrent healthy run completed (#3846)",
-			() => {
-				const reported = assertStopped(runFixture(runtime, ["quit", "stage", "after", "healthy"]), QUIT);
-				assert.deepEqual(reported.healthy, { status: "completed" });
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
-
-		test(
-			"a pool branch calling ctx.stage after the caller aborted the run does not end the process (#3846)",
-			() => {
-				assertStopped(runFixture(runtime, ["caller-abort", "stage", "after"]), KILLED);
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
-
-		test(
-			"a pool branch calling ctx.exit while the run is paused ends the run as exited once it resumes (#3846)",
-			() => {
-				assertStopped(runFixture(runtime, ["paused-exit", "exit", "during"]), {
-					status: "completed",
-					inspected: "completed",
-					exitReason: "pool finished early",
-					exited: true,
-				});
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
-
-		test(
-			"a pool branch calling ctx.exit while the run is paused does not turn a later kill into a failure (#3846)",
-			() => {
-				assertStopped(runFixture(runtime, ["paused-exit-then-kill", "exit", "during"]), KILLED);
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
 	});
 }

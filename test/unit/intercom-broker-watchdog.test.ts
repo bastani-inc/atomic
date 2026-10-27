@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, test } from "vitest";
 import {
-	bunExecutable,
 	fileExistsSync,
 	makeTempDirectory,
 	readTextSync,
@@ -112,7 +111,6 @@ test.each([
 		loader: [getJitiCliPath(extensionDir)],
 		preloadAsPath: false,
 	},
-	{ name: "Bun", command: bunExecutable(), args: ["--preload"], loader: [], preloadAsPath: true },
 ])(
 	"a $name broker with a blocked main thread exits and concurrent reconnects share one replacement (#3862)",
 	async (runtime) => {

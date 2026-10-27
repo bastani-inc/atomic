@@ -70,7 +70,7 @@ const project = (name: string, directory: string) => ({
  */
 export default defineConfig({
 	test: {
-		// Longest files first, and duration-balanced `--shard` (the CI integration job runs three shards per OS).
+		// Longest files first, and duration-balanced `--shard` (the CI integration and unit jobs each run three shards per OS).
 		sequence: { sequencer: DurationSequencer },
 		projects: [project("unit", "test/unit"), project("integration", "test/integration"), project("ci", "test/ci")],
 	},
