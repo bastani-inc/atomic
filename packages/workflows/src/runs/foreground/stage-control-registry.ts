@@ -29,7 +29,7 @@ import type { AgentSession, AgentSessionEvent, SessionStore } from "@bastani/ato
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
-import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
+import type { StageQueuedTextOptions, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 export type StageControlStatus =
 	| "pending"
@@ -48,6 +48,12 @@ export interface StagePlacement {
 	readonly kind: "local-worker";
 	readonly workId: string;
 	readonly generation: number;
+	/** The worker's attempt ended; the view waits for the replacement attempt. */
+	readonly reconnecting?: boolean;
+	/** Messages redelivered to the current attempt after the last reconnect. */
+	readonly redelivered?: number;
+	/** Messages that never reached the stage before it ended. */
+	readonly undelivered?: number;
 }
 
 /**
@@ -66,6 +72,11 @@ export interface StageControlHandle {
 	readonly sessionStore?: import("@bastani/atomic").SessionStore;
 	readonly sessionFile: string | undefined;
 	readonly isStreaming: boolean;
+	/**
+	 * True while the stage's own turn loop runs, between turns included, so a message sent now
+	 * waits behind it unless it is queued into the session (#3996). Undefined when unknown.
+	 */
+	readonly isTurnLoopBusy?: boolean;
 	/** True after the executor has released the live SDK session behind this handle. */
 	readonly isDisposed?: boolean;
 	readonly messages: AgentSession["messages"];
@@ -103,10 +114,13 @@ export interface StageControlHandle {
 
 	/** Send a prompt. Use only when the stage is idle / not streaming. */
 	prompt(text: string): Promise<void>;
-	/** Steer the current streaming operation (interrupt mid-turn). */
-	steer(text: string): Promise<void>;
-	/** Queue a follow-up after the current operation completes. */
-	followUp(text: string): Promise<void>;
+	/**
+	 * Steer the current streaming operation (interrupt mid-turn). Without `options` the text is
+	 * expanded like typed input; pass them to choose `sendUserMessage()`'s semantics.
+	 */
+	steer(text: string, options?: StageQueuedTextOptions): Promise<void>;
+	/** Queue a follow-up after the current operation completes; `options` as for `steer()`. */
+	followUp(text: string, options?: StageQueuedTextOptions): Promise<void>;
 	/**
 	 * True controlled pause. Aborts the current Pi op without finalizing
 	 * the stage as failed; the original `prompt()` awaiter is held until

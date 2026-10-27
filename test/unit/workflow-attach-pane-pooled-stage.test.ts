@@ -14,7 +14,9 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import {
 	openPooledStageHandle,
+	type PooledStageHandle,
 	type PooledStageTransport,
+	reconnectPooledStageHandle,
 } from "../../packages/workflows/src/workers/pooled-stage-handle.js";
 import { RegisteredPooledStageHandle } from "../../packages/workflows/src/workers/pooled-stage-registry.js";
 import { registerPooledStageSource } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
@@ -79,6 +81,12 @@ function fakeTransport(overrides: Partial<PooledStageChatSnapshot> = {}) {
 		async deliver(delivery) {
 			deliveries.push(delivery);
 			return { ok: true, action: delivery.intent === "followUp" ? "followUp" : "steer" };
+		},
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
 		},
 	};
 	return {
@@ -294,6 +302,100 @@ test("a stage registered in an SDK registry attaches with its transcript, reply 
 		pane.handleInput("\x18");
 		assert.equal(pane._mode, "graph");
 		assert.match(visible(pane.render(100)), /✉ 3 queued/, "and again after the chat closes");
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});
+
+test("after the pane is hidden and shown, a reconnect still remounts the chat on the replacement's transcript (#3996)", async () => {
+	const store = createStore();
+	store.recordRunStart({
+		id: "child",
+		name: "pooled-child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	store.recordStageStart("child", {
+		id: "agent",
+		name: "agent",
+		status: "running",
+		parentIds: [],
+		toolEvents: [],
+		sessionId: "pooled-session",
+		workerExecution: { worker: "worker-1", generation: 1, renewedAt: 1, expiresAt: 2 },
+	});
+	const listeners: ((message: PooledStageWatchMessage) => void)[] = [];
+	const transport: PooledStageTransport = {
+		async watch(_ref, receive) {
+			listeners.push(receive);
+			const replacement = listeners.length > 1;
+			return {
+				ok: true,
+				watch: {
+					id: `watch-${listeners.length}` as WatchId,
+					attempt: { workId: "work", generation: listeners.length },
+					snapshot: {
+						sessionId: "pooled-session",
+						status: "running",
+						isStreaming: true,
+						messages: [
+							{
+								role: "user",
+								content: replacement ? "From the replacement attempt" : "From the first attempt",
+								timestamp: 1,
+							},
+						],
+						pendingToolExecutionEvents: [],
+						queued: { steering: [], followUp: [] },
+						seq: 0,
+					},
+				},
+			};
+		},
+		async unwatch() {},
+		async deliver() {
+			return { ok: true, action: "steer" };
+		},
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
+		},
+	};
+	let handle: PooledStageHandle | undefined;
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			const opened = await openPooledStageHandle(transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			handle = opened.handle;
+			return {
+				handle: opened.handle,
+				release: () => opened.handle.dispose(),
+				onReconnected: (listener) => opened.handle.onRebind(listener),
+			};
+		},
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		onClose: () => {},
+		initialAttachStageId: "agent",
+	});
+	try {
+		await until(() => visible(pane.render(100)).includes("From the first attempt"));
+		pane.setVisible(false);
+		pane.setVisible(true);
+		listeners[0]?.({ kind: "ended", reason: "worker_exited" });
+		assert.ok(handle !== undefined);
+		assert.equal(await reconnectPooledStageHandle(handle, transport), true);
+		await until(() => visible(pane.render(100)).includes("From the replacement attempt"));
 	} finally {
 		pane.dispose();
 		unregister();

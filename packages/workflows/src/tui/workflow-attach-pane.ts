@@ -14,7 +14,8 @@ import {
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
+import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -59,6 +60,10 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	/** Where the attached pooled prompt stage sits in its run, and the attempt that published it. */
+	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
+	/** The attachment whose pooled view may remount the chat when it reconnects. */
+	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
 	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -197,14 +202,39 @@ export class WorkflowAttachPane implements Component {
 				? () => acquirePooledStage(this.store, runId, stageId)
 				: undefined,
 		);
-		const { handle, postMortemUnavailableReason, release } =
+		const { handle, postMortemUnavailableReason, release, onReconnected } =
 			resolution instanceof Promise ? await resolution : resolution;
 		if (generation !== this.attachmentGeneration || !this.visible) {
 			release?.();
 			return;
 		}
 		this._disposeChatView();
-		this.releaseChatHandle = release ?? null;
+		// A pooled stage's view rebinds to a replacement attempt after its worker dies: the chat
+		// remounts on the replacement's transcript, keeping the composer draft (#3996).
+		// Identity of this attachment: hiding and showing the pane keeps it, detaching ends it.
+		const attachment = Symbol("pooled-stage-attachment");
+		this.pooledAttachment = attachment;
+		const stopWatchingReconnects = onReconnected?.(() => {
+			if (this.pooledAttachment !== attachment || this.chatView === null) return;
+			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
+			this.chatView.dispose();
+			this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+		});
+		this.releaseChatHandle =
+			release === undefined
+				? null
+				: () => {
+						stopWatchingReconnects?.();
+						release();
+					};
+		this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+	}
+	private _mountChatView(
+		runId: string,
+		stageId: string,
+		handle: StageControlHandle | undefined,
+		postMortemUnavailableReason: PostMortemUnavailableReason | undefined,
+	): void {
 		let chatView!: StageChatView;
 		chatView = new StageChatView({
 			store: this.store,
@@ -243,6 +273,7 @@ export class WorkflowAttachPane implements Component {
 		this.hostRequestRender?.();
 	}
 	private _disposeChatView(): void {
+		this.pooledAttachment = undefined;
 		this.chatView?.dispose();
 		const release = this.releaseChatHandle;
 		this.releaseChatHandle = null;
@@ -352,7 +383,54 @@ export class WorkflowAttachPane implements Component {
 			}
 			this.lastStageAwaitingInputKey = key;
 			this.lastGraphAwaitingInputKey = this._runAwaitingInputKey(snapshot, runId);
+			// Whether this chat is attached is the pane's own state. A pooled stage republished by a
+			// replacement attempt (or released by a fenced one) arrives without the mark; the open chat
+			// marks it again, or the re-asked prompt it shows could never be submitted (#4022).
+			const attachedRun = findSnapshotRun(snapshot.runs, this.attachedRunId);
+			const stage =
+				attachedRun === undefined ? undefined : findSnapshotStage(attachedRun.stages, this.lastAttachedStageId);
+			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
+				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
+			this._followSupersedingPrompt(attachedRun, stage);
 		}
+	}
+	/**
+	 * Keeps an open chat on the prompt a pooled child is waiting on (#4022). A replacement attempt
+	 * that asks a different question at the same point of the child (its text depends on data)
+	 * publishes it as a new prompt stage at the same position, and the dead attempt's unanswered
+	 * prompt is gone: the chat moves to the new prompt instead of staying on a stage that no longer
+	 * exists.
+	 */
+	private _followSupersedingPrompt(
+		run: StoreSnapshot["runs"][number] | undefined,
+		stage: StageSnapshot | undefined,
+	): void {
+		const runId = this.attachedRunId;
+		if (run === undefined || runId === null || this.chatView === null) return;
+		if (stage !== undefined) {
+			const index = run.stages.indexOf(stage);
+			this.attachedPromptPosition =
+				stage.promptFootprint !== undefined && stage.workerExecution !== undefined && index >= 0
+					? { index, generation: stage.workerExecution.generation }
+					: null;
+			return;
+		}
+		const position = this.attachedPromptPosition;
+		if (position === null) return;
+		const successor = run.stages[position.index];
+		if (
+			successor === undefined ||
+			successor.pendingPrompt === undefined ||
+			(successor.workerExecution?.generation ?? 0) <= position.generation
+		)
+			return;
+		this.attachedPromptPosition = null;
+		const generation = this.attachmentGeneration;
+		// Attaching rereads the store; do it after this update is handled.
+		queueMicrotask(() => {
+			if (generation !== this.attachmentGeneration || this.mode !== "stage-chat" || !this.visible) return;
+			void this._attachToStage(runId, successor.id);
+		});
 	}
 	private _syncAwaitingInputKeys(snapshot: StoreSnapshot): void {
 		const runId = this._resolveRunId();
@@ -368,6 +446,15 @@ export class WorkflowAttachPane implements Component {
 		if (!visible) this.attachmentGeneration += 1;
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
+			// Updates while hidden only track input keys: a prompt a replacement attempt superseded
+			// meanwhile is followed now, or the chat would show the stage it removed (#4022).
+			if (visible) {
+				const run = findSnapshotRun(readGraphStoreSnapshot(this.store).runs, this.attachedRunId);
+				this._followSupersedingPrompt(
+					run,
+					run === undefined ? undefined : findSnapshotStage(run.stages, this.lastAttachedStageId),
+				);
+			}
 		}
 	}
 	wantsFocusForAwaitingInput(snapshot: StoreSnapshot): boolean {

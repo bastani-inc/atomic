@@ -120,9 +120,8 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	async pause(): Promise<void> {
 		await this.use((handle) => handle.pause());
 	}
-	async resume(): Promise<undefined> {
-		await this.use((handle) => handle.resume());
-		return undefined;
+	resume(message?: string, beforeResume?: () => void): Promise<StageUserMessageDeliveryAction | undefined> {
+		return this.use((handle) => handle.resume(message, beforeResume));
 	}
 
 	dispose(): void {
@@ -143,7 +142,8 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 
 	private open(): Promise<PooledStageLease | undefined> {
 		if (this.lease === undefined) {
-			const opening = this.acquire(this.runId, this.stage.id);
+			// A view that cannot open reads as no view; nothing here may reject unhandled.
+			const opening = this.acquire(this.runId, this.stage.id).catch(() => undefined);
 			this.lease = opening;
 			void opening.then((lease) => {
 				if (this.lease !== opening) lease?.release();

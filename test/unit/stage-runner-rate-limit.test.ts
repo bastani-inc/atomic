@@ -828,6 +828,36 @@ test("a 429 that does not name a model still cools every model on the provider (
 	}
 });
 
+test("a shared-provider cooldown ending between two clock reads still advances to the fallback, not the primary (#4003)", async () => {
+	const calls: string[] = [];
+	const ctx = fallbackChainContext(
+		["tick-account/model-a", "tick-account/model-b"],
+		(model) =>
+			model === "tick-account/model-a"
+				? Object.assign(new Error("429 Too Many Requests"), { status: 429, retryAfterMs: 1000 })
+				: undefined,
+		calls,
+	);
+	// The wall clock is read more finely than timers fire: the first read inside a new millisecond still
+	// sees the previous one, as when a timer wakes a hair before `Date.now()` reaches the cooldown end.
+	const timerNow = Date.now.bind(Date);
+	let lastMillisecond = timerNow();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => {
+		const now = timerNow();
+		if (now === lastMillisecond) return now;
+		lastMillisecond = now;
+		return now - 1;
+	});
+	try {
+		const outcome = await settleOnFakeTimers(ctx.prompt("go"), 1000);
+		assert.deepEqual(outcome, { value: "ok" });
+		assert.deepEqual(calls, ["tick-account/model-a", "tick-account/model-b"]);
+	} finally {
+		clock.mockRestore();
+		await ctx.abort();
+	}
+});
+
 test("a 529 overload honors its retry hint like a 503 (#3984)", async () => {
 	let calls = 0;
 	const ctx = limitedContext("overloaded-account", async () => {
