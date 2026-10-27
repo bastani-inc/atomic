@@ -41,6 +41,16 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import { sleep } from "../helpers/runtime.js";
 
+/**
+ * The PNG transcoder registers only after photon's WASM module has been read
+ * and compiled, then the image re-renders. That is real CPU work: under the
+ * full parallel unit suite it took just over vitest's default 1 s `waitFor`
+ * bound (1014 ms in a local CI run) while taking 15-140 ms standalone, so the
+ * wait gets an order of magnitude more than the observed loaded cost, still
+ * well inside the 30 s per-test budget.
+ */
+const PNG_TRANSCODER_READY_TIMEOUT_MS = 15_000;
+
 interface Harness {
 	service: EngineCustomUiService;
 	invalidatedComponentIds(): string[];
@@ -98,7 +108,9 @@ describe("EngineCustomUiService targeted invalidation (#1856)", () => {
 			try {
 				if (kind === "custom") void service.custom(() => image);
 				else service.setWidget("image", () => image);
-				await vi.waitFor(() => assert.ok(image.render(80).join("\n").includes(";iVBORw0KGgo")));
+				await vi.waitFor(() => assert.ok(image.render(80).join("\n").includes(";iVBORw0KGgo")), {
+					timeout: PNG_TRANSCODER_READY_TIMEOUT_MS,
+				});
 			} finally {
 				service.dispose();
 				resetCapabilitiesCache();

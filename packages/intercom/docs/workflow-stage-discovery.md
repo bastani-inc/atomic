@@ -10,7 +10,7 @@ Only agent sessions and agent-stage targets are recipients. Internal route-owner
 
 Each path segment may be a stage name, a materialized run id, or a glob. `*` matches one segment and may be embedded, as in `reviewer-*`; `**` matches any depth. `workflow:<rootRunId>/**` is the run-wide broadcast: it reaches every live stage through ordinary Intercom now and remains sticky for every future stage, including descendants, until the root terminates. A narrower name or pattern send likewise delivers to every future matching stage.
 
-The persisted possible-stage set is advisory. A syntactically valid path outside it is queued speculatively and acknowledged with `notInKnownSet: true`. If the entry never matches before the run terminates, acknowledgment-requesting senders receive the correlated undeliverable notification; a sticky entry delivered at least once is not reported undeliverable.
+The persisted possible-stage set is advisory. A path that matches a materialized live or pending stage is known even when the scan missed it, as it does for children loaded with `loadWorkerWorkflow`. A syntactically valid path matching neither is queued speculatively and acknowledged with `notInKnownSet: true`. If the entry never matches before the run terminates, acknowledgment-requesting senders receive the correlated undeliverable notification; a sticky entry delivered at least once is not reported undeliverable.
 
 A stage whose workflow store status is running is listed only while its Intercom session is live, so it disappears from the roster while the broker is down. It returns once automatic reconnect succeeds, and its canonical path target and final-segment name variant begin delivering together. No Intercom call inside the stage is needed to bring it back.
 
