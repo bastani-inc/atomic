@@ -40,6 +40,26 @@ const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
 const BROKER_BACKLOG_RETRIES = 6;
 const BROKER_BACKLOG_RETRY_BASE_MS = 25;
 
+/** The connect attempt was cancelled by `disconnect()` before it registered. */
+function connectAborted(): IntercomClientDisconnectedError {
+	return new IntercomClientDisconnectedError({ cause: new Error("Disconnected before the broker connection registered") });
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolveDelay, rejectDelay) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolveDelay();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			rejectDelay(connectAborted());
+		};
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 function isBacklogRefusal(error: Error): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === "ECONNREFUSED" || code === "EAGAIN";
@@ -224,6 +244,8 @@ export class IntercomClient extends EventEmitter {
 	private brokerAnswersStatus = false;
 	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
 	private brokerClaimsWorkflowInvocations = false;
+	/** #3904: the connect attempt in progress, which `disconnect()` cancels. */
+	private connectAttempt: AbortController | undefined;
 	/** #3983: the broker of the current registration accepts `saving`. */
 	private brokerExtendsSaves = false;
   private socket: net.Socket | null = null;
@@ -375,19 +397,30 @@ export class IntercomClient extends EventEmitter {
     messageSource?: Message["source"],
     registrationGroup?: string,
   ): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await this.connectOnce(session, supervisor, supervisorOwnerToken, messageSource, registrationGroup);
-        return;
-      } catch (error) {
-        if (!(error instanceof Error) || !isBacklogRefusal(error) || attempt >= BROKER_BACKLOG_RETRIES) throw error;
-        const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** attempt;
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, backoff * (0.5 + Math.random() / 2)));
+    // #3904: `disconnect()` aborts this attempt, its retry delay and any later retry, so a session that finished
+    // its cleanup never ends up connected and registered by a retry still in flight.
+    const attempt = new AbortController();
+    this.connectAttempt = attempt;
+    try {
+      for (let retry = 0; ; retry++) {
+        if (attempt.signal.aborted) throw connectAborted();
+        try {
+          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup);
+          return;
+        } catch (error) {
+          if (attempt.signal.aborted) throw connectAborted();
+          if (!(error instanceof Error) || !isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) throw error;
+          const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** retry;
+          await abortableDelay(backoff * (0.5 + Math.random() / 2), attempt.signal);
+        }
       }
+    } finally {
+      if (this.connectAttempt === attempt) this.connectAttempt = undefined;
     }
   }
 
   private connectOnce(
+    signal: AbortSignal,
     session: Omit<SessionInfo, "id">,
     supervisor?: SupervisorRegistration,
     supervisorOwnerToken?: string,
@@ -503,7 +536,38 @@ export class IntercomClient extends EventEmitter {
         this.handleBrokerMessage(msg);
       }, onReaderError);
       
+      const onConnect = (): void => {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        try {
+          writeMessage(socket, {
+            type: "register",
+            session,
+            ...(registrationGroup !== undefined ? { registrationGroup } : {}),
+			returnAddress: this.returnAddress,
+			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
+			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
+            ...(supervisor ? { supervisor } : {}),
+            ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
+          });
+        } catch (error) {
+          cleanupConnectionAttempt();
+          cleanupSocketListeners();
+          if (this.socket === socket) {
+            this.socket = null;
+          }
+          socket.destroy();
+          reject(toError(error));
+        }
+      };
+
+      const onAbort = () => onError(connectAborted());
+
       const cleanupConnectionAttempt = () => {
+        signal.removeEventListener("abort", onAbort);
+        socket.off("connect", onConnect);
         this.off("_registered", onRegistered);
         this.off("_registration_failed", onRegistrationFailed);
         socket.off("error", onError);
@@ -524,26 +588,9 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
       this.once("_registration_failed", onRegistrationFailed);
       
-      try {
-        writeMessage(socket, {
-          type: "register",
-          session,
-          ...(registrationGroup !== undefined ? { registrationGroup } : {}),
-			returnAddress: this.returnAddress,
-			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
-			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
-          ...(supervisor ? { supervisor } : {}),
-          ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
-        });
-      } catch (error) {
-        cleanupConnectionAttempt();
-        cleanupSocketListeners();
-        if (this.socket === socket) {
-          this.socket = null;
-        }
-        socket.destroy();
-        reject(toError(error));
-      }
+      // Register only once connected, and only if the attempt was not cancelled meanwhile (#3904).
+      signal.addEventListener("abort", onAbort, { once: true });
+      socket.once("connect", onConnect);
     });
   }
 
@@ -991,6 +1038,12 @@ export class IntercomClient extends EventEmitter {
     }
   }
   async disconnect(): Promise<void> {
+    // A connect still in progress (or waiting to retry) is cancelled: it closes any socket it opened and never
+    // registers (#3904).
+    if (this.connectAttempt !== undefined && this._sessionId === null) {
+      this.connectAttempt.abort();
+      return;
+    }
     const socket = this.socket;
     if (!socket) {
       return;
