@@ -1354,10 +1354,11 @@ test("intercom reconnect recovery is scored against its declared budgets", () =>
 		30_000,
 		root,
 	);
-	// 2 * (reconnectDelayMs(0) + reconnectDelayMs(1) + 10 s respawn) + 30 s killed-broker exit.
+	// 2 * (reconnectDelayMs(0) + reconnectDelayMs(1) + 10 s respawn) + 15 s process-identity query
+	// + 30 s killed-broker exit.
 	assert.deepEqual(
 		scored.samples.map((sample) => [sample.name, sample.timeoutMs, sample.unresolved]),
-		titles.map((title) => [title, 56_000, false]),
+		titles.map((title) => [title, 71_000, false]),
 	);
 	assert.deepEqual(scored.unresolved, []);
 });
