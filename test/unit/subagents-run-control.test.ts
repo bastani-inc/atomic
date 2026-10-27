@@ -534,6 +534,22 @@ test("quit stops a running child gracefully and resume without a message continu
 	assert.equal(occurrences(transcript(final), SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT), 1);
 });
 
+test("a paused child resumed without a message is told to redo or continue the step the pause interrupted (#3996)", async () => {
+	const h = harness();
+	const { record, taskId } = await h.launch("pausestep1");
+	const paused = await h.call({ action: "pause", id: record.childId });
+	assert.notEqual(paused.isError, true, text(paused));
+	await settled(h, taskId);
+	await h.waitForLatest(record.childId, (candidate) => candidate.state === "terminal");
+	const resumed = await h.call({ action: "resume", id: record.childId });
+	assert.notEqual(resumed.isError, true, text(resumed));
+	await settled(h, resumedTaskId(resumed));
+	assert.match(
+		h.runs.at(-1)?.task ?? "",
+		/^Continue where you left off\. If a pause interrupted a command or step you were running, redo or continue that step as needed\./,
+	);
+});
+
 const QUIT_PARITY_RUN_ID = "quitparity1";
 const QUIT_PARITY_CHILD_ID = `${QUIT_PARITY_RUN_ID}:0`;
 const QUIT_PARITY_RESUME_CALL = `{ action: "resume", id: "${QUIT_PARITY_CHILD_ID}"`;

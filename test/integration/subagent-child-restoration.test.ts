@@ -338,6 +338,11 @@ test("restoring a child reopens its own session under its original Intercom name
 		const transcript = readFileSync(original.childSessionFile, "utf8");
 		assert.match(transcript, /original task/);
 		assert.ok(transcript.includes(SUBAGENT_RESUME_CONTINUATION_PROMPT));
+		assert.match(
+			SUBAGENT_RESUME_CONTINUATION_PROMPT,
+			/redo or continue that step as needed/,
+			"the restored child is told to redo a step the restart interrupted",
+		);
 		const final = await waitForRecord(parent, "terminal");
 		assert.equal(final.childId, "lane1:0");
 		assert.equal(final.childSessionId, original.childSessionId);
