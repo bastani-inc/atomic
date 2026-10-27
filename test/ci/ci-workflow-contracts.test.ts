@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { delimiter, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -11,8 +9,10 @@ import {
 } from "../../scripts/release-base.js";
 import {
 	chmodSync,
+	fileExistsSync,
 	makeDirectorySync,
 	makeTempDirectory,
+	readDirectorySync,
 	readJson,
 	readTextSync,
 	removeTempDirectory,
@@ -102,7 +102,7 @@ test("npm registry retries declare integer timeouts and ordered backoffs", async
 	assert.ok(retryMinTimeoutMs <= retryMaxTimeoutMs, "minimum retry backoff must not exceed its maximum");
 });
 
-test("global setups isolate Herdr, then prepare artifacts and natives", async () => {
+test("global setups isolate Herdr and provider credentials, then prepare artifacts and natives", async () => {
 	const config = (await import("../../vitest.config.js")) as {
 		default: {
 			test?: {
@@ -112,6 +112,7 @@ test("global setups isolate Herdr, then prepare artifacts and natives", async ()
 	};
 	const projects = config.default.test?.projects ?? [];
 	const herdrSetup = "./test/global-setup-herdr-isolation.ts";
+	const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 	const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 	const nativeSetup = "./test/global-setup-natives.ts";
 	for (const name of ["unit", "integration", "ci"]) {
@@ -119,8 +120,8 @@ test("global setups isolate Herdr, then prepare artifacts and natives", async ()
 		assert.ok(project, `missing vitest project: ${name}`);
 		assert.deepEqual(
 			project.test?.globalSetup,
-			[herdrSetup, artifactSetup, nativeSetup],
-			`${name} must isolate inherited Herdr credentials before preparing artifacts and natives`,
+			[herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
+			`${name} must isolate inherited Herdr and provider credentials before preparing artifacts and natives`,
 		);
 	}
 });
@@ -143,11 +144,11 @@ test("global setups isolate Herdr, then prepare artifacts and natives", async ()
 test("workspace selectors precede the run verb so Bun cannot rewrite them", async () => {
 	const manifests = [
 		"package.json",
-		...(await readdir(join(root, "packages"))).map((p) => `packages/${p}/package.json`),
+		...readDirectorySync(join(root, "packages")).map((p) => `packages/${p}/package.json`),
 	];
 	for (const relative of manifests) {
 		const path = join(root, relative);
-		if (!existsSync(path)) continue;
+		if (!fileExistsSync(path)) continue;
 		const manifest = (await readJson(path)) as { scripts?: Record<string, string> };
 		for (const [name, command] of Object.entries(manifest.scripts ?? {})) {
 			assert.doesNotMatch(
@@ -209,7 +210,7 @@ test("SQLite selectors resolve on either runtime and their tests cannot silently
 	// guard that skips or returns early when a module is missing.
 	const testDir = join(root, "packages/coding-agent/test");
 	const excluded = new Set((config.default.test?.projects ?? [])[0]?.test?.exclude ?? []);
-	for (const entry of await readdir(testDir, { recursive: true })) {
+	for (const entry of readDirectorySync(testDir, { recursive: true, encoding: "utf8" })) {
 		if (!entry.endsWith(".test.ts")) continue;
 		const relative = `test/${entry.replaceAll("\\", "/")}`;
 		const source = await readText(join(testDir, entry));
@@ -358,7 +359,7 @@ test("musl archive build bundles pinned C++ runtimes and patches payload-local s
 
 test("obsolete publisher-only verifiers are absent", () => {
 	for (const path of ["scripts/verify" + "-publish-context.ts", "scripts/verify" + "-release-integrity.ts"])
-		assert.equal(existsSync(join(root, path)), false, path);
+		assert.equal(fileExistsSync(join(root, path)), false, path);
 });
 
 test("release-base metadata remains available to the versionless cut flow", () => {

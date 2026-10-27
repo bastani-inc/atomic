@@ -18,6 +18,10 @@ const setupFiles = ["./test/setup-workflow-durability.ts", "./test/helpers/provi
  * `global-setup-herdr-isolation` strips inherited pane credentials before any
  * workers or CLI fixtures can report to the developer's live Herdr pane.
  *
+ * `global-setup-provider-credential-isolation` strips inherited provider
+ * credentials and endpoints, so a developer's shell cannot make a provider
+ * available to tests that expect only their fixtures' providers.
+ *
  * `global-setup-workflow-artifacts` creates the per-run workflow-artifact
  * directory that `setup-workflow-durability` points workers at, and removes it
  * in teardown. It runs for all three projects.
@@ -31,6 +35,7 @@ const setupFiles = ["./test/setup-workflow-durability.ts", "./test/helpers/provi
  * first — and any warm worktree pay nothing.
  */
 const herdrSetup = "./test/global-setup-herdr-isolation.ts";
+const providerCredentialSetup = "./test/global-setup-provider-credential-isolation.ts";
 const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
 
@@ -44,7 +49,7 @@ const project = (name: string, directory: string) => ({
 		include: [`${directory}/**/*.test.ts`],
 		exclude: ["**/node_modules/**"],
 		setupFiles,
-		globalSetup: [herdrSetup, artifactSetup, nativeSetup],
+		globalSetup: [herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
 	},

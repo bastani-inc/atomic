@@ -74,6 +74,16 @@ Every suite runs with a shared **30000 ms** per-test budget, declared once as `T
 
 vitest runs test files concurrently and this repository sets no pool or worker limits, matching upstream pi. A test that only passes on an idle machine is a bug in that test: give the real work headroom and derive the assertion from a named constant. Do not skip it, serialize the suite, or shard.
 
+### Provider credentials and live provider tests
+
+Every test run strips ambient provider credentials and endpoints (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `COPILOT_GITHUB_TOKEN`, AWS, Azure and Vertex variables) before any test worker starts. This covers the unit, integration and ci projects and the `packages/coding-agent` and `packages/ai` suites. A key in your shell would otherwise make its provider available to tests that expect only their fixtures' providers. The full list is `test/helpers/provider-credential-env.ts`, and `test/global-setup-provider-credential-isolation.ts` applies it. A test that needs a credential sets it itself.
+
+Live provider tests, which skip when their key is unset, therefore skip in a default run even if you exported the key. To run them against real providers, opt back in to your shell's credentials:
+
+```bash
+OPENAI_API_KEY=sk-... ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1 npm run test --workspace=@bastani/pi-ai
+```
+
 ## Pull requests
 
 External contributors must complete the issue discussion and explicit scope approval process above before opening any PR. PRs opened without prior approval may be closed pending discussion.
