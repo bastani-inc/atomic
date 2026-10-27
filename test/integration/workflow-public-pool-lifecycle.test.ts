@@ -205,53 +205,6 @@ test.skipIf(process.platform === "win32")(
 	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
 );
 
-test.skipIf(process.platform === "win32")(
-	"a public root pauses, resumes and quits, then a fresh process resumes the retained work to completion (#3869)",
-	async () => {
-		const directory = makeTempDirectory("public-pool-quit-");
-		const first = startCoordinator(directory, "fresh");
-		let second: ReturnType<typeof startCoordinator> | undefined;
-		const status = () =>
-			observe(
-				directory,
-				(database) => database.query("SELECT status FROM wf_runs WHERE run_id = ?").get(ROOT)?.status,
-			);
-		try {
-			const firstReady = await first.next("ready");
-			const workerPid = await committedWorkerPid(directory);
-			const [before] = workItems(directory);
-			first.send("pause");
-			await first.next("controlled");
-			assert.equal(status(), "paused");
-			first.send("resume");
-			await first.next("controlled");
-			assert.equal(status(), "running");
-			first.send("quit");
-			const quit = await first.next("result");
-			assert.equal(quit.status, "paused");
-			await first.child.exited;
-			await until("the worker to be torn down", () => (pidAlive(workerPid) ? undefined : true));
-			const [retained] = workItems(directory);
-			assert.equal(retained!.id, before!.id);
-			assert.notEqual(retained!.state, "completed");
-			await writeFileEnsuringDir(join(directory, "release"), "ready");
-			second = startCoordinator(directory, "restart");
-			const secondReady = await second.next("ready");
-			const result = await second.next("result");
-			assertSingleRootRecovered(directory, workerPid, result, [firstReady.pid!, secondReady.pid!]);
-			const after = workItems(directory);
-			assert.equal(after.length, 1);
-			assert.equal(after[0]!.id, before!.id);
-			assert.equal(after[0]!.state, "completed");
-		} finally {
-			await first.stop();
-			await second?.stop();
-			removeTempDirectory(directory);
-		}
-	},
-	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
-);
-
 test.runIf(process.platform === "win32")(
 	"the public worker opt-in refuses Windows before registering a root or launching a worker (#3869)",
 	async () => {

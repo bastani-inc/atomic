@@ -1320,8 +1320,7 @@ test("array reads that are out of range, fractional or dynamic stay unresolved",
 
 // #4051 on main: every test budgets through `testBudget(coldStarts)`, which caps
 // `poolTestBudgetMs` from test/helpers/pool-budget.ts at 600 s.
-test("the pooled resume suite is scored against its testBudget budgets", () => {
-	const file = "test/integration/workflow-local-pool-resume.test.ts";
+test("the pooled resume suites are scored against their testBudget budgets", () => {
 	const expected = new Map([
 		["resuming a crashed pooled root replays children leased by the dead incarnation (#3890)", 600_000],
 		["a root stall longer than the work lease does not fence a live worker (#3888)", 315_000],
@@ -1333,8 +1332,19 @@ test("the pooled resume suite is scored against its testBudget budgets", () => {
 		["a child resumed many times keeps its full retry budget in each incarnation (#3979)", 600_000],
 		["a worker whose attempt is fenced ends it without crashing or consuming an attempt (#3979)", 240_000],
 	]);
+	const titles = [...expected.keys()];
+	const files = [
+		{ file: "test/integration/workflow-local-pool-resume.test.ts", titles: titles.slice(0, 1) },
+		{ file: "test/integration/workflow-local-pool-resume-stall.test.ts", titles: titles.slice(1, 3) },
+		{ file: "test/integration/workflow-local-pool-resume-quit.test.ts", titles: titles.slice(3) },
+	];
 	const scored = evaluateDurations(
-		report([{ file, tests: [...expected.keys()].map((title) => ({ title, status: "passed", duration: 60_000 })) }]),
+		report(
+			files.map(({ file, titles }) => ({
+				file,
+				tests: titles.map((title) => ({ title, status: "passed", duration: 60_000 })),
+			})),
+		),
 		30_000,
 		root,
 	);
