@@ -71,11 +71,11 @@ test("#4022: a held answer survives a later attempt's publication that has not a
 	assert.deepEqual(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 2), { response: "gap-answer" });
 });
 
-const question = {
+const question: PooledStageQuestion = {
 	promptId: "question-call",
 	kind: "ask_user_question",
 	params: { questions: [] },
-} as unknown as PooledStageQuestion;
+};
 
 function holdingFailure(): HeldPromptAnswers {
 	const held = new HeldPromptAnswers();
