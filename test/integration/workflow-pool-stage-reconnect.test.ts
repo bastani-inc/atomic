@@ -23,6 +23,10 @@ import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/backgroun
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
+import { renderHeader as renderGraphHeader } from "../../packages/workflows/src/tui/header.js";
+import { renderHeader as renderStageChatHeader } from "../../packages/workflows/src/tui/stage-chat-view-footer-status.js";
+import type { StageChatViewContext } from "../../packages/workflows/src/tui/stage-chat-view-types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { poolSessionStore } from "../../packages/workflows/src/workers/pool-session-store.js";
@@ -516,6 +520,25 @@ test.skipIf(process.platform === "win32")(
 				"failed",
 				"the child shows its outcome instead of running forever",
 			);
+			// Its stage ends too: the graph counts no active stage and the chat header names no worker.
+			assert.equal(failedStage.stage.status, "failed", JSON.stringify(failedStage.stage));
+			assert.match(failedStage.stage.error ?? "", /Local worker retry limit/);
+			const childGraph = renderGraphHeader(live.store.runs().find((run) => run.id === failedStage.runId)!, {
+				width: 120,
+				theme: deriveGraphTheme({}),
+			})
+				.join("\n")
+				.replace(/\x1b\[[0-9;]*m/g, "");
+			assert.doesNotMatch(childGraph, /[●↵❚○]/, childGraph);
+			assert.match(childGraph, /✗ 1/, childGraph);
+			const chatHeader = renderStageChatHeader(
+				{ theme: deriveGraphTheme({}), workflowName: "child", handle: undefined } as never as StageChatViewContext,
+				120,
+				failedStage.stage,
+			)
+				.join("\n")
+				.replace(/\x1b\[[0-9;]*m/g, "");
+			assert.doesNotMatch(chatHeader, /on local worker/, chatHeader);
 			const postMortem = await createPostMortemHandleResolver({
 				adapters: { agentSession: { create: async () => assert.fail("not opened") } },
 				resolveDefaultStageSessionDir: () => undefined,
