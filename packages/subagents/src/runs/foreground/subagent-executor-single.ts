@@ -206,6 +206,9 @@ export async function runSinglePath(
 
 	const forwardSingleUpdate = createForwardSingleUpdate(onUpdate, foregroundControl, params.agent!, 0);
 
+	// #3981: a detached child can exit after model fallback retired the stage session that launched it, whose
+	// context then throws on every read. Its stage admission outlives that session, so read it now.
+	const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 	let r: SingleResult;
 	try {
 		const supervisorAuthorization = await requestSupervisorAuthorization(
@@ -215,7 +218,7 @@ export async function runSinglePath(
 		);
 		const runOptions: RunSyncOptions = {
 			runningCapacity: deps.config.parallel?.runningCapacity,
-			getChildSessionOptions: ctx.getChildSessionOptions,
+			getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 			cwd: effectiveCwd,
 			signal,
@@ -250,7 +253,7 @@ export async function runSinglePath(
 			},
 			onDetachedExit: (result) => {
 				cleanupTransientProgress(progressDir, artifactConfig.enabled);
-				if (result && workflowStageAcceptsDetachedNotification(ctx)) {
+				if (result && workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({ pi: deps.pi, runId, mode: "single", index: 0, result });
 				}
 			},
@@ -298,6 +301,9 @@ export async function runSinglePath(
 				return await taskToolResultWithOutput(response, ctx.getAgentTaskHost());
 			r = settledChild;
 		} else {
+			// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
+			// context throws on every read. The working directory is fixed at launch.
+			const launchCwd = ctx.cwd;
 			// No task host owns this launch: it is recorded in this session like one, so run control reaches it.
 			r = await runOwnerlessChild({
 				agent: params.agent!,
@@ -307,7 +313,7 @@ export async function runSinglePath(
 				options: runOptions,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),
 				...(params[BURST_EXECUTION_SCHEDULE] ? { schedule: params[BURST_EXECUTION_SCHEDULE] } : {}),
-				runSync: (childTask, options) => deps.runtime.runSync(ctx.cwd, agents, params.agent!, childTask, options),
+				runSync: (childTask, options) => deps.runtime.runSync(launchCwd, agents, params.agent!, childTask, options),
 			}).result;
 		}
 	} catch (error) {
