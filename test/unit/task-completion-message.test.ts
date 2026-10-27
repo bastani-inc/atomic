@@ -68,7 +68,7 @@ test("a quit or paused subagent's notice says it is paused and resumable and nam
 	assert.match(killed, /This execution has ended\. Do not restart it/);
 });
 
-test("a shell interrupted by a stage, run or session pause says so and asks to redo the step, never that it ended", () => {
+test("a shell interrupted by a stage, run or session pause asks to redo the step (#3996)", () => {
 	const shell = taskRecord("paused-shell", "command");
 	const notice = formatTaskCompletion(
 		{ ...envelope, result: { kind: "cancelled", cause: "pause" } },

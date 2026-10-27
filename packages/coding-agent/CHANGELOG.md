@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A background shell stopped by a workflow stage or run pause is now recorded with the `pause` stop reason, and its completion notice says `Background shell interrupted by a pause` and asks to redo or continue the interrupted step, instead of "This execution has ended. Do not restart it". Shells stopped with `/tasks` or `kill` keep the ended-for-good wording ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+- A background shell stopped by a workflow stage or run pause is now recorded with the `pause` stop reason, and its completion notice says `Background shell interrupted by a pause` and asks to redo or continue the interrupted step, instead of "This execution has ended. Do not restart it". The shell's kind is saved with its completion intent, so a notice replayed after a restart keeps that wording; an intent saved by an earlier version asks to redo or continue the interrupted step and never offers a subagent resume call. Shells stopped with `/tasks` or `kill` keep the ended-for-good wording ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
 
 ## [0.9.46-alpha.1] - 2026-10-27
 
