@@ -1,5 +1,6 @@
 import type { AgentSession } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
@@ -62,7 +63,9 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");
 	const placement = ctx.handle?.placement;
-	const onLocalWorker = placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
+	// A finished stage runs on no worker: its post-mortem chat runs in the root, like an in-process stage's.
+	const finished = stage !== undefined && isTerminalStageStatus(stage.status);
+	const onLocalWorker = !finished && (placement?.kind === "local-worker" || stage?.workerExecution !== undefined);
 	const redelivered = placement?.redelivered ?? 0;
 	const status = [
 		onLocalWorker ? "on local worker" : "",
