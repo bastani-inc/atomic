@@ -1161,6 +1161,60 @@ test("codemode discovery names model-only tools instead of returning nothing (#3
 	}
 });
 
+test("codemode describeTool resolves equivalent MCP tool name forms and refuses ambiguous ones (#4065)", async () => {
+	const register = (name: string) => ({
+		name,
+		label: name,
+		description: `Tool ${name}`,
+		parameters: Type.Object({}),
+		execute: async () => ({ content: [{ type: "text" as const, text: "ok" }], details: {} }),
+	});
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool(register("mcp__alteryx_local__alteryx_local__get_server_info"));
+				pi.registerTool(register("mcp__alteryx_local__designer_local__get_server_info"));
+			},
+		],
+		initialActiveToolNames: [
+			"codemode",
+			"mcp__alteryx_local__alteryx_local__get_server_info",
+			"mcp__alteryx_local__designer_local__get_server_info",
+		],
+	});
+	try {
+		harness.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("codemode", {
+						code: `
+							const forms = ["mcp.alteryx-local.alteryx_local.get_server_info", "mcp__alteryx-local__alteryx_local__get_server_info", "alteryx_local__get_server_info"];
+							const described = [];
+							for (const form of forms) described.push((await describeTool(form)).includes("Tool mcp__alteryx_local__alteryx_local__get_server_info"));
+							let ambiguous = "";
+							try { await describeTool("get_server_info"); } catch (error) { ambiguous = error.message; }
+							return { described, ambiguous };
+						`,
+					}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("describe the alteryx tool");
+		const result = harness.session.messages.find((message) => message.role === "toolResult");
+		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
+		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
+		assert.deepEqual(output.described, [true, true, true]);
+		assert.match(output.ambiguous, /ambiguous/);
+		assert.match(output.ambiguous, /mcp__alteryx_local__alteryx_local__get_server_info/);
+		assert.match(output.ambiguous, /mcp__alteryx_local__designer_local__get_server_info/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode reports a running update before the script's first nested call, so the row timer starts (pi#10708)", async () => {
 	const harness = await createHarness({
 		extensionFactories: [createCodemodeExtension()],
