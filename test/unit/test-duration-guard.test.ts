@@ -773,9 +773,10 @@ test("templated and dynamic-table titles keep their budgets by matching the repo
 });
 
 /**
- * Score a scratch suite that imports a verbatim copy of the shared pool budget
- * helper (`test/helpers/pool-budget.ts`), with each test reported once. Extra
- * helper modules are written under `helpers/` by name.
+ * Score a scratch suite beside the repository's real pool budget helper
+ * (`test/helpers/pool-budget.ts`, copied in as `helpers/pool-budget.ts`), with
+ * each test reported once. Extra helper modules are written under `helpers/` by
+ * name.
  */
 function scorePoolSuite(
 	lines: string[],
@@ -786,10 +787,7 @@ function scorePoolSuite(
 	try {
 		mkdirSync(join(directory, "helpers"));
 		mkdirSync(join(directory, "integration"));
-		copyFileSync(
-			join(root, "test/fixtures/duration-guard-pool-budget.ts"),
-			join(directory, "helpers/pool-budget.ts"),
-		);
+		copyFileSync(join(root, "test/helpers/pool-budget.ts"), join(directory, "helpers/pool-budget.ts"));
 		for (const [name, source] of Object.entries(helpers)) {
 			writeFileSync(join(directory, "helpers", name), source.join("\n"));
 		}
@@ -1035,6 +1033,31 @@ test("array reads that are out of range, fractional or dynamic stay unresolved",
 	);
 	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
 	assert.equal(budgets.size, 9);
+});
+
+// #4051 on main: every test budgets through `testBudget(coldStarts)`, which caps
+// `poolTestBudgetMs` from test/helpers/pool-budget.ts at 600 s.
+test("the pooled resume suite is scored against its testBudget budgets", () => {
+	const file = "test/integration/workflow-local-pool-resume.test.ts";
+	const expected = new Map([
+		["resuming a crashed pooled root replays children leased by the dead incarnation (#3890)", 600_000],
+		["a root stall longer than the work lease does not fence a live worker (#3888)", 315_000],
+		["repeated root stalls do not keep a stopped worker's child from being replaced (#3888)", 390_000],
+		[
+			"resuming a quit root hands its in-flight children to workers only once the root re-enqueues them (#3979)",
+			465_000,
+		],
+		["a child resumed many times keeps its full retry budget in each incarnation (#3979)", 600_000],
+		["a worker whose attempt is fenced ends it without crashing or consuming an attempt (#3979)", 240_000],
+	]);
+	const scored = evaluateDurations(
+		report([{ file, tests: [...expected.keys()].map((title) => ({ title, status: "passed", duration: 60_000 })) }]),
+		30_000,
+		root,
+	);
+	assert.deepEqual(new Map(scored.samples.map((sample) => [sample.name, sample.timeoutMs])), expected);
+	assert.deepEqual(scored.unresolved, []);
+	assert.deepEqual(scored.warnings, []);
 });
 
 test("intercom reconnect recovery is scored against its declared budgets", () => {
