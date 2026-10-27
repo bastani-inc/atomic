@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -201,6 +202,54 @@ describe("AssistantMessageComponent", () => {
 		);
 		const rendered = component.render(80).join("\n");
 		expect(rendered.match(/Thinking\.\.\./g)).toHaveLength(2);
+	});
+
+	test("renders nothing for hidden thinking with an empty label (pi #11402)", () => {
+		initTheme("dark");
+
+		const thinkingOnly = new AssistantMessageComponent(
+			createAssistantMessage(
+				[
+					{ type: "thinking", thinking: "reasoning" },
+					{ type: "toolCall", id: "tool-1", name: "read", arguments: { path: "file.txt" } },
+				],
+				{ stopReason: "toolUse" },
+			),
+			true,
+			undefined,
+			"",
+		);
+		assert.deepEqual(thinkingOnly.render(80), []);
+
+		const withText = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "reasoning" },
+				{ type: "text", text: "answer" },
+			]),
+			true,
+			undefined,
+			"",
+		);
+		assert.deepEqual(
+			withText.render(80).map((line) => stripAnsi(line).trim()),
+			["", "answer"],
+		);
+	});
+
+	test("keeps the label row and spacing for hidden thinking with a label", () => {
+		initTheme("dark");
+
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([
+				{ type: "thinking", thinking: "reasoning" },
+				{ type: "text", text: "answer" },
+			]),
+			true,
+		);
+		assert.deepEqual(
+			component.render(80).map((line) => stripAnsi(line).trim()),
+			["", "Thinking...", "", "answer"],
+		);
 	});
 
 	test("wraps long aborted assistant messages to the render width", () => {

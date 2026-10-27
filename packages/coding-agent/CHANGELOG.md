@@ -11,6 +11,7 @@
 - The `grep` tool numbers `context` lines the way ripgrep does when a file contains a lone carriage return: before, every line after it was off by one, so the wrong line showed as the match and the last context line went missing. Context and match lines no longer show the carriage return ([pi #11398](https://github.com/earendil-works/pi/issues/11398))
 - An open extension dialog (`confirm`, `select`, `input`, `editor`, or an inline `ctx.ui.custom()` component) stays visible and answerable when an extension calls `ctx.ui.setEditorComponent()`. Before, the new editor replaced it on screen and the dialog waited until its timeout, or forever. The new editor appears when the last dialog closes ([pi #11431](https://github.com/earendil-works/pi/issues/11431))
 - Installing, updating or removing an npm-hosted Atomic package no longer prints npm audit and funding messages. `npm audit fix` would have installed Atomic peer packages, because it runs without `--legacy-peer-deps` ([pi #11469](https://github.com/earendil-works/pi/pull/11469))
+- Hidden thinking with an empty label (for example after `ctx.ui.setHiddenThinkingLabel("")`) no longer draws blank rows: before, a message with thinking drew two blank rows before a tool call and three before its text ([pi #11402](https://github.com/earendil-works/pi/issues/11402))
 
 ## [0.9.46-alpha.1] - 2026-10-27
 
