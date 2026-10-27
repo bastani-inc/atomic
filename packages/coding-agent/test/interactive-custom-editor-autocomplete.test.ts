@@ -37,6 +37,7 @@ test("custom editors inherit the default autocomplete dropdown limit", () => {
 	// resolve inherited behavior instead of stubbing it away.
 	const harness: CustomEditorHarness = Object.assign(Object.create(InteractiveModeBase.prototype), {
 		editorComponentFactory: undefined,
+		extensionDialogs: [],
 		activeSelectorToken: {},
 		activeSelectorDispose: cancelRefresh,
 		editor: { getText: () => "draft" },

@@ -5,6 +5,7 @@
 ### Fixed
 
 - The `grep` tool numbers `context` lines the way ripgrep does when a file contains a lone carriage return: before, every line after it was off by one, so the wrong line showed as the match and the last context line went missing. Context and match lines no longer show the carriage return ([pi #11398](https://github.com/earendil-works/pi/issues/11398))
+- An open extension dialog (`confirm`, `select`, `input`, `editor`, or an inline `ctx.ui.custom()` component) stays visible and answerable when an extension calls `ctx.ui.setEditorComponent()`. Before, the new editor replaced it on screen and the dialog waited until its timeout, or forever. The new editor appears when the last dialog closes ([pi #11431](https://github.com/earendil-works/pi/issues/11431))
 
 ## [0.9.46-alpha.1] - 2026-10-27
 

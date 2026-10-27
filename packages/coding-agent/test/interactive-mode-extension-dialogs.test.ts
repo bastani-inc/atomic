@@ -27,6 +27,9 @@ type DialogMethods = {
 	showExtensionCustom<T>(
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
 	): Promise<T>;
+	setCustomEditorComponent(
+		factory: ((tui: unknown, theme: unknown, keybindings: unknown) => Component) | undefined,
+	): void;
 };
 
 function createContext(): DialogContext & DialogMethods {
@@ -190,5 +193,24 @@ describe("InteractiveMode extension dialogs", () => {
 		assert.equal(context.pendingInlineCustomUiFocus, undefined);
 		assert.equal(context.focused, context.editor);
 		assert.deepEqual(context.editorContainer.children, [context.editor]);
+	});
+
+	it("keeps an open dialog visible when the editor component is replaced (earendil-works/pi#11431)", async () => {
+		const context = createContext();
+		(context as unknown as { defaultEditor: unknown }).defaultEditor = context.editor;
+		const confirmed = context.showExtensionConfirm("Title", "Continue?");
+		const customEditor: Component & { getText(): string; setText(text: string): void } = {
+			render: () => ["custom editor"],
+			invalidate: () => {},
+			getText: () => "",
+			setText: () => {},
+		};
+		context.setCustomEditorComponent(() => customEditor);
+
+		assert.match(visible(context), /Title/);
+		context.focused?.handleInput?.("\r");
+		assert.equal(await confirmed, true);
+		assert.equal(context.focused, customEditor);
+		assert.deepEqual(context.editorContainer.children, [customEditor]);
 	});
 });
