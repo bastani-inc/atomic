@@ -1808,8 +1808,10 @@ describe("pending-stage bridge sticky delivery", () => {
 
 	afterEach(() => setDurableBackend(undefined));
 
-	test("queues a pattern target speculatively with notInKnownSet when the scan excludes it", async () => {
-		const harness = await stickyBridgeFixture(baseStage(), { possibleStages: ["reviewer", "pull-request"] });
+	test("queues a pattern target speculatively with notInKnownSet when neither the scan nor a materialized stage matches it", async () => {
+		const harness = await stickyBridgeFixture(baseStage({ id: "reviewer-id", name: "reviewer" }), {
+			possibleStages: ["reviewer", "pull-request"],
+		});
 		const { handled, result } = await harness.request("1");
 		assert.equal(handled, true);
 		assert.deepEqual(result, {
@@ -2039,6 +2041,67 @@ describe("pending-stage bridge sticky delivery", () => {
 		dispose();
 	});
 
+	test("a pattern send matching a live or pending pooled child stage carries no notInKnownSet warning", async () => {
+		// Final E2E: the static scan of a root that loads its child through loadWorkerWorkflow
+		// persists only `child-*`, so `**/work-2` was flagged as unknown although the pooled
+		// child's work-2 stage was live and received the message.
+		const childRunId = testRunId("sticky-pooled-child");
+		const store = createStore();
+		store.recordRunStart({
+			id: ROOT_RUN_ID,
+			name: "root",
+			inputs: {},
+			status: "running",
+			possibleStages: ["child-*"],
+			toolNodes: [],
+			stages: [
+				{
+					id: "child-boundary",
+					name: "child-2",
+					status: "running",
+					parentIds: [],
+					toolEvents: [],
+					replayKey: "workflow:child:2",
+					workflowChildRun: { alias: "child", workflow: "child", runId: childRunId },
+				},
+			],
+			startedAt: 1,
+		});
+		store.recordRunStart({
+			id: childRunId,
+			name: "child",
+			inputs: {},
+			status: "running",
+			parentRunId: ROOT_RUN_ID,
+			parentStageId: "child-boundary",
+			rootRunId: ROOT_RUN_ID,
+			toolNodes: [],
+			stages: [
+				baseStage({ id: "work-2-id", name: "work-2", status: "running", sessionId: "live-pooled" }),
+				baseStage({ id: "work-3-id", name: "work-3", status: "pending" }),
+			],
+			startedAt: 2,
+		});
+		const harness = await stickyBridgeFixture([], { store });
+		try {
+			const live = await harness.request("live", { target: `workflow:${ROOT_RUN_ID}/**/work-2` });
+			assert.deepEqual(live.result, {
+				outcome: "queued",
+				position: 1,
+				forwardTargets: [`workflow:${ROOT_RUN_ID}/child-2/work-2-id`],
+			});
+			const pending = await harness.request("pending", { target: `workflow:${ROOT_RUN_ID}/*/work-*` });
+			assert.equal(pending.result?.outcome, "queued");
+			if (pending.result?.outcome === "queued") assert.equal(pending.result.notInKnownSet, undefined);
+			const pendingOnly = await harness.request("pending-only", { target: `workflow:${ROOT_RUN_ID}/**/work-3` });
+			assert.deepEqual(pendingOnly.result, { outcome: "queued", position: 1 });
+			const unknown = await harness.request("unknown", { target: `workflow:${ROOT_RUN_ID}/**/work-9` });
+			assert.deepEqual(unknown.result, { outcome: "queued", position: 1, notInKnownSet: true });
+		} finally {
+			harness.dispose();
+		}
+	});
+
 	test("records a live delivery only after the broker confirms the write, and a dedup retry re-forwards the unconfirmed target", async () => {
 		const harness = await stickyBridgeFixture([
 			baseStage({ id: "live-id", name: "orchestrator-1", status: "running", sessionId: "session-live" }),
@@ -2077,9 +2140,10 @@ describe("pending-stage bridge sticky delivery", () => {
 		assert.equal(await harness.confirm(messageId, target, [`${GROUP}/unknown-id`]), false);
 		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 
-		// Once confirmed, a dedup retry has nothing left to forward.
+		// Once confirmed, a dedup retry has nothing left to forward. The live match makes the
+		// target known even though the root has no scanned possible-stage set.
 		const retry = await harness.request("broadcast", { target });
-		assert.deepEqual(retry.result, { outcome: "queued", position: 1, notInKnownSet: true });
+		assert.deepEqual(retry.result, { outcome: "queued", position: 1 });
 		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 		harness.dispose();
 	});
