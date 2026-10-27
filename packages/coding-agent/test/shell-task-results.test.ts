@@ -339,11 +339,7 @@ describe("shell task results are friendly (#3828)", () => {
 					),
 					text.slice(-300),
 				);
-				// The full-output path lives under the OS temp directory, whose length the test does
-				// not control (a CI runner's per-run TMPDIR can be long). Render wide enough for the
-				// whole line so the assertion sees the path instead of where the renderer wraps it.
-				const unwrapped = { width: WIDTH + details.fullOutputPath!.length };
-				const plain = row(tool, args, outcome, unwrapped);
+				const plain = row(tool, args, outcome);
 				assert.equal(plain[1], "✓ completed · exit 0");
 				assert.ok(plain.some((line) => line.includes("earlier lines")));
 				const truncation = plain.find((line) => line.startsWith("Truncated:"));
@@ -355,9 +351,7 @@ describe("shell task results are friendly (#3828)", () => {
 					),
 				);
 				assert.ok(
-					row(tool, args, outcome, { ...unwrapped, raw: true }).some((line) =>
-						line.includes(theme.fg("dim", truncation)),
-					),
+					row(tool, args, outcome, { raw: true }).some((line) => line.includes(theme.fg("dim", truncation))),
 				);
 				assert.doesNotMatch(plain.join("\n"), /\[Full output|\[Output truncated/);
 				const expanded = row(tool, args, outcome, { expanded: true });
