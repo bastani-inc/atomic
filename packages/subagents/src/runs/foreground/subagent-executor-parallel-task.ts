@@ -185,7 +185,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				: undefined;
 		const runOptions: RunSyncOptions = {
 			runningCapacity: input.runningCapacity,
-			getChildSessionOptions: input.ctx.getChildSessionOptions,
+			getChildSessionOptions: input.ctx.getChildSessionOptionsResolver?.() ?? input.ctx.getChildSessionOptions,
 			resourceLoaderInheritanceSnapshot: input.resourceLoaderInheritanceSnapshot,
 			cwd: taskCwd,
 			signal: input.signal,
@@ -318,6 +318,9 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				taskResponse: response,
 			};
 		}
+		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
+		// context throws on every read. The working directory is fixed at launch.
+		const launchCwd = input.ctx.cwd;
 		// No task host owns this launch: it is recorded in this session like one, so run control reaches it. Each
 		// execution holds the run's worktrees until it exits, detached or not.
 		const launched = runOwnerlessChild({
@@ -328,8 +331,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			options: runOptions,
 			recordChild: input.recordChild ?? { record() {} },
 			schedule,
-			runSync: (childTask, options) =>
-				input.runtime.runSync(input.ctx.cwd, taskAgents, task.agent, childTask, options),
+			runSync: (childTask, options) => input.runtime.runSync(launchCwd, taskAgents, task.agent, childTask, options),
 		}).result;
 		return launched.finally(() => {
 			if (input.foregroundControl?.currentIndex === index) {

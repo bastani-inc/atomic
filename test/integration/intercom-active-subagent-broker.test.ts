@@ -19,6 +19,7 @@ import type { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/a
 import type { ModelSingleResponse } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { WorkflowStageAdmissionBoundary } from "../../packages/coding-agent/src/core/workflow-stage-admission.js";
 import { INTERCOM_DETACH_REQUEST_EVENT } from "../../packages/intercom/foreground-detach-handoff.js";
+import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS } from "../../packages/intercom/intercom-utils.js";
 import type { Attachment } from "../../packages/intercom/types.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
@@ -687,6 +688,9 @@ for (const winner of ["admission", "completion"] as const) {
 	});
 }
 
+/** Bound for an idle-queued inbound message to surface: several flush cycles, never a fixed pause. */
+const IDLE_QUEUE_DELIVERY_BOUND_MS = 10 * (INBOUND_FLUSH_DELAY_MS + INBOUND_IDLE_RETRY_MS);
+
 for (const ui of [true, false]) {
 	for (const action of ["send", "ask"] as const) {
 		test(`public ${action} preserves ${ui ? "interactive idle queue" : "unrelated headless refusal"} when the child is background`, async () => {
@@ -770,10 +774,17 @@ for (const ui of [true, false]) {
 				releaseWork.resolve();
 				await turn;
 				if (ui) {
-					await vi.waitFor(() => assert.equal(incomingCards(parent).length, 1));
+					// The queued message surfaces through the idle flush: its post-turn grace period, then an idle retry
+					// while the turn's last events settle. vitest's 1 s default leaves a slow runner almost no margin
+					// beyond that schedule (#3981 CI, Windows).
+					await vi.waitFor(() => assert.equal(incomingCards(parent).length, 1), {
+						timeout: IDLE_QUEUE_DELIVERY_BOUND_MS,
+					});
 					assert.deepEqual(receivedWhileBusy, [false]);
 					if (action === "ask") {
-						await vi.waitFor(() => assert.equal(replies.length, 1, JSON.stringify(parent.session.messages)));
+						await vi.waitFor(() => assert.equal(replies.length, 1, JSON.stringify(parent.session.messages)), {
+							timeout: IDLE_QUEUE_DELIVERY_BOUND_MS,
+						});
 						assert.notEqual(replies[0]?.isError, true, JSON.stringify(replies));
 						assert.match(getMessageText(await result), /BACKGROUND-ANSWER/);
 					}

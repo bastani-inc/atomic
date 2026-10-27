@@ -199,6 +199,13 @@ export interface ExtensionContext {
 	getAgentTaskHost?(): import("../tasks/agent-adapter.js").AgentTaskHost;
 	/** Internal owner-bound defaults and capability ceiling for builtin child adapters. */
 	getChildSessionOptions?: import("../child-session-options.ts").ChildSessionOptionsResolver;
+	/**
+	 * Internal: a child-options resolver that stays valid after this context's session is replaced or closed (#3981).
+	 * A queued or restored child calls it when it starts, possibly after this context is stale. It answers from the
+	 * owning session's live successor (a workflow stage replaced by model fallback), or from the owning session's last
+	 * state when it has none. Obtain it while the context is live; the call itself asserts that.
+	 */
+	getChildSessionOptionsResolver?(): import("../child-session-options.ts").ChildSessionOptionsResolver;
 	/** Session-scoped orchestration policy for child runtimes such as workflow stages. */
 	readonly orchestrationContext?: OrchestrationContext;
 	/** Typed capability policy for an in-process subagent child, when this session is one. */
