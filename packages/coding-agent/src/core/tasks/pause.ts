@@ -4,7 +4,8 @@ import type { CancelCause, OwnerSnapshot, TaskRecord } from "./contracts.js";
 /**
  * The caller synchronously blocks new launches; this never closes the owner or its messages. Agents are stopped
  * with the resumable `pause` cause, not a user cancellation, so they stay paused, awaiting resume; shell commands
- * cannot resume and are cancelled.
+ * cannot resume and are cancelled with the same `pause` cause, so their notice says a pause interrupted them
+ * rather than that the user ended them for good.
  */
 export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void> {
 	const errors: Error[] = [];
@@ -34,7 +35,7 @@ export async function cancelPausedOwnerTasks(host: AgentTaskHost): Promise<void>
 		watch.drain();
 		await cancel(
 			watch.snapshot.tasks.filter((task) => task.kind === "command" && task.execution.kind !== "settled"),
-			"user",
+			"pause",
 		);
 		if (errors.length) throw new AggregateError(errors, "Workflow stage task cancellation failed");
 		await new Promise<void>((resolve, reject) => {

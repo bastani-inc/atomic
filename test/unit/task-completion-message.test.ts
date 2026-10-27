@@ -68,6 +68,24 @@ test("a quit or paused subagent's notice says it is paused and resumable and nam
 	assert.match(killed, /This execution has ended\. Do not restart it/);
 });
 
+test("a shell interrupted by a stage, run or session pause says so and asks to redo the step, never that it ended", () => {
+	const shell = taskRecord("paused-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "pause" } },
+		shell,
+		"round 1",
+	);
+	assert.match(notice, /^Background shell interrupted by a pause: /);
+	assert.match(notice, /Stop reason: pause\n/);
+	assert.match(notice, /redo or continue the interrupted step/);
+	assert.match(notice, /round 1/);
+	assert.doesNotMatch(notice, /This execution has ended|Do not restart it|subagent\(|stopped/);
+	// A user stop of the same shell keeps the ended-for-good wording.
+	const stopped = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "user" } }, shell);
+	assert.match(stopped, /^Background shell stopped: /);
+	assert.match(stopped, /This execution has ended\. Do not restart it/);
+});
+
 test("completion cards shade their full width with chat-card padding in both themes", () => {
 	for (const mode of ["dark", "light"] as const) {
 		initTheme(mode);

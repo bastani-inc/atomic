@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A background shell stopped by a workflow stage or run pause is now recorded with the `pause` stop reason, and its completion notice says `Background shell interrupted by a pause` and asks to redo or continue the interrupted step, instead of "This execution has ended. Do not restart it". Shells stopped with `/tasks` or `kill` keep the ended-for-good wording ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+
 ## [0.9.46-alpha.1] - 2026-10-27
 
 Stages on local workers can now be watched, steered, paused and answered live; large pooled workflows stay responsive and recover cleanly from rate limits, worker crashes and resumes; and GPT-6.1 Terra is available.

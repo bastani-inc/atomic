@@ -75,16 +75,20 @@ export function formatTaskCompletion(
 				: "Background task";
 	const result = envelope.result;
 	const outcome = taskOutcomeStatus(result, task?.kind);
-	const resumable = isResumableStop(result);
-	const status = resumable
-		? result.cause === "quit"
-			? "quit · paused, awaiting resume"
-			: "paused · awaiting resume"
-		: task?.kind === "agent" && result.kind === "cancelled" && result.cause === "user"
-			? "killed (non-resumable)"
-			: outcome === "cancelled"
-				? "stopped"
-				: outcome;
+	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
+	const interruptedByPause = task?.kind === "command" && result.kind === "cancelled" && result.cause === "pause";
+	const resumable = !interruptedByPause && isResumableStop(result);
+	const status = interruptedByPause
+		? "interrupted by a pause"
+		: resumable
+			? result.cause === "quit"
+				? "quit · paused, awaiting resume"
+				: "paused · awaiting resume"
+			: task?.kind === "agent" && result.kind === "cancelled" && result.cause === "user"
+				? "killed (non-resumable)"
+				: outcome === "cancelled"
+					? "stopped"
+					: outcome;
 	const lines = [
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
@@ -98,9 +102,11 @@ export function formatTaskCompletion(
 	}
 	lines.push(
 		"",
-		resumable
-			? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
-			: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		interruptedByPause
+			? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
+			: resumable
+				? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
+				: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }
