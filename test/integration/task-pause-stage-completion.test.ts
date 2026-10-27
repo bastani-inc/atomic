@@ -16,6 +16,8 @@ type StageGenerationSession = AgentSession & { closeWorkflowStageGeneration(): P
 
 /** Only a stranded notice reaches this bound; a queued notice starts its turn immediately. */
 const QUEUED_NOTICE_TURN_TIMEOUT_MS = 5_000;
+/** Messages queued across a pause each take a turn after resume; only a lost message reaches this bound. */
+const QUEUED_MESSAGE_TURNS_TIMEOUT_MS = 15_000;
 
 function quote(text: string): string {
 	return `'${text.replaceAll("'", "'\\''")}'`;
@@ -536,18 +538,21 @@ test("stage pause cancels queued agents before active slots free, awaits cleanup
 		assert.equal(executionKind(host, replay.value.taskId), "running");
 		finishResponse.resolve();
 		await resume;
-		await vi.waitFor(() => {
-			assert.ok(fixture.userTexts().includes("user queued before pause"));
-			assert.ok(fixture.userTexts().includes("user queued during pause"));
-			assert.ok(
-				fixture.stage.session.messages.some(
-					(message) =>
-						message.role === "custom" &&
-						message.customType === "intercom" &&
-						message.content === "Intercom held during pause",
-				),
-			);
-		});
+		await vi.waitFor(
+			() => {
+				assert.ok(fixture.userTexts().includes("user queued before pause"));
+				assert.ok(fixture.userTexts().includes("user queued during pause"));
+				assert.ok(
+					fixture.stage.session.messages.some(
+						(message) =>
+							message.role === "custom" &&
+							message.customType === "intercom" &&
+							message.content === "Intercom held during pause",
+					),
+				);
+			},
+			{ timeout: QUEUED_MESSAGE_TURNS_TIMEOUT_MS },
+		);
 		assert.equal(queuedStarts, 0, "resume never resurrects queued executions");
 		assert.equal(mainSignal?.aborted, false);
 	} finally {
