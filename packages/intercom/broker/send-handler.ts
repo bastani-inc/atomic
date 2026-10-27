@@ -169,6 +169,8 @@ export function handleBrokerSend(
 	holdForRestoringRecipient?: RestoringRecipientHold,
 	receipts?: RecipientReceipts<BrokerConnectedSession>,
 	routeRemote?: RemoteSendRouter,
+	/** #4079: whether the sender's read-only `list` peek may inspect a group; names a hidden target's group. */
+	canPeekGroup?: (sender: BrokerConnectedSession, group: string) => boolean,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -406,6 +408,8 @@ export function handleBrokerSend(
           isNonAgentWorkflowTarget,
           holdForRestoringRecipient,
           receipts,
+          undefined,
+          canPeekGroup,
         ),
     });
     return;
@@ -473,6 +477,7 @@ export function handleBrokerSend(
 					holdForRestoringRecipient,
 					receipts,
 					routeRemote,
+					canPeekGroup,
 				);
 			},
 		});
@@ -820,13 +825,47 @@ export function handleBrokerSend(
 	) {
 		return;
 	}
+  const peekHint =
+    resolution.kind === "not_found" && !supervisorSend && !requirePendingReply && expectedRecipientId === undefined &&
+    message.replyTo === undefined && workflowTarget === undefined && canPeekGroup !== undefined
+      ? liveInPeekableGroupReason(sessions, fromSession, trimmedTo, canPeekGroup)
+      : undefined;
   write(socket, {
     type: "delivery_failed",
     messageId: message.id,
     attemptId,
-    reason: sessionTargetFailureReason(clientMessage.to, resolution),
+    reason: peekHint ?? sessionTargetFailureReason(clientMessage.to, resolution),
 		...(requirePendingReply && resolution.kind === "not_found"
 			? { reasonCode: "session_not_found" as const }
 			: {}),
   });
+}
+
+/**
+ * #4079: a target outside every group the sender shares that is live in a group the sender's read-only `list`
+ * peek already shows. Names one such group so the sender knows to join it. A target visible only in groups the
+ * peek refuses, or matching more than one peekable session, gets no hint, so this reveals nothing `list` hides.
+ * Workflow groups keep their own ownership rules: a workflow stage is never told to join a group outside its run,
+ * and no sender is told to join a `workflow:` group, since joining one is how a host takes control of a run.
+ */
+function liveInPeekableGroupReason(
+  sessions: Map<string, BrokerConnectedSession>,
+  sender: BrokerConnectedSession,
+  target: string,
+  canPeekGroup: (sender: BrokerConnectedSession, group: string) => boolean,
+): string | undefined {
+  if (normalizeGroup(sender.registrationGroup ?? sender.info.group).startsWith("workflow:")) return undefined;
+  const peekable = new Map<string, string>();
+  for (const { info } of sessions.values()) {
+    if (info.id === sender.info.id || !isAgentRecipient(info) || sessionsShareGroup(info, sender.info)) continue;
+    const group = [...sessionGroups(info)].find(
+      (candidate) => !candidate.startsWith("workflow:") && canPeekGroup(sender, candidate),
+    );
+    if (group !== undefined) peekable.set(info.id, group);
+  }
+  const candidates = Array.from(peekable.keys(), (id) => sessions.get(id)!.info);
+  const resolution = resolveSessionTarget(candidates, target);
+  if (resolution.kind !== "resolved") return undefined;
+  const group = peekable.get(resolution.session.id)!;
+  return `${resolution.session.name ?? resolution.session.id} is live in group ${group}; join it to send`;
 }

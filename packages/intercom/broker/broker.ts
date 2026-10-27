@@ -2259,6 +2259,7 @@ class IntercomBroker {
       this.holdForRestoringRecipient,
       this.receipts,
       this.routeRemote,
+      (sender, group) => this.canInspectSelectedGroup(sender, group),
     );
   }
 
