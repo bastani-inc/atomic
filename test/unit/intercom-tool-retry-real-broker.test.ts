@@ -692,7 +692,10 @@ test("a raw name and its exact resolved ID remain distinct intentional tool call
 		context,
 	);
 	assert.equal(exactCall.isError, false, exactCall.content[0]?.text);
-	assert.equal(received.length, 2, "the caller's distinct exact-ID operation must be delivered");
+	// The broker reports the send delivered once the recipient acknowledges it or its receipt wait
+	// passes (#3983), and the recipient reads the message on its own socket; neither orders the
+	// recipient's "message" event before this call returns, so wait for the delivery itself.
+	await waitUntil(() => received.length === 2, "the caller's distinct exact-ID operation is delivered");
 	assert.notEqual(received[1]?.id, received[0]?.id);
 
 	reconnectReady.resolve();
