@@ -181,7 +181,21 @@ test.skipIf(process.platform === "win32")(
 			await writeFileEnsuringDir(join(directory, "release"), "");
 			resuming = true;
 			resumed = await open();
-			const result = await resumed.run();
+			// Workers exit once the completed root releases its lease, so the pool's live pid list can already be
+			// empty when the run returns. Record every worker pid the resumed pool has while its run is in progress.
+			const resumedPids = new Set<number>();
+			const pool = resumed.pool;
+			let resumedRunning = true;
+			const recording = (async () => {
+				while (resumedRunning) {
+					for (const pid of pool.workerPids) resumedPids.add(pid);
+					await sleep(5);
+				}
+			})();
+			const result = await resumed.run().finally(() => {
+				resumedRunning = false;
+			});
+			await recording;
 			assert.deepEqual(claimedBeforeEnqueue, [], "a worker claimed a child the resumed root had not enqueued");
 			assert.equal(result.status, "completed", JSON.stringify(result));
 			assert.equal(enqueued.size, CHILDREN);
@@ -191,8 +205,7 @@ test.skipIf(process.platform === "win32")(
 				Array.from({ length: CHILDREN }, () => ["completed", 2]),
 				"each child took exactly one attempt per incarnation; no worker crashed",
 			);
-			const resumedPids = resumed.pool.workerPids;
-			const finished = startedChildren(directory).filter((entry) => resumedPids.includes(entry.pid));
+			const finished = startedChildren(directory).filter((entry) => resumedPids.has(entry.pid));
 			assert.deepEqual(
 				finished.map((entry) => entry.index).sort(),
 				[0, 1, 2],
