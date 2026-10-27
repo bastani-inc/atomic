@@ -197,7 +197,7 @@ test.runIf(process.platform !== "win32")(
 			const settled = await waiting;
 			assert.ok(settled.ok && settled.value.kind === "settled", JSON.stringify(settled));
 			assert.equal(settled.value.result.kind, "cancelled");
-			assert.equal(settled.value.result.kind === "cancelled" && settled.value.result.cause, "user");
+			assert.equal(settled.value.result.kind === "cancelled" && settled.value.result.cause, "pause");
 			await vi.waitFor(() => assert.equal(alive(pid), false));
 			assert.equal(executionKind(siblingShell.host, siblingShell.taskId), "running");
 			assert.equal(alive(siblingPid), true, "paused stage completion must not cancel a sibling");
@@ -268,6 +268,7 @@ test.runIf(process.platform !== "win32")(
 			const result = await shell.supervisor.waitForTask(shell.lease);
 			assert.ok(result.ok && result.value.kind === "settled");
 			assert.equal(result.value.result.kind, "cancelled");
+			assert.equal(result.value.result.kind === "cancelled" && result.value.result.cause, "pause");
 			assert.equal(shell.host.resolveTask(shell.taskId).ok, true);
 			await assert.rejects(startBackgroundShell(fixture.stage.session, "printf REFUSED", "Paused launch"), /paused/);
 			// The resumed turn answers the cancelled shell's completion notice, whether the notice is admitted
@@ -281,6 +282,20 @@ test.runIf(process.platform !== "win32")(
 			]);
 			await fixture.handle.resume();
 			await responseStarted.promise;
+			// The resumed stage learns a pause interrupted its shell and to redo the step, never that it ended for good.
+			await vi.waitFor(() => {
+				const notice = fixture.stage.session.messages.find(
+					(message) =>
+						message.role === "custom" &&
+						message.customType === "task-completion" &&
+						String(message.content).includes(shell.taskId),
+				);
+				assert.ok(notice && notice.role === "custom");
+				const text = String(notice.content);
+				assert.match(text, /Background shell interrupted by a pause/);
+				assert.match(text, /redo or continue the interrupted step/);
+				assert.doesNotMatch(text, /This execution has ended|Do not restart it/);
+			});
 			assert.equal(boundary.isOpen(), true);
 			assert.equal(fixture.stage.session.queuedMessagesPaused, false);
 			assert.equal(alive(siblingPid), true);
