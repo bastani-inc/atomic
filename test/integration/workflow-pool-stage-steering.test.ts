@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@bastani/atomic";
 import { beforeAll, test, vi } from "vitest";
-import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { createStore, loadWorkerWorkflow, run, workflow } from "../../packages/workflows/src/index.js";
@@ -23,7 +22,7 @@ import {
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { poolSessionStore } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator process, a worker process, and a real agent stage in it. */
@@ -68,9 +67,7 @@ test.skipIf(process.platform === "win32")(
 		const directory = makeTempDirectory("pool-stage-steering-");
 		const path = join(directory, "journal.sqlite");
 		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
-		const gate = new TestSqliteDatabase(path);
-		gate.run("CREATE TABLE test_live_stage_gate(released INTEGER); INSERT INTO test_live_stage_gate VALUES (0)");
-		gate.close();
+		const gatePath = join(directory, "release-stage");
 		const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
 		const child = await loadWorkerWorkflow(childPath, "child");
 		const store = createStore();
@@ -83,7 +80,7 @@ test.skipIf(process.platform === "win32")(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { journalPath: path } });
+						await ctx.workflow(child, { inputs: { gatePath } });
 						return {};
 					},
 				}),
@@ -132,9 +129,7 @@ test.skipIf(process.platform === "win32")(
 				CONDITION_TIMEOUT_MS,
 			);
 
-			const release = new TestSqliteDatabase(path);
-			release.run("UPDATE test_live_stage_gate SET released = 1");
-			release.close();
+			writeTextSync(gatePath, "");
 			const outcome = await execution;
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			assert.equal(registry.get(target.runId, target.stage.id), undefined, "a finished stage leaves the registry");

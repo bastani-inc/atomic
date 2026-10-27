@@ -10,7 +10,7 @@ import { bunExecutable, fileExists, readStreamText, readText, spawnProcess } fro
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const runner = join(root, "scripts/run-test-suite.ts");
 
-type Mode = "success" | "failure" | "headroom" | "blind" | "no-report";
+type Mode = "success" | "failure" | "headroom" | "unresolved" | "blind" | "no-report";
 
 /**
  * A stand-in for vitest that the wrapper cannot tell from the real thing.
@@ -23,7 +23,7 @@ type Mode = "success" | "failure" | "headroom" | "blind" | "no-report";
  * report itself is scripted.
  */
 const FAKE_VITEST = `#!/usr/bin/env node
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const outputFile = argv.find((arg) => arg.startsWith("--outputFile.json="))?.slice("--outputFile.json=".length);
@@ -41,6 +41,11 @@ let code = 0;
 
 if (mode === "headroom") {
   report = { numTotalTests: 2, testResults: [testFile("test/unit/drift.test.ts", [passed("drifting test", 25000), passed("healthy test", 120)])] };
+} else if (mode === "unresolved") {
+  // The test declares its own timeout, but as a run-time call the guard cannot evaluate.
+  mkdirSync("test/unit", { recursive: true });
+  writeFileSync("test/unit/computed.test.ts", 'test("computed budget", async () => {\\n}, computeBudget());\\n');
+  report = { numTotalTests: 1, testResults: [testFile("test/unit/computed.test.ts", [passed("computed budget", 25000)])] };
 } else if (mode === "blind") {
   // Tests ran, yet the report carries none of them: the harness broke.
   report = { numTotalTests: 2, testResults: [] };
@@ -175,6 +180,22 @@ test(
 		assert.doesNotMatch(gated.output, /::error/);
 		assert.match(gated.summary, /Slow tests/);
 		assert.match(gated.durations, /drifting test/);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
+
+test(
+	"an explicit budget the guard cannot evaluate is flagged unresolved instead of judged against the default",
+	async () => {
+		const result = await fixture("unresolved");
+		assert.equal(result.code, 0, result.output);
+		assert.match(
+			result.output,
+			/::warning title=Unresolved test budget[^\n]*computed\.test\.ts > computed budget declares a timeout the duration guard cannot evaluate/,
+		);
+		assert.doesNotMatch(result.output, /::warning title=Slow test/);
+		assert.match(result.summary, /Unresolved test budgets/);
+		assert.match(result.durations, /unresolved \(explicit\) \| test\/unit\/computed\.test\.ts \| computed budget \|/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );

@@ -148,7 +148,12 @@ function budgetedStoreListener(
 			deferred = timers.setTimeout(
 				() => {
 					deferred = undefined;
-					refresh();
+					try {
+						refresh();
+					} catch {
+						// Contained like a refresh the store's publish runs: a widget failure (an RPC host that
+						// cannot mount it) must not escape this timer and end the process.
+					}
 				},
 				Math.max(0, windowStart + WIDGET_REFRESH_WINDOW_MS - now),
 			);

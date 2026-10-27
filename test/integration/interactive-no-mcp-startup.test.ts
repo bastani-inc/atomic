@@ -105,6 +105,19 @@ export default function(pi) {
 			}
 			return true;
 		};
+		// tmux's capture-pane reads the pane grid as bytes arrive and ignores the TUI's
+		// synchronized-output markers, so a capture can catch a frame half drawn. Under
+		// load the host's deferred-startup redraw can land just after the typed text is
+		// first seen, and a second capture then shows only the top of that frame. Return
+		// the frame that satisfied the wait so assertions judge what was observed.
+		const waitForPane = async (name: string, ready: (pane: string) => boolean, deadline: number) => {
+			let pane = "";
+			await waitUntil(() => {
+				pane = tmux("capture-pane", "-p", "-t", name);
+				return ready(pane);
+			}, deadline);
+			return pane;
+		};
 		try {
 			for (const name of ["normal", "disabled", "pending"]) {
 				const disabled = name === "disabled";
@@ -164,11 +177,8 @@ export default function(pi) {
 					assert.ok(await hasContent(snapshotPath), tmux("capture-pane", "-p", "-t", name));
 					const snapshot = await readJson<StartupSnapshot>(snapshotPath);
 					tmux("send-keys", "-t", name, "-l", "/startup-ready");
-					await waitUntil(
-						() => /^❯ \/startup-ready\s*$/m.test(tmux("capture-pane", "-p", "-t", name)),
-						scenarioDeadline,
-					);
-					assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/startup-ready\s*$/m);
+					const typed = await waitForPane(name, (pane) => /^❯ \/startup-ready\s*$/m.test(pane), scenarioDeadline);
+					assert.match(typed, /^❯ \/startup-ready\s*$/m);
 					tmux("send-keys", "-t", name, "Enter");
 					await waitUntil(() => hasContent(`${snapshotPath}.ready`), scenarioDeadline);
 					assert.ok(
@@ -189,26 +199,29 @@ export default function(pi) {
 					if (!disabled) serverPid = Number(await readText(serverMarker));
 					if (pending) {
 						tmux("send-keys", "-t", name, "-l", "/mcp");
-						await waitUntil(() => /^❯ \/mcp\s*$/m.test(tmux("capture-pane", "-p", "-t", name)), scenarioDeadline);
-						assert.match(tmux("capture-pane", "-p", "-t", name), /^❯ \/mcp\s*$/m);
+						const typedMcp = await waitForPane(name, (pane) => /^❯ \/mcp\s*$/m.test(pane), scenarioDeadline);
+						assert.match(typedMcp, /^❯ \/mcp\s*$/m);
 						tmux("send-keys", "-t", name, "Enter");
 						const managerTitle = /^\s*MCP servers\s*$/m;
 						const serverRow = /^\s*→ startup\s+.+$/m;
-						let pane = "";
-						await waitUntil(() => {
-							pane = tmux("capture-pane", "-p", "-t", name);
-							return managerTitle.test(pane) && serverRow.test(pane);
-						}, scenarioDeadline);
-						assert.match(pane, managerTitle);
-						assert.match(pane, serverRow);
-						assert.ok(pane.includes("connecting"), pane);
+						// The pending server never connects, so its row must read "connecting" in the
+						// same frame; a frame still being drawn may hold the row without its status.
+						const manager = await waitForPane(
+							name,
+							(pane) => managerTitle.test(pane) && serverRow.test(pane) && pane.includes("connecting"),
+							scenarioDeadline,
+						);
+						assert.match(manager, managerTitle);
+						assert.match(manager, serverRow);
+						assert.ok(manager.includes("connecting"), manager);
 						tmux("send-keys", "-t", name, "Escape");
-						await waitUntil(() => {
-							pane = tmux("capture-pane", "-p", "-t", name);
-							return !managerTitle.test(pane) && /^❯\s*$/m.test(pane);
-						}, scenarioDeadline);
-						assert.ok(!managerTitle.test(pane), pane);
-						assert.match(pane, /^❯\s*$/m);
+						const closed = await waitForPane(
+							name,
+							(pane) => !managerTitle.test(pane) && /^❯\s*$/m.test(pane),
+							scenarioDeadline,
+						);
+						assert.ok(!managerTitle.test(closed), closed);
+						assert.match(closed, /^❯\s*$/m);
 					}
 					scenarioObserved = true;
 				} finally {
