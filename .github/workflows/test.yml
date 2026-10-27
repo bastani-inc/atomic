@@ -160,7 +160,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: true
-          fetch-depth: 0
+          # The integration suite reads no repository history (its git fixtures init their own repositories), so a
+          # shallow clone skips fetching every branch: the full fetch took 4.5 min in job 122378270170.
+          fetch-depth: 1
       - name: Configure private Windows temp storage
         if: runner.os == 'Windows'
         shell: pwsh
