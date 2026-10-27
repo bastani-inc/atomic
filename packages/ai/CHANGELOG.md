@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode Zen and OpenCode Go requests use the documented protocol-specific endpoints (`/openai/v1`, `/anthropic`, `/google/v1beta`, and `/systemone/v1` for Jev classifiers) instead of the shared `/inference/v1` base ([pi #11132](https://github.com/earendil-works/pi/issues/11132))
+
 ## [0.9.46-alpha.1] - 2026-10-27
 
 ### Added

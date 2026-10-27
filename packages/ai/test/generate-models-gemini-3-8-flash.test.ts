@@ -360,7 +360,7 @@ test("pins the opencode, OpenRouter, and Vercel AI Gateway mirrors", () => {
 		name: "Gemini 3.8 Flash",
 		api: "google-generative-ai",
 		provider: "opencode",
-		baseUrl: "https://opencode.ai/inference/v1",
+		baseUrl: "https://opencode.ai/inference/google/v1beta",
 		reasoning: true,
 		input: ["text", "image"],
 		inputLimits: { images: { resize: { maxWidth: 2000, maxHeight: 2000, maxBytes: 4718592, jpegQuality: 80 } } },
