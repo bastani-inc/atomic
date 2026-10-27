@@ -116,6 +116,8 @@ test("hello world", () => {
 
 For regression tests that fix a GitHub issue, put the issue number in the test name (for example `test("keeps cwd on resume (#123)", …)`) rather than in a comment.
 
+Test runs strip ambient provider credentials and endpoints (`test/helpers/provider-credential-env.ts`), so a key in your shell never makes its provider available to a test. A test that needs one sets it itself. Live provider tests skip without their key; run them with `ATOMIC_TEST_KEEP_PROVIDER_CREDENTIALS=1` (see CONTRIBUTING.md, "Provider credentials and live provider tests").
+
 ### Replacing Bun globals in tests
 
 Root suites run under Node, so `Bun.*` and `import.meta.dir` are unavailable. Use

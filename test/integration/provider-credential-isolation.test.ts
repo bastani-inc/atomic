@@ -18,21 +18,39 @@ const CREDENTIAL_SENSITIVE_SUITES = [
 	"test/unit/workflow-stage-auto.test.ts",
 ];
 
-test("credential-sensitive suites pass when the shell exports every provider credential and endpoint variable", () => {
-	const env: NodeJS.ProcessEnv = { ...process.env };
-	delete env[KEEP_PROVIDER_CREDENTIALS_ENV];
-	for (const name of PROVIDER_CREDENTIAL_ENV_VARS) env[name] = `fake-${name.toLowerCase()}`;
-	const run = spawnSync(
-		process.execPath,
-		[
-			fileURLToPath(new URL("../../node_modules/vitest/vitest.mjs", import.meta.url)),
-			"--run",
-			"--project",
-			"unit",
-			...CREDENTIAL_SENSITIVE_SUITES,
-		],
-		{ cwd: root, env, encoding: "utf8", timeout: 540_000 },
-	);
-	const output = `${run.stdout}\n${run.stderr}`;
-	assert.equal(run.status, 0, output.slice(-6000));
-}, 600_000);
+/**
+ * Budget for a real vitest child run of the four suites above. Its cost is structural: a fresh vitest
+ * process with its global setups, and live in-process children whose own tests allow two minutes for a
+ * resource reload. It takes about 15 s on an idle machine; the headroom absorbs full-suite parallel load.
+ */
+const REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS = 600_000;
+/** Kill the child before the test's own budget ends, so a stall still reports the child's output. */
+const CHILD_KILL_MARGIN_MS = 60_000;
+
+test(
+	"credential-sensitive suites pass when the shell exports every provider credential and endpoint variable",
+	() => {
+		const env: NodeJS.ProcessEnv = { ...process.env };
+		delete env[KEEP_PROVIDER_CREDENTIALS_ENV];
+		for (const name of PROVIDER_CREDENTIAL_ENV_VARS) env[name] = `fake-${name.toLowerCase()}`;
+		const run = spawnSync(
+			process.execPath,
+			[
+				fileURLToPath(new URL("../../node_modules/vitest/vitest.mjs", import.meta.url)),
+				"--run",
+				"--project",
+				"unit",
+				...CREDENTIAL_SENSITIVE_SUITES,
+			],
+			{
+				cwd: root,
+				env,
+				encoding: "utf8",
+				timeout: REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS - CHILD_KILL_MARGIN_MS,
+			},
+		);
+		const output = `${run.stdout}\n${run.stderr}`;
+		assert.equal(run.status, 0, output.slice(-6000));
+	},
+	REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS,
+);
