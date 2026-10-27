@@ -249,6 +249,16 @@ test(
 			const missing = await outsider.tool({ action: "send", to: "nobody-by-this-name", message: "TOKEN-MISSING" });
 			assert.match(text(missing), /Session not found/);
 			assert.doesNotMatch(text(missing), /is live in group/);
+
+			// A peekable workflow group without a roster: joining it would hand a host control of that run, so no hint.
+			await peer("open-invocation-member", "workflow:40790000-0000-4000-8000-000000000002");
+			const openInvocation = await outsider.tool({
+				action: "send",
+				to: "open-invocation-member",
+				message: "TOKEN-OPEN-INVOCATION",
+			});
+			assert.match(text(openInvocation), /Session not found/);
+			assert.doesNotMatch(text(openInvocation), /is live in group/);
 		} finally {
 			await outsider.shutdown();
 		}

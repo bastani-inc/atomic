@@ -845,6 +845,8 @@ export function handleBrokerSend(
  * #4079: a target outside every group the sender shares that is live in a group the sender's read-only `list`
  * peek already shows. Names one such group so the sender knows to join it. A target visible only in groups the
  * peek refuses, or matching more than one peekable session, gets no hint, so this reveals nothing `list` hides.
+ * Workflow groups keep their own ownership rules: a workflow stage is never told to join a group outside its run,
+ * and no sender is told to join a `workflow:` group, since joining one is how a host takes control of a run.
  */
 function liveInPeekableGroupReason(
   sessions: Map<string, BrokerConnectedSession>,
@@ -852,10 +854,13 @@ function liveInPeekableGroupReason(
   target: string,
   canPeekGroup: (sender: BrokerConnectedSession, group: string) => boolean,
 ): string | undefined {
+  if (normalizeGroup(sender.registrationGroup ?? sender.info.group).startsWith("workflow:")) return undefined;
   const peekable = new Map<string, string>();
   for (const { info } of sessions.values()) {
     if (info.id === sender.info.id || !isAgentRecipient(info) || sessionsShareGroup(info, sender.info)) continue;
-    const group = [...sessionGroups(info)].find((candidate) => canPeekGroup(sender, candidate));
+    const group = [...sessionGroups(info)].find(
+      (candidate) => !candidate.startsWith("workflow:") && canPeekGroup(sender, candidate),
+    );
     if (group !== undefined) peekable.set(info.id, group);
   }
   const candidates = Array.from(peekable.keys(), (id) => sessions.get(id)!.info);
