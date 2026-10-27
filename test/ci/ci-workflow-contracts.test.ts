@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { delimiter, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -11,8 +9,10 @@ import {
 } from "../../scripts/release-base.js";
 import {
 	chmodSync,
+	fileExistsSync,
 	makeDirectorySync,
 	makeTempDirectory,
+	readDirectorySync,
 	readJson,
 	readTextSync,
 	removeTempDirectory,
@@ -144,11 +144,11 @@ test("global setups isolate Herdr and provider credentials, then prepare artifac
 test("workspace selectors precede the run verb so Bun cannot rewrite them", async () => {
 	const manifests = [
 		"package.json",
-		...(await readdir(join(root, "packages"))).map((p) => `packages/${p}/package.json`),
+		...readDirectorySync(join(root, "packages")).map((p) => `packages/${p}/package.json`),
 	];
 	for (const relative of manifests) {
 		const path = join(root, relative);
-		if (!existsSync(path)) continue;
+		if (!fileExistsSync(path)) continue;
 		const manifest = (await readJson(path)) as { scripts?: Record<string, string> };
 		for (const [name, command] of Object.entries(manifest.scripts ?? {})) {
 			assert.doesNotMatch(
@@ -210,7 +210,7 @@ test("SQLite selectors resolve on either runtime and their tests cannot silently
 	// guard that skips or returns early when a module is missing.
 	const testDir = join(root, "packages/coding-agent/test");
 	const excluded = new Set((config.default.test?.projects ?? [])[0]?.test?.exclude ?? []);
-	for (const entry of await readdir(testDir, { recursive: true })) {
+	for (const entry of readDirectorySync(testDir, { recursive: true, encoding: "utf8" })) {
 		if (!entry.endsWith(".test.ts")) continue;
 		const relative = `test/${entry.replaceAll("\\", "/")}`;
 		const source = await readText(join(testDir, entry));
@@ -359,7 +359,7 @@ test("musl archive build bundles pinned C++ runtimes and patches payload-local s
 
 test("obsolete publisher-only verifiers are absent", () => {
 	for (const path of ["scripts/verify" + "-publish-context.ts", "scripts/verify" + "-release-integrity.ts"])
-		assert.equal(existsSync(join(root, path)), false, path);
+		assert.equal(fileExistsSync(join(root, path)), false, path);
 });
 
 test("release-base metadata remains available to the versionless cut flow", () => {

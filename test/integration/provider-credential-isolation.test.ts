@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { KEEP_PROVIDER_CREDENTIALS_ENV, PROVIDER_CREDENTIAL_ENV_VARS } from "../helpers/provider-credential-env.js";
+import { spawnSyncCollect } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -30,27 +30,22 @@ const CHILD_KILL_MARGIN_MS = 60_000;
 test(
 	"credential-sensitive suites pass when the shell exports every provider credential and endpoint variable",
 	() => {
-		const env: NodeJS.ProcessEnv = { ...process.env };
+		const env: Record<string, string | undefined> = { ...process.env };
 		delete env[KEEP_PROVIDER_CREDENTIALS_ENV];
 		for (const name of PROVIDER_CREDENTIAL_ENV_VARS) env[name] = `fake-${name.toLowerCase()}`;
-		const run = spawnSync(
-			process.execPath,
+		const run = spawnSyncCollect(
 			[
+				process.execPath,
 				fileURLToPath(new URL("../../node_modules/vitest/vitest.mjs", import.meta.url)),
 				"--run",
 				"--project",
 				"unit",
 				...CREDENTIAL_SENSITIVE_SUITES,
 			],
-			{
-				cwd: root,
-				env,
-				encoding: "utf8",
-				timeout: REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS - CHILD_KILL_MARGIN_MS,
-			},
+			{ cwd: root, env, timeout: REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS - CHILD_KILL_MARGIN_MS },
 		);
-		const output = `${run.stdout}\n${run.stderr}`;
-		assert.equal(run.status, 0, output.slice(-6000));
+		const output = `${run.stdout.toString()}\n${run.stderr.toString()}`;
+		assert.equal(run.exitCode, 0, output.slice(-6000));
 	},
 	REAL_VITEST_CREDENTIAL_SUITES_TIMEOUT_MS,
 );

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { PROVIDER_CREDENTIAL_ENV_VARS } from "../helpers/provider-credential-env.js";
+import { readDirectorySync, readTextSync } from "../helpers/runtime.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -16,7 +16,7 @@ const NOT_CREDENTIALS = new Set([
 ]);
 
 function productSources(directory: string): string[] {
-	return readdirSync(directory, { recursive: true, withFileTypes: true })
+	return readDirectorySync(directory, { recursive: true, withFileTypes: true })
 		.filter(
 			(entry) =>
 				entry.isFile() &&
@@ -31,13 +31,13 @@ test("every provider credential the product reads from the environment is stripp
 	const sources = [
 		...productSources(join(root, "packages/ai/src")),
 		...productSources(join(root, "packages/coding-agent/src")),
-		...readdirSync(join(root, "packages/web-access"))
+		...readDirectorySync(join(root, "packages/web-access"))
 			.filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
 			.map((name) => join(root, "packages/web-access", name)),
 	];
 	const read = new Set<string>();
 	for (const file of sources) {
-		const text = readFileSync(file, "utf8");
+		const text = readTextSync(file, "utf8");
 		for (const match of text.matchAll(/getProviderEnvValue\(\s*"([A-Z][A-Z0-9_]+)"/g)) read.add(match[1]!);
 		for (const match of text.matchAll(/"([A-Z][A-Z0-9_]*_API_KEY)"/g)) read.add(match[1]!);
 		// Direct reads such as `process.env.EXA_API_KEY` or `env.GITHUB_COPILOT_BASE_URL`.
@@ -46,7 +46,7 @@ test("every provider credential the product reads from the environment is stripp
 		for (const match of text.matchAll(direct)) read.add(match[1]!);
 	}
 	// Every quoted name in the provider key table and its credential checks is an environment variable.
-	const keyTable = readFileSync(join(root, "packages/ai/src/env-api-keys.ts"), "utf8");
+	const keyTable = readTextSync(join(root, "packages/ai/src/env-api-keys.ts"), "utf8");
 	for (const match of keyTable.matchAll(/"([A-Z][A-Z0-9_]+)"/g)) read.add(match[1]!);
 	assert.ok(read.has("COPILOT_GITHUB_TOKEN") && read.has("OPENAI_API_KEY"), "the source scan found the key table");
 	const listed = new Set(PROVIDER_CREDENTIAL_ENV_VARS);
