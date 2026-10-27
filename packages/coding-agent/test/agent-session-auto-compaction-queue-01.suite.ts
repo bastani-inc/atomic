@@ -481,7 +481,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp - 1000,
 		});
 		await sessionManager.appendMessage(staleAssistant);
-		appendTestCompaction(sessionManager, staleAssistant.usage.totalTokens, 50_000);
+		await appendTestCompaction(sessionManager, staleAssistant.usage.totalTokens, 50_000);
 
 		await sessionManager.appendMessage({
 			role: "user",
@@ -535,7 +535,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp - 1000,
 		});
 		await sessionManager.appendMessage(staleAssistant);
-		appendTestCompaction(sessionManager, 610_000, 50_000);
+		await appendTestCompaction(sessionManager, 610_000, 50_000);
 		await sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "session recovery payload" }],
