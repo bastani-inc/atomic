@@ -80,6 +80,8 @@ function removeProcessExitCleanup(cleanup: () => void): void {
  * loop has turned if it is still waiting on I/O. It checks the turn budget right before each
  * start, and once the budget is spent it yields with one `setImmediate`. So no turn runs more
  * than the budget plus one operation, and operations still start in the order they were queued.
+ * Each queued operation runs in the async context of the caller that queued it, not of the caller
+ * whose operation started the drain.
  * A single run's sequential journal work keeps only a few operations waiting and runs directly,
  * so its ordering against other promises is unchanged.
  *
@@ -143,11 +145,14 @@ async function drainFanOut(): Promise<void> {
 function runInJournalTurns<T>(run: () => Promise<T>, waiting: () => number): Promise<T> {
 	journalTurnStart();
 	if (fanOutQueue.length === 0 && !fanOutDraining && waiting() < FAN_OUT_WAITING_OPERATIONS) return run();
+	// The queue drains from whichever caller started it; each operation runs in its own caller's async
+	// context (workflow execution, write admission and any other store), captured as it is queued.
+	const inCallerContext = AsyncLocalStorage.snapshot();
 	return new Promise<T>((resolve, reject) => {
 		fanOutQueue.push(() => {
 			let result: Promise<T>;
 			try {
-				result = run();
+				result = inCallerContext(run);
 			} catch (error) {
 				result = Promise.reject(error);
 			}

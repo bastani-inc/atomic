@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import {
+	JournalDurableBackend,
+	JournalExecutionRetiredError,
+} from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import type { JournalEntry } from "../../packages/workflows/src/durable/journal/types.js";
 
@@ -66,6 +69,55 @@ test("a fan-out's journal work spreads over event-loop turns, checking the budge
 			turns.length >= (OPERATIONS * OPERATION_COST_MS) / (TURN_BUDGET_MS + OPERATION_COST_MS),
 			`the fan-out progressed over only ${turns.length} event-loop turns`,
 		);
+	} finally {
+		await backend.close();
+	}
+});
+
+const CHILDREN_PER_ROOT = 64;
+
+function registration(workflowId: string) {
+	return { workflowId, name: "child", inputs: {}, createdAt: 1, status: "running" as const };
+}
+
+test("a fan-out's queued journal work keeps its own root's execution when another root retires mid-queue", async () => {
+	const journal = new SynchronousCostJournal();
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: true });
+	try {
+		const queuedB = Promise.withResolvers<readonly Promise<void>[]>();
+		let lateWriteOfRetiredRoot: Promise<void> | undefined;
+		const rootA = backend.withWorkflowLease("root-a", async () => {
+			const retire = backend.captureWorkflowRetirement("root-a");
+			// Root A starts the fan-out, so the queue drains from root A's async context.
+			const writes = Array.from({ length: CHILDREN_PER_ROOT }, (_, index) =>
+				backend.commitWorkflowRegistration(registration(`a-${index}`)),
+			);
+			// Root B queues its children behind root A's while they are still waiting.
+			await queuedB.promise;
+			await retire();
+			lateWriteOfRetiredRoot = backend.commitWorkflowRegistration(registration("a-late"));
+			await Promise.allSettled(writes);
+		});
+		const rootB = backend.withWorkflowLease("root-b", async () => {
+			const writes = Array.from({ length: CHILDREN_PER_ROOT }, (_, index) =>
+				backend.commitWorkflowRegistration(registration(`b-${index}`)),
+			);
+			queuedB.resolve(writes);
+			return await Promise.allSettled(writes);
+		});
+		const [, outcomes] = await Promise.all([rootA, rootB]);
+
+		const refused = outcomes.filter((outcome) => outcome.status === "rejected");
+		assert.deepEqual(
+			refused.map((outcome) => String(outcome.reason)),
+			[],
+			"root B's child registrations are refused for root A's retirement",
+		);
+		for (let index = 0; index < CHILDREN_PER_ROOT; index++)
+			assert.ok((await journal.getRun(`b-${index}`)) !== undefined, `root B's child b-${index} is not journaled`);
+		assert.ok(lateWriteOfRetiredRoot !== undefined);
+		await assert.rejects(lateWriteOfRetiredRoot, JournalExecutionRetiredError);
+		assert.equal(await journal.getRun("a-late"), undefined);
 	} finally {
 		await backend.close();
 	}
