@@ -14,9 +14,11 @@
  * constants; nothing sleeps for a fixed "long enough" interval.
  */
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterAll, test, vi } from "vitest";
 import type { PendingStageMessageRequest } from "../../packages/intercom/broker/client.js";
 import { sleep } from "../helpers/runtime.ts";
@@ -60,10 +62,16 @@ const SECOND_RETRY_DELAY_MS = reconnectDelayMs(1);
 const BROKER_RESPAWN_MS = 10_000;
 const RECOVERY_TIMEOUT_MS = FIRST_RETRY_DELAY_MS + SECOND_RETRY_DELAY_MS + BROKER_RESPAWN_MS;
 const RECOVERY_POLL_MS = 25;
-/** A SIGKILLed Windows broker can stay signalable well past the recovery window. */
+/**
+ * How long a SIGKILLed broker may take to be gone. TerminateProcess is asynchronous on Windows,
+ * but once the process at the pid is told apart from a recycled one this is a backstop only.
+ */
 const KILLED_BROKER_EXIT_MS = 30_000;
+/** One process-identity query; PowerShell start-up dominates it on a loaded Windows runner. */
+const PROCESS_IDENTITY_QUERY_MS = 15_000;
 /** Respawn, re-registration and the killed broker's exit run back to back against real processes. */
-const KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS = 2 * RECOVERY_TIMEOUT_MS + KILLED_BROKER_EXIT_MS;
+const KILLED_BROKER_RECOVERY_TEST_TIMEOUT_MS =
+	2 * RECOVERY_TIMEOUT_MS + PROCESS_IDENTITY_QUERY_MS + KILLED_BROKER_EXIT_MS;
 const FORCED_FAILURE_MESSAGE = "forced first reconnect failure";
 
 interface OrchestrationContext {
@@ -294,7 +302,11 @@ async function waitFor<T>(
 		}
 		await sleep(RECOVERY_POLL_MS);
 	}
-	throw new Error(`Timed out waiting for ${what} within ${timeoutMs}ms: ${String(lastError)}`);
+	const reason =
+		lastError === undefined
+			? "the probe never threw; it kept reporting not ready"
+			: `last error: ${String(lastError)}`;
+	throw new Error(`Timed out waiting for ${what} within ${timeoutMs}ms (${reason})`);
 }
 
 /**
@@ -377,18 +389,73 @@ function killBroker({ pid }: BrokerIdentity): void {
 	}
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Which process holds `pid` right now: its name and start time, or `undefined` when none does.
+ *
+ * A pid alone cannot say whether a killed process is still there. Windows hands a freed pid to
+ * the next process it creates, and the broker respawn that follows a kill creates several
+ * (`wscript.exe`, `cmd.exe`, `conhost.exe`, `node.exe`), so the killed broker's pid can belong to
+ * a long-lived process of the replacement's launch chain while the killed broker is long gone.
+ * The start time tells them apart.
+ */
+async function processAt(pid: number): Promise<string | undefined> {
+	if (process.platform === "win32") {
+		const script = [
+			`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue`,
+			"if ($null -eq $p) { exit 0 }",
+			"try { $s = $p.StartTime.ToUniversalTime().ToString('o') } catch { $s = 'at an unreadable time' }",
+			"Write-Output ($p.ProcessName + ' started ' + $s)",
+		].join("; ");
+		const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+			timeout: PROCESS_IDENTITY_QUERY_MS,
+			windowsHide: true,
+		});
+		return stdout.trim() || undefined;
+	}
+	try {
+		const { stdout } = await execFileAsync("ps", ["-o", "lstart=,comm=", "-p", String(pid)], {
+			timeout: PROCESS_IDENTITY_QUERY_MS,
+		});
+		return stdout.trim() || undefined;
+	} catch (error) {
+		// `ps -p` exits 1 when no process has the pid.
+		if ((error as { code?: unknown }).code === 1) return undefined;
+		throw error;
+	}
+}
+
+/** A broker about to be killed, with the identity of the process that holds its pid. */
+interface KilledBroker extends BrokerIdentity {
+	process: string;
+}
+
+/** SIGKILL `broker`, first recording which process it is so its exit can be told from pid reuse. */
+async function killBrokerProcess(broker: BrokerIdentity): Promise<KilledBroker> {
+	const identity = await processAt(broker.pid);
+	assert.ok(identity !== undefined, `broker ${broker.pid} must be running before it is killed`);
+	killBroker(broker);
+	return { ...broker, process: identity };
+}
+
 /**
  * Wait for a SIGKILLed broker to be gone. `process.kill` only requests termination, and on
  * Windows the process stays signalable for a while afterwards, so "it was killed" is not yet
- * "it is dead". A replacement that inherited the killed broker's pid is alive by definition, so
- * only a different pid can prove the predecessor died.
+ * "it is dead". Gone means no process holds the pid, or a different process (another start
+ * time) does — the replacement broker or anything else that was handed the recycled pid.
  */
-async function waitForKilledBrokerExit(killed: BrokerIdentity, replacement: BrokerIdentity): Promise<void> {
-	if (replacement.pid === killed.pid) return;
-	await waitFor(
-		`killed broker ${killed.pid} to exit`,
-		async () => (processIsAlive(killed.pid) ? undefined : true),
-		KILLED_BROKER_EXIT_MS,
+async function waitForKilledBrokerExit(killed: KilledBroker): Promise<void> {
+	const deadline = Date.now() + KILLED_BROKER_EXIT_MS;
+	let holder: string | undefined = killed.process;
+	while (Date.now() < deadline) {
+		if (!processIsAlive(killed.pid)) return;
+		holder = await processAt(killed.pid);
+		if (holder !== killed.process) return;
+		await sleep(RECOVERY_POLL_MS);
+	}
+	throw new Error(
+		`Killed broker ${killed.pid} (${killed.process}) was still running after ${KILLED_BROKER_EXIT_MS}ms; pid ${killed.pid} is held by: ${holder ?? "no process"}`,
 	);
 }
 
@@ -595,7 +662,7 @@ test(
 			const toolCallsAtKill = session.toolExecutions;
 
 			forced.arm();
-			killBroker(firstBroker);
+			const killedBroker = await killBrokerProcess(firstBroker);
 			// The disconnect arms attempt 0; `beforeConnectAttempt` fails it through the real
 			// catch/finally path, which is exactly the transition that used to strand the runtime.
 			await forced.failed;
@@ -607,7 +674,7 @@ test(
 			});
 
 			assert.equal(forced.failures(), 1, "exactly one background attempt must have been forced to fail");
-			await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+			await waitForKilledBrokerExit(killedBroker);
 			assert.ok(replacesBroker(recoveredBroker, firstBroker), "recovery must run against a freshly spawned broker");
 			assert.equal(processIsAlive(recoveredBroker.pid), true, "the replacement broker must be live");
 			assert.ok(names.includes("reconnect-recovery"));
@@ -751,7 +818,7 @@ test(
 
 			const firstBroker = await waitForBroker();
 			forced.arm();
-			killBroker(firstBroker);
+			const killedBroker = await killBrokerProcess(firstBroker);
 			await forced.failed;
 			assert.equal(stageIsRunning(), true, "broker churn must not change the workflow stage lifecycle");
 
@@ -759,7 +826,7 @@ test(
 			// never be what respawned it. The owner's route client and the stage both recover on
 			// their own timers; whichever wins the spawn, only the stage can restore its live route.
 			const recoveredBroker = await waitForBroker(firstBroker);
-			await waitForKilledBrokerExit(firstBroker, recoveredBroker);
+			await waitForKilledBrokerExit(killedBroker);
 			assert.equal(processIsAlive(recoveredBroker.pid), true);
 			assert.equal(stage.toolExecutions, 0, "the stage must recover without making an intercom tool call");
 
