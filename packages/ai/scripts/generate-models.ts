@@ -436,11 +436,10 @@ const ANT_LING_RING_THINKING_LEVEL_MAP = {
 
 const BEDROCK_INFERENCE_PROFILE_ONLY_MODEL_IDS = new Set(["anthropic.claude-opus-5"]);
 const MODELS_DEV_OPENAI_UNSUPPORTED_MODEL_IDS = new Set(["gpt-5.6"]);
+// GPT-5.5 and older put tools loaded through tool search or additional_tools in a namespace named
+// after the tool and reject replayed calls without it, so history from other models fails there
+// (earendil-works/pi#11415). Like Codex, dynamic tool loading therefore starts with GPT-5.6, which does not do this.
 const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.4-pro",
-	"gpt-5.5",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -451,7 +450,13 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-6.1-terra",
 ]);
 const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
-const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
+const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = new Set([
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-5.4-pro",
+	"gpt-5.5",
+	...OPENAI_TOOL_SEARCH_MODEL_IDS,
+]);
 const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
@@ -1241,7 +1246,7 @@ function applyOpenAIResponsesTranscriptMetadata(model: Model<Api>): void {
 	model.compat = {
 		...(model.compat as OpenAIResponsesCompat | undefined),
 		supportsMidConvoSystemMessages: true,
-		...(isProxiedResponses ? { supportsAdditionalTools: true } : {}),
+		...(isProxiedResponses && OPENAI_ADDITIONAL_TOOLS_MODEL_IDS.has(model.id) ? { supportsAdditionalTools: true } : {}),
 	};
 }
 
