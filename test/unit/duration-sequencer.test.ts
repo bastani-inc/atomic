@@ -54,11 +54,36 @@ test("shards balance their expected wall time: the longest file or the total ove
 	assert.ok(Math.max(...walls) <= 1.1 * Math.min(...walls), `unbalanced shards: ${walls.join(", ")}`);
 });
 
+test("a serial file (run alone after the rest) leaves its shard fewer parallel files", () => {
+	// The gate runs after its shard's other files, so its time adds to theirs instead of overlapping them. Placed as
+	// if it overlapped them, this fixture's shards would take 195 s and 107 s.
+	const gate = "test/integration/gate.test.ts";
+	const record: Record<string, number> = { [gate]: 100_000 };
+	for (let i = 0; i < 8 * SHARD_WORKERS; i++)
+		record[`test/integration/short-${String(i).padStart(2, "0")}.test.ts`] = 23_000;
+	const weight = (path: string) => (record[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
+	const paths = Object.keys(record);
+	const walls = [1, 2].map((index) => {
+		const shard = shardByDuration(paths, record, index, 2, new Set([gate]));
+		const parallel = shard.filter((path) => path !== gate);
+		return (
+			Math.max(0, ...parallel.map(weight), parallel.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS) +
+			(shard.includes(gate) ? weight(gate) : 0)
+		);
+	});
+	assert.ok(Math.max(...walls) <= 1.1 * Math.min(...walls), `unbalanced shards: ${walls.join(", ")}`);
+});
+
 /** Structural: each case starts a real Vitest instance on the repository config and globs the integration suite. */
 const REAL_VITEST_TIMEOUT_MS = 60_000;
 
 async function integrationSpecifications(shard: string) {
-	const vitest = await createVitest("test", { watch: false, run: true, project: ["integration"], shard });
+	const vitest = await createVitest("test", {
+		watch: false,
+		run: true,
+		project: ["integration", "integration-load-gate"],
+		shard,
+	});
 	try {
 		return { vitest, specifications: await vitest.globTestSpecifications() };
 	} catch (error) {
@@ -86,6 +111,10 @@ test(
 			}
 		}
 		assert.ok(all.length > count, "the integration suite globbed no files");
+		assert.ok(
+			all.some((file) => file.endsWith("workflow-pool-load-gate.test.ts")),
+			"the load gate is not sharded",
+		);
 		assert.ok(shards.every((shard) => shard.length > 0));
 		assert.deepEqual(shards.flat().sort(), all, "a file ran in no shard or in more than one");
 	},
@@ -104,11 +133,16 @@ test(
 					Record<string, number>
 				>
 			)[process.platform === "win32" ? "win32" : "linux"];
-			const weights = (await sequencer.sort([...specifications])).map(
-				(specification) =>
-					record[relative(vitest.config.root, specification.moduleId).replaceAll("\\", "/")] ?? UNKNOWN_FILE_MS,
-			);
-			assert.equal(weights.length, specifications.length);
+			const sorted = await sequencer.sort([...specifications]);
+			assert.equal(sorted.length, specifications.length);
+			// The load gate's project runs after the rest (its later groupOrder), so it comes last.
+			assert.equal(sorted.at(-1)?.project.name, "integration-load-gate");
+			const weights = sorted
+				.slice(0, -1)
+				.map(
+					(specification) =>
+						record[relative(vitest.config.root, specification.moduleId).replaceAll("\\", "/")] ?? UNKNOWN_FILE_MS,
+				);
 			assert.deepEqual(
 				weights,
 				[...weights].sort((a, b) => b - a),

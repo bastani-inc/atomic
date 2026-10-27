@@ -22,7 +22,7 @@
     "hydrate:model-data": "npm --workspace=@bastani/pi-ai run hydrate-model-data",
     "test": "npm run test:scripts && vitest --run && npm --workspaces --if-present run test",
     "test:unit": "vitest --run --project unit",
-    "test:integration": "vitest --run --project integration",
+    "test:integration": "vitest --run --project integration --project integration-load-gate",
     "test:ci-contracts": "vitest --run --project ci",
     "test:all": "npm run test:unit && npm run test:integration",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
