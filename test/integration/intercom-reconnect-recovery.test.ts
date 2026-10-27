@@ -421,7 +421,7 @@ async function processAt(pid: number): Promise<string | undefined> {
 		return stdout.trim() || undefined;
 	} catch (error) {
 		// `ps -p` exits 1 when no process has the pid.
-		if ((error as { code?: unknown }).code === 1) return undefined;
+		if ((error as { code?: string | number }).code === 1) return undefined;
 		throw error;
 	}
 }
