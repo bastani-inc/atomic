@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import type net from "node:net";
+import net from "node:net";
 import { join } from "node:path";
 import { openNodeSqliteDatabase, type SqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import {
 	KNOWN_SESSION_REFRESH_INTERVAL_MS,
 	LOCAL_RETRY_LOOKUP_BOUND_MS,
@@ -28,6 +29,7 @@ import {
 	resolveBrokerStateSource,
 	type SharedDatabaseSource,
 } from "../../packages/intercom/broker/open-broker-state.js";
+import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
 import {
@@ -126,7 +128,9 @@ class Node {
 	}
 
 	write(socket: net.Socket, frame: BrokerOutboundFrame): boolean {
-		(socket as FakeSocket).frames.push(frame);
+		const fake = socket as Partial<FakeSocket>;
+		if (fake.frames !== undefined) fake.frames.push(frame);
+		else writeMessage(socket, frame);
 		return true;
 	}
 
@@ -142,6 +146,8 @@ class Node {
 			consumed?: { capability: string };
 			recipientPurpose?: SessionInfo["recipientPurpose"];
 			replyCapability?: SessionInfo["replyCapability"];
+			/** A real broker connection, for a session served through the real Intercom client. */
+			socket?: net.Socket;
 		} = {},
 	): Promise<BrokerConnectedSession> {
 		const group = options.group ?? "default";
@@ -160,7 +166,7 @@ class Node {
 			...(options.replyCapability === undefined ? {} : { replyCapability: options.replyCapability }),
 		};
 		const session: BrokerConnectedSession = {
-			socket: fakeSocket(),
+			socket: options.socket ?? fakeSocket(),
 			info,
 			registrationGroup: normalizeGroup(group),
 			registrationName: name,
@@ -430,52 +436,174 @@ test("a session that quit is queued for at once and delivered when it reconnects
 	await waitFor(() => framesOf(sender).find((entry) => entry.type === "delivered" && entry.messageId === sent.id));
 });
 
-test(
-	"a send that races its recipient's clean quit is queued for it, not reported uncertain, and delivered when it reconnects",
-	async () => {
-		const [a, b] = await cluster();
-		const sender = await a!.connect("sender");
-		const recipient = await b!.connect("recipient");
-		const returnAddress = recipient.registrationReturnAddress!;
-		// The recipient's broker records the quit only after the sender's broker has routed to it as live.
-		const leases = b!.opened.state.leases;
-		const release = leases.release.bind(leases);
-		let recordQuit!: () => void;
-		const quitRecorded = new Promise<void>((resolve) => {
-			recordQuit = resolve;
+test("a send that races its recipient's clean quit is queued for it, not reported uncertain, and delivered when it reconnects", async () => {
+	const [a, b] = await cluster();
+	const sender = await a!.connect("sender");
+	const recipient = await b!.connect("recipient");
+	const returnAddress = recipient.registrationReturnAddress!;
+	// The recipient's broker records the quit only after the sender's broker has routed to it as live.
+	const leases = b!.opened.state.leases;
+	const release = leases.release.bind(leases);
+	let recordQuit!: () => void;
+	const quitRecorded = new Promise<void>((resolve) => {
+		recordQuit = resolve;
+	});
+	const spy = vi.spyOn(leases, "release").mockImplementation(async (lease) => {
+		await quitRecorded;
+		return release(lease);
+	});
+	try {
+		b!.leave(recipient);
+		const sent = message();
+		const sentAt = Date.now();
+		a!.send(sender, "recipient", sent);
+		await vi.waitFor(async () => assert.equal((await a!.opened.state.outbox.read(sent.id)).status, "found"), {
+			timeout: CROSS_NODE_WAIT_MS,
 		});
-		const spy = vi.spyOn(leases, "release").mockImplementation(async (lease) => {
-			await quitRecorded;
-			return release(lease);
-		});
-		try {
-			b!.leave(recipient);
-			const sent = message();
-			const sentAt = Date.now();
-			a!.send(sender, "recipient", sent);
-			await vi.waitFor(async () => assert.equal((await a!.opened.state.outbox.read(sent.id)).status, "found"), {
-				timeout: CROSS_NODE_WAIT_MS,
-			});
-			recordQuit();
-			const outcome = await waitFor(() => outcomeOf(sender, sent.id), RECIPIENT_RECEIPT_TIMEOUT_MS * 2);
-			assert.equal(outcome.type, "queued", JSON.stringify(outcome));
-			assert.equal(outcome.type === "queued" && outcome.target, OFFLINE_SESSION_TARGET);
-			const waited = Date.now() - sentAt;
-			assert.ok(waited < RECIPIENT_RECEIPT_TIMEOUT_MS, `the sender heard queued after ${waited} ms`);
+		recordQuit();
+		const outcome = await waitFor(() => outcomeOf(sender, sent.id), RECIPIENT_RECEIPT_TIMEOUT_MS * 2);
+		assert.equal(outcome.type, "queued", JSON.stringify(outcome));
+		assert.equal(outcome.type === "queued" && outcome.target, OFFLINE_SESSION_TARGET);
+		const waited = Date.now() - sentAt;
+		assert.ok(waited < RECIPIENT_RECEIPT_TIMEOUT_MS, `the sender heard queued after ${waited} ms`);
 
-			const back = await b!.connect("recipient", { returnAddress, id: recipient.info.id });
-			await waitFor(() => messageFrames(back, sent.id)[0]);
-			b!.router.received(back, sent.id);
-			await waitFor(() =>
-				framesOf(sender).find((entry) => entry.type === "delivered" && entry.messageId === sent.id),
-			);
-			assert.equal(messageFrames(back, sent.id).length, 1);
-		} finally {
-			spy.mockRestore();
-		}
-	},
-	RECIPIENT_RECEIPT_TIMEOUT_MS * 4,
-);
+		const back = await b!.connect("recipient", { returnAddress, id: recipient.info.id });
+		await waitFor(() => messageFrames(back, sent.id)[0]);
+		b!.router.received(back, sent.id);
+		await waitFor(() => framesOf(sender).find((entry) => entry.type === "delivered" && entry.messageId === sent.id));
+		assert.equal(messageFrames(back, sent.id).length, 1);
+	} finally {
+		spy.mockRestore();
+	}
+});
+
+/** The sender's broker reads the recipient's presence behind a write stall on its shared connection. */
+const PRESENCE_READ_STALL_MS = 3_000;
+
+/** A broker socket served by `node`, so a sender uses the real Intercom client, with its own send timeout. */
+async function realClientOn(node: Node, name: string) {
+	const agentDir = makeTempDirectory("intercom-multinode-client-");
+	const socketPath = getBrokerSocketPath(process.platform, agentDir);
+	mkdirSync(join(agentDir, "intercom"), { recursive: true });
+	const sessions: BrokerConnectedSession[] = [];
+	const server = net.createServer((socket) => {
+		socket.on("error", () => {});
+		socket.on(
+			"data",
+			createMessageReader(
+				(frame) => {
+					const received = frame as { type: string; registrationGroup?: string; returnAddress?: string };
+					if (received.type === "register") {
+						void node
+							.connect(name, {
+								socket,
+								...(received.returnAddress === undefined ? {} : { returnAddress: received.returnAddress }),
+							})
+							.then((session) => {
+								sessions.push(session);
+								writeMessage(socket, {
+									type: "registered",
+									sessionId: session.info.id,
+									acknowledgesReceipt: true,
+								});
+							});
+					} else if (received.type === "send" && sessions[0] !== undefined) {
+						node.dispatch(socket, frame as SendClientMessage, sessions[0].info.id);
+					}
+				},
+				(error) => socket.destroy(error),
+			),
+		);
+	});
+	await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
+	const original = process.env.ATOMIC_CODING_AGENT_DIR;
+	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+	let clientModule: typeof import("../../packages/intercom/broker/client.js");
+	try {
+		vi.resetModules();
+		clientModule = await import("../../packages/intercom/broker/client.js");
+	} finally {
+		if (original === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = original;
+	}
+	const client = new clientModule.IntercomClient(undefined, { acknowledgesReceipt: true });
+	client.on("error", () => {});
+	cleanups.push(async () => {
+		await client.disconnect().catch(() => undefined);
+		await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+		removeTempDirectory(agentDir);
+	});
+	await client.connect({ name, cwd: "/work", model: "test/model", pid: 1, startedAt: 1, lastActivity: 1 });
+	return { client, session: sessions[0]! };
+}
+
+test("a send whose recipient quits before its receipt wait ends is told to keep waiting while slow reads decide it is queued", async () => {
+	const dropOutcomes = (node: number, bus: WakeUpBus): WakeUpBus =>
+		node === 1
+			? {
+					publish: (hint) =>
+						hint.reason === "outcome" ? Promise.resolve({ status: "published" }) : bus.publish(hint),
+					subscribe: (brokerId, listener) => bus.subscribe(brokerId, listener),
+					close: () => bus.close(),
+				}
+			: bus;
+	const [a, b] = await cluster(2, dropOutcomes);
+	const { client, session: sender } = await realClientOn(a!, "sender");
+	const recipient = await b!.connect("recipient");
+	// The recipient's broker records its quit only just before the sender's receipt wait ends, and its wake-up is lost.
+	const leases = b!.opened.state.leases;
+	const release = leases.release.bind(leases);
+	let recordQuit!: () => void;
+	const quitRecorded = new Promise<void>((resolveQuit) => {
+		recordQuit = resolveQuit;
+	});
+	const releaseSpy = vi.spyOn(leases, "release").mockImplementation(async (lease) => {
+		await quitRecorded;
+		return release(lease);
+	});
+	const presence = a!.opened.state.leases;
+	const read = presence.read.bind(presence);
+	const readSpy = vi.spyOn(presence, "read").mockImplementation(async (key) => {
+		await new Promise((resolveStall) => setTimeout(resolveStall, PRESENCE_READ_STALL_MS));
+		return read(key);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	const toSender: Array<{ readonly type: string; readonly at: number }> = [];
+	const write = a!.write.bind(a!);
+	const writeSpy = vi.spyOn(a!, "write").mockImplementation((socket, frame) => {
+		if (socket === sender.socket) toSender.push({ type: frame.type, at: Date.now() });
+		return write(socket, frame);
+	});
+	try {
+		b!.leave(recipient);
+		const sentAt = Date.now();
+		const sent = client.send("recipient", { text: "sent as its recipient quits" }).then(
+			(result) => ({ result, at: Date.now() }),
+			(error: Error) => ({ error, at: Date.now() }),
+		);
+		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS - 500);
+		recordQuit();
+		await advance(RECIPIENT_RECEIPT_TIMEOUT_MS + PRESENCE_READ_STALL_MS);
+		const settled = await sent;
+		if (!("result" in settled))
+			assert.fail(`the send failed after ${settled.at - sentAt} ms: ${String(settled.error)}`);
+		assert.equal(settled.result.queued, true, JSON.stringify(settled.result));
+		assert.equal(settled.result.target, OFFLINE_SESSION_TARGET);
+		const held = toSender.find((frame) => frame.type === "send_held");
+		assert.ok(held !== undefined, `the sender heard only ${JSON.stringify(toSender)}`);
+		// The sender's client gives up `SEND_RESPONSE_TIMEOUT_MS` after its send unless a hold reaches it first.
+		assert.ok(held.at - sentAt < SEND_RESPONSE_TIMEOUT_MS, `held only ${held.at - sentAt} ms after the send`);
+		assert.deepEqual(
+			toSender.map((frame) => frame.type),
+			["send_held", "queued"],
+		);
+	} finally {
+		vi.useRealTimers();
+		writeSpy.mockRestore();
+		readSpy.mockRestore();
+		releaseSpy.mockRestore();
+	}
+});
 
 test("a target no presence lease and no known session names is not found, as on a single node", async () => {
 	const [a] = await cluster(1);
