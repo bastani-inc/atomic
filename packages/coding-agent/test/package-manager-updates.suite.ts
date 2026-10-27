@@ -108,7 +108,15 @@ describe("DefaultPackageManager", () => {
 			);
 			expect(runCommandSpy).toHaveBeenCalledWith(
 				"npm",
-				["install", "example@latest", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@latest",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
 			);
 		});
@@ -132,7 +140,15 @@ describe("DefaultPackageManager", () => {
 			);
 			expect(runCommandSpy).toHaveBeenCalledWith(
 				"npm",
-				["install", "example@^1.0.0", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@^1.0.0",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
 			);
 		});
@@ -156,7 +172,15 @@ describe("DefaultPackageManager", () => {
 			);
 			expect(runCommandSpy).toHaveBeenCalledWith(
 				"npm",
-				["install", "example@beta", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@beta",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
 			);
 		});
@@ -223,6 +247,8 @@ describe("DefaultPackageManager", () => {
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(managedPath, { recursive: true });
 					writeFileSync(
@@ -340,6 +366,8 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(agentDir, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				],
 				undefined,
 			);
@@ -353,6 +381,8 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(tempDir, CONFIG_DIR_NAME, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				],
 				undefined,
 			);

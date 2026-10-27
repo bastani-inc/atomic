@@ -318,6 +318,8 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(tempDir, CONFIG_DIR_NAME, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				]);
 				writeFileSync(
 					join(installedPath, "package.json"),

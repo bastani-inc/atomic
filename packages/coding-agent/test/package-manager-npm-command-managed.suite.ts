@@ -219,6 +219,8 @@ describe("DefaultPackageManager", () => {
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(join(managedPath, "extensions"), { recursive: true });
 					writeFileSync(
@@ -285,6 +287,8 @@ describe("DefaultPackageManager", () => {
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(join(managedPath, "extensions"), { recursive: true });
 					writeFileSync(

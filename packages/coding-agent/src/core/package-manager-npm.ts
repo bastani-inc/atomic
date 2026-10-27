@@ -83,7 +83,7 @@ export function getGitDependencyInstallArgs(context: PackageManagerContext): str
 				"--config.strict-dep-builds=false",
 			];
 		case "npm":
-			return ["install", "--omit=dev", "--legacy-peer-deps"];
+			return ["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"];
 		default:
 			return ["install"];
 	}
@@ -105,7 +105,8 @@ export function getNpmInstallArgs(context: PackageManagerContext, specs: string[
 			"--config.strict-dep-builds=false",
 		];
 	}
-	return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps"];
+	// npm audit fix would run without --legacy-peer-deps and install Atomic peers, so skip audit advice.
+	return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps", "--no-audit", "--no-fund"];
 }
 
 export async function installNpm(
@@ -132,7 +133,9 @@ export async function uninstallNpm(
 		await runNpmCommand(context, ["uninstall", source.name, "--cwd", installRoot]);
 		return;
 	}
-	await runNpmCommand(context, ["uninstall", source.name, "--prefix", installRoot]);
+	const args = ["uninstall", source.name, "--prefix", installRoot];
+	if (getPackageManagerName(context) !== "pnpm") args.push("--no-audit", "--no-fund");
+	await runNpmCommand(context, args);
 }
 
 export async function installNpmBatch(
