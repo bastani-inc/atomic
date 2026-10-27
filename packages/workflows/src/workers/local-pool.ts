@@ -11,7 +11,7 @@ import {
 	type QuestionnaireResult,
 } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
-import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,
@@ -22,6 +22,7 @@ import {
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease } from "../durable/journal/types.js";
+import type { DurableCheckpoint, DurableStageCheckpoint } from "../durable/types.js";
 import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
@@ -246,6 +247,13 @@ function launchCoordinatorInProcess(): Coordinator {
  * coordinator's activity summaries to the root's store in one batched update each, at most
  * every {@link POOL_SUMMARY_INTERVAL_MS}.
  */
+/**
+ * Children completing together share turns of the event loop instead of running back to back. A completion
+ * starts only in the first part of a turn, because the engine's work for the finished child follows it.
+ */
+const COMPLETION_TURN_BUDGET_MS = 4;
+const completeInTurns = createTurnSlicer(2, COMPLETION_TURN_BUDGET_MS);
+
 export class LocalWorkerPool {
 	private readonly pids = new Set<number>();
 	private coordinator?: Coordinator;
@@ -276,6 +284,8 @@ export class LocalWorkerPool {
 	private rootBudget?: RunOpts["rootBudget"];
 	private budgetBlocked = false;
 	private rootSignature?: string;
+	/** Children whose results arrived and whose completion is still running. */
+	private completing = 0;
 	private rootFlush?: Promise<void>;
 	private starting?: Promise<void>;
 	private failure?: Error;
@@ -1079,14 +1089,13 @@ export class LocalWorkerPool {
 		if ((await definitionDigest(selectedSource.path)) !== selectedSource.digest)
 			throw new Error("Worker definition compatibility error");
 		await this.backend.catchUpWorkflow(root);
-		const boundary = this.backend
-			.listCheckpoints(root)
-			.find(
-				(entry) =>
-					entry.kind === "stage" &&
-					entry.topology?.boundary?.event === "start" &&
-					entry.topology.stageId === options.parentRun!.stageId,
-			);
+		const isChildBoundary = (entry: DurableCheckpoint | undefined): entry is DurableStageCheckpoint =>
+			entry?.kind === "stage" &&
+			entry.topology?.boundary?.event === "start" &&
+			entry.topology.stageId === options.parentRun!.stageId;
+		// The boundary is found by its id: listing every root checkpoint per child made a fan-out quadratic.
+		const recorded = this.backend.getStageCheckpoint(root, `boundary-start:${options.durableScope.scopePrefix}`);
+		const boundary = isChildBoundary(recorded) ? recorded : this.backend.listCheckpoints(root).find(isChildBoundary);
 		if (boundary?.kind !== "stage") throw new Error("Missing durable child boundary");
 		const execution = JSON.parse(
 			JSON.stringify({
@@ -1128,9 +1137,21 @@ export class LocalWorkerPool {
 				if (this.closed) throw this.closedError(root);
 				const result = this.results.get(work.id);
 				if (result) {
-					await this.inbound;
-					await this.backend.catchUpWorkflow(root);
-					await this.handoff?.complete(work);
+					// When many children finish at once, each one's completion takes its own slice of a turn (#3903).
+					this.completing++;
+					try {
+						await completeInTurns(
+							async () => {
+								await this.inbound;
+								// The handoff catches up the root's journal itself before it settles the child.
+								if (this.handoff === undefined) await this.backend.catchUpWorkflow(root);
+								else await this.handoff.complete(work);
+							},
+							() => this.completing,
+						);
+					} finally {
+						this.completing--;
+					}
 					// The child's stages are final now; end views still waiting to reconnect to them.
 					if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 					return result as unknown as RunResult;

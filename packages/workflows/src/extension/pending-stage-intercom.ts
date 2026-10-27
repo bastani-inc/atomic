@@ -1050,10 +1050,13 @@ export async function settleUndeliverablePendingStageMessages(
 	notify: (entry: PendingStageMessage, reason: string, notificationId: string) => Promise<boolean>,
 	ownsRun: (runId: string) => boolean = () => true,
 ): Promise<number> {
-	const runs = activeStore.runs().filter((run) => ownsRun(run.id));
-	if (!runs.some((run) => run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry)))) {
-		return 0;
-	}
+	// Ownership resolves a run's root through every run, so it is asked only once a run has settlement work:
+	// asking it of every run on each sweep made a wide fan-out's sweeps quadratic in its width.
+	const all = activeStore.runs();
+	const pending = (run: ReturnType<Store["runs"]>[number]) =>
+		run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry)) === true;
+	if (!all.some((run) => pending(run) && ownsRun(run.id))) return 0;
+	const runs = all.filter((run) => ownsRun(run.id));
 	let settled = 0;
 	for (const run of runs) {
 		// Retained/partial runs with no settlement work need no durable owner.
