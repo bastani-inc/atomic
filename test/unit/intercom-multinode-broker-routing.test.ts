@@ -430,6 +430,53 @@ test("a session that quit is queued for at once and delivered when it reconnects
 	await waitFor(() => framesOf(sender).find((entry) => entry.type === "delivered" && entry.messageId === sent.id));
 });
 
+test(
+	"a send that races its recipient's clean quit is queued for it, not reported uncertain, and delivered when it reconnects",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const returnAddress = recipient.registrationReturnAddress!;
+		// The recipient's broker records the quit only after the sender's broker has routed to it as live.
+		const leases = b!.opened.state.leases;
+		const release = leases.release.bind(leases);
+		let recordQuit!: () => void;
+		const quitRecorded = new Promise<void>((resolve) => {
+			recordQuit = resolve;
+		});
+		const spy = vi.spyOn(leases, "release").mockImplementation(async (lease) => {
+			await quitRecorded;
+			return release(lease);
+		});
+		try {
+			b!.leave(recipient);
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await vi.waitFor(async () => assert.equal((await a!.opened.state.outbox.read(sent.id)).status, "found"), {
+				timeout: CROSS_NODE_WAIT_MS,
+			});
+			recordQuit();
+			const outcome = await waitFor(() => outcomeOf(sender, sent.id), RECIPIENT_RECEIPT_TIMEOUT_MS * 2);
+			assert.equal(outcome.type, "queued", JSON.stringify(outcome));
+			assert.equal(outcome.type === "queued" && outcome.target, OFFLINE_SESSION_TARGET);
+			const waited = Date.now() - sentAt;
+			assert.ok(waited < RECIPIENT_RECEIPT_TIMEOUT_MS, `the sender heard queued after ${waited} ms`);
+
+			const back = await b!.connect("recipient", { returnAddress, id: recipient.info.id });
+			await waitFor(() => messageFrames(back, sent.id)[0]);
+			b!.router.received(back, sent.id);
+			await waitFor(() =>
+				framesOf(sender).find((entry) => entry.type === "delivered" && entry.messageId === sent.id),
+			);
+			assert.equal(messageFrames(back, sent.id).length, 1);
+		} finally {
+			spy.mockRestore();
+		}
+	},
+	RECIPIENT_RECEIPT_TIMEOUT_MS * 4,
+);
+
 test("a target no presence lease and no known session names is not found, as on a single node", async () => {
 	const [a] = await cluster(1);
 	const sender = await a!.connect("sender");

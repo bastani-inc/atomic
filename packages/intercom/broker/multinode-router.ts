@@ -421,7 +421,10 @@ export class MultiNodeRouter {
 		const sessionId = session.info.id;
 		this.serial(identity, async () => {
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
-			if (entry.lease !== undefined) await this.state.leases.release(entry.lease);
+			if (entry.lease !== undefined) {
+				await this.state.leases.release(entry.lease);
+				await this.wakeWaitingOrigins(identity);
+			}
 			await this.recordKnown(session, entry);
 			await this.state.pendingAsks.pruneSender(sessionId);
 			await this.state.pendingAsks.takeForTarget(sessionId);
@@ -967,21 +970,64 @@ export class MultiNodeRouter {
 		this.armWaiter(waiter, offline ? DELIVERED_MESSAGE_TTL_MS : RECIPIENT_RECEIPT_TIMEOUT_MS);
 		this.waiters.set(message.id, waiter);
 		if (offline) {
-			const listed = await this.state.outbox.listUndelivered(target.identity);
-			const index = listed.status === "listed" ? listed.rows.findIndex((entry) => entry.messageId === message.id) : -1;
-			this.host.write(request.socket, {
-				type: "queued",
-				messageId: message.id,
-				...(request.attemptId === undefined ? {} : { attemptId: request.attemptId }),
-				target: OFFLINE_SESSION_TARGET,
-				position: index + 1 || 1,
-			});
+			await this.writeQueued(request.socket, message.id, request.attemptId, target.identity);
 			return;
 		}
 		if (asksTarget) await this.writeQuestionTarget(request.socket, message.id, request.attemptId, target);
 		await this.bus.publish({ brokerId: target.hostBrokerId!, reason: "outbox", version: row.sequence });
+		// A clean quit recorded before this send's row was written is seen here; one recorded after it wakes this
+		// broker (`wakeWaitingOrigins`), so a send racing its recipient's quit is queued either way.
+		await this.queueIfRecipientLeft(waiter).catch((error: Error) => this.report(error));
 	}
 
+	private async writeQueued(
+		socket: BrokerConnectedSession["socket"],
+		messageId: string,
+		attemptId: string | undefined,
+		identity: string,
+	): Promise<void> {
+		const listed = await this.state.outbox.listUndelivered(identity);
+		const index = listed.status === "listed" ? listed.rows.findIndex((entry) => entry.messageId === messageId) : -1;
+		this.host.write(socket, {
+			type: "queued",
+			messageId,
+			...(attemptId === undefined ? {} : { attemptId }),
+			target: OFFLINE_SESSION_TARGET,
+			position: index + 1 || 1,
+		});
+	}
+
+	/**
+	 * A send routed to a live recipient that has since quit, before any broker claimed its row: the row was never
+	 * written to the recipient and no broker hosts it now, so the sender is told `queued`, as for a send routed after
+	 * the quit, instead of waiting out a receipt that cannot come and hearing the outcome is uncertain. Presence is
+	 * read before the row, so a row still unclaimed was never written to any recipient. True when told `queued`.
+	 */
+	private async queueIfRecipientLeft(waiter: Waiter): Promise<boolean> {
+		if (waiter.queued || this.waiters.get(waiter.messageId) !== waiter) return false;
+		const presence = await this.state.leases.read({ kind: "presence", targetIdentity: waiter.targetIdentity });
+		if (presence.status === "invalid") return false;
+		if (presence.status === "found" && presence.lease.ageMs < BROKER_LEASE_STALE_AFTER_MS) return false;
+		const read = await this.state.outbox.read(waiter.messageId);
+		if (read.status !== "found" || read.row.state !== "queued" || read.row.claimAttempts !== 0) return false;
+		if (this.waiters.get(waiter.messageId) !== waiter) return false;
+		this.dropWaiter(waiter);
+		const queued: Waiter = { ...waiter, queued: true, timer: undefined, capTimer: undefined, holdCheck: undefined };
+		this.armWaiter(queued, DELIVERED_MESSAGE_TTL_MS);
+		this.waiters.set(queued.messageId, queued);
+		await this.writeQueued(queued.socket, queued.messageId, queued.attemptId, queued.targetIdentity);
+		return true;
+	}
+
+	/** A recipient left: the brokers waiting on its undelivered rows re-read them, and queue the ones never claimed. */
+	private async wakeWaitingOrigins(identity: string): Promise<void> {
+		const listed = await this.state.outbox.listUndelivered(identity);
+		if (listed.status !== "listed") return;
+		for (const origin of new Set(listed.rows.map((row) => row.originBrokerId))) {
+			if (origin === this.brokerId) void this.checkOutcomes();
+			else await this.bus.publish({ brokerId: origin, reason: "outcome", version: 0 });
+		}
+	}
 	private async writeQuestionTarget(
 		socket: BrokerConnectedSession["socket"],
 		messageId: string,
@@ -1281,6 +1327,8 @@ export class MultiNodeRouter {
 							attemptId: waiter.attemptId,
 							reason: row.failureReason ?? "Session not found",
 						});
+					} else if (row.state === "queued" && row.claimAttempts === 0 && !waiter.queued) {
+						await this.queueIfRecipientLeft(waiter);
 					}
 				}
 			} while (state.again && !this.closed);
@@ -1391,6 +1439,7 @@ export class MultiNodeRouter {
 			this.holdSender(waiter, timeoutMs);
 			return;
 		}
+		if (read.status === "found" && read.row.state === "queued" && (await this.queueIfRecipientLeft(waiter))) return;
 		this.expireUncertain(waiter);
 	}
 
