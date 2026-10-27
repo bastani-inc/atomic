@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.48-alpha.1] - 2026-10-27
+
 ### Fixed
 
 - A session restored after Atomic restarts now rejoins the Intercom groups it had joined, so it can still reach its restored subagents in those groups without joining again. Each `join` and `leave` is saved with the session, and a restored session rejoins exactly the groups its own last record lists before it first connects. A group it left before the restart is not rejoined, a forked session does not inherit the record, and a session restored under a different home group keeps only its home group. The same holds for a resumed workflow stage, in process or on a replacement local worker: it comes back in its invocation group or subgroup and in every group it joined, so the launcher reaches it by path and its teammates by name ([#4079](https://github.com/bastani-inc/atomic/issues/4079))
