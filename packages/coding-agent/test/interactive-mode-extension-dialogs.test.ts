@@ -28,9 +28,7 @@ type DialogMethods = {
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
 		options?: { blocked?: { kind: "permission" | "question" | "auth"; message: string } },
 	): Promise<T>;
-	setCustomEditorComponent(
-		factory: ((tui: unknown, theme: unknown, keybindings: unknown) => Component) | undefined,
-	): void;
+	setCustomEditorComponent(factory: (() => Component) | undefined): void;
 };
 
 function createContext(): DialogContext & DialogMethods {
@@ -234,7 +232,7 @@ describe("InteractiveMode extension dialogs", () => {
 
 	it("keeps an open dialog visible when the editor component is replaced (earendil-works/pi#11431)", async () => {
 		const context = createContext();
-		(context as unknown as { defaultEditor: unknown }).defaultEditor = context.editor;
+		(context as DialogContext & { defaultEditor: DialogContext["editor"] }).defaultEditor = context.editor;
 		const confirmed = context.showExtensionConfirm("Title", "Continue?");
 		const customEditor: Component & { getText(): string; setText(text: string): void } = {
 			render: () => ["custom editor"],

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import type {
+	ConverseStreamCommandInput,
+	ConverseStreamCommandOutput,
+	ConverseStreamOutput,
+} from "@aws-sdk/client-bedrock-runtime";
 import { Type } from "typebox";
 import { beforeEach, describe, it, vi } from "vitest";
 
 const bedrockMock = vi.hoisted(() => ({
-	inputs: [] as unknown[],
-	respond: undefined as ((attempt: number) => Promise<unknown>) | undefined,
+	inputs: [] as CommandInput[],
+	respond: undefined as ((attempt: number) => Promise<ConverseStreamCommandOutput>) | undefined,
 }));
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
@@ -18,16 +23,16 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	class BedrockRuntimeClient {
 		middlewareStack = { add: () => {} };
 
-		send(command: { input: unknown }): Promise<unknown> {
-			bedrockMock.inputs.push(structuredClone(command.input));
+		send(command: { input: ConverseStreamCommandInput }): Promise<ConverseStreamCommandOutput> {
+			bedrockMock.inputs.push(structuredClone(command.input) as CommandInput);
 			return bedrockMock.respond!(bedrockMock.inputs.length);
 		}
 	}
 
 	class ConverseStreamCommand {
-		readonly input: unknown;
+		readonly input: ConverseStreamCommandInput;
 
-		constructor(input: unknown) {
+		constructor(input: ConverseStreamCommandInput) {
 			this.input = input;
 		}
 	}
@@ -46,9 +51,9 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { BedrockRuntimeServiceException } from "@aws-sdk/client-bedrock-runtime";
-import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
-import type { Model, StreamOptions, Tool } from "../src/types.ts";
-import { normalizeContext } from "../src/utils/transcript.ts";
+import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.js";
+import type { Model, StreamOptions, Tool } from "../src/types.js";
+import { normalizeContext } from "../src/utils/transcript.js";
 
 const model: Model<"bedrock-converse-stream"> = {
 	id: "us.anthropic.claude-opus-5-5",
@@ -84,10 +89,10 @@ function sdkError(name: string, message: string): Error {
 	return new BedrockRuntimeServiceException({ name, message, $fault: "client", $metadata: { httpStatusCode: 400 } });
 }
 
-function successResponse(): Promise<object> {
+function successResponse(): Promise<ConverseStreamCommandOutput> {
 	return Promise.resolve({
 		$metadata: { httpStatusCode: 200 },
-		stream: (async function* () {
+		stream: (async function* (): AsyncGenerator<ConverseStreamOutput> {
 			yield { messageStart: { role: "assistant" } };
 			yield { messageStop: { stopReason: "end_turn" } };
 		})(),
@@ -120,7 +125,7 @@ describe("Bedrock preferred strict tool fallback (earendil-works/pi#11416)", () 
 
 		assert.equal(result.stopReason, "stop");
 		assert.equal(payloadCalls, 2);
-		const [first, second] = bedrockMock.inputs as CommandInput[];
+		const [first, second] = bedrockMock.inputs;
 		assert.equal(first.toolConfig.tools[0].toolSpec.strict, true);
 		assert.notDeepEqual(first.toolConfig.tools[0].toolSpec.inputSchema.json, second.toolConfig.tools[0].toolSpec.inputSchema.json);
 		assert.equal(second.toolConfig.tools[0].toolSpec.strict, undefined);

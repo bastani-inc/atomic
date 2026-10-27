@@ -158,7 +158,8 @@ describe("DefaultPackageManager", () => {
 
 		it("should skip npm audit and fund output when uninstalling npm packages", async () => {
 			mkdirSync(join(agentDir, "npm"), { recursive: true });
-			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
 
 			await packageManager.remove("npm:@scope/pkg");
 

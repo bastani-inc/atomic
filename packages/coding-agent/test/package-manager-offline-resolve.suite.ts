@@ -311,8 +311,8 @@ describe("DefaultPackageManager", () => {
 			const internals = packageManager as object as PackageManagerInternals;
 			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
 			const runCommandSpy = vi.spyOn(internals, "runCommand").mockImplementation(async (command, args) => {
-				expect(command).toBe("npm");
-				expect(args).toEqual([
+				assert.equal(command, "npm");
+				assert.deepEqual(args, [
 					"install",
 					"example@latest",
 					"--prefix",
