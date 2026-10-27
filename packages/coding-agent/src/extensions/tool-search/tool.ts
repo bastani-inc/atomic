@@ -1,5 +1,6 @@
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition, ToolInfo, ToolNamespace } from "../../core/extensions/types.ts";
+import { createMcpToolName } from "../mcp/tools.ts";
 
 export const TOOL_SEARCH_TOOL_NAME = "tool_search";
 export const DEFAULT_TOOL_SEARCH_LIMIT = 8;
@@ -86,10 +87,22 @@ function normalizeName(name: string): string {
 /**
  * The normalized forms `query` can take for one tool name. MCP tools are registered as
  * `mcp__<server>__<tool>` with `-` and `.` sanitized to `_`, but skills and models also write the
- * dotted `mcp.<server>.<tool>` and the raw `mcp__alteryx-local__…` forms (#4065).
+ * dotted `mcp.<server>.<tool>` and the raw `mcp__alteryx-local__…` forms (#4065). In the dotted form
+ * only the first two dots separate server and tool. The rest is a raw tool name, either as written
+ * (`mcp.srv.get.item/v2` for the tool `get.item/v2`) or with its dots standing for `__`
+ * (`mcp.alteryx-local.alteryx_local.get_server_info` for `alteryx_local__get_server_info`); each is
+ * named the way registration names it, with `createMcpToolName`.
  */
 function nameQueryForms(query: string): Set<string> {
-	return new Set([normalizeName(query), normalizeName(query.trim().replaceAll(".", "__"))]);
+	const trimmed = query.trim();
+	const dotted = /^mcp\.([^.]+)\.(.+)$/i.exec(trimmed);
+	if (!dotted) return new Set([normalizeName(trimmed), normalizeName(trimmed.replaceAll(".", "__"))]);
+	const [, server, tool] = dotted;
+	return new Set([
+		normalizeName(trimmed),
+		normalizeName(createMcpToolName(server, tool)),
+		normalizeName(createMcpToolName(server, tool.replaceAll(".", "__"))),
+	]);
 }
 /**
  * Whether `query` names the tool: its full name or a suffix after a `__` separator, so `thread_read`

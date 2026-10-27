@@ -157,6 +157,20 @@ test("tool search resolves the dotted, prefixed and bare forms of an MCP tool na
 	}
 });
 
+test("tool search resolves a dotted MCP name whose tool part contains dots and slashes (#4065)", () => {
+	const documents = [
+		{
+			name: "mcp__my_server__get_item_v1",
+			description: "Get the item v2 from my server: get item, server item v2, mcp server get item v2.",
+		},
+		{ name: "mcp__my_server__get_item_v2", description: "Fetch one record." },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	assert.deepEqual(
+		new Bm25Ranker().rank("mcp.my-server.get.item/v2", documents, 1).map((match) => match.name),
+		["mcp__my_server__get_item_v2"],
+	);
+});
+
 test("tool search finds a tool whose name is only stop words, and nothing for other stop-word queries", () => {
 	const documents = [
 		{ name: "mcp__app__thread_read", description: "Read a thread." },

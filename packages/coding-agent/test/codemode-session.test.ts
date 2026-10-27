@@ -1175,12 +1175,14 @@ test("codemode describeTool resolves equivalent MCP tool name forms and refuses 
 			(pi) => {
 				pi.registerTool(register("mcp__alteryx_local__alteryx_local__get_server_info"));
 				pi.registerTool(register("mcp__alteryx_local__designer_local__get_server_info"));
+				pi.registerTool(register("mcp__my_server__get_item_v2"));
 			},
 		],
 		initialActiveToolNames: [
 			"codemode",
 			"mcp__alteryx_local__alteryx_local__get_server_info",
 			"mcp__alteryx_local__designer_local__get_server_info",
+			"mcp__my_server__get_item_v2",
 		],
 	});
 	try {
@@ -1194,7 +1196,9 @@ test("codemode describeTool resolves equivalent MCP tool name forms and refuses 
 							for (const form of forms) described.push((await describeTool(form)).includes("Tool mcp__alteryx_local__alteryx_local__get_server_info"));
 							let ambiguous = "";
 							try { await describeTool("get_server_info"); } catch (error) { ambiguous = error.message; }
-							return { described, ambiguous };
+							const slashed = (await describeTool("mcp.my-server.get.item/v2")) ?? "";
+							const searched = (await searchTools("mcp.my-server.get.item/v2", { limit: 1 })).map((hit) => hit.name);
+							return { described, ambiguous, slashed: slashed.includes("Tool mcp__my_server__get_item_v2"), searched };
 						`,
 					}),
 				],
@@ -1207,6 +1211,8 @@ test("codemode describeTool resolves equivalent MCP tool name forms and refuses 
 		assert(result?.role === "toolResult" && !result.isError, getMessageText(result));
 		const output = JSON.parse(getMessageText(result).split("\n").at(-1) ?? "");
 		assert.deepEqual(output.described, [true, true, true]);
+		assert.equal(output.slashed, true);
+		assert.deepEqual(output.searched, ["mcp__my_server__get_item_v2"]);
 		assert.match(output.ambiguous, /ambiguous/);
 		assert.match(output.ambiguous, /mcp__alteryx_local__alteryx_local__get_server_info/);
 		assert.match(output.ambiguous, /mcp__alteryx_local__designer_local__get_server_info/);
