@@ -21,7 +21,7 @@ const REAL_VITEST_PROCESS_TIMEOUT_MS = 90_000;
 const DESCENDANT_PROCESS_TIMEOUT_MS = 10_000;
 
 for (const [label, root, projectCount] of [
-	["repository projects", repositoryRoot, 3],
+	["repository projects", repositoryRoot, 4],
 	["coding-agent projects", join(repositoryRoot, "packages/coding-agent"), 1],
 ] as const) {
 	test(

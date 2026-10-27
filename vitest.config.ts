@@ -40,15 +40,20 @@ const providerCredentialSetup = "./test/global-setup-provider-credential-isolati
 const artifactSetup = "./test/global-setup-workflow-artifacts.ts";
 const nativeSetup = "./test/global-setup-natives.ts";
 
-const project = (name: string, directory: string) => ({
+const project = (
+	name: string,
+	include: string,
+	options: { readonly exclude?: readonly string[]; readonly groupOrder?: number } = {},
+) => ({
 	resolve: { alias: sharedAliases },
 	test: {
 		name,
 		root: import.meta.dirname,
 		environment: "node" as const,
 		globals: true,
-		include: [`${directory}/**/*.test.ts`],
-		exclude: ["**/node_modules/**"],
+		include: [include],
+		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
+		sequence: { groupOrder: options.groupOrder ?? 0 },
 		setupFiles,
 		globalSetup: [herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
@@ -57,9 +62,18 @@ const project = (name: string, directory: string) => ({
 });
 
 /**
- * Three projects, one per suite directory, so the CI job split and the
+ * The pool load gate measures the root's main-thread lag under 150 busy workers against fixed bounds, so other files
+ * running beside it would be measured too: with sharding's longest-first order it started beside about five other
+ * pool files, and its p99 lag reached 105.6 ms of its 100 ms bound (run 40577049870). It is its own project with a
+ * later `groupOrder`, so vitest runs it after every other integration file of the run (or shard) has finished, with
+ * nothing beside it. `npm run test:integration` selects both projects.
+ */
+const loadGate = "test/integration/workflow-pool-load-gate.test.ts";
+
+/**
+ * One project per suite directory, so the CI job split and the
  * diagnostics artifact names all survive the move off `bun test <dir>`
- * unchanged.
+ * unchanged, plus the integration load gate on its own (above).
  *
  * All projects use native setup: the CI project now executes the minified
  * extension/native binary boundary instead of limiting itself to source inspection.
@@ -70,8 +84,13 @@ const project = (name: string, directory: string) => ({
  */
 export default defineConfig({
 	test: {
-		// Longest files first, and duration-balanced `--shard` (the CI integration and unit jobs each run three shards per OS).
+		// Longest files first, and duration-balanced `--shard` (CI runs the unit and integration suites in shards).
 		sequence: { sequencer: DurationSequencer },
-		projects: [project("unit", "test/unit"), project("integration", "test/integration"), project("ci", "test/ci")],
+		projects: [
+			project("unit", "test/unit/**/*.test.ts"),
+			project("integration", "test/integration/**/*.test.ts", { exclude: [loadGate] }),
+			project("integration-load-gate", loadGate, { groupOrder: 1 }),
+			project("ci", "test/ci/**/*.test.ts"),
+		],
 	},
 });
