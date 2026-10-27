@@ -290,13 +290,13 @@ describe("ToolExecutionComponent parity", () => {
 
 		const rendered = stripAnsi(component.render(200).join("\n"));
 		expect(rendered.match(/Full output:/g)?.length ?? 0).toBe(1);
-		expect(rendered).toMatch(/line-4000[^\n]*\n[^\S\n]*\n \[Truncated: showing 3000 of 4000 lines\. Full output:\]/);
-		expect(rendered).not.toMatch(/line-4000[^\n]*\n[^\S\n]*\n[^\S\n]*\n \[Truncated:/);
+		assert.match(rendered, /line-4000[^\n]*\n[^\S\n]*\n \[Truncated: showing 3000 of 4000 lines\. Full output:\]/);
+		assert.doesNotMatch(rendered, /line-4000[^\n]*\n[^\S\n]*\n[^\S\n]*\n \[Truncated:/);
 		expect(rendered).toContain("Truncated: showing 3000 of 4000 lines");
 		expect(rendered).not.toContain("[Showing lines 1001-4000 of 4000. Full output:");
 	});
 
-	test("bash renderer keeps a long full-output path with spaces whole and linked", async () => {
+	test("bash renderer keeps a long full-output path with spaces whole and linked (#3828)", async () => {
 		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 		const longTemp = realpathSync(mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(2))));
 		// os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
@@ -332,10 +332,10 @@ describe("ToolExecutionComponent parity", () => {
 			// Wide enough for the path alone (plus row padding), too narrow for the path beside its label.
 			const lines = component.render(fullOutputPath.length + 4);
 			const plain = lines.map((line) => stripAnsi(line).trim());
-			expect(plain).toContain(fullOutputPath);
+			assert.ok(plain.includes(fullOutputPath), plain);
 			// Wider than the terminal, the path still wraps; its link target keeps it whole.
 			const narrow = component.render(40).join("\n");
-			expect(narrow).toContain(`\x1b]8;;${pathToFileURL(resolve(fullOutputPath)).href}`);
+			assert.ok(narrow.includes(`\x1b]8;;${pathToFileURL(resolve(fullOutputPath)).href}`), narrow);
 		} finally {
 			vi.unstubAllEnvs();
 			rmSync(longTemp, { recursive: true, force: true });
