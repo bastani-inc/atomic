@@ -632,6 +632,126 @@ test.skipIf(process.platform === "win32")(
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
 
+/** Records each failure the root sends a pooled stage, and resolves once one has come back. */
+function watchFailures() {
+	const answer = LocalWorkerPool.prototype.answerPooledStagePrompt;
+	const returned = Promise.withResolvers<PromptResult>();
+	const spy = vi.spyOn(LocalWorkerPool.prototype, "answerPooledStagePrompt").mockImplementation(async function (
+		this: LocalWorkerPool,
+		runId: string,
+		stageId: string,
+		reply: PooledPromptAnswer,
+	): Promise<PromptResult> {
+		const result = await answer.call(this, runId, stageId, reply);
+		if (reply.kind === "failed") returned.resolve(result);
+		return result;
+	});
+	return { returned: returned.promise, restore: () => spy.mockRestore() };
+}
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an ask_user_question whose root form host fails after the worker died, before the replacement asks again, fails the re-asked call without showing the form again",
+	async () => {
+		const failures = watchFailures();
+		const run = await openRun("pool-open-prompt-question-fail-gap-", questionChildPath, "gatedNoReaskChild", true);
+		const hostFails = Promise.withResolvers<never>();
+		let requests = 0;
+		// The question's form host fails; the readiness gate the stage shows afterwards is shown as usual.
+		const show = run.broker.requestCustomUi.bind(run.broker);
+		const host = vi.spyOn(run.broker, "requestCustomUi").mockImplementation((runId, stageId, ...rest) => {
+			const stage = run.store
+				.runs()
+				.find((candidate) => candidate.id === runId)
+				?.stages.find((candidate) => candidate.id === stageId);
+			if (stage?.inputRequest?.id !== "question-call") return show(runId, stageId, ...rest);
+			requests++;
+			return hostFails.promise;
+		});
+		try {
+			const first = await untilValue(() => {
+				if (requests !== 1) return undefined;
+				for (const candidate of run.store.runs())
+					for (const stage of candidate.stages)
+						if (stage.inputRequest?.id === "question-call") return { runId: candidate.id, stageId: stage.id };
+				return undefined;
+			}, run.execution);
+			run.pane.retarget(run.rootRunId, first.stageId, first.runId);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// Explicit signal: the replacement started and waits before it asks again.
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			hostFails.reject(new Error("the root's form host failed"));
+			// Explicit signal: the failure reached the pool, which no attempt could take yet.
+			const refused = await settled(failures.returned);
+			assert.equal(refused.ok, false, "no attempt had the question pending");
+			releaseReaskGate(run.path);
+			// The stage then asks whether to move on; that form is shown and answered.
+			await untilValue(
+				() =>
+					plain(run.pane.render(120)).includes("Are you ready to move on to the next stage?") ? true : undefined,
+				run.execution,
+			);
+			run.advance();
+			run.pane.handleInput("\r");
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.match(String(outcome.result?.branch), /answered: .*the root's form host failed/s);
+			assert.equal(requests, 1, "the failed form is not shown again");
+		} finally {
+			hostFails.reject(new Error("closed"));
+			host.mockRestore();
+			failures.restore();
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"#4022: an SDK ui that rejects a ctx.ui prompt after the worker died, before the replacement asks again, fails the re-asked prompt without asking the ui again",
+	async () => {
+		const failures = watchFailures();
+		const asks: PromiseWithResolvers<string>[] = [];
+		const ui: WorkflowUIAdapter = {
+			input() {
+				const answer = Promise.withResolvers<string>();
+				asks.push(answer);
+				return answer.promise;
+			},
+			confirm: async () => false,
+			select: async (_message, options) => options[0]!,
+			editor: async (initial) => initial ?? "",
+			custom: async () => {
+				throw new Error("not used");
+			},
+		};
+		const run = await openRun("pool-open-prompt-sdk-fail-gap-", promptChildPath, "gatedChild", true, ui);
+		try {
+			await untilValue(() => (asks.length === 1 ? true : undefined), run.execution);
+			const [worker] = run.pool.workerPids;
+			assert.ok(worker !== undefined);
+			process.kill(worker, "SIGKILL");
+			// Explicit signal: the replacement started and waits before it asks again.
+			await untilValue(() => (reaskGateStarts(run.path) > 1 ? true : undefined), run.execution);
+			asks[0]!.reject(new Error("the SDK ui failed"));
+			// Explicit signal: the failure reached the pool, which no attempt could take yet.
+			const refused = await settled(failures.returned);
+			assert.equal(refused.ok, false, "no attempt had the prompt pending");
+			releaseReaskGate(run.path);
+			const outcome = await settled(run.execution);
+			assert.equal(outcome.status, "failed");
+			assert.match(JSON.stringify(outcome.error), /the SDK ui failed/);
+			assert.equal(asks.length, 1, "the failed prompt is not asked again");
+		} finally {
+			for (const ask of asks) ask.resolve("unused");
+			failures.restore();
+			await run.close();
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
 test.skipIf(process.platform === "win32")(
 	"#4022: a root resumed after its pooled child completed on a replacement that asked a different question replays the cached child without running it again",
 	async () => {

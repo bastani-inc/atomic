@@ -32,7 +32,6 @@ import {
 	type ExternalRunRouteOwner,
 	pendingStageMessageRouter,
 } from "../shared/external-run-routes.js";
-import type { StageInputAnswer } from "../shared/stage-prompt.js";
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
@@ -70,7 +69,13 @@ import {
 	workerDefinitionSources,
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
-import { HeldPromptAnswers, promptIdentity, questionIdentity } from "./held-prompt-answers.js";
+import {
+	HeldPromptAnswers,
+	type HeldPromptOutcome,
+	type HeldQuestionOutcome,
+	promptIdentity,
+	questionIdentity,
+} from "./held-prompt-answers.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
@@ -312,10 +317,11 @@ export class LocalWorkerPool {
 		{ readonly promptId: string; readonly generation: number; readonly controller: AbortController }
 	>();
 	/**
-	 * Gives a held answer to a prompt already routed to its answerer (the stage chat, `workflow
-	 * answer` or an SDK `ui`), by run, stage and prompt id (#4022). Whichever answers first is sent.
+	 * Gives a held answer, or a held failure, to a prompt already routed to its answerer (the stage
+	 * chat, `workflow answer` or an SDK `ui`), by run, stage and prompt id (#4022). Whichever settles
+	 * first is sent.
 	 */
-	private readonly routedPromptAnswers = new Map<string, (response: WorkflowSerializableValue) => void>();
+	private readonly routedPromptAnswers = new Map<string, (outcome: HeldPromptOutcome) => void>();
 	/** An SDK caller's `stageUiBroker`, which shows the brokered questions of pooled stages. */
 	private questionBroker?: StageUiBroker;
 	/** Answers that reached a dead attempt, held for the replacement that asks again (#4022). */
@@ -581,23 +587,48 @@ export class LocalWorkerPool {
 					if (prompt === undefined) continue;
 					const key = JSON.stringify([run.id, stage.id, prompt.id]);
 					if (this.routedPrompts.has(key)) continue;
+					// Its outcome is held for a later attempt: this attempt's view of the prompt is out of date.
+					if (this.heldAnswers.awaitsLaterAttempt(run.id, stage.id, generation)) continue;
 					this.routedPrompts.add(key);
-					// The user already answered this prompt while the attempt that asked it first was dying.
+					// The user already answered this prompt, or its UI failed, while the attempt that asked it
+					// first was dying.
 					const held = this.heldAnswers.takePrompt(run.id, stage.id, prompt, generation);
-					if (held !== undefined) store?.resolveStagePendingPrompt(run.id, stage.id, prompt.id, held.response);
-					const fail = (error: Error) =>
-						this.answerPooledStagePrompt(run.id, stage.id, {
+					if (held !== undefined && "response" in held)
+						store?.resolveStagePendingPrompt(run.id, stage.id, prompt.id, held.response);
+					const fail = async (error: Error) => {
+						const result = await this.answerPooledStagePrompt(run.id, stage.id, {
 							kind: "failed",
 							promptId: prompt.id,
 							error: error.message,
 						});
+						// The attempt that asked died before the failure reached it: hold the failure for the
+						// replacement, which asks the same prompt again, so its UI is not asked again.
+						if (!result.ok && result.refusal !== "StageNotLive") {
+							this.heldAnswers.hold(run.id, stage.id, {
+								kind: "prompt",
+								generation,
+								promptId: prompt.id,
+								identity: promptIdentity(prompt),
+								error: error.message,
+							});
+							this.applyHeldAnswer(run.id, stage.id, generation);
+						}
+						return result;
+					};
 					// A custom prompt renders a component that exists only in the worker: fail it at once.
-					// An answer held for this prompt that comes back refused later still answers it, once.
+					// An outcome held for this prompt that comes back refused later still settles it, once.
+					let failedElsewhere = held !== undefined && "error" in held;
 					const heldLater = Promise.withResolvers<WorkflowSerializableValue>();
-					this.routedPromptAnswers.set(key, heldLater.resolve);
+					this.routedPromptAnswers.set(key, (outcome) => {
+						if ("response" in outcome) return heldLater.resolve(outcome.response);
+						failedElsewhere = true;
+						heldLater.reject(new Error(outcome.error));
+					});
 					const answered =
 						held !== undefined
-							? Promise.resolve(held.response)
+							? "response" in held
+								? Promise.resolve(held.response)
+								: Promise.reject(new Error(held.error))
 							: prompt.kind === "custom"
 								? Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE))
 								: Promise.race([
@@ -633,13 +664,17 @@ export class LocalWorkerPool {
 							return result;
 						},
 						// A `ui` that rejects fails the prompt in the child; it is never asked again silently.
-						(error: Error) => (this.promptUi !== undefined || prompt.kind === "custom" ? fail(error) : undefined),
+						(error: Error) =>
+							failedElsewhere || this.promptUi !== undefined || prompt.kind === "custom"
+								? fail(error)
+								: undefined,
 					);
-					// A prompt answered or failed stays routed: asking again would ask the user twice. Only an
-					// answer its attempt never received re-arms it, for the replacement that asks again.
+					// A prompt answered or failed stays routed: asking again would ask the user twice. An outcome
+					// its attempt never received is held, and re-arms the prompt for the replacement that asks
+					// again, which takes that outcome instead of asking.
 					void answer
 						.then((result) => {
-							if (result?.ok === false && result.refusal === "StaleAttempt") this.routedPrompts.delete(key);
+							if (result?.ok === false && result.refusal !== "StageNotLive") this.routedPrompts.delete(key);
 						})
 						.catch(() => this.routedPrompts.delete(key));
 				}
@@ -691,9 +726,13 @@ export class LocalWorkerPool {
 			import("../shared/stage-ui-broker.js"),
 		]);
 		if (question?.promptId !== promptId || signal.aborted) return signal.aborted;
-		// The user already answered this question while the attempt that asked it first was dying.
+		// The user already answered this question, or its form host failed, while the attempt that asked
+		// it first was dying.
 		const held = this.heldAnswers.takeQuestion(runId, stageId, question, generation);
-		if (held !== undefined) return this.sendQuestionAnswer(runId, stageId, question, generation, held.answer, route);
+		if (held !== undefined) {
+			const sent = await this.sendQuestionOutcome(runId, stageId, question, generation, held, route);
+			return sent && "error" in held ? "failed" : sent;
+		}
 		const broker = this.questionBroker ?? currentStageUiBroker();
 		let answered: { readonly value: QuestionnaireResult } | undefined;
 		let failure: Error | undefined;
@@ -718,48 +757,58 @@ export class LocalWorkerPool {
 			if (signal.aborted) broker.clearStagePrompt(runId, stageId);
 		}
 		if (failure !== undefined) {
-			await this.answerPooledStagePrompt(runId, stageId, { kind: "failed", promptId, error: failure.message });
-			return "failed";
+			const sent = await this.sendQuestionOutcome(
+				runId,
+				stageId,
+				question,
+				generation,
+				{ error: failure.message },
+				route,
+			);
+			return sent ? "failed" : false;
 		}
 		if (answered === undefined) return true;
 		// The form's result, as the worker's own form would have returned it.
-		return this.sendQuestionAnswer(runId, stageId, question, generation, { raw: answered.value }, route);
+		return this.sendQuestionOutcome(runId, stageId, question, generation, { answer: { raw: answered.value } }, route);
 	}
 	/**
-	 * Sends a question's answer to the stage's current attempt. An attempt that died before it
-	 * received the answer leaves it held for the replacement, which asks the same question again
-	 * (#4022); false then, so that question is routed again.
+	 * Sends a question's answer, or its form host's failure, to the stage's current attempt. An
+	 * attempt that died before it received it, or a replacement that has not raised its form yet,
+	 * leaves it held for the replacement, which asks the same question again (#4022); false then, so
+	 * that question is routed again and takes the held outcome instead of showing its form again.
 	 */
-	private async sendQuestionAnswer(
+	private async sendQuestionOutcome(
 		runId: string,
 		stageId: string,
 		question: PooledStageQuestion,
 		generation: number,
-		answer: StageInputAnswer,
+		outcome: HeldQuestionOutcome,
 		route: AbortController,
 	): Promise<boolean> {
-		const result = await this.answerPooledStagePrompt(runId, stageId, {
-			kind: "input",
-			promptId: question.promptId,
-			answer,
-		});
+		const result = await this.answerPooledStagePrompt(
+			runId,
+			stageId,
+			"error" in outcome
+				? { kind: "failed", promptId: question.promptId, error: outcome.error }
+				: { kind: "input", promptId: question.promptId, answer: outcome.answer },
+		);
 		if (result.ok || result.refusal === "StageNotLive") return true;
 		this.heldAnswers.hold(runId, stageId, {
 			kind: "question",
 			generation,
 			promptId: question.promptId,
 			identity: questionIdentity(question),
-			answer,
+			...outcome,
 		});
-		// This route ends with this answer. A later attempt's route already showing the same question
-		// gets the held answer instead of a second one: its form closes, and the question is routed
+		// This route ends with this outcome. A later attempt's route already showing the same question
+		// gets the held outcome instead of a second one: its form closes, and the question is routed
 		// again to send it. Any other route is not this one's to end.
 		const key = JSON.stringify([runId, stageId]);
 		const active = this.routedQuestions.get(key);
 		if (active?.controller === route) this.routedQuestions.delete(key);
 		else if (active !== undefined && active.promptId === question.promptId && active.generation > generation) {
 			this.routedQuestions.delete(key);
-			active.controller.abort(new Error("The question was answered before its worker was replaced."));
+			active.controller.abort(new Error("The question was settled before its worker was replaced."));
 		}
 		this.applyHeldAnswer(runId, stageId, generation);
 		return false;
@@ -779,15 +828,16 @@ export class LocalWorkerPool {
 		if (generation <= heldGeneration) return;
 		if (stage.inputRequest !== undefined) this.routeQuestion(runId, stageId, stage.inputRequest.id, generation);
 		const prompt = stage.pendingPrompt;
-		// A prompt already routed waits for its answerer; the held answer answers it instead, once.
+		// A prompt already routed waits for its answerer; the held outcome settles it instead, once.
 		const deliver =
 			prompt === undefined ? undefined : this.routedPromptAnswers.get(JSON.stringify([runId, stageId, prompt.id]));
 		if (prompt === undefined || deliver === undefined) return;
 		const held = this.heldAnswers.takePrompt(runId, stageId, prompt, generation);
 		if (held === undefined) return;
 		// The stage chat's prompt card closes as answered; an SDK `ui` still asking is not asked to answer.
-		if (this.promptUi === undefined) this.store?.resolveStagePendingPrompt(runId, stageId, prompt.id, held.response);
-		deliver(held.response);
+		if (this.promptUi === undefined && "response" in held)
+			this.store?.resolveStagePendingPrompt(runId, stageId, prompt.id, held.response);
+		deliver(held);
 	}
 	/** Holds one watched stage's turn loop without touching pool-wide control (#3996). */
 	async pausePooledStage(watch: WatchId): Promise<ControlResult> {
