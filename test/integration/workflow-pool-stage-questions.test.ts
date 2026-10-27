@@ -15,6 +15,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
+import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../../packages/workflows/src/extension/wiring.js";
 import { createStore, loadWorkerWorkflow, run } from "../../packages/workflows/src/index.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
@@ -22,6 +23,7 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.j
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { PoolStageHandoff, type PoolStagePublication } from "../../packages/workflows/src/workers/stage-handoff.js";
 import { FOLLOW_UP_MARKER, POOL_QUESTION } from "../fixtures/pool-question-child.js";
 import { testRunId } from "../helpers/run-id.js";
 import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -406,84 +408,133 @@ test.skipIf(process.platform === "win32")(
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
 
+/**
+ * Kills the worker of a stage showing its ask_user_question, then fails the root's form host while
+ * the replacement's question is shown. With `withdrawFirst`, the replacement's first publication of
+ * the stage does not ask yet, which withdraws the dead attempt's form before the replacement shows its own.
+ */
+async function failReaskedForm(prefix: string, withdrawFirst: boolean): Promise<void> {
+	const directory = makeTempDirectory(prefix);
+	const path = join(directory, "journal.sqlite");
+	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+	const child = await loadWorkerDefinition({
+		path: childPath,
+		exportName: "noReaskChild",
+		digest: await definitionDigest(childPath),
+	});
+	const publish = PoolStageHandoff.prototype.publishBatch;
+	let split = withdrawFirst;
+	const publications = vi.spyOn(PoolStageHandoff.prototype, "publishBatch").mockImplementation(async function (
+		this: PoolStageHandoff,
+		batch: readonly PoolStagePublication[],
+	) {
+		// In place: the pool reads each publication's outcome by its index in this batch.
+		const list = batch as PoolStagePublication[];
+		const index = list.findIndex(
+			(entry) =>
+				entry.work.generation > 1 && entry.runs.some((run) => run.stages.some((stage) => stage.inputRequest)),
+		);
+		if (split && index >= 0) {
+			split = false;
+			const asking = list[index]!;
+			list.splice(index, 0, {
+				work: asking.work,
+				runs: asking.runs.map((run) => ({
+					...run,
+					stages: run.stages.map(({ inputRequest: _asked, ...stage }) => stage),
+				})),
+			});
+		}
+		return publish.call(this, list);
+	});
+	const pool = new LocalWorkerPool(backend, {
+		journalPath: path,
+		workers: 1,
+		definitions: [{ definition: child, path: childPath, exportName: "noReaskChild" }],
+	});
+	const store = createStore();
+	const hostFails = Promise.withResolvers<never>();
+	const forms: AbortSignal[] = [];
+	/** A form host that stays open until the test fails it; a withdrawn form closes, as a real host's does. */
+	class FailingBroker extends StageUiBroker {
+		override requestCustomUi<T>(
+			_runId: string,
+			_stageId: string,
+			_factory: PiCustomOverlayFactory<T>,
+			_options?: PiCustomOverlayOptions,
+			signal?: AbortSignal,
+		): Promise<T> {
+			const form = signal ?? new AbortController().signal;
+			forms.push(form);
+			if (form.aborted) return Promise.reject(form.reason);
+			const withdrawn = Promise.withResolvers<never>();
+			form.addEventListener("abort", () => withdrawn.reject(form.reason), { once: true });
+			return Promise.race([hostFails.promise, withdrawn.promise]);
+		}
+	}
+	try {
+		const execution = engineRun(
+			parentOf(child),
+			{},
+			{
+				runId: testRunId(prefix),
+				cwd: directory,
+				store,
+				durableBackend: backend,
+				stageUiBroker: new FailingBroker(store),
+			},
+		);
+		await untilOrRunEnds(async () => forms.length > 0, execution, CONDITION_TIMEOUT_MS);
+		const [worker] = pool.workerPids;
+		assert.ok(worker !== undefined);
+		const shownBeforeKill = forms.length;
+		process.kill(worker, "SIGKILL");
+		// Explicit signals: the replacement asks the same question again, and the root shows a form for it:
+		// the dead attempt's form, kept open, or the replacement's own once the dead attempt's was withdrawn.
+		await untilOrRunEnds(
+			async () =>
+				forms.some((signal) => !signal.aborted) &&
+				(!withdrawFirst || forms.length > shownBeforeKill) &&
+				store
+					.runs()
+					.some((candidate) =>
+						candidate.stages.some(
+							(stage) =>
+								(stage.workerExecution?.generation ?? 0) > 1 && stage.inputRequest?.id === "question-call",
+						),
+					),
+			execution,
+			CONDITION_TIMEOUT_MS,
+		);
+		const shown = forms.length;
+		hostFails.reject(new Error("the replacement's form host failed"));
+		// Explicit: the run settles on its own; a stage whose session the failure disposed does not.
+		const outcome = await Promise.race([
+			execution,
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("the run did not settle")), CONDITION_TIMEOUT_MS).unref(),
+			),
+		]);
+		assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+		assert.match(String(outcome.result?.text), /answered: .*the replacement's form host failed/s);
+		assert.equal(forms.length, shown, "the failed form is not shown again");
+	} finally {
+		publications.mockRestore();
+		await pool.close();
+		await backend.close();
+		removeTempDirectory(directory);
+	}
+}
+
 test.skipIf(process.platform === "win32")(
 	"an ask_user_question asked again on the replacement whose form host fails records that failure as the call's result, and the stage goes on (#3996)",
-	async () => {
-		const directory = makeTempDirectory("pool-stage-question-kill-reject-");
-		const path = join(directory, "journal.sqlite");
-		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
-		const child = await loadWorkerDefinition({
-			path: childPath,
-			exportName: "noReaskChild",
-			digest: await definitionDigest(childPath),
-		});
-		const pool = new LocalWorkerPool(backend, {
-			journalPath: path,
-			workers: 1,
-			definitions: [{ definition: child, path: childPath, exportName: "noReaskChild" }],
-		});
-		const store = createStore();
-		const shown = Promise.withResolvers<void>();
-		const hostFails = Promise.withResolvers<never>();
-		let requests = 0;
-		/** A form host that stays open until the test fails it. */
-		class FailingBroker extends StageUiBroker {
-			override requestCustomUi<T>(): Promise<T> {
-				requests++;
-				shown.resolve();
-				return hostFails.promise;
-			}
-		}
-		try {
-			const execution = engineRun(
-				parentOf(child),
-				{},
-				{
-					runId: testRunId("pool-stage-question-kill-reject"),
-					cwd: directory,
-					store,
-					durableBackend: backend,
-					stageUiBroker: new FailingBroker(store),
-				},
-			);
-			await Promise.race([
-				shown.promise,
-				execution.then((outcome) => assert.fail(`the run ended first: ${JSON.stringify(outcome)}`)),
-			]);
-			const [worker] = pool.workerPids;
-			assert.ok(worker !== undefined);
-			process.kill(worker, "SIGKILL");
-			// The replacement asks the same question again; then the root's form host fails.
-			await untilOrRunEnds(
-				async () =>
-					store
-						.runs()
-						.some((candidate) =>
-							candidate.stages.some(
-								(stage) =>
-									(stage.workerExecution?.generation ?? 0) > 1 && stage.inputRequest?.id === "question-call",
-							),
-						),
-				execution,
-				CONDITION_TIMEOUT_MS,
-			);
-			hostFails.reject(new Error("the replacement's form host failed"));
-			// Explicit: the run settles on its own; a stage whose session the failure disposed does not.
-			const outcome = await Promise.race([
-				execution,
-				new Promise<never>((_, reject) =>
-					setTimeout(() => reject(new Error("the run did not settle")), CONDITION_TIMEOUT_MS).unref(),
-				),
-			]);
-			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
-			assert.match(String(outcome.result?.text), /answered: .*the replacement's form host failed/s);
-			assert.equal(requests, 1, "the failed form is not shown again");
-		} finally {
-			await pool.close();
-			await backend.close();
-			removeTempDirectory(directory);
-		}
-	},
+	() => failReaskedForm("pool-stage-question-kill-reject-", false),
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a replacement that publishes its stage before asking again withdraws the dead attempt's form, and its own form's failure is the call's result, shown once (#3996)",
+	() => failReaskedForm("pool-stage-question-kill-withdraw-", true),
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
 

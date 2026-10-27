@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { PendingPrompt, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { HeldPromptAnswers, promptIdentity } from "../../packages/workflows/src/workers/held-prompt-answers.js";
+import {
+	HeldPromptAnswers,
+	promptIdentity,
+	questionIdentity,
+} from "../../packages/workflows/src/workers/held-prompt-answers.js";
+import type { PooledStageQuestion } from "../../packages/workflows/src/workers/stage-watch-types.js";
 
 const asked: PendingPrompt = { id: "hil-first", kind: "input", message: "Which branch?", createdAt: 1 };
 
@@ -64,4 +69,37 @@ test("#4022: a held answer survives a later attempt's publication that has not a
 	held.settleRun("run", [], 2);
 	held.settleRun("run", [{ ...stage(2, {}), id: "other-stage", status: "running" }], 2);
 	assert.deepEqual(held.takePrompt("run", "stage", { ...asked, id: "hil-again" }, 2), { response: "gap-answer" });
+});
+
+const question: PooledStageQuestion = {
+	promptId: "question-call",
+	kind: "ask_user_question",
+	params: { questions: [] },
+};
+
+function holdingFailure(): HeldPromptAnswers {
+	const held = new HeldPromptAnswers();
+	held.hold("run", "stage", {
+		kind: "question",
+		generation: 1,
+		promptId: question.promptId,
+		identity: questionIdentity(question),
+		error: "the form host failed",
+	});
+	return held;
+}
+
+test("#4022: a form host failure refused before the replacement asked goes once to the same question, and is discarded otherwise", () => {
+	const reasked = holdingFailure();
+	reasked.settle("run", stage(2, { inputRequest: { id: question.promptId } as StageSnapshot["inputRequest"] }), 2);
+	assert.deepEqual(reasked.takeQuestion("run", "stage", question, 2), { error: "the form host failed" });
+	assert.equal(reasked.takeQuestion("run", "stage", question, 2), undefined, "handed out once");
+
+	const changed = holdingFailure();
+	changed.settle("run", stage(2, { inputRequest: { id: "other-call" } as StageSnapshot["inputRequest"] }), 2);
+	assert.equal(changed.takeQuestion("run", "stage", question, 2), undefined, "a different question is shown");
+
+	const ended = holdingFailure();
+	ended.settle("run", stage(2, { status: "completed" }), 2);
+	assert.equal(ended.takeQuestion("run", "stage", question, 2), undefined, "an ended stage drops it");
 });

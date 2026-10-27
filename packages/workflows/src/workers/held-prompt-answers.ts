@@ -4,22 +4,26 @@ import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { PooledStageQuestion } from "./stage-watch-types.js";
 
-/** An answer the user gave a pooled stage's prompt that its attempt never received. */
+/** What became of a prompt: the user's response, or the error its root UI failed with. */
+export type HeldPromptOutcome = { readonly response: WorkflowSerializableValue } | { readonly error: string };
+
+/** What became of a brokered question: the user's answer, or the error its form host failed with. */
+export type HeldQuestionOutcome = { readonly answer: StageInputAnswer } | { readonly error: string };
+
+/** An answer the user gave a pooled stage's prompt, or its UI's failure, that its attempt never received. */
 type HeldAnswer =
-	| {
+	| ({
 			readonly kind: "prompt";
 			readonly generation: number;
 			readonly promptId: string;
 			readonly identity: string;
-			readonly response: WorkflowSerializableValue;
-	  }
-	| {
+	  } & HeldPromptOutcome)
+	| ({
 			readonly kind: "question";
 			readonly generation: number;
 			readonly promptId: string;
 			readonly identity: string;
-			readonly answer: StageInputAnswer;
-	  };
+	  } & HeldQuestionOutcome);
 
 /** What the user was asked by a `ctx.ui` prompt, whatever attempt asked it. */
 export function promptIdentity(prompt: PendingPrompt): string {
@@ -33,8 +37,9 @@ export function questionIdentity(question: PooledStageQuestion): string {
 
 /**
  * Answers to prompts of pooled stages that reached an attempt after it died (#4022), by run and
- * stage. The replacement attempt asks the same prompt again; the held answer goes to that prompt
- * once, so the user is not asked twice. A replacement that asks something else, a stage that
+ * stage, and failures of the root UI that showed them, refused the same way. The replacement attempt
+ * asks the same prompt again; the held answer or failure goes to that prompt once, so the user is
+ * not asked twice and a failed prompt is not shown again. A replacement that asks something else, a stage that
  * ends, and an attempt that is still live and moved on discard it: a held answer only ever goes
  * to the same question on a later attempt.
  */
@@ -84,36 +89,43 @@ export class HeldPromptAnswers {
 			if (held.runId === runId && generation > held.generation && !present.has(key)) this.held.delete(key);
 	}
 
-	/** The held response for `prompt`, asked again by attempt `generation`; it is handed out once. */
+	/**
+	 * Whether a publication of attempt `generation` must not route the stage's prompt again: an
+	 * outcome is held for a later attempt's prompt, and this attempt's view of it is out of date.
+	 */
+	awaitsLaterAttempt(runId: string, stageId: string, generation: number): boolean {
+		const held = this.held.get(JSON.stringify([runId, stageId]));
+		return held !== undefined && generation <= held.generation;
+	}
+
+	/** The held outcome for `prompt`, asked again by attempt `generation`; it is handed out once. */
 	takePrompt(
 		runId: string,
 		stageId: string,
 		prompt: PendingPrompt,
 		generation: number,
-	): { readonly response: WorkflowSerializableValue } | undefined {
+	): HeldPromptOutcome | undefined {
 		const key = JSON.stringify([runId, stageId]);
 		const held = this.held.get(key);
 		if (held === undefined || generation <= held.generation) return undefined;
 		this.held.delete(key);
-		return held.kind === "prompt" && held.identity === promptIdentity(prompt)
-			? { response: held.response }
-			: undefined;
+		if (held.kind !== "prompt" || held.identity !== promptIdentity(prompt)) return undefined;
+		return "error" in held ? { error: held.error } : { response: held.response };
 	}
 
-	/** The held answer for `question`, asked again by attempt `generation`; it is handed out once. */
+	/** The held outcome for `question`, asked again by attempt `generation`; it is handed out once. */
 	takeQuestion(
 		runId: string,
 		stageId: string,
 		question: PooledStageQuestion,
 		generation: number,
-	): { readonly answer: StageInputAnswer } | undefined {
+	): HeldQuestionOutcome | undefined {
 		const key = JSON.stringify([runId, stageId]);
 		const held = this.held.get(key);
 		if (held === undefined || generation <= held.generation) return undefined;
 		this.held.delete(key);
-		return held.kind === "question" && held.identity === questionIdentity(question)
-			? { answer: held.answer }
-			: undefined;
+		if (held.kind !== "question" || held.identity !== questionIdentity(question)) return undefined;
+		return "error" in held ? { error: held.error } : { answer: held.answer };
 	}
 
 	clear(): void {
