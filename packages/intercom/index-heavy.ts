@@ -5,6 +5,11 @@ import {
   readIntercomSessionIdentity,
 } from "./session-identity.js";
 import {
+  INTERCOM_SESSION_MEMBERSHIPS_ENTRY,
+  type IntercomSessionMemberships,
+  readIntercomSessionMemberships,
+} from "./session-memberships.js";
+import {
   INTERCOM_RECOVERY_PEERS_EVENT,
   type IntercomRecoveryPeersRequest,
   isAwaitIntercomPeerRequest,
@@ -335,6 +340,31 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function clearJoinedGroups(): void {
     if (currentSessionId) sessionMemberships.delete(currentSessionId);
     releaseJoinedGroups();
+  }
+  /** #4079: record a `join` or `leave` with the session so a restored session rejoins the same groups. */
+  async function persistJoinedGroups(groups: readonly string[] | null): Promise<void> {
+    const sessionId = currentSessionId;
+    if (!sessionId) return;
+    try {
+      await pi.appendEntry(INTERCOM_SESSION_MEMBERSHIPS_ENTRY, {
+        sessionId,
+        homeGroup: resolveSessionHomeGroup(),
+        groups: groups === null ? null : [...normalizeGroups(groups)],
+      } satisfies IntercomSessionMemberships);
+    } catch {
+      // Best effort: without the record a later restart restores only the home group, as before.
+    }
+  }
+  function persistedJoinedGroups(ctx: ExtensionContext): readonly string[] | undefined {
+    try {
+      return readIntercomSessionMemberships(
+        ctx.sessionManager.getEntries(),
+        ctx.sessionManager.getSessionId(),
+        resolveSessionHomeGroup(),
+      );
+    } catch {
+      return undefined;
+    }
   }
   function releaseJoinedGroups(): void {
     joinedGroups = null;
@@ -1591,7 +1621,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     currentStatus,
   });
   pi.on("session_start", async (event, ctx) => {
-    const retainedMemberships = event.reason === "reload" ? sessionMemberships.get(ctx.sessionManager.getSessionId()) : undefined;
+    // A reload keeps the memberships this process held. A restart or resume reopens the session from its
+    // store, so it rejoins the groups its own last `join`/`leave` recorded there (#4079), before the session
+    // first connects: its registration then carries them, as a reconnect's does.
+    const retainedMemberships = event.reason === "reload"
+      ? sessionMemberships.get(ctx.sessionManager.getSessionId())
+      : persistedJoinedGroups(ctx);
     if (retainedMemberships) setJoinedGroups(retainedMemberships);
     const pendingStageDelivery = ctx.orchestrationContext?.kind === "workflow-stage" ? ctx.orchestrationContext.pendingStageDelivery : undefined;
     if (pendingStageDelivery === undefined) {
@@ -1660,8 +1695,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
-    setJoinedGroups,
-    clearJoinedGroups,
+    setJoinedGroups: async (groups) => {
+      setJoinedGroups(groups);
+      await persistJoinedGroups(groups);
+    },
+    clearJoinedGroups: async () => {
+      clearJoinedGroups();
+      await persistJoinedGroups(null);
+    },
     replyTracker: () => replyTracker,
   });
   registerIntercomOverlay(pi, {

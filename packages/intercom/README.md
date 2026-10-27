@@ -191,6 +191,11 @@ startup identity. An ordinary host can therefore control several joined workflow
 invocations, while a workflow worker cannot gain another invocation's parent-control
 authority by joining its group and reconnecting.
 
+Joined memberships are also saved with the session: a session restored after
+Atomic restarts rejoins the groups its last `join`/`leave` left it in, and a group
+it left is not rejoined. A `send` to a session that is live only in a group your
+read-only `list` peek can show fails with `<name> is live in group <group>; join it to send`.
+
 **Worker finds something unexpected — escalates and waits:**
 ```typescript
 intercom({

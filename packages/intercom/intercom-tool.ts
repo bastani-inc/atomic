@@ -195,8 +195,9 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
-  setJoinedGroups(groups: readonly string[]): void;
-  clearJoinedGroups(): void;
+  /** Record the memberships after a `join`/`leave`; settles once they are saved with the session (#4079). */
+  setJoinedGroups(groups: readonly string[]): void | Promise<void>;
+  clearJoinedGroups(): void | Promise<void>;
   confirmSend: boolean;
   /** Atomically reserves one correlation-keyed reply waiter. */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
@@ -373,7 +374,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           }
           try {
             const groups = await connectedClient.joinGroup(targetGroup);
-            deps.setJoinedGroups(groups);
+            await deps.setJoinedGroups(groups);
             return {
               content: [{ type: "text", text: `Joined intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.` }],
               isError: false,
@@ -409,10 +410,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               if (homeGroup === undefined) throw new Error("Intercom home group is unavailable");
               await connectedClient.updatePresenceAcked({ groups: [homeGroup] });
               groups = connectedClient.groups;
-              deps.clearJoinedGroups();
+              await deps.clearJoinedGroups();
             } else {
               groups = await connectedClient.leaveGroup(targetGroup);
-              deps.setJoinedGroups(groups);
+              await deps.setJoinedGroups(groups);
             }
             const text = targetGroup === undefined
               ? `Returned to home intercom membership. Memberships: ${groups.join(", ")}.`
