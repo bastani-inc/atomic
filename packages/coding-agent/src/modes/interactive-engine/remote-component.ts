@@ -3,7 +3,12 @@ import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { WidgetScrollRequest, WidgetScrollState } from "../../core/extensions/ui-types.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
-import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
+import type {
+	EngineBlockedStatus,
+	InteractiveEngineMessage,
+	JsonValue,
+	SerializableOverlayOptions,
+} from "./protocol.ts";
 import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 import { TerminalModeController } from "./terminal-mode-controller.ts";
 
@@ -335,6 +340,7 @@ export class RemoteComponentController {
 					message.reserveTranscriptRows === true,
 					message.purpose,
 					message.widgetScroll,
+					message.blocked,
 				);
 				break;
 			case "engine_custom_close":
@@ -397,6 +403,7 @@ export class RemoteComponentController {
 		reserveTranscriptRows = false,
 		purpose?: "prompt" | "navigation",
 		widgetScroll?: { maxHeight: number; maxHeightFraction?: number },
+		blocked?: EngineBlockedStatus,
 	): void {
 		if (this.mounted.has(componentId)) return;
 		if (widgetKey) {
@@ -453,6 +460,7 @@ export class RemoteComponentController {
 					handlesInternalUiAction,
 					reserveTranscriptRows,
 					overlayOptions: overlayOptions(options),
+					blocked,
 					onHandle: (handle) => {
 						if (mounted) mounted.handle = handle;
 					},

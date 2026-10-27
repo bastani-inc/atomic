@@ -18,6 +18,7 @@ import {
 } from "./interactive-mode-deps.ts";
 import type { ExtensionDialogComponent } from "./interactive-mode-types.ts";
 import { isMouseWheelInput, isOverlayMounted } from "./interactive-tui.ts";
+import type { BlockedStatus } from "./program-status-reporter.ts";
 
 function validateReservedBottomOverlayOptions(options: OverlayOptions | undefined): void {
 	const anchor = options?.anchor;
@@ -65,6 +66,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 		signal?: AbortSignal;
 		overlayOptions?: OverlayOptions | (() => OverlayOptions);
 		onHandle?: (handle: OverlayHandle) => void;
+		blocked?: BlockedStatus;
 	},
 ): Promise<T> {
 	const savedText = this.editor.getText();
@@ -363,7 +365,7 @@ InteractiveModeBase.prototype.showExtensionCustom = async function <T>(
 				} else {
 					inlineMount = component;
 					const deferFocus = this.shouldDeferInlineCustomUiFocus();
-					this.pushExtensionDialog(component, undefined, !deferFocus);
+					this.pushExtensionDialog(component, options?.blocked, !deferFocus);
 					if (deferFocus) {
 						this.pendingInlineCustomUiFocus = component;
 						this.notifyHostCustomUiStateListeners();

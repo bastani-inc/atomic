@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.ui.custom()` accepts `blocked: { kind, message }` so an inline component that waits for an answer reports Atomic as blocked through OSC 7501 program status while it is visible, including in the default isolated mode. `kind` is `"question"`, `"permission"` or `"auth"`; overlays ignore the option ([pi #11428](https://github.com/earendil-works/pi/issues/11428))
+
 ### Changed
 
 - The `openai` and `openai-api` providers default to `gpt-6.1-sol` instead of `gpt-5.5`, matching `openai-codex` ([pi #11467](https://github.com/earendil-works/pi/pull/11467))

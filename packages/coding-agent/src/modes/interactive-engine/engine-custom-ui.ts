@@ -16,6 +16,7 @@ import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import type { Theme } from "../interactive/theme/theme.js";
 import { theme } from "../interactive/theme/theme.js";
 import {
+	type EngineBlockedStatus,
 	type EngineTerminalControl,
 	type InteractiveEngineMessage,
 	isJsonValue,
@@ -38,6 +39,8 @@ interface CustomUiOptions {
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	onHandle?: (handle: OverlayHandle) => void;
 	signal?: AbortSignal;
+	/** Report the host as blocked on user input while this inline component is visible. */
+	blocked?: EngineBlockedStatus;
 }
 
 interface ActiveComponent {
@@ -267,6 +270,7 @@ export class EngineCustomUiService {
 			handlesInternalUiAction: options?.handlesInternalUiAction,
 			reserveTranscriptRows: options?.reserveTranscriptRows,
 			overlayOptions: serializableOverlayOptions(options?.overlayOptions),
+			blocked: options?.blocked,
 		});
 		if (options?.onHandle) options.onHandle(this.remoteHandle(componentId));
 		if (doneCalled) this.sendDone(componentId, pendingDone as T);
