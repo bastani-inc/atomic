@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import {
@@ -66,6 +66,11 @@ function fakeTimers() {
 }
 
 test("a burst of store changes refreshes the widget within its budget, then once at the window's end (#4009)", () => {
+	// The widget's elapsed-clock tick takes its delay from the wall clock through the same timers. Pin the wall
+	// clock at a whole second of the run's elapsed time so that tick is a full second out, never mistaken for
+	// the budget's deferred refresh.
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(run("root").startedAt + 1_000_000);
 	const costMs = 3;
 	const { store, clock, advance, refreshes } = costlyStore(costMs);
 	const timers = fakeTimers();
@@ -97,6 +102,39 @@ test("a burst of store changes refreshes the widget within its budget, then once
 		advance(WIDGET_REFRESH_WINDOW_MS);
 		store.recordRunExecutionState("root", { lastProgressAt: 1_000 });
 		assert.equal(refreshes() - before, immediate + 2);
+	} finally {
+		dispose();
+		vi.useRealTimers();
+	}
+});
+
+test("a deferred widget refresh that fails stays inside its timer instead of crashing the host (#4009)", () => {
+	// As in an RPC host: every widget mount throws. A refresh run by a store change is contained by the store's
+	// publish; the budget's deferred refresh runs from a timer, where an escaping error would end the process.
+	const { store, clock, refreshes } = costlyStore(3);
+	const timers = fakeTimers();
+	const dispose = installStoreWidget(
+		{
+			ui: {
+				setWidget: (_key, factory) => {
+					if (factory) throw new Error("Component-factory widgets are unavailable in this RPC host.");
+				},
+				notify: () => {},
+			},
+		},
+		store,
+		timers.api,
+		clock,
+	);
+	try {
+		store.recordRunStart(run("root"));
+		for (let index = 0; index < 100; index++) store.recordRunExecutionState("root", { lastProgressAt: index });
+		const deferred = timers.scheduled.filter((timer) => !timer.cleared);
+		assert.equal(deferred.length, 1, "the over-budget changes fold into one deferred refresh");
+
+		const before = refreshes();
+		assert.doesNotThrow(() => deferred[0]!.handler());
+		assert.equal(refreshes(), before + 1, "the deferred refresh still ran");
 	} finally {
 		dispose();
 	}
