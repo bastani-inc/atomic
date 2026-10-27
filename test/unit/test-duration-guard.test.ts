@@ -1096,6 +1096,86 @@ test("an object that is written, deleted, assigned into or passed away is not a 
 	assert.equal(budgets.size, 10);
 });
 
+// Greptile PRRT_kwDOQHh8ns6wikO9: a helper is only called while nothing can replace it.
+test("a helper that is reassigned or passed away is not called for its budget", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			'import { tunable } from "../helpers/tunable.js";',
+			"function reassigned() {",
+			"\treturn 60_000;",
+			"}",
+			"reassigned = () => 120_000;",
+			"function reassignedInBody() {",
+			"\treturn 60_000;",
+			"}",
+			"function plain() {",
+			"\treturn 60_000;",
+			"}",
+			"const passedAway = () => 60_000;",
+			"register(passedAway);",
+			"let steady = () => 70_000;",
+			"let replaced = () => 70_000;",
+			"replaced = () => 1_000;",
+			"var destructured = () => 70_000;",
+			"[destructured] = [() => 1_000];",
+			"wrap(poolTestBudgetMs);",
+			'test("reassigned declaration", async () => {',
+			"}, reassigned());",
+			'test("reassigned in a test body", async () => {',
+			"\treassignedInBody = () => 1_000;",
+			"}, reassignedInBody());",
+			'test("passed away", async () => {',
+			"}, passedAway());",
+			'test("let reassigned", async () => {',
+			"}, replaced());",
+			'test("var reassigned by destructuring", async () => {',
+			"}, destructured());",
+			'test("imported helper passed away", async () => {',
+			"}, poolTestBudgetMs(1).timeoutMs);",
+			'test("exported let reassigned in its module", async () => {',
+			"}, tunable());",
+			'test("plain declaration", async () => {',
+			"}, plain());",
+			'test("let never reassigned", async () => {',
+			"}, steady());",
+		],
+		[
+			"reassigned declaration",
+			"reassigned in a test body",
+			"passed away",
+			"let reassigned",
+			"var reassigned by destructuring",
+			"imported helper passed away",
+			"exported let reassigned in its module",
+			"plain declaration",
+			"let never reassigned",
+		],
+		{
+			"tunable.ts": [
+				"export let tunable = () => 80_000;",
+				"export function retune() {",
+				"\ttunable = () => 1_000;",
+				"}",
+			],
+		},
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["reassigned declaration", UNRESOLVED],
+			["reassigned in a test body", UNRESOLVED],
+			["passed away", UNRESOLVED],
+			["let reassigned", UNRESOLVED],
+			["var reassigned by destructuring", UNRESOLVED],
+			["imported helper passed away", UNRESOLVED],
+			["exported let reassigned in its module", UNRESOLVED],
+			["plain declaration", { timeoutMs: 60_000, unresolved: false }],
+			["let never reassigned", { timeoutMs: 70_000, unresolved: false }],
+		]),
+	);
+});
+
 // Greptile PRRT_kwDOQHh8ns6wiTVI: a name resolves through the call site's own
 // lexical scopes, never through a same-named declaration in a sibling scope.
 test("budget names resolve through the call site's lexical scope chain", () => {

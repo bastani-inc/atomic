@@ -203,6 +203,8 @@ interface LexicalScope {
 	readonly constants: Map<string, Expression | undefined>;
 	/** Function declarations; `undefined` marks a name bound here more than once. */
 	readonly functions: Map<string, FunctionNode | undefined>;
+	/** `let`/`var name = init` bindings, used only as helpers that are never reassigned; `undefined` if unknown. */
+	readonly assignable: Map<string, Expression | undefined>;
 	/** Bindings whose object may change after it was created: a member written, deleted or called. */
 	readonly mutated: Set<string>;
 	/** Member paths of a binding that are passed or aliased elsewhere, where the object could be changed. */
@@ -384,6 +386,7 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 			declared: new Set(),
 			constants: new Map(),
 			functions: new Map(),
+			assignable: new Map(),
 			mutated: new Set(),
 			escapes: new Map(),
 		};
@@ -434,10 +437,14 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 					const target = node.kind === "var" ? varScope(ancestors) : around;
 					for (const declarator of node.declarations) {
 						for (const name of bindingNames(declarator.id)) {
+							const fresh = !target.declared.has(name);
 							if (node.kind === "const" && declarator.id.type === "Identifier" && declarator.init) {
-								target.constants.set(name, target.declared.has(name) ? undefined : declarator.init);
+								target.constants.set(name, fresh ? declarator.init : undefined);
 							} else if (target.constants.has(name)) {
 								target.constants.set(name, undefined);
+							}
+							if (node.kind !== "const" && declarator.id.type === "Identifier") {
+								target.assignable.set(name, fresh ? (declarator.init ?? undefined) : undefined);
 							}
 							target.declared.add(name);
 						}
@@ -511,18 +518,38 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 		}
 	}
 
+	const ownerOf = (name: string, ancestors: TraversalAncestors): LexicalScope | undefined => {
+		let owner: LexicalScope | undefined = innermost(ancestors);
+		while (owner && !owner.declared.has(name)) owner = owner.parent;
+		return owner;
+	};
 	traverse(program, {
 		enter(node, ancestors) {
+			// `name = ...`, `[name] = ...`, `({ name } = ...)` and `for (name of ...)` rebind a name; Babel does
+			// not count these targets as references, so they are found here.
+			const target =
+				node.type === "AssignmentExpression"
+					? node.left
+					: (node.type === "ForOfStatement" || node.type === "ForInStatement") &&
+							node.left.type !== "VariableDeclaration"
+						? node.left
+						: undefined;
+			if (target) {
+				for (const name of bindingNames(target)) ownerOf(name, ancestors)?.mutated.add(name);
+				return;
+			}
 			if (node.type !== "Identifier") return;
 			const parent = ancestors.at(-1);
 			if (!parent || !isReferenced(node, parent.node, ancestors.at(-2)?.node)) return;
-			let owner: LexicalScope | undefined = innermost(ancestors);
-			while (owner && !owner.declared.has(node.name)) owner = owner.parent;
-			// Only `const` and import bindings can carry a known value; uses of anything else are irrelevant.
-			if (!owner || !(owner.constants.has(node.name) || (owner === root && module.imports.has(node.name)))) {
-				return;
-			}
-			recordUse(owner, node.name, ancestors);
+			const owner = ownerOf(node.name, ancestors);
+			// Only constants, helpers and imports can carry a known value; uses of anything else are irrelevant.
+			const tracked =
+				owner &&
+				(owner.constants.has(node.name) ||
+					owner.functions.has(node.name) ||
+					owner.assignable.has(node.name) ||
+					(owner === root && module.imports.has(node.name)));
+			if (owner && tracked) recordUse(owner, node.name, ancestors);
 		},
 	});
 	return module;
@@ -874,6 +901,18 @@ class ConstantEvaluator {
 		return leaks.every((leak) => harmless(value, leak.path, leak.shallow)) ? value : undefined;
 	}
 
+	/**
+	 * Whether the helper `name` (bound in `owner`) may not be the function it was
+	 * declared as when called: it is reassigned anywhere in its module (by an
+	 * assignment, update or destructuring), has a member written or called, or the
+	 * function itself is passed, stored, returned or exported where it could be
+	 * swapped for another.
+	 */
+	private replaceable(owner: LexicalScope, name: string): boolean {
+		if (owner.mutated.has(name)) return true;
+		return (owner.escapes.get(name) ?? []).some((leak) => leak.path.length === 0);
+	}
+
 	/** Whether `name` is bound in `scope`'s chain or the helper being evaluated, so it is not the global. */
 	private bound(name: string, scope: LexicalScope, locals: Locals): boolean {
 		return locals.has(name) || this.owner(name, scope) !== undefined;
@@ -884,10 +923,10 @@ class ConstantEvaluator {
 		const owner = this.owner(name, scope);
 		if (!owner) return undefined;
 		const key = `${owner.id}#call:${name}`;
-		if (seen.has(key)) return undefined;
+		if (seen.has(key) || this.replaceable(owner, name)) return undefined;
 		const next = new Set(seen).add(key);
-		if (owner.constants.has(name)) {
-			const init = owner.constants.get(name);
+		if (owner.constants.has(name) || owner.assignable.has(name)) {
+			const init = owner.constants.has(name) ? owner.constants.get(name) : owner.assignable.get(name);
 			const helper =
 				init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression" ? init : undefined;
 			return helper ? this.apply(helper, args, owner.module, next) : undefined;
