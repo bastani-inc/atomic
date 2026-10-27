@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -14,7 +13,7 @@ import { loadWorkerWorkflow } from "../../packages/workflows/src/workers/definit
 import { POOL_JOIN_GROUP } from "../fixtures/pool-intercom-join-child.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { testRunId } from "../helpers/run-id.js";
-import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+import { makeTempDirectory, readDirectorySync, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator and two worker processes in turn run the pooled child. */
@@ -23,7 +22,7 @@ const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const CONDITION_TIMEOUT_MS = 60_000;
 
 function marker(directory: string, prefix: string): string | undefined {
-	return readdirSync(directory).find((name) => name.startsWith(prefix));
+	return readDirectorySync(directory).find((name) => name.startsWith(prefix));
 }
 
 test.skipIf(process.platform === "win32")(

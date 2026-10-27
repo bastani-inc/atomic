@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
 import net from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+import { makeTempDirectory } from "../helpers/runtime.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "intercom-groups-restore-")));
+const brokerFixture = new IntercomBrokerFixture(makeTempDirectory("intercom-groups-restore-"));
 brokerFixture.overrideAgentDir();
 // Intercom's broker paths are snapshotted at import time, so import after the agent dir override.
 const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");

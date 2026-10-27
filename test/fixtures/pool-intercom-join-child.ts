@@ -1,9 +1,9 @@
-import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
+import { fileExistsSync, writeTextSync } from "../helpers/runtime.js";
 import { poolStageOptions } from "./pool-stage-options.js";
 
 /** The group the pooled stage joins on its first worker (#4079). */
@@ -78,15 +78,15 @@ export const child = workflow({
 						true,
 					);
 				if (process.pid === firstPid) {
-					writeFileSync(join(directory, `joined-${process.pid}`), "");
+					writeTextSync(join(directory, `joined-${process.pid}`), "");
 					// Held until the test kills this worker.
 					return createAssistantMessageEventStream();
 				}
-				if (!joined) writeFileSync(join(directory, "fresh-session"), "");
+				if (!joined) writeTextSync(join(directory, "fresh-session"), "");
 				const stream = createAssistantMessageEventStream();
 				void (async () => {
-					writeFileSync(join(directory, `resumed-${process.pid}`), "");
-					while (!existsSync(join(directory, "release"))) await delay(25);
+					writeTextSync(join(directory, `resumed-${process.pid}`), "");
+					while (!fileExistsSync(join(directory, "release"))) await delay(25);
 					const finished = done(model, [{ type: "text", text: "resumed" }], false);
 					for await (const event of finished) stream.push(event);
 					stream.end();

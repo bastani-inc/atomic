@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CreateAgentSessionOptions, SessionEntry, SessionManager } from "@bastani/atomic";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
@@ -13,6 +11,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { configureTestStoreBackend } from "../helpers/store-backend.js";
 import { createPersistedStageFixture } from "../unit/persisted-stage-fixture.js";
 
@@ -22,7 +21,7 @@ const STATE_POLL_TIMEOUT_MS = 10_000;
 const STATE_POLL_INTERVAL_MS = 25;
 const repoRoot = resolve(import.meta.dirname, "../..");
 const extensionDir = join(repoRoot, "packages/intercom");
-const agentDir = mkdtempSync(join(tmpdir(), "resumed-stage-groups-"));
+const agentDir = makeTempDirectory("resumed-stage-groups-");
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
@@ -223,7 +222,7 @@ afterAll(async () => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true });
+	removeTempDirectory(agentDir);
 });
 
 const cleanups: Array<() => void | Promise<void>> = [];
