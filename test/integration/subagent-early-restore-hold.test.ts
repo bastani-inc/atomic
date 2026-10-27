@@ -263,12 +263,16 @@ test(
 			const outcomes = [...held.map((entry) => entry.outcome), ask].map((outcome, index) =>
 				outcome.finally(() => settled.push(String(index))),
 			);
+			// Observed from the start: if an assertion fails before the await below, cleanup disconnects the client and
+			// these sends reject; unobserved, that rejection escapes and is credited to a later test.
+			void Promise.allSettled(outcomes);
 			await sleep(SETTLE_MS);
 			assert.deepEqual(settled, [], "every send waits for the subagent instead of failing with Session not found");
 
 			// Recovery restores the child; it takes over the hold the session already had.
 			const launched: RunSyncOptions[] = [];
 			const restoration = restoreSubagentChild(parent.restoreDeps(launched), parent.ctx, "early1:0");
+			void Promise.allSettled([restoration]);
 			await vi.waitFor(() => assert.equal(launched.length, 1), { timeout: 10_000, interval: 10 });
 			assert.deepEqual(settled, [], "nothing is released while the child is relaunching");
 			const capability = launched[0]?.supervisorAuthorization;
@@ -398,6 +402,7 @@ test(
 		const outcomes = [...before, ...after].map((entry, index) =>
 			entry.outcome.finally(() => settled.push(String(index))),
 		);
+		void Promise.allSettled(outcomes);
 		await sleep(SETTLE_MS);
 		assert.deepEqual(settled, [], "the handover released nothing");
 
