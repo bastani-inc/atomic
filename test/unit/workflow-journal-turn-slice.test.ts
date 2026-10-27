@@ -10,7 +10,7 @@ import type { JournalEntry } from "../../packages/workflows/src/durable/journal/
 /** Each operation's journal read holds the thread this long, as a synchronous SQLite statement does. */
 const OPERATION_COST_MS = 2;
 const OPERATIONS = 128;
-/** The journal's turn budget (JOURNAL_TURN_BUDGET_MS in journal-backend.ts). */
+/** The journal's turn budget (TURN_BUDGET_MS in journal-backend.ts). */
 const TURN_BUDGET_MS = 8;
 /** Scheduling noise of a loaded test host; far below the 124 operations a missed check runs together. */
 const HOST_SLACK_MS = 30;

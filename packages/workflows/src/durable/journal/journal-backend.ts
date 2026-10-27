@@ -70,34 +70,32 @@ function removeProcessExitCleanup(cleanup: () => void): void {
 		process.off("exit", runProcessExitCleanups);
 }
 /**
- * Bounds how long journal work keeps one turn of the event loop.
+ * Bounds how long journal work, and other per-child work of a fan-out, keeps one turn of the event loop.
  *
  * Journal operations resolve in microtasks once their SQLite statement returns, so a fan-out
- * that starts or dispatches many children chains every child's journal work into one turn: the
+ * that starts, dispatches or completes many children chains every child's work into one turn: the
  * 150-worker load gate measured single tasks of 300 ms at worker startup on a contended host.
- * While a journal has a fan-out's worth of operations waiting, they go through one FIFO queue.
+ * While a fan-out's worth of operations is waiting, a turn slicer runs them through its FIFO queue.
  * The queue starts its next operation only after the previous one settles, or after the event
- * loop has turned if it is still waiting on I/O. It checks the turn budget right before each
- * start, and once the budget is spent it yields with one `setImmediate`. So no turn runs more
- * than the budget plus one operation, and operations still start in the order they were queued.
- * Each queued operation runs in the async context of the caller that queued it, not of the caller
- * whose operation started the drain.
- * A single run's sequential journal work keeps only a few operations waiting and runs directly,
- * so its ordering against other promises is unchanged.
+ * loop has turned if it is still waiting on I/O. It checks the turn budget, shared by every
+ * slicer, right before each start, and once the budget is spent it yields with one `setImmediate`.
+ * So no turn runs more than the budget plus one operation per slicer, and operations still start
+ * in the order they were queued. Each queued operation runs in the async context of the caller
+ * that queued it, not of the caller whose operation started the drain. Work below the threshold,
+ * such as a single run's sequential journal work, runs directly, so its ordering against other
+ * promises is unchanged.
  *
  * `setImmediate` comes from `node:timers`, so a test that fakes the global timers cannot hold
- * journal work behind an immediate it never runs.
+ * the work behind an immediate it never runs.
  */
-const JOURNAL_TURN_BUDGET_MS = 8;
-/** Waiting operations that mark a fan-out; one workflow's own work keeps far fewer queued. */
+const TURN_BUDGET_MS = 8;
+/** Waiting journal operations that mark a fan-out; one workflow's own work keeps far fewer queued. */
 const FAN_OUT_WAITING_OPERATIONS = 32;
 
-/** When the current turn's journal work began; cleared at the next check phase. */
+/** When the current turn's sliced work began; cleared at the next check phase. */
 let turnStartedAt: number | undefined;
-const fanOutQueue: (() => Promise<void>)[] = [];
-let fanOutDraining = false;
 
-function journalTurnStart(): number {
+function turnStart(): number {
 	if (turnStartedAt === undefined) {
 		turnStartedAt = performance.now();
 		setImmediate(() => {
@@ -111,60 +109,62 @@ function nextTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function drainFanOut(): Promise<void> {
-	fanOutDraining = true;
-	let sliceStartedAt = journalTurnStart();
-	try {
-		for (let start = fanOutQueue.shift(); start !== undefined; start = fanOutQueue.shift()) {
-			if (performance.now() - sliceStartedAt >= JOURNAL_TURN_BUDGET_MS) {
-				await nextTurn();
-				sliceStartedAt = performance.now();
+/**
+ * Runs `run` directly while nothing is queued and `waiting()` (the caller's operations in flight, this
+ * one included) is below `threshold`; otherwise through the slicer's FIFO queue.
+ */
+export type TurnSlicer = <T>(run: () => Promise<T>, waiting: () => number) => Promise<T>;
+
+export function createTurnSlicer(threshold: number): TurnSlicer {
+	const queue: (() => Promise<void>)[] = [];
+	let draining = false;
+	const drain = async (): Promise<void> => {
+		draining = true;
+		try {
+			for (let start = queue.shift(); start !== undefined; start = queue.shift()) {
+				if (performance.now() - turnStart() >= TURN_BUDGET_MS) await nextTurn();
+				const settled = start();
+				// The next start waits for this operation, but not past the turn: one waiting on I/O lets
+				// the queue go on in the next turn, which then has a fresh budget.
+				let turn: NodeJS.Immediate | undefined;
+				await Promise.race([
+					settled,
+					new Promise<void>((resolve) => {
+						turn = setImmediate(resolve);
+					}),
+				]);
+				clearImmediate(turn);
 			}
-			const settled = start();
-			// The next start waits for this operation, but not past the turn: one waiting on I/O lets
-			// the queue go on in the next turn, which then has a fresh budget.
-			let turn: NodeJS.Immediate | undefined;
-			const turned = await Promise.race([
-				settled.then(() => false),
-				new Promise<boolean>((resolve) => {
-					turn = setImmediate(() => resolve(true));
-				}),
-			]);
-			clearImmediate(turn);
-			if (turned) sliceStartedAt = performance.now();
+		} finally {
+			draining = false;
 		}
-	} finally {
-		fanOutDraining = false;
-	}
+	};
+	return <T>(run: () => Promise<T>, waiting: () => number): Promise<T> => {
+		turnStart();
+		if (queue.length === 0 && !draining && waiting() < threshold) return run();
+		// The queue drains from whichever caller started it; each operation runs in its own caller's async
+		// context (workflow execution, write admission and any other store), captured as it is queued.
+		const inCallerContext = AsyncLocalStorage.snapshot();
+		return new Promise<T>((resolve, reject) => {
+			queue.push(() => {
+				let result: Promise<T>;
+				try {
+					result = inCallerContext(run);
+				} catch (error) {
+					result = Promise.reject(error);
+				}
+				result.then(resolve, reject);
+				return result.then(
+					() => {},
+					() => {},
+				);
+			});
+			if (!draining) void drain();
+		});
+	};
 }
 
-/**
- * Runs a journal operation directly while `waiting()` (the operations queued on its journal, this
- * one included) is below a fan-out's and nothing is queued; otherwise through the fan-out queue.
- */
-function runInJournalTurns<T>(run: () => Promise<T>, waiting: () => number): Promise<T> {
-	journalTurnStart();
-	if (fanOutQueue.length === 0 && !fanOutDraining && waiting() < FAN_OUT_WAITING_OPERATIONS) return run();
-	// The queue drains from whichever caller started it; each operation runs in its own caller's async
-	// context (workflow execution, write admission and any other store), captured as it is queued.
-	const inCallerContext = AsyncLocalStorage.snapshot();
-	return new Promise<T>((resolve, reject) => {
-		fanOutQueue.push(() => {
-			let result: Promise<T>;
-			try {
-				result = inCallerContext(run);
-			} catch (error) {
-				result = Promise.reject(error);
-			}
-			result.then(resolve, reject);
-			return result.then(
-				() => {},
-				() => {},
-			);
-		});
-		if (!fanOutDraining) void drainFanOut();
-	});
-}
+const runInJournalTurns = createTurnSlicer(FAN_OUT_WAITING_OPERATIONS);
 
 type Operation<T> = Generator<Promise<void>, T, void>;
 type BackendState = "open" | "closing" | "closed";

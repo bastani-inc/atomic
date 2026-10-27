@@ -11,7 +11,7 @@ import {
 	type QuestionnaireResult,
 } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
-import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,
@@ -247,6 +247,9 @@ function launchCoordinatorInProcess(): Coordinator {
  * coordinator's activity summaries to the root's store in one batched update each, at most
  * every {@link POOL_SUMMARY_INTERVAL_MS}.
  */
+/** Children completing together beyond this share turns of the event loop instead of running back to back. */
+const completeInTurns = createTurnSlicer(2);
+
 export class LocalWorkerPool {
 	private readonly pids = new Set<number>();
 	private coordinator?: Coordinator;
@@ -277,6 +280,8 @@ export class LocalWorkerPool {
 	private rootBudget?: RunOpts["rootBudget"];
 	private budgetBlocked = false;
 	private rootSignature?: string;
+	/** Children whose results arrived and whose completion is still running. */
+	private completing = 0;
 	private rootFlush?: Promise<void>;
 	private starting?: Promise<void>;
 	private failure?: Error;
@@ -1128,9 +1133,20 @@ export class LocalWorkerPool {
 				if (this.closed) throw this.closedError(root);
 				const result = this.results.get(work.id);
 				if (result) {
-					await this.inbound;
-					await this.backend.catchUpWorkflow(root);
-					await this.handoff?.complete(work);
+					// When many children finish at once, each one's completion takes its own slice of a turn (#3903).
+					this.completing++;
+					try {
+						await completeInTurns(
+							async () => {
+								await this.inbound;
+								await this.backend.catchUpWorkflow(root);
+								await this.handoff?.complete(work);
+							},
+							() => this.completing,
+						);
+					} finally {
+						this.completing--;
+					}
 					// The child's stages are final now; end views still waiting to reconnect to them.
 					if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 					return result as unknown as RunResult;
