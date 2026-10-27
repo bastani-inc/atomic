@@ -3,9 +3,9 @@
  *
  * Vitest's own sequencer runs larger files first when it has no local results cache (every CI run), and its `--shard`
  * splits files by a hash of their path. Both ignore duration, so a five-minute pool file could start last, and one
- * shard could draw several of them. This sequencer starts the longest files first and assigns files to shards by
- * longest-processing-time-first, using the per-file durations recorded in `integration-file-durations.json`
- * (refresh it with `bun run scripts/integration-file-durations.ts <vitest JSON reports...>`).
+ * shard could draw several of them. This sequencer starts the longest files first and balances shards by their
+ * expected wall time, using the per-file durations measured on CI for the current OS and recorded in
+ * `integration-file-durations.json` (refresh it with `scripts/integration-file-durations.ts`; see docs/ci.md).
  *
  * Every shard sees the same file list and computes the same assignment, so each file runs in exactly one shard.
  * A file missing from the record (a new one) is weighted `UNKNOWN_FILE_MS`; a stale record only skews the balance,
@@ -18,21 +18,38 @@ import { BaseSequencer, type TestSpecification } from "vitest/node";
 /** Weight of a file with no recorded duration: above most integration files, so a new heavy file is not started last. */
 export const UNKNOWN_FILE_MS = 20_000;
 
+/**
+ * What a file costs a worker beyond its tests: collecting it (transform and import). The integration shards of run
+ * 40569411594 spent 88 s of worker time importing 44 files, about 2 s each.
+ */
+export const FILE_OVERHEAD_MS = 2_000;
+
+/**
+ * Files one shard runs at once: vitest's default worker count on the 8-vCPU CI runners. A constant, not the local
+ * core count, so every shard computes the same assignment even on a differently sized machine.
+ */
+export const SHARD_WORKERS = 7;
+
 /** Recorded per-file durations in milliseconds, keyed by repository-relative path with forward slashes. */
 export type FileDurations = Readonly<Record<string, number>>;
 
-const recordedDurations: FileDurations = JSON.parse(
+/** One record per CI OS: file times differ between them, and many pool files do not run on Windows. */
+export type DurationRecord = Readonly<Record<"linux" | "win32", FileDurations>>;
+
+const record: DurationRecord = JSON.parse(
 	readFileSync(new URL("./integration-file-durations.json", import.meta.url), "utf8"),
 );
+const recordedDurations = process.platform === "win32" ? record.win32 : record.linux;
 
 function weightOf(path: string, durations: FileDurations): number {
-	return durations[path] ?? UNKNOWN_FILE_MS;
+	return (durations[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
 }
 
 /**
- * The files of shard `index` (1-based) of `count`: each file, heaviest first, goes to the shard with the least total
- * weight so far, the lowest-numbered shard on a tie. Ties between files break by path, so the result depends only on
- * the set of paths, not on the order they arrive in.
+ * The files of shard `index` (1-based) of `count`. A shard's expected wall time is its longest file or its total
+ * spread over `SHARD_WORKERS`, whichever is larger. Each file, heaviest first, goes to the shard whose expected wall
+ * time would be lowest with it (the lighter total on a tie, then the lower-numbered shard). Ties between files break
+ * by path, so the result depends only on the set of paths, not on the order they arrive in.
  */
 export function shardByDuration(
 	paths: readonly string[],
@@ -43,14 +60,25 @@ export function shardByDuration(
 	const ordered = [...paths].sort(
 		(a, b) => weightOf(b, durations) - weightOf(a, durations) || (a < b ? -1 : a > b ? 1 : 0),
 	);
-	const totals = new Array<number>(count).fill(0);
-	const shards = Array.from({ length: count }, (): string[] => []);
+	const shards = Array.from({ length: count }, () => ({ paths: [] as string[], total: 0, longest: 0 }));
+	const wallTime = (total: number, longest: number) => Math.max(longest, total / SHARD_WORKERS);
 	for (const path of ordered) {
-		const lightest = totals.indexOf(Math.min(...totals));
-		totals[lightest] = (totals[lightest] ?? 0) + weightOf(path, durations);
-		shards[lightest]?.push(path);
+		const weight = weightOf(path, durations);
+		let best = 0;
+		for (let candidate = 1; candidate < count; candidate++) {
+			const a = shards[candidate]!;
+			const b = shards[best]!;
+			const difference =
+				wallTime(a.total + weight, Math.max(a.longest, weight)) -
+				wallTime(b.total + weight, Math.max(b.longest, weight));
+			if (difference < 0 || (difference === 0 && a.total < b.total)) best = candidate;
+		}
+		const shard = shards[best]!;
+		shard.paths.push(path);
+		shard.total += weight;
+		shard.longest = Math.max(shard.longest, weight);
 	}
-	return shards[index - 1] ?? [];
+	return shards[index - 1]?.paths ?? [];
 }
 
 export class DurationSequencer extends BaseSequencer {
