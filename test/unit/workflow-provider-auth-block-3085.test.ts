@@ -39,9 +39,20 @@ const RUN_STATUS_POLL_FAKE_MS = 1_000;
 /** Real time all of the test's waits share, inside the 30 s test timeout, leaving room to report and clean up. */
 const WAITS_REAL_BUDGET_MS = 24_000;
 
-/** Real elapsed milliseconds: `process.hrtime` is not one of the clocks the fake timers replace. */
+/**
+ * The real `process.hrtime.bigint`, saved when this module loads, before any test installs fake timers: vitest's fake
+ * timers replace `process.hrtime` and `performance` too, so a clock read through them stands still in real time.
+ */
+const realHrtime = process.hrtime.bigint;
+
+/** Real elapsed milliseconds, whether or not fake timers are installed. */
 function realNow(): number {
-	return Number(process.hrtime.bigint() / 1_000_000n);
+	return Number(realHrtime() / 1_000_000n);
+}
+
+/** Runs `step` until `done`, or until the real clock passes `deadline` (whichever comes first). */
+async function pollUntil(done: () => boolean, step: () => Promise<void>, deadline: number): Promise<void> {
+	while (!done() && realNow() < deadline) await step();
 }
 
 const spec = {
@@ -110,12 +121,34 @@ function requestedProvider(model: unknown): string {
 	return "primary";
 }
 
+test("a wait on a run that never gets there ends at its real-time deadline while fake timers run (#3085)", async () => {
+	// The deadline is taken before fake timers are installed, as the scenario below does.
+	const deadline = realNow() + 300;
+	vi.useFakeTimers();
+	let abandoned = false;
+	try {
+		const outcome = await Promise.race([
+			pollUntil(
+				() => abandoned,
+				async () => {
+					await realSleep(RUN_STATUS_POLL_REAL_MS);
+					await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+				},
+				deadline,
+			).then(() => "ended at its deadline"),
+			realSleep(5_000).then(() => "still polling after 5 s of real time"),
+		]);
+		assert.equal(outcome, "ended at its deadline");
+	} finally {
+		abandoned = true;
+		vi.useRealTimers();
+	}
+});
+
 test("fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix", async () => {
 	const deadline = realNow() + WAITS_REAL_BUDGET_MS;
 	/** Polls until `done`, advancing fake time a step per real slice, or until the test's shared real budget is spent. */
-	const until = async (done: () => boolean, step: () => Promise<unknown>) => {
-		while (!done() && realNow() < deadline) await step();
-	};
+	const until = (done: () => boolean, step: () => Promise<void>) => pollUntil(done, step, deadline);
 	const cleanup: Array<() => void | Promise<void>> = [];
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
