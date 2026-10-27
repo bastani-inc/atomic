@@ -46,3 +46,22 @@ test("while its run is republished without the stage, a reconnecting pooled stag
 		.replace(/\x1b\[[0-9;]*m/g, "");
 	assert.match(rendered, /fan-out-review \/ work-0/);
 });
+
+test("the post-mortem chat of a completed pooled stage shows what an in-process completed stage shows (#3996)", () => {
+	const ctx = {
+		theme: deriveGraphTheme({}),
+		workflowName: "fan-out-review",
+		handle: { stageName: "work-0", sessionId: "session" },
+	} as never as StageChatViewContext;
+	const completed = { id: "work-0", name: "work-0", status: "completed", sessionId: "session" };
+	const pooled = {
+		...completed,
+		workerExecution: { worker: "worker-1", generation: 1, renewedAt: 0, expiresAt: 0 },
+	};
+	const render = (stage: object) =>
+		renderHeader(ctx, 120, stage as never)
+			.join("\n")
+			.replace(/\x1b\[[0-9;]*m/g, "");
+	assert.doesNotMatch(render(pooled), /on local worker/);
+	assert.equal(render(pooled), render(completed));
+});

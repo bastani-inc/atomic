@@ -39,6 +39,8 @@ pub(super) struct InputQueue {
 	pending: VecDeque<JsString>,
 	credits: usize,
 	closed: bool,
+	/// Set only by supervisor cleanup; caller EOF leaves it false.
+	terminal: bool,
 }
 impl InputQueue {
 	fn admit(&mut self, operation: &JsString, data: InputData) -> Door<()> {
@@ -52,6 +54,9 @@ impl InputQueue {
 		let hash: [u8; 32] = hash.finalize().into();
 		if let Some(existing) = self.operations.get(operation) {
 			return if existing.hash == hash { Ok(()) } else { Err(fail("OperationConflict")) };
+		}
+		if self.terminal {
+			return Err(fail("TaskTerminal"));
 		}
 		if self.closed {
 			return Err(fail("StdinClosed"));
@@ -122,6 +127,7 @@ impl InputQueue {
 	}
 	pub(super) fn close(&mut self) {
 		self.closed = true;
+		self.terminal = true;
 		for id in self.pending.drain(..) {
 			let op = self.operations.get_mut(&id).unwrap();
 			op.result = Some(Err(TaskFailure {
@@ -175,7 +181,7 @@ impl Actor {
 	}
 	pub(in crate::task_supervisor) fn stdin_lease(&self, task: &TaskLease) -> Door<StdinLease> {
 		let command = self.command_resource(task)?;
-		if command.finished.load(Ordering::Acquire) {
+		if command.finished.load(Ordering::Acquire) || command.input.lock().unwrap().terminal {
 			return Err(fail("TaskTerminal"));
 		}
 		if command.input.lock().unwrap().closed {
@@ -273,5 +279,18 @@ mod tests {
 		assert!(!queue.operations.contains_key(&JsString::from("extra")));
 		queue.close();
 		assert_eq!(queue.credits, 0);
+	}
+	// A write admitted after supervisor cleanup closed stdin, but before the runner
+	// publishes `finished`, races task termination; it must not look like caller EOF.
+	#[test]
+	fn supervisor_close_refuses_late_writes_as_task_terminal() {
+		let mut queue = InputQueue::default();
+		queue.close();
+		let late = InputData::Bytes { bytes: vec![1].into() };
+		assert_eq!(queue.admit(&"late".into(), late).unwrap_err().code, "TaskTerminal");
+		let mut eof = InputQueue::default();
+		eof.admit(&"eof".into(), InputData::Eof {}).unwrap();
+		let after = InputData::Bytes { bytes: vec![1].into() };
+		assert_eq!(eof.admit(&"after".into(), after).unwrap_err().code, "StdinClosed");
 	}
 }

@@ -243,7 +243,10 @@ for (const mode of ["cancel", "natural"]) {
 					const receipt = value(await supervisor.closeTaskOwner(owner, "session-close"));
 					assert.equal(receipt.tasks[0].cleanup.kind, "reaped");
 					const write = await writing;
-					assert.ok(write.ok || ["InputDeliveryUnknown", "TaskTerminal"].includes(write.error.code));
+					assert.ok(
+						write.ok || ["InputDeliveryUnknown", "TaskTerminal"].includes(write.error.code),
+						JSON.stringify(write),
+					);
 				}
 				const outcome = await observing;
 				assert.equal(outcome.kind, "settled");

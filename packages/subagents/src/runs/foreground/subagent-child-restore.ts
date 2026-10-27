@@ -404,7 +404,7 @@ async function relaunchChild(
 	const prompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
-		getChildSessionOptions: ctx.getChildSessionOptions,
+		getChildSessionOptions: ctx.getChildSessionOptionsResolver?.() ?? ctx.getChildSessionOptions,
 		resourceLoaderInheritanceSnapshot: deps.pi.getResourceLoaderInheritanceSnapshot?.(),
 		cwd: record.cwd,
 		runId: record.runId,
@@ -442,6 +442,9 @@ async function relaunchChild(
 	// It waits for a slot in its run, as its original launch did.
 	const schedule = subagentChildSchedule(record.runId, record.index);
 	if (!host) {
+		// #3981: a queued child starts after its launch; by then model fallback can have retired the launching session, whose
+		// context throws on every read. The working directory is fixed at launch.
+		const launchCwd = ctx.cwd;
 		// No task host (an SDK session): it runs in the background directly, recorded like a task-host launch.
 		const launched = runOwnerlessChild({
 			agent: agent.name,
@@ -453,7 +456,7 @@ async function relaunchChild(
 			...(ownerSignal ? { ownerSignal } : {}),
 			recordChild,
 			...(schedule ? { schedule } : {}),
-			runSync: (task, childOptions) => runtime.runSync(ctx.cwd, [agent], agent.name, task, childOptions),
+			runSync: (task, childOptions) => runtime.runSync(launchCwd, [agent], agent.name, task, childOptions),
 		});
 		const outcome = await ownerlessRelaunched(
 			deps,

@@ -183,6 +183,8 @@ export type ClientMessage =
 	| { type: "unregister" }
 	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
 	| { type: "received"; messageId: string }
+	/** #3983: the recipient is still saving this message; its sender keeps waiting. Sent only to a broker that advertised `extendsSaves`. */
+	| { type: "saving"; messageId: string }
   | { type: "list"; requestId: string; group?: string }
 	| { type: "list_groups"; requestId: string }
 	| { type: "join_group"; requestId: string; group: string }
@@ -306,6 +308,8 @@ export type BrokerMessage =
 			brokerStatus?: true;
 			/** #4006: this broker accepts `claim_workflow_invocation`; absent on older brokers, which drop a client that sends it. */
 			claimsWorkflowInvocations?: true;
+			/** #3983: this broker accepts `saving`; absent on older brokers, which drop a client that sends it. */
+			extendsSaves?: true;
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }

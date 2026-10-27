@@ -34,6 +34,8 @@ interface OutboxRecord extends SqliteRow {
 	readonly claim_token: string | null;
 	/** Store-clock milliseconds since the claim was taken or renewed; null when unclaimed. */
 	readonly claim_age: SqliteValue;
+	/** Store-clock milliseconds since the claim's recipient last reported it is still saving the row; null when never. */
+	readonly saving_age: SqliteValue;
 	readonly failure_reason: string | null;
 }
 
@@ -51,6 +53,9 @@ function toRow(record: OutboxRecord): OutboxRow {
 		state: record.state,
 		claimAttempts: Number(record.claim_attempts),
 		...(failureReason === null ? {} : { failureReason: JSON.parse(failureReason) as string }),
+		...(record.saving_age === null || record.saving_age === undefined
+			? {}
+			: { savingAgeMs: Number(record.saving_age) }),
 	};
 }
 
@@ -81,10 +86,22 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
 	`);
+	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
+	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
+	if (!known.some((column) => column.name === "saving_at")) {
+		try {
+			await database.exec(`ALTER TABLE ${table} ADD COLUMN saving_at INTEGER`);
+		} catch (error) {
+			// Another broker added it between the check and the change.
+			if (!/duplicate column/i.test(error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : ""))
+				throw error;
+		}
+	}
 
 	const columns = `sequence, message_id, target_identity, origin_broker_id, digest, frame_json, state,
 		claim_attempts, claimant_id, claim_token, failure_reason,
-		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claim_renewed_at) END AS claim_age`;
+		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claim_renewed_at) END AS claim_age,
+		CASE WHEN saving_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - saving_at) END AS saving_age`;
 	const select = (executor: SqliteExecutor, messageId: string) =>
 		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
 	const undelivered = (executor: SqliteExecutor, targetIdentity: string) =>
@@ -121,7 +138,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 	): Promise<OutboxRow> => {
 		await executor.run(
 			`UPDATE ${table} SET state = ?, failure_reason = ?, settled_at = ${STORE_NOW},
-				claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL
+				claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL
 			WHERE message_id = ?`,
 			state,
 			reason === null ? null : JSON.stringify(reason),
@@ -175,7 +192,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 					const token = randomUUID();
 					await executor.run(
 						`UPDATE ${table} SET state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
-							claim_token = ?, claim_renewed_at = ${STORE_NOW}
+							claim_token = ?, claim_renewed_at = ${STORE_NOW}, saving_at = NULL
 						WHERE message_id = ?`,
 						request.claimantId,
 						token,
@@ -201,10 +218,18 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			});
 		},
 
+		reportSaving(claim) {
+			return withClaim(claim, async (executor) => {
+				await executor.run(`UPDATE ${table} SET saving_at = ${STORE_NOW} WHERE message_id = ?`, claim.messageId);
+				return { status: "renewed" } as const;
+			});
+		},
+
 		releaseClaim(claim) {
 			return withClaim(claim, async (executor) => {
 				await executor.run(
-					`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL
+					`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
+						saving_at = NULL
 					WHERE message_id = ?`,
 					claim.messageId,
 				);
