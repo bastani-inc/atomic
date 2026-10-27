@@ -323,6 +323,23 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 				}
 			}
 		}
+		// `const { name, other: alias } = await import("./module.js")` binds like a static import.
+		if (statement.type === "VariableDeclaration" && statement.kind === "const") {
+			for (const declarator of statement.declarations) {
+				const source =
+					declarator.init?.type === "AwaitExpression" &&
+					declarator.init.argument.type === "ImportExpression" &&
+					declarator.init.argument.source.type === "StringLiteral"
+						? declarator.init.argument.source.value
+						: undefined;
+				if (source === undefined || declarator.id.type !== "ObjectPattern") continue;
+				for (const property of declarator.id.properties) {
+					if (property.type !== "ObjectProperty" || property.value.type !== "Identifier") continue;
+					const name = propertyKey(property.key, property.computed);
+					if (name !== undefined) scope.imports.set(property.value.name, { source, name });
+				}
+			}
+		}
 		visit(statement, (_call, descend) => descend(), addConstant);
 	}
 	return scope;
@@ -344,10 +361,16 @@ function resolveImport(from: string, specifier: string): string | undefined {
 	return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
 }
 
-/** A statically known value: a number, or an object literal whose known fields are values. */
-type ConstValue = number | ConstObject;
+/** A statically known value: a number, or an array or object literal whose known entries are values. */
+type ConstValue = number | ConstObject | ConstArray;
 interface ConstObject {
+	readonly kind: "object";
 	readonly fields: ReadonlyMap<string, ConstValue>;
+}
+/** A constant array literal; an element that is not a known value is `undefined`. */
+interface ConstArray {
+	readonly kind: "array";
+	readonly elements: readonly (ConstValue | undefined)[];
 }
 /** A called helper's parameters and `const`s; `undefined` shadows an outer name with an unknown value. */
 type Locals = ReadonlyMap<string, ConstValue | undefined>;
@@ -435,12 +458,26 @@ class ConstantEvaluator {
 			case "Identifier":
 				if (locals.has(expression.name)) return locals.get(expression.name);
 				return this.binding(expression.name, scope, seen);
+			case "ArrayExpression": {
+				const elements: (ConstValue | undefined)[] = [];
+				for (const element of expression.elements) {
+					if (element?.type === "SpreadElement") {
+						const spread = this.value(element.argument, scope, seen, locals);
+						// An unknown spread leaves every later index unknown.
+						if (typeof spread !== "object" || spread.kind !== "array") return undefined;
+						elements.push(...spread.elements);
+						continue;
+					}
+					elements.push(element ? this.value(element, scope, seen, locals) : undefined);
+				}
+				return { kind: "array", elements };
+			}
 			case "ObjectExpression": {
 				const fields = new Map<string, ConstValue>();
 				for (const property of expression.properties) {
 					if (property.type === "SpreadElement") {
 						const spread = this.value(property.argument, scope, seen, locals);
-						if (spread === undefined || typeof spread === "number") return undefined;
+						if (typeof spread !== "object" || spread.kind !== "object") return undefined;
 						for (const [key, field] of spread.fields) fields.set(key, field);
 						continue;
 					}
@@ -452,14 +489,24 @@ class ConstantEvaluator {
 					const field = this.value(property.value, scope, seen, locals);
 					if (field !== undefined) fields.set(key, field);
 				}
-				return { fields };
+				return { kind: "object", fields };
 			}
 			case "MemberExpression": {
 				if (expression.object.type === "Super") return undefined;
-				const key = propertyKey(expression.property, expression.computed);
 				const object = this.value(expression.object, scope, seen, locals);
-				if (key === undefined || object === undefined || typeof object === "number") return undefined;
-				return object.fields.get(key);
+				if (typeof object !== "object") return undefined;
+				if (object.kind === "object") {
+					const key = propertyKey(expression.property, expression.computed);
+					return key === undefined ? undefined : object.fields.get(key);
+				}
+				if (!expression.computed) {
+					const isLength = expression.property.type === "Identifier" && expression.property.name === "length";
+					return isLength ? object.elements.length : undefined;
+				}
+				// Only an integer index inside the array reads an element.
+				const index = number(expression.property);
+				if (index === undefined || !Number.isInteger(index) || index < 0) return undefined;
+				return object.elements[index];
 			}
 			case "CallExpression": {
 				const args: ConstValue[] = [];

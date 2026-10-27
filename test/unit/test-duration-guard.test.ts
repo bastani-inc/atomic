@@ -774,9 +774,14 @@ test("templated and dynamic-table titles keep their budgets by matching the repo
 
 /**
  * Score a scratch suite that imports a verbatim copy of the shared pool budget
- * helper (`test/helpers/pool-budget.ts`), with each test reported once.
+ * helper (`test/helpers/pool-budget.ts`), with each test reported once. Extra
+ * helper modules are written under `helpers/` by name.
  */
-function scorePoolSuite(lines: string[], titles: string[]): Map<string, { timeoutMs: number; unresolved: boolean }> {
+function scorePoolSuite(
+	lines: string[],
+	titles: string[],
+	helpers: Record<string, string[]> = {},
+): Map<string, { timeoutMs: number; unresolved: boolean }> {
 	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-pool-"));
 	try {
 		mkdirSync(join(directory, "helpers"));
@@ -785,6 +790,9 @@ function scorePoolSuite(lines: string[], titles: string[]): Map<string, { timeou
 			join(root, "test/fixtures/duration-guard-pool-budget.ts"),
 			join(directory, "helpers/pool-budget.ts"),
 		);
+		for (const [name, source] of Object.entries(helpers)) {
+			writeFileSync(join(directory, "helpers", name), source.join("\n"));
+		}
 		writeFileSync(join(directory, "integration/pool.test.ts"), lines.join("\n"));
 		const scored = evaluateDurations(
 			report(
@@ -932,6 +940,120 @@ test("a shadowed Math is not treated as the global", () => {
 		["shadowed"],
 	);
 	assert.deepEqual(budgets.get("shadowed"), { timeoutMs: 0, unresolved: true });
+});
+
+// intercom-reconnect-recovery's budgets come from `BACKOFF_MS[Math.min(attempt,
+// BACKOFF_MS.length - 1)]`, through a destructured dynamic import.
+test("constant arrays indexed by constants, and dynamically imported helpers, are scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'const { reconnectDelayMs } = await import("../helpers/backoff.js");',
+			'const { reconnectDelayMs: delay } = await import("../helpers/backoff.js");',
+			"const STEPS = [1_000, 2_000, 5_000] as const;",
+			"const FIRST = reconnectDelayMs(0);",
+			"const RECOVERY_MS = reconnectDelayMs(0) + delay(1) + 10_000;",
+			'test("index literal", async () => {',
+			"}, STEPS[1]);",
+			'test("last via length", async () => {',
+			"}, STEPS[STEPS.length - 1]);",
+			'test("clamped index", async () => {',
+			"}, STEPS[Math.min(7, STEPS.length - 1)]);",
+			'test("spread array", async () => {',
+			"}, [...STEPS, 9_000][3]);",
+			'test("dynamically imported helper", async () => {',
+			"}, 2 * RECOVERY_MS + 30_000);",
+			'test("clamped through the helper", async () => {',
+			"}, reconnectDelayMs(99) + FIRST);",
+		],
+		[
+			"index literal",
+			"last via length",
+			"clamped index",
+			"spread array",
+			"dynamically imported helper",
+			"clamped through the helper",
+		],
+		{
+			"backoff.ts": [
+				"const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000] as const;",
+				"export function reconnectDelayMs(attempt: number): number {",
+				"\treturn BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;",
+				"}",
+			],
+		},
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["index literal", { timeoutMs: 2_000, unresolved: false }],
+			["last via length", { timeoutMs: 5_000, unresolved: false }],
+			["clamped index", { timeoutMs: 5_000, unresolved: false }],
+			["spread array", { timeoutMs: 9_000, unresolved: false }],
+			["dynamically imported helper", { timeoutMs: 56_000, unresolved: false }],
+			["clamped through the helper", { timeoutMs: 31_000, unresolved: false }],
+		]),
+	);
+});
+
+test("array reads that are out of range, fractional or dynamic stay unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const STEPS = [1_000, 2_000, 5_000] as const;",
+			"let MUTABLE = [1_000];",
+			"const MIXED = [1_000, rows.length];",
+			"const { missing } = await import(modulePath);",
+			'test("past the end", async () => {',
+			"}, STEPS[3]);",
+			'test("negative", async () => {',
+			"}, STEPS[-1]);",
+			'test("fractional", async () => {',
+			"}, STEPS[0.5]);",
+			'test("non-constant index", async () => {',
+			"}, STEPS[rows.length]);",
+			'test("non-constant array", async () => {',
+			"}, rows[0]);",
+			'test("mutable array", async () => {',
+			"}, MUTABLE[0]);",
+			'test("non-constant element", async () => {',
+			"}, MIXED[1]);",
+			'test("unknown member", async () => {',
+			"}, STEPS.size);",
+			'test("non-literal dynamic import", async () => {',
+			"}, missing(1));",
+		],
+		[
+			"past the end",
+			"negative",
+			"fractional",
+			"non-constant index",
+			"non-constant array",
+			"mutable array",
+			"non-constant element",
+			"unknown member",
+			"non-literal dynamic import",
+		],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 9);
+});
+
+test("intercom reconnect recovery is scored against its declared budgets", () => {
+	const file = "test/integration/intercom-reconnect-recovery.test.ts";
+	const titles = [
+		"a failed background reconnect still recovers the session with no intercom tool call",
+		"a running workflow stage regains list visibility and both route aliases after broker churn",
+	];
+	const scored = evaluateDurations(
+		report([{ file, tests: titles.map((title) => ({ title, status: "passed", duration: 10_000 })) }]),
+		30_000,
+		root,
+	);
+	// 2 * (reconnectDelayMs(0) + reconnectDelayMs(1) + 10 s respawn) + 30 s killed-broker exit.
+	assert.deepEqual(
+		scored.samples.map((sample) => [sample.name, sample.timeoutMs, sample.unresolved]),
+		titles.map((title) => [title, 56_000, false]),
+	);
+	assert.deepEqual(scored.unresolved, []);
 });
 
 test("helper calls and member reads that are genuinely dynamic stay unresolved", () => {
