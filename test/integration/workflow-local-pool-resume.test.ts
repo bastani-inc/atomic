@@ -14,20 +14,47 @@ import { toolControlRegistry } from "../../packages/workflows/src/engine/run-too
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import {
-	makeTempDirectory,
-	readJson,
-	readStreamText,
-	removeTempDirectory,
-	sleep,
-	spawnProcess,
-	writeFileEnsuringDir,
-} from "../helpers/runtime.js";
+import { expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
+import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";
+import { makeTempDirectory, readJson, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const CRASHED_ROOT_RESUME_TIMEOUT_MS = 180_000;
-const ROOT_PROCESS_TIMEOUT_MS = 90_000;
+/**
+ * The most any one test in this file may take. The Linux integration job is cancelled after 20 minutes, and in that
+ * time it also installs, builds, runs every other file and reports; a test allowed longer would be cancelled with the
+ * job instead of failing with its own timeout and message.
+ */
+const TEST_BUDGET_CAP_MS = 600_000;
+
+/**
+ * A test's budget for the cold starts it makes: one per root process (the root loads the workflow runtime through
+ * jiti itself) and three per pool it starts (its coordinator, its worker, and the child's own work and teardown),
+ * capped at {@link TEST_BUDGET_CAP_MS}. Every process and run of the test shares one deadline, so a slow cold start
+ * leaves less for the rest instead of each getting its own bound.
+ */
+function testBudget(coldStarts: number): { readonly waitMs: number; readonly timeoutMs: number } {
+	const waitMs = Math.min(poolTestBudgetMs(coldStarts).waitMs, TEST_BUDGET_CAP_MS - POOL_CLEANUP_HEADROOM_MS);
+	return { waitMs, timeoutMs: waitMs + POOL_CLEANUP_HEADROOM_MS };
+}
+
+/** What is left of a test's budget at `deadline`, as a run signal. */
+function remaining(deadline: number): AbortSignal {
+	return AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+}
+
+/** A root process over one pool. */
+const ROOT_PROCESS_COLD_STARTS = 4;
+/** An in-process root over one pool. */
+const POOL_COLD_STARTS = 3;
 const CHILDREN = 3;
 const rootFixture = fileURLToPath(new URL("../fixtures/pool-resume-root.mjs", import.meta.url));
+
+/** Polls until the condition holds, or fails once `signal` (the test's budget) is spent. */
+async function waitUntil(predicate: () => boolean, signal: AbortSignal): Promise<void> {
+	while (!predicate()) {
+		if (signal.aborted) throw new Error("Pool resume condition timed out: the test's budget is spent");
+		await sleep(20);
+	}
+}
 
 interface ResumeOutcome {
 	readonly status: string;
@@ -42,36 +69,39 @@ function startedWorkers(directory: string): number[] {
 		.map((name) => Number(name.split("-")[2]));
 }
 
+/** The crashed root and its resumed incarnation each run in their own process, one after the other. */
+const CRASHED_ROOT_RESUME = testBudget(2 * ROOT_PROCESS_COLD_STARTS);
+
 test.skipIf(process.platform === "win32")(
 	"resuming a crashed pooled root replays children leased by the dead incarnation (#3890)",
 	async () => {
+		const deadline = Date.now() + CRASHED_ROOT_RESUME.waitMs;
 		const directory = makeTempDirectory("pool-crashed-root-resume-");
 		try {
-			const crashed = spawnProcess([process.execPath, rootFixture, "start", directory, String(CHILDREN)], {
-				cwd: directory,
-				stdout: "ignore",
-				stderr: "pipe",
-				timeout: ROOT_PROCESS_TIMEOUT_MS,
-			});
-			const crashedStderr = readStreamText(crashed.stderr);
-			const deadline = Date.now() + ROOT_PROCESS_TIMEOUT_MS;
+			const crashed = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", directory, String(CHILDREN)],
+				{ cwd: directory, stdout: "ignore" },
+				deadline,
+			);
+			// The process's budget bounds this wait; a process that ends first, or is killed by it, fails it at once.
 			while (startedWorkers(directory).length < CHILDREN) {
-				if (Date.now() >= deadline) assert.fail(await crashedStderr);
+				if (crashed.process.exitCode !== null)
+					assert.fail(
+						`the crashed root ended before its children started:\n${await expectExitedCleanly(crashed)}`,
+					);
 				await sleep(50);
 			}
 			const deadWorkers = startedWorkers(directory);
-			crashed.kill("SIGKILL");
-			await crashed.exited;
+			crashed.process.kill("SIGKILL");
+			await crashed.process.exited;
 
-			const resumed = spawnProcess([process.execPath, rootFixture, "resume", directory, String(CHILDREN)], {
-				cwd: directory,
-				stdout: "ignore",
-				stderr: "pipe",
-				timeout: ROOT_PROCESS_TIMEOUT_MS,
-			});
-			const stderr = readStreamText(resumed.stderr);
-			assert.equal(await resumed.exited, 0, await stderr);
-			assert.doesNotMatch(await stderr, /Stale work lease|cleanup was not confirmed/);
+			const resumed = spawnWithinBudget(
+				[process.execPath, rootFixture, "resume", directory, String(CHILDREN)],
+				{ cwd: directory, stdout: "ignore" },
+				deadline,
+			);
+			const stderr = await expectExitedCleanly(resumed);
+			assert.doesNotMatch(stderr, /Stale work lease|cleanup was not confirmed/);
 			const outcome = await readJson<ResumeOutcome>(join(directory, "outcome.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			assert.equal(outcome.children.length, CHILDREN);
@@ -84,10 +114,10 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	CRASHED_ROOT_RESUME_TIMEOUT_MS,
+	CRASHED_ROOT_RESUME.timeoutMs,
 );
 
-const LEASE_STALL_TIMEOUT_MS = 120_000;
+const LEASE_STALL = testBudget(ROOT_PROCESS_COLD_STARTS);
 const STALL_TEST_LEASE_MS = 2_000;
 const ROOT_STALL_MS = 3 * STALL_TEST_LEASE_MS;
 const stallFixture = fileURLToPath(new URL("../fixtures/pool-lease-stall-root.mjs", import.meta.url));
@@ -97,13 +127,13 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = makeTempDirectory("pool-lease-stall-");
 		try {
-			const root = spawnProcess(
+			const root = spawnWithinBudget(
 				[process.execPath, stallFixture, directory, String(STALL_TEST_LEASE_MS), String(ROOT_STALL_MS)],
-				{ cwd: directory, stdout: "ignore", stderr: "pipe", timeout: ROOT_PROCESS_TIMEOUT_MS },
+				{ cwd: directory, stdout: "ignore" },
+				Date.now() + LEASE_STALL.waitMs,
 			);
-			const stderr = readStreamText(root.stderr);
-			assert.equal(await root.exited, 0, await stderr);
-			assert.doesNotMatch(await stderr, /Stale work lease/);
+			const stderr = await expectExitedCleanly(root);
+			assert.doesNotMatch(stderr, /Stale work lease/);
 			const outcome = await readJson<ResumeOutcome>(join(directory, "outcome.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const [child] = outcome.children;
@@ -114,17 +144,19 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	LEASE_STALL_TIMEOUT_MS,
+	LEASE_STALL.timeoutMs,
 );
 
 const REPEATED_ROOT_STALL_MS = 600;
+/** The stopped worker's replacement is one more worker cold start in the root process's pool. */
+const REPLACED_WORKER = testBudget(ROOT_PROCESS_COLD_STARTS + 1);
 
 test.skipIf(process.platform === "win32")(
 	"repeated root stalls do not keep a stopped worker's child from being replaced (#3888)",
 	async () => {
 		const directory = makeTempDirectory("pool-lease-repeated-stall-");
 		try {
-			const root = spawnProcess(
+			const root = spawnWithinBudget(
 				[
 					process.execPath,
 					stallFixture,
@@ -133,10 +165,10 @@ test.skipIf(process.platform === "win32")(
 					String(REPEATED_ROOT_STALL_MS),
 					"stopped",
 				],
-				{ cwd: directory, stdout: "ignore", stderr: "pipe", timeout: ROOT_PROCESS_TIMEOUT_MS },
+				{ cwd: directory, stdout: "ignore" },
+				Date.now() + REPLACED_WORKER.waitMs,
 			);
-			const stderr = readStreamText(root.stderr);
-			assert.equal(await root.exited, 0, await stderr);
+			await expectExitedCleanly(root);
 			const outcome = await readJson<ResumeOutcome>(join(directory, "outcome.json"));
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const [child] = outcome.children;
@@ -146,24 +178,17 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	LEASE_STALL_TIMEOUT_MS,
+	REPLACED_WORKER.timeoutMs,
 );
 
-const QUIT_RESUME_TIMEOUT_MS = 180_000;
+/** A quit root and its resumed incarnation each start their own pool, one after the other. */
+const QUIT_RESUME = testBudget(2 * POOL_COLD_STARTS);
 const childPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
 
 function startedChildren(directory: string): { readonly index: number; readonly pid: number }[] {
 	return readdirSync(directory)
 		.filter((name) => name.startsWith("started-"))
 		.map((name) => ({ index: Number(name.split("-")[1]), pid: Number(name.split("-")[2]) }));
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-	const deadline = Date.now() + ROOT_PROCESS_TIMEOUT_MS;
-	while (!predicate()) {
-		if (Date.now() >= deadline) throw new Error("Pool resume condition timed out");
-		await sleep(20);
-	}
 }
 
 test.skipIf(process.platform === "win32")(
@@ -218,14 +243,19 @@ test.skipIf(process.platform === "win32")(
 					if (resuming)
 						await waitUntil(
 							() => claimedBeforeEnqueue.length > 0 || idleClaimsAfter.some((count) => count > index),
+							budget,
 						);
-					else await waitUntil(() => startedChildren(directory).some((entry) => entry.index === index));
+					else await waitUntil(() => startedChildren(directory).some((entry) => entry.index === index), budget);
 				}
 				for (const result of await Promise.all(pending)) assert.equal(result.status, "completed");
 				return {};
 			},
 		});
+		// Both incarnations share the test's budget: what is left of it is each run's signal and bounds its waits.
+		const deadline = Date.now() + QUIT_RESUME.waitMs;
+		let budget = remaining(deadline);
 		const open = async () => {
+			budget = remaining(deadline);
 			const database = await openNodeSqliteDatabase(path);
 			const journal = await SqlRunJournal.open(database);
 			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
@@ -247,7 +277,7 @@ test.skipIf(process.platform === "win32")(
 							cwd: directory,
 							store: createStore(),
 							durableBackend: backend,
-							signal: AbortSignal.timeout(ROOT_PROCESS_TIMEOUT_MS),
+							signal: budget,
 						},
 					),
 				async close() {
@@ -263,7 +293,7 @@ test.skipIf(process.platform === "win32")(
 		try {
 			first = await open();
 			const running = first.run();
-			await waitUntil(() => startedWorkers(directory).length === CHILDREN);
+			await waitUntil(() => startedWorkers(directory).length === CHILDREN, budget);
 			await toolControlRegistry.runControl(root)!.quit();
 			assert.equal((await running).status, "paused");
 			await first.close();
@@ -296,7 +326,7 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	QUIT_RESUME_TIMEOUT_MS,
+	QUIT_RESUME.timeoutMs,
 );
 
 function isAlive(pid: number): boolean {
@@ -309,11 +339,17 @@ function isAlive(pid: number): boolean {
 }
 
 /** A root over one pooled child, reopened on the same journal for every incarnation. */
-async function singleChildRoot(directory: string, workers: number, afterChild?: () => Promise<void>) {
+async function singleChildRoot(
+	directory: string,
+	workers: number,
+	afterChild?: (budget: AbortSignal) => Promise<void>,
+) {
 	const path = join(directory, "journal.sqlite");
 	const root = randomUUID();
 	const exportName = "resumedChild";
 	const child = await loadWorkerDefinition({ path: childPath, exportName, digest: await definitionDigest(childPath) });
+	// The open incarnation's budget, which bounds the waits its root makes.
+	let budget = AbortSignal.timeout(0);
 	const parent = workflow({
 		name: "pool-single-child-root",
 		description: "Root over one pooled child",
@@ -322,13 +358,15 @@ async function singleChildRoot(directory: string, workers: number, afterChild?: 
 		async run(ctx) {
 			const result = await ctx.workflow(child, { inputs: { directory, index: 0 } });
 			assert.equal(result.status, "completed");
-			await afterChild?.();
+			await afterChild?.(budget);
 			return {};
 		},
 	});
 	return {
 		root,
-		async open() {
+		/** One incarnation over its own pool; what is left before `deadline` bounds its run (`budget`) and its waits. */
+		async open(deadline: number) {
+			budget = remaining(deadline);
 			const database = await openNodeSqliteDatabase(path);
 			const journal = await SqlRunJournal.open(database);
 			const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
@@ -339,6 +377,7 @@ async function singleChildRoot(directory: string, workers: number, afterChild?: 
 				coordinator: "in-process",
 			});
 			return {
+				budget,
 				database,
 				journal,
 				pool,
@@ -351,7 +390,7 @@ async function singleChildRoot(directory: string, workers: number, afterChild?: 
 							cwd: directory,
 							store: createStore(),
 							durableBackend: backend,
-							signal: AbortSignal.timeout(ROOT_PROCESS_TIMEOUT_MS),
+							signal: budget,
 						},
 					),
 				async close() {
@@ -366,28 +405,34 @@ async function singleChildRoot(directory: string, workers: number, afterChild?: 
 }
 
 const RESUMES = 4;
-const RESUME_CYCLES_TIMEOUT_MS = 300_000;
+/**
+ * One pool per incarnation, one after the other, and the last incarnation's killed worker replaced. Worst-case cold
+ * starts for all of them exceed {@link TEST_BUDGET_CAP_MS}, so they share the capped budget: the incarnations are
+ * not all at their worst at once in practice, and a slow one leaves less for the rest instead of failing alone.
+ */
+const RESUME_CYCLES = testBudget((RESUMES + 1) * POOL_COLD_STARTS + 1);
 
 test.skipIf(process.platform === "win32")(
 	"a child resumed many times keeps its full retry budget in each incarnation (#3979)",
 	async () => {
 		const directory = makeTempDirectory("pool-repeated-resume-");
+		const deadline = Date.now() + RESUME_CYCLES.waitMs;
 		const f = await singleChildRoot(directory, 1);
 		let current: Awaited<ReturnType<typeof f.open>> | undefined;
 		try {
 			for (let incarnation = 1; incarnation <= RESUMES; incarnation++) {
-				current = await f.open();
+				current = await f.open(deadline);
 				const running = current.run();
-				await waitUntil(() => startedChildren(directory).length === incarnation);
+				await waitUntil(() => startedChildren(directory).length === incarnation, current.budget);
 				await toolControlRegistry.runControl(f.root)!.quit();
 				assert.equal((await running).status, "paused");
 				await current.close();
 				current = undefined;
 			}
 			// The last incarnation loses its worker once; the child still has attempts left in this incarnation.
-			current = await f.open();
+			current = await f.open(deadline);
 			const running = current.run();
-			await waitUntil(() => startedChildren(directory).length === RESUMES + 1);
+			await waitUntil(() => startedChildren(directory).length === RESUMES + 1, current.budget);
 			const [crashed] = startedChildren(directory).filter((entry) => current!.pool.workerPids.includes(entry.pid));
 			assert.ok(crashed, "the resumed worker runs the child");
 			let settled = false;
@@ -395,7 +440,7 @@ test.skipIf(process.platform === "win32")(
 				settled = true;
 			});
 			process.kill(crashed.pid, "SIGKILL");
-			await waitUntil(() => settled || startedChildren(directory).length === RESUMES + 2);
+			await waitUntil(() => settled || startedChildren(directory).length === RESUMES + 2, current.budget);
 			await writeFileEnsuringDir(join(directory, "release"), "");
 			const result = await running;
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -407,8 +452,11 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	RESUME_CYCLES_TIMEOUT_MS,
+	RESUME_CYCLES.timeoutMs,
 );
+
+/** One pool, whose two workers start together. */
+const FENCED_ATTEMPT = testBudget(POOL_COLD_STARTS);
 
 test.skipIf(process.platform === "win32")(
 	"a worker whose attempt is fenced ends it without crashing or consuming an attempt (#3979)",
@@ -419,8 +467,10 @@ test.skipIf(process.platform === "win32")(
 		let fencedPid: number | undefined;
 		let reclaimed = false;
 		// The root outlives the fenced attempt, so its worker meets the fence and not the root's release.
-		const f = await singleChildRoot(directory, 2, () => waitUntil(() => reclaimed || !isAlive(fencedPid!)));
-		const current = await f.open();
+		const f = await singleChildRoot(directory, 2, (budget) =>
+			waitUntil(() => reclaimed || !isAlive(fencedPid!), budget),
+		);
+		const current = await f.open(Date.now() + FENCED_ATTEMPT.waitMs);
 		const claim = SqlPoolQueue.prototype.claim;
 		vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (this: SqlPoolQueue, ...args) {
 			if (args[1] === fencedWorker) reclaimed = true;
@@ -428,7 +478,7 @@ test.skipIf(process.platform === "win32")(
 		});
 		try {
 			const running = current.run();
-			await waitUntil(() => startedChildren(directory).length === 1);
+			await waitUntil(() => startedChildren(directory).length === 1, current.budget);
 			const [fenced] = startedChildren(directory);
 			fencedPid = fenced!.pid;
 			const workers = [...current.pool.workerPids].sort();
@@ -441,7 +491,7 @@ test.skipIf(process.platform === "win32")(
 				"UPDATE wf_runs_work SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?",
 				held.id,
 			);
-			await waitUntil(() => startedChildren(directory).some((entry) => entry.pid !== fenced!.pid));
+			await waitUntil(() => startedChildren(directory).some((entry) => entry.pid !== fenced!.pid), current.budget);
 			// Both attempts finish their tool; the fenced one then asks for new work, or exits.
 			await writeFileEnsuringDir(join(directory, "release"), "");
 			const result = await running;
@@ -456,5 +506,5 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	QUIT_RESUME_TIMEOUT_MS,
+	FENCED_ATTEMPT.timeoutMs,
 );
