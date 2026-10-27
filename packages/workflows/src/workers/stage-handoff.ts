@@ -150,7 +150,12 @@ export class PoolStageHandoff {
 		if (result === undefined) return;
 		await this.backend.catchUpWorkflow(root);
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
-		for (const checkpoint of this.backend.listCheckpoints(root)) {
+		// Terminal boundaries settle the child's own nested runs; a child without any skips the scan of every
+		// root checkpoint, which made the completion of a wide fan-out quadratic in its width.
+		const nested = this.store
+			.runs()
+			.some((run) => run.endedAt === undefined && run.id !== work.childRunId && this.owners.get(run.id) === work.id);
+		for (const checkpoint of nested ? this.backend.listCheckpoints(root) : []) {
 			const boundary = checkpoint.kind === "stage" ? checkpoint.topology?.boundary : undefined;
 			if (checkpoint.kind !== "stage" || boundary?.event !== "terminal") continue;
 			const child = parseWorkflowChildResult(checkpoint.output);

@@ -75,11 +75,13 @@ function removeProcessExitCleanup(cleanup: () => void): void {
  * Journal operations resolve in microtasks once their SQLite statement returns, so a fan-out
  * that starts or dispatches many children chains every child's journal work into one turn: the
  * 150-worker load gate measured single tasks of 300 ms at worker startup on a contended host.
- * Before an operation runs, `journalTurnPause` lets it through while the current turn is younger
- * than the budget; past it, when a fan-out has many operations waiting, every operation waits for
- * one shared `setImmediate`, so timers, input and I/O run in between, and the operations then
- * continue in their original order. A single run's sequential journal work, which keeps only a
- * few operations waiting, never pauses, so its ordering against other promises is unchanged.
+ * While a journal has a fan-out's worth of operations waiting, they go through one FIFO queue.
+ * The queue starts its next operation only after the previous one settles, or after the event
+ * loop has turned if it is still waiting on I/O. It checks the turn budget right before each
+ * start, and once the budget is spent it yields with one `setImmediate`. So no turn runs more
+ * than the budget plus one operation, and operations still start in the order they were queued.
+ * A single run's sequential journal work keeps only a few operations waiting and runs directly,
+ * so its ordering against other promises is unchanged.
  *
  * `setImmediate` comes from `node:timers`, so a test that fakes the global timers cannot hold
  * journal work behind an immediate it never runs.
@@ -88,35 +90,75 @@ const JOURNAL_TURN_BUDGET_MS = 8;
 /** Waiting operations that mark a fan-out; one workflow's own work keeps far fewer queued. */
 const FAN_OUT_WAITING_OPERATIONS = 32;
 
+/** When the current turn's journal work began; cleared at the next check phase. */
 let turnStartedAt: number | undefined;
-let pause: Promise<void> | undefined;
+const fanOutQueue: (() => Promise<void>)[] = [];
+let fanOutDraining = false;
+
+function journalTurnStart(): number {
+	if (turnStartedAt === undefined) {
+		turnStartedAt = performance.now();
+		setImmediate(() => {
+			turnStartedAt = undefined;
+		});
+	}
+	return turnStartedAt;
+}
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function drainFanOut(): Promise<void> {
+	fanOutDraining = true;
+	let sliceStartedAt = journalTurnStart();
+	try {
+		for (let start = fanOutQueue.shift(); start !== undefined; start = fanOutQueue.shift()) {
+			if (performance.now() - sliceStartedAt >= JOURNAL_TURN_BUDGET_MS) {
+				await nextTurn();
+				sliceStartedAt = performance.now();
+			}
+			const settled = start();
+			// The next start waits for this operation, but not past the turn: one waiting on I/O lets
+			// the queue go on in the next turn, which then has a fresh budget.
+			let turn: NodeJS.Immediate | undefined;
+			const turned = await Promise.race([
+				settled.then(() => false),
+				new Promise<boolean>((resolve) => {
+					turn = setImmediate(() => resolve(true));
+				}),
+			]);
+			clearImmediate(turn);
+			if (turned) sliceStartedAt = performance.now();
+		}
+	} finally {
+		fanOutDraining = false;
+	}
+}
 
 /**
- * `undefined` while the current turn has budget left or `waiting()` (the operations queued on
- * the caller's journal, this one included) is below a fan-out's, so the operation runs without an extra
- * microtask; otherwise a promise that resolves after the event loop has turned.
+ * Runs a journal operation directly while `waiting()` (the operations queued on its journal, this
+ * one included) is below a fan-out's and nothing is queued; otherwise through the fan-out queue.
  */
-function journalTurnPause(waiting: () => number): Promise<void> | undefined {
-	if (pause !== undefined) return pause.then(() => journalTurnPause(waiting));
-	const now = performance.now();
-	if (turnStartedAt === undefined) {
-		turnStartedAt = now;
-		// The next check phase ends this turn, so the following one starts with a fresh budget.
-		setImmediate(() => {
-			turnStartedAt = undefined;
+function runInJournalTurns<T>(run: () => Promise<T>, waiting: () => number): Promise<T> {
+	journalTurnStart();
+	if (fanOutQueue.length === 0 && !fanOutDraining && waiting() < FAN_OUT_WAITING_OPERATIONS) return run();
+	return new Promise<T>((resolve, reject) => {
+		fanOutQueue.push(() => {
+			let result: Promise<T>;
+			try {
+				result = run();
+			} catch (error) {
+				result = Promise.reject(error);
+			}
+			result.then(resolve, reject);
+			return result.then(
+				() => {},
+				() => {},
+			);
 		});
-		return undefined;
-	}
-	if (waiting() < FAN_OUT_WAITING_OPERATIONS || now - turnStartedAt < JOURNAL_TURN_BUDGET_MS) return undefined;
-	const turned = new Promise<void>((resolve) => {
-		setImmediate(() => {
-			pause = undefined;
-			turnStartedAt = undefined;
-			resolve();
-		});
+		if (!fanOutDraining) void drainFanOut();
 	});
-	pause = turned;
-	return turned.then(() => journalTurnPause(waiting));
 }
 
 type Operation<T> = Generator<Promise<void>, T, void>;
@@ -280,7 +322,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly executions = new Map<string, WorkflowLeaseExecution>();
 	private readonly executionContext = new AsyncLocalStorage<ReadonlyMap<string, WorkflowLeaseExecution>>();
 	private readonly pending = new Map<string | symbol, Promise<void>>();
-	/** Operations queued or running on this backend; many at once mark a fan-out (see `journalTurnPause`). */
+	/** Operations queued or running on this backend; many at once mark a fan-out (see `runInJournalTurns`). */
 	private waitingOperations = 0;
 	/**
 	 * The receipts and settlements queued last for each run, not yet started: one more appended before any other
@@ -369,7 +411,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const run = () => this.mutationContext.run(admitted, () => execute(action()));
 		this.waitingOperations++;
 		// A fan-out's journal work yields the event loop between operations once it has held a turn too long.
-		const result = prior.then(() => journalTurnPause(() => this.waitingOperations)?.then(run) ?? run());
+		const result = prior.then(() => runInJournalTurns(run, () => this.waitingOperations));
 		const settled = result.then(
 			() => {
 				this.waitingOperations--;
