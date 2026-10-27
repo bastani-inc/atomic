@@ -354,6 +354,16 @@ type Locals = ReadonlyMap<string, ConstValue | undefined>;
 
 const NO_LOCALS: Locals = new Map();
 
+/** Deterministic numeric `Math` methods a timeout may use; `Math.random` and the like stay unresolved. */
+const PURE_MATH = new Map<string, (args: number[]) => number | undefined>([
+	["min", (args) => (args.length > 0 ? Math.min(...args) : undefined)],
+	["max", (args) => (args.length > 0 ? Math.max(...args) : undefined)],
+	["abs", ([value, ...rest]) => (value !== undefined && rest.length === 0 ? Math.abs(value) : undefined)],
+	["ceil", ([value, ...rest]) => (value !== undefined && rest.length === 0 ? Math.ceil(value) : undefined)],
+	["floor", ([value, ...rest]) => (value !== undefined && rest.length === 0 ? Math.floor(value) : undefined)],
+	["round", ([value, ...rest]) => (value !== undefined && rest.length === 0 ? Math.round(value) : undefined)],
+]);
+
 function asNumber(value: ConstValue | undefined): number | undefined {
 	return typeof value === "number" ? value : undefined;
 }
@@ -362,11 +372,13 @@ function asNumber(value: ConstValue | undefined): number | undefined {
  * Evaluate a timeout expression without executing source: numeric literals,
  * arithmetic, parentheses, TypeScript assertions, `const` bindings declared in
  * the file or imported from a relative module, member reads of constant object
- * literals, and calls of pure helpers with constant arguments. A pure helper is
- * a function whose parameters are plain names and whose body is only `const`
- * declarations and a `return` (or an arrow's expression body); it is evaluated
- * from its own constant expressions, as `poolTestBudgetMs(pools)` in
- * `test/helpers/pool-budget.ts` is. Anything else is unresolved.
+ * literals, deterministic `Math` methods (`min`, `max`, `abs`, `ceil`, `floor`,
+ * `round`) of the global `Math`, and calls of pure helpers with constant
+ * arguments. A pure helper is a function whose parameters are plain names and
+ * whose body is only `const` declarations and a `return` (or an arrow's
+ * expression body); it is evaluated from its own constant expressions, as
+ * `poolTestBudgetMs(pools)` in `test/helpers/pool-budget.ts` is. Anything else
+ * is unresolved.
  */
 class ConstantEvaluator {
 	private readonly modules = new Map<string, ModuleScope | undefined>();
@@ -450,7 +462,6 @@ class ConstantEvaluator {
 				return object.fields.get(key);
 			}
 			case "CallExpression": {
-				if (expression.callee.type !== "Identifier") return undefined;
 				const args: ConstValue[] = [];
 				for (const argument of expression.arguments) {
 					const node = unwrapExpression(argument);
@@ -458,9 +469,21 @@ class ConstantEvaluator {
 					if (arg === undefined) return undefined;
 					args.push(arg);
 				}
-				const name = expression.callee.name;
-				if (locals.has(name)) return undefined;
-				return this.call(name, args, scope, seen);
+				const { callee } = expression;
+				if (
+					callee.type === "MemberExpression" &&
+					callee.object.type === "Identifier" &&
+					callee.object.name === "Math" &&
+					!this.bound("Math", scope, locals)
+				) {
+					const method = propertyKey(callee.property, callee.computed);
+					const pure = method === undefined ? undefined : PURE_MATH.get(method);
+					const numbers = args.map(asNumber);
+					if (!pure || !numbers.every((arg): arg is number => arg !== undefined)) return undefined;
+					return pure(numbers);
+				}
+				if (callee.type !== "Identifier" || locals.has(callee.name)) return undefined;
+				return this.call(callee.name, args, scope, seen);
 			}
 			default:
 				return undefined;
@@ -475,6 +498,11 @@ class ConstantEvaluator {
 		if (init) return this.value(init, scope, next, NO_LOCALS);
 		const target = this.imported(name, scope);
 		return target ? this.binding(target.name, target.scope, next) : undefined;
+	}
+
+	/** Whether `name` is declared in `scope` or the helper being evaluated, so it is not the global of that name. */
+	private bound(name: string, scope: ModuleScope, locals: Locals): boolean {
+		return locals.has(name) || scope.constants.has(name) || scope.functions.has(name) || scope.imports.has(name);
 	}
 
 	/** Call a pure helper declared in, or imported into, `scope`. */

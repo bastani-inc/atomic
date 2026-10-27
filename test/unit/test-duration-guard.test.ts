@@ -869,6 +869,71 @@ test("budgets from an imported pure helper and constant object members are score
 	);
 });
 
+// #4051 wraps the pool helper in a local `testBudget(coldStarts)` that caps the
+// budget with `Math.min` against a named constant.
+test("a local helper capping the pool budget with Math.min is scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const TEST_BUDGET_CAP_MS = 600_000;",
+			"function testBudget(coldStarts: number): { readonly waitMs: number; readonly timeoutMs: number } {",
+			"\tconst waitMs = Math.min(poolTestBudgetMs(coldStarts).waitMs, TEST_BUDGET_CAP_MS - POOL_CLEANUP_HEADROOM_MS);",
+			"\treturn { waitMs, timeoutMs: waitMs + POOL_CLEANUP_HEADROOM_MS };",
+			"}",
+			"const ROOT_PROCESS_COLD_STARTS = 4;",
+			"const POOL_COLD_STARTS = 3;",
+			"const RESUMES = 4;",
+			"const LEASE_STALL = testBudget(ROOT_PROCESS_COLD_STARTS);",
+			"const RESUME_CYCLES = testBudget((RESUMES + 1) * POOL_COLD_STARTS + 1);",
+			"const LARGEST = Math.max(LEASE_STALL.timeoutMs, 1_000);",
+			'test("under the cap", async () => {',
+			"}, LEASE_STALL.timeoutMs);",
+			'test("capped", async () => {',
+			"}, RESUME_CYCLES.timeoutMs);",
+			'test("Math.max of constants", async () => {',
+			"}, LARGEST);",
+		],
+		["under the cap", "capped", "Math.max of constants"],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["under the cap", { timeoutMs: 315_000, unresolved: false }],
+			["capped", { timeoutMs: 600_000, unresolved: false }],
+			["Math.max of constants", { timeoutMs: 315_000, unresolved: false }],
+		]),
+	);
+});
+
+test("Math members are only evaluated when Math is the global and the method is a pure numeric one", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const Clamp = { min: (a: number) => a };",
+			'test("random", async () => {',
+			"}, Math.random() * 1_000);",
+			'test("min of a non-constant", async () => {',
+			"}, Math.min(rows.length, 1_000));",
+			'test("not the Math global", async () => {',
+			"}, Clamp.min(1_000));",
+		],
+		["random", "min of a non-constant", "not the Math global"],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 3);
+});
+
+test("a shadowed Math is not treated as the global", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const Math = { min: (a: number, b: number) => a + b };",
+			'test("shadowed", async () => {',
+			"}, Math.min(1_000, 2_000));",
+		],
+		["shadowed"],
+	);
+	assert.deepEqual(budgets.get("shadowed"), { timeoutMs: 0, unresolved: true });
+});
+
 test("helper calls and member reads that are genuinely dynamic stay unresolved", () => {
 	const budgets = scorePoolSuite(
 		[
