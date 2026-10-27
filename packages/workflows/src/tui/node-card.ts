@@ -148,10 +148,25 @@ function modelText(stage: StageSnapshot, innerWidth: number): string {
 	return `${truncateToWidth(name, room, "…")}${modelSuffix}${suffix}`;
 }
 
-function workflowChildRunRows(stage: StageSnapshot, width: number): string[] {
+/**
+ * Wrapped child run-id rows by width and run id. Every store publish re-measures every card, and
+ * a graph of hundreds of workflow children re-wrapped every id each time (#3996); the rows depend
+ * only on these two values. Bounded: cleared once it holds more entries than a large graph needs.
+ */
+const childRunRowsCache = new Map<string, readonly string[]>();
+const CHILD_RUN_ROWS_CACHE_LIMIT = 4096;
+
+function workflowChildRunRows(stage: StageSnapshot, width: number): readonly string[] {
 	const child = stage.workflowChild ?? stage.workflowChildRun;
 	if (child === undefined) return [];
-	return wrapIdentifierLines(child.runId, Math.max(1, width), "run ", "").map((row) => `${row.prefix}${row.chunk}`);
+	const rowWidth = Math.max(1, width);
+	const key = `${rowWidth}\u0000${child.runId}`;
+	const cached = childRunRowsCache.get(key);
+	if (cached !== undefined) return cached;
+	const rows = wrapIdentifierLines(child.runId, rowWidth, "run ", "").map((row) => `${row.prefix}${row.chunk}`);
+	if (childRunRowsCache.size >= CHILD_RUN_ROWS_CACHE_LIMIT) childRunRowsCache.clear();
+	childRunRowsCache.set(key, rows);
+	return rows;
 }
 
 /** Wrapped child-run id row counts by width and run id; sizing asks per node on every layout (#4009). */

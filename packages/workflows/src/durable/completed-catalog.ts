@@ -42,7 +42,12 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 	);
 }
 
-import { directChildTopologyErrorFromRecords, immutableStageGroupError } from "./stage-topology-validation.js";
+import {
+	directChildTopologyErrorFromRecords,
+	durableStageGroupKey,
+	immutableStageGroupError,
+	supersededPromptGroupKeys,
+} from "./stage-topology-validation.js";
 import { workflowToolOutcomeFromValue } from "./tool-outcome.js";
 import {
 	DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -493,7 +498,10 @@ function runSnapshotsFromCheckpoints(
 			stage.topology?.boundary !== undefined,
 	);
 	if (immutableStageGroupError(identityRecords) !== undefined) return [];
+	// A prompt a replacement attempt superseded is not part of its run (#4022).
+	const superseded = supersededPromptGroupKeys(stageRecords);
 	const candidates = [...index.stageGroups()]
+		.filter((records) => records[0] === undefined || !superseded.has(durableStageGroupKey(records[0])))
 		.map((records) => mergeStageGroup(records, index))
 		.filter(
 			(draft) =>

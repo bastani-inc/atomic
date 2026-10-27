@@ -264,6 +264,12 @@ export class PoolStageHandoff {
 				if (stage.sessionId === undefined) attempt.sessions.delete(key);
 				else attempt.sessions.set(key, stage.sessionId);
 			}
+			// Whether a chat in this process is attached to a stage is the root's own state: a worker's
+			// republished run never knows it, and dropping it would stop the chat answering prompts.
+			const previous = this.store.runs().find((candidate) => candidate.id === run.id);
+			for (const stage of run.stages)
+				if (previous?.stages.find((candidate) => candidate.id === stage.id)?.attached === true)
+					stage.attached = true;
 			this.store.recordRunStart(run);
 		}
 		if (changed) this.store.recordRunExecutionState(root, { lastProgressAt: Date.now() });
@@ -411,12 +417,21 @@ function withReconnectingStages(
 	if (previous === undefined || run.endedAt !== undefined || isTerminalRunStatus(run.status)) return stages;
 	const ids = new Set(stages.map((stage) => stage.id));
 	const replayKeys = new Set(stages.flatMap((stage) => (stage.replayKey === undefined ? [] : [stage.replayKey])));
+	const previousIds = new Set(previous.stages.map((stage) => stage.id));
+	// Positions where this attempt asks a prompt the earlier attempt did not: an unanswered prompt the
+	// earlier attempt asked there was superseded (#4022), not left behind, and is not kept.
+	const newPromptPositions = new Set(
+		stages.flatMap((stage, index) =>
+			stage.promptFootprint !== undefined && !previousIds.has(stage.id) ? [index] : [],
+		),
+	);
 	const reconnecting = previous.stages.filter(
-		(stage) =>
+		(stage, index) =>
 			!ids.has(stage.id) &&
 			(stage.replayKey === undefined || !replayKeys.has(stage.replayKey)) &&
 			stage.workerExecution !== undefined &&
-			stage.workerExecution.generation < generation,
+			stage.workerExecution.generation < generation &&
+			!(stage.promptFootprint !== undefined && stage.endedAt === undefined && newPromptPositions.has(index)),
 	);
 	if (reconnecting.length === 0) return stages;
 	// A stage republished under a new id with the same replay key keeps its edges: retained

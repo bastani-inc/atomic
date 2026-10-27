@@ -424,6 +424,36 @@ export interface ToolNodeSnapshot extends WorkflowSerializableObject {
 	readonly attachable: false;
 }
 
+/**
+ * How a failed run's failure was classified. A parent workflow classifies a failed child from it, so the
+ * child's own failure decides whether the parent fails or blocks resumably, never workflow names.
+ */
+export interface RunFailureClassification extends WorkflowSerializableObject {
+	readonly kind: "auth" | "rate_limit" | "provider" | "cancelled" | "unknown";
+	readonly code?:
+		| "login_required"
+		| "auth_timeout"
+		| "missing_api_key"
+		| "invalid_api_key"
+		| "forbidden_config"
+		| "unknown_model"
+		| "rate_limited"
+		| "quota_limited"
+		| "provider_unavailable"
+		| "pending_stage_delivery_failed"
+		| "cancelled"
+		| "unknown";
+	/** Whether retrying the same work can succeed, as for a rate limit or an outage. */
+	readonly retryable: boolean;
+	/** Whether the run can be resumed after this failure. */
+	readonly resumable: boolean;
+	readonly recoverability?: "recoverable" | "non_recoverable" | "unknown";
+	/** Absent when the run failed outside any stage. */
+	readonly disposition?: "active_blocked" | "terminal_killed" | "terminal_failed";
+	/** Server retry hint of a rate limit or outage, in milliseconds. */
+	readonly retryAfterMs?: number;
+}
+
 export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues>
 	extends WorkflowSerializableObject {
 	readonly runId: string;
@@ -435,6 +465,8 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	/** True when the run reached its terminal status through ctx.exit(). */
 	readonly exited?: boolean;
 	readonly exitReason?: string;
+	/** How the run's failure was classified, when it failed or blocked on a failure. */
+	readonly failure?: RunFailureClassification;
 	readonly stages: readonly StageSnapshot[];
 	readonly toolNodes: readonly ToolNodeSnapshot[];
 }

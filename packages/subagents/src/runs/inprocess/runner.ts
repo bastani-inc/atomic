@@ -120,8 +120,16 @@ export interface ChildSpec {
 	readonly sessionManager?: SessionManager;
 	/** The child reopens its own interrupted session, so its unreconciled deliveries are recovered before the task. */
 	readonly resumeSession?: boolean;
-	/** Follow-ups queued with the task prompt, in order: a resumed child's held messages, then its continuation. */
+	/**
+	 * Follow-ups queued with the task prompt, in order: a resumed child's held messages, then its continuation. They
+	 * are delivered as written: never expanded as prompt templates or run as commands.
+	 */
 	readonly resumeFollowUps?: readonly string[];
+	/**
+	 * The task is a resume's message or a message the child had already received, not the child's original task, so it
+	 * is delivered as written. An original task is prompted as a fresh launch prompts it.
+	 */
+	readonly resumeTaskLiteral?: boolean;
 	/** Told the child's own session, and the model it started on, for a launch no task host records. */
 	readonly onChildSession?: TaskExecutionHooks["bindChildSession"];
 	readonly onChildLaunch?: TaskExecutionHooks["bindChildLaunch"];
@@ -227,6 +235,8 @@ export type AttemptOutcome = (
 			readonly cause?: string;
 			/** Steering then follow-up messages the child had queued but not read when its parent stopped it, in order. */
 			readonly pendingMessages?: readonly string[];
+			/** The first pending message is the child's original task it never read, prompted as a fresh launch prompts it. */
+			readonly pendingTaskExpands?: true;
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
@@ -661,6 +671,9 @@ function cancelledEnvelope(
 	}).text;
 }
 
+/** Text a resumed child receives as written: never expanded as a prompt template or run as a command. */
+const LITERAL_TEXT = { expandPromptTemplates: false } as const;
+
 /**
  * What a stopped child had queued and not yet read, steering before follow-ups, so its resume delivers it. A child
  * stopped before its prompt ran never read its task either: that comes first, then the follow-ups it was to queue.
@@ -668,11 +681,14 @@ function cancelledEnvelope(
 function pendingMessagesOf(
 	session: AgentSession | undefined,
 	unsent: readonly string[],
-): { pendingMessages?: readonly string[] } {
+	taskLiteral: boolean | undefined,
+): { pendingMessages?: readonly string[]; pendingTaskExpands?: true } {
 	const queued = session ? [...session.getSteeringMessages(), ...session.getFollowUpMessages()] : [];
 	const [task, ...followUps] = unsent;
 	const pending = task === undefined ? queued : [task, ...queued, ...followUps];
-	return pending.length > 0 ? { pendingMessages: pending } : {};
+	if (pending.length === 0) return {};
+	// Only an original task it never read keeps a fresh launch's handling; everything else is delivered as written.
+	return { pendingMessages: pending, ...(task !== undefined && !taskLiteral ? { pendingTaskExpands: true } : {}) };
 }
 
 function attemptStatus(termination: TerminationCauseName | undefined): "ok" | "error" | "interrupted" {
@@ -964,10 +980,11 @@ export class SubagentControlRuntime {
 						...(waitResult === PARENT_CANCEL_CAUSE && !killed
 							? {
 									cause: PARENT_CANCEL_CAUSE,
-									...pendingMessagesOf(undefined, [
-										admitted.spec.task,
-										...(admitted.spec.resumeFollowUps ?? []),
-									]),
+									...pendingMessagesOf(
+										undefined,
+										[admitted.spec.task, ...(admitted.spec.resumeFollowUps ?? [])],
+										admitted.spec.resumeTaskLiteral,
+									),
 								}
 							: {}),
 						stats,
@@ -1281,12 +1298,13 @@ export class SubagentControlRuntime {
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
 			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
 				if (termination) break;
-				await session.followUp(followUp);
+				// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
+				await session.followUp(followUp, undefined, LITERAL_TEXT);
 				unsent.splice(1, 1);
 			}
 			if (!termination) {
 				unsent.splice(0, 1);
-				await session.prompt(admitted.spec.task);
+				await session.prompt(admitted.spec.task, admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined);
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -1321,7 +1339,10 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session, unsent) }
+						? {
+								cause: PARENT_CANCEL_CAUSE,
+								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+							}
 						: {}),
 					stats,
 					path: admitted.identity.path,
@@ -1360,7 +1381,10 @@ export class SubagentControlRuntime {
 				return {
 					status: this.killedChildren.has(admitted.identity.path) ? "killed" : status,
 					...(termination === PARENT_CANCEL_CAUSE && !this.killedChildren.has(admitted.identity.path)
-						? { cause: PARENT_CANCEL_CAUSE, ...pendingMessagesOf(session, unsent) }
+						? {
+								cause: PARENT_CANCEL_CAUSE,
+								...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
+							}
 						: {}),
 					stats,
 					path: admitted.identity.path,

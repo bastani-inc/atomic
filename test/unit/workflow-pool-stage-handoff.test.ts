@@ -1229,6 +1229,46 @@ test("a replacement worker's first publications keep the replaced attempt's stag
 	}
 });
 
+test("#4022: a replacement that asks a different prompt where the replaced attempt's unanswered prompt was does not keep the superseded prompt", async () => {
+	const f = await fixture();
+	try {
+		const asked = (id: string, message: string): StageSnapshot =>
+			stage(id, {
+				status: "awaiting_input",
+				parentIds: ["plan"],
+				replayKey: `${descriptor.scope}:prompt:${message}`,
+				pendingPrompt: { id: `hil-${id}`, kind: "input", message, createdAt: 1 },
+				promptFootprint: { id: `hil-${id}`, kind: "input", message, createdAt: 1 },
+			});
+		await f.handoff.publish(f.first, [
+			childRun([stage("plan", { status: "completed" }), asked("branch", "Which branch?")]),
+		]);
+		const next = await f.replacement();
+		f.handoff.fence(f.first);
+		const childStages = () => f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages ?? [];
+		// Until the replacement reaches the prompt, the replaced attempt's prompt is kept, reconnecting.
+		await f.handoff.publish(next, [childRun([stage("plan", { status: "completed" })])]);
+		assert.deepEqual(
+			childStages().map((entry) => [entry.id, entry.workerExecution?.reconnecting]),
+			[
+				["plan", undefined],
+				["branch", true],
+			],
+		);
+		// The replacement asks a different question at that point: it supersedes the unanswered one.
+		await f.handoff.publish(next, [childRun([stage("plan", { status: "completed" }), asked("tag", "Which tag?")])]);
+		assert.deepEqual(
+			childStages().map((entry) => [entry.id, entry.pendingPrompt?.message, entry.workerExecution?.reconnecting]),
+			[
+				["plan", undefined, undefined],
+				["tag", "Which tag?", undefined],
+			],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a replacement worker's terminal publication drops the replaced attempt's stages it did not republish (#4009)", async () => {
 	const f = await fixture();
 	try {

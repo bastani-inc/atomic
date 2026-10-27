@@ -34,6 +34,12 @@ test("a stage watched while paused reads running once it is resumed (#3996)", as
 			async deliver() {
 				return { ok: false, refusal: "StageNotLive" };
 			},
+			async pause() {
+				return { ok: true };
+			},
+			async resume() {
+				return { ok: true };
+			},
 		},
 		{ runId: "child", stageId: "agent" },
 		"agent",

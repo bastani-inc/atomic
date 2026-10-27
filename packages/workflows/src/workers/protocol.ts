@@ -9,10 +9,14 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type {
 	AttemptRef,
+	ControlRefusal,
 	DeliveryIntent,
 	DeliveryOpId,
 	DeliveryRefusal,
+	PooledPromptAnswer,
 	PooledStageChatSnapshot,
+	PooledStageQuestion,
+	PromptRefusal,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -34,6 +38,8 @@ export interface WorkerStart {
 	readonly root: string;
 	readonly definitions: readonly WorkerDefinitionSource[];
 	readonly admission?: AdmissionConfiguration;
+	/** Children raise `ctx.ui` prompts as prompt nodes for the root to answer (#3996). */
+	readonly promptNodes?: boolean;
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }
@@ -59,8 +65,9 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly kind: "stage-command-result";
 			readonly commandId: number;
 			readonly snapshot?: PooledStageChatSnapshot;
-			readonly refusal?: WatchRefusal | DeliveryRefusal;
+			readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 			readonly action?: StageUserMessageDeliveryAction;
+			readonly question?: PooledStageQuestion;
 			/** The stage refused the text for another reason; the message says why. */
 			readonly error?: string;
 	  }
@@ -97,6 +104,22 @@ export type WorkerStageCommand = {
 			readonly text: string;
 			readonly intent: DeliveryIntent;
 			readonly expandPromptTemplates?: boolean;
+	  }
+	| { readonly op: "pause"; readonly watch: WatchId }
+	/** Answers a prompt of the attempt's stage; needs no watch, since a prompt waits for whoever answers. */
+	/** Reads the brokered question the attempt's stage waits on; needs no watch either. */
+	| { readonly op: "question"; readonly runId: string; readonly stageId: string }
+	| {
+			readonly op: "answer";
+			readonly runId: string;
+			readonly stageId: string;
+			readonly answer: PooledPromptAnswer;
+	  }
+	| {
+			readonly op: "resume";
+			readonly watch: WatchId;
+			/** Sent as the next user message, admitted at most once per op. */
+			readonly message?: { readonly deliveryOp: DeliveryOpId; readonly text: string };
 	  }
 );
 

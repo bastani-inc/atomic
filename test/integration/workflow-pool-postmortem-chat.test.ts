@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JsonlSessionStore } from "@bastani/atomic";
 import { beforeAll, test, vi } from "vitest";
-import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import {
 	completedWorkflowRunSnapshots,
@@ -29,7 +28,7 @@ import type { StageSnapshot } from "../../packages/workflows/src/shared/store-ty
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, writeTextSync } from "../helpers/runtime.js";
 
 /** Structural: a coordinator process, a worker process, and a real agent stage in it. */
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
@@ -76,9 +75,9 @@ test.skipIf(process.platform === "win32")(
 		const directory = makeTempDirectory("pool-postmortem-");
 		const path = join(directory, "journal.sqlite");
 		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
-		const gate = new TestSqliteDatabase(path);
-		gate.run("CREATE TABLE test_live_stage_gate(released INTEGER); INSERT INTO test_live_stage_gate VALUES (1)");
-		gate.close();
+		// Released from the start: this suite only needs the stage to finish.
+		const gatePath = join(directory, "release-stage");
+		writeTextSync(gatePath, "");
 		const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
 		const child = await loadWorkerDefinition({
 			path: childPath,
@@ -110,7 +109,7 @@ test.skipIf(process.platform === "win32")(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { journalPath: path } });
+						await ctx.workflow(child, { inputs: { gatePath } });
 						return {};
 					},
 				}),

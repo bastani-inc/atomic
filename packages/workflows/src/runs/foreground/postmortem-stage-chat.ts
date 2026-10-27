@@ -93,11 +93,23 @@ async function reopenableSessionStore(
 const TERMINAL_POSTMORTEM_STATUSES = new Set<StageSnapshot["status"]>(["completed"]);
 
 /**
+ * A finished stage whose chat can reopen: a completed one, or a failed one that ran on a local
+ * worker. A failed stage in this process keeps its live chat handle; a failed pooled stage has
+ * none here, so its retained session reopens instead (#3996).
+ */
+function reopensForPostMortem(stage: StageSnapshot): boolean {
+	return (
+		TERMINAL_POSTMORTEM_STATUSES.has(stage.status) ||
+		(stage.status === "failed" && stage.workerExecution !== undefined)
+	);
+}
+
+/**
  * True when the snapshot is an eligible terminal agent stage: a completed stage
  * that retains a session ID. Nodes without their own agent session are excluded.
  */
 export function isPostMortemEligibleStage(stage: StageSnapshot): boolean {
-	return TERMINAL_POSTMORTEM_STATUSES.has(stage.status) && stage.sessionId !== undefined;
+	return reopensForPostMortem(stage) && stage.sessionId !== undefined;
 }
 
 /**
@@ -114,7 +126,7 @@ export async function ensurePostMortemStageHandle(
 	deps: PostMortemStageChatDeps,
 ): Promise<EnsurePostMortemStageHandleResult> {
 	const generation = deps.registry.generation;
-	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
+	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.claim(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return { ok: true, handle: existing };
@@ -140,7 +152,7 @@ export async function acquirePostMortemStageHandle(
 	deps: PostMortemStageChatDeps,
 ): Promise<AcquirePostMortemStageHandleResult> {
 	const generation = deps.registry.generation;
-	if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
+	if (!reopensForPostMortem(stage)) return { ok: false, reason: "not_terminal" };
 	const existing = deps.registry.peek(runId, stage.id);
 	if (existing !== undefined && existing.isDisposed !== true) {
 		return {

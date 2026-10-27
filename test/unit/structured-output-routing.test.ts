@@ -604,3 +604,39 @@ test("classifier abort during a rejected provider request never falls back or de
 	assert.equal(dispatch.mock.calls.length, 0);
 	assert.equal(decode.mock.calls.length, 0);
 });
+
+test("a classifier router's 429 keeps its status, code and retry hint without its text (#4031)", async () => {
+	const classify = vi.fn(async () => {
+		throw Object.assign(new Error("429 Too Many Requests: private upstream mock-key"), {
+			status: 429,
+			headers: new Headers({ "Retry-After": "7" }),
+		});
+	});
+	await assert.rejects(routeModel(classifierRequest(classify)), (error: Error) => {
+		assert.doesNotMatch(String(error.stack), /private upstream|mock-key/);
+		assert.equal(error.cause, undefined);
+		assert.deepEqual(
+			{
+				status: Reflect.get(error, "status"),
+				code: Reflect.get(error, "code"),
+				retry: Reflect.get(error, "retryAfterMs"),
+			},
+			{ status: 429, code: "rate_limit_exceeded", retry: 7000 },
+		);
+		return true;
+	});
+});
+
+test("a classifier router's exhausted quota keeps its 402 status and code (#4031)", async () => {
+	const classify = vi.fn(async () =>
+		classifierResult({ stopReason: "error", errorMessage: "402 Payment Required: private upstream body" }),
+	);
+	await assert.rejects(routeModel(classifierRequest(classify)), (error: Error) => {
+		assert.doesNotMatch(String(error.stack), /private upstream/);
+		assert.deepEqual(
+			{ status: Reflect.get(error, "status"), code: Reflect.get(error, "code") },
+			{ status: 402, code: "insufficient_quota" },
+		);
+		return true;
+	});
+});

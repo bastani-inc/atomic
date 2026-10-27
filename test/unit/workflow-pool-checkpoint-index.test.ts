@@ -9,6 +9,7 @@ import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/int
 import { PoolCheckpointIndex } from "../../packages/workflows/src/durable/journal/pool-checkpoint-index.js";
 import {
 	type PoolCheckpointMutation,
+	poolTopologyDivergence,
 	validatePoolMutation,
 } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -127,7 +128,7 @@ async function originalValidatePoolMutation(
 		),
 	);
 	const stageError = directChildTopologyError(next, owner.replayScope, run, tools);
-	if (stageError) throw new Error(`Pool topology scope: ${stageError}`);
+	if (stageError) throw new Error(poolTopologyDivergence(run.runName, stageError));
 	const boundary = checkpoint.topology?.boundary;
 	if (!boundary) {
 		if (parseWorkflowChildResult(checkpoint.output)) throw new Error("Pool boundary output without ownership");
