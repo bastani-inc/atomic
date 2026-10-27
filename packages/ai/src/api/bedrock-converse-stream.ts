@@ -13,6 +13,7 @@ import {
 	type ContentBlockStopEvent,
 	ConversationRole,
 	ConverseStreamCommand,
+	type ConverseStreamCommandOutput,
 	type ConverseStreamMetadataEvent,
 	DocumentFormat,
 	ImageFormat,
@@ -71,6 +72,8 @@ import {
 import {
 	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
 	getJsonSchemaToolParameters,
+	isStrictToolLimitErrorMessage,
+	prefersJsonSchemaStrictSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
 import {
@@ -279,35 +282,61 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const inferenceMaxTokens = options.maxTokens ?? (isAnthropicClaudeModel(model) ? model.maxTokens : undefined);
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
-			let commandInput = {
-				modelId: model.id,
-				messages: convertMessages(normalizedContext, model, cacheRetention, options.env),
-				system: buildSystemPrompt(initialSystemPrompt, model, cacheRetention, options.env),
-				inferenceConfig: {
-					...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
-					// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every
-					// request. Generated metadata marks such models `supportsTemperature: false`; every
-					// other model keeps sending the field exactly as before.
-					// https://platform.claude.com/docs/en/build-with-claude/thinking
-					...(options.temperature !== undefined &&
-						model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
-				},
-				toolConfig: convertToolConfig(
+			let disablePreferredStrictTools = false;
+			let response: ConverseStreamCommandOutput;
+			for (;;) {
+				const tools = convertToolConfig(
 					getCurrentTools(normalizedContext.messages),
 					options.toolChoice,
 					supportsStrictMode,
 					model,
-				),
-				additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
-				...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
-			};
-			const nextCommandInput = await options?.onPayload?.(commandInput, model);
-			if (nextCommandInput !== undefined) {
-				commandInput = nextCommandInput as typeof commandInput;
+					disablePreferredStrictTools,
+				);
+				let commandInput = {
+					modelId: model.id,
+					messages: convertMessages(normalizedContext, model, cacheRetention, options.env),
+					system: buildSystemPrompt(initialSystemPrompt, model, cacheRetention, options.env),
+					inferenceConfig: {
+						...(inferenceMaxTokens !== undefined && { maxTokens: inferenceMaxTokens }),
+						// Claude Fable 5.1 rejects non-default `temperature`, `top_p`, and `top_k` on every
+						// request. Generated metadata marks such models `supportsTemperature: false`; every
+						// other model keeps sending the field exactly as before.
+						// https://platform.claude.com/docs/en/build-with-claude/thinking
+						...(options.temperature !== undefined &&
+							model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
+					},
+					toolConfig: tools.toolConfig,
+					additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+					...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
+				};
+				const nextCommandInput = await options?.onPayload?.(commandInput, model);
+				if (nextCommandInput !== undefined) {
+					commandInput = nextCommandInput as typeof commandInput;
+				}
+				try {
+					response = await client.send(new ConverseStreamCommand(commandInput), { abortSignal: options.signal });
+					break;
+				} catch (error) {
+					// Bedrock checks the tool schemas before it starts the stream, so a retry never repeats streamed output.
+					if (
+						options.signal?.aborted ||
+						disablePreferredStrictTools ||
+						!tools.hasPreferredStrictTools ||
+						!(error instanceof BedrockRuntimeServiceException) ||
+						error.name !== "ValidationException" ||
+						!isStrictToolLimitErrorMessage(error.message)
+					) {
+						throw error;
+					}
+					disablePreferredStrictTools = true;
+					appendAssistantMessageDiagnostic(output, {
+						type: "bedrock_strict_tools_fallback",
+						timestamp: Date.now(),
+						error: { message: error.message },
+						details: { reason: "strict_tool_limits_exceeded" },
+					});
+				}
 			}
-			const command = new ConverseStreamCommand(commandInput);
-
-			const response = await client.send(command, { abortSignal: options.signal });
 			responseRequestId = normalizeDiagnosticValue(response.$metadata.requestId);
 			if (!observedRawResponse && response.$metadata.httpStatusCode !== undefined) {
 				const responseHeaders: Record<string, string> = {};
@@ -1177,7 +1206,8 @@ function convertToolConfig(
 	toolChoice: BedrockOptions["toolChoice"],
 	supportsStrictMode: boolean,
 	model: Model<"bedrock-converse-stream">,
-): ToolConfiguration | undefined {
+	disablePreferredStrictTools: boolean,
+): { toolConfig: ToolConfiguration | undefined; hasPreferredStrictTools: boolean } {
 	// Validate the requested choice before any early return. A forced choice on a model that
 	// rejects it is an error regardless of whether tools were supplied: returning `undefined` for
 	// an empty or absent tool list would discard the caller's instruction silently, which is the
@@ -1198,13 +1228,18 @@ function convertToolConfig(
 		}
 	}
 
-	if (!tools?.length) return undefined;
 	// `none` is never a forced choice, so this return can never skip a rejection above.
-	if (toolChoice === "none") return undefined;
+	if (!tools?.length || toolChoice === "none") return { toolConfig: undefined, hasPreferredStrictTools: false };
 
 	const strictProfile = isAnthropicClaudeModel(model) ? ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE : undefined;
+	let hasPreferredStrictTools = false;
 	const bedrockTools: BedrockTool[] = tools.map((tool) => {
-		const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode, strictProfile);
+		const preferred = prefersJsonSchemaStrictSampling(tool);
+		const strict =
+			disablePreferredStrictTools && preferred
+				? undefined
+				: resolveJsonSchemaStrictSampling(tool, supportsStrictMode, strictProfile);
+		if (strict === true && preferred) hasPreferredStrictTools = true;
 		return {
 			toolSpec: {
 				name: tool.name,
@@ -1229,7 +1264,7 @@ function convertToolConfig(
 			}
 	}
 
-	return { tools: bedrockTools, toolChoice: bedrockToolChoice };
+	return { toolConfig: { tools: bedrockTools, toolChoice: bedrockToolChoice }, hasPreferredStrictTools };
 }
 
 function mapStopReason(reason: string | undefined): { stopReason: StopReason; errorMessage?: string } {

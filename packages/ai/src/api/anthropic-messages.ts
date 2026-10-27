@@ -62,6 +62,8 @@ import {
 import {
 	ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE,
 	getJsonSchemaToolParameters,
+	isStrictToolLimitErrorMessage,
+	prefersJsonSchemaStrictSampling,
 	resolveJsonSchemaStrictSampling,
 } from "./constrained-sampling.ts";
 import {
@@ -939,11 +941,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 						!(error instanceof Anthropic.APIError) ||
 						error.status !== 400 ||
 						error.type !== "invalid_request_error" ||
-						![
-							"The compiled grammar is too large",
-							"Too many strict tools (",
-							"Schemas contains too many parameters with union types (",
-						].some((message) => error.message.includes(message))
+						!isStrictToolLimitErrorMessage(error.message)
 					)
 						throw error;
 					disablePreferredStrictTools = true;
@@ -1509,10 +1507,9 @@ function buildParams(
 			disablePreferredStrictTools,
 		);
 		if (
-			definitions.some((definition, index) => {
-				const config = tools[index].constrainedSampling;
-				return definition.strict === true && config && config.type === "json_schema" && config.strict === "prefer";
-			})
+			definitions.some(
+				(definition, index) => definition.strict === true && prefersJsonSchemaStrictSampling(tools[index]),
+			)
 		)
 			hasPreferredStrictTools = true;
 		return definitions;
@@ -2065,9 +2062,8 @@ function convertTools(
 	if (!tools) return [];
 
 	return tools.map((tool, index) => {
-		const config = tool.constrainedSampling;
 		const strict =
-			disablePreferredStrictTools && config && config.type === "json_schema" && config.strict === "prefer"
+			disablePreferredStrictTools && prefersJsonSchemaStrictSampling(tool)
 				? undefined
 				: resolveJsonSchemaStrictSampling(tool, supportsStrictTools, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
 		const parameters = getJsonSchemaToolParameters(tool, strict, ANTHROPIC_STRICT_JSON_SCHEMA_PROFILE);
