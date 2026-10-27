@@ -132,6 +132,45 @@ test("tool search ranks a tool first when the query is its name (pi#11331)", () 
 	}
 });
 
+test("tool search resolves the dotted, prefixed and bare forms of an MCP tool name (#4065)", () => {
+	// Server `alteryx-local` sanitizes to `alteryx_local`; its tool names already contain `_`.
+	const documents = [
+		{ name: "mcp__alteryx_local__alteryx_local__get_server_info", description: "Server version." },
+		{
+			name: "mcp__alteryx_local__designer_local__get_server_info",
+			description: "Get the Alteryx local server info: the alteryx local server version and local server info.",
+		},
+		{ name: "mcp__alteryx_local__alteryx_local__run_workflow", description: "Run a workflow." },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	const ranker = new Bm25Ranker();
+	for (const query of [
+		"mcp.alteryx-local.alteryx_local.get_server_info",
+		"mcp__alteryx-local__alteryx_local__get_server_info",
+		"alteryx-local__alteryx_local__get_server_info",
+		"alteryx_local__get_server_info",
+	]) {
+		assert.deepEqual(
+			ranker.rank(query, documents, 1).map((match) => match.name),
+			["mcp__alteryx_local__alteryx_local__get_server_info"],
+			query,
+		);
+	}
+});
+
+test("tool search resolves a dotted MCP name whose tool part contains dots and slashes (#4065)", () => {
+	const documents = [
+		{
+			name: "mcp__my_server__get_item_v1",
+			description: "Get the item v2 from my server: get item, server item v2, mcp server get item v2.",
+		},
+		{ name: "mcp__my_server__get_item_v2", description: "Fetch one record." },
+	].map((tool) => createToolSearchDocument({ ...tool, parameters: Type.Object({}) }));
+	assert.deepEqual(
+		new Bm25Ranker().rank("mcp.my-server.get.item/v2", documents, 1).map((match) => match.name),
+		["mcp__my_server__get_item_v2"],
+	);
+});
+
 test("tool search finds a tool whose name is only stop words, and nothing for other stop-word queries", () => {
 	const documents = [
 		{ name: "mcp__app__thread_read", description: "Read a thread." },

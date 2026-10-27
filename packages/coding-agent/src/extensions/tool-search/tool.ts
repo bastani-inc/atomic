@@ -1,5 +1,6 @@
 import { type Static, Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition, ToolInfo, ToolNamespace } from "../../core/extensions/types.ts";
+import { createMcpToolName } from "../mcp/tools.ts";
 
 export const TOOL_SEARCH_TOOL_NAME = "tool_search";
 export const DEFAULT_TOOL_SEARCH_LIMIT = 8;
@@ -84,12 +85,44 @@ function normalizeName(name: string): string {
 		.replace(/[^a-z0-9_$]/g, "_");
 }
 /**
+ * The normalized forms `query` can take for one tool name. MCP tools are registered as
+ * `mcp__<server>__<tool>` with `-` and `.` sanitized to `_`, but skills and models also write the
+ * dotted `mcp.<server>.<tool>` and the raw `mcp__alteryx-local__…` forms (#4065). In the dotted form
+ * only the first two dots separate server and tool. The rest is a raw tool name, either as written
+ * (`mcp.srv.get.item/v2` for the tool `get.item/v2`) or with its dots standing for `__`
+ * (`mcp.alteryx-local.alteryx_local.get_server_info` for `alteryx_local__get_server_info`); each is
+ * named the way registration names it, with `createMcpToolName`.
+ */
+function nameQueryForms(query: string): Set<string> {
+	const trimmed = query.trim();
+	const dotted = /^mcp\.([^.]+)\.(.+)$/i.exec(trimmed);
+	if (!dotted) return new Set([normalizeName(trimmed), normalizeName(trimmed.replaceAll(".", "__"))]);
+	const [, server, tool] = dotted;
+	return new Set([
+		normalizeName(trimmed),
+		normalizeName(createMcpToolName(server, tool)),
+		normalizeName(createMcpToolName(server, tool.replaceAll(".", "__"))),
+	]);
+}
+/**
  * Whether `query` names the tool: its full name or a suffix after a `__` separator, so `thread_read`
- * and `app__thread_read` both name `mcp__app__thread_read`.
+ * and `app__thread_read` both name `mcp__app__thread_read`, and `mcp.app.thread_read` does too.
  */
 function isNameQuery(query: string, name: string): boolean {
 	const normalized = normalizeName(name);
-	return normalized === query || normalized.endsWith(`__${query}`);
+	for (const form of nameQueryForms(query)) if (normalized === form || normalized.endsWith(`__${form}`)) return true;
+	return false;
+}
+/**
+ * The tool names `query` names, as {@link isNameQuery} matches them: the exact name when it is
+ * registered, else every full-name match, else every `__` suffix match. More than one result is
+ * ambiguous; callers must not pick one.
+ */
+export function resolveToolNames(query: string, names: readonly string[]): string[] {
+	if (names.includes(query)) return [query];
+	const forms = nameQueryForms(query);
+	const full = names.filter((name) => forms.has(normalizeName(name)));
+	return full.length ? full : names.filter((name) => isNameQuery(query, name));
 }
 /**
  * Okapi BM25 with the usual parameters. A query that names a tool ranks that tool first, because
@@ -108,9 +141,8 @@ export class Bm25Ranker implements ToolRanker {
 		const terms = [...new Set(tokenize(query))];
 		// A query made only of stop words has no BM25 terms, but can still name a tool exactly (`is`).
 		if (!terms.length) {
-			const nameQuery = normalizeName(query);
 			return documents
-				.filter((document) => isNameQuery(nameQuery, document.name))
+				.filter((document) => isNameQuery(query, document.name))
 				.slice(0, limit)
 				.map((document) => ({ name: document.name, score: 0 }));
 		}
@@ -127,7 +159,6 @@ export class Bm25Ranker implements ToolRanker {
 				return [term, Math.log(1 + (documents.length - frequency + 0.5) / (frequency + 0.5))];
 			}),
 		);
-		const nameQuery = normalizeName(query);
 		return documents
 			.flatMap((document, index) => {
 				let score = 0;
@@ -139,7 +170,7 @@ export class Bm25Ranker implements ToolRanker {
 				}
 				// A query naming the tool keeps it even when tokenization shares no term with it (`readthread`
 				// for `readThread`).
-				const named = isNameQuery(nameQuery, document.name);
+				const named = isNameQuery(query, document.name);
 				return score > 0 || named ? [{ name: document.name, score, named }] : [];
 			})
 			.sort((a, b) => Number(b.named) - Number(a.named) || b.score - a.score)

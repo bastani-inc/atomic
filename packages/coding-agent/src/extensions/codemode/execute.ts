@@ -26,7 +26,12 @@ import type { SessionEntry } from "../../core/session-manager.ts";
 import { formatSize } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
 import { writeOutputFile } from "../../utils/output-files.js";
-import { Bm25Ranker, createToolSearchDocument, DEFAULT_TOOL_SEARCH_LIMIT } from "../tool-search/tool.js";
+import {
+	Bm25Ranker,
+	createToolSearchDocument,
+	DEFAULT_TOOL_SEARCH_LIMIT,
+	resolveToolNames,
+} from "../tool-search/tool.js";
 import {
 	CODEMODE_DOCS_PATH,
 	CODEMODE_STORE_ENTRY_TYPE,
@@ -344,6 +349,22 @@ function createLimiter(limit: number) {
 		}
 	};
 }
+/**
+ * The script-callable tool another form of its name names (`mcp.<server>.<tool>`,
+ * `mcp__<raw-server>__<tool>`, `<server>__<tool>`, `<tool>`), or `undefined`. Throws, listing the
+ * matching names, when the form names more than one tool (#4065).
+ */
+function resolveScriptTool(tools: readonly AgentTool[], query: string): AgentTool | undefined {
+	const names = resolveToolNames(
+		query,
+		tools.map((tool) => tool.name),
+	);
+	if (names.length > 1)
+		throw new Error(
+			`Tool name "${query}" is ambiguous; it matches ${names.map((name) => toCodemodeIdentifier(name)).join(", ")}. Use one of these names.`,
+		);
+	return tools.find((tool) => tool.name === names[0]);
+}
 function discoveryGlobals(
 	tools: readonly AgentTool[],
 	samples: ReadonlyMap<string, string>,
@@ -392,7 +413,9 @@ function discoveryGlobals(
 			execute: (args) => {
 				const [name] = args as unknown[];
 				if (typeof name !== "string") throw new Error("describeTool() expects a tool name");
-				const tool = tools.find((tool) => tool.name === name || toCodemodeIdentifier(tool.name) === name);
+				const tool =
+					tools.find((tool) => tool.name === name || toCodemodeIdentifier(tool.name) === name) ??
+					resolveScriptTool(tools, name);
 				return tool ? samples.get(tool.name) : modelOnly(name)?.description;
 			},
 		},
