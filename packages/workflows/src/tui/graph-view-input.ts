@@ -16,6 +16,7 @@ const GRAPH_SCROLL_WHEEL_LINES = 4;
 export abstract class GraphViewInputController extends GraphViewRenderer {
 	/** Returns true if consumed. */
 	handleInput(data: string): boolean {
+		this._syncLayout();
 		if (this.toolDetail !== null) return this._handleToolDetailInput(data);
 		if (this._isReturnToMainChatInput(data)) {
 			this._returnToMainChat();
@@ -357,30 +358,38 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 	}
 
 	get _graphScrollbarGeometry() {
+		this._syncLayout();
 		return this.graphLayout.scrollbarGeometry;
 	}
 
 	get _toolDetail(): typeof this.toolDetail {
+		this._syncLayout();
 		return this.toolDetail;
 	}
 	get _toolDetailExpanded(): boolean {
+		this._syncLayout();
 		return this.toolDetailExpanded;
 	}
 
-	// ---- test seams ----
+	// ---- test seams (read the layout as the next frame would) ----
 	get _focusedIndex(): number {
+		this._syncLayout();
 		return this.focusedIndex;
 	}
 	get _switcherOpen(): boolean {
+		this._syncLayout();
 		return this.switcherOpen;
 	}
 	get _switcherState(): SwitcherState {
+		this._syncLayout();
 		return this.switcherState;
 	}
 	get _graphScrollOffset(): number {
+		this._syncLayout();
 		return this._graphScrollTop();
 	}
 	get _graphScrollColOffset(): number {
+		this._syncLayout();
 		return this.graphScrollColOffset;
 	}
 }

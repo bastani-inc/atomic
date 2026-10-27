@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@bastani/atomic";
 import { beforeAll, test, vi } from "vitest";
-import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -27,7 +26,7 @@ import type {
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { LIVE_STAGE_FIRST_DELTA, LIVE_STAGE_SECOND_DELTA } from "../fixtures/pool-live-stage-child.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, removeTempDirectory, sleep, writeTextSync } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** Structural: a coordinator process, a worker process, and a real agent stage in it. */
@@ -83,9 +82,7 @@ test.skipIf(process.platform === "win32")(
 		const path = join(directory, "journal.sqlite");
 		const journal = await resolveRunJournal({ journal: { path } });
 		const backend = await JournalDurableBackend.open(journal);
-		const gate = new TestSqliteDatabase(path);
-		gate.run("CREATE TABLE test_live_stage_gate(released INTEGER); INSERT INTO test_live_stage_gate VALUES (0)");
-		gate.close();
+		const gatePath = join(directory, "release-stage");
 		const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
 		const child = await loadWorkerDefinition({
 			path: childPath,
@@ -107,7 +104,7 @@ test.skipIf(process.platform === "win32")(
 					inputs: {},
 					outputs: {},
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { journalPath: path } });
+						await ctx.workflow(child, { inputs: { gatePath } });
 						return {};
 					},
 				}),
@@ -165,9 +162,7 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(watch.snapshot.isStreaming, true);
 			assert.equal(watch.attempt.generation, target.stage.workerExecution!.generation);
 
-			const release = new TestSqliteDatabase(path);
-			release.run("UPDATE test_live_stage_gate SET released = 1");
-			release.close();
+			writeTextSync(gatePath, "");
 			const events = (): readonly SeqEvent[] =>
 				received.flatMap((message) => (message.kind === "events" ? message.events : []));
 			const outcome = await execution;

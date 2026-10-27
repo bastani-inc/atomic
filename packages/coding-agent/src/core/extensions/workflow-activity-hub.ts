@@ -31,6 +31,8 @@ export class WorkflowActivityHub {
 	private disposed = false;
 	private dispatch?: (event: WorkflowEvent, isCurrent: () => boolean) => Promise<void>;
 	private pendingDispatches: (() => void)[] = [];
+	/** Publishes root changes the current publisher has coalesced but not yet published. */
+	private pendingPublications?: () => void;
 	bindDispatcher(dispatch: (event: WorkflowEvent, isCurrent: () => boolean) => Promise<void>): void {
 		if (this.disposed) return;
 		this.dispatch = dispatch;
@@ -49,6 +51,11 @@ export class WorkflowActivityHub {
 	}
 
 	getSnapshotFrame(): WorkflowActivitySnapshotFrame {
+		this.pendingPublications?.();
+		return this.currentSnapshotFrame();
+	}
+	/** The published state as is; publications the source still coalesces are not flushed. */
+	private currentSnapshotFrame(): WorkflowActivitySnapshotFrame {
 		return this.availability === "ready"
 			? {
 					kind: "snapshot",
@@ -64,10 +71,14 @@ export class WorkflowActivityHub {
 			this.record("ObserverDisposed");
 			return { dispose: () => {} };
 		}
+		// Publish coalesced changes before this observer exists, so they reach it inside its snapshot
+		// rather than as frames queued ahead of it (#4009).
+		this.pendingPublications?.();
 		if (this.availability !== "ready")
 			this.record(this.availability === "recovering" ? "SourceRecovering" : "SourceUnavailable");
+		const snapshot = this.currentSnapshotFrame();
 		this.observers.add(lease);
-		this.enqueue(lease, this.getSnapshotFrame());
+		this.enqueue(lease, snapshot);
 		return { dispose: () => this.disposeLease(lease) };
 	}
 	private disposeLease(lease: ObserverLease): void {
@@ -79,7 +90,7 @@ export class WorkflowActivityHub {
 	}
 	private enqueue(lease: ObserverLease, frame: WorkflowActivityFrame): void {
 		if (lease.queue.length >= 256) {
-			lease.queue = [this.getSnapshotFrame()];
+			lease.queue = [this.currentSnapshotFrame()];
 			this.record("ObserverOverflow");
 		} else lease.queue.push(frame);
 		if (lease.delivering) return;
@@ -110,10 +121,11 @@ export class WorkflowActivityHub {
 		let active = !this.disposed;
 		if (active) {
 			this.cursor = { epoch: randomUUID(), revision: 0 };
+			this.pendingPublications = undefined;
 			this.availability = "unavailable";
 			this.roots.clear();
 			this.record("SourceUnavailable");
-			this.broadcast(this.getSnapshotFrame());
+			this.broadcast(this.currentSnapshotFrame());
 		}
 		const epoch = this.cursor.epoch;
 		const isCurrent = () => active && !this.disposed && this.cursor.epoch === epoch;
@@ -132,7 +144,7 @@ export class WorkflowActivityHub {
 					input.availability === "ready" ? input.roots.map((root) => [root.rootRunId, { ...root }]) : [],
 				);
 				this.advance();
-				this.broadcast(this.getSnapshotFrame());
+				this.broadcast(this.currentSnapshotFrame());
 			},
 			publishChanged: (root) => {
 				if (!admitted()) return;
@@ -160,6 +172,13 @@ export class WorkflowActivityHub {
 			publishHeartbeat: (event) => {
 				if (admitted()) this.emit(event, isCurrent);
 			},
+			bindPendingPublications: (flush) => {
+				if (!isCurrent()) return;
+				const pending = () => {
+					if (isCurrent()) flush();
+				};
+				this.pendingPublications = pending;
+			},
 			dispose: () => {
 				if (!active) return;
 				const current = admitted();
@@ -169,7 +188,7 @@ export class WorkflowActivityHub {
 				this.roots.clear();
 				this.advance();
 				this.record("SourceUnavailable");
-				this.broadcast(this.getSnapshotFrame());
+				this.broadcast(this.currentSnapshotFrame());
 			},
 		};
 	}

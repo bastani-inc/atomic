@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type net from "node:net";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { DeliveredMessageCache } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { PendingQuestionIndex } from "../../packages/intercom/broker/pending-question-index.js";
 import { RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from "../../packages/intercom/broker/recipient-receipts.js";
@@ -11,6 +11,7 @@ import {
 } from "../../packages/intercom/broker/send-handler.js";
 import { buildMessageSendSignature } from "../../packages/intercom/broker/send-signature.js";
 import { SupervisorChannelCache } from "../../packages/intercom/broker/supervisor-channel.js";
+import { RECIPIENT_RECEIPT_TIMEOUT_MS, RECIPIENT_SAVE_MAX_WAIT_MS } from "../../packages/intercom/retry-policy.js";
 import type { BrokerMessage, Message } from "../../packages/intercom/types.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -160,4 +161,79 @@ test("broker keeps socket-write delivery for a recipient that does not confirm s
 	assert.deepEqual(toSender(), [{ type: "delivered", messageId: outgoing.id, attemptId: "attempt-1" }]);
 	assert.equal(lookup(outgoing), "match");
 	assert.deepEqual(receipts.framesFor(deliveryTargetIdentity(recipient)), []);
+});
+
+test("a recipient still saving a message keeps its sender waiting past the receipt wait, and the sender hears it (#3983)", () => {
+	vi.useFakeTimers();
+	try {
+		const { recipient, receipts, send, toSender } = fixture({ senderTimeoutMs: RECIPIENT_RECEIPT_TIMEOUT_MS });
+		const outgoing = message("slow-commit");
+		send(outgoing);
+		// The recipient's save is held behind a busy journal; it reports progress before each wait would end.
+		for (let report = 0; report < 4; report++) {
+			vi.advanceTimersByTime(RECIPIENT_RECEIPT_TIMEOUT_MS - 1);
+			assert.equal(receipts.extend(outgoing.id, deliveryTargetIdentity(recipient)), true);
+		}
+		assert.deepEqual(
+			toSender(),
+			Array.from({ length: 4 }, () => ({
+				type: "send_held",
+				messageId: outgoing.id,
+				attemptId: "attempt-1",
+				timeoutMs: RECIPIENT_RECEIPT_TIMEOUT_MS,
+			})),
+			"each progress report tells the sender to keep waiting, and nothing reports the outcome uncertain",
+		);
+		receipts.settle(outgoing.id, deliveryTargetIdentity(recipient), recipient);
+		assert.deepEqual(toSender().at(-1), { type: "delivered", messageId: outgoing.id, attemptId: "attempt-1" });
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a recipient that stops reporting progress, or another recipient's report, does not keep the sender waiting (#3983)", () => {
+	vi.useFakeTimers();
+	try {
+		const { recipient, receipts, send, toSender } = fixture({ senderTimeoutMs: RECIPIENT_RECEIPT_TIMEOUT_MS });
+		const outgoing = message("dead-recipient");
+		send(outgoing);
+		const stranger = connected("stranger", true, "another-home");
+		vi.advanceTimersByTime(RECIPIENT_RECEIPT_TIMEOUT_MS - 1);
+		assert.equal(receipts.extend(outgoing.id, deliveryTargetIdentity(stranger)), false);
+		assert.equal(receipts.extend(outgoing.id, deliveryTargetIdentity(recipient)), true);
+		// The recipient's process died: no more reports, so the sender's wait ends one receipt wait later.
+		vi.advanceTimersByTime(RECIPIENT_RECEIPT_TIMEOUT_MS);
+		assert.deepEqual(toSender().at(-1), {
+			type: "delivery_failed",
+			messageId: outgoing.id,
+			attemptId: "attempt-1",
+			reason: UNCERTAIN_RECEIPT_REASON,
+		});
+		assert.equal(receipts.extend(outgoing.id, deliveryTargetIdentity(recipient)), false, "the sender is gone");
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("progress reports never hold a sender past the save cap (#3983)", () => {
+	vi.useFakeTimers();
+	try {
+		const { recipient, receipts, send, toSender } = fixture({ senderTimeoutMs: RECIPIENT_RECEIPT_TIMEOUT_MS });
+		const outgoing = message("stuck-save");
+		send(outgoing);
+		let extended = 0;
+		while (receipts.extend(outgoing.id, deliveryTargetIdentity(recipient))) {
+			extended += 1;
+			vi.advanceTimersByTime(RECIPIENT_RECEIPT_TIMEOUT_MS - 1);
+		}
+		assert.ok(extended > 1);
+		vi.advanceTimersByTime(RECIPIENT_RECEIPT_TIMEOUT_MS);
+		assert.equal(toSender().at(-1)?.type, "delivery_failed");
+		const held = toSender().filter((frame) => frame.type === "send_held");
+		assert.ok(
+			held.length * (RECIPIENT_RECEIPT_TIMEOUT_MS - 1) <= RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_RECEIPT_TIMEOUT_MS,
+		);
+	} finally {
+		vi.useRealTimers();
+	}
 });

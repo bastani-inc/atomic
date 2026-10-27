@@ -1,5 +1,6 @@
 import type { AgentSession } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
@@ -56,12 +57,27 @@ export function injectStageLabelIntoEditorTopRule(
 
 export function renderHeader(ctx: StageChatViewContext, width: number, stage: StageSnapshot | undefined): string[] {
 	const t = ctx.theme;
-	const stageName = stage?.name ?? "stage";
+	// While a pooled stage moves to a replacement attempt, its run may be republished before the stage is.
+	const stageName = stage?.name ?? ctx.handle?.stageName ?? "stage";
 	const sid = ctx.handle?.sessionId ?? stage?.sessionId;
 	const prefixWidth = visibleWidth("   STAGE  ");
 	const separatorWidth = visibleWidth(" / ");
-	const onLocalWorker = ctx.handle?.placement?.kind === "local-worker" || stage?.workerExecution !== undefined;
-	const meta = [onLocalWorker ? "on local worker" : "", sid ? `session ${sid}` : ""].filter(Boolean).join(" · ");
+	const placement = ctx.handle?.placement;
+	// A finished stage runs on no worker: its post-mortem chat runs in the root, like an in-process stage's.
+	const finished = stage !== undefined && isTerminalStageStatus(stage.status);
+	const onLocalWorker = !finished && (placement?.kind === "local-worker" || stage?.workerExecution !== undefined);
+	const redelivered = placement?.redelivered ?? 0;
+	const status = [
+		onLocalWorker ? "on local worker" : "",
+		placement?.reconnecting === true ? "RECONNECTING" : "",
+		redelivered > 0 ? `redelivered ${redelivered} message${redelivered === 1 ? "" : "s"}` : "",
+		(placement?.undelivered ?? 0) > 0
+			? `${placement!.undelivered} message${placement!.undelivered === 1 ? "" : "s"} not delivered`
+			: "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	const meta = [status, sid ? `session ${sid}` : ""].filter(Boolean).join(" · ");
 	const rightWidth = meta ? visibleWidth(meta) + 1 : 0;
 	const singleRowNameBudget = width - prefixWidth - separatorWidth - rightWidth - (meta ? 1 : 0);
 
@@ -81,9 +97,10 @@ export function renderHeader(ctx: StageChatViewContext, width: number, stage: St
 		lines.push(`${" ".repeat(Math.max(0, width - visibleWidth(meta) - 1))}${paint(meta, t.dim)} `);
 		return lines;
 	}
-	if (onLocalWorker) {
-		const placement = `   ${paint("on local worker", t.dim)}`;
-		lines.push(placement + " ".repeat(Math.max(0, width - visibleWidth(placement))));
+	// Worker status keeps its own row, so a narrow chat still shows reconnects and redelivery.
+	if (status) {
+		const row = `   ${paint(truncateToWidth(status, Math.max(1, width - 3), "…"), t.dim)}`;
+		lines.push(row + " ".repeat(Math.max(0, width - visibleWidth(row))));
 	}
 	for (const row of wrapIdentifierLines(sid, width, "   ", "   ")) {
 		const value = `${row.prefix}${paint(row.chunk, t.dim)}`;

@@ -14,13 +14,15 @@ import {
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
+import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
 import { acquirePooledStage } from "../workers/pooled-stage-sources.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
@@ -58,6 +60,10 @@ export class WorkflowAttachPane implements Component {
 	private attachmentGeneration = 0;
 	private graphView: GraphView;
 	private chatView: StageChatView | null = null;
+	/** Where the attached pooled prompt stage sits in its run, and the attempt that published it. */
+	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
+	/** The attachment whose pooled view may remount the chat when it reconnects. */
+	private pooledAttachment?: symbol;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
 	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -71,6 +77,8 @@ export class WorkflowAttachPane implements Component {
 	private stagePromptEnterQuarantineUntil = 0;
 	private lastGraphAwaitingInputKey: string | null = null;
 	private lastStageAwaitingInputKey: string | null = null;
+	/** When the latest store change not yet applied by `_flushStoreUpdate` arrived. */
+	private storeChangedAt: number | undefined;
 	constructor(opts: WorkflowAttachPaneOpts) {
 		this.store = opts.store;
 		this.sessionStore = opts.sessionStore;
@@ -92,9 +100,9 @@ export class WorkflowAttachPane implements Component {
 		this.setToolsExpanded = opts.setToolsExpanded;
 		this.footerData = opts.footerData;
 		this.now = opts.now ?? Date.now;
-		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () =>
-			this._handleStoreUpdate(readGraphStoreSnapshot(this.store)),
-		);
+		this.unsubscribeStore = subscribeStoreInvalidation(this.store, () => {
+			this.storeChangedAt = this.now();
+		});
 		this.graphView = this._buildGraphView();
 		const target =
 			opts.initialAttachStageId !== undefined && this.runId
@@ -171,6 +179,7 @@ export class WorkflowAttachPane implements Component {
 		stageId: string,
 		options: { suppressInitialPromptSubmit?: boolean } = { suppressInitialPromptSubmit: true },
 	): Promise<void> {
+		this._flushStoreUpdate();
 		const generation = ++this.attachmentGeneration;
 		this.graphEnterQuarantineUntil = 0;
 		const snapshot = readGraphStoreSnapshot(this.store);
@@ -193,14 +202,39 @@ export class WorkflowAttachPane implements Component {
 				? () => acquirePooledStage(this.store, runId, stageId)
 				: undefined,
 		);
-		const { handle, postMortemUnavailableReason, release } =
+		const { handle, postMortemUnavailableReason, release, onReconnected } =
 			resolution instanceof Promise ? await resolution : resolution;
 		if (generation !== this.attachmentGeneration || !this.visible) {
 			release?.();
 			return;
 		}
 		this._disposeChatView();
-		this.releaseChatHandle = release ?? null;
+		// A pooled stage's view rebinds to a replacement attempt after its worker dies: the chat
+		// remounts on the replacement's transcript, keeping the composer draft (#3996).
+		// Identity of this attachment: hiding and showing the pane keeps it, detaching ends it.
+		const attachment = Symbol("pooled-stage-attachment");
+		this.pooledAttachment = attachment;
+		const stopWatchingReconnects = onReconnected?.(() => {
+			if (this.pooledAttachment !== attachment || this.chatView === null) return;
+			this.composerDrafts.capture(runId, stageId, this.chatView._inputBuffer);
+			this.chatView.dispose();
+			this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+		});
+		this.releaseChatHandle =
+			release === undefined
+				? null
+				: () => {
+						stopWatchingReconnects?.();
+						release();
+					};
+		this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+	}
+	private _mountChatView(
+		runId: string,
+		stageId: string,
+		handle: StageControlHandle | undefined,
+		postMortemUnavailableReason: PostMortemUnavailableReason | undefined,
+	): void {
 		let chatView!: StageChatView;
 		chatView = new StageChatView({
 			store: this.store,
@@ -239,12 +273,14 @@ export class WorkflowAttachPane implements Component {
 		this.hostRequestRender?.();
 	}
 	private _disposeChatView(): void {
+		this.pooledAttachment = undefined;
 		this.chatView?.dispose();
 		const release = this.releaseChatHandle;
 		this.releaseChatHandle = null;
 		release?.();
 	}
 	private _detachFromStage(reason: StageChatDetachReason = "user", metadata: StageChatDetachMetadata = {}): void {
+		this._flushStoreUpdate();
 		this.attachmentGeneration += 1;
 		this.composerDrafts.capture(this.attachedRunId, this.lastAttachedStageId, this.chatView?._inputBuffer);
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
@@ -267,6 +303,7 @@ export class WorkflowAttachPane implements Component {
 				: 0;
 	}
 	retarget(runId: string | null, stageId?: string, stageRunId?: string): void {
+		this._flushStoreUpdate();
 		this.attachmentGeneration += 1;
 		if (this.chatView && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, false);
@@ -307,7 +344,19 @@ export class WorkflowAttachPane implements Component {
 			stageId: match.workflowGraphTarget.stageId,
 		};
 	}
-	private _handleStoreUpdate(snapshot: StoreSnapshot): void {
+	/**
+	 * Applies the store changes that arrived since the last call, once (#4009). A pooled fan-out
+	 * publishes hundreds of store changes in one turn of the event loop, and each one cost a walk of
+	 * the whole expanded graph here; the pane now catches up before it renders, handles input or
+	 * answers its host. Enter quarantines still count from the latest change's arrival.
+	 */
+	private _flushStoreUpdate(): void {
+		const arrivedAt = this.storeChangedAt;
+		if (arrivedAt === undefined) return;
+		this.storeChangedAt = undefined;
+		this._handleStoreUpdate(readGraphStoreSnapshot(this.store), arrivedAt);
+	}
+	private _handleStoreUpdate(snapshot: StoreSnapshot, arrivedAt: number): void {
 		if (!this.visible) {
 			this._syncAwaitingInputKeys(snapshot);
 			return;
@@ -321,7 +370,7 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode === "graph") {
 			const key = this._runAwaitingInputKey(snapshot, runId);
 			if (key !== null && key !== this.lastGraphAwaitingInputKey) {
-				this.graphEnterQuarantineUntil = this.now() + ENTER_TRANSITION_QUARANTINE_MS;
+				this.graphEnterQuarantineUntil = arrivedAt + ENTER_TRANSITION_QUARANTINE_MS;
 			}
 			this.lastGraphAwaitingInputKey = key;
 			this.lastStageAwaitingInputKey = null;
@@ -330,11 +379,58 @@ export class WorkflowAttachPane implements Component {
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			const key = this._stageAwaitingInputKey(snapshot, this.attachedRunId, this.lastAttachedStageId);
 			if (key !== null && key !== this.lastStageAwaitingInputKey) {
-				this.stagePromptEnterQuarantineUntil = this.now() + ENTER_TRANSITION_QUARANTINE_MS;
+				this.stagePromptEnterQuarantineUntil = arrivedAt + ENTER_TRANSITION_QUARANTINE_MS;
 			}
 			this.lastStageAwaitingInputKey = key;
 			this.lastGraphAwaitingInputKey = this._runAwaitingInputKey(snapshot, runId);
+			// Whether this chat is attached is the pane's own state. A pooled stage republished by a
+			// replacement attempt (or released by a fenced one) arrives without the mark; the open chat
+			// marks it again, or the re-asked prompt it shows could never be submitted (#4022).
+			const attachedRun = findSnapshotRun(snapshot.runs, this.attachedRunId);
+			const stage =
+				attachedRun === undefined ? undefined : findSnapshotStage(attachedRun.stages, this.lastAttachedStageId);
+			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
+				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
+			this._followSupersedingPrompt(attachedRun, stage);
 		}
+	}
+	/**
+	 * Keeps an open chat on the prompt a pooled child is waiting on (#4022). A replacement attempt
+	 * that asks a different question at the same point of the child (its text depends on data)
+	 * publishes it as a new prompt stage at the same position, and the dead attempt's unanswered
+	 * prompt is gone: the chat moves to the new prompt instead of staying on a stage that no longer
+	 * exists.
+	 */
+	private _followSupersedingPrompt(
+		run: StoreSnapshot["runs"][number] | undefined,
+		stage: StageSnapshot | undefined,
+	): void {
+		const runId = this.attachedRunId;
+		if (run === undefined || runId === null || this.chatView === null) return;
+		if (stage !== undefined) {
+			const index = run.stages.indexOf(stage);
+			this.attachedPromptPosition =
+				stage.promptFootprint !== undefined && stage.workerExecution !== undefined && index >= 0
+					? { index, generation: stage.workerExecution.generation }
+					: null;
+			return;
+		}
+		const position = this.attachedPromptPosition;
+		if (position === null) return;
+		const successor = run.stages[position.index];
+		if (
+			successor === undefined ||
+			successor.pendingPrompt === undefined ||
+			(successor.workerExecution?.generation ?? 0) <= position.generation
+		)
+			return;
+		this.attachedPromptPosition = null;
+		const generation = this.attachmentGeneration;
+		// Attaching rereads the store; do it after this update is handled.
+		queueMicrotask(() => {
+			if (generation !== this.attachmentGeneration || this.mode !== "stage-chat" || !this.visible) return;
+			void this._attachToStage(runId, successor.id);
+		});
 	}
 	private _syncAwaitingInputKeys(snapshot: StoreSnapshot): void {
 		const runId = this._resolveRunId();
@@ -345,13 +441,24 @@ export class WorkflowAttachPane implements Component {
 				: null;
 	}
 	setVisible(visible: boolean): void {
+		this._flushStoreUpdate();
 		this.visible = visible;
 		if (!visible) this.attachmentGeneration += 1;
 		if (this.mode === "stage-chat" && this.attachedRunId && this.lastAttachedStageId) {
 			this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, visible);
+			// Updates while hidden only track input keys: a prompt a replacement attempt superseded
+			// meanwhile is followed now, or the chat would show the stage it removed (#4022).
+			if (visible) {
+				const run = findSnapshotRun(readGraphStoreSnapshot(this.store).runs, this.attachedRunId);
+				this._followSupersedingPrompt(
+					run,
+					run === undefined ? undefined : findSnapshotStage(run.stages, this.lastAttachedStageId),
+				);
+			}
 		}
 	}
 	wantsFocusForAwaitingInput(snapshot: StoreSnapshot): boolean {
+		this._flushStoreUpdate();
 		if (!this.visible) return false;
 		const runId = this._resolveRunId();
 		if (!runId) return false;
@@ -366,12 +473,14 @@ export class WorkflowAttachPane implements Component {
 		return stage?.attached === true && this._stageSnapshotNeedsInput(stage);
 	}
 	render(width: number): string[] {
+		this._flushStoreUpdate();
 		if (this.mode === "stage-chat" && this.chatView) {
 			return this.chatView.render(width);
 		}
 		return this.graphView.render(width);
 	}
 	handleInput(data: string): boolean | undefined {
+		this._flushStoreUpdate();
 		if (!this.visible) return false;
 		if (this.mode === "stage-chat" && this.chatView) {
 			if (this._shouldQuarantineStagePromptEnter(data)) return true;
@@ -472,8 +581,9 @@ export class WorkflowAttachPane implements Component {
 		return this._stageSnapshot(runId, stageId)?.attached === true;
 	}
 	private _stageSnapshot(runId: string, stageId: string): StageSnapshot | undefined {
-		const run = readGraphStoreSnapshot(this.store).runs.find((candidate) => candidate.id === runId);
-		return run?.stages.find((candidate) => candidate.id === stageId);
+		// Called per graph node while laying out: indexed lookups keep a layout linear in its nodes.
+		const run = findSnapshotRun(readGraphStoreSnapshot(this.store).runs, runId);
+		return run === undefined ? undefined : findSnapshotStage(run.stages, stageId);
 	}
 	private _stageSnapshotNeedsInput(stage: Pick<StageSnapshot, "pendingPrompt" | "inputRequest" | "status">): boolean {
 		return stage.pendingPrompt !== undefined || stage.inputRequest !== undefined || stage.status === "awaiting_input";

@@ -15,6 +15,8 @@ export type RoutingProviderBehavior =
 	/** Never answers. `honorsAbort: false` models a transport that ignores its abort signal. */
 	| { kind: "hang"; honorsAbort: boolean }
 	| { kind: "rate-limit"; retryAfterMs?: number }
+	/** Rejects every call with a 402: the account's quota is exhausted until `retryAfterMs` from now. */
+	| { kind: "quota"; retryAfterMs: number }
 	/** Answers after `latencyMs`, but rejects with a 429 any call arriving while `capacity` calls are in flight. */
 	| { kind: "capacity"; capacity: number; latencyMs: number };
 
@@ -29,6 +31,8 @@ export class RoutingProvider {
 	peakInflight = 0;
 	aborted = 0;
 	rateLimited = 0;
+	/** When the last 429 or 402 was sent. */
+	limitedAt = 0;
 
 	constructor(public behavior: RoutingProviderBehavior) {}
 
@@ -67,6 +71,7 @@ export class RoutingProvider {
 		};
 		const rateLimit = (retryAfterMs?: number): void => {
 			this.rateLimited += 1;
+			this.limitedAt = Date.now();
 			finish(
 				failure("error", {
 					errorMessage: "429 Too Many Requests: rate limit exceeded",
@@ -74,7 +79,13 @@ export class RoutingProvider {
 				}),
 			);
 		};
+		const quotaExhausted = (retryAfterMs: number): void => {
+			this.rateLimited += 1;
+			this.limitedAt = Date.now();
+			finish(failure("error", { errorMessage: "402 Payment Required: insufficient_quota", retryAfterMs }));
+		};
 		if (behavior.kind === "answer") answer(behavior.latencyMs);
+		else if (behavior.kind === "quota") quotaExhausted(behavior.retryAfterMs);
 		else if (behavior.kind === "rate-limit") rateLimit(behavior.retryAfterMs);
 		else if (behavior.kind === "capacity") {
 			if (this.inflight > behavior.capacity) rateLimit();

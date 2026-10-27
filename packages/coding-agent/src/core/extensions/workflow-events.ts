@@ -178,6 +178,11 @@ export interface WorkflowActivityPublisher {
 	publishRemoved(rootRunId: string): void;
 	publishLifecycle(event: Omit<WorkflowLifecycleEvent, "cursor">): void;
 	publishHeartbeat(event: WorkflowHeartbeatEvent): void;
+	/**
+	 * Registers how to publish root changes the source has coalesced but not yet published, so
+	 * every read of the published activity sees them first.
+	 */
+	bindPendingPublications?(flush: () => void): void;
 	dispose(): void;
 }
 export interface WorkflowObservationDiagnostic {

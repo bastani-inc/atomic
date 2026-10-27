@@ -3,7 +3,6 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe } from "vitest";
 import { createHarness, getMessageText, type Harness } from "../../packages/coding-agent/test/suite/harness.ts";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { sleep } from "../helpers/runtime.js";
 import {
 	assert,
 	createStageControlRegistry,
@@ -17,6 +16,15 @@ import {
 	waitForMicrotasks,
 	workflow,
 } from "./executor-shared.js";
+
+/**
+ * How long the run may take to finish on its own after resume before the test
+ * concludes the idle readiness-stage continuation was stranded. The run
+ * finishing is the signal; this only caps a regression. The earlier 25 ms bound
+ * is shorter than the continuation's own turn under the parallel unit suite, and
+ * it failed there in CI run 40403548253 and in a local CI run.
+ */
+const RESUME_CONTINUATION_TIMEOUT_MS = 10_000;
 
 type QueueHold = {
 	readonly steering: AgentMessage[];
@@ -284,10 +292,14 @@ describe("workflow paused queued messages", () => {
 			assert.equal(harness.session.agent.hasQueuedMessages(), false);
 
 			await handle.resume();
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			const resumedWithoutExternalTurn = await Promise.race([
 				runPromise.then(() => true),
-				sleep(25).then(() => false),
+				new Promise<boolean>((resolve) => {
+					timer = setTimeout(() => resolve(false), RESUME_CONTINUATION_TIMEOUT_MS);
+				}),
 			]);
+			clearTimeout(timer);
 			if (!resumedWithoutExternalTurn) {
 				await handle.prompt("cleanup stranded readiness-stage chat");
 			}

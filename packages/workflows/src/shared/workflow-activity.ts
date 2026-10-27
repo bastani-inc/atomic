@@ -249,7 +249,23 @@ function projectPrompt(prompt: PendingPrompt): WorkflowGraphNodePrompt {
 	};
 }
 
+/**
+ * Projections of expanded nodes. Expansion reuses the node objects of unchanged child runs
+ * (#4009), so a root's graph re-projects only the nodes that changed; a node is never mutated
+ * after expansion, so its projection stays valid for as long as it lives.
+ */
+const projectedGraphNodes = new WeakMap<ExpandedWorkflowNode, WorkflowGraphNode>();
+
 function projectGraphNode(node: ExpandedWorkflowNode): WorkflowGraphNode {
+	let projected = projectedGraphNodes.get(node);
+	if (projected === undefined) {
+		projected = projectExpandedNode(node);
+		projectedGraphNodes.set(node, projected);
+	}
+	return projected;
+}
+
+function projectExpandedNode(node: ExpandedWorkflowNode): WorkflowGraphNode {
 	if (node.kind === "stage") {
 		const { stage } = node;
 		const target = stage.workflowGraphTarget;

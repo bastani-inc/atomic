@@ -28,6 +28,7 @@ import type {
 	WorkflowModelUsage,
 	WorkflowModelValue,
 } from "../../shared/types.js";
+import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import {
 	buildModelCandidatesFromCatalog,
 	errorMessage,
@@ -77,6 +78,7 @@ import {
 	normalizeSessionCreateResult,
 	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
+	stageError,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
@@ -131,12 +133,12 @@ type RetryPauseResume = NonNullable<ReturnType<StageSessionPause["currentResume"
  * worth a fresh session, first on the same candidate and then on the next. A
  * deterministic one fails identically for every candidate, so it ends the stage.
  */
-function candidateCooldownMs(value: WorkflowModelValue | undefined): number {
-	return providerCooldownMs(workflowProviderId(value), workflowModelName(value));
+function candidateCooldownMs(value: WorkflowModelValue | undefined, now?: number): number {
+	return providerCooldownMs(workflowProviderId(value), workflowModelName(value), now);
 }
 
-function candidateUnavailableMs(value: WorkflowModelValue | undefined): number {
-	return providerUnavailableMs(workflowProviderId(value), workflowModelName(value));
+function candidateUnavailableMs(value: WorkflowModelValue | undefined, now?: number): number {
+	return providerUnavailableMs(workflowProviderId(value), workflowModelName(value), now);
 }
 
 function isRetryableSameCandidateFailure(error: unknown): boolean {
@@ -227,6 +229,14 @@ class StageSessionCreationCancelled extends Error {
 		super("atomic-workflows: stage session creation was cancelled while paused");
 		this.name = "StageSessionCreationCancelled";
 	}
+}
+
+/**
+ * Options for a resume message that replaces a paused prompt's text. The message is the
+ * operator's own text, so it is read literally, as an idle stage's resume message is sent.
+ */
+function resumeMessageOptions(sdkOptions: PromptOptions | undefined): PromptOptions {
+	return { ...sdkOptions, expandPromptTemplates: false };
 }
 
 function stageUserMessageText(message: StageSessionRuntime["messages"][number]): string | undefined {
@@ -559,8 +569,13 @@ export class StageSessionController {
 				}
 				if (this.startupWait.signal.aborted || this.opts.signal?.aborted) throw error;
 				this.settleStartup(true);
-				throw new Error(
-					`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
+				// #4031: classified as the routing failure it wraps, never by the stage name in this message.
+				throw classifyFailureFrom(
+					new Error(
+						`atomic-workflows: stage "${this.opts.stageName}" failed during startup phase model-resolution: ${errorMessage(error)}`,
+						{ cause: error },
+					),
+					error,
 				);
 			});
 			this.routingPromise = routing;
@@ -598,7 +613,7 @@ export class StageSessionController {
 			if (this.disposed || this.opts.signal?.aborted || this.abortGeneration !== generation)
 				throw this.staleCreationReason(generation);
 		}
-		if (this.disposed) throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+		if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 		this.opts.signal?.throwIfAborted();
 		if (this.session !== undefined && this.activeCreation === undefined) return this.checkedSession(this.session);
 		if (!this.sessionPromise) {
@@ -633,9 +648,14 @@ export class StageSessionController {
 		sessionId: string,
 		consumer: AgentSessionConsumer = "prompt",
 	): Promise<StageSessionRuntime> {
-		if (!this.sessionShutdownPromise && !this.sessionPromise && !this.session) this.reattachSessionId = sessionId;
+		// Only a session this call reopens is an archived transcript whose generation ends here. A
+		// live session, or one still being created (a pool worker records its id first, #3996), is the
+		// stage's running generation: closing it would refuse every later tool call of the stage.
+		const joinsLiveGeneration =
+			!this.sessionShutdownPromise && (this.sessionPromise !== undefined || this.session !== undefined);
+		if (!this.sessionShutdownPromise && !joinsLiveGeneration) this.reattachSessionId = sessionId;
 		const session = await this.ensureSession(consumer);
-		await session.closeWorkflowStageGeneration?.();
+		if (!joinsLiveGeneration || this.generationSealed) await session.closeWorkflowStageGeneration?.();
 		return session;
 	}
 
@@ -704,6 +724,13 @@ export class StageSessionController {
 		return this.deliveryActivity.subscribe(listener);
 	}
 
+	/**
+	 * Whether the stage's generation closed while the stage still ran: closed, but not by the stage's own
+	 * seal or close. Its tool calls were refused from then on, so it cannot have done its work (#3996).
+	 */
+	generationClosedUnderStage(): boolean {
+		return !this.generationSealed && this.sharedOrchestrationContext?.messageAdmission?.isOpen() === false;
+	}
 	/** With `closedForGood`, the stage finished or its run ended: its subagent children end with it, not resumable. */
 	sealGeneration(closedForGood = false): void {
 		if (closedForGood)
@@ -754,7 +781,11 @@ export class StageSessionController {
 				const candidate = { id: workflowModelId(value) ?? "default", value };
 				this.beginAttemptUsage(activeSession);
 				try {
-					await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+					await this.promptWithThrownErrorRetry(
+						activeSession,
+						resumedText ?? text,
+						resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions),
+					);
 				} catch (error) {
 					await this.handleCandidateFailure(error, candidate, [candidate], 0);
 					throw error;
@@ -780,7 +811,11 @@ export class StageSessionController {
 				const activeSession = await this.ensureSession(consumer);
 				const resumedText = this.pendingCreationResumeMessage;
 				this.pendingCreationResumeMessage = undefined;
-				await this.promptWithThrownErrorRetry(activeSession, resumedText ?? text, sdkOptions);
+				await this.promptWithThrownErrorRetry(
+					activeSession,
+					resumedText ?? text,
+					resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions),
+				);
 				this.artifactCapture.settleAttempt(true);
 			} catch (error) {
 				this.artifactCapture.settleAttempt(false);
@@ -801,8 +836,14 @@ export class StageSessionController {
 		const resumedText = this.pendingCreationResumeMessage;
 		this.pendingCreationResumeMessage = undefined;
 		let promptText = resumedText ?? text;
+		let promptOptions = resumedText === undefined ? sdkOptions : resumeMessageOptions(sdkOptions);
+		const useResumeMessage = (message: string | undefined): void => {
+			if (message === undefined) return;
+			promptText = message;
+			promptOptions = resumeMessageOptions(sdkOptions);
+		};
 		const walk = this.candidateWalk(candidates, this.activeCandidateIndex ?? 0);
-		if (await this.tryResumeCurrentSession(promptText, sdkOptions, candidates, walk)) return;
+		if (await this.tryResumeCurrentSession(promptText, promptOptions, candidates, walk)) return;
 		// A follow-up written for the conversation it continues (a structured-output
 		// correction) cannot stand alone in a session that never saw the stage
 		// prompt, so every session the walk prompts from here receives the caller's
@@ -821,13 +862,13 @@ export class StageSessionController {
 					throw error;
 				}
 				index = this.activeCandidateIndex ?? index;
-				promptText = this.pendingCreationResumeMessage ?? promptText;
+				useResumeMessage(this.pendingCreationResumeMessage);
 				this.pendingCreationResumeMessage = undefined;
 			}
 			const readyIndex = await this.selectReadyCandidate(candidates, walk, index);
 			if (readyIndex === undefined) return;
 			index = readyIndex;
-			promptText = this.pendingCreationResumeMessage ?? promptText;
+			useResumeMessage(this.pendingCreationResumeMessage);
 			this.pendingCreationResumeMessage = undefined;
 			const candidate = candidates[index]!;
 			try {
@@ -842,7 +883,7 @@ export class StageSessionController {
 							);
 				if (isSessionCreationPauseResult(created)) {
 					if (created.resumeMessage === undefined) return;
-					promptText = created.resumeMessage;
+					useResumeMessage(created.resumeMessage);
 					continue;
 				}
 				const activeSession = created;
@@ -853,7 +894,7 @@ export class StageSessionController {
 				const { terminalScanStartIndex } = await this.promptWithThrownErrorRetry(
 					activeSession,
 					promptText,
-					sdkOptions,
+					promptOptions,
 				);
 				const terminalFailure = latestTerminalAssistantFailureSince(activeSession.messages, terminalScanStartIndex);
 				if (terminalFailure !== undefined) {
@@ -919,7 +960,7 @@ export class StageSessionController {
 
 	private async finishDisposeAll(): Promise<void> {
 		this.disposed = true;
-		const reason = new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+		const reason = stageError(this.opts.stageName, "session has been disposed");
 		this.markAbort(reason);
 		this.pauseControl.reject(reason);
 		for (const unsubscribe of this.listenerUnsubscribes.values()) unsubscribe();
@@ -1002,6 +1043,11 @@ export class StageSessionController {
 	}
 
 	/** True when no message, turn, creation, retry, pause, or queue work still needs the live session. */
+	/** True while a message, the stage's own prompt included, holds or waits for the turn loop. */
+	isTurnLoopBusy(): boolean {
+		return this.messageAdmission.isBusy();
+	}
+
 	isIdleForRelease(): boolean {
 		const session = this.session;
 		if (session === undefined || this.disposed || this.pendingDisposal || this.disposalPromise !== undefined)
@@ -1222,13 +1268,16 @@ export class StageSessionController {
 			this.opts.signal?.throwIfAborted();
 			let earliest: { index: number; delay: number } | undefined;
 			let earliestUnavailable: { index: number; delay: number } | undefined;
+			// One clock reading per scan: candidates sharing a provider cooldown must see the same remaining
+			// time, or a later candidate whose read lands after the cooldown ends jumps ahead of the walk order.
+			const now = Date.now();
 			for (let offset = 0; offset < candidates.length; offset += 1) {
 				const index = (start + offset) % candidates.length;
 				if (!walk.remaining.has(index)) continue;
 				const candidate = candidates[index]!;
-				const delay = candidateCooldownMs(candidate.value);
+				const delay = candidateCooldownMs(candidate.value, now);
 				// An exhausted quota or a reset beyond the wait cap is used only when nothing else is left.
-				if (this.candidateUnavailable(candidate.value)) {
+				if (this.candidateUnavailable(candidate.value, now)) {
 					if (earliestUnavailable === undefined || delay < earliestUnavailable.delay)
 						earliestUnavailable = { index, delay };
 					continue;
@@ -1266,9 +1315,9 @@ export class StageSessionController {
 		return settings?.maxRetryDelayMs || (settings?.maxAgentDelayMs ?? 60_000);
 	}
 
-	private candidateUnavailable(value: WorkflowModelValue | undefined): boolean {
-		if (candidateUnavailableMs(value) > 0) return true;
-		const cooldown = candidateCooldownMs(value);
+	private candidateUnavailable(value: WorkflowModelValue | undefined, now?: number): boolean {
+		if (candidateUnavailableMs(value, now) > 0) return true;
+		const cooldown = candidateCooldownMs(value, now);
 		return cooldown > 0 && cooldown > this.maxCooldownWaitMs();
 	}
 
@@ -1350,6 +1399,7 @@ export class StageSessionController {
 	): Promise<{ readonly terminalScanStartIndex: number }> {
 		let retryAttempt = 0;
 		let nextText = text;
+		let nextOptions = sdkOptions;
 		let retryAdmittedPrompt = false;
 		let retainedPrompt: StageSessionRuntime["messages"][number] | undefined;
 		let terminalScanStartIndex: number | undefined;
@@ -1381,6 +1431,7 @@ export class StageSessionController {
 							return { terminalScanStartIndex: activeSession.messages.length };
 						}
 						nextText = outcome.message;
+						nextOptions = resumeMessageOptions(sdkOptions);
 						continue;
 					}
 					// No continuation is possible after all, so the retained prompt
@@ -1389,7 +1440,7 @@ export class StageSessionController {
 					retainedPrompt = undefined;
 					retryAdmittedPrompt = false;
 				}
-				const result = await this.promptWithPauseResume(activeSession, nextText, sdkOptions);
+				const result = await this.promptWithPauseResume(activeSession, nextText, nextOptions);
 				const terminalFailure = latestTerminalAssistantFailureSince(
 					activeSession.messages,
 					result.terminalScanStartIndex,
@@ -1450,8 +1501,7 @@ export class StageSessionController {
 					if (sleepError instanceof ThrownErrorRetryPaused) pauseResume = sleepError.resume;
 					else {
 						if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-						if (this.disposed)
-							throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+						if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 						throw sleepError;
 					}
 				}
@@ -1468,10 +1518,10 @@ export class StageSessionController {
 						return { terminalScanStartIndex: activeSession.messages.length };
 					}
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					continue;
 				}
-				if (this.disposed)
-					throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+				if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 				if (this.opts.signal?.aborted) throw this.workflowAbortReason();
 				// Only resume the existing turn when the restored transcript still
 				// satisfies pi-agent-core's continuation contract. A retained
@@ -1651,7 +1701,7 @@ export class StageSessionController {
 				index = this.activeCandidateIndex ?? index + 1;
 			}
 		}
-		throw lastError ?? new Error(`atomic-workflows: stage "${this.opts.stageName}" has no usable model candidate`);
+		throw lastError ?? stageError(this.opts.stageName, "has no usable model candidate");
 	}
 
 	private async createInitialSessionWithRetry(
@@ -1774,12 +1824,10 @@ export class StageSessionController {
 						};
 					}
 					if (this.opts.signal?.aborted) throw this.workflowAbortReason();
-					if (this.disposed)
-						throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+					if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 					throw sleepError;
 				}
-				if (this.disposed)
-					throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+				if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 				if (this.opts.signal?.aborted) throw this.workflowAbortReason();
 			}
 		}
@@ -1933,14 +1981,13 @@ export class StageSessionController {
 			}
 			if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration)
 				throw this.disposed
-					? new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`)
+					? stageError(this.opts.stageName, "session has been disposed")
 					: this.staleCreationReason(startGeneration);
 			throw error;
 		}
 		if (this.disposed || this.opts.signal?.aborted === true || this.abortGeneration !== startGeneration) {
 			await disposeStageSession(normalizeSessionCreateResult(created).session).catch(() => {});
-			if (this.disposed)
-				throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
+			if (this.disposed) throw stageError(this.opts.stageName, "session has been disposed");
 			throw this.staleCreationReason(startGeneration);
 		}
 		this.reportStartupPhase("session-attachment");
@@ -2050,7 +2097,7 @@ export class StageSessionController {
 		// A later prompt must not replace a rejected cleanup barrier with an empty shutdown.
 		if (this.sessionShutdownPromise !== undefined) await this.sessionShutdownPromise;
 		const startGeneration = this.abortGeneration;
-		this.abortThrownErrorRetries(new Error(`atomic-workflows: stage "${this.opts.stageName}" session was replaced`));
+		this.abortThrownErrorRetries(stageError(this.opts.stageName, "session was replaced"));
 		const current = this.session;
 		this.messageAdmission.reset();
 		this.replacement.retire(current);
@@ -2089,12 +2136,14 @@ export class StageSessionController {
 		sdkOptions: PromptOptions | undefined,
 	): Promise<{ readonly terminalScanStartIndex: number }> {
 		let nextText: string | undefined = initialText;
+		let nextOptions = sdkOptions;
 		while (nextText !== undefined) {
 			const pendingPauseBeforePrompt = this.pauseControl.currentResume();
 			if (pendingPauseBeforePrompt) {
 				const resumed = await pendingPauseBeforePrompt;
 				await resumed.runnerOwnedDeliverySettlement;
 				nextText = resumed.message;
+				nextOptions = resumeMessageOptions(sdkOptions);
 				if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 				continue;
 			}
@@ -2106,13 +2155,14 @@ export class StageSessionController {
 				// A live resume loops here without returning through the outer retry guard.
 				this.checkedSession(activeSession);
 				await this.waitForProvider(this.currentModelValue());
-				await activeSession.prompt(nextText, sdkOptions);
+				await activeSession.prompt(nextText, nextOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
 					const resumed = await pendingPauseAfterPrompt;
 					await resumed.runnerOwnedDeliverySettlement;
 					this.throwUnresolvedContextOverflowIfPresent();
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 					continue;
 				}
@@ -2127,6 +2177,7 @@ export class StageSessionController {
 					await resumed.runnerOwnedDeliverySettlement;
 					this.throwUnresolvedContextOverflowIfPresent();
 					nextText = resumed.message;
+					nextOptions = resumeMessageOptions(sdkOptions);
 					if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
 					continue;
 				}
@@ -2157,8 +2208,12 @@ export class StageSessionController {
 				await this.disposeCurrentSession(index);
 				return false;
 			}
-			text = this.pendingCreationResumeMessage ?? text;
+			const resumedText = this.pendingCreationResumeMessage;
 			this.pendingCreationResumeMessage = undefined;
+			if (resumedText !== undefined) {
+				text = resumedText;
+				sdkOptions = resumeMessageOptions(sdkOptions);
+			}
 		}
 		this.resumeCurrentSession = false;
 		const resumedSession = this.session;

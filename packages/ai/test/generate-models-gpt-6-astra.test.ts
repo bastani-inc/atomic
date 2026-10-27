@@ -216,7 +216,12 @@ test("advertises OpenAI and Codex service tiers per model with their published r
 		"gpt-6-luna": ["priority"],
 		"gpt-6-sol": ["priority"],
 		"gpt-6.1-sol": ["priority", "ultrafast"],
+		"gpt-6.1-terra": [],
 	});
+	// The API publishes GPT-6.1 Terra Fast at 2x Standard; Codex does not list a Terra service tier yet.
+	assert.deepEqual(catalogs.openai["gpt-6.1-terra"]?.serviceTiers, [
+		{ id: "priority", cost: withLongContext(2, 10, 0.1, 2.5) },
+	]);
 });
 
 test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and leaves every other entry alone", () => {
@@ -266,6 +271,7 @@ test("gives Codex GPT-6.1 Sol a 500K context without long-context pricing and le
 		"gpt-6-astra": { contextWindow: 272_000, tiered: true },
 		"gpt-6-luna": { contextWindow: 272_000, tiered: true },
 		"gpt-6-sol": { contextWindow: 272_000, tiered: true },
+		"gpt-6.1-terra": { contextWindow: 500_000, tiered: true },
 	});
 });
 
@@ -320,6 +326,21 @@ test("generates only the three Codex-advertised Bedrock IDs with safe zero prici
 		assert.equal(model.compat?.supportsToolSearch, undefined);
 		assert.equal(model.compat?.supportsAdditionalTools, undefined);
 	}
+});
+
+test("gives Bedrock GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna routes their published reasoning efforts", () => {
+	const fixture = { name: "fixture", reasoning: true, tool_call: true, limit: { context: 1_050_000, output: 128_000 } };
+	const solIds = ["openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol"];
+	const gpt6Ids = ["openai.gpt-6-sol", "global.openai.gpt-6-sol", "us.openai.gpt-6-luna"];
+	const bedrock = generate([], [], {
+		"amazon-bedrock": { models: Object.fromEntries([...solIds, ...gpt6Ids].map((id) => [id, fixture])) },
+	})["amazon-bedrock"];
+	const efforts = { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+
+	// OpenAI: GPT-6.1 Sol supports low, medium (default), high, xhigh, and max; not none or minimal.
+	for (const id of solIds) assert.deepEqual(bedrock[id]?.thinkingLevelMap, { off: null, ...efforts }, id);
+	// AWS model cards: GPT-6 Sol and GPT-6 Luna accept none, low, medium, high, xhigh, or max.
+	for (const id of gpt6Ids) assert.deepEqual(bedrock[id]?.thinkingLevelMap, { off: "none", ...efforts }, id);
 });
 
 test("keeps models.dev pricing tiers for Amazon Bedrock models", () => {

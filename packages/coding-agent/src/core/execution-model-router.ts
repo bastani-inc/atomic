@@ -38,6 +38,7 @@ import {
 } from "./model-routing-needs.js";
 import type { ModelRoutingSettings } from "./settings-types.ts";
 import { resolveRouterModel, routeModel } from "./structured-output/index.js";
+import { carriedProviderFailure, withProviderFailure } from "./structured-output/provider-failure.js";
 
 export interface ModelRoutingContext {
 	readonly modelRegistry: Pick<
@@ -278,9 +279,17 @@ export async function routeExecutionModel(input: {
 				return await (limit ? limit(() => decide(inferenceSignal), inferenceSignal) : decide(inferenceSignal));
 			} catch (error) {
 				signal?.throwIfAborted();
-				throw new AutoRoutingInferenceError(
-					deadline?.aborted ? INFERENCE_DEADLINE_MESSAGE : error instanceof Error ? error.message : String(error),
-					await currentModelRoute().catch(() => undefined),
+				// A router's rate limit or exhausted quota keeps its status, code and retry hint (#4031).
+				throw withProviderFailure(
+					new AutoRoutingInferenceError(
+						deadline?.aborted
+							? INFERENCE_DEADLINE_MESSAGE
+							: error instanceof Error
+								? error.message
+								: String(error),
+						await currentModelRoute().catch(() => undefined),
+					),
+					deadline?.aborted ? undefined : carriedProviderFailure(error),
 				);
 			}
 		};

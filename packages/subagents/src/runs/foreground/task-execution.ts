@@ -13,6 +13,7 @@ import type {
 	YieldReason,
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agents.js";
+import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import {
@@ -23,9 +24,11 @@ import {
 	unparkRunWorktree,
 } from "./run-worktrees.js";
 import {
+	pendingMessagesOfResult,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildLaunch,
+	type SubagentChildPendingMessages,
 	type SubagentChildRecordInput,
 	type SubagentChildRecordSink,
 	subagentChildInheritance,
@@ -300,7 +303,7 @@ export async function runAgentTask(input: {
 		taskId: TaskId,
 		state: SubagentChildRecordInput["state"],
 		terminalStatus?: string,
-		heldMessages?: readonly string[],
+		heldMessages?: SubagentChildPendingMessages,
 		launch?: SubagentChildLaunch,
 	) => {
 		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
@@ -322,8 +325,15 @@ export async function runAgentTask(input: {
 				: {}),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
-			...(heldMessages?.length ? { heldMessages: { taskId, messages: heldMessages } } : {}),
-			...(launch ? { launch } : {}),
+			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
+			...(launch
+				? { launch }
+				: heldMessages?.taskExpands &&
+						input.options.resumeSession !== true &&
+						childSession.childSessionId === undefined
+					? // It stopped before its session existed, holding its unread task: only its launch can start it again.
+						{ launch: subagentChildLaunch(input.task, input.intentTask, input.options) }
+					: {}),
 			inherited: subagentChildInheritance(input.options),
 		});
 	};
@@ -429,7 +439,7 @@ export async function runAgentTask(input: {
 			const recordChild = (
 				state: SubagentChildRecordInput["state"],
 				terminalStatus?: string,
-				heldMessages?: readonly string[],
+				heldMessages?: SubagentChildPendingMessages,
 			) => recordChildTask(context.ref.taskId, state, terminalStatus, heldMessages);
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
@@ -492,7 +502,7 @@ export async function runAgentTask(input: {
 					if (child.model !== undefined || child.thinking !== undefined)
 						context.reportActivity({
 							reportId: "terminal-model",
-							change: { kind: "model", model: child.model, thinking: child.thinking },
+							change: { kind: "model", model: taskRecordModel(child.model), thinking: child.thinking },
 						});
 					const stopped = takeSubagentChildStop(context.ref.taskId);
 					const stoppedByControl = stopped !== undefined && child.status === "interrupted";
@@ -517,11 +527,12 @@ export async function runAgentTask(input: {
 									? SUBAGENT_CHILD_STAGE_PAUSED_STATUS
 									: child.status,
 							// A child that stays resumable keeps what it had queued and not read, for its resume.
-							stoppedByControl || stoppedByStagePause ? child.pendingMessages : undefined,
+							stoppedByControl || stoppedByStagePause ? pendingMessagesOfResult(child) : undefined,
 						);
 					else if (endedForGood) recordChild("terminal", SUBAGENT_CHILD_STAGE_CLOSED_STATUS);
 					// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
-					else if (child.pendingMessages?.length) recordChild("running", undefined, child.pendingMessages);
+					else if (child.pendingMessages?.length)
+						recordChild("running", undefined, pendingMessagesOfResult(child));
 					input.onTerminal?.(child);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
 					retainTaskOutput(child, text, context.ref);

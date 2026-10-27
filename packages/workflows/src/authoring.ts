@@ -35,6 +35,7 @@ export type {
 	PromptAdapter,
 	PromptOptions,
 	ResolvedInputs,
+	RunFailureClassification,
 	RunResult,
 	RunStatus,
 	StageAdapters,

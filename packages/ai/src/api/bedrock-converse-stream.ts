@@ -57,6 +57,7 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -370,6 +371,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			flushOpenBlocks(openBlocks, output);
 			output.stopReason = options.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatBedrockError(error);
+			output.retryAfterMs =
+				typeof error === "object" && error !== null ? getProviderRetryAfterMs(error) : undefined;
 			if (output.stopReason === "error") {
 				appendBedrockFailureDiagnostic(output, error, responseRequestId);
 			}
@@ -1310,12 +1313,32 @@ function isOpenAiGpt6AstraBedrockModel(model: Model<"bedrock-converse-stream">):
 	return /^(?:global\.|us\.)?openai\.gpt-6-astra$/.test(model.id);
 }
 
+/**
+ * With reasoning off, send the model's mapped `off` effort (GPT-6 Sol and Luna map it to `none`) in the same
+ * field its other efforts use, as the OpenAI Responses provider does. Without a mapped value, send nothing
+ * so Bedrock applies the model default.
+ */
+function buildOpenAiReasoningOffFields(
+	model: Model<"bedrock-converse-stream">,
+): { reasoning_effort: string } | { reasoning: { effort: string } } | undefined {
+	const off = model.thinkingLevelMap?.off;
+	if (typeof off !== "string") return undefined;
+	if (isOpenAiGpt6AstraBedrockModel(model)) return { reasoning_effort: off };
+	const candidates = getModelMatchCandidates(model.id, model.name);
+	if (candidates.some((candidate) => candidate.includes("gpt-oss"))) return { reasoning_effort: off };
+	if (candidates.some((candidate) => candidate.includes("gpt-"))) return { reasoning: { effort: off } };
+	return undefined;
+}
+
 function buildAdditionalModelRequestFields(
 	model: Model<"bedrock-converse-stream">,
 	options: BedrockOptions,
 ): Record<string, any> | undefined {
-	if (!options.reasoning || !model.reasoning) {
+	if (!model.reasoning) {
 		return undefined;
+	}
+	if (!options.reasoning) {
+		return buildOpenAiReasoningOffFields(model);
 	}
 
 	if (isAnthropicClaudeModel(model)) {

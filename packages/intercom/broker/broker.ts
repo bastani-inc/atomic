@@ -72,7 +72,7 @@ import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
 import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
-import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationGroupRefusal } from "../group.js";
+import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
 	knownGroupSummaries,
@@ -954,7 +954,8 @@ class IntercomBroker {
         type: "delivery_failed",
         messageId: route.message.id,
         ...(route.attemptId ? { attemptId: route.attemptId } : {}),
-        reason: workflowInvocationGroupRefusal(ownerRegistration.group),
+        // A workflow stage registered outside the invocation can't gain control by joining; say so.
+        reason: workflowInvocationRefusalFor(route.from.registrationGroup, ownerRegistration.group),
       });
       return true;
     }
@@ -1280,6 +1281,14 @@ class IntercomBroker {
 							reason: UNCERTAIN_RECEIPT_REASON,
 						});
 					},
+					hold: (waiting, timeoutMs) => {
+						writeMessageIfOpen(waiting.socket, {
+							type: "send_held",
+							messageId: pending.messageId,
+							...(waiting.attemptId === undefined ? {} : { attemptId: waiting.attemptId }),
+							timeoutMs,
+						});
+					},
 				},
 				sender,
 			);
@@ -1435,8 +1444,7 @@ class IntercomBroker {
 			target === undefined ||
 			!isAgentRecipient(target.info) ||
 			target.info.id === currentId ||
-			normalizeGroup(target.registrationGroup) !== routeGroup ||
-			!hasGroup(sessionGroups(target.info), routeGroup)
+			!this.canReceivePendingStageNotification(target, clientMessage.to, routeGroup)
 		) {
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
 			return;
@@ -1517,6 +1525,19 @@ class IntercomBroker {
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
 			this.deliveredMessages.forget(message.id, signature);
 		}
+	}
+
+	/**
+	 * A pending-stage notice reaches a session registered in the run's group, or (#4006) the exact
+	 * sender session that controls the run from outside it: the launcher holding a current claim, or
+	 * an ordinary session that joined `workflow:<rootRunId>`. Isolated stages never qualify, and the
+	 * legacy name/return-address fallbacks stay limited to the run's own group.
+	 */
+	private canReceivePendingStageNotification(target: ConnectedSession, to: string, routeGroup: string): boolean {
+		if (normalizeGroup(target.registrationGroup) === routeGroup && hasGroup(sessionGroups(target.info), routeGroup)) {
+			return true;
+		}
+		return target.info.id === to && this.canControlWorkflowInvocation(target, routeGroup);
 	}
 
 	private settlePendingStageNotification(
@@ -1697,6 +1718,7 @@ class IntercomBroker {
             refusesPendingStageRoutesInPlace: true as const,
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
+            extendsSaves: true as const,
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -2172,6 +2194,14 @@ class IntercomBroker {
 				this.multiNode?.received(recipient, clientMessage.messageId);
 				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
 			}
+			break;
+		}
+
+		case "saving": {
+			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid saving message");
+			const recipient = this.sessions.get(currentId);
+			if (recipient?.acknowledgesReceipt === true && !this.multiNode?.saving(recipient, clientMessage.messageId))
+				this.receipts.extend(clientMessage.messageId, deliveryTargetIdentity(recipient));
 			break;
 		}
 

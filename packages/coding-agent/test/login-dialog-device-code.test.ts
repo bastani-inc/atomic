@@ -139,3 +139,47 @@ describe("device-code login (pi #9282)", () => {
 		assert.equal(vi.mocked(onComplete).mock.calls.length, 0);
 	});
 });
+
+describe("login URLs (pi 89c921d8)", () => {
+	beforeAll(() => initTheme("dark"));
+	beforeEach(() => {
+		vi.resetAllMocks();
+		setKeybindings(new KeybindingsManager());
+	});
+
+	it("opens only http(s) sign-in URLs", () => {
+		const { dialog } = createDialog();
+		dialog.showAuth("file:///Users/victim/Downloads/payload.app");
+		assert.equal(vi.mocked(openBrowser).mock.calls.length, 0);
+
+		dialog.showAuth("https://example.com/authorize");
+		assert.deepEqual(vi.mocked(openBrowser).mock.calls, [["https://example.com/authorize"]]);
+	});
+
+	it("keeps control characters in URLs from ending terminal hyperlinks", () => {
+		const { dialog } = createDialog();
+		dialog.showDeviceCode({ ...device, verificationUri: "https://example.com/device\x07\x1b]52;c;Zm9v\x07" });
+		dialog.showInfo("Docs", [{ label: "Help", url: "https://example.com/help\x07\x1b]52;c;Zm9v\x07" }]);
+		const output = dialog.render(120).join("\n");
+
+		assert.ok(!output.includes("\x1b]52"));
+		assert.ok(render(dialog).includes("https://example.com/device%07%1B]52;c;Zm9v"));
+		assert.ok(render(dialog).includes("Help: https://example.com/help%07%1B]52;c;Zm9v"));
+	});
+
+	it("replaces control characters in URLs that are not web URLs", () => {
+		const injected = "x\x07\x1b]52;c;Zm9v\x07";
+		const { dialog } = createDialog();
+		dialog.showAuth(`file:///tmp/${injected}`);
+		assert.ok(!dialog.render(120).join("\n").includes("\x1b]52"));
+
+		dialog.showDeviceCode({ ...device, verificationUri: injected });
+		assert.ok(!dialog.render(120).join("\n").includes("\x1b]52"));
+		assert.ok(render(dialog).includes("x ]52;c;Zm9v"));
+
+		dialog.showInfo("Docs", [{ label: "Help", url: injected }]);
+		assert.ok(!dialog.render(120).join("\n").includes("\x1b]52"));
+		assert.ok(render(dialog).includes("Help: x ]52;c;Zm9v"));
+		assert.equal(vi.mocked(openBrowser).mock.calls.length, 0);
+	});
+});

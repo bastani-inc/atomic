@@ -3825,6 +3825,91 @@ test("an ordinary queued send receives one correlated failure when its stage bec
 	}
 });
 
+test("a session that joined the run's group from default receives its undeliverable notice once; a bystander gets none (#4006)", async () => {
+	const runId = "f4006f40-0600-4006-8006-400640064006";
+	const group = `workflow:${runId}`;
+	const store = createStore();
+	const backend = await createMemoryTestBackend();
+	configureTestStoreBackend(store, backend);
+	const owner = extensionFixture("issue-4006-joined-owner", "issue-4006-joined-owner", undefined, "default");
+	// Both sessions are registered in `default`; only one joins the run's invocation group and sends.
+	const sender = extensionFixture("issue-4006-joined-sender", "issue-4006-joined-sender", undefined, "default");
+	const bystander = extensionFixture("issue-4006-bystander", "issue-4006-bystander", undefined, "default");
+	intercom(owner.pi as never);
+	const disposeBridge = registerPendingStageIntercomBridge(owner.pi as never, store);
+	intercom(sender.pi as never);
+	intercom(bystander.pi as never);
+	try {
+		await owner.start();
+		store.recordRunStart({
+			id: runId,
+			name: "issue-4006-joined",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [
+				{
+					id: "reviewer-id",
+					name: "reviewer",
+					status: "pending",
+					parentIds: [],
+					toolEvents: [],
+					pendingStageDeliveryAvailable: true,
+				},
+			],
+			startedAt: 1,
+		});
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "issue-4006-joined",
+			inputs: {},
+			status: "running",
+			createdAt: 1,
+		});
+		await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+		await sender.start();
+		await bystander.start();
+		for (const fixture of [sender, bystander]) {
+			const joined = await executeIntercom(fixture, { action: "join", group });
+			assert.equal(joined.isError, false, joined.content[0]?.text);
+		}
+		const queued = await executeIntercom(sender, {
+			action: "send",
+			to: `${group}/reviewer`,
+			message: "joined sender handoff",
+		});
+		assert.equal(queued.isError, false, queued.content[0]?.text);
+		assert.equal(queued.details.queued, true);
+
+		const failureVisible = sender.waitForInjectedCount(1);
+		const notified = waitForStoreState(
+			store,
+			() => store.runs()[0]?.pendingStageMessages?.[0]?.undeliverableNotifiedAt !== undefined,
+		);
+		store.recordStageEnd(runId, {
+			id: "reviewer-id",
+			name: "reviewer",
+			status: "skipped",
+			parentIds: [],
+			toolEvents: [],
+			skippedReason: "fail-fast",
+		});
+		await failureVisible;
+		await notified;
+		const failure = sender.injectedMessages[0];
+		assert.match(failure?.content ?? "", /could not receive intercom message:.*skipped.*fail-fast/i);
+		assert.equal(failure?.details?.message?.replyTo, queued.details.messageId);
+		assert.equal(sender.injectedMessages.length, 1);
+		// The notice goes to the sender only: a bystander in the same groups learns nothing.
+		assert.equal(bystander.injectedMessages.length, 0);
+	} finally {
+		disposeBridge();
+		await bystander.shutdown();
+		await sender.shutdown();
+		await owner.shutdown();
+	}
+});
+
 test("the workflow owner session receives its own undeliverable notice when it is the sender", async () => {
 	// The launching session commonly joins its own invocation group and steers a stage from
 	// there. Its undeliverable notice then targets the very session that owns the pending

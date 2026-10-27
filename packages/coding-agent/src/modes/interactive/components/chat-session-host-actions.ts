@@ -476,7 +476,8 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
-		await agentSession.prompt(text, { streamingBehavior: "steer" });
+		// Only `/skill:` expands (above); other text queues literally, as an idle submission is sent.
+		await agentSession.prompt(text, { streamingBehavior: "steer", expandPromptTemplates: false });
 		return;
 	}
 	await requiredChatSessionCommand(state, "steer")(text);
@@ -492,7 +493,7 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
-		await agentSession.prompt(text, { streamingBehavior: "followUp" });
+		await agentSession.prompt(text, { streamingBehavior: "followUp", expandPromptTemplates: false });
 		return;
 	}
 	await requiredChatSessionCommand(state, "followUp")(text);

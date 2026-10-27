@@ -6,7 +6,7 @@ import {
 	parseLegacyWorkflowStageTarget,
 	parseWorkflowStageTarget,
 } from "../workflow-stage-target.js";
-import { normalizeGroup, workflowInvocationGroupRefusal } from "../group.js";
+import { normalizeGroup, workflowInvocationRefusalFor } from "../group.js";
 import { isMessage } from "./client-message-validation.js";
 import {
 	resolveSessionTarget,
@@ -541,9 +541,10 @@ export function handleBrokerSend(
         type: "delivery_failed",
         messageId: message.id,
         attemptId,
-        // #4006: a live workflow stage is reached through its invocation; name the group to join.
+        // #4006: a live workflow stage is reached through its invocation; name the group to join,
+        // unless the sender is a workflow stage that joining could never authorize.
         reason: liveWorkflowTarget !== undefined && workflowTarget !== undefined
-          ? workflowInvocationGroupRefusal(`workflow:${workflowTarget.rootRunId}`)
+          ? workflowInvocationRefusalFor(fromSession.registrationGroup, `workflow:${workflowTarget.rootRunId}`)
           : "Target session is in a different intercom group",
       });
       return;
@@ -746,6 +747,9 @@ export function handleBrokerSend(
           complete: finishDelivery,
           expire: (waiting) => {
             write(waiting.socket, { type: "delivery_failed", messageId: message.id, attemptId: waiting.attemptId, reason: UNCERTAIN_RECEIPT_REASON });
+          },
+          hold: (waiting, timeoutMs) => {
+            write(waiting.socket, { type: "send_held", messageId: message.id, attemptId: waiting.attemptId, timeoutMs });
           },
         },
         senderWaiting,

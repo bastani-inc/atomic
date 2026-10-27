@@ -49,6 +49,7 @@ function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage
 	// While a run is active the loop owns pairing for the in-flight tool batch.
 	const repaired = repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(messages), {
 		repairTrailing: !session.isStreaming,
+		inFlightToolCallIds: session._reissuedToolCallIds,
 	});
 	return session._contextProjectionTransform ? session._contextProjectionTransform(repaired) : repaired;
 }

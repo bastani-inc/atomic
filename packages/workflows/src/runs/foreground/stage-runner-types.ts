@@ -20,6 +20,9 @@ import type {
 	WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
+/** How queued text is read: literal unless `expandPromptTemplates` asks for command/template expansion. */
+export type StageQueuedTextOptions = Pick<StageSendUserMessageOptions, "expandPromptTemplates">;
+
 type WorkflowPendingStageDelivery = NonNullable<
 	CreateAgentSessionOptions["orchestrationContext"]
 >["pendingStageDelivery"];
@@ -72,8 +75,16 @@ export interface StageSessionRuntime {
 	startPendingRecovery?(reason: SessionRecoveryReason): Promise<SessionRecoveryReport>;
 	/** Reopen launches only; cancelled executions must never restart. */
 	resumeTasks?(): void;
-	steer(text: string): Promise<void> | Promise<"handled" | "queued">;
-	followUp(text: string): Promise<void> | Promise<"handled" | "queued">;
+	steer(
+		text: string,
+		images?: undefined,
+		options?: StageQueuedTextOptions,
+	): Promise<void> | Promise<"handled" | "queued">;
+	followUp(
+		text: string,
+		images?: undefined,
+		options?: StageQueuedTextOptions,
+	): Promise<void> | Promise<"handled" | "queued">;
 	subscribe(listener: (event: StageSessionEvent) => void): () => void;
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
@@ -234,6 +245,17 @@ export interface InternalStageContext extends StageContext {
 	__persistedSessionStore(): SessionStore | undefined;
 	/** Internal: synchronous; true when no message, turn, retry, pause, or queue work needs the live session. */
 	__idleForRelease(): boolean;
+	/** Internal: true while a message, the stage's own prompt included, holds or waits for the turn loop. */
+	__turnLoopBusy?(): boolean;
+	/** Internal: true when the stage's generation closed while the stage still ran (not by its own finish). */
+	__generationClosedUnderStage?(): boolean;
+	/**
+	 * Internal: queues text into the turn the stage's current session is running, without waiting
+	 * for the stage's session to be ready; false when no turn runs.
+	 */
+	__queueIntoLiveTurn?(text: string, kind: "steer" | "followUp", options?: StageQueuedTextOptions): Promise<boolean>;
+	/** Internal: `steer()`/`followUp()` with explicit text semantics (see `StageQueuedTextOptions`). */
+	__queueUserText?(text: string, kind: "steer" | "followUp", options?: StageQueuedTextOptions): Promise<void>;
 	/** Internal: selected/effective model and fallback attempt metadata. */
 	__modelFallbackMeta(): StageModelFallbackMeta;
 	/** Internal: register a controlled-pause request. */
