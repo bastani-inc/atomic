@@ -12,7 +12,7 @@ import { VisualLinePreview } from "../../modes/interactive/components/visual-tru
 import { theme } from "../../modes/interactive/theme/theme.js";
 import type { ToolRenderResultOptions } from "../extensions/types.ts";
 import type { CancelReceipt, WaitOutcome } from "../tasks/contracts.js";
-import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
+import { getTextOutput, invalidArgText, linkPath, str } from "./render-utils.ts";
 import {
 	cancelReceiptStatus,
 	cleanupFailureSummary,
@@ -94,7 +94,13 @@ export function rebuildShellWaitResult(
 	component: Container,
 	result: ShellWaitResultView,
 	options: Pick<ToolRenderResultOptions, "expanded">,
-	view: { showImages: boolean; isError: boolean; taskId: string | undefined; timerText: string | undefined },
+	view: {
+		showImages: boolean;
+		isError: boolean;
+		taskId: string | undefined;
+		timerText: string | undefined;
+		cwd: string;
+	},
 ): boolean {
 	const text = getTextOutput(result, view.showImages).trim();
 	if (view.isError) {
@@ -118,9 +124,14 @@ export function rebuildShellWaitResult(
 	else component.addChild(new Text(theme.fg("dim", EMPTY_OUTPUT_TEXT), 0, 0));
 	const notes = [
 		truncation?.truncated ? formatTruncationNotice(truncation) : undefined,
-		fullOutputPath ? `Full output: ${fullOutputPath}` : undefined,
+		fullOutputPath ? "Full output:" : undefined,
 	].filter((note) => note !== undefined);
 	if (notes.length > 0) component.addChild(new Text(theme.fg("dim", notes.join(" · ")), 0, 0));
+	// The path gets a line of its own so word wrap never splits it at a space beside its label, and a link so a
+	// path wider than the terminal still opens (and copies) whole.
+	if (fullOutputPath) {
+		component.addChild(new Text(theme.fg("dim", linkPath(fullOutputPath, fullOutputPath, view.cwd)), 0, 0));
+	}
 	addTimer(component, view.timerText);
 	return true;
 }
