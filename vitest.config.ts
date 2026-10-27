@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { sharedAliases } from "./vitest.base.js";
+import { DurationSequencer } from "./test/helpers/duration-sequencer.js";
 import { TEST_TIMEOUT_MS } from "./test/helpers/test-timeout.js";
 
 export { TEST_TIMEOUT_MS };
@@ -69,6 +70,8 @@ const project = (name: string, directory: string) => ({
  */
 export default defineConfig({
 	test: {
+		// Longest files first, and duration-balanced `--shard` (the CI integration job runs four shards per OS).
+		sequence: { sequencer: DurationSequencer },
 		projects: [project("unit", "test/unit"), project("integration", "test/integration"), project("ci", "test/ci")],
 	},
 });

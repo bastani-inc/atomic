@@ -8,7 +8,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 Pull request / selected branch push
 └─ test.yml (five concurrent work jobs + one result gate)
    ├─ unit-tests (Linux, Windows): build package -> unit
-   ├─ integration-tests (Linux, Windows): build package -> integration
+   ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
    ├─ agent-suite (Linux, Windows): native bindings -> pi-ai + coding-agent vitest (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
@@ -270,10 +270,11 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to nine work-job instances and three
+Five independent job definitions expand to fifteen work-job instances and three
 result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
-serial dependencies between suites; it does not shard or remove tests.
+serial dependencies between suites. The integration suite is split by file across
+four jobs per OS (see [Integration shards](#integration-shards)); no test is removed.
 
 
 ### Why steps are grouped this way
@@ -286,9 +287,22 @@ Steps stay in one job only when one consumes another's build output. Nothing is 
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. Both root-suite jobs also build native bindings explicitly. The CI project's native global setup builds a missing binding in `static-checks`, so a cold static job needs Rust despite having no explicit toolchain step.
 - `agent-suite` runs the `packages/ai` and `packages/coding-agent` Vitest suites under Node on both Linux and Windows, in separate steps. The AI suite runs after its package build via `npm run test --workspace=@bastani/pi-ai`; live-provider tests skip when their credentials are absent, while deterministic tests remain required. The coding-agent suite runs after the native build; its SQLite selectors resolve `node:sqlite` on both runtimes (Bun ships it from 1.4.0; the repository's Bun floor is now 1.4.2). Both suites are covered by the existing `test (all platforms)` gate through `agent-suite`.
 
-Keep Vitest's default file isolation and worker sizing. Do not shard or serialize suites, cap workers, or remove existing duplicate executions to improve timings.
+Keep Vitest's default file isolation and worker sizing. Do not serialize suites, cap workers, or remove existing duplicate executions to improve timings. Only the integration suite is sharded across jobs, and every shard still runs its files with Vitest's defaults.
 
-Split long-running test files by topic so file-level parallelism can apply. Do not add a barrel that imports the split files: it would run their tests again in a single worker.
+Split long-running test files by topic so file-level parallelism can apply. Do not add a barrel that imports the split files: it would run their tests again in a single worker. Move a fixture the split files share into `test/helpers/` (for example `test/helpers/workflow-local-pool-lifecycle.ts`).
+
+### Integration shards
+
+`integration-tests` runs `npm run test:integration -- --shard=<i>/4` in four jobs per OS. The suite's wall time was set by its longest files rather than its total: pooled-worker files ran for four to eight minutes each on one runner. Sharding spreads the files over four 8-vCPU runners, and the long files are split so that none runs much over two minutes.
+
+`vitest.config.ts` sets `test/helpers/duration-sequencer.ts` as the sequencer. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer instead assigns files to shards longest-processing-time-first and starts each shard's longest files first, using per-file durations recorded in `test/helpers/integration-file-durations.json`. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file.
+
+Refresh the record when shard times drift apart, from one CI run's Linux reports:
+
+```sh
+gh run download <run-id> -p 'test-diagnostics-integration-tests-linux-x64-*' -D /tmp/integration-reports
+bun run scripts/integration-file-durations.ts /tmp/integration-reports/*/integration-tests-*.json
+```
 
 ### The `test` job is a result gate
 
@@ -300,7 +314,7 @@ The gate exists to fail closed:
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
 - The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, the gate asserts every platform's work jobs.
 
-The work jobs are named by platform only, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names.
+The work jobs are named by platform, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`, and integration jobs also by shard, for example `integration-tests (linux-x64, 2/4)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names. Because the gate needs `integration-tests` as a whole, any failed, cancelled or skipped shard fails it.
 
 When changing a required-check name, emit the replacement first, update the repository ruleset, then remove the old context. Never remove a context while branch rules still require it.
 
@@ -313,7 +327,7 @@ job deadline.
 | Job | Linux | Windows | Calibration source |
 | --- | ---: | ---: | --- |
 | Unit tests | 22 min | 22 min | [Observed timeout boundaries](https://github.com/bastani-inc/atomic/actions/runs/34270757695) |
-| Integration tests | 10 min | 14 min | [Linux setup](https://github.com/bastani-inc/atomic/actions/runs/34652319107/job/103437056550), [Windows retry](https://github.com/bastani-inc/atomic/actions/runs/34275410217/job/102227085985) |
+| Integration tests (each shard) | 15 min | 15 min | Provisional until calibrated from sharded runs |
 | Agent suite | 15 min | 20 min | [Linux completion](https://github.com/bastani-inc/atomic/actions/runs/35543699213), [Windows completion](https://github.com/bastani-inc/atomic/actions/runs/35619483893/job/106398647825) |
 | Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
 | Static checks | 5 min | not run | [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) |

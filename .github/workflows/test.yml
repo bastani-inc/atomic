@@ -29,7 +29,7 @@ on:
 # waits for the other; no shared producer sits on their critical path.
 #
 #   unit-tests      build package -> unit
-#   integration-tests build package -> integration
+#   integration-tests build package -> one of four integration shards (per OS)
 #   agent-suite     build ai + native bindings -> pi-ai and coding-agent vitest
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
@@ -142,19 +142,23 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }})
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/4)
     strategy:
       matrix:
+        # Four shards per OS, balanced by recorded file duration (test/helpers/duration-sequencer.ts). The result
+        # gate below needs every shard, so the required check still covers the whole suite on both hosts.
+        binary_platform: [linux-x64, windows-x64]
+        shard: [1, 2, 3, 4]
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
-            timeout_minutes: 20
+            timeout_minutes: 15
           - binary_platform: windows-x64
             runner: namespace-profile-atomic-ci-windows-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.windows-amd64
-            timeout_minutes: 20
+            timeout_minutes: 15
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Setup + two attempts at measured cost + 50% per host; September 11 Linux repair in docs/ci.md.
+    # Provisional until measured on sharded runs; see docs/ci.md ("Sizing").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -207,8 +211,8 @@ jobs:
         run: npm run build
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
-          -- npm run test:integration
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 4)"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/4
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
@@ -216,7 +220,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}
+          name: test-diagnostics-integration-tests-${{ matrix.binary_platform }}-${{ matrix.shard }}
           path: .ci-diagnostics/
           include-hidden-files: true
           if-no-files-found: ignore
