@@ -233,6 +233,7 @@ declare module "./interactive-mode-base.ts" {
 				signal?: AbortSignal;
 				overlayOptions?: OverlayOptions | (() => OverlayOptions);
 				onHandle?: (handle: OverlayHandle) => void;
+				blocked?: BlockedStatus;
 			},
 		): Promise<T>;
 		showExtensionError(extensionPath: string, error: string, stack?: string): void;

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,13 +213,15 @@ describe("DefaultPackageManager", () => {
 			const runCommandSpy = vi
 				.spyOn(managerWithInternals, "runCommand")
 				.mockImplementation(async (command, args) => {
-					expect(command).toBe("npm");
-					expect(args).toEqual([
+					assert.equal(command, "npm");
+					assert.deepEqual(args, [
 						"install",
 						"example@^2.0.0",
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(join(managedPath, "extensions"), { recursive: true });
 					writeFileSync(
@@ -278,13 +281,15 @@ describe("DefaultPackageManager", () => {
 			const runCommandSpy = vi
 				.spyOn(managerWithInternals, "runCommand")
 				.mockImplementation(async (command, args) => {
-					expect(command).toBe("npm");
-					expect(args).toEqual([
+					assert.equal(command, "npm");
+					assert.deepEqual(args, [
 						"install",
 						"example@beta",
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(join(managedPath, "extensions"), { recursive: true });
 					writeFileSync(

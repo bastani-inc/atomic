@@ -311,13 +311,15 @@ describe("DefaultPackageManager", () => {
 			const internals = packageManager as object as PackageManagerInternals;
 			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
 			const runCommandSpy = vi.spyOn(internals, "runCommand").mockImplementation(async (command, args) => {
-				expect(command).toBe("npm");
-				expect(args).toEqual([
+				assert.equal(command, "npm");
+				assert.deepEqual(args, [
 					"install",
 					"example@latest",
 					"--prefix",
 					join(tempDir, CONFIG_DIR_NAME, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				]);
 				writeFileSync(
 					join(installedPath, "package.json"),

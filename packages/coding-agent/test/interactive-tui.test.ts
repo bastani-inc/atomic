@@ -733,6 +733,7 @@ describe("clear-on-shrink working status spacing", () => {
 		};
 		const context = {
 			editorComponentFactory: undefined,
+			extensionDialogs: [],
 			editor: { getText: () => "draft" },
 			defaultEditor,
 			disposeActiveSelector: vi.fn(),

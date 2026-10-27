@@ -5,6 +5,7 @@ import type {
 	EditorTheme,
 	OverlayHandle,
 	OverlayOptions,
+	ProgramStatus,
 	TUI,
 } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
@@ -349,6 +350,11 @@ export interface ExtensionUIContext {
 			overlayOptions?: OverlayOptions | (() => OverlayOptions);
 			/** Called with the overlay handle after the overlay is shown. Use to control visibility. */
 			onHandle?: (handle: OverlayHandle) => void;
+			/**
+			 * Report Atomic as blocked on user input (OSC 7501 program status) while this component is visible.
+			 * Only applies to inline components, not overlays.
+			 */
+			blocked?: { kind: NonNullable<ProgramStatus["kind"]>; message: string };
 		},
 	): Promise<T>;
 

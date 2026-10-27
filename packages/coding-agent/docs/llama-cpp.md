@@ -5,32 +5,43 @@ description: "Run models locally with a llama.cpp server: discovery, load manage
 
 # llama.cpp
 
-Atomic supports the [llama.cpp](https://github.com/ggml-org/llama.cpp) router server. The router discovers multiple GGUF models and loads or unloads them on demand.
+Atomic supports the [llama.cpp](https://llama.app) router server. The router discovers multiple GGUF models and loads or unloads them on demand.
 
-Use a current llama.cpp build with router support. Follow its [build instructions](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) or install a [prebuilt release](https://github.com/ggml-org/llama.cpp/releases).
+## Install llama.cpp
+
+Install llama.cpp with the [official installer](https://llama.app/docs/installation):
+
+```bash
+curl -LsSf https://llama.app/install.sh | sh
+```
+
+Verify the installation:
+
+```bash
+llama cli --version
+```
+
+See [llama.app](https://llama.app) for other installation methods, including package managers and building from source.
 
 ## Start the router
 
-Start `llama-server` without `--model` or `-m`; those options start single-model mode instead of router mode.
+Start `llama serve` without `--model`, `-m`, or `-hf`; those options start single-model mode instead of router mode. See the [llama.cpp server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode) for router configuration.
 
 ```bash
-llama-server \
-  --models-dir ~/models \
+llama serve \
   --no-models-autoload \
-  --jinja \
   --host 127.0.0.1 \
   --port 8080 \
-  -ngl 999 \
+  -ngl all \
   -c 32768
 ```
 
-- `--models-dir` discovers local GGUF files.
 - `--no-models-autoload` leaves loading under explicit `/llama` control.
-- `--jinja` enables compatible chat templates and tool calling.
-- `-ngl 999` offloads as many layers as possible to the GPU.
-- `-c 32768` sets each model's context window. Omit it to use the model's native context, which may require substantially more memory.
+- `-ngl all` offloads all layers to the GPU. Omit it to use automatic GPU offloading.
+- `-c 32768` sets the context size in tokens. Use `-c 0` for the model's full context window, which may require substantially more memory. Context is shared across parallel server slots.
+- `--models-dir ~/models` also discovers local GGUF files in that directory.
 
-Single-file models can sit directly in the model directory. Put multimodal and multi-shard models in separate subdirectories with their projection or shard files. Restart the router after manually adding files. Per-model context sizes and other options can be set with [model presets](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#model-presets).
+Single-file models can sit directly in the model directory. Put multimodal and multi-shard models in separate subdirectories with their projection or shard files. Restart the router after manually adding files. The router also supports cached models and preset files through `--models-preset`, as described in the [server guide](https://llama.app/docs/serve#serving-multiple-models-router-mode).
 
 For settings tuned to a specific NVIDIA GPU and model, see [NVIDIA RTX recipes](#nvidia-rtx-recipes).
 
@@ -50,7 +61,7 @@ export LLAMA_API_KEY=optional-secret
 atomic
 ```
 
-If the server requires a key, start `llama-server` with the matching `--api-key`. Keep `--host 127.0.0.1` for local-only access.
+If the server requires a key, start `llama serve` with the matching `--api-key`. Keep `--host 127.0.0.1` for local-only access.
 
 ## Manage models
 
@@ -190,7 +201,7 @@ curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/models
 ```
 
-- **No models in `/llama`:** Check `--models-dir`, the directory layout, and restart the router.
+- **No models in `/llama`:** Check the cached models, `--models-dir` and its directory layout, then restart the router.
 - **Model missing from `/model` with `--no-models-autoload`:** Load it with `/llama` first.
 - **Load fails or uses too much memory:** Lower `-c` or unload another model.
 - **Server is not in router mode:** Start it without `--model`, `-m`, or `-hf`.

@@ -436,11 +436,10 @@ const ANT_LING_RING_THINKING_LEVEL_MAP = {
 
 const BEDROCK_INFERENCE_PROFILE_ONLY_MODEL_IDS = new Set(["anthropic.claude-opus-5"]);
 const MODELS_DEV_OPENAI_UNSUPPORTED_MODEL_IDS = new Set(["gpt-5.6"]);
+// GPT-5.5 and older put tools loaded through tool search or additional_tools in a namespace named
+// after the tool and reject replayed calls without it, so history from other models fails there
+// (earendil-works/pi#11415). Like Codex, dynamic tool loading therefore starts with GPT-5.6, which does not do this.
 const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
-	"gpt-5.4",
-	"gpt-5.4-mini",
-	"gpt-5.4-pro",
-	"gpt-5.5",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
@@ -451,7 +450,13 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-6.1-terra",
 ]);
 const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
-const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
+const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = new Set([
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-5.4-pro",
+	"gpt-5.5",
+	...OPENAI_TOOL_SEARCH_MODEL_IDS,
+]);
 const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
@@ -1241,7 +1246,7 @@ function applyOpenAIResponsesTranscriptMetadata(model: Model<Api>): void {
 	model.compat = {
 		...(model.compat as OpenAIResponsesCompat | undefined),
 		supportsMidConvoSystemMessages: true,
-		...(isProxiedResponses ? { supportsAdditionalTools: true } : {}),
+		...(isProxiedResponses && OPENAI_ADDITIONAL_TOOLS_MODEL_IDS.has(model.id) ? { supportsAdditionalTools: true } : {}),
 	};
 }
 
@@ -2551,23 +2556,23 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				if (npm === "@ai-sdk/openai") {
 					api = "openai-responses";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = `${variant.basePath}/openai/v1`;
 					compat = { sessionAffinityFormat: "openai-nosession" };
 				} else if (npm === "@ai-sdk/anthropic") {
 					api = "anthropic-messages";
 					// Anthropic SDK appends /v1/messages to baseURL
-					baseUrl = variant.basePath;
+					baseUrl = `${variant.basePath}/anthropic`;
 				} else if (npm === "@ai-sdk/google") {
 					api = "google-generative-ai";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = `${variant.basePath}/google/v1beta`;
 				} else if (npm === "@ai-sdk/alibaba") {
 					api = "openai-completions";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = `${variant.basePath}/openai/v1`;
 					compat = { cacheControlFormat: "anthropic" };
 				} else {
 					// null, undefined, or @ai-sdk/openai-compatible
 					api = "openai-completions";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = `${variant.basePath}/openai/v1`;
 				}
 
 				if (variant.provider === "opencode" && modelId === "grok-build-0.1") {
@@ -2583,11 +2588,11 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				// Fix known mismatches between models.dev npm data and actual
 				// OpenCode Go endpoint behaviour. models.dev reports these models
 				// as @ai-sdk/anthropic, but OpenCode Go serves them through the
-				// OpenAI-compatible /v1/chat/completions path.
+				// OpenAI-compatible /openai/v1/chat/completions path.
 				if (variant.provider === "opencode-go") {
 					if (modelId === "qwen3.5-plus" || modelId === "qwen3.6-plus") {
 						api = "openai-completions";
-						baseUrl = `${variant.basePath}/v1`;
+						baseUrl = `${variant.basePath}/openai/v1`;
 						// Qwen/DashScope uses enable_thinking at the top level.
 						compat = { ...(compat ?? {}), thinkingFormat: "qwen" };
 					}
@@ -2965,7 +2970,7 @@ const OPENCODE_CLASSIFIER_MODELS: ClassifierModel<"typesafe-system-one">[] = [
 		name: "Jev 1.13",
 		api: "typesafe-system-one",
 		provider: "opencode",
-		baseUrl: "https://opencode.ai/inference/v1",
+		baseUrl: "https://opencode.ai/inference/systemone/v1",
 		input: ["text"],
 		cost: { input: 0.042, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 32000,
@@ -2976,7 +2981,7 @@ const OPENCODE_CLASSIFIER_MODELS: ClassifierModel<"typesafe-system-one">[] = [
 		name: "Jev 1.13 Free",
 		api: "typesafe-system-one",
 		provider: "opencode",
-		baseUrl: "https://opencode.ai/inference/v1",
+		baseUrl: "https://opencode.ai/inference/systemone/v1",
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 32000,

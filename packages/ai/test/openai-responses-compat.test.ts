@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
@@ -121,7 +122,7 @@ describe("openai-responses provider defaults", () => {
 		);
 
 		const stream = streamOpenAIResponses(
-			getModel("openai", "gpt-5.4"),
+			getModel("openai", "gpt-5.6-luna"),
 			normalizeContext({
 				messages: [
 					{
@@ -151,11 +152,53 @@ describe("openai-responses provider defaults", () => {
 			if (event.type === "done" || event.type === "error") break;
 		}
 
-		// gpt-5.4 declares its tools in additional_tools items; tool_choice applies to them.
+		// gpt-5.6-luna declares its tools in additional_tools items; tool_choice applies to them.
 		expect(capturedPayload).toMatchObject({
 			tool_choice: "required",
 			input: [{ type: "additional_tools", tools: [expect.objectContaining({ name: "ping" })] }, expect.anything()],
 		});
+	});
+
+	it.each([
+		["openai", "gpt-5.4"],
+		["openai", "gpt-5.5"],
+		["opencode", "gpt-5.5"],
+	] as const)("declares %s %s tools at the top level (earendil-works/pi#11415)", async (provider, id) => {
+		let capturedPayload: { tools?: Array<{ name?: string }>; input?: Array<{ type?: string }> } | undefined;
+
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response("data: [DONE]\n\n", {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			}),
+		);
+
+		const stream = streamOpenAIResponses(
+			getModel(provider, id),
+			normalizeContext({
+				messages: [{ role: "user", content: "Ping.", timestamp: Date.now() }],
+				tools: [{ name: "ping", description: "Ping", parameters: Type.Object({ value: Type.String() }) }],
+			}),
+			{
+				apiKey: "sk-test-key",
+				onPayload: (payload) => {
+					capturedPayload = payload as typeof capturedPayload;
+				},
+			},
+		);
+
+		for await (const event of stream) {
+			if (event.type === "done" || event.type === "error") break;
+		}
+
+		assert.deepEqual(
+			capturedPayload?.tools?.map((tool) => tool.name),
+			["ping"],
+		);
+		assert.equal(
+			capturedPayload?.input?.some((item) => item.type === "additional_tools"),
+			false,
+		);
 	});
 
 	it("sets strict mode explicitly for Cloudflare OpenAI Responses tools", async () => {

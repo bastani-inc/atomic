@@ -153,13 +153,15 @@ function formatGrepResult(
 }
 
 function formatNativeGrepMatch(match: NativeGrepMatch, displayPath: string): string[] {
+	// Lines are split only at LF, like ripgrep; a lone CR stays inside a line and is dropped from the display.
+	const clean = (line: string) => line.replace(/\r/g, "");
 	const lines: string[] = [];
 	for (const contextLine of match.contextBefore ?? []) {
-		lines.push(`${displayPath}-${contextLine.lineNumber}- ${contextLine.line}`);
+		lines.push(`${displayPath}-${contextLine.lineNumber}- ${clean(contextLine.line)}`);
 	}
-	lines.push(`${displayPath}:${match.lineNumber}: ${match.line}`);
+	lines.push(`${displayPath}:${match.lineNumber}: ${clean(match.line)}`);
 	for (const contextLine of match.contextAfter ?? []) {
-		lines.push(`${displayPath}-${contextLine.lineNumber}- ${contextLine.line}`);
+		lines.push(`${displayPath}-${contextLine.lineNumber}- ${clean(contextLine.line)}`);
 	}
 	return lines;
 }
@@ -327,7 +329,7 @@ export function createGrepToolDefinition(
 							if (!lines) {
 								try {
 									const content = await ops.readFile(filePath);
-									lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+									lines = content.replace(/\r\n/g, "\n").split("\n");
 								} catch {
 									lines = [];
 								}

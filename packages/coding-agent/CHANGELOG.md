@@ -2,8 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.ui.custom()` accepts `blocked: { kind, message }` so an inline component that waits for an answer reports Atomic as blocked through OSC 7501 program status while it is visible, including in the default isolated mode. `kind` is `"question"`, `"permission"` or `"auth"`; overlays ignore the option ([pi #11428](https://github.com/earendil-works/pi/issues/11428))
+
+### Changed
+
+- The `openai` and `openai-api` providers default to `gpt-6.1-sol` instead of `gpt-5.5`, matching `openai-codex` ([pi #11467](https://github.com/earendil-works/pi/pull/11467))
+
 ### Fixed
 
+- The `grep` tool numbers `context` lines the way ripgrep does when a file contains a lone carriage return: before, every line after it was off by one, so the wrong line showed as the match and the last context line went missing. Context and match lines no longer show the carriage return ([pi #11398](https://github.com/earendil-works/pi/issues/11398))
+- An open extension dialog (`confirm`, `select`, `input`, `editor`, or an inline `ctx.ui.custom()` component) stays visible and answerable when an extension calls `ctx.ui.setEditorComponent()`. Before, the new editor replaced it on screen and the dialog waited until its timeout, or forever. The new editor appears when the last dialog closes ([pi #11431](https://github.com/earendil-works/pi/issues/11431))
+- Installing, updating or removing an npm-hosted Atomic package no longer prints npm audit and funding messages. `npm audit fix` would have installed Atomic peer packages, because it runs without `--legacy-peer-deps` ([pi #11469](https://github.com/earendil-works/pi/pull/11469))
+- Hidden thinking with an empty label (for example after `ctx.ui.setHiddenThinkingLabel("")`) no longer draws blank rows: before, a message with thinking drew two blank rows before a tool call and three before its text ([pi #11402](https://github.com/earendil-works/pi/issues/11402))
 - A background shell stopped by a workflow stage or run pause is now recorded with the `pause` stop reason, and its completion notice says `Background shell interrupted by a pause` and asks to redo or continue the interrupted step, instead of "This execution has ended. Do not restart it". The shell's kind is saved with its completion intent, so a notice replayed after a restart keeps that wording; an intent saved by an earlier version asks to redo or continue the interrupted step and never offers a subagent resume call. Shells stopped with `/tasks` or `kill` keep the ended-for-good wording ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
 - The `wait` and `kill` results for a shell stopped by a pause now say `stopped by a pause` instead of `paused · awaiting resume`, since a shell does not resume ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
 

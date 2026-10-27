@@ -149,7 +149,24 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(agentDir, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				],
+				undefined,
+			);
+		});
+
+		it("should skip npm audit and fund output when uninstalling npm packages", async () => {
+			mkdirSync(join(agentDir, "npm"), { recursive: true });
+			const internals = packageManager as object as PackageManagerInternals;
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.remove("npm:@scope/pkg");
+
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["uninstall", "@scope/pkg", "--prefix", join(agentDir, "npm"), "--no-audit", "--no-fund"],
 				undefined,
 			);
 		});
@@ -191,9 +208,14 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.install(source);
 
-			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-				cwd: targetDir,
-			});
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{
+					cwd: targetDir,
+				},
+			);
 		});
 
 		it("should reject unsafe pinned git refs before invoking git", async () => {
@@ -234,9 +256,14 @@ describe("DefaultPackageManager", () => {
 				cwd: targetDir,
 			});
 			assertCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
-			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-				cwd: targetDir,
-			});
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{
+					cwd: targetDir,
+				},
+			);
 		});
 
 		it("should reconcile an existing git checkout to its update target when installing without a ref", async () => {
@@ -438,9 +465,14 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-				cwd: targetDir,
-			});
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{
+					cwd: targetDir,
+				},
+			);
 		});
 
 		it("repairs missing git dependencies when the checkout is already current", async () => {
@@ -465,9 +497,14 @@ describe("DefaultPackageManager", () => {
 
 			await packageManager.update(source);
 
-			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-				cwd: targetDir,
-			});
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{
+					cwd: targetDir,
+				},
+			);
 			assertNotCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
@@ -542,9 +579,14 @@ describe("DefaultPackageManager", () => {
 
 			await assert.rejects(packageManager.update(source), rejectsWithMessage("simulated clean failure"));
 
-			assertCalledWith(runCommandSpy, "npm", ["install", "--omit=dev", "--legacy-peer-deps"], {
-				cwd: targetDir,
-			});
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{
+					cwd: targetDir,
+				},
+			);
 		});
 		it("should disable peer installation through wrapped pnpm when updating git dependencies", async () => {
 			settingsManager = SettingsManager.inMemory({

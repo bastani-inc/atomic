@@ -4,6 +4,12 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode Zen and OpenCode Go requests use the documented protocol-specific endpoints (`/openai/v1`, `/anthropic`, `/google/v1beta`, and `/systemone/v1` for Jev classifiers) instead of the shared `/inference/v1` base ([pi #11132](https://github.com/earendil-works/pi/issues/11132))
+- GPT-5.4 and GPT-5.5 no longer fail with `Missing namespace for function_call` after switching from another model that called tools. On the OpenAI, OpenCode and GitHub Copilot providers they now declare their tools in the top-level tool list instead of loading them through `additional_tools` or tool search ([pi #11415](https://github.com/earendil-works/pi/issues/11415))
+- Bedrock requests no longer fail when `strict: "prefer"` tools exceed Claude's strict tool limits, such as more than 16 optional parameters across all strict tools. They retry once with preferred tools non-strict and keep `strict: "require"` tools strict, as the Anthropic provider already does ([pi #11416](https://github.com/earendil-works/pi/issues/11416))
+
 ## [0.9.46-alpha.1] - 2026-10-27
 
 ### Added

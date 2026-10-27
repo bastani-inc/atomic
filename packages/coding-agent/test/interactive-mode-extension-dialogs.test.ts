@@ -26,7 +26,9 @@ type DialogMethods = {
 	focusHostInlineCustomUi(): boolean;
 	showExtensionCustom<T>(
 		factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => Component,
+		options?: { blocked?: { kind: "permission" | "question" | "auth"; message: string } },
 	): Promise<T>;
+	setCustomEditorComponent(factory: (() => Component) | undefined): void;
 };
 
 function createContext(): DialogContext & DialogMethods {
@@ -190,5 +192,60 @@ describe("InteractiveMode extension dialogs", () => {
 		assert.equal(context.pendingInlineCustomUiFocus, undefined);
 		assert.equal(context.focused, context.editor);
 		assert.deepEqual(context.editorContainer.children, [context.editor]);
+	});
+
+	it("reports blocked status for an inline custom component that opts in (earendil-works/pi#11428)", async () => {
+		const context = createContext();
+		const dones: Array<(result: string) => void> = [];
+		const first = context.showExtensionCustom<string>(
+			(_tui, _theme, _keybindings, done) => {
+				dones.push(done);
+				return new Text("approval");
+			},
+			{ blocked: { kind: "permission", message: "Approve?" } },
+		);
+		await vi.waitFor(() => assert.match(visible(context), /approval/));
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-dialog",
+			{ kind: "permission", message: "Approve?" },
+		]);
+
+		const loader = context.showExtensionCustom<string>((_tui, _theme, _keybindings, done) => {
+			dones.push(done);
+			return new Text("loading");
+		});
+		await vi.waitFor(() => assert.match(visible(context), /loading/));
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-dialog", undefined]);
+
+		dones[1]("loaded");
+		assert.equal(await loader, "loaded");
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, [
+			"extension-dialog",
+			{ kind: "permission", message: "Approve?" },
+		]);
+
+		dones[0]("yes");
+		assert.equal(await first, "yes");
+		assert.equal(context.focused, context.editor);
+		assert.deepEqual(context.programStatus.setBlocked.mock.lastCall, ["extension-dialog", undefined]);
+	});
+
+	it("keeps an open dialog visible when the editor component is replaced (earendil-works/pi#11431)", async () => {
+		const context = createContext();
+		(context as DialogContext & { defaultEditor: DialogContext["editor"] }).defaultEditor = context.editor;
+		const confirmed = context.showExtensionConfirm("Title", "Continue?");
+		const customEditor: Component & { getText(): string; setText(text: string): void } = {
+			render: () => ["custom editor"],
+			invalidate: () => {},
+			getText: () => "",
+			setText: () => {},
+		};
+		context.setCustomEditorComponent(() => customEditor);
+
+		assert.match(visible(context), /Title/);
+		context.focused?.handleInput?.("\r");
+		assert.equal(await confirmed, true);
+		assert.equal(context.focused, customEditor);
+		assert.deepEqual(context.editorContainer.children, [customEditor]);
 	});
 });

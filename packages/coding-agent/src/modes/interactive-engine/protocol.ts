@@ -98,6 +98,7 @@ export type InteractiveEngineMessage =
 			handlesInternalUiAction?: boolean;
 			reserveTranscriptRows?: boolean;
 			overlayOptions?: SerializableOverlayOptions;
+			blocked?: EngineBlockedStatus;
 			widgetKey?: string;
 			widgetPlacement?: "aboveEditor" | "belowEditor";
 			widgetScroll?: { maxHeight: number; maxHeightFraction?: number };
@@ -200,6 +201,17 @@ export function isJsonValue(value: object | boolean | null | number | string): v
 	if (value === null || typeof value !== "object") return true;
 	if (Array.isArray(value)) return value.every((item) => isJsonValue(item));
 	return Object.values(value).every((item) => item !== undefined && isJsonValue(item));
+}
+
+/** Blocked program status an inline custom component reports while visible; see ExtensionUIContext.custom options. */
+export type EngineBlockedStatus = { kind: "permission" | "question" | "auth"; message: string };
+
+function parseBlockedStatus(value: JsonValue | undefined): EngineBlockedStatus | undefined {
+	if (value === undefined || !isJsonObject(value) || typeof value.message !== "string") return undefined;
+	const kind = value.kind;
+	return kind === "permission" || kind === "question" || kind === "auth"
+		? { kind, message: value.message }
+		: undefined;
 }
 
 function isJsonObject(value: JsonValue): value is JsonObject {
@@ -522,6 +534,7 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 						overlayOptions: isJsonObject(value.overlayOptions)
 							? (value.overlayOptions as SerializableOverlayOptions)
 							: undefined,
+						...(parseBlockedStatus(value.blocked) ? { blocked: parseBlockedStatus(value.blocked) } : {}),
 						widgetKey: typeof value.widgetKey === "string" ? value.widgetKey : undefined,
 						...(isJsonObject(value.widgetScroll) && typeof value.widgetScroll.maxHeight === "number"
 							? {

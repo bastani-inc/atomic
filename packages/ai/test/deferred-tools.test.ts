@@ -513,7 +513,7 @@ describe("deferred tools", () => {
 
 	it("loads an OpenAI Responses tool through additional_tools", async () => {
 		const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);
-		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.4"), context);
+		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.6-luna"), context);
 		const additionalTools = payload.input?.filter(
 			(item): item is OpenAIAdditionalTools => item.type === "additional_tools",
 		);
@@ -535,7 +535,7 @@ describe("deferred tools", () => {
 			content: [{ type: "toolCall", id: "call_late|fc_late", name: "late_tool", arguments: {} }],
 			api: "openai-responses",
 			provider: "openai",
-			model: "gpt-5.4",
+			model: "gpt-5.6-luna",
 		};
 		context.messages.splice(4, 0, lateCall, {
 			...makeToolResult(["late_tool"]),
@@ -543,7 +543,7 @@ describe("deferred tools", () => {
 			toolName: "late_tool",
 		});
 
-		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.4"), context);
+		const payload = await capturePayload<OpenAIPayload>(getModel("openai", "gpt-5.6-luna"), context);
 		const additionalToolIndexes = (payload.input ?? []).flatMap((item, index) =>
 			item.type === "additional_tools" ? [index] : [],
 		);
@@ -576,7 +576,7 @@ describe("deferred tools", () => {
 		expect(payload.input?.some((item) => item.type === "additional_tools")).toBe(false);
 	});
 
-	it.each(["gpt-5.2", "gpt-5.4-nano", "gpt-5.5-pro"] as const)(
+	it.each(["gpt-5.2", "gpt-5.4", "gpt-5.4-nano", "gpt-5.5", "gpt-5.5-pro"] as const)(
 		"uses the normal tool list for unsupported OpenAI model %s",
 		async (modelId) => {
 			const context = makeContext([makeTool("base_tool"), makeTool("late_tool")]);

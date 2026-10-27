@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -106,11 +107,19 @@ describe("DefaultPackageManager", () => {
 				["view", "example", "version", "--json"],
 				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
 			);
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assert.deepEqual(runCommandSpy.mock.calls.at(-1), [
 				"npm",
-				["install", "example@latest", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@latest",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
-			);
+			]);
 		});
 
 		it("should update npm range packages using the configured spec", async () => {
@@ -130,11 +139,19 @@ describe("DefaultPackageManager", () => {
 				["view", "example@^1.0.0", "version", "--json"],
 				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
 			);
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assert.deepEqual(runCommandSpy.mock.calls.at(-1), [
 				"npm",
-				["install", "example@^1.0.0", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@^1.0.0",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
-			);
+			]);
 		});
 
 		it("should update npm dist-tag packages using the configured tag spec", async () => {
@@ -154,11 +171,19 @@ describe("DefaultPackageManager", () => {
 				["view", "example@beta", "version", "--json"],
 				expect.objectContaining({ cwd: tempDir, timeoutMs: expect.any(Number) }),
 			);
-			expect(runCommandSpy).toHaveBeenCalledWith(
+			assert.deepEqual(runCommandSpy.mock.calls.at(-1), [
 				"npm",
-				["install", "example@beta", "--prefix", join(tempDir, CONFIG_DIR_NAME, "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@beta",
+					"--prefix",
+					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
+				],
 				undefined,
-			);
+			]);
 		});
 
 		it("should skip npm range package update when installed version matches the satisfying target", async () => {
@@ -216,13 +241,15 @@ describe("DefaultPackageManager", () => {
 				.spyOn(packageManager as any, "runCommand")
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
-					expect(command).toBe("npm");
-					expect(args).toEqual([
+					assert.equal(command, "npm");
+					assert.deepEqual(args, [
 						"install",
 						"legacy-pkg@latest",
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--no-audit",
+						"--no-fund",
 					]);
 					mkdirSync(managedPath, { recursive: true });
 					writeFileSync(
@@ -330,8 +357,7 @@ describe("DefaultPackageManager", () => {
 
 			expect(runCommandCaptureSpy).toHaveBeenCalledTimes(5);
 			expect(runCommandSpy).toHaveBeenCalledTimes(2);
-			expect(runCommandSpy).toHaveBeenNthCalledWith(
-				1,
+			assert.deepEqual(runCommandSpy.mock.calls[0], [
 				"npm",
 				[
 					"install",
@@ -340,11 +366,12 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(agentDir, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				],
 				undefined,
-			);
-			expect(runCommandSpy).toHaveBeenNthCalledWith(
-				2,
+			]);
+			assert.deepEqual(runCommandSpy.mock.calls[1], [
 				"npm",
 				[
 					"install",
@@ -353,9 +380,11 @@ describe("DefaultPackageManager", () => {
 					"--prefix",
 					join(tempDir, CONFIG_DIR_NAME, "npm"),
 					"--legacy-peer-deps",
+					"--no-audit",
+					"--no-fund",
 				],
 				undefined,
-			);
+			]);
 			expect(updateGitSpy).toHaveBeenCalledTimes(4);
 			expect(maxConcurrentNpmUpdates).toBeGreaterThan(1);
 			expect(maxConcurrentGitUpdates).toBeGreaterThan(1);
