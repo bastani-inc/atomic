@@ -234,8 +234,8 @@ const text = (result: ToolResult): string => result.content.map((part) => part.t
  * observer that rejection escapes as an unhandled rejection credited to a later test. Callers drain `pending` after
  * shutdown.
  */
-function observed<T>(promise: Promise<T>, pending: Promise<unknown>[]): Promise<T> {
-	pending.push(Promise.allSettled([promise]));
+function observed<T>(promise: Promise<T>, pending: Promise<void>[]): Promise<T> {
+	pending.push(Promise.allSettled([promise]).then(() => undefined));
 	return promise;
 }
 
@@ -328,7 +328,7 @@ test(
 		const childName = "subagent-worker-live1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
 		let child: InstanceType<typeof IntercomClient> | undefined;
-		const pending: Promise<unknown>[] = [];
+		const pending: Promise<void>[] = [];
 		try {
 			await launchInterruptedChild(cwd, sessionManager, "live1");
 			await parent.resume();
@@ -388,7 +388,7 @@ test(
 		const childName = "subagent-worker-ids1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
 		let child: InstanceType<typeof IntercomClient> | undefined;
-		const pending: Promise<unknown>[] = [];
+		const pending: Promise<void>[] = [];
 		try {
 			const original = await launchInterruptedChild(cwd, sessionManager, "ids1");
 			const childSessionId = original.childSessionId;
@@ -463,7 +463,7 @@ test(
 		const sessionManager = SessionManager.inMemory(cwd);
 		const childName = "subagent-worker-gone1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
-		const pending: Promise<unknown>[] = [];
+		const pending: Promise<void>[] = [];
 		try {
 			const original = await launchInterruptedChild(cwd, sessionManager, "gone1");
 			rmSync(original.childSessionFile!, { force: true });
