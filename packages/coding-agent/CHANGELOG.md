@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The `openai` and `openai-api` providers default to `gpt-6.1-sol` instead of `gpt-5.5`, matching `openai-codex` ([pi #11467](https://github.com/earendil-works/pi/pull/11467))
+
 ### Fixed
 
 - The `grep` tool numbers `context` lines the way ripgrep does when a file contains a lone carriage return: before, every line after it was off by one, so the wrong line showed as the match and the last context line went missing. Context and match lines no longer show the carriage return ([pi #11398](https://github.com/earendil-works/pi/issues/11398))
