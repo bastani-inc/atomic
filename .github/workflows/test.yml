@@ -71,9 +71,11 @@ jobs:
       # docs/ci.md ("Checkout and cache trust model").
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # LFS fixtures are required by the coding-agent test suite.
-          lfs: true
-          # Full history and tags support CI contract fixtures and release tooling.
+          # No LFS: the unit suite reads none of the LFS files (it passes with every one replaced by its pointer), and an
+          # LFS fetch has taken up to 162 s. The coding-agent suite's LFS fixtures are fetched by agent-suite.
+          lfs: false
+          # Full history and tags: the changelog test compares released sections against their tags. A depth-1 fetch
+          # of all 676 tags measured slower (10.8 s) than this full fetch (5.3 s).
           fetch-depth: 0
       - name: Configure private Windows temp storage
         if: runner.os == 'Windows'
