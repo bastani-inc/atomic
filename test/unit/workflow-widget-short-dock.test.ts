@@ -11,7 +11,18 @@ import {
 import factory from "../../packages/workflows/src/extension/extension-factory.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
-import { installStoreWidget } from "../../packages/workflows/src/tui/store-widget-installer.js";
+import {
+	installStoreWidget,
+	WIDGET_REFRESH_WINDOW_MS,
+} from "../../packages/workflows/src/tui/store-widget-installer.js";
+
+/**
+ * Store changes past a busy window's refresh budget fold into one refresh at the window's end
+ * (#4009); waiting out one window lets that refresh land.
+ */
+function widgetRefreshSettled(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, WIDGET_REFRESH_WINDOW_MS + 1));
+}
 
 // #3015: a multiline editor can leave only one painted widget row at 80x9.
 test("registered workflow shortcuts reach every run in a clipped dock without stealing the editor", async () => {
@@ -105,14 +116,14 @@ test("registered workflow shortcuts reach every run in a clipped dock without st
 			}
 		}
 		for (const id of ids.slice(0, -1)) store.removeRun(id);
-		await Promise.resolve();
+		await widgetRefreshSettled();
 		terminal.resize(120, 40);
 		assert.ok(frame().some((line) => line.includes(ids.at(-1)!)));
 		store.recordRunEnd(ids.at(-1)!, "completed");
-		await Promise.resolve();
+		await widgetRefreshSettled();
 		assert.ok(frame().some((line) => line.includes("complete")));
 		store.removeRun(ids.at(-1)!);
-		await Promise.resolve();
+		await widgetRefreshSettled();
 		tui.renderNow();
 		assert.equal(context.extensionWidgetsBelow.has("workflow.run"), false);
 		assert.equal(editor.getText(), draft);

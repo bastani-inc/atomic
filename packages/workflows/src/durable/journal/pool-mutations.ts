@@ -147,7 +147,7 @@ export async function validatePoolMutation(
 		runEntries.flatMap((entry) => (entry.checkpoint.kind === "tool" ? [entry.checkpoint.topology!.nodeId] : [])),
 	);
 	const stageError = directChildTopologyError(next, owner.replayScope, run, tools);
-	if (stageError) throw new Error(`Pool topology scope: ${stageError}`);
+	if (stageError) throw new Error(poolTopologyDivergence(run.runName, stageError));
 	if (!boundary) {
 		if (parseWorkflowChildResult(checkpoint.output)) throw new Error("Pool boundary output without ownership");
 		return;
@@ -227,4 +227,12 @@ async function withSessionStore(
 	} finally {
 		await store.close();
 	}
+}
+
+/**
+ * A child whose replacement attempt took different steps than the attempt it replaces, in plain
+ * words (#4022). Prompt text that differs between attempts is not such a difference.
+ */
+export function poolTopologyDivergence(runName: string, detail: string): string {
+	return `Pool topology scope: child workflow "${runName}" took different steps when it ran again on a replacement worker (${detail}). A child workflow must start the same stages and prompts, in the same order, each time it runs.`;
 }

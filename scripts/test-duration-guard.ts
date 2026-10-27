@@ -20,10 +20,10 @@
  * record per test with its own file, so the gate now covers the whole suite and
  * `blind` finally means what it says.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseExpression } from "@babel/parser";
+import { parse } from "@babel/parser";
 
 /** Emit a warning once a test consumes this share of its effective timeout. */
 export const WARN_RATIO = 0.4;
@@ -42,6 +42,12 @@ export interface BudgetedSample extends DurationSample {
 	timeoutMs: number;
 	ratio: number;
 	explicit: boolean;
+	/**
+	 * The test declares its own timeout but the guard could not evaluate it
+	 * statically. Its budget is unknown, so it is never scored against the suite
+	 * default (`timeoutMs` and `ratio` are 0) and is reported separately.
+	 */
+	unresolved: boolean;
 }
 
 export interface DurationGuardReport {
@@ -51,6 +57,8 @@ export interface DurationGuardReport {
 	blind: boolean;
 	samples: BudgetedSample[];
 	warnings: BudgetedSample[];
+	/** Tests with an explicit timeout the guard could not evaluate, so their headroom is unmeasured. */
+	unresolved: BudgetedSample[];
 }
 
 /** The subset of vitest's JSON reporter this guard reads. */
@@ -113,183 +121,536 @@ export function reportedTestCount(json: string): number {
 	return (report.testResults ?? []).reduce((total, result) => total + (result.assertionResults?.length ?? 0), 0);
 }
 
-const DECLARATION_HEAD = "(?:\\.(?:only|skip|todo|failing|serial|concurrent|sequential))*(?<each>\\.each)?\\s*\\(";
-const DESCRIBE = /^(\s*)describe(?:\.(?:only|skip|todo|each|if))*\s*\(/u;
-const NUMERIC_TERM = "(?:[0-9][0-9_]*|[A-Za-z_$][A-Za-z0-9_$]*)";
-const TIMEOUT_EXPRESSION = `${NUMERIC_TERM}(?:\\s*\\+\\s*${NUMERIC_TERM})*`;
-const CLOSER = new RegExp(`^(\\s*)\\},\\s*(${TIMEOUT_EXPRESSION})\\s*\\)\\s*;?\\s*$`, "u");
-const TRAILING_VALUE = new RegExp(`^\\s*(${TIMEOUT_EXPRESSION})\\s*,?\\s*$`, "u");
-const CALL_END = /^(\s*)\)\s*;?\s*$/u;
-const NAME_LITERAL = /^\s*(["'`])((?:\\.|(?!\1).)*)\1/u;
+type Program = ReturnType<typeof parse>["program"];
+type Statement = Program["body"][number];
+type Expression = Extract<Statement, { type: "ExpressionStatement" }>["expression"];
+type CallExpression = Extract<Expression, { type: "CallExpression" }>;
+type Callee = CallExpression["callee"];
+type Argument = CallExpression["arguments"][number];
+type MemberObject = Extract<Expression, { type: "MemberExpression" }>["object"];
+type ObjectMember = Extract<Expression, { type: "ObjectExpression" }>["properties"][number];
+type PropertyValue = Extract<ObjectMember, { type: "ObjectProperty" }>["value"];
 
-function numericConstants(lines: string[]): Map<string, number> {
-	const constants = new Map<string, number>();
-	for (const line of lines) {
-		const match =
-			/^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::\s*number\s*)?=\s*([0-9][0-9_]*)\s*;?\s*$/u.exec(
-				line,
-			);
-		if (match?.[1] && match[2]) constants.set(match[1], Number(match[2].replaceAll("_", "")));
-	}
-	return constants;
+/** Chained members that leave a `test`/`describe` declarer callable with the same arguments. */
+const PLAIN_MODIFIERS = new Set([
+	"only",
+	"skip",
+	"todo",
+	"fails",
+	"failing",
+	"serial",
+	"concurrent",
+	"sequential",
+	"shuffle",
+]);
+/** Members called with arguments that return a declarer: `test.skipIf(cond)(...)`, `test.extend({...})(...)`. */
+const CONDITION_MODIFIERS = new Set(["skipIf", "runIf", "extend"]);
+/** Members called with a case table that return a declarer: `test.each(rows)(...)`. */
+const TABLE_MODIFIERS = new Set(["each", "for"]);
+const ROOT_DECLARERS = new Map<string, Declarer["kind"]>([
+	["test", "test"],
+	["it", "test"],
+	["describe", "describe"],
+	["suite", "describe"],
+]);
+
+interface Declarer {
+	kind: "test" | "describe";
+	/** The case table of a `.each`/`.for` declarer, whose rows expand the title. */
+	table?: Expression;
 }
 
-/** Resolve literal/constant sums without executing test source. */
-function timeoutValue(expression: string, constants: Map<string, number>): number | undefined {
-	let total = 0;
-	for (const raw of expression.split("+")) {
-		const term = raw.trim();
-		const value = /^[0-9]/u.test(term) ? Number(term.replaceAll("_", "")) : constants.get(term);
-		if (value === undefined || !Number.isFinite(value)) return undefined;
-		total += value;
-	}
-	return total;
+/** A timeout argument the scan found: its value, or `undefined` when it could not be evaluated. */
+interface DeclaredTimeout {
+	value: number | undefined;
 }
 
 /**
- * Escape every RegExp metacharacter, backslash included, so an alias name is
- * only ever matched literally. Escaping a subset would leave a backslash in the
- * input able to re-open the escape it was meant to neutralise.
+ * Explicit per-test budgets by qualified `scope > name`, plus those declared but
+ * not statically evaluable. Titles only known at run time (template literals,
+ * dynamic `.each` tables) are matched by `patterns` against the reported name.
+ * `unbudgeted` lists exact declarations with no explicit budget: they keep the
+ * suite default and never borrow a pattern's budget.
+ */
+export interface DeclaredBudgets {
+	timeouts: Map<string, number>;
+	unresolved: Set<string>;
+	unbudgeted: Set<string>;
+	patterns: { pattern: RegExp; timeoutMs: number | undefined }[];
+}
+
+/** A test or suite title: exact text, or a regular-expression source for a title only known at run time. */
+type Title = { exact: string } | { pattern: string };
+
+interface ModuleScope {
+	file: string | undefined;
+	/** `const` initialisers by name; `undefined` marks a name declared more than once. */
+	constants: Map<string, Expression | undefined>;
+	/** Local import bindings to the module and exported name they read. */
+	imports: Map<string, { source: string; name: string }>;
+	/** Exported name to the local binding that provides it. */
+	exports: Map<string, string>;
+}
+
+function parseModule(source: string, file: string | undefined): Program | undefined {
+	try {
+		return parse(source, {
+			sourceType: "module",
+			plugins: file?.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"],
+			errorRecovery: true,
+		}).program;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Visit every statement and expression a test declaration can sit in: top-level
+ * statements, blocks, loops, conditionals, and callback bodies passed to calls.
+ */
+function visit(
+	node: Statement | Expression | Argument | Callee | null | undefined,
+	onCall: (call: CallExpression, descend: () => void) => void,
+	onConstant: (name: string, init: Expression) => void,
+): void {
+	if (!node) return;
+	const walk = (child: Statement | Expression | Argument | Callee | null | undefined): void =>
+		visit(child, onCall, onConstant);
+	switch (node.type) {
+		case "ExpressionStatement":
+			walk(node.expression);
+			return;
+		case "BlockStatement":
+			for (const statement of node.body) walk(statement);
+			return;
+		case "IfStatement":
+			walk(node.consequent);
+			walk(node.alternate);
+			return;
+		case "ForStatement":
+		case "ForInStatement":
+		case "ForOfStatement":
+		case "WhileStatement":
+		case "DoWhileStatement":
+		case "LabeledStatement":
+			walk(node.body);
+			return;
+		case "TryStatement":
+			walk(node.block);
+			if (node.handler) walk(node.handler.body);
+			walk(node.finalizer);
+			return;
+		case "ExportNamedDeclaration":
+			walk(node.declaration);
+			return;
+		case "VariableDeclaration":
+			for (const declarator of node.declarations) {
+				if (!declarator.init) continue;
+				if (node.kind === "const" && declarator.id.type === "Identifier")
+					onConstant(declarator.id.name, declarator.init);
+				walk(declarator.init);
+			}
+			return;
+		case "AwaitExpression":
+		case "UnaryExpression":
+			walk(node.argument);
+			return;
+		case "ArrowFunctionExpression":
+		case "FunctionExpression":
+			walk(node.body);
+			return;
+		case "FunctionDeclaration":
+			walk(node.body);
+			return;
+		case "CallExpression":
+			onCall(node, () => {
+				walk(node.callee);
+				for (const argument of node.arguments) walk(argument);
+			});
+			return;
+		default:
+			return;
+	}
+}
+
+function moduleScope(program: Program, file: string | undefined): ModuleScope {
+	const scope: ModuleScope = { file, constants: new Map(), imports: new Map(), exports: new Map() };
+	const addConstant = (name: string, init: Expression): void => {
+		scope.constants.set(name, scope.constants.has(name) ? undefined : init);
+	};
+	for (const statement of program.body) {
+		if (statement.type === "ImportDeclaration") {
+			for (const specifier of statement.specifiers) {
+				if (specifier.type !== "ImportSpecifier") continue;
+				const imported =
+					specifier.imported.type === "Identifier" ? specifier.imported.name : specifier.imported.value;
+				scope.imports.set(specifier.local.name, { source: statement.source.value, name: imported });
+			}
+		} else if (statement.type === "ExportNamedDeclaration") {
+			if (statement.declaration?.type === "VariableDeclaration") {
+				for (const declarator of statement.declaration.declarations) {
+					if (declarator.id.type === "Identifier") scope.exports.set(declarator.id.name, declarator.id.name);
+				}
+			}
+			if (!statement.source) {
+				for (const specifier of statement.specifiers) {
+					if (specifier.type !== "ExportSpecifier") continue;
+					const exported =
+						specifier.exported.type === "Identifier" ? specifier.exported.name : specifier.exported.value;
+					const local = specifier.local.type === "Identifier" ? specifier.local.name : specifier.local.value;
+					scope.exports.set(exported, local);
+				}
+			}
+		}
+		visit(statement, (_call, descend) => descend(), addConstant);
+	}
+	return scope;
+}
+
+/** Resolve a relative import specifier to the TypeScript source Bun and vitest would load. */
+function resolveImport(from: string, specifier: string): string | undefined {
+	if (!specifier.startsWith(".")) return undefined;
+	const base = resolve(dirname(from), specifier);
+	const stem = base.replace(/\.(?:[cm]?js|[cm]?ts|tsx|jsx)$/u, "");
+	const candidates = [
+		base.replace(/\.js$/u, ".ts"),
+		base.replace(/\.mjs$/u, ".mts"),
+		base.replace(/\.js$/u, ".tsx"),
+		base,
+		`${stem}.ts`,
+		join(stem, "index.ts"),
+	];
+	return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
+}
+
+/**
+ * Evaluate a timeout expression without executing source: numeric literals,
+ * arithmetic, parentheses, TypeScript assertions, and `const` bindings declared
+ * in the file or imported from a relative module. Anything else is unresolved.
+ */
+class ConstantEvaluator {
+	private readonly modules = new Map<string, ModuleScope | undefined>();
+
+	evaluate(
+		expression: Expression | PropertyValue,
+		scope: ModuleScope,
+		seen: Set<string> = new Set(),
+	): number | undefined {
+		switch (expression.type) {
+			case "NumericLiteral":
+				return expression.value;
+			case "ParenthesizedExpression":
+			case "TSAsExpression":
+			case "TSSatisfiesExpression":
+			case "TSNonNullExpression":
+			case "TSTypeAssertion":
+				return this.evaluate(expression.expression, scope, seen);
+			case "UnaryExpression": {
+				const operand = this.evaluate(expression.argument, scope, seen);
+				if (operand === undefined) return undefined;
+				if (expression.operator === "-") return -operand;
+				return expression.operator === "+" ? operand : undefined;
+			}
+			case "BinaryExpression": {
+				if (expression.left.type === "PrivateName") return undefined;
+				const left = this.evaluate(expression.left, scope, seen);
+				const right = this.evaluate(expression.right, scope, seen);
+				if (left === undefined || right === undefined) return undefined;
+				switch (expression.operator) {
+					case "+":
+						return left + right;
+					case "-":
+						return left - right;
+					case "*":
+						return left * right;
+					case "/":
+						return left / right;
+					case "%":
+						return left % right;
+					case "**":
+						return left ** right;
+					default:
+						return undefined;
+				}
+			}
+			case "Identifier":
+				return this.binding(expression.name, scope, seen);
+			default:
+				return undefined;
+		}
+	}
+
+	private binding(name: string, scope: ModuleScope, seen: Set<string>): number | undefined {
+		const key = `${scope.file ?? "<source>"}#${name}`;
+		if (seen.has(key)) return undefined;
+		const next = new Set(seen).add(key);
+		const init = scope.constants.get(name);
+		if (init) return this.evaluate(init, scope, next);
+		const imported = scope.imports.get(name);
+		if (!imported || !scope.file) return undefined;
+		const path = resolveImport(scope.file, imported.source);
+		const target = path === undefined ? undefined : this.module(path);
+		const local = target?.exports.get(imported.name);
+		return target && local !== undefined ? this.binding(local, target, next) : undefined;
+	}
+
+	private module(path: string): ModuleScope | undefined {
+		if (!this.modules.has(path)) {
+			const program = parseModule(readFileSync(path, "utf8"), path);
+			this.modules.set(path, program ? moduleScope(program, path) : undefined);
+		}
+		return this.modules.get(path);
+	}
+}
+
+function unwrapExpression(node: Argument | undefined): Expression | undefined {
+	if (!node || node.type === "SpreadElement" || node.type === "ArgumentPlaceholder") return undefined;
+	return node;
+}
+
+/**
+ * Escape every RegExp metacharacter, backslash included, so title text is only
+ * ever matched literally.
  */
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** `test`, `it`, and any local alias bound to them (e.g. `const runTest = ... test.skip`). */
-function declarationPattern(lines: string[]): RegExp {
-	const names = new Set(["test", "it"]);
-	for (const line of lines) {
-		const match = /^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=[^;]*\b(?:test|it)\b/u.exec(line);
-		if (match?.[1]) names.add(match[1]);
-	}
-	const alternation = [...names].map(escapeRegExp).join("|");
-	return new RegExp(`^(\\s*)(?:${alternation})${DECLARATION_HEAD}`, "u");
+/** A title's text with each run-time placeholder (`%s`, `$name`, a template slot) widened to a wildcard. */
+function placeholderPattern(parts: string[], table: boolean): string {
+	const text = (part: string): string =>
+		table
+			? part
+					.split(/(%%|%[sdifjoOc#$]|\$[A-Za-z_][\w.]*)/u)
+					.map((piece, index) => (index % 2 === 0 ? escapeRegExp(piece) : piece === "%%" ? "%" : ".+?"))
+					.join("")
+			: escapeRegExp(part);
+	return parts.map(text).join(".+?");
 }
 
-function previousMeaningfulIndex(lines: string[], index: number): number {
-	for (let back = index - 1; back >= 0; back--) if ((lines[back] as string).trim() !== "") return back;
-	return -1;
-}
-
-/**
- * Reconstruct the `describe` path enclosing a declaration, outermost first, by
- * walking outwards through strictly shallower `describe(` openers. A test is
- * reported as `scope > name`, so without the path two same-named tests in
- * different scopes would collapse onto one budget and be scored against each
- * other's.
- */
-function describeScopes(lines: string[], index: number, indent: string): string[] {
-	const scopes: string[] = [];
-	let inner = indent;
-	for (let back = index - 1; back >= 0 && inner.length > 0; back--) {
-		const opener = DESCRIBE.exec(lines[back] as string);
-		if (!opener || (opener[1] as string).length >= inner.length) continue;
-		const name = NAME_LITERAL.exec((lines[back] as string).slice((opener[0] as string).length))?.[2];
-		if (name) scopes.unshift(name);
-		inner = opener[1] as string;
-	}
-	return scopes;
-}
-
-/**
- * Locate the explicit timeout argument that terminates a test declaration, in
- * both formatted shapes this repository uses: `}, 60_000);` on one line, and a
- * multi-line call whose penultimate line is a bare `240_000,` after `},`.
- * Returns the raw numeric expression plus the indentation of the call's closing line.
- */
-function timeoutTail(lines: string[], index: number): { raw: string; indent: string } | undefined {
-	const line = lines[index] as string;
-	const closer = CLOSER.exec(line);
-	if (closer?.[1] !== undefined && closer[2]) return { raw: closer[2], indent: closer[1] };
-	const callEnd = CALL_END.exec(line);
-	if (!callEnd) return undefined;
-	const valueIndex = previousMeaningfulIndex(lines, index);
-	if (valueIndex === -1) return undefined;
-	const value = TRAILING_VALUE.exec(lines[valueIndex] as string);
-	if (!value?.[1]) return undefined;
-	const bodyIndex = previousMeaningfulIndex(lines, valueIndex);
-	if (bodyIndex === -1 || !/^\s*\},?\s*$/u.test(lines[bodyIndex] as string)) return undefined;
-	return { raw: value[1], indent: callEnd[1] as string };
+function titleParts(node: Argument | undefined): string[] | undefined {
+	if (node?.type === "StringLiteral") return [node.value];
+	if (node?.type !== "TemplateLiteral") return undefined;
+	const parts = node.quasis.map((quasi) => quasi.value.cooked);
+	return parts.every((part): part is string => typeof part === "string") ? parts : undefined;
 }
 
 /** Expand only literal scalar tables and %s titles, never executing a test module. */
-function tableTestNames(source: string): string[] {
-	try {
-		const call = parseExpression(source.trim().replace(/;$/u, ""), {
-			sourceType: "module",
-			plugins: ["typescript"],
-		});
-		if (call.type !== "CallExpression" || call.callee.type !== "CallExpression") return [];
-		let table = call.callee.arguments[0];
-		if (table?.type === "TSAsExpression") table = table.expression;
-		const title = call.arguments[0];
-		if (table?.type !== "ArrayExpression" || title?.type !== "StringLiteral") return [];
-		if (title.value.replace(/%%|%s/gu, "").includes("%")) return [];
-		const names: string[] = [];
-		for (const row of table.elements) {
-			if (row?.type !== "StringLiteral" && row?.type !== "NumericLiteral" && row?.type !== "BooleanLiteral") {
-				return [];
-			}
-			let used = false;
-			const name = title.value.replace(/%%|%s/gu, (token) => {
+function tableTitles(table: Expression, title: string): string[] | undefined {
+	let rows = table;
+	while (rows.type === "TSAsExpression" || rows.type === "TSSatisfiesExpression") rows = rows.expression;
+	if (rows.type !== "ArrayExpression") return undefined;
+	if (title.replace(/%%|%s/gu, "").includes("%")) return undefined;
+	const names: string[] = [];
+	for (const row of rows.elements) {
+		if (row?.type !== "StringLiteral" && row?.type !== "NumericLiteral" && row?.type !== "BooleanLiteral") {
+			return undefined;
+		}
+		let used = false;
+		names.push(
+			title.replace(/%%|%s/gu, (token) => {
 				if (token === "%%") return "%";
 				if (used) return token;
 				used = true;
 				return String(row.value);
-			});
-			names.push(name);
-		}
-		return names;
-	} catch {
-		return [];
+			}),
+		);
 	}
+	return names;
+}
+
+/** `process.platform === "win32" ? A : B` picks its branch for the platform the guard runs on, as the suite did. */
+function platformBranch(expression: Expression): Expression {
+	if (expression.type !== "ConditionalExpression" || expression.test.type !== "BinaryExpression") return expression;
+	const { operator, left, right } = expression.test;
+	if (!["===", "!==", "==", "!="].includes(operator) || left.type === "PrivateName") return expression;
+	const isPlatform = (side: Expression): boolean =>
+		side.type === "MemberExpression" &&
+		!side.computed &&
+		side.object.type === "Identifier" &&
+		side.object.name === "process" &&
+		side.property.type === "Identifier" &&
+		side.property.name === "platform";
+	const literal = left.type === "StringLiteral" ? left : right.type === "StringLiteral" ? right : undefined;
+	if (!literal || !(isPlatform(left) || isPlatform(right))) return expression;
+	const equal = process.platform === literal.value;
+	return platformBranch(equal === operator.startsWith("=") ? expression.consequent : expression.alternate);
 }
 
 /**
- * Map each declared test to its explicit timeout argument, keyed by the fully
- * qualified `scope > name` it is reported under.
+ * Map each declared test to its explicit timeout, keyed by the fully qualified
+ * `scope > name` it is reported under, and list the declared timeouts that could
+ * not be evaluated statically.
  *
  * The key is always qualified. Recording a scoped declaration under its bare
  * terminal name too would lend that budget to a same-named test in a sibling
  * scope that declared none, scoring it against a timeout it never had.
  *
- * Timeout boundaries are scanned by indentation, excluding the more common inner
- * `}, <number>)` of nested callbacks such as `setTimeout` or a poll helper. Literal
- * test.each tables are parsed without evaluating source to recover reported names.
- * Unsupported syntax or dynamic tables degrade to the suite default, never a
- * guessed budget or an executed test module.
+ * The source is parsed, never executed. A declaration is a call whose callee is
+ * `test`, `it`, `describe`, `suite`, or a local alias bound to one, followed by
+ * any chain of vitest modifiers (`.skip`, `.concurrent`, `.skipIf(cond)`,
+ * `.runIf(cond)`, `.each(rows)`, ...). Its budget is the numeric third argument
+ * or the `timeout` of an options object, else the nearest enclosing suite's,
+ * which is how vitest itself inherits suite options. Callbacks nested inside a
+ * test, such as a `setTimeout` or a poll helper, are never declarations.
  */
-export function declaredTimeouts(source: string): Map<string, number> {
-	const lines = source.split(/\r?\n/);
-	const constants = numericConstants(lines);
-	const declaration = declarationPattern(lines);
-	const declared = new Map<string, number>();
-	const record = (name: string, value: number): void => {
-		const previous = declared.get(name);
-		declared.set(name, previous === undefined ? value : Math.min(previous, value));
-	};
-	for (let index = 0; index < lines.length; index++) {
-		const tail = timeoutTail(lines, index);
-		if (!tail) continue;
-		const value = timeoutValue(tail.raw, constants);
-		if (value === undefined || !Number.isFinite(value)) continue;
-		for (let back = index; back >= 0; back--) {
-			const candidate = lines[back] as string;
-			const opener = declaration.exec(candidate);
-			if (!opener || opener[1] !== tail.indent) continue;
-			const head = lines
-				.slice(back, back + 3)
-				.join(" ")
-				.slice((opener[0] as string).length);
-			const names = opener.groups?.each
-				? tableTestNames(lines.slice(back, index + 1).join("\n"))
-				: [NAME_LITERAL.exec(head)?.[2]].filter((name): name is string => name !== undefined);
-			for (const name of names) record([...describeScopes(lines, back, tail.indent), name].join(" > "), value);
-			break;
+export function declaredBudgets(source: string, file?: string): DeclaredBudgets {
+	const budgets: DeclaredBudgets = { timeouts: new Map(), unresolved: new Set(), unbudgeted: new Set(), patterns: [] };
+	const program = parseModule(source, file);
+	if (!program) return budgets;
+	const scope = moduleScope(program, file);
+	const evaluator = new ConstantEvaluator();
+	const aliases = new Map<string, Declarer["kind"]>();
+
+	const declarer = (callee: Callee | MemberObject): Declarer | undefined => {
+		if (callee.type === "Identifier") {
+			const kind = ROOT_DECLARERS.get(callee.name) ?? aliases.get(callee.name);
+			return kind ? { kind } : undefined;
 		}
+		if (callee.type === "MemberExpression" && !callee.computed && callee.property.type === "Identifier") {
+			const base = declarer(callee.object);
+			return base && PLAIN_MODIFIERS.has(callee.property.name) ? base : undefined;
+		}
+		if (
+			callee.type === "CallExpression" &&
+			callee.callee.type === "MemberExpression" &&
+			!callee.callee.computed &&
+			callee.callee.property.type === "Identifier"
+		) {
+			const base = declarer(callee.callee.object);
+			const modifier = callee.callee.property.name;
+			if (!base) return undefined;
+			if (CONDITION_MODIFIERS.has(modifier)) return base;
+			const table = unwrapExpression(callee.arguments[0]);
+			if (TABLE_MODIFIERS.has(modifier) && table && !base.table) return { ...base, table };
+		}
+		return undefined;
+	};
+	const aliasKind = (init: Expression): Declarer["kind"] | undefined => {
+		if (init.type === "ConditionalExpression") return aliasKind(init.consequent) ?? aliasKind(init.alternate);
+		if (init.type === "LogicalExpression") return aliasKind(init.left) ?? aliasKind(init.right);
+		return declarer(init)?.kind;
+	};
+	for (const [name, init] of scope.constants) {
+		const kind = init ? aliasKind(init) : undefined;
+		if (kind) aliases.set(name, kind);
 	}
-	return declared;
+
+	const evaluateTimeout = (expression: Expression | PropertyValue): DeclaredTimeout | undefined => {
+		const chosen = expression.type === "ConditionalExpression" ? platformBranch(expression) : expression;
+		// `cond ? BUDGET : undefined` declares no budget on the branch vitest takes here.
+		if (chosen.type === "Identifier" && chosen.name === "undefined") return undefined;
+		return { value: evaluator.evaluate(chosen, scope) };
+	};
+	const callbackNames = new Set<string>();
+	for (const statement of program.body) {
+		if (statement.type === "FunctionDeclaration" && statement.id) callbackNames.add(statement.id.name);
+	}
+	for (const [name, init] of scope.constants) {
+		if (init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression") callbackNames.add(name);
+	}
+	const isCallback = (node: Expression): boolean =>
+		node.type === "ArrowFunctionExpression" ||
+		node.type === "FunctionExpression" ||
+		(node.type === "Identifier" && callbackNames.has(node.name));
+	const timeoutOf = (call: CallExpression): DeclaredTimeout | undefined => {
+		// `test(name, options, body)`: the options object carries the budget and the
+		// third argument is the body, whether written inline or as a named callback.
+		const options = unwrapExpression(call.arguments[1]);
+		if (options?.type === "ObjectExpression") {
+			for (const property of options.properties) {
+				if (property.type !== "ObjectProperty" || property.computed) continue;
+				const key = property.key.type === "Identifier" ? property.key.name : undefined;
+				if (key !== "timeout") continue;
+				return evaluateTimeout(property.value);
+			}
+			return undefined;
+		}
+		// `test(name, body, timeout)`.
+		const third = unwrapExpression(call.arguments[2]);
+		return third && !isCallback(third) ? evaluateTimeout(third) : undefined;
+	};
+	const titlesOf = (call: CallExpression, found: Declarer): Title[] | undefined => {
+		const parts = titleParts(call.arguments[0]);
+		if (!parts) return undefined;
+		const [only] = parts;
+		if (parts.length === 1 && only !== undefined) {
+			if (!found.table) return [{ exact: only }];
+			const expanded = tableTitles(found.table, only);
+			if (expanded) return expanded.map((exact) => ({ exact }));
+		}
+		return [{ pattern: placeholderPattern(parts, found.table !== undefined) }];
+	};
+	const record = (key: Title[], timeout: DeclaredTimeout): void => {
+		const value = timeout.value !== undefined && Number.isFinite(timeout.value) ? timeout.value : undefined;
+		if (!key.every((part): part is { exact: string } => "exact" in part)) {
+			const source = key.map((part) => ("exact" in part ? escapeRegExp(part.exact) : part.pattern)).join(" > ");
+			budgets.patterns.push({ pattern: new RegExp(`^${source}$`, "u"), timeoutMs: value });
+			return;
+		}
+		const exact = key.map((part) => part.exact).join(" > ");
+		if (value === undefined) {
+			if (!budgets.timeouts.has(exact)) budgets.unresolved.add(exact);
+			return;
+		}
+		budgets.unresolved.delete(exact);
+		const previous = budgets.timeouts.get(exact);
+		budgets.timeouts.set(exact, previous === undefined ? value : Math.min(previous, value));
+	};
+
+	/** Enclosing suites as the title(s) each can report under; `undefined` when a title cannot be read. */
+	const scopes: (Title[] | undefined)[] = [];
+	const suiteTimeouts: (DeclaredTimeout | undefined)[] = [];
+	const qualified = (titles: Title[]): Title[][] | undefined => {
+		let paths: Title[][] = [[]];
+		for (const level of scopes) {
+			if (!level) return undefined;
+			paths = paths.flatMap((path) => level.map((title) => [...path, title]));
+		}
+		return paths.flatMap((path) => titles.map((title) => [...path, title]));
+	};
+	const onCall = (call: CallExpression, descend: () => void): void => {
+		const found = call.callee.type === "V8IntrinsicIdentifier" ? undefined : declarer(call.callee);
+		if (!found) {
+			descend();
+			return;
+		}
+		const titles = titlesOf(call, found);
+		const own = timeoutOf(call);
+		if (found.kind === "describe") {
+			scopes.push(titles);
+			suiteTimeouts.push(own);
+			for (const argument of call.arguments) visit(argument, onCall, () => {});
+			scopes.pop();
+			suiteTimeouts.pop();
+			return;
+		}
+		let inherited = own;
+		for (let level = suiteTimeouts.length - 1; inherited === undefined && level >= 0; level--) {
+			inherited = suiteTimeouts[level];
+		}
+		const keys = titles ? qualified(titles) : undefined;
+		if (!keys) return;
+		if (inherited) {
+			for (const key of keys) record(key, inherited);
+			return;
+		}
+		for (const key of keys) {
+			if (key.every((part): part is { exact: string } => "exact" in part)) {
+				budgets.unbudgeted.add(key.map((part) => part.exact).join(" > "));
+			}
+		}
+	};
+	for (const statement of program.body) visit(statement, onCall, () => {});
+	return budgets;
 }
+
+/** Explicit per-test budgets by qualified `scope > name`; see {@link declaredBudgets}. */
+export function declaredTimeouts(source: string, file?: string): Map<string, number> {
+	return declaredBudgets(source, file).timeouts;
+}
+
+type ExplicitBudget = { kind: "explicit"; timeoutMs: number } | { kind: "unresolved" };
 
 /**
  * Look a sample's explicit budget up by its qualified name. There is
@@ -297,17 +658,28 @@ export function declaredTimeouts(source: string): Map<string, number> {
  * degrades to the suite default rather than borrowing the budget of a same-named
  * test declared elsewhere in the file.
  */
-function timeoutIndex(rootDir: string): (file: string, fullName: string) => number | undefined {
-	const cache = new Map<string, Map<string, number>>();
+function timeoutIndex(rootDir: string): (file: string, fullName: string) => ExplicitBudget | undefined {
+	const cache = new Map<string, DeclaredBudgets>();
 	return (file, fullName) => {
 		if (!file) return undefined;
 		let declared = cache.get(file);
 		if (!declared) {
 			const path = resolve(rootDir, file);
-			declared = existsSync(path) ? declaredTimeouts(readFileSync(path, "utf8")) : new Map<string, number>();
+			declared = existsSync(path)
+				? declaredBudgets(readFileSync(path, "utf8"), path)
+				: { timeouts: new Map(), unresolved: new Set(), unbudgeted: new Set(), patterns: [] };
 			cache.set(file, declared);
 		}
-		return declared.get(fullName);
+		// Exact declarations take priority over run-time title patterns.
+		const timeoutMs = declared.timeouts.get(fullName);
+		if (timeoutMs !== undefined) return { kind: "explicit", timeoutMs };
+		if (declared.unresolved.has(fullName)) return { kind: "unresolved" };
+		if (declared.unbudgeted.has(fullName)) return undefined;
+		// A run-time title can match more than one declaration; keep the tightest budget, as for exact names.
+		const matches = declared.patterns.filter((entry) => entry.pattern.test(fullName));
+		const resolved = matches.flatMap((entry) => (entry.timeoutMs === undefined ? [] : [entry.timeoutMs]));
+		if (resolved.length > 0) return { kind: "explicit", timeoutMs: Math.min(...resolved) };
+		return matches.length > 0 ? { kind: "unresolved" } : undefined;
 	};
 }
 
@@ -439,31 +811,37 @@ export function evaluateDurations(
 	const lookup = timeoutIndex(rootDir);
 	const samples: BudgetedSample[] = [];
 	for (const sample of parseVitestReport(reportJson, rootDir)) {
-		const explicitTimeout = lookup(sample.file, sample.fullName);
-		const timeoutMs = explicitTimeout ?? defaultTimeoutMs ?? VITEST_DEFAULT_TIMEOUT_MS;
+		const explicitBudget = lookup(sample.file, sample.fullName);
+		if (explicitBudget?.kind === "unresolved") {
+			samples.push({ ...sample, timeoutMs: 0, explicit: true, unresolved: true, ratio: 0 });
+			continue;
+		}
+		const timeoutMs = explicitBudget?.timeoutMs ?? defaultTimeoutMs ?? VITEST_DEFAULT_TIMEOUT_MS;
 		samples.push({
 			...sample,
 			timeoutMs,
-			explicit: explicitTimeout !== undefined,
+			explicit: explicitBudget !== undefined,
+			unresolved: false,
 			ratio: timeoutMs > 0 ? sample.durationMs / timeoutMs : 0,
 		});
 	}
 	samples.sort((left, right) => right.ratio - left.ratio);
 	const enabled = defaultTimeoutMs !== undefined;
 	const warnings = enabled ? samples.filter((sample) => sample.ratio >= WARN_RATIO) : [];
+	const unresolved = samples.filter((sample) => sample.unresolved);
 	// A suite that ran tests yet yielded no durations has not been measured. An
 	// empty sample set is otherwise indistinguishable from a healthy run, which
 	// is exactly how a silently disabled gate survives. Under the JSON reporter
 	// this can only mean the harness broke: it emits a record per test.
 	const ranTests = reportedTestCount(reportJson);
 	const blind = enabled && ranTests > 0 && samples.length === 0;
-	return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings };
+	return { enabled, defaultTimeoutMs, ranTests, blind, samples, warnings, unresolved };
 }
 
 function row(sample: BudgetedSample): string {
 	const cell = (value: string): string => value.replaceAll("|", "\\|");
-	const percent = `${(sample.ratio * 100).toFixed(1)} %`;
-	const budget = `${sample.timeoutMs} ms${sample.explicit ? " (explicit)" : ""}`;
+	const percent = sample.unresolved ? "n/a" : `${(sample.ratio * 100).toFixed(1)} %`;
+	const budget = `${sample.unresolved ? "unresolved" : `${sample.timeoutMs} ms`}${sample.explicit ? " (explicit)" : ""}`;
 	return `| ${percent} | ${sample.durationMs.toFixed(2)} ms | ${budget} | ${cell(sample.file)} | ${cell(sample.fullName)} |`;
 }
 
@@ -476,7 +854,9 @@ export function renderDurationTable(report: DurationGuardReport, limit = 40): st
 		"| Budget used | Duration | Timeout | File | Test |",
 		"|---|---|---|---|---|",
 	];
-	const rows = report.samples.slice(0, limit).map(row);
+	// Unresolved budgets sort last (their ratio is unknown), so list them after the slowest rows.
+	const scored = report.samples.filter((sample) => !sample.unresolved).slice(0, limit);
+	const rows = [...scored, ...report.unresolved].map(row);
 	const empty = report.blind
 		? "| n/a | n/a | n/a | n/a | tests ran but the reporter emitted no durations |"
 		: "| n/a | n/a | n/a | n/a | no duration samples parsed |";

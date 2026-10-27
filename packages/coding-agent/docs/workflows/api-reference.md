@@ -1165,7 +1165,17 @@ interface RunResult<
   readonly error?: string;
   readonly exited?: boolean;
   readonly exitReason?: string;
+  readonly failure?: RunFailureClassification;
   readonly stages: readonly StageSnapshot[];
+}
+interface RunFailureClassification extends WorkflowSerializableObject {
+  readonly kind: "auth" | "rate_limit" | "provider" | "cancelled" | "unknown";
+  readonly code?: string;
+  readonly retryable: boolean;
+  readonly resumable: boolean;
+  readonly recoverability?: "recoverable" | "non_recoverable" | "unknown";
+  readonly disposition?: "active_blocked" | "terminal_killed" | "terminal_failed";
+  readonly retryAfterMs?: number;
 }
 interface StageSnapshot extends WorkflowSerializableObject {
   readonly id: string;
@@ -1184,6 +1194,15 @@ interface StageSnapshot extends WorkflowSerializableObject {
 ```
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
+
+`failure` describes how a run that failed, or blocked on a failure, was classified. It is absent for runs that did not fail, and for results recorded before this field existed.
+- `kind` and `code` say what failed.
+- `retryable` says whether retrying the same work can succeed, as for a rate limit or an outage.
+- `resumable` says whether the run can be resumed.
+- `disposition` says whether the run failed (`terminal_failed`), was stopped (`terminal_killed`), or stays `running` and blocked until a resume (`active_blocked`). It is absent when the run failed outside any stage.
+- `retryAfterMs` is the server's retry hint, when it sent one.
+
+When a child workflow fails, its parent classifies the failure from the child's `failure`, never from workflow or stage names in the error text. An ordinary child failure fails the parent; a child blocked on a rate limit blocks the parent for resume. A child result without `failure` is classified from the child's own error text.
 
 Each stage snapshot carries its graph position: `parentIds` lists the stages it depends on, and `executionOrder` is its admission order among the run's stages and tool nodes. `model` is the effective model after fallback resolution; `routerSelection` is the automatic routing choice: `model` and `effort`, ranked `fallbacks`, and `candidates`, the full IDs of every model the router could choose from after [`modelRouting`](/settings#modelrouting) and `modelConstraints` filtering. Selections recorded before `candidates` existed omit it. Timestamps are epoch milliseconds and are absent until the stage starts or ends. The runtime may replace `parentIds` before a stage starts, so read it from the latest snapshot rather than caching it.
 
@@ -1253,7 +1272,7 @@ The option is off by default. Without it, Atomic creates no pool tables, worker 
 
 The pool runs children once any worker is ready and fails only when no worker starts. A worker that dies while it runs a child is replaced, and the child replays from its last committed checkpoint. Each worker's standard error is written to `worker-logs/<root run ID>/<worker ID>.log` in the journal's directory; worker failure errors name that file and include the end of its output. See [Worker startup and failures](/workflows/operations#worker-startup-and-failures).
 
-Workers are supported only on Linux and macOS hosts with native process identity and boot identity. Windows and hosts without those capabilities refuse activation, including when no process cap is configured. Remote hosts are not supported. Pooled SDK runs reject process-bound adapters, UI, persistence, and similar runtime overrides before worker launch. `stageControlRegistry` is accepted: while a stage runs on a worker, the registry holds a handle for it whose `sendUserMessage`, `steer`, `followUp` and `subscribe` reach that stage and report the same delivery actions as an in-process stage. The handle streams the stage's events only while something subscribes or a message is on its way. The CLI keeps its host-specific bindings at the root and gives worker sessions their own adapters.
+Workers are supported only on Linux and macOS hosts with native process identity and boot identity. Windows and hosts without those capabilities refuse activation, including when no process cap is configured. Remote hosts are not supported. Pooled SDK runs reject process-bound adapters, UI, persistence, and similar runtime overrides before worker launch. `ui` is accepted: it answers the `ctx.ui` prompts (`input`, `confirm`, `select`, `editor`) of children on local workers, and each answer is sent to the worker that asked. If a `ui` call rejects, the prompt fails in that child with the same error. `stageUiBroker` is accepted: a stage on a local worker that asks `ask_user_question` raises the same form there, and its answer is sent to the worker that asked. A `ctx.ui.custom` prompt in a child on a local worker fails that child with an error, since its component cannot be shown outside the worker. `stageControlRegistry` is accepted: while a stage runs on a worker, the registry holds a handle for it whose `sendUserMessage`, `steer`, `followUp` and `subscribe` reach that stage and report the same delivery actions as an in-process stage. The handle streams the stage's events only while something subscribes or a message is on its way. The CLI keeps its host-specific bindings at the root and gives worker sessions their own adapters.
 
 Admission limits count actual resources: a session from creation through disposal, including fallback and delegated sessions, and a managed tool process until confirmed cleanup. Yielding an observation wait does not free a process permit. Subprocesses started outside Atomic's managed APIs are not counted. Host load and free-memory thresholds are launch gates, not hard OS limits. `userLimits` are reliable only when every participating run uses the configured canonical database path; they are local-user coordination, not a tenant security boundary.
 

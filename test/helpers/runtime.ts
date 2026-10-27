@@ -292,6 +292,8 @@ export interface SpawnedProcess {
 	readonly stderr: ByteStream | null;
 	readonly exited: Promise<number>;
 	readonly exitCode: number | null;
+	/** The signal that ended the process, once it ended by one; `exitCode` is then 128. */
+	readonly signalCode: NodeJS.Signals | null;
 	kill(signal?: NodeJS.Signals | number): void;
 	unref(): void;
 }
@@ -336,10 +338,12 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 		],
 	});
 	let exitCode: number | null = null;
+	let signalCode: NodeJS.Signals | null = null;
 	const exited = new Promise<number>((resolve, reject) => {
 		child.on("error", reject);
 		child.on("close", (code, signal) => {
 			exitCode = code ?? (signal ? 128 : 0);
+			signalCode = signal;
 			resolve(exitCode);
 		});
 	});
@@ -362,6 +366,9 @@ export function spawnProcess(first: readonly string[] | BunSpawnOptions, second?
 		exited,
 		get exitCode() {
 			return exitCode;
+		},
+		get signalCode() {
+			return signalCode;
 		},
 		kill: (signal) => {
 			child.kill(signal as NodeJS.Signals);

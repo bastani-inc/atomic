@@ -31,11 +31,25 @@ interface ProviderLimitState {
 	readonly providers: Map<string, ProviderLimit>;
 	/** Failures already recorded, with the limit (provider or model) they were recorded against. */
 	readonly observedFailures: WeakMap<object, ProviderLimitScope>;
+	/** Listeners told when this process records or extends a limit; absent on state created by an older copy. */
+	observers?: Set<(observation: ProviderRateLimitObservation) => void>;
+}
+
+/**
+ * A limit one process recorded, in a form other processes on the same host can apply: the provider, the
+ * model when the limit covers only that model, and the wall-clock time the limit ends.
+ */
+export interface ProviderRateLimitObservation {
+	readonly provider: string;
+	readonly model?: string;
+	/** `cooldown` holds requests back; `unavailable` (an exhausted quota) makes the fallback walk skip the account. */
+	readonly kind: "cooldown" | "unavailable";
+	readonly untilEpochMs: number;
 }
 
 const stateKey = Symbol.for("atomic-coding-agent/provider-rate-limits@1");
 const globals = globalThis as typeof globalThis & { [stateKey]?: ProviderLimitState };
-const state = globals[stateKey] ?? {
+const state: ProviderLimitState = globals[stateKey] ?? {
 	providers: new Map<string, ProviderLimit>(),
 	observedFailures: new WeakMap<object, ProviderLimitScope>(),
 };
@@ -95,18 +109,21 @@ export function modelIdForModel(model: string | object | undefined): string | un
 	return undefined;
 }
 
-/** Time until requests to the provider (and, when given, this model) are admitted again. */
-export function providerCooldownMs(provider: string | undefined, model?: string): number {
+/**
+ * Time until requests to the provider (and, when given, this model) are admitted again. Pass `now` to compare
+ * several limits against one clock reading.
+ */
+export function providerCooldownMs(provider: string | undefined, model?: string, now = Date.now()): number {
 	if (provider === undefined) return 0;
 	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.cooldownUntil));
-	return Math.max(0, until - Date.now());
+	return Math.max(0, until - now);
 }
 
 /** Time until an exhausted quota on the provider (and, when given, this model) resets. */
-export function providerUnavailableMs(provider: string | undefined, model?: string): number {
+export function providerUnavailableMs(provider: string | undefined, model?: string, now = Date.now()): number {
 	if (provider === undefined) return 0;
 	const until = Math.max(0, ...scopedLimits(provider, model).map((limit) => limit.unavailableUntil));
-	return Math.max(0, until - Date.now());
+	return Math.max(0, until - now);
 }
 
 export function providerAdmissionDelayMs(provider: string, model?: string): number {
@@ -195,16 +212,13 @@ export function recordProviderRateLimit(
 		}
 	}
 	const providerEntry = providerLimit(provider);
-	const limit = scopedLimit(provider, error, model);
+	const key = providerLimitScope(provider, error, model).key;
+	const limit = providerLimit(key);
 	providerEntry.rateLimitCount += 1;
 	limit.consecutiveLimits += 1;
 	const backoff = Math.min(60_000, 1000 * 2 ** Math.min(limit.consecutiveLimits - 1, 6));
-	extendLimit(limit, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
+	extendLimit(key, kind, providerRetryHint(error).retryAfterMs ?? backoff * (0.5 + Math.random() * 0.5));
 	return remaining();
-}
-
-function scopedLimit(provider: string, error: unknown, model: string | undefined): ProviderLimit {
-	return providerLimit(providerLimitScope(provider, error, model).key);
 }
 
 /** The limit a failure belongs to: its model when the failure names that model, else the whole provider. */
@@ -212,10 +226,81 @@ export function providerLimitScope(provider: string, error: unknown, model?: str
 	return { key: model !== undefined && failureNamesModel(error, model) ? modelLimitKey(provider, model) : provider };
 }
 
-function extendLimit(limit: ProviderLimit, kind: "rate_limit" | "quota_exhausted", delay: number): void {
+function extendLimit(key: string, kind: "rate_limit" | "quota_exhausted", delay: number): void {
 	const until = Math.ceil(Date.now() + Math.max(1, delay));
-	if (kind === "quota_exhausted") limit.unavailableUntil = Math.max(limit.unavailableUntil, until);
-	else limit.cooldownUntil = Math.max(limit.cooldownUntil, until);
+	const observation = raiseLimit(key, kind === "quota_exhausted" ? "unavailable" : "cooldown", until);
+	if (observation === undefined || state.observers === undefined) return;
+	for (const observer of state.observers) {
+		// An observer must never change how the request that hit the limit is handled, nor starve the others.
+		try {
+			observer(observation);
+		} catch (error) {
+			if (!observerFailureReported) {
+				observerFailureReported = true;
+				console.debug("Provider rate-limit observer failed", error);
+			}
+		}
+	}
+}
+
+/** Observer failures are reported once per process. */
+let observerFailureReported = false;
+
+/** Raise one limit to `until`; returns the limit as an observation when it grew, and nothing otherwise. */
+function raiseLimit(
+	key: string,
+	kind: ProviderRateLimitObservation["kind"],
+	until: number,
+): ProviderRateLimitObservation | undefined {
+	const limit = providerLimit(key);
+	const field = kind === "unavailable" ? "unavailableUntil" : "cooldownUntil";
+	if (until <= limit[field]) return undefined;
+	limit[field] = until;
+	const slash = key.indexOf("/");
+	return slash < 0
+		? { provider: key, kind, untilEpochMs: until }
+		: { provider: key.slice(0, slash), model: key.slice(slash + 1), kind, untilEpochMs: until };
+}
+
+/**
+ * Merge a limit another process observed. It only ever extends the limit of the same provider or model
+ * scope, ignores limits that already ended, and counts no failure here. Returns whether the limit grew.
+ * Observers are not told: the observation came from elsewhere, so sending it on would echo it back.
+ */
+export function applyProviderRateLimitObservation(observation: ProviderRateLimitObservation): boolean {
+	const { provider, model, kind, untilEpochMs } = observation;
+	if (!provider || provider.includes("/") || (kind !== "cooldown" && kind !== "unavailable")) return false;
+	if (!Number.isFinite(untilEpochMs) || untilEpochMs <= Date.now()) return false;
+	const key = model === undefined ? provider : modelLimitKey(provider, model);
+	return raiseLimit(key, kind, Math.ceil(untilEpochMs)) !== undefined;
+}
+
+/** Every limit of this process that has not ended yet, as observations another process can apply. */
+export function providerRateLimitObservations(): ProviderRateLimitObservation[] {
+	const now = Date.now();
+	const observations: ProviderRateLimitObservation[] = [];
+	for (const [key, limit] of state.providers) {
+		const slash = key.indexOf("/");
+		const scope = slash < 0 ? { provider: key } : { provider: key.slice(0, slash), model: key.slice(slash + 1) };
+		if (limit.cooldownUntil > now)
+			observations.push({ ...scope, kind: "cooldown", untilEpochMs: limit.cooldownUntil });
+		if (limit.unavailableUntil > now)
+			observations.push({ ...scope, kind: "unavailable", untilEpochMs: limit.unavailableUntil });
+	}
+	return observations;
+}
+
+/**
+ * Be told each time this process records or extends a limit, but not when it applies another process's
+ * observation. Only rate-limited and quota-exhausted responses notify, never ordinary requests.
+ */
+export function observeProviderRateLimits(observer: (observation: ProviderRateLimitObservation) => void): () => void {
+	state.observers ??= new Set();
+	const observers = state.observers;
+	observers.add(observer);
+	return () => {
+		observers.delete(observer);
+	};
 }
 
 /**
@@ -227,7 +312,7 @@ export function recordProviderRetryHint(provider: string | undefined, error: unk
 	const kind = normalizeModelFailureSignal(error)?.kind;
 	if (kind !== "rate_limit" && kind !== "quota_exhausted") return;
 	const retryAfterMs = providerRetryHint(error).retryAfterMs;
-	if (retryAfterMs !== undefined) extendLimit(providerLimit(scope.key), kind, retryAfterMs);
+	if (retryAfterMs !== undefined) extendLimit(scope.key, kind, retryAfterMs);
 }
 
 export function recordProviderSuccess(provider: string, model?: string): void {

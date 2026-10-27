@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
 import { test } from "vitest";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
@@ -22,11 +24,14 @@ import {
 	readText,
 	readTextSync,
 	removeTempDirectory,
+	sleep,
 	spawnProcess,
 	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
+import { untilOrRunEnds } from "../helpers/until-run.js";
 
 const WORKER_FAILURE_ROOT_TIMEOUT_MS = 150_000;
+const CONDITION_TIMEOUT_MS = 90_000;
 const ROOT_PROCESS_TIMEOUT_MS = 120_000;
 const LOCAL_WORKER_STARTUP_TEST_TIMEOUT_MS = 120_000;
 const CONFIGURED_STARTUP_TIMEOUT_MS = 500;
@@ -331,16 +336,137 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a child started after the pool failed gets the pool's fault instead of running in the host (#3979)",
+	"a child that exhausts its own attempt limit fails alone, by name, while a sibling waiting on a prompt completes (#3996)",
 	async () => {
-		const directory = makeTempDirectory("pool-fault-no-host-fallback-");
+		const directory = makeTempDirectory("pool-child-retry-limit-");
 		const path = join(directory, "journal.sqlite");
-		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
 		const crashingPath = fileURLToPath(new URL("../fixtures/pool-crashing-child.ts", import.meta.url));
+		const promptPath = fileURLToPath(new URL("../fixtures/pool-prompt-child.ts", import.meta.url));
 		const crashing = await loadWorkerDefinition({
 			path: crashingPath,
 			exportName: "crashingChild",
 			digest: await definitionDigest(crashingPath),
+		});
+		const asking = await loadWorkerDefinition({
+			path: promptPath,
+			exportName: "child",
+			digest: await definitionDigest(promptPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 2,
+			definitions: [
+				{ definition: crashing, path: crashingPath, exportName: "crashingChild" },
+				{ definition: asking, path: promptPath, exportName: "child" },
+			],
+		});
+		const root = "pool-child-retry-limit-root";
+		let crashFailure: unknown;
+		const parent = workflow({
+			name: root,
+			description: "",
+			inputs: {},
+			outputs: { branch: Type.String() },
+			async run(ctx) {
+				// Every attempt of the crashing child kills its worker; the asking child's worker is never touched.
+				const crashed = ctx.workflow(crashing).then(
+					() => {},
+					(error: unknown) => {
+						crashFailure = error;
+					},
+				);
+				const asked = ctx.workflow(asking, {});
+				await crashed;
+				return { branch: String((await asked).outputs.branch) };
+			},
+		});
+		const store = createStore();
+		try {
+			const execution = run(
+				parent,
+				{},
+				{ runId: root, cwd: directory, store, durableBackend: backend, usePromptNodesForUi: true },
+			);
+			await untilOrRunEnds(async () => crashFailure !== undefined, execution, CONDITION_TIMEOUT_MS);
+			let prompt: { runId: string; stageId: string; promptId: string } | undefined;
+			await untilOrRunEnds(
+				async () => {
+					for (const candidate of store.runs())
+						for (const stage of candidate.stages)
+							if (stage.pendingPrompt !== undefined && stage.workerExecution !== undefined)
+								prompt = { runId: candidate.id, stageId: stage.id, promptId: stage.pendingPrompt.id };
+					return prompt !== undefined;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(prompt !== undefined);
+			assert.equal(store.resolveStagePendingPrompt(prompt.runId, prompt.stageId, prompt.promptId, "main"), true);
+			const outcome = await execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome.error));
+			assert.deepEqual(outcome.result, { branch: "main" });
+
+			assert.ok(crashFailure instanceof WorkflowInfrastructureError, String(crashFailure));
+			assert.ok(isRetryableWorkflowError(crashFailure));
+			assert.equal(crashFailure.code, "worker_retry_limit");
+			assert.match(crashFailure.message, /Local worker retry limit/);
+			await pool.close();
+			const work = await (await openSqlPoolQueue(journal)).inspect(root);
+			const failed = work.find((item) => item.definition.endsWith("#crashingChild"));
+			assert.ok(failed, JSON.stringify(work));
+			assert.ok(crashFailure.message.includes(failed.childRunId), crashFailure.message);
+			assert.deepEqual(
+				Object.fromEntries(work.map((item) => [item.definition.split("#")[1], item.state])),
+				{ crashingChild: "failed", child: "completed" },
+				"every work row of the finished root is terminal",
+			);
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	WORKER_FAILURE_ROOT_TIMEOUT_MS,
+);
+
+/**
+ * Fails the whole pool the way only a pool-wide fault does: every worker but the one whose pid `busyPidFile` names
+ * is SIGKILLed as soon as it appears, so workers keep crashing without work, until `done`. Only replacement workers
+ * may be idle when it starts: an initial worker killed before readiness is not replaced.
+ */
+async function crashIdleWorkers(pool: LocalWorkerPool, busyPidFile: string, done: () => boolean): Promise<void> {
+	const killed = new Set<number>();
+	const deadline = performance.now() + CONDITION_TIMEOUT_MS;
+	while (!done()) {
+		if (performance.now() > deadline) assert.fail("the pool never failed");
+		const busy = fileExistsSync(busyPidFile) ? Number(readTextSync(busyPidFile, "utf8")) : 0;
+		if (busy > 0)
+			for (const pid of pool.workerPids)
+				if (pid !== busy && !killed.has(pid)) {
+					killed.add(pid);
+					try {
+						process.kill(pid, "SIGKILL");
+					} catch {}
+				}
+		await sleep(25);
+	}
+}
+
+const heldChildPath = fileURLToPath(new URL("../fixtures/pool-worker-failure-child.ts", import.meta.url));
+
+test.skipIf(process.platform === "win32")(
+	"a child started after the pool failed gets the pool's fault instead of running in the host (#3979)",
+	async () => {
+		const directory = makeTempDirectory("pool-fault-no-host-fallback-");
+		const held = join(directory, "held");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const holding = await loadWorkerDefinition({
+			path: heldChildPath,
+			exportName: "releasedChild",
+			digest: await definitionDigest(heldChildPath),
 		});
 		const laterPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
 		const later = await loadWorkerDefinition({
@@ -352,10 +478,11 @@ test.skipIf(process.platform === "win32")(
 			journalPath: path,
 			workers: 1,
 			definitions: [
-				{ definition: crashing, path: crashingPath, exportName: "crashingChild" },
+				{ definition: holding, path: heldChildPath, exportName: "releasedChild" },
 				{ definition: later, path: laterPath, exportName: "resumedChild" },
 			],
 		});
+		await writeFileEnsuringDir(join(held, "placeholder"), "");
 		await writeFileEnsuringDir(join(directory, "release"), "");
 		let first: unknown;
 		let afterFault: unknown;
@@ -366,7 +493,8 @@ test.skipIf(process.platform === "win32")(
 			inputs: {},
 			outputs: {},
 			async run(ctx) {
-				await ctx.workflow(crashing).catch((error: Error) => {
+				// Its release file never appears: it holds its worker until the coordinator dies.
+				await ctx.workflow(holding, { inputs: { directory: held, index: 0 } }).catch((error: Error) => {
 					first = error;
 				});
 				try {
@@ -378,7 +506,7 @@ test.skipIf(process.platform === "win32")(
 			},
 		});
 		try {
-			await run(
+			const execution = run(
 				parent,
 				{},
 				{
@@ -388,11 +516,97 @@ test.skipIf(process.platform === "win32")(
 					durableBackend: backend,
 				},
 			);
+			// A coordinator that dies is a pool-wide fault.
+			await untilOrRunEnds(async () => fileExistsSync(join(held, "started-0")), execution, CONDITION_TIMEOUT_MS);
+			process.kill(pool.coordinatorPid!, "SIGKILL");
+			const outcome = await execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			assert.ok(first instanceof WorkflowInfrastructureError, String(first));
-			assert.equal(first.code, "worker_retry_limit");
 			assert.equal(laterOutputs, undefined, "the later child ran in the host process");
 			assert.ok(afterFault instanceof WorkflowInfrastructureError, String(afterFault));
-			assert.equal(afterFault.code, "worker_retry_limit");
+			assert.equal(afterFault.code, first.code);
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	WORKER_FAILURE_ROOT_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a pool that fails settles the work of its root, so none stays ready or leased after the root completes (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-fault-releases-leases-");
+		const held = join(directory, "held");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const crashingPath = fileURLToPath(new URL("../fixtures/pool-crashing-child.ts", import.meta.url));
+		const crashing = await loadWorkerDefinition({
+			path: crashingPath,
+			exportName: "crashingChild",
+			digest: await definitionDigest(crashingPath),
+		});
+		const holding = await loadWorkerDefinition({
+			path: heldChildPath,
+			exportName: "releasedChild",
+			digest: await definitionDigest(heldChildPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 2,
+			definitions: [
+				{ definition: crashing, path: crashingPath, exportName: "crashingChild" },
+				{ definition: holding, path: heldChildPath, exportName: "releasedChild" },
+			],
+		});
+		await writeFileEnsuringDir(join(held, "placeholder"), "");
+		const root = "pool-fault-releases-leases-root";
+		let settled: PromiseSettledResult<unknown>[] | undefined;
+		let crashFailure: unknown;
+		const parent = workflow({
+			name: "pool-fault-releases-leases-root",
+			description: "",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				// The holding child keeps its worker's lease until the pool fails: its release file never appears.
+				settled = await Promise.allSettled([
+					ctx.workflow(holding, { inputs: { directory: held, index: 0 } }),
+					ctx.workflow(crashing).catch((error: unknown) => {
+						crashFailure = error;
+						throw error;
+					}),
+				]);
+				return {};
+			},
+		});
+		try {
+			const execution = run(
+				parent,
+				{},
+				{ runId: root, cwd: directory, store: createStore(), durableBackend: backend },
+			);
+			// The crashing child fails alone first; every worker not holding the other child is then a replacement.
+			await untilOrRunEnds(async () => crashFailure !== undefined, execution, CONDITION_TIMEOUT_MS);
+			assert.ok(crashFailure instanceof WorkflowInfrastructureError, String(crashFailure));
+			assert.equal(crashFailure.code, "worker_retry_limit");
+			await crashIdleWorkers(pool, join(held, "started-0"), () => settled !== undefined);
+			const outcome = await execution;
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			assert.deepEqual(
+				settled?.map((result) => result.status),
+				["rejected", "rejected"],
+			);
+			await pool.close().catch(() => {});
+			const work = await (await openSqlPoolQueue(journal)).inspect(root);
+			assert.equal(work.length, 2);
+			assert.deepEqual(
+				work.filter((item) => item.state === "leased" || item.state === "ready").map((item) => item.childRunId),
+				[],
+				"no work of the finished root stays ready or leased",
+			);
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();

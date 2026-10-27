@@ -12,6 +12,7 @@ import { coerceStageInputAnswer, hasStageInputAnswerContent, type StageInputAnsw
 import { isTerminalRunStatus } from "../shared/store-internal.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
+import { answerPooledStage } from "../workers/pooled-stage-sources.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -151,6 +152,25 @@ export async function workflowAnswerAction(
 			stage.stageId,
 			ok ? "ok" : "noop",
 			ok ? `Answered input request ${brokerPrompt.id}.` : `No matching pending input request ${brokerPrompt.id}.`,
+		);
+	}
+	// A stage on a local worker raises its question in its worker; the answer goes there (#3996).
+	const pooledInput = snapshot?.workerExecution !== undefined ? snapshot.inputRequest : undefined;
+	if (pooledInput !== undefined && (args.promptId === undefined || args.promptId === pooledInput.id)) {
+		if (!hasPayloadProperty(args))
+			return answerResult(stageRunId, stage.stageId, "noop", "Answer requires text, response, or message.");
+		const result = await answerPooledStage(store, stageRunId, stage.stageId, {
+			kind: "input",
+			promptId: pooledInput.id,
+			answer: brokerAnswerFromArgs(args),
+		});
+		return answerResult(
+			stageRunId,
+			stage.stageId,
+			result?.ok === true ? "ok" : "noop",
+			result?.ok === true
+				? `Answered input request ${pooledInput.id}.`
+				: `No matching pending input request ${pooledInput.id}.`,
 		);
 	}
 	const customPrompt =

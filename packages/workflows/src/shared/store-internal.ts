@@ -1,5 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { createGraphStoreSnapshot } from "./graph-store-snapshot.js";
+import { GraphStoreSnapshotBuilder } from "./graph-store-snapshot.js";
 import type { PromptAnswerRecord, RunEndMetadata } from "./store-public-types.js";
 import type {
 	PendingPrompt,
@@ -11,6 +11,7 @@ import type {
 	WorkflowNotice,
 } from "./store-types.js";
 import { type WorkflowObservationChange, WorkflowObservationRuntime } from "./workflow-observation-runtime.js";
+import { findSnapshotRun } from "./workflow-run-ownership.js";
 
 /**
  * Statuses that represent a terminal run state — cannot be overwritten.
@@ -58,6 +59,7 @@ export interface StoreContext {
 	readonly observation: WorkflowObservationRuntime;
 	snapshot(): StoreSnapshot;
 	graphSnapshot(): StoreSnapshot;
+	graphRun(runId: string): RunSnapshot | undefined;
 	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
 	notify(change?: WorkflowObservationChange): void;
 	/** Runs `update` with every invalidation it causes coalesced into one notification at its end. */
@@ -150,6 +152,7 @@ export function createStoreState(): StoreState {
 export function createStoreContext(state: StoreState = createStoreState()): StoreContext {
 	let cachedGraphVersion = -1;
 	let cachedGraphSnapshot: StoreSnapshot | undefined;
+	const graphBuilder = new GraphStoreSnapshotBuilder();
 	const observation = new WorkflowObservationRuntime(() => state.runs, bumpAndNotify);
 
 	function snapshot(): StoreSnapshot {
@@ -160,10 +163,17 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 
 	function graphSnapshot(): StoreSnapshot {
 		if (cachedGraphSnapshot === undefined || cachedGraphVersion !== state.version) {
-			cachedGraphSnapshot = createGraphStoreSnapshot(state.runs, state.notices, state.version);
+			cachedGraphSnapshot = graphBuilder.build(state.runs, state.notices, state.version);
 			cachedGraphVersion = state.version;
 		}
 		return cachedGraphSnapshot;
+	}
+
+	function graphRun(runId: string): RunSnapshot | undefined {
+		if (cachedGraphSnapshot !== undefined && cachedGraphVersion === state.version)
+			return findSnapshotRun(cachedGraphSnapshot.runs, runId);
+		const run = state.runs.find((candidate) => candidate.id === runId);
+		return run === undefined ? undefined : graphBuilder.buildRun(run);
 	}
 
 	let batchDepth = 0;
@@ -172,6 +182,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	let batchedChanges: WorkflowObservationChange[] | undefined = [];
 
 	function notify(change?: WorkflowObservationChange): void {
+		graphBuilder.markChanged(change);
 		if (batchDepth > 0) {
 			batchedNotification = true;
 			if (change === undefined) batchedChanges = undefined;
@@ -281,6 +292,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		observation,
 		snapshot,
 		graphSnapshot,
+		graphRun,
 		notify,
 		batch,
 		bumpAndNotify,

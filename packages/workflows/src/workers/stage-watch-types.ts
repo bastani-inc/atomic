@@ -1,8 +1,10 @@
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, QuestionParams } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
-import type { StageSendUserMessageOptions } from "../shared/types.js";
+import type { StageInputAnswer } from "../shared/stage-prompt.js";
+import type { StageInputKind } from "../shared/store-types.js";
+import type { StageSendUserMessageOptions, WorkflowSerializableValue } from "../shared/types.js";
 
 /**
  * Identity and payload types of a pooled stage watch: a live, attempt-bound view of one
@@ -42,6 +44,16 @@ export interface PooledStageChatSnapshot {
 	readonly streamingMessage?: AssistantMessage;
 	readonly pendingToolExecutionEvents: readonly AgentSessionEvent[];
 	readonly queued: StageQueuedUserMessages;
+	/**
+	 * Delivery ops whose text this attempt's session already holds, so a handle that reconnects
+	 * after a fence redelivers only what the replacement attempt does not have.
+	 */
+	readonly deliveredOps?: readonly DeliveryOpId[];
+	/**
+	 * Whether the stage started a turn in this attempt. A replacement that has not redelivers
+	 * nothing until it does, so the replay's own prompt comes first.
+	 */
+	readonly turnStarted?: boolean;
 	/** Seq of the last event folded into this snapshot; the stream continues after it. */
 	readonly seq: number;
 }
@@ -87,6 +99,45 @@ export type DeliveryRefusal = "StaleAttempt" | "StageNotLive" | "Unconfirmed";
 export type DeliveryResult =
 	| { readonly ok: true; readonly action: StageUserMessageDeliveryAction }
 	| { readonly ok: false; readonly refusal: DeliveryRefusal };
+
+/**
+ * Why a per-stage pause or resume was refused.
+ * - `PoolPausedOrQuitting`: pool-wide control holds every stage; per-stage control waits for it.
+ */
+export type ControlRefusal = "StaleAttempt" | "StageNotLive" | "PoolPausedOrQuitting";
+
+export type ControlResult =
+	| { readonly ok: true; readonly action?: StageUserMessageDeliveryAction }
+	| { readonly ok: false; readonly refusal: ControlRefusal };
+
+/**
+ * An answer to a human-input prompt a pooled stage raised (#3996): a workflow `ctx.ui` prompt
+ * node (`prompt`), or a stage's brokered question such as `ask_user_question` (`input`).
+ * Bound to the prompt id, so an answer meant for one prompt never resolves another.
+ */
+export type PooledPromptAnswer =
+	| { readonly kind: "prompt"; readonly promptId: string; readonly response: WorkflowSerializableValue }
+	| { readonly kind: "input"; readonly promptId: string; readonly answer: StageInputAnswer }
+	/** The root could not answer the prompt or question: it fails in the worker with `error`, as an in-process `ui` or broker rejection does. */
+	| { readonly kind: "failed"; readonly promptId: string; readonly error: string };
+
+/**
+ * A stage's brokered question (`ask_user_question`) as its worker holds it (#3996): the exact
+ * tool parameters, so the root can show the same form an in-process stage shows.
+ */
+export interface PooledStageQuestion {
+	readonly promptId: string;
+	readonly kind: StageInputKind;
+	readonly params: QuestionParams;
+}
+
+/**
+ * Why an answer was not applied.
+ * - `PromptNotPending`: the stage has no pending prompt with that id (already answered or replaced).
+ */
+export type PromptRefusal = "StaleAttempt" | "StageNotLive" | "PromptNotPending";
+
+export type PromptResult = { readonly ok: true } | { readonly ok: false; readonly refusal: PromptRefusal };
 
 /** One user delivery through a watch. */
 export interface PooledStageDelivery {

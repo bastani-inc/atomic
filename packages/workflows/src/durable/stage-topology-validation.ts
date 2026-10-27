@@ -1,6 +1,7 @@
 import {
 	DURABLE_STAGE_TOPOLOGY_VERSION,
 	type DurableStageCheckpoint,
+	type DurableStageLifecycleStatus,
 	type DurableStageRunTopology,
 	type DurableStageTopology,
 } from "./types.js";
@@ -81,8 +82,10 @@ export function directChildTopologyErrorFromRecords(
 	const immutableError = immutableStageGroupError(direct);
 	if (immutableError !== undefined) return immutableError;
 
+	const superseded = supersededPromptGroupKeys(direct);
 	const merged: DurableStageTopology[] = [];
-	for (const group of groupByDurableStageKey(direct).values()) {
+	for (const [key, group] of groupByDurableStageKey(direct)) {
+		if (superseded.has(key)) continue;
 		const topology = group.find((stage) => stage.topology?.run?.runId === expectedRun.runId)?.topology;
 		if (topology === undefined) return "direct child stage group lacks owning-run topology";
 		if (topology.version !== DURABLE_STAGE_TOPOLOGY_VERSION || topology.sourceOrder === undefined) {
@@ -179,6 +182,72 @@ export function promptOccurrenceIdentityError(stages: readonly DurableStageCheck
 		stageByReplayOccurrence.set(replayOccurrence, topology.stageId);
 	}
 	return undefined;
+}
+
+/**
+ * A prompt occurrence that was asked but never answered, failed or skipped: the run waited on it
+ * and went no further, so nothing in the run depends on it.
+ */
+/** A prompt node's records (a `ctx.ui` prompt occurrence), not an agent stage or a child boundary. */
+function isPromptGroup(group: readonly DurableStageCheckpoint[]): boolean {
+	return group.every((stage) => stage.topology?.occurrenceKey !== undefined && stage.topology.boundary === undefined);
+}
+
+function isUnansweredPromptGroup(group: readonly DurableStageCheckpoint[]): boolean {
+	return group.every(
+		(stage) =>
+			stage.topology?.occurrenceKey !== undefined &&
+			stage.topology.boundary === undefined &&
+			stage.topology.status !== undefined &&
+			UNANSWERED_PROMPT_STATUSES.has(stage.topology.status),
+	);
+}
+
+const UNANSWERED_PROMPT_STATUSES: ReadonlySet<DurableStageLifecycleStatus> = new Set([
+	"pending",
+	"running",
+	"awaiting_input",
+	"paused",
+	"blocked",
+]);
+
+/**
+ * The durable group keys ({@link durableStageGroupKey}) of prompts an attempt asked and never got
+ * answered that a later ask at the same source position of the same run replaced (#4022). A
+ * replacement attempt of a child re-runs its code and asks again at the same position; when the
+ * prompt's text depends on data, the new ask is a different durable prompt. The unanswered one is
+ * superseded, not a second node at that position: the run never got past it. Among unanswered
+ * prompts alone at one position, the latest ask (in record order) stands. Any other collision stays
+ * a source-order conflict. Every check of saved stages (live checkpoint validation, completed-run
+ * rebuild, cached-child replay, inspection) leaves these groups out, so they agree.
+ */
+export function supersededPromptGroupKeys(stages: readonly DurableStageCheckpoint[]): ReadonlySet<string> {
+	const byPosition = new Map<
+		string,
+		{ readonly key: string; readonly prompt: boolean; readonly unanswered: boolean }[]
+	>();
+	for (const [key, group] of groupByDurableStageKey(stages)) {
+		const topology = group.find((stage) => stage.topology !== undefined)?.topology;
+		if (topology?.sourceOrder === undefined) continue;
+		const position = JSON.stringify([topology.run?.runId ?? null, topology.sourceOrder]);
+		const atPosition = byPosition.get(position) ?? [];
+		atPosition.push({ key, prompt: isPromptGroup(group), unanswered: isUnansweredPromptGroup(group) });
+		byPosition.set(position, atPosition);
+	}
+	const superseded = new Set<string>();
+	for (const atPosition of byPosition.values()) {
+		if (atPosition.length < 2 || !atPosition.some((candidate) => candidate.unanswered)) continue;
+		// Only a prompt replaces a prompt: an agent stage where a prompt was (or a prompt where a stage
+		// was) is a different path through the child, and stays a source-order conflict.
+		if (!atPosition.every((candidate) => candidate.prompt)) continue;
+		const answered = atPosition.filter((candidate) => !candidate.unanswered);
+		// Answered prompts at one position are kept (two of them remain a conflict); unanswered asks give
+		// way to the prompt that replaced them, or to the latest unanswered ask.
+		const kept = answered.length > 0 ? answered : [atPosition[atPosition.length - 1]!];
+		for (const candidate of atPosition)
+			if (candidate.unanswered && !kept.includes(candidate)) superseded.add(candidate.key);
+	}
+	return superseded;
 }
 
 /** Group prompt occurrences by replay + occurrence while retaining strict non-prompt replay grouping. */

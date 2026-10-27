@@ -1,3 +1,4 @@
+import { replaceControlCharacters } from "../../utils/ansi.js";
 import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -190,7 +191,7 @@ InteractiveModeBase.prototype.createExtensionUIContext = function (this: Interac
 		setFooter: (factory) => this.setExtensionFooter(factory),
 		onWidgetRelease: (key, listener) => this.onExtensionWidgetRelease(key, listener),
 		setHeader: (factory) => this.setExtensionHeader(factory),
-		setTitle: (title) => this.ui.terminal.setTitle(title),
+		setTitle: (title) => this.ui.terminal.setTitle(replaceControlCharacters(title)),
 		custom: (factory, options) => this.showExtensionCustom(factory, options),
 		// In-process host session picker: extensions already run in the terminal
 		// process here, so the selector mounts directly with no IPC. Isolated

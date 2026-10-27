@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,24 +23,27 @@ import {
 	SqlResourceAdmission,
 } from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolStageOptions } from "../fixtures/pool-stage-options.js";
+import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
-const LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS = 120_000;
 /**
- * One pool's cold start to its child running: its coordinator and worker processes each load the workflow runtime
- * through jiti, several CPU-seconds apiece, which took about 45 s with the CPU three times oversubscribed.
+ * A test over one pool: its cold start, plus the child's own work and the root's teardown. Every wait of a test shares
+ * its root run's budget (the run's own signal), so a slow cold start leaves more for the waits after it instead of
+ * failing one wait at a fixed bound.
  */
-const POOL_COLD_START_BUDGET_MS = 75_000;
-/** What a test keeps of its budget, after its waits give up, to close its pools and report the failure. */
-const LIFECYCLE_CLEANUP_HEADROOM_MS = 15_000;
-/** A restart test cold-starts two pools, the original and the restarted one. */
-const RESTART_WAIT_BUDGET_MS = 2 * POOL_COLD_START_BUDGET_MS;
-const RESTART_TEST_TIMEOUT_MS = RESTART_WAIT_BUDGET_MS + LIFECYCLE_CLEANUP_HEADROOM_MS;
+const SINGLE_POOL = poolTestBudgetMs(3);
+/** A restart test runs two roots, each over its own pool and each with a single pool's budget. */
+const TWO_POOLS = {
+	waitMs: 2 * SINGLE_POOL.waitMs,
+	timeoutMs: 2 * SINGLE_POOL.waitMs + POOL_CLEANUP_HEADROOM_MS,
+} as const;
+/** A test that kills its worker twice cold-starts three workers in one pool, plus the child's work. */
+const THREE_WORKERS = poolTestBudgetMs(5);
 
-async function waitUntil(predicate: () => Promise<boolean>): Promise<void> {
-	const deadline = Date.now() + POOL_COLD_START_BUDGET_MS;
+/** Polls until the condition holds, or fails once the test's budget (`signal`) is spent. */
+async function waitUntil(predicate: () => Promise<boolean>, signal: AbortSignal): Promise<void> {
 	while (!(await predicate())) {
-		if (Date.now() >= deadline) throw new Error("Worker lifecycle condition timed out");
+		if (signal.aborted) throw new Error("Worker lifecycle condition timed out: the test's budget is spent");
 		await sleep(20);
 	}
 }
@@ -51,6 +55,8 @@ async function fixture(
 		beforeChild?: () => Promise<void>;
 		admission?: AdmissionConfiguration;
 		coordinator?: "in-process";
+		/** The root run's signal: its share of the test's budget, one cold start per pool or worker it starts. */
+		runBudgetMs?: number;
 	} = {},
 ) {
 	const directory = makeTempDirectory("local-pool-lifecycle-");
@@ -86,6 +92,7 @@ async function fixture(
 		},
 	});
 	const store = createStore();
+	const budget = AbortSignal.timeout(options.runBudgetMs ?? SINGLE_POOL.waitMs);
 	const running = run(
 		parent,
 		{},
@@ -94,7 +101,7 @@ async function fixture(
 			cwd: directory,
 			store,
 			durableBackend: backend,
-			signal: AbortSignal.timeout(90_000),
+			signal: budget,
 		},
 	);
 	return {
@@ -110,22 +117,25 @@ async function fixture(
 		pool,
 		running,
 		store,
+		budget,
 		async finishing() {
-			await waitUntil(async () =>
-				store
-					.runs()
-					.some(
-						(entry) =>
-							entry.parentRunId === root &&
-							entry.toolNodes.some((node) => node.name === "finish" && node.status === "running"),
-					),
+			await waitUntil(
+				async () =>
+					store
+						.runs()
+						.some(
+							(entry) =>
+								entry.parentRunId === root &&
+								entry.toolNodes.some((node) => node.name === "finish" && node.status === "running"),
+						),
+				budget,
 			);
 		},
 		async ready() {
 			await waitUntil(async () => {
 				await backend.hydrateWorkflow(root);
 				return backend.listCheckpoints(root).some((entry) => entry.kind === "tool" && entry.name === "checkpoint");
-			});
+			}, budget);
 			return openSqlPoolQueue(journal);
 		},
 		release: () => writeFileEnsuringDir(releasePath, "ready"),
@@ -168,7 +178,7 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 test(
 	"a worker tool finishing while the root is paused commits its checkpoint without a new attempt (#3869)",
@@ -184,7 +194,7 @@ test(
 			await waitUntil(async () => {
 				await f.backend.hydrateWorkflow("root");
 				return f.backend.listCheckpoints("root").some((entry) => entry.kind === "tool" && entry.name === "finish");
-			});
+			}, f.budget);
 			const [paused] = await queue.inspect("root");
 			assert.equal(paused!.id, before!.id);
 			assert.equal(paused!.generation, before!.generation);
@@ -202,7 +212,7 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 test(
 	"root quit waits for worker teardown and retains resumable work (#3869)",
@@ -230,7 +240,7 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 
 test(
@@ -281,7 +291,7 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 
 test(
@@ -324,7 +334,7 @@ test(
 					cwd: f.directory,
 					store: createStore(),
 					durableBackend: backend,
-					signal: AbortSignal.timeout(90_000),
+					signal: AbortSignal.timeout(SINGLE_POOL.waitMs),
 				},
 			);
 			assert.equal(result.status, "completed", JSON.stringify(result));
@@ -345,7 +355,7 @@ test(
 			removeTempDirectory(f.directory);
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	TWO_POOLS.timeoutMs,
 );
 
 test(
@@ -364,14 +374,14 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 
 test(
 	"a final-attempt worker death cannot hide its pending durable completion (#3869)",
 	async () => {
 		// The completion this test holds is written by the coordinator; keep it in this process to intercept it.
-		const f = await fixture("root", undefined, { coordinator: "in-process" });
+		const f = await fixture("root", undefined, { coordinator: "in-process", runBudgetMs: THREE_WORKERS.waitMs });
 		let releaseCompletion = () => {};
 		const completionGate = new Promise<void>((resolve) => {
 			releaseCompletion = resolve;
@@ -394,13 +404,13 @@ test(
 		try {
 			const queue = await f.ready();
 			for (const generation of [1, 2]) {
-				await waitUntil(async () => (await queue.inspect("root"))[0]?.generation === generation);
+				await waitUntil(async () => (await queue.inspect("root"))[0]?.generation === generation, f.budget);
 				process.kill(f.pool.workerPids[0]!, "SIGKILL");
-				await waitUntil(async () => (await queue.inspect("root"))[0]?.generation === generation + 1);
+				await waitUntil(async () => (await queue.inspect("root"))[0]?.generation === generation + 1, f.budget);
 			}
 			await f.release();
 			await received;
-			await waitUntil(async () => f.pool.workerPids.length === 0);
+			await waitUntil(async () => f.pool.workerPids.length === 0, f.budget);
 			await sleep(100);
 			releaseCompletion();
 			const result = await f.running;
@@ -415,28 +425,58 @@ test(
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	THREE_WORKERS.timeoutMs,
 );
 
 test(
 	"an idle worker acknowledges root quit after completing a child (#3869)",
 	async () => {
-		const IDLE_WORKER_QUIT_ACK_BUDGET_MS = 3_000;
 		const childCompleted = Promise.withResolvers<void>();
 		const releaseRoot = Promise.withResolvers<void>();
-		const f = await fixture(randomUUID(), async () => {
-			childCompleted.resolve();
-			await releaseRoot.promise;
+		// In process, the coordinator's quit revision and its workers' acknowledgements are observable here.
+		const f = await fixture(
+			randomUUID(),
+			async () => {
+				childCompleted.resolve();
+				await releaseRoot.promise;
+			},
+			{ coordinator: "in-process" },
+		);
+		let quitRevision: number | undefined;
+		const setControl = SqlPoolQueue.prototype.setControl;
+		const controlSpy = vi.spyOn(SqlPoolQueue.prototype, "setControl").mockImplementation(async function (
+			this: SqlPoolQueue,
+			...args
+		) {
+			const control = await setControl.apply(this, args);
+			if (args[1] === "quit") quitRevision = control.revision;
+			return control;
+		});
+		const acknowledged: number[] = [];
+		const emit = ChildProcess.prototype.emit as (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) => boolean;
+		const messageSpy = vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) {
+			const message = args[0] as { readonly kind?: string; readonly revision?: number } | undefined;
+			if (event === "message" && message?.kind === "controlled" && typeof message.revision === "number")
+				acknowledged.push(message.revision);
+			return emit.call(this, event, ...args);
 		});
 		try {
 			await f.release();
 			await childCompleted.promise;
-			const started = performance.now();
 			await toolControlRegistry.runControl(f.root)!.quit();
-			const elapsed = performance.now() - started;
+			// The idle worker itself acknowledged the quit; quit did not just give up after the coordinator's grace.
+			assert.ok(quitRevision !== undefined, "quit reached the pool");
 			assert.ok(
-				elapsed < IDLE_WORKER_QUIT_ACK_BUDGET_MS,
-				`idle-worker quit took ${elapsed}ms instead of acknowledging before the grace period`,
+				acknowledged.some((revision) => revision >= quitRevision!),
+				`no worker acknowledged quit revision ${quitRevision} (acknowledged ${JSON.stringify(acknowledged)})`,
 			);
 			assert.equal((await f.running).status, "paused");
 			assert.equal(f.pool.workerPids.length, 0);
@@ -444,10 +484,12 @@ test(
 			assert.equal((await queue.inspect(f.root))[0]?.state, "completed");
 		} finally {
 			releaseRoot.resolve();
+			controlSpy.mockRestore();
+			messageSpy.mockRestore();
 			await f.close();
 		}
 	},
-	LOCAL_WORKER_LIFECYCLE_TIMEOUT_MS,
+	SINGLE_POOL.timeoutMs,
 );
 
 test.each([
@@ -461,7 +503,7 @@ test.each([
 		// Every wait shares what is left of the test's budget: the restarted pool cold-starts its coordinator and
 		// worker again, which takes tens of seconds under parallel-suite load, and a fixed 30 s run timeout killed
 		// the restarted root before its child finished.
-		const budget = AbortSignal.timeout(RESTART_WAIT_BUDGET_MS);
+		const budget = AbortSignal.timeout(TWO_POOLS.waitMs);
 		const completed = Promise.withResolvers<void>();
 		const releaseRoot = Promise.withResolvers<void>();
 		let resuming = false;
@@ -604,5 +646,5 @@ test.each([
 			removeTempDirectory(f.directory);
 		}
 	},
-	RESTART_TEST_TIMEOUT_MS,
+	TWO_POOLS.timeoutMs,
 );

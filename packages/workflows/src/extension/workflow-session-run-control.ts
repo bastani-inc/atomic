@@ -27,6 +27,7 @@ import { workflowIdentity } from "../shared/workflow-identity.js";
 import type { PiEventContext, PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import { classifyControlError, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
+import { flushWorkflowActivityPublications } from "./workflow-observation.js";
 
 export interface SessionRunControlHost {
 	/** The same executor the registered `workflow` tool runs, so ownership and durability rules are shared. */
@@ -271,6 +272,8 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 			if (job === undefined) return;
 			try {
 				await awaitJobSettlement(job);
+				// The settled run's root activity must not lag behind a caller that waited for it (#4009).
+				flushWorkflowActivityPublications();
 			} catch (error) {
 				const cause = error instanceof Error ? error : new Error(String(error));
 				const code = error instanceof JournalError ? "storage_unavailable" : classifyControlError(error);

@@ -5,6 +5,7 @@ import type * as AuthoringContract from "../../shared/authoring-contract.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { Store } from "../../shared/store.js";
 import type {
+	RunFailureClassification,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
@@ -181,6 +182,11 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 	/** True when the run reached its terminal status through ctx.exit(). */
 	readonly exited?: boolean;
 	readonly exitReason?: string;
+	/**
+	 * How the run's failure was classified, when it failed or blocked on a failure. A parent workflow
+	 * classifies a failed child from it rather than from the child's error text (#4031).
+	 */
+	readonly failure?: RunFailureClassification;
 	readonly stages: StageSnapshot[];
 	readonly toolNodes: ToolNodeSnapshot[];
 }
