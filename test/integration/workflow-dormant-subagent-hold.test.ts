@@ -355,6 +355,9 @@ test(
 				);
 				const settled: string[] = [];
 				const outcomes = held.map((entry, index) => entry.outcome.finally(() => settled.push(String(index))));
+				// Observed from the start: if an assertion fails before the await below, cleanup disconnects the client and
+				// these sends reject; unobserved, that rejection escapes and is credited to a later test.
+				void Promise.allSettled(outcomes);
 				await sleep(SETTLE_MS);
 				assert.deepEqual(settled, [], "every send to the subagent waits instead of failing with Session not found");
 
@@ -371,6 +374,7 @@ test(
 				await stage.start();
 				const launched: RunSyncOptions[] = [];
 				const restoration = restoreSubagentChild(stage.restoreDeps(launched), stage.ctx, "lane-run:0");
+				void Promise.allSettled([restoration]);
 				await vi.waitFor(() => assert.equal(launched.length, 1), { timeout: 15_000, interval: 10 });
 				const afterHandover = await sendUntilHeld(thirdParty, childName, "RESUMED-4-BY-NAME");
 				assert.deepEqual(settled, [], "the handover released nothing");

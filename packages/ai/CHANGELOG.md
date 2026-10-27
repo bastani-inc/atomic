@@ -4,6 +4,18 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.47] - 2026-10-27
+
+### Fixed
+
+- LiteLLM's pre-call `ContextWindowExceededError` ("Context Window exceeded for given call") is now recognized as a context overflow, so the session compacts and retries instead of failing the turn with the 400 ([pi #11492](https://github.com/earendil-works/pi/issues/11492))
+
+## [0.9.47-alpha.1] - 2026-10-27
+
+### Fixed
+
+- LiteLLM's pre-call `ContextWindowExceededError` ("Context Window exceeded for given call") is now recognized as a context overflow, so the session compacts and retries instead of failing the turn with the 400 ([pi #11492](https://github.com/earendil-works/pi/issues/11492))
+
 ## [0.9.46] - 2026-10-27
 
 ### Added

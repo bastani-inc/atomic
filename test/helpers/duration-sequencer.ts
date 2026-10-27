@@ -48,36 +48,45 @@ function weightOf(path: string, durations: FileDurations): number {
 
 /**
  * The files of shard `index` (1-based) of `count`. A shard's expected wall time is its longest file or its total
- * spread over `SHARD_WORKERS`, whichever is larger. Each file, heaviest first, goes to the shard whose expected wall
- * time would be lowest with it (the lighter total on a tie, then the lower-numbered shard). Ties between files break
- * by path, so the result depends only on the set of paths, not on the order they arrive in.
+ * spread over `SHARD_WORKERS`, whichever is larger, plus its `serial` files one after another: those run alone after
+ * the rest (a project with a later `sequence.groupOrder`). Each file, heaviest first, goes to the shard whose expected
+ * wall time would be lowest with it (the lighter total on a tie, then the lower-numbered shard). Ties between files
+ * break by path, so the result depends only on the set of paths, not on the order they arrive in.
  */
 export function shardByDuration(
 	paths: readonly string[],
 	durations: FileDurations,
 	index: number,
 	count: number,
+	serial: ReadonlySet<string> = new Set(),
 ): string[] {
 	const ordered = [...paths].sort(
 		(a, b) => weightOf(b, durations) - weightOf(a, durations) || (a < b ? -1 : a > b ? 1 : 0),
 	);
-	const shards = Array.from({ length: count }, () => ({ paths: [] as string[], total: 0, longest: 0 }));
-	const wallTime = (total: number, longest: number) => Math.max(longest, total / SHARD_WORKERS);
+	const shards = Array.from({ length: count }, () => ({ paths: [] as string[], total: 0, longest: 0, serial: 0 }));
+	type Shard = (typeof shards)[number];
+	/** The shard's expected wall time with one more file of `weight`. */
+	const wallWith = (shard: Shard, weight: number, isSerial: boolean) =>
+		isSerial
+			? Math.max(shard.longest, shard.total / SHARD_WORKERS) + shard.serial + weight
+			: Math.max(shard.longest, weight, (shard.total + weight) / SHARD_WORKERS) + shard.serial;
 	for (const path of ordered) {
 		const weight = weightOf(path, durations);
+		const isSerial = serial.has(path);
 		let best = 0;
 		for (let candidate = 1; candidate < count; candidate++) {
 			const a = shards[candidate]!;
 			const b = shards[best]!;
-			const difference =
-				wallTime(a.total + weight, Math.max(a.longest, weight)) -
-				wallTime(b.total + weight, Math.max(b.longest, weight));
-			if (difference < 0 || (difference === 0 && a.total < b.total)) best = candidate;
+			const difference = wallWith(a, weight, isSerial) - wallWith(b, weight, isSerial);
+			if (difference < 0 || (difference === 0 && a.total + a.serial < b.total + b.serial)) best = candidate;
 		}
 		const shard = shards[best]!;
 		shard.paths.push(path);
-		shard.total += weight;
-		shard.longest = Math.max(shard.longest, weight);
+		if (isSerial) shard.serial += weight;
+		else {
+			shard.total += weight;
+			shard.longest = Math.max(shard.longest, weight);
+		}
 	}
 	return shards[index - 1]?.paths ?? [];
 }
@@ -89,8 +98,11 @@ export class DurationSequencer extends BaseSequencer {
 
 	override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
 		const { index, count } = this.ctx.config.shard!;
+		const serial = new Set(
+			files.filter((spec) => spec.project.config.sequence.groupOrder > 0).map((spec) => this.key(spec)),
+		);
 		const selected = new Set(
-			shardByDuration([...new Set(files.map((spec) => this.key(spec)))], recordedDurations, index, count),
+			shardByDuration([...new Set(files.map((spec) => this.key(spec)))], recordedDurations, index, count, serial),
 		);
 		return files.filter((spec) => selected.has(this.key(spec)));
 	}

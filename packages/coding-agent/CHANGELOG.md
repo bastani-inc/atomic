@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.47] - 2026-10-27
+
+Two fixes for model errors and MCP tool names.
+
+- **LiteLLM context overflows recover:** LiteLLM's pre-call `ContextWindowExceededError` is now recognized as a context overflow, so the session compacts and retries instead of failing the turn.
+- **MCP tools found by any spelling:** tool search and codemode `describeTool()` resolve an MCP tool from its dotted `mcp.<server>.<tool>` form, from its server name as written, or from the bare `<server>__<tool>` or tool name, including tool names with `.` or `/`. An ambiguous name lists its matches instead of guessing.
+
+### Fixed
+
+- `tool_search` and codemode's `searchTools()` and `describeTool()` resolve the other forms of an MCP tool name to the registered tool: the dotted `mcp.<server>.<tool>`, the unsanitized `mcp__<server>__<tool>` (a server named `alteryx-local` is registered as `mcp__alteryx_local__…`), and a bare `<server>__<tool>` or `<tool>` suffix. In the dotted form only the first two dots separate server and tool, so a tool name that itself contains dots or slashes (`mcp.my-server.get.item/v2`) resolves too. Before, the dotted form did not count as naming the tool, so another tool whose description shared its words could rank first. When a form matches more than one tool, `describeTool()` throws an error that lists every matching name and does not pick one ([#4065](https://github.com/bastani-inc/atomic/issues/4065))
+
+## [0.9.47-alpha.1] - 2026-10-27
+
+Two fixes for model errors and MCP tool names.
+
+- **LiteLLM context overflows recover:** LiteLLM's pre-call `ContextWindowExceededError` is now recognized as a context overflow, so the session compacts and retries instead of failing the turn.
+- **MCP tools found by any spelling:** tool search and codemode `describeTool()` resolve an MCP tool from its dotted `mcp.<server>.<tool>` form, from its server name as written, or from the bare `<server>__<tool>` or tool name, including tool names with `.` or `/`. An ambiguous name lists its matches instead of guessing.
+
+### Fixed
+
+- `tool_search` and codemode's `searchTools()` and `describeTool()` resolve the other forms of an MCP tool name to the registered tool: the dotted `mcp.<server>.<tool>`, the unsanitized `mcp__<server>__<tool>` (a server named `alteryx-local` is registered as `mcp__alteryx_local__…`), and a bare `<server>__<tool>` or `<tool>` suffix. In the dotted form only the first two dots separate server and tool, so a tool name that itself contains dots or slashes (`mcp.my-server.get.item/v2`) resolves too. Before, the dotted form did not count as naming the tool, so another tool whose description shared its words could rank first. When a form matches more than one tool, `describeTool()` throws an error that lists every matching name and does not pick one ([#4065](https://github.com/bastani-inc/atomic/issues/4065))
+
 ## [0.9.46] - 2026-10-27
 
 Stages on local workers can now be watched, steered, paused and answered live; large pooled workflows stay responsive and recover cleanly from rate limits, worker crashes and resumes; and GPT-6.1 Terra is available.
