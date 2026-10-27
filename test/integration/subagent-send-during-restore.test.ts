@@ -228,8 +228,38 @@ async function launchInterruptedChild(cwd: string, sessionManager: SessionManage
 
 const text = (result: ToolResult): string => result.content.map((part) => part.text).join("\n");
 
-/** Restoration dependencies that relaunch the child in-process and record each relaunch's options. */
-function restoreDeps(parent: ReturnType<typeof resumedSession>, launched: RunSyncOptions[]): SubagentChildRestoreDeps {
+/**
+ * Observe an in-flight operation from the moment it starts. A test that fails an assertion before awaiting it shuts
+ * the parent down, and the operation then settles (a send rejects with Intercom's shutdown invalidation); without an
+ * observer that rejection escapes as an unhandled rejection credited to a later test. Callers drain `pending` after
+ * shutdown.
+ */
+function observed<T>(promise: Promise<T>, pending: Promise<unknown>[]): Promise<T> {
+	pending.push(Promise.allSettled([promise]));
+	return promise;
+}
+
+/** Resolves with the first relaunch's options once restoration has started it, however slow the host is. */
+function relaunches(): { first: Promise<RunSyncOptions>; record(options: RunSyncOptions): void } {
+	const first = Promise.withResolvers<RunSyncOptions>();
+	return { first: first.promise, record: (options) => first.resolve(options) };
+}
+
+/** The first relaunch, or a prompt failure when restoration settles without relaunching the child. */
+function relaunched(launched: ReturnType<typeof relaunches>, restoration: Promise<object>): Promise<RunSyncOptions> {
+	const withoutRelaunch = restoration.then((outcome) => {
+		throw new Error(`restoration settled without relaunching the child: ${JSON.stringify(outcome)}`);
+	});
+	// The race adopts this branch only when it settles first; once the relaunch wins, its later rejection is moot.
+	withoutRelaunch.catch(() => undefined);
+	return Promise.race([launched.first, withoutRelaunch]);
+}
+
+/** Restoration dependencies that relaunch the child in-process and signal its relaunch. */
+function restoreDeps(
+	parent: ReturnType<typeof resumedSession>,
+	launched: ReturnType<typeof relaunches>,
+): SubagentChildRestoreDeps {
 	return {
 		pi: {
 			events: parent.events,
@@ -240,7 +270,7 @@ function restoreDeps(parent: ReturnType<typeof resumedSession>, launched: RunSyn
 		discoverAgents: () => ({ agents: [worker] }),
 		runtime: {
 			runSync: (...args) => {
-				launched.push(args[4]);
+				launched.record(args[4]);
 				return runSync(args[0], args[1], args[2], args[3], {
 					...args[4],
 					testSession: { output: "resumed" },
@@ -298,19 +328,23 @@ test(
 		const childName = "subagent-worker-live1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
 		let child: InstanceType<typeof IntercomClient> | undefined;
+		const pending: Promise<unknown>[] = [];
 		try {
 			await launchInterruptedChild(cwd, sessionManager, "live1");
 			await parent.resume();
 
-			const launched: RunSyncOptions[] = [];
+			const launched = relaunches();
 			const deps = restoreDeps(parent, launched);
 			// Restoration is now in progress: the child has been relaunched but has not re-registered with Intercom.
-			const restoration = restoreSubagentChild(deps, parent.ctx, "live1:0");
+			const restoration = observed(restoreSubagentChild(deps, parent.ctx, "live1:0"), pending);
 
 			let settled = false;
-			const sent = parent.send(childName, "continue after resume").finally(() => {
-				settled = true;
-			});
+			const sent = observed(
+				parent.send(childName, "continue after resume").finally(() => {
+					settled = true;
+				}),
+				pending,
+			);
 			await sleep(SETTLE_MS);
 			assert.equal(
 				settled,
@@ -318,7 +352,8 @@ test(
 				"the send must wait for the restoration instead of failing with Session not found",
 			);
 
-			const capability = launched[0]?.supervisorAuthorization;
+			// A slow host may not have relaunched the child yet; wait for the relaunch itself, not a fixed delay.
+			const capability = (await relaunched(launched, restoration)).supervisorAuthorization;
 			assert.ok(capability, "the relaunch must carry a fresh supervisor authorization");
 			const received: string[] = [];
 			child = await connectRestoredChild(
@@ -336,6 +371,7 @@ test(
 		} finally {
 			await child?.disconnect().catch(() => undefined);
 			await parent.shutdown();
+			await Promise.all(pending);
 			await resumedHost.close("session-close");
 			removeTempDirectory(cwd);
 		}
@@ -352,6 +388,7 @@ test(
 		const childName = "subagent-worker-ids1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
 		let child: InstanceType<typeof IntercomClient> | undefined;
+		const pending: Promise<unknown>[] = [];
 		try {
 			const original = await launchInterruptedChild(cwd, sessionManager, "ids1");
 			const childSessionId = original.childSessionId;
@@ -365,16 +402,21 @@ test(
 			});
 			await parent.resume();
 
-			const launched: RunSyncOptions[] = [];
-			const restoration = restoreSubagentChild(restoreDeps(parent, launched), parent.ctx, "ids1:0");
+			const launched = relaunches();
+			const restoration = observed(
+				restoreSubagentChild(restoreDeps(parent, launched), parent.ctx, "ids1:0"),
+				pending,
+			);
 
 			const settled = new Set<string>();
-			const byAtomicId = parent
-				.send(childSessionId, "addressed by Atomic session id")
-				.finally(() => settled.add("atomic"));
-			const byIntercomId = parent
-				.send(previousIntercomId, "addressed by previous Intercom id")
-				.finally(() => settled.add("intercom"));
+			const byAtomicId = observed(
+				parent.send(childSessionId, "addressed by Atomic session id").finally(() => settled.add("atomic")),
+				pending,
+			);
+			const byIntercomId = observed(
+				parent.send(previousIntercomId, "addressed by previous Intercom id").finally(() => settled.add("intercom")),
+				pending,
+			);
 			await sleep(SETTLE_MS);
 			assert.deepEqual(
 				[...settled],
@@ -382,7 +424,7 @@ test(
 				"sends by either id must wait for the restoration instead of failing with Session not found",
 			);
 
-			const capability = launched[0]?.supervisorAuthorization;
+			const capability = (await relaunched(launched, restoration)).supervisorAuthorization;
 			assert.ok(capability, "the relaunch must carry a fresh supervisor authorization");
 			const received: string[] = [];
 			child = await connectRestoredChild(
@@ -405,6 +447,7 @@ test(
 		} finally {
 			await child?.disconnect().catch(() => undefined);
 			await parent.shutdown();
+			await Promise.all(pending);
 			await resumedHost.close("session-close");
 			removeTempDirectory(cwd);
 		}
@@ -420,13 +463,14 @@ test(
 		const sessionManager = SessionManager.inMemory(cwd);
 		const childName = "subagent-worker-gone1-1";
 		const parent = resumedSession(cwd, sessionManager, resumedHost);
+		const pending: Promise<unknown>[] = [];
 		try {
 			const original = await launchInterruptedChild(cwd, sessionManager, "gone1");
 			rmSync(original.childSessionFile!, { force: true });
 			await parent.resume();
 
 			// The sends race the restoration, which finds the child's session missing.
-			const restoration = parent.startSubagentRestoration();
+			const restoration = observed(parent.startSubagentRestoration(), pending);
 			const [duringRestore, byAtomicIdDuringRestore] = await Promise.all([
 				parent.send(childName, "are you there?"),
 				parent.send(original.childSessionId!, "are you there, by session id?"),
@@ -456,6 +500,7 @@ test(
 			);
 		} finally {
 			await parent.shutdown();
+			await Promise.all(pending);
 			await resumedHost.close("session-close");
 			removeTempDirectory(cwd);
 		}

@@ -301,6 +301,9 @@ test(
 
 			const launched: RunSyncOptions[] = [];
 			const restoration = restoreSubagentChild(parent.restoreDeps(launched), parent.ctx, "hold1:0");
+			// Observed from the start: if an assertion fails before the awaits below, cleanup disconnects the clients and
+			// these operations reject; unobserved, that rejection escapes and is credited to a later test.
+			void Promise.allSettled([restoration]);
 			// Relaunched, but not yet re-registered with Intercom.
 			await vi.waitFor(() => assert.equal(launched.length, 1), { timeout: 10_000, interval: 10 });
 
@@ -314,6 +317,7 @@ test(
 				track("sibling-atomic", sibling.send(childSessionId, { text: "SIBLING-2-BY-ATOMIC-ID" })),
 				track("sibling-previous", sibling.send(previousIntercomId, { text: "SIBLING-3-BY-PREVIOUS-ID" })),
 			];
+			void Promise.allSettled(sends);
 			await sleep(SETTLE_MS);
 			assert.deepEqual(settled, [], "every send waits for the subagent instead of failing with Session not found");
 
