@@ -1,6 +1,7 @@
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
 import type { PiEventContext } from "../../extension/public-types.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
+import { acquirePooledStage } from "../../workers/pooled-stage-sources.js";
 import { WORKFLOW_KILLED_ABORT_REASON } from "../foreground/executor-abort.js";
 import { endRunStageSubagents, type RunEndedStageSubagentsEvents } from "./run-ended-stage-subagents.js";
 /**
@@ -310,76 +311,112 @@ export async function resumeRun(
 			controlRun?.status === "paused" || (controlRun?.stages.some((stage) => stage.status === "paused") ?? false)
 		);
 	});
-	if (hasPausedState) {
-		const handles = opts?.stageId
-			? [registry.get(runId, opts.stageId)]
-					.filter(
-						(handle): handle is NonNullable<typeof handle> => handle !== undefined && handle.status === "paused",
-					)
-					.map((handle) => ({ controlRunId: runId, handle }))
+	// A paused stage on a local worker has no handle here; a live view reaches it (#3996).
+	const pooledTargets = !hasPausedState
+		? []
+		: opts?.stageId !== undefined
+			? registry.get(runId, opts.stageId) === undefined
+				? [{ controlRunId: runId, stageId: opts.stageId }]
+				: []
 			: controlRunIds.flatMap((controlRunId) =>
-					registry
-						.run(controlRunId)
-						.pausedStages()
-						.map((handle) => ({ controlRunId, handle })),
+					(runs.find((candidate) => candidate.id === controlRunId)?.stages ?? [])
+						.filter(
+							(stage) =>
+								stage.status === "paused" &&
+								stage.workerExecution !== undefined &&
+								registry.get(controlRunId, stage.id) === undefined,
+						)
+						.map((stage) => ({ controlRunId, stageId: stage.id })),
 				);
-		const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
-		acknowledgedTargets = acknowledgements.acknowledged;
-		resumed.push(...acknowledgements.resumed);
-		const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
-		const hasPausedDescendant = workflowHasPausedStages(activeStore, runId);
-		if (
-			acknowledgements.acknowledged > 0 ||
-			(handles.length === 0 &&
-				acknowledgements.failures.length === 0 &&
-				!hasPausedDescendant &&
-				currentRun?.status === "paused")
-		) {
-			// One scope carries the actor, mirroring pauseRun: the stage when a
-			// stage-scoped resume leaves siblings paused, the run otherwise. The
-			// aggregate root is reconciled without attribution so one request never
-			// reports twice.
-			//
-			// A run only carries the actor when it has a resume transition to attach
-			// it to. A stage-scoped resume of a run that never paused — because a
-			// sibling stage kept it running — leaves `resumedAt` unset, and
-			// `recordRunResumed` refuses an attribution-only claim against a run that
-			// never resumed. Attributing the run there would report nothing at all,
-			// so the stage carries it instead.
-			const attributeStage =
-				opts?.stageId !== undefined && (hasPausedDescendant || currentRun?.resumedAt === undefined);
-			activeStore.recordRunResumed(runId, undefined, {
-				source: "run_control",
-				...(opts?.actor === undefined || attributeStage ? {} : { actor: opts.actor }),
-			});
-			if (aggregateRootRunId !== runId) {
-				activeStore.recordRunResumed(aggregateRootRunId, undefined, { source: "run_control" });
+	const pooled = (
+		await Promise.all(
+			pooledTargets.map(async ({ controlRunId, stageId }) => ({
+				controlRunId,
+				lease: await acquirePooledStage(activeStore, controlRunId, stageId),
+			})),
+		)
+	).flatMap(({ controlRunId, lease }) => (lease === undefined ? [] : [{ controlRunId, lease }]));
+	try {
+		if (hasPausedState) {
+			const pausedPooled = pooled
+				.filter(({ lease }) => lease.handle.status === "paused")
+				.map(({ controlRunId, lease }) => ({ controlRunId, handle: lease.handle }));
+			const handles = opts?.stageId
+				? [registry.get(runId, opts.stageId)]
+						.filter(
+							(handle): handle is NonNullable<typeof handle> =>
+								handle !== undefined && handle.status === "paused",
+						)
+						.map((handle) => ({ controlRunId: runId, handle }))
+						.concat(pausedPooled)
+				: controlRunIds
+						.flatMap((controlRunId) =>
+							registry
+								.run(controlRunId)
+								.pausedStages()
+								.map((handle) => ({ controlRunId, handle })),
+						)
+						.concat(pausedPooled);
+			const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
+			acknowledgedTargets = acknowledgements.acknowledged;
+			resumed.push(...acknowledgements.resumed);
+			const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
+			const hasPausedDescendant = workflowHasPausedStages(activeStore, runId);
+			if (
+				acknowledgements.acknowledged > 0 ||
+				(handles.length === 0 &&
+					acknowledgements.failures.length === 0 &&
+					!hasPausedDescendant &&
+					currentRun?.status === "paused")
+			) {
+				// One scope carries the actor, mirroring pauseRun: the stage when a
+				// stage-scoped resume leaves siblings paused, the run otherwise. The
+				// aggregate root is reconciled without attribution so one request never
+				// reports twice.
+				//
+				// A run only carries the actor when it has a resume transition to attach
+				// it to. A stage-scoped resume of a run that never paused — because a
+				// sibling stage kept it running — leaves `resumedAt` unset, and
+				// `recordRunResumed` refuses an attribution-only claim against a run that
+				// never resumed. Attributing the run there would report nothing at all,
+				// so the stage carries it instead.
+				const attributeStage =
+					opts?.stageId !== undefined && (hasPausedDescendant || currentRun?.resumedAt === undefined);
+				activeStore.recordRunResumed(runId, undefined, {
+					source: "run_control",
+					...(opts?.actor === undefined || attributeStage ? {} : { actor: opts.actor }),
+				});
+				if (aggregateRootRunId !== runId) {
+					activeStore.recordRunResumed(aggregateRootRunId, undefined, { source: "run_control" });
+				}
+				if (attributeStage && opts?.actor !== undefined && opts.stageId !== undefined) {
+					activeStore.recordStageResumed(runId, opts.stageId, undefined, { actor: opts.actor });
+				}
 			}
-			if (attributeStage && opts?.actor !== undefined && opts.stageId !== undefined) {
-				activeStore.recordStageResumed(runId, opts.stageId, undefined, { actor: opts.actor });
+			if (acknowledgements.failures.length > 0) {
+				const failureMessage = `Failed to resume workflow stages: ${acknowledgements.failures.join("; ")}`;
+				if (acknowledgements.acknowledged === 0) throw new Error(failureMessage);
+				partialFailureMessage =
+					"Partially resumed " +
+					runId +
+					": " +
+					resumed.length +
+					" stage(s) running; " +
+					failureMessage +
+					". Failed paused stages remain resumable.";
+			} else if (acknowledgements.lateFailures.length > 0) {
+				partialFailureMessage =
+					"Resumed " +
+					resumed.length +
+					" stage(s) on " +
+					runId +
+					"; acknowledgements reported after visible resume: " +
+					acknowledgements.lateFailures.join("; ") +
+					". Running stages are not retryable.";
 			}
 		}
-		if (acknowledgements.failures.length > 0) {
-			const failureMessage = `Failed to resume workflow stages: ${acknowledgements.failures.join("; ")}`;
-			if (acknowledgements.acknowledged === 0) throw new Error(failureMessage);
-			partialFailureMessage =
-				"Partially resumed " +
-				runId +
-				": " +
-				resumed.length +
-				" stage(s) running; " +
-				failureMessage +
-				". Failed paused stages remain resumable.";
-		} else if (acknowledgements.lateFailures.length > 0) {
-			partialFailureMessage =
-				"Resumed " +
-				resumed.length +
-				" stage(s) on " +
-				runId +
-				"; acknowledgements reported after visible resume: " +
-				acknowledgements.lateFailures.join("; ") +
-				". Running stages are not retryable.";
-		}
+	} finally {
+		for (const { lease } of pooled) lease.release();
 	}
 
 	await waitForResumeReconciliation(acknowledgedTargets);
@@ -500,12 +537,21 @@ async function pauseRunWithAction(
 	workflowObservationRuntime(activeStore).control(runId, action);
 
 	if (opts?.stageId !== undefined) {
-		const handle = registry.get(runId, opts.stageId);
+		// A stage on a local worker has no handle here; a live view reaches it (#3996).
+		const pooled =
+			registry.get(runId, opts.stageId) === undefined
+				? await acquirePooledStage(activeStore, runId, opts.stageId)
+				: undefined;
+		const handle = pooled?.handle ?? registry.get(runId, opts.stageId);
 		if (!handle) return { ok: false, runId, reason: "stage_not_found" };
-		if (handle.status !== "running" && handle.status !== "pending") {
-			return { ok: false, runId, reason: "no_active_stages" };
+		try {
+			if (handle.status !== "running" && handle.status !== "pending") {
+				return { ok: false, runId, reason: "no_active_stages" };
+			}
+			await handle.pause();
+		} finally {
+			pooled?.release();
 		}
-		await handle.pause();
 		activeStore.recordStagePaused(runId, opts.stageId);
 		const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
 		const stage = currentRun?.stages.find((candidate) => candidate.id === opts.stageId);

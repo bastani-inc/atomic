@@ -8,6 +8,8 @@ interface AttachedStageHandleResolution {
 	readonly postMortemUnavailableReason?: PostMortemUnavailableReason;
 	/** Set for a live view of a pooled stage; the view stays open until it is called. */
 	readonly release?: () => void;
+	/** Set for a live view of a pooled stage: observes it reconnecting to a replacement attempt. */
+	readonly onReconnected?: (listener: (redelivered: number) => void) => () => void;
 }
 
 /**
@@ -31,7 +33,19 @@ export function resolveAttachedStageHandle(
 	const pooled = resolvePooledStage?.();
 	if (pooled !== undefined)
 		return pooled.then(
-			(lease) => (lease === undefined ? fallback() : { handle: lease.handle, release: lease.release }),
+			(lease) =>
+				lease === undefined
+					? fallback()
+					: {
+							handle: lease.handle,
+							release: lease.release,
+							...(lease.onReconnected === undefined
+								? {}
+								: {
+										onReconnected: (listener: (redelivered: number) => void) =>
+											lease.onReconnected!(listener),
+									}),
+						},
 			fallback,
 		);
 	return fallback();

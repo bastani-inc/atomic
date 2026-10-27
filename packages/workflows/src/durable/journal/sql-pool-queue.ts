@@ -681,6 +681,23 @@ export class SqlPoolQueue {
 			return true;
 		});
 	}
+	/**
+	 * Releases the work this root incarnation's workers still hold when its pool closes (#3996), except the
+	 * `retained` work ids, which stay leased. Their workers are stopped, so no attempt holds that work any more.
+	 */
+	async releaseClosed(lease: Lease, retained: readonly string[] = []): Promise<number> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const released = await tx.run(
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE root = ? AND state = 'leased' AND epoch = ? AND id NOT IN (SELECT value FROM json_each(?))`,
+				lease.runId,
+				lease.epoch,
+				JSON.stringify(retained),
+			);
+			return released.changes;
+		});
+	}
 	/** Releases work leased by earlier root incarnations, except the `retained` work ids, which stay leased. */
 	async releasePreviousIncarnations(lease: Lease, retained: readonly string[] = []): Promise<number> {
 		lease = snapshotLease(lease);
@@ -706,15 +723,22 @@ export class SqlPoolQueue {
 
 /**
  * Whether the checkpoint serialized as `payload` is the one already stored as `stored`, so re-recording it keeps the first write.
- * Only the record time may differ: a later work generation that replays a cached stage re-records its
- * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time.
+ * Only its times may differ: a later work generation that replays a cached stage re-records its
+ * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time,
+ * and one that replays a human-input prompt still pending when its worker died re-records that
+ * prompt's stage checkpoint with the time the replay asked it again (#3996).
  * Any other difference is a different checkpoint and still conflicts.
  */
 function isRecordedCheckpoint(stored: string, payload: string): boolean {
 	if (stored === payload) return true;
-	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: number };
+	const { completedAt, startedAt } = JSON.parse(stored) as {
+		readonly completedAt?: number;
+		readonly startedAt?: number;
+	};
 	if (typeof completedAt !== "number") return false;
-	return serializeJson({ ...(JSON.parse(payload) as { readonly completedAt: number }), completedAt }) === stored;
+	const next = JSON.parse(payload) as { readonly completedAt: number; readonly startedAt?: number };
+	if ((startedAt === undefined) !== (next.startedAt === undefined)) return false;
+	return serializeJson({ ...next, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }) === stored;
 }
 
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {
