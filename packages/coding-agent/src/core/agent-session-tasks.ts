@@ -152,7 +152,13 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		onTaskSettled: (
 			...[ref, receipt]: Parameters<NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>>
 		) => {
-			outbox.record(ref.ownerId, receipt);
+			// Save the task's kind with the intent: a notice replayed after a restart has no task record to read it from.
+			const watched = this._agentTaskHost?.watchOwnerTasks();
+			const kind = watched?.ok
+				? watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind
+				: undefined;
+			if (watched?.ok) watched.value.dispose();
+			outbox.record(ref.ownerId, receipt, kind);
 			void outbox.flush();
 		},
 	};

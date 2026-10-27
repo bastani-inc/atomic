@@ -10,6 +10,11 @@ export type TaskCompletionEnvelope = {
 	terminalSequence: Sequence;
 	result: TaskResult;
 	display: false;
+	/**
+	 * Whether the settled task was a shell or a subagent, saved with the intent so a notice replayed after a restart,
+	 * when the task record is gone, still words a pause correctly. Intents saved by earlier versions lack it.
+	 */
+	taskKind?: TaskRecord["kind"];
 };
 
 export type TaskCompletionNotice = {
@@ -67,24 +72,34 @@ export function formatTaskCompletion(
 	output?: string,
 ): string {
 	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+	const kind = task?.kind ?? envelope.taskKind;
 	const label =
-		task?.kind === "agent"
-			? `Subagent ${singleLine(task.agentName ?? "agent")}`
-			: task?.kind === "command"
+		kind === "agent"
+			? `Subagent ${singleLine(task?.agentName ?? "agent")}`
+			: kind === "command"
 				? "Background shell"
 				: "Background task";
 	const result = envelope.result;
-	const outcome = taskOutcomeStatus(result, task?.kind);
-	const resumable = isResumableStop(result);
-	const status = resumable
-		? result.cause === "quit"
-			? "quit · paused, awaiting resume"
-			: "paused · awaiting resume"
-		: task?.kind === "agent" && result.kind === "cancelled" && result.cause === "user"
-			? "killed (non-resumable)"
-			: outcome === "cancelled"
-				? "stopped"
-				: outcome;
+	const outcome = taskOutcomeStatus(result, kind);
+	const pauseStop = result.kind === "cancelled" && result.cause === "pause";
+	// A shell cannot resume: a stage, run or session pause interrupts it, and the resumed stage redoes the step.
+	const interruptedByPause = pauseStop && kind === "command";
+	// An intent saved without its kind cannot tell a shell from a subagent, so its notice names no resume call.
+	const pausedUnknownKind = pauseStop && kind === undefined;
+	const resumable = !interruptedByPause && !pausedUnknownKind && isResumableStop(result);
+	const status = interruptedByPause
+		? "interrupted by a pause"
+		: pausedUnknownKind
+			? "stopped by a pause"
+			: resumable
+				? result.cause === "quit"
+					? "quit · paused, awaiting resume"
+					: "paused · awaiting resume"
+				: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
+					? "killed (non-resumable)"
+					: outcome === "cancelled"
+						? "stopped"
+						: outcome;
 	const lines = [
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
@@ -98,9 +113,13 @@ export function formatTaskCompletion(
 	}
 	lines.push(
 		"",
-		resumable
-			? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
-			: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+		interruptedByPause
+			? "A pause interrupted this command before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed, re-running the command if its result is still needed."
+			: pausedUnknownKind
+				? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
+				: resumable
+					? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
+					: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }
@@ -135,7 +154,7 @@ export class TaskCompletionOutbox {
 		return [...this.entries.values()];
 	}
 
-	record(ownerId: OwnerId, receipt: SettlementReceipt): void {
+	record(ownerId: OwnerId, receipt: SettlementReceipt, taskKind?: TaskRecord["kind"]): void {
 		if (this.entries.has(receipt.completionId)) return;
 		const envelope: TaskCompletionEnvelope = {
 			completionId: receipt.completionId,
@@ -144,6 +163,7 @@ export class TaskCompletionOutbox {
 			terminalSequence: receipt.cursor.sequence,
 			result: receipt.result,
 			display: false,
+			...(taskKind === undefined ? {} : { taskKind }),
 		};
 		this.entries.set(envelope.completionId, envelope);
 	}

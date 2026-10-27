@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Pausing a stage or a run (`/workflow pause <run> [stage]`) no longer tells the stage that its interrupted background shell ended for good. The shell's notice now says a pause interrupted it and that the step should be redone or continued, and the "Continue where you left off" resume prompt says to redo or continue a step the pause interrupted. Previously the notice said "This execution has ended. Do not restart it", and a resumed stage could stop early with its remaining work never run ([#3996](https://github.com/bastani-inc/atomic/issues/3996))
+
 ## [0.9.46-alpha.1] - 2026-10-27
 
 ### Added
