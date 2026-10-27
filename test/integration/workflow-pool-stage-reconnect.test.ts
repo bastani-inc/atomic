@@ -2,15 +2,16 @@
  * Per-stage pause, and reconnect with redelivery, for stages on local workers (#3996).
  *
  * Real pools run children whose agent stage streams one delta and then holds mid-turn until
- * the test sets `test_live_stage_gate.released`.
+ * the test creates the marker file at `gatePathFor(journalPath)`.
  */
 import assert from "node:assert/strict";
 import type { ForkOptions } from "node:child_process";
-import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@bastani/atomic";
 import { beforeAll, test, vi } from "vitest";
-import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
+
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -107,24 +108,22 @@ async function step<T>(
 	return await Promise.race([signal, gaveUp, ended]);
 }
 
-function setGate(path: string, released: 0 | 1): void {
-	const database = new TestSqliteDatabase(path);
-	try {
-		// The pool writes the same journal; wait for its write lock instead of failing on it.
-		database.run("PRAGMA busy_timeout = 30000");
-		database.run(`UPDATE test_live_stage_gate SET released = ${released}`);
-	} finally {
-		database.close();
-	}
+/**
+ * The release gate is a marker file next to the journal, never a journal row: the coordinator
+ * and worker hold the journal's write lock, and a test write that races them can fail.
+ */
+function gatePathFor(journalPath: string): string {
+	return join(dirname(journalPath), "release-stage");
+}
+
+function setGate(journalPath: string, _released: 1): void {
+	writeFileSync(gatePathFor(journalPath), "");
 }
 
 async function livePool(prefix: string, workers: number, children: number) {
 	const directory = makeTempDirectory(prefix);
 	const path = join(directory, "journal.sqlite");
 	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
-	const gate = new TestSqliteDatabase(path);
-	gate.run("CREATE TABLE test_live_stage_gate(released INTEGER); INSERT INTO test_live_stage_gate VALUES (0)");
-	gate.close();
 	const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
 	const child = await loadWorkerDefinition({
 		path: childPath,
@@ -148,7 +147,7 @@ async function livePool(prefix: string, workers: number, children: number) {
 			outputs: {},
 			async run(ctx) {
 				await Promise.all(
-					Array.from({ length: children }, () => ctx.workflow(child, { inputs: { journalPath: path } })),
+					Array.from({ length: children }, () => ctx.workflow(child, { inputs: { gatePath: gatePathFor(path) } })),
 				);
 				return {};
 			},
