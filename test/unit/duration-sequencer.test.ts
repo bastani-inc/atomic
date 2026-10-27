@@ -3,7 +3,13 @@ import { join, relative } from "node:path";
 import { test } from "vitest";
 import { createVitest } from "vitest/node";
 import { integrationFileDurations } from "../../scripts/integration-file-durations.js";
-import { DurationSequencer, shardByDuration, UNKNOWN_FILE_MS } from "../helpers/duration-sequencer.js";
+import {
+	DurationSequencer,
+	FILE_OVERHEAD_MS,
+	SHARD_WORKERS,
+	shardByDuration,
+	UNKNOWN_FILE_MS,
+} from "../helpers/duration-sequencer.js";
 import { readText } from "../helpers/runtime.js";
 
 const durations = {
@@ -26,14 +32,26 @@ test("every file runs in exactly one shard, whatever order the shards list the f
 	assert.deepEqual(new Set(assigned), new Set(files));
 });
 
-test("the longest files go to different shards and the totals stay balanced", () => {
-	const weight = (path: string) => durations[path as keyof typeof durations] ?? UNKNOWN_FILE_MS;
+test("the longest files go to different shards", () => {
 	const shards = [1, 2, 3].map((index) => shardByDuration(files, durations, index, 3));
 	const owner = (path: string) => shards.findIndex((shard) => shard.includes(path));
 	assert.equal(new Set(["a", "b", "c"].map((name) => owner(`test/integration/${name}.test.ts`))).size, 3);
-	const totals = shards.map((shard) => shard.reduce((sum, path) => sum + weight(path), 0));
-	// 851 s over three shards: the heaviest file alone (300 s) bounds the best possible split.
-	assert.ok(Math.max(...totals) <= 300_000, `unbalanced shards: ${totals.join(", ")}`);
+});
+
+test("shards balance their expected wall time: the longest file or the total over the shard's workers", () => {
+	// One long file, plus as many short ones as two shards' workers take in about its time: summing weights alone
+	// (plain longest-processing-time-first) would put a share of the short files beside the long one and finish
+	// that shard last.
+	const record: Record<string, number> = { "test/integration/long.test.ts": 100_000 };
+	for (let i = 0; i < 4 * SHARD_WORKERS; i++)
+		record[`test/integration/short-${String(i).padStart(2, "0")}.test.ts`] = 23_000;
+	const weight = (path: string) => (record[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
+	const paths = Object.keys(record);
+	const walls = [1, 2].map((index) => {
+		const shard = shardByDuration(paths, record, index, 2);
+		return Math.max(...shard.map(weight), shard.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS);
+	});
+	assert.ok(Math.max(...walls) <= 1.1 * Math.min(...walls), `unbalanced shards: ${walls.join(", ")}`);
 });
 
 /** Structural: each case starts a real Vitest instance on the repository config and globs the integration suite. */
@@ -52,7 +70,7 @@ async function integrationSpecifications(shard: string) {
 test(
 	"the configured sequencer runs every integration file in exactly one of the CI shards",
 	async () => {
-		const count = 4;
+		const count = 3;
 		const shards: string[][] = [];
 		let all: string[] = [];
 		for (let index = 1; index <= count; index++) {
@@ -80,9 +98,11 @@ test(
 		const { vitest, specifications } = await integrationSpecifications("1/1");
 		try {
 			const sequencer = new vitest.config.sequence.sequencer(vitest);
-			const record = JSON.parse(
-				await readText(join(vitest.config.root, "test/helpers/integration-file-durations.json")),
-			) as Record<string, number>;
+			const record = (
+				JSON.parse(
+					await readText(join(vitest.config.root, "test/helpers/integration-file-durations.json")),
+				) as Record<"linux" | "win32", Record<string, number>>
+			)[process.platform === "win32" ? "win32" : "linux"];
 			const weights = (await sequencer.sort([...specifications])).map(
 				(specification) =>
 					record[relative(vitest.config.root, specification.moduleId).replaceAll("\\", "/")] ?? UNKNOWN_FILE_MS,

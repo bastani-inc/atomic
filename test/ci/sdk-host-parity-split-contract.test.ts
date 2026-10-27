@@ -7,7 +7,15 @@ import { test } from "vitest";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const integrationDir = join(root, "test/integration");
 const FAMILY = "sdk-builtin-host-parity";
-const TOPICS = ["host-routing", "shared-siblings", "retirement", "concurrency", "ownership", "mcp-web"] as const;
+const TOPICS = [
+	"host-routing",
+	"shared-siblings",
+	"retirement",
+	"concurrency",
+	"ownership",
+	"admission",
+	"mcp-web",
+] as const;
 const BUDGET_CONSTANT = "BUILT_NODE_HOST_PROCESS_TIMEOUT_MS";
 const SPAWN_CONSTANT = "FIXTURE_PROCESS_TIMEOUT_MS";
 const EXPECTED_TIMEOUT_MS = 60_000;

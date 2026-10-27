@@ -1,13 +1,13 @@
 /**
- * Rewrites test/helpers/integration-file-durations.json, the per-file weights the integration suite is ordered and
- * sharded by (see test/helpers/duration-sequencer.ts), from vitest JSON reports.
+ * Rewrites one OS's section of test/helpers/integration-file-durations.json, the per-file weights the integration
+ * suite is ordered and sharded by (see test/helpers/duration-sequencer.ts), from vitest JSON reports.
  *
- *   bun run scripts/integration-file-durations.ts <report.json>...
+ *   bun run scripts/integration-file-durations.ts --os linux|win32 <report.json>...
  *
- * Pass the Linux integration reports from one CI run, one per shard: download the
- * `test-diagnostics-integration-tests-linux-x64-*` artifacts and give it each `integration-tests-*.json`. A file
- * that appears in several reports gets its mean duration. Reports that hold no integration file leave the record
- * untouched and fail the command.
+ * Pass that OS's integration reports from recent CI runs, one per shard per run: download the
+ * `test-diagnostics-integration-tests-<linux-x64|windows-x64>-*` artifacts and give it each `integration-tests-*.json`.
+ * A file that appears in several reports gets its mean duration. Reports that hold no integration file leave the
+ * record untouched and fail the command.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -37,9 +37,9 @@ export function integrationFileDurations(reports: readonly VitestJsonReport[]): 
 }
 
 if (import.meta.main) {
-	const paths = process.argv.slice(2);
-	if (paths.length === 0) {
-		console.error("usage: bun run scripts/integration-file-durations.ts <vitest JSON report>...");
+	const [flag, os, ...paths] = process.argv.slice(2);
+	if (flag !== "--os" || (os !== "linux" && os !== "win32") || paths.length === 0) {
+		console.error("usage: bun run scripts/integration-file-durations.ts --os linux|win32 <vitest JSON report>...");
 		process.exit(2);
 	}
 	let durations: Record<string, number>;
@@ -52,6 +52,8 @@ if (import.meta.main) {
 		process.exit(1);
 	}
 	const output = new URL("../test/helpers/integration-file-durations.json", import.meta.url);
-	writeFileSync(output, `${JSON.stringify(durations, null, "\t")}\n`);
-	console.log(`Recorded ${Object.keys(durations).length} integration files from ${paths.length} report(s).`);
+	const record = JSON.parse(readFileSync(output, "utf8")) as Record<string, Record<string, number>>;
+	record[os] = durations;
+	writeFileSync(output, `${JSON.stringify(record, null, "\t")}\n`);
+	console.log(`Recorded ${Object.keys(durations).length} ${os} integration files from ${paths.length} report(s).`);
 }

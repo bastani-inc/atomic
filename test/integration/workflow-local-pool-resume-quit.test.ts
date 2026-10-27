@@ -20,7 +20,7 @@ import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } f
 /** Quit and resumed pooled roots: re-enqueued children, retry budgets across incarnations, fenced attempts (#3979). */
 
 /**
- * The most any one test in this file may take. An integration shard job is cancelled after 15 minutes, and in that
+ * The most any one test in this file may take. An integration shard job is cancelled after 12 minutes, and in that
  * time it also installs, builds, runs the shard's other files and reports; a test allowed longer would be cancelled with the
  * job instead of failing with its own timeout and message.
  */

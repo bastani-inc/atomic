@@ -8,7 +8,7 @@ import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budg
 import { makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 /**
- * The most any one test in this file may take. An integration shard job is cancelled after 15 minutes, and in that
+ * The most any one test in this file may take. An integration shard job is cancelled after 12 minutes, and in that
  * time it also installs, builds, runs the shard's other files and reports; a test allowed longer would be cancelled with the
  * job instead of failing with its own timeout and message.
  */
