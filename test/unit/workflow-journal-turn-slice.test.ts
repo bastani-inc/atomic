@@ -96,6 +96,9 @@ test("a fan-out's queued journal work keeps its own root's execution when anothe
 			await queuedB.promise;
 			await retire();
 			lateWriteOfRetiredRoot = backend.commitWorkflowRegistration(registration("a-late"));
+			// Its rejection is asserted below, after both roots finish; until then this keeps it from being reported as
+			// unhandled when it settles first.
+			lateWriteOfRetiredRoot.catch(() => {});
 			await Promise.allSettled(writes);
 		});
 		const rootB = backend.withWorkflowLease("root-b", async () => {

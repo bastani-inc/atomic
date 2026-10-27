@@ -132,7 +132,7 @@ describe("AgentSession.getSessionStats", () => {
 			await sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
 			await sessionManager.appendMessage(createUserMessage("second", 3));
 			await sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			appendTestCompaction(sessionManager, 195_000, 50_000);
+			await appendTestCompaction(sessionManager, 195_000, 50_000);
 			await sessionManager.appendMessage(createUserMessage("third", 5));
 			syncAgentMessages(session, sessionManager);
 
@@ -155,7 +155,7 @@ describe("AgentSession.getSessionStats", () => {
 			await sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
 			await sessionManager.appendMessage(createUserMessage("second", 3));
 			await sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			appendTestCompaction(sessionManager, 195_000, 50_000);
+			await appendTestCompaction(sessionManager, 195_000, 50_000);
 			await sessionManager.appendMessage(createUserMessage("third", Date.now() + 1));
 			await sessionManager.appendMessage(createAssistantMessage("response3", 25_000, Date.now() + 2));
 			syncAgentMessages(session, sessionManager);
@@ -222,7 +222,7 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			await sessionManager.appendMessage(createUserMessage("first", 1));
 			await sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
-			appendTestCompaction(sessionManager, 216_006, 81_414);
+			await appendTestCompaction(sessionManager, 216_006, 81_414);
 			const postCompaction = Date.now() + 1;
 			await sessionManager.appendMessage(createUserMessage("second", postCompaction));
 			await sessionManager.appendMessage(
@@ -254,7 +254,7 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			await sessionManager.appendMessage(createUserMessage("first", 1));
 			await sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
-			appendTestCompaction(sessionManager, 195_000, 50_000);
+			await appendTestCompaction(sessionManager, 195_000, 50_000);
 			const postCompaction = Date.now() + 1;
 			await sessionManager.appendMessage(createUserMessage("second", postCompaction));
 			await sessionManager.appendMessage({
