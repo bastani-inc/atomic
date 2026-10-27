@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -770,6 +770,150 @@ test("templated and dynamic-table titles keep their budgets by matching the repo
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+/**
+ * Score a scratch suite that imports a verbatim copy of the shared pool budget
+ * helper (`test/helpers/pool-budget.ts`), with each test reported once.
+ */
+function scorePoolSuite(lines: string[], titles: string[]): Map<string, { timeoutMs: number; unresolved: boolean }> {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-pool-"));
+	try {
+		mkdirSync(join(directory, "helpers"));
+		mkdirSync(join(directory, "integration"));
+		copyFileSync(
+			join(root, "test/fixtures/duration-guard-pool-budget.ts"),
+			join(directory, "helpers/pool-budget.ts"),
+		);
+		writeFileSync(join(directory, "integration/pool.test.ts"), lines.join("\n"));
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "integration/pool.test.ts",
+						tests: titles.map((title) => ({ title, status: "passed", duration: 40_000 })),
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		return new Map(
+			scored.samples.map((sample) => [sample.name, { timeoutMs: sample.timeoutMs, unresolved: sample.unresolved }]),
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+// The pool suites (#4043, #4051) declare budgets through `poolTestBudgetMs(pools)`
+// and member reads of its result or of object literals built from it.
+test("budgets from an imported pure helper and constant object members are scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const BUDGET = poolTestBudgetMs(2);",
+			"const SINGLE_POOL = poolTestBudgetMs(3);",
+			"const TWO_POOLS = {",
+			"\twaitMs: 2 * SINGLE_POOL.waitMs,",
+			"\ttimeoutMs: 2 * SINGLE_POOL.waitMs + POOL_CLEANUP_HEADROOM_MS,",
+			"} as const;",
+			"const QUIT_RESUME_TIMEOUT_MS = 2 * SINGLE_POOL.waitMs + POOL_CLEANUP_HEADROOM_MS;",
+			"const LOCAL_BUDGETS = { slow: 90_000, nested: { slower: 95_000 } };",
+			"const twice = (ms: number) => 2 * ms;",
+			"function padded(ms: number) {",
+			"\tconst pad = 5_000;",
+			"\treturn ms + pad;",
+			"}",
+			'test("helper result member", async () => {',
+			"}, BUDGET.timeoutMs);",
+			'test("object built from helper members", async () => {',
+			"}, TWO_POOLS.timeoutMs);",
+			'test("constant built from helper members", async () => {',
+			"}, QUIT_RESUME_TIMEOUT_MS);",
+			'test("inline helper call", async () => {',
+			"}, poolTestBudgetMs(1).timeoutMs);",
+			'test("local object member", async () => {',
+			"}, LOCAL_BUDGETS.slow);",
+			'test("nested object member", async () => {',
+			"}, LOCAL_BUDGETS.nested.slower);",
+			'test("local arrow helper", async () => {',
+			"}, twice(30_000));",
+			'test("local function helper with a const", async () => {',
+			"}, padded(60_000));",
+		],
+		[
+			"helper result member",
+			"object built from helper members",
+			"constant built from helper members",
+			"inline helper call",
+			"local object member",
+			"nested object member",
+			"local arrow helper",
+			"local function helper with a const",
+		],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["helper result member", { timeoutMs: 165_000, unresolved: false }],
+			["object built from helper members", { timeoutMs: 465_000, unresolved: false }],
+			["constant built from helper members", { timeoutMs: 465_000, unresolved: false }],
+			["inline helper call", { timeoutMs: 90_000, unresolved: false }],
+			["local object member", { timeoutMs: 90_000, unresolved: false }],
+			["nested object member", { timeoutMs: 95_000, unresolved: false }],
+			["local arrow helper", { timeoutMs: 60_000, unresolved: false }],
+			["local function helper with a const", { timeoutMs: 65_000, unresolved: false }],
+		]),
+	);
+});
+
+test("helper calls and member reads that are genuinely dynamic stay unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const pools = rows.length;",
+			"const DYNAMIC = poolTestBudgetMs(pools);",
+			"const KNOWN = poolTestBudgetMs(2);",
+			"function jitter(ms: number) {",
+			"\treturn ms + Math.random();",
+			"}",
+			"function branchy(ms: number) {",
+			"\tif (ms > 1) return ms;",
+			"\treturn 0;",
+			"}",
+			"function loop(ms: number): number {",
+			"\treturn loop(ms);",
+			"}",
+			"let mutable = { timeoutMs: 1_000 };",
+			'test("non-constant argument", async () => {',
+			"}, DYNAMIC.timeoutMs);",
+			'test("missing member", async () => {',
+			"}, KNOWN.missingMs);",
+			'test("impure helper", async () => {',
+			"}, jitter(1_000));",
+			'test("helper with control flow", async () => {',
+			"}, branchy(1_000));",
+			'test("recursive helper", async () => {',
+			"}, loop(1_000));",
+			'test("mutable binding", async () => {',
+			"}, mutable.timeoutMs);",
+			'test("unknown helper", async () => {',
+			"}, computeBudget(2));",
+		],
+		[
+			"non-constant argument",
+			"missing member",
+			"impure helper",
+			"helper with control flow",
+			"recursive helper",
+			"mutable binding",
+			"unknown helper",
+		],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 7);
 });
 
 test("the no-MCP startup scenario is scored against its declared 570 s budget", () => {

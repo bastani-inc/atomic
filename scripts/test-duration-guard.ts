@@ -182,10 +182,17 @@ export interface DeclaredBudgets {
 /** A test or suite title: exact text, or a regular-expression source for a title only known at run time. */
 type Title = { exact: string } | { pattern: string };
 
+/** A function a timeout may call: a declaration, or a `const` bound to an arrow or function expression. */
+type FunctionNode =
+	| Extract<Statement, { type: "FunctionDeclaration" }>
+	| Extract<Expression, { type: "ArrowFunctionExpression" | "FunctionExpression" }>;
+
 interface ModuleScope {
 	file: string | undefined;
 	/** `const` initialisers by name; `undefined` marks a name declared more than once. */
 	constants: Map<string, Expression | undefined>;
+	/** Top-level function declarations by name; `undefined` marks a name declared more than once. */
+	functions: Map<string, FunctionNode | undefined>;
 	/** Local import bindings to the module and exported name they read. */
 	imports: Map<string, { source: string; name: string }>;
 	/** Exported name to the local binding that provides it. */
@@ -274,11 +281,22 @@ function visit(
 }
 
 function moduleScope(program: Program, file: string | undefined): ModuleScope {
-	const scope: ModuleScope = { file, constants: new Map(), imports: new Map(), exports: new Map() };
+	const scope: ModuleScope = {
+		file,
+		constants: new Map(),
+		functions: new Map(),
+		imports: new Map(),
+		exports: new Map(),
+	};
+	const addFunction = (node: FunctionNode, name: string): void => {
+		scope.functions.set(name, scope.functions.has(name) ? undefined : node);
+	};
 	const addConstant = (name: string, init: Expression): void => {
 		scope.constants.set(name, scope.constants.has(name) ? undefined : init);
 	};
 	for (const statement of program.body) {
+		const declared = statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+		if (declared?.type === "FunctionDeclaration" && declared.id) addFunction(declared, declared.id.name);
 		if (statement.type === "ImportDeclaration") {
 			for (const specifier of statement.specifiers) {
 				if (specifier.type !== "ImportSpecifier") continue;
@@ -291,6 +309,9 @@ function moduleScope(program: Program, file: string | undefined): ModuleScope {
 				for (const declarator of statement.declaration.declarations) {
 					if (declarator.id.type === "Identifier") scope.exports.set(declarator.id.name, declarator.id.name);
 				}
+			}
+			if (statement.declaration?.type === "FunctionDeclaration" && statement.declaration.id) {
+				scope.exports.set(statement.declaration.id.name, statement.declaration.id.name);
 			}
 			if (!statement.source) {
 				for (const specifier of statement.specifiers) {
@@ -323,19 +344,45 @@ function resolveImport(from: string, specifier: string): string | undefined {
 	return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
 }
 
+/** A statically known value: a number, or an object literal whose known fields are values. */
+type ConstValue = number | ConstObject;
+interface ConstObject {
+	readonly fields: ReadonlyMap<string, ConstValue>;
+}
+/** A called helper's parameters and `const`s; `undefined` shadows an outer name with an unknown value. */
+type Locals = ReadonlyMap<string, ConstValue | undefined>;
+
+const NO_LOCALS: Locals = new Map();
+
+function asNumber(value: ConstValue | undefined): number | undefined {
+	return typeof value === "number" ? value : undefined;
+}
+
 /**
  * Evaluate a timeout expression without executing source: numeric literals,
- * arithmetic, parentheses, TypeScript assertions, and `const` bindings declared
- * in the file or imported from a relative module. Anything else is unresolved.
+ * arithmetic, parentheses, TypeScript assertions, `const` bindings declared in
+ * the file or imported from a relative module, member reads of constant object
+ * literals, and calls of pure helpers with constant arguments. A pure helper is
+ * a function whose parameters are plain names and whose body is only `const`
+ * declarations and a `return` (or an arrow's expression body); it is evaluated
+ * from its own constant expressions, as `poolTestBudgetMs(pools)` in
+ * `test/helpers/pool-budget.ts` is. Anything else is unresolved.
  */
 class ConstantEvaluator {
 	private readonly modules = new Map<string, ModuleScope | undefined>();
 
-	evaluate(
+	evaluate(expression: Expression | PropertyValue, scope: ModuleScope): number | undefined {
+		return asNumber(this.value(expression, scope, new Set(), NO_LOCALS));
+	}
+
+	private value(
 		expression: Expression | PropertyValue,
 		scope: ModuleScope,
-		seen: Set<string> = new Set(),
-	): number | undefined {
+		seen: Set<string>,
+		locals: Locals,
+	): ConstValue | undefined {
+		const number = (operand: Expression | PropertyValue): number | undefined =>
+			asNumber(this.value(operand, scope, seen, locals));
 		switch (expression.type) {
 			case "NumericLiteral":
 				return expression.value;
@@ -344,17 +391,17 @@ class ConstantEvaluator {
 			case "TSSatisfiesExpression":
 			case "TSNonNullExpression":
 			case "TSTypeAssertion":
-				return this.evaluate(expression.expression, scope, seen);
+				return this.value(expression.expression, scope, seen, locals);
 			case "UnaryExpression": {
-				const operand = this.evaluate(expression.argument, scope, seen);
+				const operand = number(expression.argument);
 				if (operand === undefined) return undefined;
 				if (expression.operator === "-") return -operand;
 				return expression.operator === "+" ? operand : undefined;
 			}
 			case "BinaryExpression": {
 				if (expression.left.type === "PrivateName") return undefined;
-				const left = this.evaluate(expression.left, scope, seen);
-				const right = this.evaluate(expression.right, scope, seen);
+				const left = number(expression.left);
+				const right = number(expression.right);
 				if (left === undefined || right === undefined) return undefined;
 				switch (expression.operator) {
 					case "+":
@@ -374,24 +421,114 @@ class ConstantEvaluator {
 				}
 			}
 			case "Identifier":
+				if (locals.has(expression.name)) return locals.get(expression.name);
 				return this.binding(expression.name, scope, seen);
+			case "ObjectExpression": {
+				const fields = new Map<string, ConstValue>();
+				for (const property of expression.properties) {
+					if (property.type === "SpreadElement") {
+						const spread = this.value(property.argument, scope, seen, locals);
+						if (spread === undefined || typeof spread === "number") return undefined;
+						for (const [key, field] of spread.fields) fields.set(key, field);
+						continue;
+					}
+					const key = propertyKey(property.key, property.computed);
+					if (key === undefined) return undefined;
+					// A method or an unknown field leaves only that field unknown.
+					fields.delete(key);
+					if (property.type !== "ObjectProperty") continue;
+					const field = this.value(property.value, scope, seen, locals);
+					if (field !== undefined) fields.set(key, field);
+				}
+				return { fields };
+			}
+			case "MemberExpression": {
+				if (expression.object.type === "Super") return undefined;
+				const key = propertyKey(expression.property, expression.computed);
+				const object = this.value(expression.object, scope, seen, locals);
+				if (key === undefined || object === undefined || typeof object === "number") return undefined;
+				return object.fields.get(key);
+			}
+			case "CallExpression": {
+				if (expression.callee.type !== "Identifier") return undefined;
+				const args: ConstValue[] = [];
+				for (const argument of expression.arguments) {
+					const node = unwrapExpression(argument);
+					const arg = node ? this.value(node, scope, seen, locals) : undefined;
+					if (arg === undefined) return undefined;
+					args.push(arg);
+				}
+				const name = expression.callee.name;
+				if (locals.has(name)) return undefined;
+				return this.call(name, args, scope, seen);
+			}
 			default:
 				return undefined;
 		}
 	}
 
-	private binding(name: string, scope: ModuleScope, seen: Set<string>): number | undefined {
+	private binding(name: string, scope: ModuleScope, seen: Set<string>): ConstValue | undefined {
 		const key = `${scope.file ?? "<source>"}#${name}`;
 		if (seen.has(key)) return undefined;
 		const next = new Set(seen).add(key);
 		const init = scope.constants.get(name);
-		if (init) return this.evaluate(init, scope, next);
+		if (init) return this.value(init, scope, next, NO_LOCALS);
+		const target = this.imported(name, scope);
+		return target ? this.binding(target.name, target.scope, next) : undefined;
+	}
+
+	/** Call a pure helper declared in, or imported into, `scope`. */
+	private call(name: string, args: ConstValue[], scope: ModuleScope, seen: Set<string>): ConstValue | undefined {
+		const key = `${scope.file ?? "<source>"}#call:${name}`;
+		if (seen.has(key)) return undefined;
+		const next = new Set(seen).add(key);
+		const init = scope.constants.get(name);
+		const helper =
+			init?.type === "ArrowFunctionExpression" || init?.type === "FunctionExpression"
+				? init
+				: scope.constants.has(name)
+					? undefined
+					: scope.functions.get(name);
+		if (helper) return this.apply(helper, args, scope, next);
+		if (scope.constants.has(name) || scope.functions.has(name)) return undefined;
+		const target = this.imported(name, scope);
+		return target ? this.call(target.name, args, target.scope, next) : undefined;
+	}
+
+	private apply(
+		helper: FunctionNode,
+		args: ConstValue[],
+		scope: ModuleScope,
+		seen: Set<string>,
+	): ConstValue | undefined {
+		if (helper.async || helper.generator || helper.params.length !== args.length) return undefined;
+		const locals = new Map<string, ConstValue | undefined>();
+		for (const [index, param] of helper.params.entries()) {
+			if (param.type !== "Identifier") return undefined;
+			locals.set(param.name, args[index]);
+		}
+		if (helper.body.type !== "BlockStatement") return this.value(helper.body, scope, seen, locals);
+		for (const statement of helper.body.body) {
+			if (statement.type === "ReturnStatement") {
+				return statement.argument ? this.value(statement.argument, scope, seen, locals) : undefined;
+			}
+			if (statement.type !== "VariableDeclaration" || statement.kind !== "const") return undefined;
+			for (const declarator of statement.declarations) {
+				if (declarator.id.type !== "Identifier" || !declarator.init) return undefined;
+				locals.set(declarator.id.name, this.value(declarator.init, scope, seen, locals));
+			}
+		}
+		return undefined;
+	}
+
+	/** The module and local name an import binding in `scope` reads. */
+	private imported(name: string, scope: ModuleScope): { scope: ModuleScope; name: string } | undefined {
 		const imported = scope.imports.get(name);
 		if (!imported || !scope.file) return undefined;
 		const path = resolveImport(scope.file, imported.source);
 		const target = path === undefined ? undefined : this.module(path);
 		const local = target?.exports.get(imported.name);
-		return target && local !== undefined ? this.binding(local, target, next) : undefined;
+		return target && local !== undefined ? { scope: target, name: local } : undefined;
 	}
 
 	private module(path: string): ModuleScope | undefined {
@@ -401,6 +538,14 @@ class ConstantEvaluator {
 		}
 		return this.modules.get(path);
 	}
+}
+
+/** A property name that is known statically: `a.b`, `a["b"]`, `{ b: ... }`, `{ "b": ... }`. */
+function propertyKey(key: Expression | PropertyValue | { type: "PrivateName" }, computed: boolean): string | undefined {
+	if (!computed && key.type === "Identifier") return key.name;
+	if (key.type === "StringLiteral") return key.value;
+	if (key.type === "NumericLiteral") return String(key.value);
+	return undefined;
 }
 
 function unwrapExpression(node: Argument | undefined): Expression | undefined {
