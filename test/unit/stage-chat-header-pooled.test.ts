@@ -47,7 +47,7 @@ test("while its run is republished without the stage, a reconnecting pooled stag
 	assert.match(rendered, /fan-out-review \/ work-0/);
 });
 
-test("the post-mortem chat of a completed pooled stage shows what an in-process completed stage shows", () => {
+test("the post-mortem chat of a completed pooled stage shows what an in-process completed stage shows (#3996)", () => {
 	const ctx = {
 		theme: deriveGraphTheme({}),
 		workflowName: "fan-out-review",

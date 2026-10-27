@@ -35,6 +35,7 @@ import type { StageInputAnswer } from "../shared/stage-prompt.js";
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
@@ -1168,8 +1169,7 @@ export class LocalWorkerPool {
 					return false;
 				};
 				for (const run of runs)
-					if (run.endedAt === undefined && inChild(run))
-						store.recordRunEnd(run.id, "failed", undefined, error.message);
+					if (run.endedAt === undefined && inChild(run)) endPooledRun(store, run, error.message);
 			});
 		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 	}
@@ -1456,7 +1456,7 @@ export class LocalWorkerPool {
 						run.id !== this.root &&
 						run.stages.some((stage) => stage.workerExecution !== undefined)
 					)
-						store.recordRunEnd(run.id, "failed", undefined, poolFailure.message);
+						endPooledRun(store, run, poolFailure.message);
 			});
 		void this.registrations?.then((registrations) => registrations.clear());
 		const watches = [...this.stageWatches.values()];
@@ -1496,3 +1496,21 @@ export class LocalWorkerPool {
 }
 
 /** Asks an SDK caller's `ui` a pooled stage's prompt; custom prompts never reach it. */
+
+/**
+ * Ends a pooled run that failed with its pool or on its own (#3996): its unfinished stages fail with the run's
+ * error, so the graph counts none of them active and their chats show no worker; finished stages keep their outcome.
+ */
+function endPooledRun(store: Store, run: RunSnapshot, error: string): void {
+	const now = Date.now();
+	for (const stage of run.stages)
+		if (!isTerminalStageStatus(stage.status))
+			store.recordStageEnd(run.id, {
+				...stage,
+				status: "failed",
+				endedAt: now,
+				durationMs: stage.startedAt === undefined ? undefined : Math.max(0, now - stage.startedAt),
+				error,
+			});
+	store.recordRunEnd(run.id, "failed", undefined, error);
+}

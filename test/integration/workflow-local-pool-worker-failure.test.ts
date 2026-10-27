@@ -336,7 +336,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a child that exhausts its own attempt limit fails alone, by name, while a sibling waiting on a prompt completes",
+	"a child that exhausts its own attempt limit fails alone, by name, while a sibling waiting on a prompt completes (#3996)",
 	async () => {
 		const directory = makeTempDirectory("pool-child-retry-limit-");
 		const path = join(directory, "journal.sqlite");
