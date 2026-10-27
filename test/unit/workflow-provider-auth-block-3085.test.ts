@@ -29,12 +29,20 @@ import { JournalTestBackend } from "../helpers/journal-backend.js";
 // Issue #3085 / #3087
 
 /**
- * Wall-clock slice per status poll. Fake time still covers retry/auth delays.
- * 5ms × 60 (~300ms) was load-sensitive after durable resume (#3085/#3087).
+ * Each status poll gives the run a real-time slice for its I/O, then advances fake time (retry, cooldown and auth
+ * delays) by one step. A run under load needs more slices than an idle one before its next timer is even armed, so
+ * the waits end on the state they wait for, not after a fixed number of polls: 60 polls failed under CPU contention
+ * with the run still waiting on its first fallback (#3085/#3087).
  */
 const RUN_STATUS_POLL_REAL_MS = 50;
 const RUN_STATUS_POLL_FAKE_MS = 1_000;
-const RUN_STATUS_POLL_ATTEMPTS = 60;
+/** Real time all of the test's waits share, inside the 30 s test timeout, leaving room to report and clean up. */
+const WAITS_REAL_BUDGET_MS = 24_000;
+
+/** Real elapsed milliseconds: `process.hrtime` is not one of the clocks the fake timers replace. */
+function realNow(): number {
+	return Number(process.hrtime.bigint() / 1_000_000n);
+}
 
 const spec = {
 	id: "m",
@@ -103,6 +111,11 @@ function requestedProvider(model: unknown): string {
 }
 
 test("fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix", async () => {
+	const deadline = realNow() + WAITS_REAL_BUDGET_MS;
+	/** Polls until `done`, advancing fake time a step per real slice, or until the test's shared real budget is spent. */
+	const until = async (done: () => boolean, step: () => Promise<unknown>) => {
+		while (!done() && realNow() < deadline) await step();
+	};
 	const cleanup: Array<() => void | Promise<void>> = [];
 	try {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-3085-wf-"));
@@ -223,22 +236,26 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const starting = runtime.dispatch({ action: "run", workflow: definition.name, inputs: {} }).then((result) => {
 			started = result;
 		});
-		for (let i = 0; i < 100 && started === undefined; i++) await vi.advanceTimersByTimeAsync(1);
+		await until(
+			() => started !== undefined,
+			async () => {
+				await realSleep(1);
+				await vi.advanceTimersByTimeAsync(1);
+			},
+		);
 		assert.ok(started, "detached dispatch must acknowledge");
 		await starting;
 		const startedRun = started;
 		assert.equal(startedRun.action, "run");
 		assert.ok(startedRun.runId);
 
-		for (
-			let i = 0;
-			i < RUN_STATUS_POLL_ATTEMPTS &&
-			effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) !== "blocked";
-			i++
-		) {
-			await realSleep(RUN_STATUS_POLL_REAL_MS);
-			await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
-		}
+		await until(
+			() => effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) === "blocked",
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
+		);
 		const source = store.runs().find((run) => run.id === startedRun.runId);
 		assert.ok(source);
 		assert.equal(effectiveRunStatus(source), "blocked", JSON.stringify(source));
@@ -292,27 +309,28 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const resuming = recoveryRuntime.resumeDurableWorkflow(source.id).then((result) => {
 			resumed = result;
 		});
-		for (let i = 0; i < RUN_STATUS_POLL_ATTEMPTS && resumed === undefined; i++) {
-			vi.useRealTimers();
-			await realSleep(RUN_STATUS_POLL_REAL_MS);
-			vi.useFakeTimers();
-			await vi.advanceTimersByTimeAsync(1);
-		}
+		await until(
+			() => resumed !== undefined,
+			async () => {
+				vi.useRealTimers();
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				vi.useFakeTimers();
+				await vi.advanceTimersByTimeAsync(1);
+			},
+		);
 		assert.ok(resumed, "resume must acknowledge");
 		await resuming;
 		const resumedRun = resumed;
 		assert.equal(resumedRun.ok, true, resumedRun.message);
 		assert.ok(resumedRun.runId);
 
-		for (
-			let i = 0;
-			i < RUN_STATUS_POLL_ATTEMPTS &&
-			effectiveRunStatus(restoredStore.runs().find((run) => run.id === resumedRun.runId)!) !== "completed";
-			i++
-		) {
-			await realSleep(RUN_STATUS_POLL_REAL_MS);
-			await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
-		}
+		await until(
+			() => effectiveRunStatus(restoredStore.runs().find((run) => run.id === resumedRun.runId)!) === "completed",
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
+		);
 		const continuation = restoredStore.runs().find((run) => run.id === resumedRun.runId);
 		assert.ok(continuation);
 		assert.equal(effectiveRunStatus(continuation), "completed", JSON.stringify(continuation));
