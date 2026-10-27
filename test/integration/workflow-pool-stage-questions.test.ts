@@ -15,6 +15,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { run as engineRun } from "../../packages/workflows/src/engine/run.js";
+import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../../packages/workflows/src/extension/wiring.js";
 import { createStore, loadWorkerWorkflow, run } from "../../packages/workflows/src/index.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
@@ -459,8 +460,8 @@ async function failReaskedForm(prefix: string, withdrawFirst: boolean): Promise<
 		override requestCustomUi<T>(
 			_runId: string,
 			_stageId: string,
-			_factory: unknown,
-			_options?: unknown,
+			_factory: PiCustomOverlayFactory<T>,
+			_options?: PiCustomOverlayOptions,
 			signal?: AbortSignal,
 		): Promise<T> {
 			const form = signal ?? new AbortController().signal;
