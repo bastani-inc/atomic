@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import {
+	declaredBudgets,
 	declaredTimeouts,
 	evaluateDurations,
 	parseVitestReport,
@@ -420,7 +421,7 @@ test("real edited-flow CLI cases keep their structural budgets without lending t
 	assert.deepEqual(unbudgeted.warnings, unbudgeted.samples);
 });
 
-test("unsupported wrappers and lookalike members do not donate timeout budgets", () => {
+test("foreign members, lookalike modifiers and dynamic tables do not donate timeout budgets", () => {
 	const source = [
 		"test.each(dynamicRows)(",
 		'  "table wrapper",',
@@ -429,19 +430,364 @@ test("unsupported wrappers and lookalike members do not donate timeout budgets",
 		"  90_000,",
 		");",
 		"",
-		"test.runIf(true)(",
-		'  "conditional wrapper",',
-		"  async () => {",
-		"  },",
-		"  120_000,",
-		");",
-		"",
 		'helper.test.sequential("foreign member", async () => {',
 		"}, 180_000);",
 		'test.sequentially("lookalike member", async () => {',
 		"}, 240_000);",
+		'test.skipIfNot(true)("lookalike condition", async () => {',
+		"}, 240_000);",
 	].join("\n");
 	assert.deepEqual([...declaredTimeouts(source)], []);
+});
+
+// CI reported interactive-no-mcp-startup at "76.8 s of its 30 s budget (256%)" although it
+// declares a 570 s budget: the guard read neither `test.skipIf(cond)(` nor `3 * (A + B + C)`.
+test("conditional and chained declarations keep their explicit budgets", () => {
+	const source = [
+		"const TMUX_AVAILABLE = true;",
+		"test.skipIf(!TMUX_AVAILABLE)(",
+		'  "skip if",',
+		"  async () => {",
+		"  },",
+		"  90_000,",
+		");",
+		'test.runIf(process.platform !== "win32")("run if", async () => {',
+		"}, 60_000);",
+		'it.skipIf(false).concurrent("it skip if, then concurrent", async () => {',
+		"}, 45_000);",
+		'test.concurrent.runIf(true)("concurrent, then run if", async () => {',
+		"}, 50_000);",
+		'test.runIf(true).each(["a", "b"] as const)("table %s", async () => {',
+		"}, 55_000);",
+		'describe.skipIf(false)("conditional scope", () => {',
+		'  test("inside", async () => {',
+		"  }, 70_000);",
+		"});",
+		'describe.runIf(true).concurrent("chained scope", () => {',
+		'  it.runIf(true)("inside", async () => {',
+		"  }, 75_000);",
+		"});",
+	].join("\n");
+	assert.deepEqual(
+		new Map(declaredTimeouts(source)),
+		new Map([
+			["skip if", 90_000],
+			["run if", 60_000],
+			["it skip if, then concurrent", 45_000],
+			["concurrent, then run if", 50_000],
+			["table a", 55_000],
+			["table b", 55_000],
+			["conditional scope > inside", 70_000],
+			["chained scope > inside", 75_000],
+		]),
+	);
+});
+
+test("an options-object timeout applies to the test and a suite's timeout to the tests it encloses", () => {
+	const source = [
+		'test("own options", { timeout: 80_000 }, async () => {',
+		"});",
+		'describe("budgeted scope", { timeout: 85_000 }, () => {',
+		'  test("inherits", async () => {',
+		"  });",
+		'  test("overrides", async () => {',
+		"  }, 20_000);",
+		'  describe("nested", () => {',
+		'    test("inherits from its ancestor", async () => {',
+		"    });",
+		"  });",
+		"});",
+		'describe("numeric scope budget", () => {',
+		'  test("inherits", async () => {',
+		"  });",
+		"}, 95_000);",
+	].join("\n");
+	assert.deepEqual(
+		new Map(declaredTimeouts(source)),
+		new Map([
+			["own options", 80_000],
+			["budgeted scope > inherits", 85_000],
+			["budgeted scope > overrides", 20_000],
+			["budgeted scope > nested > inherits from its ancestor", 85_000],
+			["numeric scope budget > inherits", 95_000],
+		]),
+	);
+});
+
+test("timeouts written as constant expressions resolve to their value", () => {
+	const source = [
+		"const CLI_SCENARIO_TIMEOUT_MS = 120_000;",
+		"const CLI_EXIT_TIMEOUT_MS = 60_000;",
+		"const SCENARIO_OVERHEAD_MS = 10_000;",
+		"const TOTAL_MS = 3 * (CLI_SCENARIO_TIMEOUT_MS + CLI_EXIT_TIMEOUT_MS + SCENARIO_OVERHEAD_MS);",
+		"const TYPED: number = (TOTAL_MS / 2) as number;",
+		'test("product of a sum", async () => {',
+		"}, TOTAL_MS);",
+		'test("inline arithmetic", async () => {',
+		"}, 2 * CLI_SCENARIO_TIMEOUT_MS - CLI_EXIT_TIMEOUT_MS / 2);",
+		'test("annotated and asserted", async () => {',
+		"}, TYPED);",
+	].join("\n");
+	assert.deepEqual(
+		new Map(declaredTimeouts(source)),
+		new Map([
+			["product of a sum", 570_000],
+			["inline arithmetic", 210_000],
+			["annotated and asserted", 285_000],
+		]),
+	);
+});
+
+test("a timeout built from constants imported from a sibling module resolves", () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-import-"));
+	try {
+		writeFileSync(
+			join(directory, "budgets.ts"),
+			[
+				"export const SHARED_MS = 45_000;",
+				"const BASE_MS = 10_000;",
+				"export const DERIVED_MS = SHARED_MS + BASE_MS;",
+			].join("\n"),
+		);
+		writeFileSync(
+			join(directory, "imported.test.ts"),
+			[
+				'import { DERIVED_MS as RENAMED_MS, SHARED_MS } from "./budgets.js";',
+				'test("imported", async () => {',
+				"}, SHARED_MS + 5_000);",
+				'test("renamed", async () => {',
+				"}, RENAMED_MS);",
+			].join("\n"),
+		);
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "imported.test.ts",
+						tests: [
+							{ title: "imported", status: "passed", duration: 40_000 },
+							{ title: "renamed", status: "passed", duration: 40_000 },
+						],
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		const budgets = new Map(scored.samples.map((sample) => [sample.name, sample.timeoutMs]));
+		assert.deepEqual(
+			budgets,
+			new Map([
+				["imported", 50_000],
+				["renamed", 55_000],
+			]),
+		);
+		assert.deepEqual(scored.unresolved, []);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("an explicit timeout the guard cannot evaluate is reported unresolved, not scored against the default", () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-unresolved-"));
+	try {
+		writeFileSync(
+			join(directory, "unresolved.test.ts"),
+			[
+				"const PROCESS_TIMEOUT = 60_000;",
+				'test("unresolved sum", async () => {',
+				"}, PROCESS_TIMEOUT + UNKNOWN);",
+				'test("computed", async () => {',
+				"}, computeBudget());",
+				'test("undeclared", async () => {',
+				"});",
+			].join("\n"),
+		);
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "unresolved.test.ts",
+						tests: [
+							{ title: "unresolved sum", status: "passed", duration: 40_000 },
+							{ title: "computed", status: "passed", duration: 40_000 },
+							{ title: "undeclared", status: "passed", duration: 40_000 },
+						],
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		assert.deepEqual(scored.unresolved.map((sample) => sample.name).sort(), ["computed", "unresolved sum"]);
+		// Only the test with no explicit budget is judged against the suite default.
+		assert.deepEqual(
+			scored.warnings.map((sample) => sample.name),
+			["undeclared"],
+		);
+		assert.match(
+			renderDurationTable(scored),
+			/\| n\/a \| 40000\.00 ms \| unresolved \(explicit\) \| unresolved\.test\.ts \| computed \|/,
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// Greptile PRRT_kwDOQHh8ns6wfPjy: with a named callback in the third slot, the
+// options object still carries the budget; the callback is not a timeout.
+test("an options-object timeout is read even when the body is a named callback", () => {
+	const source = [
+		"async function body() {}",
+		"const arrow = async () => {};",
+		'test("named function body", { timeout: 80_000 }, body);',
+		'test("named arrow body", { timeout: 85_000 }, arrow);',
+		'test("numeric budget after a named body", body, 90_000);',
+	].join("\n");
+	assert.deepEqual(
+		new Map(declaredTimeouts(source)),
+		new Map([
+			["named function body", 80_000],
+			["named arrow body", 85_000],
+			["numeric budget after a named body", 90_000],
+		]),
+	);
+	assert.deepEqual([...declaredBudgets(source).unresolved], []);
+});
+
+// Greptile PRRT_kwDOQHh8ns6wfPj5: a dynamic table's title pattern must not lend
+// its budget to a plain test whose exact declaration carries none.
+test("a declared test without a budget never borrows a dynamic table's budget", () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-exact-first-"));
+	try {
+		writeFileSync(
+			join(directory, "mixed.test.ts"),
+			[
+				'test.each(computeRows())("case %s", async () => {',
+				"}, 120_000);",
+				'test("case plain", async () => {',
+				"});",
+			].join("\n"),
+		);
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "mixed.test.ts",
+						tests: [
+							{ title: "case dynamic", status: "passed", duration: 20_000 },
+							{ title: "case plain", status: "passed", duration: 20_000 },
+						],
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		const budgets = new Map(scored.samples.map((sample) => [sample.name, [sample.timeoutMs, sample.explicit]]));
+		assert.deepEqual(budgets.get("case dynamic"), [120_000, true]);
+		assert.deepEqual(budgets.get("case plain"), [30_000, false]);
+		assert.deepEqual(
+			scored.warnings.map((sample) => sample.name),
+			["case plain"],
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+// Dozens of repository suites name tests through template literals and dynamic
+// tables (`on ${runtime.name}`, `test.each(rows)("%s ...")`). The reported names
+// are only known at run time, so the declared budget is matched by its shape.
+test("templated and dynamic-table titles keep their budgets by matching the reported name", () => {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-template-"));
+	try {
+		writeFileSync(
+			join(directory, "templated.test.ts"),
+			[
+				"const PROCESS_TIMEOUT_MS = 120_000;",
+				"for (const runtime of runtimes) {",
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source text declaring a templated title
+				"  describe(`containment on ${runtime.name}`, () => {",
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: fixture source text declaring a templated title
+				"    test(`a ${runtime.label} rejection fails its run`, async () => {",
+				"    }, PROCESS_TIMEOUT_MS);",
+				"  });",
+				"}",
+				"test.each(computeRows())(",
+				'  "%s: every message is delivered once",',
+				"  async () => {",
+				"  },",
+				"  90_000,",
+				");",
+				'test("on windows only", async () => {',
+				'}, process.platform === "win32" ? 60_000 : undefined);',
+				'test("off windows only", async () => {',
+				'}, process.platform !== "win32" ? 70_000 : undefined);',
+			].join("\n"),
+		);
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "templated.test.ts",
+						tests: [
+							{
+								scopes: ["containment on node"],
+								title: "a ctx.task rejection fails its run",
+								status: "passed",
+								duration: 40_000,
+							},
+							{ title: "idle: every message is delivered once", status: "passed", duration: 40_000 },
+							{ title: "a ctx.task rejection fails its run", status: "passed", duration: 40_000 },
+							{ title: "on windows only", status: "passed", duration: 40_000 },
+							{ title: "off windows only", status: "passed", duration: 40_000 },
+						],
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		const budgets = new Map(scored.samples.map((sample) => [sample.fullName, sample.timeoutMs]));
+		const windows = process.platform === "win32";
+		assert.deepEqual(
+			budgets,
+			new Map([
+				["containment on node > a ctx.task rejection fails its run", 120_000],
+				["idle: every message is delivered once", 90_000],
+				// Outside the templated scope the same terminal name borrows nothing.
+				["a ctx.task rejection fails its run", 30_000],
+				["on windows only", windows ? 60_000 : 30_000],
+				["off windows only", windows ? 30_000 : 70_000],
+			]),
+		);
+		assert.deepEqual(scored.unresolved, []);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("the no-MCP startup scenario is scored against its declared 570 s budget", () => {
+	const name =
+		"built interactive CLI waits for startup before testing --no-mcp and pending /mcp shutdown (#10249) (#3470)";
+	const scored = evaluateDurations(
+		report([
+			{
+				file: "test/integration/interactive-no-mcp-startup.test.ts",
+				tests: [{ title: name, status: "passed", duration: 76_800 }],
+			},
+		]),
+		30_000,
+		root,
+	);
+	assert.equal(scored.samples[0]?.timeoutMs, 570_000);
+	assert.equal(scored.samples[0]?.explicit, true);
+	assert.deepEqual(scored.warnings, []);
 });
 
 /**

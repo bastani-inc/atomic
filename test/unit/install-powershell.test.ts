@@ -1681,6 +1681,21 @@ function Assert-NoTransactionResidue {
     }
 }
 
+function Reset-FixtureInstallState {
+    param([string[]]$Paths)
+    # A just-executed atomic.exe can stay delete-pending on Windows (for example while
+    # Defender scans it), so a single silenced removal can leave versions\<tag> behind.
+    foreach ($path in $Paths) {
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 20 -and (Test-Path -LiteralPath $path); $attempt++) {
+            try { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+            catch { $lastError = $_ }
+            if (Test-Path -LiteralPath $path) { Start-Sleep -Milliseconds (50 * $attempt) }
+        }
+        Assert-Fixture (-not (Test-Path -LiteralPath $path)) "fixture could not reset $path before the next install: $lastError"
+    }
+}
+
 function Get-TempResidueReport {
     param([string]$Root)
     $entries = @(Get-ChildItem -LiteralPath $Root -Filter "atomic-install-*" -Force)
@@ -2271,8 +2286,7 @@ try {
             Assert-Fixture (Test-Path -LiteralPath (Join-Path $installRoot ("versions\" + [Uri]::EscapeDataString($validTag) + "\atomic.exe"))) "valid tag $validTag did not install"
             Assert-NoTransactionResidue $installRoot $binDir
         }
-        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        Reset-FixtureInstallState @($installRoot, $binDir)
 
         $global:AtomicFixtureRedirectTag = "release/1.0"
         $redirectRequestStart = @($global:AtomicFixtureRequests).Count
@@ -2318,8 +2332,7 @@ try {
         Assert-Fixture ($rejectionResidue.Count -eq 0) "the missing-.CMD rejection created transaction temp state: $($rejectionResidue.Paths)"
 
         foreach ($acceptedPathExt in @(".cmd;.EXE", '  " .CMD " ; ".EXE"  ', ".EXE;.CMD;.BAT", $null)) {
-            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+            Reset-FixtureInstallState @($installRoot, $binDir)
             $env:PATHEXT = $acceptedPathExt
             & $InstallerPath -Ref "1.0.0" | Out-Null
             Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "PATHEXT '$acceptedPathExt' blocked a valid install"
@@ -2337,8 +2350,7 @@ try {
             [pscustomobject]@{ Label = "atomic-current directory"; Parent = "bin"; Name = "atomic-current"; Kind = "Directory"; Message = 'ATOMIC_BIN_DIR contains an unexpected atomic-current entry' },
             [pscustomobject]@{ Label = "atomic-current file"; Parent = "bin"; Name = "atomic-current"; Kind = "File"; Message = 'ATOMIC_BIN_DIR contains an unexpected atomic-current entry' }
         )) {
-            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+            Reset-FixtureInstallState @($installRoot, $binDir)
             $parentPath = if ($case.Parent -eq "install") { $installRoot } else { $binDir }
             New-Item -ItemType Directory -Path $parentPath -Force | Out-Null
             $conflictPath = Join-Path $parentPath $case.Name
@@ -2369,8 +2381,7 @@ try {
             Assert-NoTransactionResidue $installRoot $binDir
         }
 
-        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        Reset-FixtureInstallState @($installRoot, $binDir)
         & $InstallerPath -Ref "1.0.0" | Out-Null
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $binDir "atomic.cmd")) "the reparse-point control install did not complete"
         & $InstallerPath -Ref "2.0.0" | Out-Null
@@ -3167,8 +3178,7 @@ try {
         Assert-Fixture ($oneShotResidue.Count -eq 0) "a released one-shot handle still left temp residue: $($oneShotResidue.Paths)"
         Assert-NoTransactionResidue $installRoot $binDir
 
-        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        Reset-FixtureInstallState @($installRoot, $binDir)
         $global:AtomicFixtureTempRemovalAttempts = 0
         $global:AtomicFixtureTempLockMode = "sticky"
         $stickyFailure = $null
@@ -3191,8 +3201,7 @@ try {
         Remove-Item -LiteralPath $stickyTempDir -Recurse -Force
         Assert-NoTransactionResidue $installRoot $binDir
 
-        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $binDir -Recurse -Force -ErrorAction SilentlyContinue
+        Reset-FixtureInstallState @($installRoot, $binDir)
         $global:AtomicFixtureTempRemovalAttempts = 0
         $global:AtomicFixtureWarnings.Clear()
         $global:AtomicFixtureTempLockMode = "sticky"
@@ -3713,6 +3722,33 @@ test("Windows PowerShell 5.1 fixtures cover missing .CMD, pointer conflicts, and
 	assert.match(fixtureHarness, /the API error was replaced/u);
 	assert.equal((fixtureHarness.match(/mentions an uninitialized variable/gu) ?? []).length, 2);
 	assert.match(fixtureHarness, /\$env:PATHEXT = "\.COM;\.EXE;\.BAT;\.CMD;\.VBS;\.VBE;\.JS;\.JSE;\.WSF;\.WSH;\.MSC"/u);
+});
+
+test("Windows PowerShell 5.1 fixtures verify install-state removal before reinstalling into the same roots", () => {
+	// Windows can leave a just-executed atomic.exe delete-pending (for example while
+	// Defender scans it), so a silenced Remove-Item can leave versions\1.0.0 behind
+	// and turn the next fresh install into a backup move that fails with access denied.
+	const resetStart = fixtureHarness.indexOf("function Reset-FixtureInstallState");
+	assert.ok(resetStart >= 0, "the fixture lacks a verified install-state reset");
+	const resetEnd = fixtureHarness.indexOf("\nfunction ", resetStart + 1);
+	const reset = fixtureHarness.slice(resetStart, resetEnd);
+	assert.doesNotMatch(reset, /SilentlyContinue/u, "the reset must not hide removal failures");
+	assert.match(reset, /Start-Sleep/u, "the reset must retry transient Windows deletion failures");
+	assert.match(reset, /Assert-Fixture/u, "the reset must fail loudly when residue remains");
+
+	const silencedResets = fixtureHarness.match(
+		/Remove-Item -LiteralPath \$(?:installRoot|binDir) -Recurse -Force -ErrorAction SilentlyContinue/gu,
+	);
+	assert.equal(
+		silencedResets?.length,
+		2,
+		"only the final best-effort cleanup may silence install-root and bin-dir removal",
+	);
+	assert.ok(
+		fixtureHarness.indexOf("Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue") >
+			fixtureHarness.lastIndexOf("finally {"),
+		"a silenced install-root removal still precedes a reinstall",
+	);
 });
 
 test("Windows PowerShell 5.1 Ctrl+C fixture uses a real isolated console event after actual moves", () => {

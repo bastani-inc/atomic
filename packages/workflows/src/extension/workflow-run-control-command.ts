@@ -179,6 +179,48 @@ export async function handleRunControlCommand(
 			return true;
 		}
 		const run = store.runs().find((candidate) => candidate.id === resolved.runId);
+		// `/workflow pause <run> <stage>` holds only that stage, in this process or on a local worker.
+		const positional = tokens.filter((token) => !token.startsWith("--"));
+		const stageTarget = action === "pause" && target === positional[0] ? positional[1] : undefined;
+		if (stageTarget !== undefined) {
+			const stage = resolveStageTarget(resolved.runId, stageTarget, store);
+			if (!stage.ok || stage.stageId === undefined) {
+				fail(stage.ok ? `Stage not found for run ${resolved.runId}: ${stageTarget}` : stage.message);
+				return true;
+			}
+			const stageRunId = stage.runId ?? resolved.runId;
+			if (!yes && run && run.endedAt === undefined && confirmationPrompt) {
+				const confirmed = await confirmationPrompt(
+					`Pause stage ${stageTarget} of workflow run ${run.name} (${run.id})?`,
+					"Pauses only this stage so it can be resumed later; other stages keep running.",
+				);
+				if (!confirmed) {
+					print(`Cancelled. Stage ${stageTarget} is still active.`);
+					return true;
+				}
+			}
+			try {
+				const result = await pauseRun(stageRunId, { ...owner, stageId: stage.stageId });
+				if (result.ok)
+					print(
+						result.message ??
+							`Stage ${stageTarget} of run ${resolved.runId} paused; resume it with /workflow resume ${resolved.runId} ${stageTarget}.`,
+					);
+				else
+					fail(
+						result.reason === "stage_not_found"
+							? `Stage not found for run ${resolved.runId}: ${stageTarget}`
+							: result.reason === "already_ended"
+								? `Run already ended: ${target}`
+								: `Stage ${stageTarget} of run ${resolved.runId} is not running.`,
+					);
+			} catch (error) {
+				fail(
+					`Failed to pause stage ${stageTarget} of run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return true;
+		}
 		if (action === "quit") {
 			if (run?.endedAt !== undefined) {
 				print(`Run ${resolved.runId} already ended.`);

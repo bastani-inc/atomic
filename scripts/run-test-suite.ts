@@ -191,6 +191,16 @@ async function reportDurations(result: RunResult, options: Options, name: string
 			`### ⚠️ Slow tests: ${options.label}\n${evaluated.warnings.length} test(s) used at least ${WARN_RATIO * 100} % of their per-test timeout. Headroom is advisory; Vitest enforces the actual timeout.\n\n${table}`,
 		);
 	}
+	for (const sample of evaluated.unresolved.slice(0, 10)) {
+		console.error(
+			`::warning title=Unresolved test budget: ${options.label}::${sample.file} > ${sample.fullName} declares a timeout the duration guard cannot evaluate, so its ${sample.durationMs.toFixed(0)}ms run was not scored. Declare the timeout from literals and named constants.`,
+		);
+	}
+	if (evaluated.unresolved.length > 0) {
+		appendSummary(
+			`### ⚠️ Unresolved test budgets: ${options.label}\n${evaluated.unresolved.length} test(s) declare a timeout the duration guard cannot evaluate statically, so their headroom is unmeasured.\n\n${table}`,
+		);
+	}
 	return 0;
 }
 

@@ -137,8 +137,10 @@ export interface RunSyncOptions {
 	sessionManager?: SessionManager;
 	/** Reopen `sessionManager` as this child's own interrupted session rather than a fork. */
 	resumeSession?: boolean;
-	/** Queued as follow-ups to the task, in order: a resumed child's held messages, then its continuation. */
+	/** Queued as follow-ups to the task, in order: a resumed child's held messages, then its continuation. Delivered as written. */
 	resumeFollowUps?: readonly string[];
+	/** The task is a resume's message or one the child already received, delivered as written rather than as a fresh launch's task. */
+	resumeTaskLiteral?: boolean;
 	/** Told the child's own session once it is created, for a launch no task host records (an SDK session). */
 	onChildSession?: (session: { sessionId: string; sessionFile: string | undefined }) => void;
 	/** Told the model and thinking level the child's session started on, and its leaf entry then, as `onChildSession`. */

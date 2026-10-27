@@ -6,6 +6,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Added
 
+- Added GPT-6.1 Terra to the OpenAI, Azure OpenAI Responses, and OpenAI Codex providers with official pricing ($1 input, $0.05 cached input, $1.25 cache writes, $5 output, long-context tier above 272k), Fast at twice those rates on the OpenAI API, tool search, and mid-conversation effort changes. Unlike GPT-6.1 Sol it supports `off` (reasoning effort `none`); it rejects `minimal`. Codex serves it with a 500K context window ([pi 363ad78b](https://github.com/earendil-works/pi/commit/363ad78bf0625e1dfbe848429782f5e07bb1584e))
 - `OAuthAuth.needsRefresh()` (optional) reports that an unexpired stored credential lacks data only a refresh restores; `Models.refresh()` with network access then refreshes it once for providers without a model source ([#3998](https://github.com/bastani-inc/atomic/issues/3998))
 
 ### Fixed
@@ -18,6 +19,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - OpenCode DeepSeek V4.1 Flash no longer sends `prompt_cache_retention` with long cache retention, which the OpenCode gateway rejects ([pi 89c921d8](https://github.com/earendil-works/pi/commit/89c921d8b56b59e768b26e7f48b6832978119310))
 - Google Generative AI, Google Vertex and Amazon Bedrock failures now report the server's retry hint as `retryAfterMs`: Google's `RetryInfo.retryDelay` from the error body, and Bedrock's `Retry-After` / `Retry-After-Ms` response headers. A Google request retried by the shared retry policy now waits that delay instead of a guessed backoff, and a delay above the retry-delay cap fails at once with the hint attached.
 - ChatGPT (Codex) HTTP failures other than usage limits now keep the HTTP status in their message (`402: …`), so an exhausted quota or server error is still recognizable from the message.
+- Amazon Bedrock GPT-6.1 Sol (`openai.gpt-6.1-sol`, `us.openai.gpt-6.1-sol`, `global.openai.gpt-6.1-sol`) now offers its published reasoning efforts `low` through `max`, including `xhigh` and `max`, and no longer offers `off` or `minimal`, which the model does not support ([OpenAI](https://developers.openai.com/api/docs/models/gpt-6.1-sol)). Bedrock GPT-6 Sol and GPT-6 Luna routes now offer `xhigh` and `max` and no longer offer `minimal`, matching their AWS model cards ([GPT-6 Sol](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-sol.html), [GPT-6 Luna](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-6-luna.html))
+- Amazon Bedrock OpenAI GPT models with reasoning `off` now send the model's mapped `off` effort, as the OpenAI Responses provider does, so Bedrock GPT-6 Sol and GPT-6 Luna run with `reasoning.effort: "none"` instead of silently using their default `medium`. Models whose map gives `off` no value, such as GPT-6 Astra and GPT-6.1 Sol, still send no reasoning field.
 
 ## [0.9.44] - 2026-10-25
 

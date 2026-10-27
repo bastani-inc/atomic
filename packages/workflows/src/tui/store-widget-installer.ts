@@ -94,6 +94,78 @@ export interface LiveWidgetAPI {
 
 const WIDGET_KEY = "workflow.run";
 
+/**
+ * Store-driven widget refreshes may spend at most WIDGET_REFRESH_BUDGET_MS of main-thread time
+ * in each WIDGET_REFRESH_WINDOW_MS window, beyond the first WIDGET_REFRESH_BURST refreshes in it
+ * (#4009). A pooled fan-out publishes many store changes per frame and each refresh rebuilds the
+ * lines of every run, so once a window has had its refreshes and spent its budget, the changes
+ * left in it fold into one refresh at its end. A store that changes now and then, or whose
+ * refreshes cost far less than the budget, still refreshes on every change.
+ */
+export const WIDGET_REFRESH_WINDOW_MS = 50;
+export const WIDGET_REFRESH_BUDGET_MS = 8;
+export const WIDGET_REFRESH_BURST = 4;
+
+/** Milliseconds from a monotonic clock. */
+export type WidgetRefreshClock = () => number;
+
+function budgetedStoreListener(
+	listener: () => void,
+	timers: TimerApi,
+	clock: WidgetRefreshClock,
+): { listener: () => void; dispose(): void } {
+	let windowStart = Number.NEGATIVE_INFINITY;
+	let spent = 0;
+	let refreshes = 0;
+	let deferred: TimerHandle | undefined;
+	const refresh = (): void => {
+		const began = clock();
+		if (began - windowStart >= WIDGET_REFRESH_WINDOW_MS) {
+			windowStart = began;
+			spent = 0;
+			refreshes = 0;
+		}
+		refreshes++;
+		try {
+			listener();
+		} finally {
+			spent += clock() - began;
+		}
+	};
+	return {
+		listener: () => {
+			// The deferred refresh reads the store when it runs, so it covers this change too.
+			if (deferred !== undefined) return;
+			const now = clock();
+			if (
+				now - windowStart >= WIDGET_REFRESH_WINDOW_MS ||
+				refreshes < WIDGET_REFRESH_BURST ||
+				spent < WIDGET_REFRESH_BUDGET_MS
+			) {
+				refresh();
+				return;
+			}
+			deferred = timers.setTimeout(
+				() => {
+					deferred = undefined;
+					try {
+						refresh();
+					} catch {
+						// Contained like a refresh the store's publish runs: a widget failure (an RPC host that
+						// cannot mount it) must not escape this timer and end the process.
+					}
+				},
+				Math.max(0, windowStart + WIDGET_REFRESH_WINDOW_MS - now),
+			);
+			deferred.unref?.();
+		},
+		dispose: () => {
+			if (deferred !== undefined) timers.clearTimeout(deferred);
+			deferred = undefined;
+		},
+	};
+}
+
 function reportWidgetFailure(ui: UiSlice | undefined, message: string): void {
 	if (ui?.notify) {
 		ui.notify.call(ui, message, "warning");
@@ -119,6 +191,7 @@ export function installStoreWidget(
 	pi: LiveWidgetAPI,
 	storeInstance: Store,
 	timers: TimerApi = defaultTimerApi,
+	clock: WidgetRefreshClock = () => performance.now(),
 ): () => void {
 	const ui = pi.ui;
 	if (!ui?.setWidget) {
@@ -165,7 +238,14 @@ export function installStoreWidget(
 		scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 },
 		timers,
 		getSnapshot: () => liveWidgetSnapshot(storeInstance),
-		subscribe: (listener) => subscribeStoreInvalidation(storeInstance, listener),
+		subscribe: (listener) => {
+			const throttled = budgetedStoreListener(listener, timers, clock);
+			const unsubscribe = subscribeStoreInvalidation(storeInstance, throttled.listener);
+			return () => {
+				unsubscribe();
+				throttled.dispose();
+			};
+		},
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
 		render: (snap, { theme, width, now }) =>
 			buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now, layout),
@@ -271,7 +351,10 @@ export function installToolExecutionHooks(pi: LiveWidgetAPI, storeInstance: Stor
 		return call ? { key, call } : null;
 	}
 
-	subscribeStoreInvalidation(storeInstance, () => pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance)));
+	// Pruning an empty set needs no snapshot; reading one per store change cost a projection (#4009).
+	subscribeStoreInvalidation(storeInstance, () => {
+		if (activeToolCalls.size > 0) pruneActiveToolCalls(readGraphStoreSnapshot(storeInstance));
+	});
 
 	function recordToolStart(payload: unknown): void {
 		if (!isToolExecutionPayload(payload)) return;

@@ -15,6 +15,10 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
+
+/** Host cleanup and git worktree state have no event to await; poll them within the test's own budget. */
+const STATE_POLL = { timeout: TEST_TIMEOUT_MS, interval: 10 };
 
 type Tool = {
 	execute(
@@ -68,10 +72,30 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		},
 	};
 	const gates = Array.from({ length: 3 }, () => Promise.withResolvers<void>());
+	// Waits re-check when the fixture records a start, surfaced message, terminal result or reply waiter,
+	// so they follow those events themselves instead of polling against a wall-clock deadline.
+	const waiters = new Set<{ readonly check: () => boolean; readonly resolve: () => void }>();
+	function changed(): void {
+		for (const waiter of waiters) {
+			if (!waiter.check()) continue;
+			waiters.delete(waiter);
+			waiter.resolve();
+		}
+	}
+	function until(check: () => boolean): Promise<void> {
+		if (check()) return Promise.resolve();
+		const { promise, resolve } = Promise.withResolvers<void>();
+		waiters.add({ check, resolve });
+		return promise;
+	}
 	const starts: number[] = [];
 	const effects: number[] = [];
 	const optionsByIndex = new Map<number, RunSyncOptions>();
 	const terminal = new Map<number, SingleResult>();
+	const recordTerminal = (index: number, result: SingleResult): void => {
+		terminal.set(index, result);
+		changed();
+	};
 	const surfaced: Message[] = [];
 	const lifecycle = new Map<string, Array<(event: object, ctx: object) => void | Promise<void>>>();
 	let inbound!: Inbound;
@@ -114,6 +138,7 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		async appendEntry() {},
 		sendMessage(value: { details: { message: Message } }) {
 			surfaced.push(value.details.message);
+			changed();
 		},
 	};
 	intercomHeavy(pi as never, {
@@ -151,17 +176,18 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 				const index = options.index!;
 				starts.push(index);
 				optionsByIndex.set(index, options);
+				changed();
 				const result = await runSync(runtimeCwd, agents, agent, task, {
 					...options,
 					testSession: { output: `effect-${index}`, promptGate: gates[index]!.promise, abortResolvesPrompt: true },
 					onDetachedExit: (result) => {
 						if (result.status === "ok") effects.push(index);
-						terminal.set(index, result);
+						recordTerminal(index, result);
 						options.onDetachedExit?.(result);
 					},
 				});
 				if (result.status === "ok") effects.push(index);
-				if (!result.detached) terminal.set(index, result);
+				if (!result.detached) recordTerminal(index, result);
 				return result;
 			},
 		},
@@ -243,7 +269,11 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 			syncPresenceIdentity() {},
 			resolveSessionTarget: async (_client: object, target: string) =>
 				target === options.orchestratorIntercomTarget ? "parent-id" : target,
-			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => waits.begin(from, replyTo, signal),
+			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => {
+				const waiter = waits.begin(from, replyTo, signal);
+				changed();
+				return waiter;
+			},
 			hasReplyWaiter: () => waits.has(),
 			childOrchestratorMetadata: {
 				runId: options.runId,
@@ -289,6 +319,7 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		starts,
 		effects,
 		terminal,
+		until,
 		surfaced,
 		optionsByIndex,
 		gates,
@@ -308,7 +339,15 @@ function fixture(wait: WaitPolicy | undefined, owned = true, resources: { worktr
 		},
 		async finish(index: number) {
 			gates[index]!.resolve();
-			await vi.waitFor(() => assert.ok(terminal.has(index)));
+			await until(() => terminal.has(index));
+			// An owned launch settles its host task after the child exits; wait for that settlement itself.
+			const task = owned ? snapshot()[index] : undefined;
+			if (task === undefined) return;
+			for (;;) {
+				const outcome = await host.waitForTask(task.ref.taskId, TEST_TIMEOUT_MS);
+				assert.ok(outcome.ok, `waiting for child ${index} failed`);
+				if (outcome.value.kind === "settled") return;
+			}
 		},
 		async close() {
 			for (const gate of gates) gate.resolve();
@@ -353,23 +392,20 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 						returned = true;
 						return result;
 					});
-				await vi.waitFor(() => assert.ok(returned || child.waits.has()));
+				await Promise.race([execution, current.until(() => child.waits.has())]);
 				assert.equal(returned, false, "requester must wait, not terminally hand off and stop its batch");
-				await vi.waitFor(() => assert.equal(current.surfaced.length, 1));
-				let observed = false;
-				void current.launch.then(() => {
-					observed = true;
-				});
-				await vi.waitFor(() =>
-					assert.equal(observed, true, "parent observation must yield even with queued siblings"),
-				);
+				await current.until(() => current.surfaced.length >= 1);
+				assert.equal(current.surfaced.length, 1);
+				// The parent observation must yield even with queued siblings.
+				await current.launch;
 				assert.deepEqual(current.starts, [0, 1]);
 				assert.equal(current.terminal.size, 0, "yielding observations must not end executions");
 				assert.ok(current.surfaced[0]!.content.text.includes("Keep  spacing\nraw"));
 				assert.equal(child.reply("wrong-thread"), false);
 				assert.equal(child.reply(current.surfaced[0]!.id, "wrong sender", "other-parent"), false);
 				await current.finish(1);
-				await vi.waitFor(() => assert.deepEqual(current.starts, [0, 1, 2]));
+				await current.until(() => current.starts.length === 3);
+				assert.deepEqual(current.starts, [0, 1, 2]);
 				await current.finish(2);
 				assert.deepEqual(current.effects, [1, 2]);
 				assert.equal(returned, false);
@@ -407,15 +443,12 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 				);
 				assert.equal(result.isError, false);
 				assert.equal(child.waits.has(), false);
-				let observed = false;
-				void current.launch.then(() => {
-					observed = true;
-				});
-				await vi.waitFor(() => assert.equal(observed, true));
+				await current.launch;
 				assert.deepEqual(current.starts, [0, 1]);
 				assert.equal(current.terminal.size, 0);
 				await current.finish(0);
-				await vi.waitFor(() => assert.deepEqual(current.starts, [0, 1, 2]));
+				await current.until(() => current.starts.length === 3);
+				assert.deepEqual(current.starts, [0, 1, 2]);
 				await current.finish(2);
 				await current.finish(1);
 				assert.deepEqual(current.effects, [0, 2, 1]);
@@ -450,9 +483,11 @@ test("parallel parent questions preserve empty text, omitted decision notes and 
 					returned = true;
 					return result;
 				});
-			await vi.waitFor(() => assert.ok(returned || child.waits.has()));
+			await Promise.race([execution, current.until(() => child.waits.has())]);
 			assert.equal(returned, false, "previously accepted parent questions must still be admitted");
-			await vi.waitFor(() => assert.equal(current.surfaced.length, kind === "intercom" ? 1 : 2));
+			const expectedSurfaced = kind === "intercom" ? 1 : 2;
+			await current.until(() => current.surfaced.length >= expectedSurfaced);
+			assert.equal(current.surfaced.length, expectedSurfaced);
 			const message = current.surfaced.at(-1)!;
 			if (kind === "intercom") {
 				assert.equal(message.content.text, "");
@@ -478,17 +513,22 @@ for (const wait of [{ kind: "background" }, { kind: "foreground", budgetMs: 1000
 				}
 				const child = current.childTool("supervisor");
 				const execution = child.execute({ reason: "need_decision", message: "Choose" });
-				await vi.waitFor(() => assert.equal(current.surfaced.length, 1));
+				await current.until(() => current.surfaced.length >= 1);
+				assert.equal(current.surfaced.length, 1);
 				const question = current.surfaced[0]!.id;
+				// A foreground launch registers its queued sibling with the host on its own schedule.
+				await vi.waitFor(() => assert.equal(current.snapshot().length, 3), STATE_POLL);
 				const ids = current.snapshot().map((task) => task.ref.taskId);
 				if (replyFirst) assert.equal(child.reply(question), true);
 				assert.notEqual((await current.kill(ids[0]!)).isError, true);
 				assert.equal((await execution).isError, !replyFirst);
 				assert.equal(child.reply(question), false, "late/duplicate replies cannot revive a killed child");
 				assert.equal(child.waits.has(), false);
-				await vi.waitFor(() => assert.equal(current.terminal.get(0)?.status, "killed"));
+				await current.until(() => current.terminal.has(0));
+				assert.equal(current.terminal.get(0)?.status, "killed");
 				assert.equal(current.terminal.has(1), false);
-				await vi.waitFor(() => assert.deepEqual(current.starts, [0, 1, 2]));
+				await current.until(() => current.starts.length === 3);
+				assert.deepEqual(current.starts, [0, 1, 2]);
 				await current.finish(1);
 				await current.finish(2);
 				assert.deepEqual(current.effects, [1, 2]);
@@ -512,7 +552,8 @@ for (const wait of [{ kind: "background" }, { kind: "foreground", budgetMs: 1000
 				}
 				const child = current.childTool("intercom");
 				const execution = child.execute({ action: "ask", to: "parent-id", message: "Choose" });
-				await vi.waitFor(() => assert.equal(current.surfaced.length, 1));
+				await current.until(() => current.surfaced.length >= 1);
+				assert.equal(current.surfaced.length, 1);
 				const closed = await current.host.close(cause);
 				assert.ok(closed.ok);
 				assert.equal((await execution).isError, true);
@@ -535,11 +576,13 @@ test("unbound parallel Intercom yield keeps execution concurrency and queued sib
 		await current.start();
 		const child = current.childTool("intercom");
 		const execution = child.execute({ action: "ask", to: "parent-id", message: "Choose" });
-		await vi.waitFor(() => assert.equal(current.surfaced.length, 1));
+		await current.until(() => current.surfaced.length >= 1);
+		assert.equal(current.surfaced.length, 1);
 		await current.launch;
 		assert.deepEqual(current.starts, [0, 1], "observation yield must not spend another execution slot");
 		await current.finish(1);
-		await vi.waitFor(() => assert.deepEqual(current.starts, [0, 1, 2]));
+		await current.until(() => current.starts.length === 3);
+		assert.deepEqual(current.starts, [0, 1, 2]);
 		await current.finish(2);
 		assert.equal(child.reply(current.surfaced[0]!.id), true);
 		assert.equal((await execution).isError, false);
@@ -557,14 +600,15 @@ for (const replyFirst of [false, true]) {
 			await current.start();
 			const child = current.childTool("supervisor");
 			const execution = child.execute({ reason: "need_decision", message: "Choose" });
-			await vi.waitFor(() => assert.equal(current.surfaced.length, 1));
+			await current.until(() => current.surfaced.length >= 1);
+			assert.equal(current.surfaced.length, 1);
 			await current.launch;
 			if (replyFirst) assert.equal(child.reply(current.surfaced[0]!.id), true);
 			current.batchSignal.abort();
 			assert.equal((await execution).isError, !replyFirst);
 			assert.equal(child.waits.has(), false);
 			assert.equal(child.reply(current.surfaced[0]!.id), false);
-			await vi.waitFor(() => assert.equal(current.terminal.size, 3));
+			await current.until(() => current.terminal.size === 3);
 			assert.ok([...current.terminal.values()].every((result) => result.status === "interrupted"));
 			assert.deepEqual(current.effects, []);
 		} finally {
@@ -636,12 +680,14 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 					);
 					assert.equal(current.optionsByIndex.get(1)!.signal?.aborted, false);
 					await current.finish(1);
-					await vi.waitFor(() =>
-						assert.ok(
-							current
-								.snapshot()
-								.every((task) => task.execution.kind === "settled" && task.cleanup.kind === "reaped"),
-						),
+					await vi.waitFor(
+						() =>
+							assert.ok(
+								current
+									.snapshot()
+									.every((task) => task.execution.kind === "settled" && task.cleanup.kind === "reaped"),
+							),
+						STATE_POLL,
 					);
 					assert.deepEqual(current.effects, [0, 1]);
 				} else {
@@ -663,12 +709,14 @@ for (const wait of [undefined, { kind: "background" }, { kind: "foreground", bud
 					[0, 1],
 					"cancelled queued child must never execute, even after capacity opens",
 				);
-				await vi.waitFor(() =>
-					assert.equal(
-						current.git("worktree", "list", "--porcelain"),
-						originalWorktrees,
-						"all clean child worktrees must be removed",
-					),
+				await vi.waitFor(
+					() =>
+						assert.equal(
+							current.git("worktree", "list", "--porcelain"),
+							originalWorktrees,
+							"all clean child worktrees must be removed",
+						),
+					STATE_POLL,
 				);
 				assert.equal(
 					current.git("branch", "--format=%(refname)"),

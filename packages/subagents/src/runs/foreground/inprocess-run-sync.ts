@@ -129,7 +129,10 @@ function resultFromOutcome(
 		envelope: outcome.status === "killed" ? output : outcome.envelope,
 		interrupted: status === "interrupted" ? true : undefined,
 		...(outcome.status === "interrupted" && outcome.pendingMessages
-			? { pendingMessages: outcome.pendingMessages }
+			? {
+					pendingMessages: outcome.pendingMessages,
+					...(outcome.pendingTaskExpands ? { pendingTaskExpands: true } : {}),
+				}
 			: {}),
 		messages: [],
 		usage: usageFromStats(outcome.stats),
@@ -288,6 +291,7 @@ export async function runSingleInProcess(
 		sessionManager: options.sessionManager,
 		...(options.resumeSession ? { resumeSession: true } : {}),
 		...(options.resumeFollowUps?.length ? { resumeFollowUps: options.resumeFollowUps } : {}),
+		...(options.resumeTaskLiteral ? { resumeTaskLiteral: true } : {}),
 		...(options.onChildSession ? { onChildSession: options.onChildSession } : {}),
 		...(options.onChildLaunch ? { onChildLaunch: options.onChildLaunch } : {}),
 		...(options.progressPath ? { progressPath: options.progressPath } : {}),

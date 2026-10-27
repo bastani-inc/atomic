@@ -1,4 +1,5 @@
 import type { AgentSession } from "@bastani/atomic";
+import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import type { StageSessionCreateResult, StageSessionRuntime } from "./stage-runner-types.js";
 
 type StageSessionExtensionRunner = {
@@ -121,5 +122,16 @@ export function attachCreatedStageSession<T>(
 
 async function rejectDisposedCreatedSession(result: StageSessionCreateResult, stageName: string): Promise<never> {
 	await disposeStageSession(result.session);
-	throw new Error(`atomic-workflows: stage "${stageName}" session has been disposed`);
+	throw stageError(stageName, "session has been disposed");
+}
+
+/**
+ * `atomic-workflows: stage "<name>" <detail>`, classified as that text without the stage name, so a stage's
+ * name never decides how its failure is classified (#4031).
+ */
+export function stageError(stageName: string, detail: string): Error {
+	return classifyFailureFrom(
+		new Error(`atomic-workflows: stage "${stageName}" ${detail}`),
+		new Error(`atomic-workflows: stage ${detail}`),
+	);
 }

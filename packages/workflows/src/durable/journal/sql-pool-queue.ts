@@ -64,7 +64,8 @@ export interface PoolWorkDescriptor {
 }
 export interface PoolWork extends PoolWorkDescriptor {
 	readonly id: string;
-	readonly state: "ready" | "leased" | "completed";
+	/** `failed`: not completed in its root incarnation; a resumed root that enqueues it again replays it. */
+	readonly state: "ready" | "leased" | "completed" | "failed";
 	readonly generation: number;
 	readonly worker: string | null;
 	readonly epoch: number;
@@ -355,10 +356,12 @@ export class SqlPoolQueue {
 			);
 			if (previous) {
 				if (previous.fingerprint !== fingerprint) throw new Error("Pool boundary identity conflict");
-				if (previous.state !== "ready" || previous.epoch === lease.epoch) return fromRow(previous);
-				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979).
-				await tx.run(`UPDATE ${this.work} SET epoch = ? WHERE id = ?`, lease.epoch, previous.id);
-				return fromRow({ ...previous, epoch: lease.epoch });
+				if ((previous.state !== "ready" && previous.state !== "failed") || previous.epoch >= lease.epoch)
+					return fromRow(previous);
+				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
+				// work that incarnation failed or left unfinished when its pool closed.
+				await tx.run(`UPDATE ${this.work} SET state = 'ready', epoch = ? WHERE id = ?`, lease.epoch, previous.id);
+				return fromRow({ ...previous, state: "ready", epoch: lease.epoch });
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
 				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
@@ -641,6 +644,13 @@ export class SqlPoolQueue {
 		});
 	}
 	async releaseExited(lease: Lease, token: WorkLease): Promise<boolean> {
+		return this.settleExited(lease, token, "ready");
+	}
+	/** Fails an exited attempt's work item for this root incarnation: no worker claims it again. */
+	async failExited(lease: Lease, token: WorkLease): Promise<boolean> {
+		return this.settleExited(lease, token, "failed");
+	}
+	private async settleExited(lease: Lease, token: WorkLease, state: "ready" | "failed"): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		return this.transaction(async (tx) => {
@@ -657,7 +667,7 @@ export class SqlPoolQueue {
 				row.epoch !== token.epoch
 			)
 				return false;
-			await tx.run(`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0 WHERE id = ?`, row.id);
+			await tx.run(`UPDATE ${this.work} SET state = ?, worker = NULL, expires_at = 0 WHERE id = ?`, state, row.id);
 			return true;
 		});
 	}
@@ -679,6 +689,25 @@ export class SqlPoolQueue {
 				row.id,
 			);
 			return true;
+		});
+	}
+	/**
+	 * Settles the work this root left unfinished when its pool closes (#3996): work this incarnation's workers still
+	 * hold, and work no worker claimed, ends `failed`, so none stays `ready` or `leased` for a root whose pool is gone.
+	 * The `retained` work ids, and earlier incarnations' attempts still leased, keep their leases. A resumed root that
+	 * enqueues failed work again replays it.
+	 */
+	async releaseClosed(lease: Lease, retained: readonly string[] = []): Promise<number> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const released = await tx.run(
+				`UPDATE ${this.work} SET state = 'failed', worker = NULL, expires_at = 0 WHERE root = ? AND (state = 'ready' OR (state = 'leased' AND epoch = ?)) AND id NOT IN (SELECT value FROM json_each(?))`,
+				lease.runId,
+				lease.epoch,
+				JSON.stringify(retained),
+			);
+			return released.changes;
 		});
 	}
 	/** Releases work leased by earlier root incarnations, except the `retained` work ids, which stay leased. */
@@ -706,15 +735,22 @@ export class SqlPoolQueue {
 
 /**
  * Whether the checkpoint serialized as `payload` is the one already stored as `stored`, so re-recording it keeps the first write.
- * Only the record time may differ: a later work generation that replays a cached stage re-records its
- * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time.
+ * Only its times may differ: a later work generation that replays a cached stage re-records its
+ * `stage-replay-meta:` checkpoint under the same content-derived id, stamped with that replay's time,
+ * and one that replays a human-input prompt still pending when its worker died re-records that
+ * prompt's stage checkpoint with the time the replay asked it again (#3996).
  * Any other difference is a different checkpoint and still conflicts.
  */
 function isRecordedCheckpoint(stored: string, payload: string): boolean {
 	if (stored === payload) return true;
-	const { completedAt } = JSON.parse(stored) as { readonly completedAt?: number };
+	const { completedAt, startedAt } = JSON.parse(stored) as {
+		readonly completedAt?: number;
+		readonly startedAt?: number;
+	};
 	if (typeof completedAt !== "number") return false;
-	return serializeJson({ ...(JSON.parse(payload) as { readonly completedAt: number }), completedAt }) === stored;
+	const next = JSON.parse(payload) as { readonly completedAt: number; readonly startedAt?: number };
+	if ((startedAt === undefined) !== (next.startedAt === undefined)) return false;
+	return serializeJson({ ...next, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }) === stored;
 }
 
 export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {

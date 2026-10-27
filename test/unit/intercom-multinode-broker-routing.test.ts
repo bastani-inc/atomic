@@ -42,6 +42,12 @@ import { SupervisorChannelCache } from "../../packages/intercom/broker/superviso
 import type { WakeUpBus } from "../../packages/intercom/broker/wake-up-bus.js";
 import { normalizeGroup } from "../../packages/intercom/group.js";
 import { NON_AGENT_RECIPIENT_REFUSAL, TERMINAL_CHILD_ASK_REFUSAL } from "../../packages/intercom/recipient-purpose.js";
+import {
+	RECIPIENT_RECEIPT_TIMEOUT_MS,
+	RECIPIENT_SAVE_MAX_WAIT_MS,
+	RECIPIENT_SAVING_REPORT_INTERVAL_MS,
+	SEND_RESPONSE_TIMEOUT_MS,
+} from "../../packages/intercom/retry-policy.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import {
 	type OpenSharedStoreFixture,
@@ -984,3 +990,153 @@ test("an ask to an offline terminal child is refused like an ask to a live one",
 	a!.send(asker, "child", plain);
 	assert.equal((await waitFor(() => outcomeOf(asker, plain.id))).type, "queued", "a plain send is still queued");
 });
+
+/** A write stall on the sender's shared connection: longer than the sender's wait past the receipt wait. */
+const OUTBOX_READ_STALL_MS = 5_000;
+const SLOW_HOLD_TEST_TIMEOUT_MS = 4 * (RECIPIENT_RECEIPT_TIMEOUT_MS + OUTBOX_READ_STALL_MS);
+
+test(
+	"a remote recipient still saving keeps its sender waiting even when the hold check's outbox read is slow (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		const sent = message();
+		const sentAt = Date.now();
+		a!.send(sender, "recipient", sent);
+		await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+		// The recipient's save is held while it reports progress, as a pooled stage's journal commit can wait.
+		const saving = setInterval(() => b!.router.saving(recipient, sent.id), RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+		b!.router.saving(recipient, sent.id);
+		// From now on the sender's broker reads the outbox behind a write stall on its shared connection.
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			await new Promise((resolveStall) => setTimeout(resolveStall, OUTBOX_READ_STALL_MS));
+			return read(messageId);
+		});
+		try {
+			const held = await waitFor(
+				() =>
+					framesOf(sender).find((frame) => frame.type === "send_held" && frame.messageId === sent.id) === undefined
+						? undefined
+						: Date.now(),
+				SEND_RESPONSE_TIMEOUT_MS + OUTBOX_READ_STALL_MS,
+			);
+			// The sender's client gives up `SEND_RESPONSE_TIMEOUT_MS` after its send unless a hold reaches it first.
+			assert.ok(
+				held - sentAt < SEND_RESPONSE_TIMEOUT_MS,
+				`the sender was told to keep waiting only ${held - sentAt} ms after its send`,
+			);
+			assert.equal(outcomeOf(sender, sent.id), undefined, "no outcome while the recipient is still saving");
+			// The recipient keeps reporting through another receipt wait, then saves.
+			await new Promise((resolveSave) => setTimeout(resolveSave, RECIPIENT_RECEIPT_TIMEOUT_MS));
+			clearInterval(saving);
+			b!.router.received(recipient, sent.id);
+			const outcome = await waitFor(() => outcomeOf(sender, sent.id), CROSS_NODE_WAIT_MS + OUTBOX_READ_STALL_MS);
+			assert.equal(outcome.type, "delivered", JSON.stringify(outcome));
+			assert.equal(
+				framesOf(sender).filter((frame) => frame.type === "delivery_failed" && frame.messageId === sent.id).length,
+				0,
+			);
+			assert.equal(messageFrames(recipient, sent.id).length, 1, "delivered once");
+		} finally {
+			clearInterval(saving);
+			spy.mockRestore();
+		}
+	},
+	SLOW_HOLD_TEST_TIMEOUT_MS,
+);
+
+/** Steps fake time forward, letting the real store and bus settle between steps. */
+async function advance(totalMs: number, stepMs = 500): Promise<void> {
+	for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
+		await vi.advanceTimersByTimeAsync(stepMs);
+		await new Promise((resolveTick) => setImmediate(resolveTick));
+	}
+}
+
+test(
+	"a send whose hold check meets a permanently stalled store keeps one read in flight and ends uncertain within the save cap (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		const outbox = a!.opened.state.outbox;
+		const read = outbox.read.bind(outbox);
+		let stalled = false;
+		let inFlight = 0;
+		let mostInFlight = 0;
+		const spy = vi.spyOn(outbox, "read").mockImplementation(async (messageId) => {
+			if (!stalled) return read(messageId);
+			inFlight += 1;
+			mostInFlight = Math.max(mostInFlight, inFlight);
+			return new Promise<never>(() => {});
+		});
+		try {
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			b!.router.saving(recipient, sent.id);
+			stalled = true;
+			await advance(RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_RECEIPT_TIMEOUT_MS);
+			const outcome = outcomeOf(sender, sent.id);
+			assert.equal(outcome?.type, "delivery_failed", JSON.stringify(outcome));
+			assert.equal(mostInFlight, 1, `${mostInFlight} hold-check reads were in flight at once`);
+			const holds = framesOf(sender).filter((frame) => frame.type === "send_held" && frame.messageId === sent.id);
+			for (const hold of holds)
+				assert.ok(
+					hold.type === "send_held" && hold.timeoutMs <= RECIPIENT_SAVE_MAX_WAIT_MS,
+					"no hold reaches past the save cap",
+				);
+			assert.ok(Date.now() - sentAt >= RECIPIENT_RECEIPT_TIMEOUT_MS);
+		} finally {
+			spy.mockRestore();
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);
+
+test(
+	"a remote recipient that keeps reporting progress with a fast store keeps its sender waiting until the save cap (#3983)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("recipient");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		try {
+			const sent = message();
+			const sentAt = Date.now();
+			a!.send(sender, "recipient", sent);
+			await waitFor(() => (messageFrames(recipient, sent.id).length > 0 ? true : undefined));
+			let outcomeAt: number | undefined;
+			for (let elapsed = 0; elapsed < RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_RECEIPT_TIMEOUT_MS; ) {
+				b!.router.saving(recipient, sent.id);
+				await advance(RECIPIENT_SAVING_REPORT_INTERVAL_MS);
+				elapsed += RECIPIENT_SAVING_REPORT_INTERVAL_MS;
+				if (outcomeAt === undefined && outcomeOf(sender, sent.id) !== undefined) outcomeAt = Date.now();
+			}
+			assert.equal(outcomeOf(sender, sent.id)?.type, "delivery_failed");
+			assert.ok(outcomeAt !== undefined);
+			const waited = outcomeAt - sentAt;
+			assert.ok(
+				waited >= RECIPIENT_SAVE_MAX_WAIT_MS - RECIPIENT_RECEIPT_TIMEOUT_MS,
+				`the sender heard the outcome after ${waited} ms, before the save cap`,
+			);
+			assert.ok(
+				waited <= RECIPIENT_SAVE_MAX_WAIT_MS + RECIPIENT_SAVING_REPORT_INTERVAL_MS,
+				`the sender waited ${waited} ms, past the save cap`,
+			);
+			assert.ok(
+				framesOf(sender).filter((frame) => frame.type === "send_held" && frame.messageId === sent.id).length > 1,
+				"progress reports held the sender",
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+	CROSS_NODE_WAIT_MS * 6,
+);

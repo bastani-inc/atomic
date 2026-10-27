@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
-import { createAskUserQuestionToolDefinition } from "@bastani/atomic";
 import { currentPromptCallerStack } from "../../shared/prompt-callsite-context.js";
-import { buildStagePromptAdapter } from "../../shared/stage-prompt.js";
+import { presentStageQuestion } from "../../shared/stage-question-form.js";
 import type { StageUiBroker } from "../../shared/stage-ui-broker.js";
 import type { CustomPromptIdentitySource, PendingPrompt } from "../../shared/store-types.js";
 import type {
@@ -337,52 +336,24 @@ export function shouldInjectResumeContinuation(state: {
 	return state.reason === "queued-user-message" || state.reason === "paused-queued-user-message" || state.gateEnabled;
 }
 
-let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;
-function readinessGateTool(): ReturnType<typeof createAskUserQuestionToolDefinition> {
-	if (cachedReadinessGateTool === undefined) {
-		cachedReadinessGateTool = createAskUserQuestionToolDefinition({ chatAsOption: true });
-	}
-	return cachedReadinessGateTool;
-}
-
 export async function askReadinessViaStageBroker(
 	runId: string,
 	stageId: string,
 	signal: AbortSignal,
 	stageUiBroker: StageUiBroker,
 ): Promise<ReadinessDecision> {
-	const execute = readinessGateTool().execute;
-	if (execute === undefined) return { action: "advance" };
-	const gateContext = {
-		hasUI: true,
-		ui: {
-			custom: (factory: unknown, options?: unknown): Promise<unknown> =>
-				stageUiBroker.requestCustomUi(
-					runId,
-					stageId,
-					factory as Parameters<StageUiBroker["requestCustomUi"]>[2],
-					options as Parameters<StageUiBroker["requestCustomUi"]>[3],
-					signal,
-				),
-		},
-	};
 	const gatePromptId = `readiness-gate-${stageId}-${crypto.randomUUID()}`;
-	const gateAdapter = buildStagePromptAdapter(
-		gatePromptId,
-		"readiness_gate",
-		READINESS_GATE_QUESTION_PARAMS,
-		Date.now(),
-	);
-	if (gateAdapter) stageUiBroker.provideStagePrompt(runId, stageId, gateAdapter);
 	try {
-		const result = await execute(
-			gatePromptId,
-			READINESS_GATE_QUESTION_PARAMS as Parameters<typeof execute>[1],
+		const result = await presentStageQuestion({
+			broker: stageUiBroker,
+			runId,
+			stageId,
+			promptId: gatePromptId,
+			kind: "readiness_gate",
+			params: READINESS_GATE_QUESTION_PARAMS,
 			signal,
-			undefined,
-			gateContext as unknown as Parameters<typeof execute>[4],
-		);
-		return interpretReadinessResult(result);
+		}).result;
+		return result === undefined ? { action: "advance" } : interpretReadinessResult(result);
 	} finally {
 		stageUiBroker.clearStagePrompt(runId, stageId);
 	}

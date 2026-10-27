@@ -45,6 +45,7 @@ export type {
 	NoticeLevel,
 	PendingPrompt,
 	PromptKind,
+	RunFailureClassification,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
