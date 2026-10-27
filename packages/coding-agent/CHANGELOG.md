@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.46-alpha.1] - 2026-10-27
+
+Stages on local workers can now be watched, steered, paused and answered live; large pooled workflows stay responsive and recover cleanly from rate limits, worker crashes and resumes; and GPT-6.1 Terra is available.
+
+- **Live chat for pooled stages:** opening a running stage on a local worker shows its live transcript. Enter steers, Ctrl+F queues a follow-up, `/workflow pause <run> <stage>` pauses just that stage, and `ctx.ui` and `ask_user_question` prompts are answered from the stage chat. When a worker dies, the chat reconnects to its replacement, a pending prompt is asked again, and every pending message is delivered exactly once.
+- **Responsive at scale:** a 150-worker fan-out no longer stalls the root while children start or finish, even with the graph and a stage chat open. One child that keeps losing its worker now fails alone instead of taking its siblings with it.
+- **Rate limits handled the way providers ask:** `Retry-After` is honored on every provider path, including Google and Bedrock. A quota-exhausted model moves straight to the next fallback, a chain where every model is throttled waits for the earliest cooldown, and a limit one local worker meets now holds back the other workers and the root too.
+- **Failures classified by what happened:** a child workflow's failure no longer depends on its name, and SDK callers get the classification in `RunResult.failure`.
+- **Pools that survive crashes and resumes:** resuming a quit root no longer fails in-flight children, journal writers are served in order instead of timing out, and workflow runs survive a deleted `jiti` cache.
+- **New models:** GPT-6.1 Terra on OpenAI, Azure and Codex, with a Fast tier on the OpenAI API, and correct reasoning-effort levels for GPT-6 models on Bedrock.
+- **Hardening from upstream pi:** OAuth logins accept only trusted URLs, terminal titles and the login dialog strip control characters, and the CLI auth file is written with mode 0600.
+
 ### Added
 
 - GPT-6.1 Terra is available as `openai/gpt-6.1-terra`, `openai-codex/gpt-6.1-terra` and `azure/gpt-6.1-terra`, with a derived `openai/gpt-6.1-terra-fast` choice. It supports `off` through `max` (not `minimal`), and `openai-codex/gpt-6.1-terra` has a 500K context window ([pi 363ad78b](https://github.com/earendil-works/pi/commit/363ad78bf0625e1dfbe848429782f5e07bb1584e))

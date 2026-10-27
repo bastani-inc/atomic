@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.46-alpha.1] - 2026-10-27
+
 ### Added
 
 - `RunResult.failure` (type `RunFailureClassification`, exported from `@bastani/atomic/workflows`) describes how a failed or blocked run's failure was classified: `kind`, `code`, `retryable`, `resumable`, `recoverability`, `disposition` and `retryAfterMs`. It is absent for runs that did not fail and for results recorded by earlier releases ([#4031](https://github.com/bastani-inc/atomic/issues/4031))
