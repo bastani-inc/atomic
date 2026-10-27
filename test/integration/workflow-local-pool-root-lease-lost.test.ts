@@ -8,9 +8,7 @@ import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
@@ -68,6 +66,9 @@ test.skipIf(process.platform === "win32")(
 		// The in-process coordinator forks the workers from this process, so their spawns and exit codes are observable.
 		const exits: { readonly pid: number | undefined; readonly code: number | null }[] = [];
 		let spawns = 0;
+		// Workers whose request the coordinator refused because the root's lease is gone: its claim or its control
+		// request, whichever the worker sent first after the release (both check the root's lease).
+		const leaseLostReplies = new Set<number>();
 		const emit = ChildProcess.prototype.emit as (
 			this: ChildProcess,
 			event: string | symbol,
@@ -78,19 +79,19 @@ test.skipIf(process.platform === "win32")(
 			event: string | symbol,
 			...args: unknown[]
 		) {
-			if (event === "spawn") spawns += 1;
+			if (event === "spawn") {
+				spawns += 1;
+				// Each forked worker has its own IPC `send`; record the replies that tell it the root's lease is gone.
+				const send = this.send.bind(this) as (message: object, ...rest: unknown[]) => boolean;
+				const pid = this.pid;
+				this.send = ((message: object, ...rest: unknown[]) => {
+					if ((message as { readonly rootLeaseLost?: boolean }).rootLeaseLost === true && pid !== undefined)
+						leaseLostReplies.add(pid);
+					return send(message, ...rest);
+				}) as typeof this.send;
+			}
 			if (event === "exit") exits.push({ pid: this.pid, code: args[0] as number | null });
 			return emit.call(this, event, ...args);
-		});
-		let staleClaims = 0;
-		const claim = SqlPoolQueue.prototype.claim;
-		vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (this: SqlPoolQueue, ...args) {
-			try {
-				return await claim.apply(this, args);
-			} catch (error) {
-				if (error instanceof StaleLeaseError) staleClaims += 1;
-				throw error;
-			}
 		});
 		// Every wait shares the test's budget.
 		const budget = AbortSignal.timeout(BUDGET.waitMs);
@@ -114,11 +115,14 @@ test.skipIf(process.platform === "win32")(
 			const workers = [...pool.workerPids];
 			assert.equal(workers.length, WORKERS);
 			const spawnedBefore = spawns;
-			await waitUntil(() => staleClaims > 0, "a claim to meet the released root lease", budget);
 			await waitUntil(
 				() => workers.every((pid) => exits.some((exit) => exit.pid === pid)),
 				"every worker to end after the root lease is gone",
 				budget,
+			);
+			assert.ok(
+				[...leaseLostReplies].some((pid) => workers.includes(pid)),
+				"the coordinator told a worker the root's lease is gone",
 			);
 			for (const pid of workers)
 				assert.equal(
