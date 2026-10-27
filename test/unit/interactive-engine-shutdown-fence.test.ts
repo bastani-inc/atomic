@@ -210,7 +210,11 @@ serialTest(
 				() => undefined,
 				(error: unknown) => error,
 			);
-			await sleep(5);
+			// Let restart() run up to its stop fence without letting the first stop finish: restart takes
+			// its permit synchronously and reaches the fence within a few microtasks, while the first
+			// stop cannot finish before the child's exit arrives as I/O. A timer here could oversleep
+			// under load until the first stop had finished, so the second stop would start a new one.
+			for (let turn = 0; turn < 10; turn++) await Promise.resolve();
 			const secondStop = client.stop();
 			assert.strictEqual(secondStop, firstStop, "concurrent stops must share the teardown");
 
