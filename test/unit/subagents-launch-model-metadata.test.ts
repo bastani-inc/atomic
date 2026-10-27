@@ -78,9 +78,12 @@ async function withQueuedLaunch(
 	const terminal = Promise.withResolvers<SingleResult>();
 	const updates: SubagentToolResult[] = [];
 	try {
-		// Hold the four admitted turns to keep the next child before session creation.
-		// This exercises the same early receipt boundary as asynchronous resource loading,
-		// without mocking model selection, the owner task store, or the renderer.
+		// Hold four admitted turns in a run that runs four children at a time, so the fifth child
+		// waits for a slot before its session exists until the test releases them. The default running
+		// capacity (1000 since the agent-count raise) admits it at once, racing its session start
+		// against every "before the child reports" read here. This exercises the same early receipt
+		// boundary as asynchronous resource loading, without mocking model selection, the owner task
+		// store, or the renderer.
 		for (let index = 0; index < 5; index++) {
 			const response = await runAgentTask({
 				host,
@@ -94,6 +97,7 @@ async function withQueuedLaunch(
 					currentModel: "fixture/inherited",
 					currentThinkingLevel: "high",
 					resolveCandidateModel: createCandidateModelResolver(lookup),
+					runningCapacity: 4,
 					testSession: { promptGate: gate.promise },
 					...(index === 4 ? config.options : {}),
 					onUpdate: index === 4 ? (update) => updates.push(update) : undefined,

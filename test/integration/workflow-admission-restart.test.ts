@@ -7,12 +7,18 @@ import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-const RESTART_PROCESS_TIMEOUT_MS = 120_000;
+/**
+ * Two owner processes each load the admission runtime through jiti, and the coordinator also starts an agent session:
+ * as slow as a pool's cold start under load. Every wait shares this one budget instead of fixed per-step bounds.
+ */
+const BUDGET = poolTestBudgetMs(2);
 test.skipIf(process.platform === "win32")(
 	"restart retires dead owners and FIFO waiters but retains live paused owners (#3869)",
 	async () => {
+		const budget = AbortSignal.timeout(BUDGET.waitMs);
 		const directory = makeTempDirectory("admission-restart-");
 		const path = join(directory, "journal.sqlite");
 		const children: ChildProcess[] = [];
@@ -26,7 +32,7 @@ test.skipIf(process.platform === "win32")(
 				{ stdio: ["ignore", "ignore", "inherit", "ipc"], execArgv: [] },
 			);
 			children.push(child);
-			const [message] = await once(child, "message", { signal: AbortSignal.timeout(30_000) });
+			const [message] = await once(child, "message", { signal: budget });
 			if (holder === "coordinator") {
 				groupId = (message as { groupId: number }).groupId;
 				assert.ok(Number.isSafeInteger(groupId) && groupId > 0);
@@ -73,7 +79,7 @@ test.skipIf(process.platform === "win32")(
 				rows.find((row) => row.holder === "coordinator" && row.kind === "process")?.reason,
 				"cleanup unconfirmed",
 			);
-			const release = await replacement.acquire("session", AbortSignal.timeout(5000));
+			const release = await replacement.acquire("session", budget);
 			await database.run("UPDATE wf_runs_resource_owners SET expires_at = 0");
 			await replacement.reconcile();
 			assert.equal(
@@ -85,14 +91,13 @@ test.skipIf(process.platform === "win32")(
 				1,
 			);
 			process.kill(-groupId!, "SIGKILL");
-			const cleanupSignal = AbortSignal.timeout(5000);
 			while ((await replacement.inspect()).some((row) => row.kind === "process" && row.state === "granted")) {
-				cleanupSignal.throwIfAborted();
+				budget.throwIfAborted();
 				await replacement.reconcile();
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 			groupId = undefined;
-			const releaseProcess = await replacement.acquire("process", cleanupSignal);
+			const releaseProcess = await replacement.acquire("process", budget);
 			await releaseProcess();
 			await stop(worker);
 			await replacement.reconcile();
@@ -114,5 +119,5 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
-	RESTART_PROCESS_TIMEOUT_MS,
+	BUDGET.timeoutMs,
 );

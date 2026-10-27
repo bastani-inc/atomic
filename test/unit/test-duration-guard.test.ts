@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -770,6 +770,643 @@ test("templated and dynamic-table titles keep their budgets by matching the repo
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+/**
+ * Score a scratch suite beside the repository's real pool budget helper
+ * (`test/helpers/pool-budget.ts`, copied in as `helpers/pool-budget.ts`), with
+ * each test reported once. Extra helper modules are written under `helpers/` by
+ * name.
+ */
+function scorePoolSuite(
+	lines: string[],
+	titles: string[],
+	helpers: Record<string, string[]> = {},
+): Map<string, { timeoutMs: number; unresolved: boolean }> {
+	const directory = mkdtempSync(join(tmpdir(), "atomic-duration-pool-"));
+	try {
+		mkdirSync(join(directory, "helpers"));
+		mkdirSync(join(directory, "integration"));
+		copyFileSync(join(root, "test/helpers/pool-budget.ts"), join(directory, "helpers/pool-budget.ts"));
+		for (const [name, source] of Object.entries(helpers)) {
+			writeFileSync(join(directory, "helpers", name), source.join("\n"));
+		}
+		writeFileSync(join(directory, "integration/pool.test.ts"), lines.join("\n"));
+		const scored = evaluateDurations(
+			report(
+				[
+					{
+						file: "integration/pool.test.ts",
+						// A title written `scope > name` is reported inside that describe scope.
+						tests: titles.map((title) => {
+							const parts = title.split(" > ");
+							return {
+								scopes: parts.slice(0, -1),
+								title: parts.at(-1) ?? title,
+								status: "passed",
+								duration: 40_000,
+							};
+						}),
+					},
+				],
+				directory,
+			),
+			30_000,
+			directory,
+		);
+		return new Map(
+			scored.samples.map((sample) => [
+				sample.fullName,
+				{ timeoutMs: sample.timeoutMs, unresolved: sample.unresolved },
+			]),
+		);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+// The pool suites (#4043, #4051) declare budgets through `poolTestBudgetMs(pools)`
+// and member reads of its result or of object literals built from it.
+test("budgets from an imported pure helper and constant object members are scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const BUDGET = poolTestBudgetMs(2);",
+			"const SINGLE_POOL = poolTestBudgetMs(3);",
+			"const TWO_POOLS = {",
+			"\twaitMs: 2 * SINGLE_POOL.waitMs,",
+			"\ttimeoutMs: 2 * SINGLE_POOL.waitMs + POOL_CLEANUP_HEADROOM_MS,",
+			"} as const;",
+			"const QUIT_RESUME_TIMEOUT_MS = 2 * SINGLE_POOL.waitMs + POOL_CLEANUP_HEADROOM_MS;",
+			"const LOCAL_BUDGETS = { slow: 90_000, nested: { slower: 95_000 } };",
+			"const twice = (ms: number) => 2 * ms;",
+			"function padded(ms: number) {",
+			"\tconst pad = 5_000;",
+			"\treturn ms + pad;",
+			"}",
+			'test("helper result member", async () => {',
+			"}, BUDGET.timeoutMs);",
+			'test("object built from helper members", async () => {',
+			"}, TWO_POOLS.timeoutMs);",
+			'test("constant built from helper members", async () => {',
+			"}, QUIT_RESUME_TIMEOUT_MS);",
+			'test("inline helper call", async () => {',
+			"}, poolTestBudgetMs(1).timeoutMs);",
+			'test("local object member", async () => {',
+			"}, LOCAL_BUDGETS.slow);",
+			'test("nested object member", async () => {',
+			"}, LOCAL_BUDGETS.nested.slower);",
+			'test("local arrow helper", async () => {',
+			"}, twice(30_000));",
+			'test("local function helper with a const", async () => {',
+			"}, padded(60_000));",
+		],
+		[
+			"helper result member",
+			"object built from helper members",
+			"constant built from helper members",
+			"inline helper call",
+			"local object member",
+			"nested object member",
+			"local arrow helper",
+			"local function helper with a const",
+		],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["helper result member", { timeoutMs: 165_000, unresolved: false }],
+			["object built from helper members", { timeoutMs: 465_000, unresolved: false }],
+			["constant built from helper members", { timeoutMs: 465_000, unresolved: false }],
+			["inline helper call", { timeoutMs: 90_000, unresolved: false }],
+			["local object member", { timeoutMs: 90_000, unresolved: false }],
+			["nested object member", { timeoutMs: 95_000, unresolved: false }],
+			["local arrow helper", { timeoutMs: 60_000, unresolved: false }],
+			["local function helper with a const", { timeoutMs: 65_000, unresolved: false }],
+		]),
+	);
+});
+
+// #4051 wraps the pool helper in a local `testBudget(coldStarts)` that caps the
+// budget with `Math.min` against a named constant.
+test("a local helper capping the pool budget with Math.min is scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { POOL_CLEANUP_HEADROOM_MS, poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const TEST_BUDGET_CAP_MS = 600_000;",
+			"function testBudget(coldStarts: number): { readonly waitMs: number; readonly timeoutMs: number } {",
+			"\tconst waitMs = Math.min(poolTestBudgetMs(coldStarts).waitMs, TEST_BUDGET_CAP_MS - POOL_CLEANUP_HEADROOM_MS);",
+			"\treturn { waitMs, timeoutMs: waitMs + POOL_CLEANUP_HEADROOM_MS };",
+			"}",
+			"const ROOT_PROCESS_COLD_STARTS = 4;",
+			"const POOL_COLD_STARTS = 3;",
+			"const RESUMES = 4;",
+			"const LEASE_STALL = testBudget(ROOT_PROCESS_COLD_STARTS);",
+			"const RESUME_CYCLES = testBudget((RESUMES + 1) * POOL_COLD_STARTS + 1);",
+			"const LARGEST = Math.max(LEASE_STALL.timeoutMs, 1_000);",
+			'test("under the cap", async () => {',
+			"}, LEASE_STALL.timeoutMs);",
+			'test("capped", async () => {',
+			"}, RESUME_CYCLES.timeoutMs);",
+			'test("Math.max of constants", async () => {',
+			"}, LARGEST);",
+		],
+		["under the cap", "capped", "Math.max of constants"],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["under the cap", { timeoutMs: 315_000, unresolved: false }],
+			["capped", { timeoutMs: 600_000, unresolved: false }],
+			["Math.max of constants", { timeoutMs: 315_000, unresolved: false }],
+		]),
+	);
+});
+
+test("Math members are only evaluated when Math is the global and the method is a pure numeric one", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const Clamp = { min: (a: number) => a };",
+			'test("random", async () => {',
+			"}, Math.random() * 1_000);",
+			'test("min of a non-constant", async () => {',
+			"}, Math.min(rows.length, 1_000));",
+			'test("not the Math global", async () => {',
+			"}, Clamp.min(1_000));",
+		],
+		["random", "min of a non-constant", "not the Math global"],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 3);
+});
+
+test("a shadowed Math is not treated as the global", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const Math = { min: (a: number, b: number) => a + b };",
+			'test("shadowed", async () => {',
+			"}, Math.min(1_000, 2_000));",
+		],
+		["shadowed"],
+	);
+	assert.deepEqual(budgets.get("shadowed"), { timeoutMs: 0, unresolved: true });
+});
+const UNRESOLVED = { timeoutMs: 0, unresolved: true } as const;
+
+// Greptile PRRT_kwDOQHh8ns6whbCu: an object spread whose field is unknown must
+// override earlier values in source order instead of being dropped.
+test("a spread or getter that overrides a field with an unknown value leaves it unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const OVERRIDDEN = { timeoutMs: 90_000, ...{ timeoutMs: rows.length * 1_000 } };",
+			"const UNKNOWN_SPREAD = { timeoutMs: 90_000, ...lookup() };",
+			"const GETTER = { timeoutMs: 90_000, ...{ get timeoutMs() { return 1_000; } } };",
+			"const SPREAD_THEN_SET = { ...{ timeoutMs: rows.length }, timeoutMs: 80_000 };",
+			'test("unknown spread field", async () => {',
+			"}, OVERRIDDEN.timeoutMs);",
+			'test("unresolvable spread", async () => {',
+			"}, UNKNOWN_SPREAD.timeoutMs);",
+			'test("getter spread", async () => {',
+			"}, GETTER.timeoutMs);",
+			'test("later property wins", async () => {',
+			"}, SPREAD_THEN_SET.timeoutMs);",
+		],
+		["unknown spread field", "unresolvable spread", "getter spread", "later property wins"],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["unknown spread field", UNRESOLVED],
+			["unresolvable spread", UNRESOLVED],
+			["getter spread", UNRESOLVED],
+			["later property wins", { timeoutMs: 80_000, unresolved: false }],
+		]),
+	);
+});
+
+// Greptile PRRT_kwDOQHh8ns6whbCx: every kind of binding named `Math` shadows the global.
+test("Math bound by let, var, a parameter, a block const or a default or namespace import is not the global", () => {
+	const shadows: Record<string, string[]> = {
+		let: ["let Math = { min: (a: number, b: number) => a + b };"],
+		var: ["var Math = { min: (a: number, b: number) => a + b };"],
+		"default import": ['import Math from "../helpers/math.js";'],
+		"namespace import": ['import * as Math from "../helpers/math.js";'],
+	};
+	const call = ['test("shadowed", async () => {', "}, Math.min(1_000, 2_000));"];
+	const helpers = { "math.ts": ["export default { min: (a: number, b: number) => a + b };", "export const min = 0;"] };
+	for (const [kind, declaration] of Object.entries(shadows)) {
+		assert.deepEqual(
+			scorePoolSuite([...declaration, ...call], ["shadowed"], helpers).get("shadowed"),
+			UNRESOLVED,
+			kind,
+		);
+	}
+	const nested = scorePoolSuite(
+		[
+			"function suite(Math: { min(a: number, b: number): number }) {",
+			'\ttest("parameter", async () => {',
+			"\t}, Math.min(1_000, 2_000));",
+			"}",
+			"suite(globalThis.Math);",
+			'describe("block", () => {',
+			"\tconst Math = { min: (a: number, b: number) => a + b };",
+			'\ttest("block const", async () => {',
+			"\t}, Math.min(1_000, 2_000));",
+			"});",
+			'test("global", async () => {',
+			"}, Math.min(1_000, 2_000));",
+		],
+		["parameter", "block > block const", "global"],
+	);
+	assert.deepEqual(
+		nested,
+		new Map([
+			["parameter", UNRESOLVED],
+			["block > block const", UNRESOLVED],
+			["global", { timeoutMs: 1_000, unresolved: false }],
+		]),
+	);
+});
+
+// Greptile PRRT_kwDOQHh8ns6whbC1: a `const` binding does not freeze its object.
+test("an object that is written, deleted, assigned into or passed away is not a known budget", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const WRITTEN = { timeoutMs: 90_000 };",
+			"WRITTEN.timeoutMs = 120_000;",
+			"const ALIASED = { timeoutMs: 90_000 };",
+			"const ALIAS = ALIASED;",
+			"ALIAS.timeoutMs = 120_000;",
+			"const NESTED = { inner: { timeoutMs: 90_000 } };",
+			"const INNER = NESTED.inner;",
+			'INNER["timeoutMs"] += 30_000;',
+			"const DELETED = { timeoutMs: 90_000 };",
+			"delete DELETED.timeoutMs;",
+			"const ASSIGNED = { timeoutMs: 90_000 };",
+			"Object.assign(ASSIGNED, { timeoutMs: 120_000 });",
+			"const DEFINED = { timeoutMs: 90_000 };",
+			'Object.defineProperty(DEFINED, "timeoutMs", { value: 120_000 });',
+			"const ESCAPED = { timeoutMs: 90_000 };",
+			"tweak(ESCAPED);",
+			"const INCREMENTED = { timeoutMs: 90_000 };",
+			"INCREMENTED.timeoutMs++;",
+			"const HELPER = poolTestBudgetMs(1);",
+			'test("helper result written in a test body", async () => {',
+			"\tHELPER.timeoutMs = 1;",
+			"}, HELPER.timeoutMs);",
+			"const READ_ONLY = { timeoutMs: 90_000, waitMs: 60_000 };",
+			"AbortSignal.timeout(READ_ONLY.waitMs);",
+			'test("written", async () => {',
+			"}, WRITTEN.timeoutMs);",
+			'test("written through an alias", async () => {',
+			"}, ALIASED.timeoutMs);",
+			'test("nested object written through an alias", async () => {',
+			"}, NESTED.inner.timeoutMs);",
+			'test("deleted", async () => {',
+			"}, DELETED.timeoutMs);",
+			'test("Object.assign", async () => {',
+			"}, ASSIGNED.timeoutMs);",
+			'test("Object.defineProperty", async () => {',
+			"}, DEFINED.timeoutMs);",
+			'test("escaped into a call", async () => {',
+			"}, ESCAPED.timeoutMs);",
+			'test("incremented", async () => {',
+			"}, INCREMENTED.timeoutMs);",
+			'test("only a number field passed on", async () => {',
+			"}, READ_ONLY.timeoutMs);",
+		],
+		[
+			"helper result written in a test body",
+			"written",
+			"written through an alias",
+			"nested object written through an alias",
+			"deleted",
+			"Object.assign",
+			"Object.defineProperty",
+			"escaped into a call",
+			"incremented",
+			"only a number field passed on",
+		],
+	);
+	for (const [name, budget] of budgets) {
+		const expected = name === "only a number field passed on" ? { timeoutMs: 90_000, unresolved: false } : UNRESOLVED;
+		assert.deepEqual(budget, expected, name);
+	}
+	assert.equal(budgets.size, 10);
+});
+
+// Greptile PRRT_kwDOQHh8ns6wikO9: a helper is only called while nothing can replace it.
+test("a helper that is reassigned or passed away is not called for its budget", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			'import { tunable } from "../helpers/tunable.js";',
+			"function reassigned() {",
+			"\treturn 60_000;",
+			"}",
+			"reassigned = () => 120_000;",
+			"function reassignedInBody() {",
+			"\treturn 60_000;",
+			"}",
+			"function plain() {",
+			"\treturn 60_000;",
+			"}",
+			"const passedAway = () => 60_000;",
+			"register(passedAway);",
+			"let steady = () => 70_000;",
+			"let replaced = () => 70_000;",
+			"replaced = () => 1_000;",
+			"var destructured = () => 70_000;",
+			"[destructured] = [() => 1_000];",
+			"wrap(poolTestBudgetMs);",
+			'test("reassigned declaration", async () => {',
+			"}, reassigned());",
+			'test("reassigned in a test body", async () => {',
+			"\treassignedInBody = () => 1_000;",
+			"}, reassignedInBody());",
+			'test("passed away", async () => {',
+			"}, passedAway());",
+			'test("let reassigned", async () => {',
+			"}, replaced());",
+			'test("var reassigned by destructuring", async () => {',
+			"}, destructured());",
+			'test("imported helper passed away", async () => {',
+			"}, poolTestBudgetMs(1).timeoutMs);",
+			'test("exported let reassigned in its module", async () => {',
+			"}, tunable());",
+			'test("plain declaration", async () => {',
+			"}, plain());",
+			'test("let never reassigned", async () => {',
+			"}, steady());",
+		],
+		[
+			"reassigned declaration",
+			"reassigned in a test body",
+			"passed away",
+			"let reassigned",
+			"var reassigned by destructuring",
+			"imported helper passed away",
+			"exported let reassigned in its module",
+			"plain declaration",
+			"let never reassigned",
+		],
+		{
+			"tunable.ts": [
+				"export let tunable = () => 80_000;",
+				"export function retune() {",
+				"\ttunable = () => 1_000;",
+				"}",
+			],
+		},
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["reassigned declaration", UNRESOLVED],
+			["reassigned in a test body", UNRESOLVED],
+			["passed away", UNRESOLVED],
+			["let reassigned", UNRESOLVED],
+			["var reassigned by destructuring", UNRESOLVED],
+			["imported helper passed away", UNRESOLVED],
+			["exported let reassigned in its module", UNRESOLVED],
+			["plain declaration", { timeoutMs: 60_000, unresolved: false }],
+			["let never reassigned", { timeoutMs: 70_000, unresolved: false }],
+		]),
+	);
+});
+
+// Greptile PRRT_kwDOQHh8ns6wiTVI: a name resolves through the call site's own
+// lexical scopes, never through a same-named declaration in a sibling scope.
+test("budget names resolve through the call site's lexical scope chain", () => {
+	const budgets = scorePoolSuite(
+		[
+			"function budget() {",
+			"\treturn 60_000;",
+			"}",
+			"const LIMIT = 70_000;",
+			'test("unrelated body declares its own", async () => {',
+			"\tconst budget = () => 1_000;",
+			"\tconst LIMIT = 1_000;",
+			"\tbudget();",
+			"}, budget());",
+			'test("outer helper", async () => {',
+			"}, budget());",
+			'test("outer constant", async () => {',
+			"}, LIMIT);",
+			'describe("inner scope", () => {',
+			"\tconst budget = () => 5_000;",
+			"\tconst LIMIT = 75_000;",
+			'\ttest("inner helper", async () => {',
+			"\t}, budget());",
+			'\ttest("inner constant", async () => {',
+			"\t}, LIMIT);",
+			"});",
+		],
+		[
+			"unrelated body declares its own",
+			"outer helper",
+			"outer constant",
+			"inner scope > inner helper",
+			"inner scope > inner constant",
+		],
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["unrelated body declares its own", { timeoutMs: 60_000, unresolved: false }],
+			["outer helper", { timeoutMs: 60_000, unresolved: false }],
+			["outer constant", { timeoutMs: 70_000, unresolved: false }],
+			["inner scope > inner helper", { timeoutMs: 5_000, unresolved: false }],
+			["inner scope > inner constant", { timeoutMs: 75_000, unresolved: false }],
+		]),
+	);
+});
+
+// intercom-reconnect-recovery's budgets come from `BACKOFF_MS[Math.min(attempt,
+// BACKOFF_MS.length - 1)]`, through a destructured dynamic import.
+test("constant arrays indexed by constants, and dynamically imported helpers, are scored", () => {
+	const budgets = scorePoolSuite(
+		[
+			'const { reconnectDelayMs } = await import("../helpers/backoff.js");',
+			'const { reconnectDelayMs: delay } = await import("../helpers/backoff.js");',
+			"const STEPS = [1_000, 2_000, 5_000] as const;",
+			"const FIRST = reconnectDelayMs(0);",
+			"const RECOVERY_MS = reconnectDelayMs(0) + delay(1) + 10_000;",
+			'test("index literal", async () => {',
+			"}, STEPS[1]);",
+			'test("last via length", async () => {',
+			"}, STEPS[STEPS.length - 1]);",
+			'test("clamped index", async () => {',
+			"}, STEPS[Math.min(7, STEPS.length - 1)]);",
+			'test("spread array", async () => {',
+			"}, [...STEPS, 9_000][3]);",
+			'test("dynamically imported helper", async () => {',
+			"}, 2 * RECOVERY_MS + 30_000);",
+			'test("clamped through the helper", async () => {',
+			"}, reconnectDelayMs(99) + FIRST);",
+		],
+		[
+			"index literal",
+			"last via length",
+			"clamped index",
+			"spread array",
+			"dynamically imported helper",
+			"clamped through the helper",
+		],
+		{
+			"backoff.ts": [
+				"const BACKOFF_MS = [1000, 2000, 5000, 10000, 30000] as const;",
+				"export function reconnectDelayMs(attempt: number): number {",
+				"\treturn BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;",
+				"}",
+			],
+		},
+	);
+	assert.deepEqual(
+		budgets,
+		new Map([
+			["index literal", { timeoutMs: 2_000, unresolved: false }],
+			["last via length", { timeoutMs: 5_000, unresolved: false }],
+			["clamped index", { timeoutMs: 5_000, unresolved: false }],
+			["spread array", { timeoutMs: 9_000, unresolved: false }],
+			["dynamically imported helper", { timeoutMs: 56_000, unresolved: false }],
+			["clamped through the helper", { timeoutMs: 31_000, unresolved: false }],
+		]),
+	);
+});
+
+test("array reads that are out of range, fractional or dynamic stay unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			"const STEPS = [1_000, 2_000, 5_000] as const;",
+			"let MUTABLE = [1_000];",
+			"const MIXED = [1_000, rows.length];",
+			"const { missing } = await import(modulePath);",
+			'test("past the end", async () => {',
+			"}, STEPS[3]);",
+			'test("negative", async () => {',
+			"}, STEPS[-1]);",
+			'test("fractional", async () => {',
+			"}, STEPS[0.5]);",
+			'test("non-constant index", async () => {',
+			"}, STEPS[rows.length]);",
+			'test("non-constant array", async () => {',
+			"}, rows[0]);",
+			'test("mutable array", async () => {',
+			"}, MUTABLE[0]);",
+			'test("non-constant element", async () => {',
+			"}, MIXED[1]);",
+			'test("unknown member", async () => {',
+			"}, STEPS.size);",
+			'test("non-literal dynamic import", async () => {',
+			"}, missing(1));",
+		],
+		[
+			"past the end",
+			"negative",
+			"fractional",
+			"non-constant index",
+			"non-constant array",
+			"mutable array",
+			"non-constant element",
+			"unknown member",
+			"non-literal dynamic import",
+		],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 9);
+});
+
+// #4051 on main: every test budgets through `testBudget(coldStarts)`, which caps
+// `poolTestBudgetMs` from test/helpers/pool-budget.ts at 600 s.
+test("the pooled resume suite is scored against its testBudget budgets", () => {
+	const file = "test/integration/workflow-local-pool-resume.test.ts";
+	const expected = new Map([
+		["resuming a crashed pooled root replays children leased by the dead incarnation (#3890)", 600_000],
+		["a root stall longer than the work lease does not fence a live worker (#3888)", 315_000],
+		["repeated root stalls do not keep a stopped worker's child from being replaced (#3888)", 390_000],
+		[
+			"resuming a quit root hands its in-flight children to workers only once the root re-enqueues them (#3979)",
+			465_000,
+		],
+		["a child resumed many times keeps its full retry budget in each incarnation (#3979)", 600_000],
+		["a worker whose attempt is fenced ends it without crashing or consuming an attempt (#3979)", 240_000],
+	]);
+	const scored = evaluateDurations(
+		report([{ file, tests: [...expected.keys()].map((title) => ({ title, status: "passed", duration: 60_000 })) }]),
+		30_000,
+		root,
+	);
+	assert.deepEqual(new Map(scored.samples.map((sample) => [sample.name, sample.timeoutMs])), expected);
+	assert.deepEqual(scored.unresolved, []);
+	assert.deepEqual(scored.warnings, []);
+});
+
+test("intercom reconnect recovery is scored against its declared budgets", () => {
+	const file = "test/integration/intercom-reconnect-recovery.test.ts";
+	const titles = [
+		"a failed background reconnect still recovers the session with no intercom tool call",
+		"a running workflow stage regains list visibility and both route aliases after broker churn",
+	];
+	const scored = evaluateDurations(
+		report([{ file, tests: titles.map((title) => ({ title, status: "passed", duration: 10_000 })) }]),
+		30_000,
+		root,
+	);
+	// 2 * (reconnectDelayMs(0) + reconnectDelayMs(1) + 10 s respawn) + 30 s killed-broker exit.
+	assert.deepEqual(
+		scored.samples.map((sample) => [sample.name, sample.timeoutMs, sample.unresolved]),
+		titles.map((title) => [title, 56_000, false]),
+	);
+	assert.deepEqual(scored.unresolved, []);
+});
+
+test("helper calls and member reads that are genuinely dynamic stay unresolved", () => {
+	const budgets = scorePoolSuite(
+		[
+			'import { poolTestBudgetMs } from "../helpers/pool-budget.js";',
+			"const pools = rows.length;",
+			"const DYNAMIC = poolTestBudgetMs(pools);",
+			"const KNOWN = poolTestBudgetMs(2);",
+			"function jitter(ms: number) {",
+			"\treturn ms + Math.random();",
+			"}",
+			"function branchy(ms: number) {",
+			"\tif (ms > 1) return ms;",
+			"\treturn 0;",
+			"}",
+			"function loop(ms: number): number {",
+			"\treturn loop(ms);",
+			"}",
+			"let mutable = { timeoutMs: 1_000 };",
+			'test("non-constant argument", async () => {',
+			"}, DYNAMIC.timeoutMs);",
+			'test("missing member", async () => {',
+			"}, KNOWN.missingMs);",
+			'test("impure helper", async () => {',
+			"}, jitter(1_000));",
+			'test("helper with control flow", async () => {',
+			"}, branchy(1_000));",
+			'test("recursive helper", async () => {',
+			"}, loop(1_000));",
+			'test("mutable binding", async () => {',
+			"}, mutable.timeoutMs);",
+			'test("unknown helper", async () => {',
+			"}, computeBudget(2));",
+		],
+		[
+			"non-constant argument",
+			"missing member",
+			"impure helper",
+			"helper with control flow",
+			"recursive helper",
+			"mutable binding",
+			"unknown helper",
+		],
+	);
+	for (const [name, budget] of budgets) assert.deepEqual(budget, { timeoutMs: 0, unresolved: true }, name);
+	assert.equal(budgets.size, 7);
 });
 
 test("the no-MCP startup scenario is scored against its declared 570 s budget", () => {

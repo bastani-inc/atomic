@@ -82,6 +82,8 @@ export interface WorkerReply {
 	readonly error?: string;
 	/** The refusal fences the worker's attempt: the work has another owner, or none, and the attempt must end. */
 	readonly fenced?: true;
+	/** The root no longer holds its lease (it released it, or another incarnation took it): the worker has nothing to serve. */
+	readonly rootLeaseLost?: true;
 	readonly delivery?: {
 		readonly id: string;
 		readonly from: Parameters<WorkerDeliver>[0];

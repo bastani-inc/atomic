@@ -38,6 +38,7 @@ import { OutputAccumulator } from "./output-accumulator.ts";
 import {
 	getTextOutput,
 	invalidArgText,
+	linkPath,
 	startToolTimer,
 	str,
 	type ToolTimerState,
@@ -362,6 +363,7 @@ function rebuildBashResultRenderComponent(
 	options: ToolRenderResultOptions,
 	showImages: boolean,
 	timerText: string | undefined,
+	cwd: string,
 ): void {
 	component.clear();
 	let output = getTextOutput(result, showImages).trim();
@@ -389,11 +391,14 @@ function rebuildBashResultRenderComponent(
 	if (output) addShellOutputPreview(component, output, options.expanded);
 	if (truncation?.truncated || fullOutputPath) {
 		const warnings: string[] = [];
-		if (fullOutputPath) {
-			warnings.push(`Full output: ${fullOutputPath}`);
-		}
 		if (truncation?.truncated) warnings.push(formatTruncationNotice(truncation));
+		if (fullOutputPath) warnings.push("Full output:");
 		component.addChild(new Text(`\n${theme.fg("warning", `[${warnings.join(". ")}]`)}`, 0, 0));
+		// The path gets a line of its own so word wrap never splits it at a space beside its label, and a link so a
+		// path wider than the terminal still opens (and copies) whole.
+		if (fullOutputPath) {
+			component.addChild(new Text(theme.fg("warning", linkPath(fullOutputPath, fullOutputPath, cwd)), 0, 0));
+		}
 	}
 	if (timerText) component.addChild(new Text(`\n${theme.fg("muted", timerText)}`, 0, 0));
 }
@@ -707,8 +712,11 @@ export function createBashToolDefinition(
 					isError: context.isError,
 					taskId: context.args.id,
 					timerText,
+					cwd: context.cwd,
 				});
-			if (!waited) rebuildBashResultRenderComponent(component, result, options, context.showImages, timerText);
+			if (!waited) {
+				rebuildBashResultRenderComponent(component, result, options, context.showImages, timerText, context.cwd);
+			}
 			component.invalidate();
 			return component;
 		},

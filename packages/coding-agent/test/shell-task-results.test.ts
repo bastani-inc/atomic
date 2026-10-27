@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
@@ -321,8 +324,12 @@ describe("shell task results are friendly (#3828)", () => {
 	);
 
 	test.runIf(process.platform !== "win32")(
-		"a truncated wait keeps the full-output path as a dim line (#3828)",
+		"a truncated wait keeps the full-output path intact on its own dim line, however long the temp path (#3828)",
 		async () => {
+			// A long temp directory with spaces (a deep TMPDIR, C:\Users\Jane Doe\AppData\Local\Temp) must not split the path mid-way.
+			const longTemp = realpathSync(mkdtempSync(join(tmpdir(), "long temp directory with spaces ".repeat(2))));
+			// os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+			for (const key of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(key, longTemp);
 			const owner = host();
 			try {
 				const id = await launch(owner, "seq 1 5000");
@@ -331,28 +338,27 @@ describe("shell task results are friendly (#3828)", () => {
 				const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
 				const details = outcome.result.details as BashToolDetails;
 				assert.ok(details.truncation?.truncated);
-				assert.ok(details.fullOutputPath);
+				const fullOutputPath = details.fullOutputPath;
+				assert.ok(fullOutputPath?.startsWith(longTemp), fullOutputPath);
 				const text = waitText(outcome.result as ShellResult);
 				assert.ok(
 					text.endsWith(
-						`\n[Output truncated.]\n\nTask ${id} completed with exit code 0.\nFull output: ${details.fullOutputPath}`,
+						`\n[Output truncated.]\n\nTask ${id} completed with exit code 0.\nFull output: ${fullOutputPath}`,
 					),
 					text.slice(-300),
 				);
-				const plain = row(tool, args, outcome);
+				// Wide enough for the path alone, too narrow for the path beside its label.
+				const width = fullOutputPath.length + 2;
+				const plain = row(tool, args, outcome, { width });
 				assert.equal(plain[1], "✓ completed · exit 0");
 				assert.ok(plain.some((line) => line.includes("earlier lines")));
-				const truncation = plain.find((line) => line.startsWith("Truncated:"));
-				assert.ok(truncation, plain.join("\n"));
-				assert.match(
-					truncation,
-					new RegExp(
-						`^Truncated: showing \\d+ of 5000 lines · Full output: ${details.fullOutputPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
-					),
-				);
-				assert.ok(
-					row(tool, args, outcome, { raw: true }).some((line) => line.includes(theme.fg("dim", truncation))),
-				);
+				const truncation = plain.findIndex((line) => line.startsWith("Truncated:"));
+				assert.ok(truncation !== -1, plain.join("\n"));
+				assert.match(plain[truncation]!, /^Truncated: showing \d+ of 5000 lines · Full output:$/);
+				assert.equal(plain[truncation + 1], fullOutputPath, plain.join("\n"));
+				const raw = row(tool, args, outcome, { width, raw: true });
+				assert.ok(raw[truncation]!.includes(theme.fg("dim", plain[truncation]!)));
+				assert.ok(raw[truncation + 1]!.startsWith(theme.getFgAnsi("dim")), JSON.stringify(raw[truncation + 1]));
 				assert.doesNotMatch(plain.join("\n"), /\[Full output|\[Output truncated/);
 				const expanded = row(tool, args, outcome, { expanded: true });
 				assert.equal(expanded[1], "✓ completed · exit 0");
@@ -360,6 +366,7 @@ describe("shell task results are friendly (#3828)", () => {
 				assert.ok(expanded.includes("3500"));
 			} finally {
 				await owner.close("session-close");
+				rmSync(longTemp, { recursive: true, force: true });
 			}
 		},
 	);

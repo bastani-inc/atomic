@@ -233,11 +233,14 @@ export async function runParallelPath(
 			}
 		}
 
+		// #3981: a detached child can exit after model fallback retired the stage session that launched it, whose
+		// context then throws on every read. Its stage admission outlives that session, so read it now.
+		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
 			wait: params.wait,
 			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onDetachedExit: (index, result) => {
-				if (workflowStageAcceptsDetachedNotification(ctx)) {
+				if (workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {
 					notifyDetachedForegroundChildExit({
 						pi: deps.pi,
 						runId,

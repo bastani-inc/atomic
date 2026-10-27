@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import type { Provider } from "@bastani/pi-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
+import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import {
@@ -343,6 +344,20 @@ export function getExtensionSourceLabel(this: AgentSession, extensionPath: strin
 	return `extension:${name}`;
 }
 
+/**
+ * Child session defaults from this session's live successor (#3981). A child queued or restored by a workflow stage
+ * session can start after model fallback replaced that session; it then inherits the replacement's current model,
+ * settings and tool ceiling. A session with no successor (it was not replaced, or it closed for good) answers with its
+ * own last state, which is what it had when it admitted the child.
+ */
+function liveChildSessionOptions(
+	session: AgentSession,
+): import("./child-session-options.ts").ChildSessionOptionsResolver | undefined {
+	const own = session._childSessionOptions;
+	if (!own) return undefined;
+	return (options) => (resolveWorkflowStageDeliveryTarget(session)._childSessionOptions ?? own)(options);
+}
+
 export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRunner): void {
 	runner.setHostBindings(
 		this._extensionHumanInput,
@@ -352,7 +367,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	runner.setUIPromptObserver(uiPromptBindings.get(this));
 	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
 	runner.bindCommandContext(this._extensionCommandContextActions);
-	runner.bindChildSessionOptions(this._childSessionOptions);
+	runner.bindChildSessionOptions(liveChildSessionOptions(this));
 	runner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
 
 	this._extensionErrorUnsubscriber?.();
@@ -954,7 +969,7 @@ async function reloadOwnedGeneration(
 			presentationOnlyBindings.get(this) ?? false,
 		);
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
-		candidateRunner.bindChildSessionOptions(this._childSessionOptions);
+		candidateRunner.bindChildSessionOptions(liveChildSessionOptions(this));
 		candidateRunner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
 		if (options?.failOnExtensionErrors && errors.length > 0)
 			throw new Error(

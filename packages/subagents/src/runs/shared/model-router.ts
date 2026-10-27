@@ -70,17 +70,21 @@ export async function routeSubagentModel(input: {
 					signal: input.signal,
 					selection: route.routerSelection,
 				});
+	// #3981: the route outlives the launching session. A background child checks candidates and its fallback gate after
+	// model fallback retired that session, whose context then throws on every read, so bind what it reads now.
+	const { modelRegistry } = ctx;
+	const launchProvider = ctx.model?.provider;
 	return {
 		...route,
 		allowsModel: fallbackRoute.allowsModel,
 		allowsCandidate: (candidate, defaultEffort) => {
 			const normalized = resolveModelCandidate(
 				candidate,
-				ctx.modelRegistry.getAvailable().map(toModelInfo),
-				ctx.model?.provider,
+				modelRegistry.getAvailable().map(toModelInfo),
+				launchProvider,
 			)!;
 			const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(normalized);
-			const model = ctx.modelRegistry.getAvailable().find((m) => `${m.provider}/${m.id}` === baseModel);
+			const model = modelRegistry.getAvailable().find((m) => `${m.provider}/${m.id}` === baseModel);
 			return model !== undefined && fallbackRoute.allowsModel(model, thinkingSuffix.slice(1) || defaultEffort);
 		},
 	};

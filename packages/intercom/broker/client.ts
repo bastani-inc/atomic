@@ -36,6 +36,34 @@ export const PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS = 10_000;
 const GROUP_REQUEST_TIMEOUT_MS = 5000;
 const PRESENCE_ACK_TIMEOUT_MS = 5000;
 const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
+/** #3904: retries of a connection the kernel refused before it reached the broker (a full listen backlog). */
+const BROKER_BACKLOG_RETRIES = 6;
+const BROKER_BACKLOG_RETRY_BASE_MS = 25;
+
+/** The connect attempt was cancelled by `disconnect()` before it registered. */
+function connectAborted(): IntercomClientDisconnectedError {
+	return new IntercomClientDisconnectedError({ cause: new Error("Disconnected before the broker connection registered") });
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolveDelay, rejectDelay) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolveDelay();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			rejectDelay(connectAborted());
+		};
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function isBacklogRefusal(error: Error): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "ECONNREFUSED" || code === "EAGAIN";
+}
 /** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
 const HELD_SEND_GRACE_MS = 5000;
 
@@ -216,6 +244,10 @@ export class IntercomClient extends EventEmitter {
 	private brokerAnswersStatus = false;
 	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
 	private brokerClaimsWorkflowInvocations = false;
+	/** #3904: the connect attempt in progress, which `disconnect()` cancels. */
+	private connectAttempt: AbortController | undefined;
+	/** #3983: the broker of the current registration accepts `saving`. */
+	private brokerExtendsSaves = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -352,7 +384,43 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(
+  /**
+   * Connect and register. A connection the operating system refuses before it reaches the broker (`ECONNREFUSED`,
+   * `EAGAIN`) is retried a few times with a short jittered backoff: when many sessions start at once (a large pooled
+   * fan-out) the broker socket's listen backlog fills and the kernel refuses connections the broker would accept a
+   * moment later (#3904). Every other failure, and a refusal that persists past the retries, rejects as before.
+   */
+  async connect(
+    session: Omit<SessionInfo, "id">,
+    supervisor?: SupervisorRegistration,
+    supervisorOwnerToken?: string,
+    messageSource?: Message["source"],
+    registrationGroup?: string,
+  ): Promise<void> {
+    // #3904: `disconnect()` aborts this attempt, its retry delay and any later retry, so a session that finished
+    // its cleanup never ends up connected and registered by a retry still in flight.
+    const attempt = new AbortController();
+    this.connectAttempt = attempt;
+    try {
+      for (let retry = 0; ; retry++) {
+        if (attempt.signal.aborted) throw connectAborted();
+        try {
+          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup);
+          return;
+        } catch (error) {
+          if (attempt.signal.aborted) throw connectAborted();
+          if (!(error instanceof Error) || !isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) throw error;
+          const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** retry;
+          await abortableDelay(backoff * (0.5 + Math.random() / 2), attempt.signal);
+        }
+      }
+    } finally {
+      if (this.connectAttempt === attempt) this.connectAttempt = undefined;
+    }
+  }
+
+  private connectOnce(
+    signal: AbortSignal,
     session: Omit<SessionInfo, "id">,
     supervisor?: SupervisorRegistration,
     supervisorOwnerToken?: string,
@@ -421,6 +489,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
         this.brokerClaimsWorkflowInvocations = false;
+        this.brokerExtendsSaves = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -467,7 +536,38 @@ export class IntercomClient extends EventEmitter {
         this.handleBrokerMessage(msg);
       }, onReaderError);
       
+      const onConnect = (): void => {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        try {
+          writeMessage(socket, {
+            type: "register",
+            session,
+            ...(registrationGroup !== undefined ? { registrationGroup } : {}),
+			returnAddress: this.returnAddress,
+			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
+			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
+            ...(supervisor ? { supervisor } : {}),
+            ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
+          });
+        } catch (error) {
+          cleanupConnectionAttempt();
+          cleanupSocketListeners();
+          if (this.socket === socket) {
+            this.socket = null;
+          }
+          socket.destroy();
+          reject(toError(error));
+        }
+      };
+
+      const onAbort = () => onError(connectAborted());
+
       const cleanupConnectionAttempt = () => {
+        signal.removeEventListener("abort", onAbort);
+        socket.off("connect", onConnect);
         this.off("_registered", onRegistered);
         this.off("_registration_failed", onRegistrationFailed);
         socket.off("error", onError);
@@ -488,26 +588,9 @@ export class IntercomClient extends EventEmitter {
       this.once("_registered", onRegistered);
       this.once("_registration_failed", onRegistrationFailed);
       
-      try {
-        writeMessage(socket, {
-          type: "register",
-          session,
-          ...(registrationGroup !== undefined ? { registrationGroup } : {}),
-			returnAddress: this.returnAddress,
-			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
-			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
-          ...(supervisor ? { supervisor } : {}),
-          ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
-        });
-      } catch (error) {
-        cleanupConnectionAttempt();
-        cleanupSocketListeners();
-        if (this.socket === socket) {
-          this.socket = null;
-        }
-        socket.destroy();
-        reject(toError(error));
-      }
+      // Register only once connected, and only if the attempt was not cancelled meanwhile (#3904).
+      signal.addEventListener("abort", onAbort, { once: true });
+      socket.once("connect", onConnect);
     });
   }
 
@@ -532,7 +615,8 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
           || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
           || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
-          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)) {
+          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)
+          || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)) {
           throw new Error("Invalid registered message");
         }
 
@@ -549,6 +633,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
         this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
+        this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -953,6 +1038,12 @@ export class IntercomClient extends EventEmitter {
     }
   }
   async disconnect(): Promise<void> {
+    // A connect still in progress (or waiting to retry) is cancelled: it closes any socket it opened and never
+    // registers (#3904).
+    if (this.connectAttempt !== undefined && this._sessionId === null) {
+      this.connectAttempt.abort();
+      return;
+    }
     const socket = this.socket;
     if (!socket) {
       return;
@@ -1393,6 +1484,15 @@ export class IntercomClient extends EventEmitter {
 	acknowledgeReceived(messageId: string): void {
 		if (!this.brokerAcknowledgesReceipt) return;
 		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+	}
+
+	/**
+	 * #3983: tell the broker this message is still being saved, so its sender keeps waiting instead of hearing the
+	 * outcome is uncertain. A no-op on a broker that did not advertise `extendsSaves`, or while disconnected.
+	 */
+	reportSaving(messageId: string): void {
+		if (!this.brokerExtendsSaves || !this.socket || this.socket.destroyed) return;
+		writeMessage(this.socket, { type: "saving", messageId });
 	}
 
 	sendPendingStageNotification(

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
@@ -12,6 +14,7 @@ import {
 	removeTempDirectory,
 	type SpawnedProcess,
 	spawnProcess,
+	writeFileEnsuringDir,
 } from "../helpers/runtime.js";
 
 const LOCK_CONTENTION_TEST_TIMEOUT_MS = 60_000;
@@ -161,4 +164,223 @@ test(
 		}
 	},
 	LOCK_CONTENTION_TEST_TIMEOUT_MS,
+);
+
+const HOG_FIXTURE = fileURLToPath(new URL("../fixtures/sqlite-write-hog.mjs", import.meta.url));
+const HOGS = 3;
+const HOG_HOLD_MS = 20;
+const VICTIM_TRANSACTIONS = 10;
+/** Short enough that a writer starved by the other processes fails quickly on a stall-blind deadline. */
+const VICTIM_LOCK_WAIT_MS = 5_000;
+/** The writers that may commit while one waits: each other process's turn, plus the one already holding the lock. */
+const MAX_COMMITS_AHEAD = 2 * HOGS;
+const FAIRNESS_TEST_TIMEOUT_MS = 120_000;
+const PROGRESS_LOCK_WAIT_MS = 2_000;
+
+async function startHog(path: string, stopPath: string): Promise<SpawnedProcess> {
+	const hog = spawnProcess([process.execPath, HOG_FIXTURE, path, String(HOG_HOLD_MS), stopPath], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	assert.ok(hog.stdout);
+	const reader = hog.stdout.getReader();
+	let text = "";
+	try {
+		while (!text.includes("\n")) {
+			const next = await reader.read();
+			if (next.done) assert.fail(await readStreamText(hog.stderr));
+			text += new TextDecoder().decode(next.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return hog;
+}
+
+test(
+	"writers in several processes take the write lock in turn, so a writer is not starved by one that retakes it (#3978)",
+	async () => {
+		const directory = makeTempDirectory("journal-lock-fairness-");
+		const path = join(directory, "journal.sqlite");
+		const stopPath = join(directory, "stop");
+		const database = await openNodeSqliteDatabase(path, { lockWaitMs: VICTIM_LOCK_WAIT_MS });
+		const hogs: SpawnedProcess[] = [];
+		try {
+			await database.exec("CREATE TABLE hog(pid INTEGER); CREATE TABLE victim(n INTEGER)");
+			for (let index = 0; index < HOGS; index++) hogs.push(await startHog(path, stopPath));
+			const overtaken: number[] = [];
+			for (let index = 0; index < VICTIM_TRANSACTIONS; index++) {
+				const before = (await database.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog"))!.count;
+				await database.transaction(async (tx) => {
+					const after = (await tx.get<{ count: number }>("SELECT COUNT(*) AS count FROM hog"))!.count;
+					overtaken.push(after - before);
+					await tx.run("INSERT INTO victim VALUES (?)", index);
+				});
+			}
+			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM victim"), { count: VICTIM_TRANSACTIONS });
+			assert.ok(
+				Math.max(...overtaken) <= MAX_COMMITS_AHEAD,
+				`other writers committed ${JSON.stringify(overtaken)} times while each of this writer's transactions waited`,
+			);
+			await writeFileEnsuringDir(stopPath, "");
+			for (const hog of hogs) assert.equal(await hog.exited, 0, await readStreamText(hog.stderr));
+			const perHog = await database.all<{ pid: number; count: number }>(
+				"SELECT pid, COUNT(*) AS count FROM hog GROUP BY pid",
+			);
+			assert.equal(perHog.length, HOGS, "every writer process committed");
+		} finally {
+			await writeFileEnsuringDir(stopPath, "");
+			for (const hog of hogs) {
+				hog.kill("SIGKILL");
+				await hog.exited;
+			}
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	FAIRNESS_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a write lock other writers keep committing through does not fail a waiting writer at the lock wait (#3978)",
+	async () => {
+		const directory = makeTempDirectory("journal-lock-progress-");
+		const path = join(directory, "journal.sqlite");
+		const stopPath = join(directory, "stop");
+		// Far longer than any one commit holds the lock, even on a loaded machine, and far shorter than the time the
+		// other writers keep the lock busy in total, which is what a deadline blind to their commits measured.
+		const database = await openNodeSqliteDatabase(path, { lockWaitMs: PROGRESS_LOCK_WAIT_MS });
+		const hogs: SpawnedProcess[] = [];
+		try {
+			await database.exec("CREATE TABLE hog(pid INTEGER); CREATE TABLE victim(n INTEGER)");
+			for (let index = 0; index < HOGS; index++) hogs.push(await startHog(path, stopPath));
+			for (let index = 0; index < VICTIM_TRANSACTIONS; index++)
+				await database.transaction((tx) => tx.run("INSERT INTO victim VALUES (?)", index));
+			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM victim"), { count: VICTIM_TRANSACTIONS });
+		} finally {
+			await writeFileEnsuringDir(stopPath, "");
+			for (const hog of hogs) {
+				hog.kill("SIGKILL");
+				await hog.exited;
+			}
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	FAIRNESS_TEST_TIMEOUT_MS,
+);
+
+const STALLED_WRITER_FIXTURE = fileURLToPath(new URL("../fixtures/sqlite-stalled-writer.mjs", import.meta.url));
+const STALLED_WRITERS = 10;
+const STALLED_LOCK_WAIT_MS = 500;
+/**
+ * A queued writer measures the same stall: with nobody committing, each gives up about one lock wait after the last
+ * commit. Before #3978's follow-up, every older ticket counted as progress, so the tenth writer waited roughly once
+ * per writer ahead of it (4.7 s here); this bound sits well between the two.
+ */
+const STALLED_WAIT_BOUND_MS = (STALLED_WRITERS / 2) * STALLED_LOCK_WAIT_MS;
+
+async function readLine(child: SpawnedProcess): Promise<string> {
+	assert.ok(child.stdout);
+	const reader = child.stdout.getReader();
+	let text = "";
+	try {
+		while (!text.includes("\n")) {
+			const next = await reader.read();
+			if (next.done) assert.fail(await readStreamText(child.stderr));
+			text += new TextDecoder().decode(next.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return text.trim();
+}
+
+test(
+	"writers queued behind an idle lock still give up one lock wait after the last commit, not one per writer ahead (#3978)",
+	async () => {
+		const directory = makeTempDirectory("journal-lock-queued-stall-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path);
+		const writers: SpawnedProcess[] = [];
+		let holder: SpawnedProcess | undefined;
+		try {
+			await database.exec("CREATE TABLE probe(x)");
+			for (let index = 0; index < STALLED_WRITERS; index++) {
+				const writer = spawnProcess(
+					[process.execPath, STALLED_WRITER_FIXTURE, path, String(STALLED_LOCK_WAIT_MS)],
+					{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+				);
+				writers.push(writer);
+				assert.equal(await readLine(writer), "ready");
+			}
+			// Held and never committed: nobody makes progress through the lock.
+			holder = await holdWriteLock(path, -1);
+			for (const writer of writers) writer.stdin?.end("go\n");
+			const outcomes = await Promise.all(
+				writers.map(
+					async (writer) =>
+						JSON.parse(await readLine(writer)) as {
+							waitedMs: number;
+							error: { name: string; message: string } | null;
+						},
+				),
+			);
+			for (const outcome of outcomes) {
+				assert.equal(outcome.error?.name, "StorageUnavailableError", JSON.stringify(outcome));
+				assert.match(outcome.error!.message, /gave up after \d+ ms waiting for the write lock/);
+			}
+			const longest = Math.max(...outcomes.map((outcome) => outcome.waitedMs));
+			assert.ok(
+				longest < STALLED_WAIT_BOUND_MS,
+				`a writer waited ${Math.round(longest)} ms with no commit; each should give up after about ${STALLED_LOCK_WAIT_MS} ms`,
+			);
+		} finally {
+			holder?.kill("SIGKILL");
+			await holder?.exited;
+			for (const writer of writers) {
+				writer.kill("SIGKILL");
+				await writer.exited;
+			}
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	FAIRNESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+	"a writers' queue that cannot be created fails the transaction as storage unavailable, naming the database (#3978)",
+	async () => {
+		const directory = makeTempDirectory("journal-lock-queue-unwritable-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path, { busyTimeoutMs: 0, lockWaitMs: 2_000 });
+		let holder: SpawnedProcess | undefined;
+		// The queue directory exists but cannot take a ticket.
+		const queue = `${path}-writers`;
+		mkdirSync(queue);
+		chmodSync(queue, 0o500);
+		try {
+			await database.exec("CREATE TABLE probe(x)");
+			holder = await holdWriteLock(path, -1);
+			const error = await database
+				.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"))
+				.then(
+					() => assert.fail("write succeeded under a held lock"),
+					(cause: unknown) => cause,
+				);
+			assert.ok(error instanceof StorageUnavailableError, String(error));
+			assert.match(error.message, /^Storage unavailable: node-sqlite at .*journal\.sqlite: .*writers' queue/);
+			assert.ok(
+				error.cause instanceof Error && /EACCES|EPERM/.test((error.cause as NodeJS.ErrnoException).code ?? ""),
+			);
+		} finally {
+			chmodSync(queue, 0o700);
+			holder?.kill("SIGKILL");
+			await holder?.exited;
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	FAIRNESS_TEST_TIMEOUT_MS,
 );

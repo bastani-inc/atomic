@@ -26,9 +26,8 @@ if (holder === "coordinator") {
 		if (!groupId) await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	void admission.acquire("session");
-	const waiting = AbortSignal.timeout(5000);
+	// No deadline of its own: the test bounds the whole exchange with its budget and kills this process.
 	while (!(await admission.inspect()).some((permit) => permit.holder === holder && permit.state === "waiting")) {
-		waiting.throwIfAborted();
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
