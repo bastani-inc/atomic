@@ -147,8 +147,8 @@ export class PoolStageHandoff {
 	async complete(work: Pick<PoolWork, "id" | "childRunId">): Promise<void> {
 		const root = this.lease.runId;
 		const result = (await this.queue.result(root, work.id)) as RunResult | undefined;
-		if (result === undefined) return;
 		await this.backend.catchUpWorkflow(root);
+		if (result === undefined) return;
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
 		// Terminal boundaries settle the child's own nested runs; a child without any skips the scan of every
 		// root checkpoint, which made the completion of a wide fan-out quadratic in its width.

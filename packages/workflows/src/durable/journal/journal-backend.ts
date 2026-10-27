@@ -111,18 +111,19 @@ function nextTurn(): Promise<void> {
 
 /**
  * Runs `run` directly while nothing is queued and `waiting()` (the caller's operations in flight, this
- * one included) is below `threshold`; otherwise through the slicer's FIFO queue.
+ * one included) is below `threshold`; otherwise through the slicer's FIFO queue, which starts an
+ * operation only while the turn is younger than `budgetMs`.
  */
 export type TurnSlicer = <T>(run: () => Promise<T>, waiting: () => number) => Promise<T>;
 
-export function createTurnSlicer(threshold: number): TurnSlicer {
+export function createTurnSlicer(threshold: number, budgetMs = TURN_BUDGET_MS): TurnSlicer {
 	const queue: (() => Promise<void>)[] = [];
 	let draining = false;
 	const drain = async (): Promise<void> => {
 		draining = true;
 		try {
 			for (let start = queue.shift(); start !== undefined; start = queue.shift()) {
-				if (performance.now() - turnStart() >= TURN_BUDGET_MS) await nextTurn();
+				if (performance.now() - turnStart() >= budgetMs) await nextTurn();
 				const settled = start();
 				// The next start waits for this operation, but not past the turn: one waiting on I/O lets
 				// the queue go on in the next turn, which then has a fresh budget.

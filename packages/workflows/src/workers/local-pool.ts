@@ -247,8 +247,12 @@ function launchCoordinatorInProcess(): Coordinator {
  * coordinator's activity summaries to the root's store in one batched update each, at most
  * every {@link POOL_SUMMARY_INTERVAL_MS}.
  */
-/** Children completing together beyond this share turns of the event loop instead of running back to back. */
-const completeInTurns = createTurnSlicer(2);
+/**
+ * Children completing together share turns of the event loop instead of running back to back. A completion
+ * starts only in the first part of a turn, because the engine's work for the finished child follows it.
+ */
+const COMPLETION_TURN_BUDGET_MS = 4;
+const completeInTurns = createTurnSlicer(2, COMPLETION_TURN_BUDGET_MS);
 
 export class LocalWorkerPool {
 	private readonly pids = new Set<number>();
@@ -1139,8 +1143,9 @@ export class LocalWorkerPool {
 						await completeInTurns(
 							async () => {
 								await this.inbound;
-								await this.backend.catchUpWorkflow(root);
-								await this.handoff?.complete(work);
+								// The handoff catches up the root's journal itself before it settles the child.
+								if (this.handoff === undefined) await this.backend.catchUpWorkflow(root);
+								else await this.handoff.complete(work);
 							},
 							() => this.completing,
 						);
