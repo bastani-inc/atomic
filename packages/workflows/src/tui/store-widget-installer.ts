@@ -148,7 +148,13 @@ function budgetedStoreListener(
 			deferred = timers.setTimeout(
 				() => {
 					deferred = undefined;
-					refresh();
+					// Immediate refreshes run inside the store's publish, which contains observer
+					// failures; a timer has no such caller, so a throw here would end the process.
+					try {
+						refresh();
+					} catch {
+						// The widget already reported its failure (for example through onMountError).
+					}
 				},
 				Math.max(0, windowStart + WIDGET_REFRESH_WINDOW_MS - now),
 			);

@@ -120,3 +120,30 @@ test("cheap widget refreshes still follow every store change at once (#4009)", (
 		dispose();
 	}
 });
+
+test("a deferred widget refresh contains a host mount failure like an immediate one does", () => {
+	const { store, clock, advance } = costlyStore(3);
+	const timers = fakeTimers();
+	const notices: string[] = [];
+	// Plain RPC hosts refuse component-factory widgets on every mount attempt.
+	const setWidget = (_key: string, content: unknown) => {
+		if (typeof content === "function") throw new Error("Component-factory widgets are unavailable in this RPC host.");
+	};
+	const dispose = installStoreWidget(
+		{ ui: { setWidget, requestRender: () => {}, notify: (message: string) => notices.push(message) } },
+		store,
+		timers.api,
+		clock,
+	);
+	try {
+		store.recordRunStart(run("root"));
+		for (let index = 0; index < 100; index++) store.recordRunExecutionState("root", { lastProgressAt: index });
+		const deferred = timers.scheduled.filter((timer) => !timer.cleared && timer.delayMs <= WIDGET_REFRESH_WINDOW_MS);
+		assert.equal(deferred.length, 1);
+		advance(WIDGET_REFRESH_WINDOW_MS);
+		assert.doesNotThrow(() => deferred[0]!.handler());
+		assert.equal(notices.length, 1, notices.join("\n"));
+	} finally {
+		dispose();
+	}
+});
