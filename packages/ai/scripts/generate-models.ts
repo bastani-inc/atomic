@@ -98,7 +98,7 @@ function readGeneratorOptions(args: string[]): {
 
 const generatorOptions = readGeneratorOptions(process.argv.slice(2));
 
-const MODEL_FETCH_ATTEMPTS = 2;
+const MODEL_FETCH_ATTEMPTS = 3;
 const MODEL_FETCH_RETRY_DELAY_MS = 250;
 const TRANSIENT_NETWORK_ERROR_CODES = new Set([
 	"EAI_AGAIN",
@@ -129,10 +129,18 @@ function isRetryableHttpStatus(status: number): boolean {
 	return status === 429 || status >= 500;
 }
 
+/**
+ * Fetches a catalog, retrying transient failures. A successful response is read here, inside the retry, so a body that
+ * times out mid-download (catalogs are megabytes) is retried like a failed request; callers get it buffered.
+ */
 async function fetchModelCatalog(url: string): Promise<Response> {
 	for (let attempt = 1; attempt <= MODEL_FETCH_ATTEMPTS; attempt++) {
 		try {
 			const response = await fetch(url);
+			if (response.ok) {
+				const body = await response.arrayBuffer();
+				return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+			}
 			if (!isRetryableHttpStatus(response.status) || attempt === MODEL_FETCH_ATTEMPTS) return response;
 			console.warn(
 				`Model fetch from ${url} returned ${response.status}; retrying (attempt ${attempt + 1}/${MODEL_FETCH_ATTEMPTS})`,
