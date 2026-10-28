@@ -125,21 +125,45 @@ function isTransientNetworkError(error: unknown, visited = new Set<Error>()): bo
 	return "cause" in error && isTransientNetworkError(error.cause, visited);
 }
 
+/** Runs `load` again after a transient network failure, as `fetchModelCatalog` does for catalogs it fetches itself. */
+async function withTransientRetries<T>(url: string, load: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await load();
+		} catch (error) {
+			if (!isTransientNetworkError(error) || attempt === MODEL_FETCH_ATTEMPTS) throw error;
+			console.warn(`Model fetch from ${url} failed transiently; retrying (attempt ${attempt + 1}/${MODEL_FETCH_ATTEMPTS})`);
+			await new Promise((resolve) => setTimeout(resolve, MODEL_FETCH_RETRY_DELAY_MS));
+		}
+	}
+}
+
 function isRetryableHttpStatus(status: number): boolean {
 	return status === 429 || status >= 500;
 }
 
 /**
- * Fetches a catalog, retrying transient failures. A successful response is read here, inside the retry, so a body that
- * times out mid-download (catalogs are megabytes) is retried like a failed request; callers get it buffered.
+ * Fetches a JSON catalog, retrying transient failures. A successful response is read and parsed here, inside the
+ * retry, so a body that times out or arrives cut short (catalogs are megabytes) is retried like a failed request;
+ * callers get it buffered.
  */
 async function fetchModelCatalog(url: string): Promise<Response> {
 	for (let attempt = 1; attempt <= MODEL_FETCH_ATTEMPTS; attempt++) {
 		try {
 			const response = await fetch(url);
 			if (response.ok) {
-				const body = await response.arrayBuffer();
-				return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+				const body = await response.text();
+				try {
+					JSON.parse(body);
+				} catch (error) {
+					if (attempt === MODEL_FETCH_ATTEMPTS) throw error;
+					console.warn(
+						`Model fetch from ${url} returned incomplete JSON; retrying (attempt ${attempt + 1}/${MODEL_FETCH_ATTEMPTS})`,
+					);
+					await new Promise((resolve) => setTimeout(resolve, MODEL_FETCH_RETRY_DELAY_MS));
+					continue;
+				}
+				return new Response(body, { status: response.status, statusText: response.statusText });
 			}
 			if (!isRetryableHttpStatus(response.status) || attempt === MODEL_FETCH_ATTEMPTS) return response;
 			console.warn(
@@ -1687,7 +1711,9 @@ async function fetchOpenRouterModels(): Promise<OpenRouterCatalog> {
 async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
 	try {
 		console.log("Fetching models from Radius API...");
-		const config = await loadRadiusGatewayConfig(DEFAULT_RADIUS_GATEWAY);
+		const config = await withTransientRetries("https://radius.pi.dev/v1/config", () =>
+			loadRadiusGatewayConfig(DEFAULT_RADIUS_GATEWAY),
+		);
 		const models = getRadiusModelsFromConfig("radius", config);
 		if (models.length === 0) throw new Error("Radius API returned no models");
 		console.log(`Fetched ${models.length} models from Radius`);

@@ -18,6 +18,8 @@ function runOpenRouterRetryFixture(
 		| "transient-success"
 		| "transient-failure"
 		| "body-timeout"
+		| "truncated-json"
+		| "radius-timeout"
 		| "http-429"
 		| "http-400"
 		| "classifier-429"
@@ -80,6 +82,7 @@ function runOpenRouterRetryFixture(
 			`let openRouterAttempts = 0;\n` +
 			`let classifierAttempts = 0;\n` +
 			`let catalogAttempts = 0;\n` +
+			`let radiusAttempts = 0;\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") {\n` +
@@ -103,7 +106,8 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://openrouter.ai/api/v1/models") {\n` +
 			`    openRouterAttempts += 1;\n` +
 			`    const mode = ${JSON.stringify(mode)};\n` +
-			`    if (mode === "classifier-429" || mode === "body-timeout" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
+			`    if (mode === "truncated-json" && openRouterAttempts === 1) return new Response('{"data": [{"id": "cut', { status: 200 });\n` +
+			`    if (mode === "classifier-429" || mode === "body-timeout" || mode === "truncated-json" || mode === "radius-timeout" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
 			`      return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`    }\n` +
 			`    if (mode === "http-429") return new Response("rate limited", { status: 429 });\n` +
@@ -126,6 +130,9 @@ function runOpenRouterRetryFixture(
 			`  }\n` +
 			`  if (url === "https://ai-gateway.vercel.sh/v1/models") {\n` +
 			`    return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
+			`  }\n` +
+			`  if (url === "https://radius.pi.dev/v1/config" && ${JSON.stringify(mode)} === "radius-timeout" && ++radiusAttempts === 1) {\n` +
+			`    throw new TypeError("fetch failed", { cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }) });\n` +
 			`  }\n` +
 			`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
 			`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
@@ -186,7 +193,29 @@ describe("strict model generation", () => {
 		const output = `${result.stdout}\n${result.stderr}`;
 
 		expect(result.status, output).toBe(0);
-		expect(output).toContain("Model fetch from https://models.dev/api.json failed transiently; retrying (attempt 2/3)");
+		expect(output).toContain(
+			"Model fetch from https://models.dev/api.json failed transiently; retrying (attempt 2/3)",
+		);
+	});
+
+	it("retries a model catalog that arrives as cut-off JSON", () => {
+		const result = runOpenRouterRetryFixture("truncated-json");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://openrouter.ai/api/v1/models returned incomplete JSON; retrying (attempt 2/3)",
+		);
+	});
+
+	it("retries the Radius config after a connect timeout", () => {
+		const result = runOpenRouterRetryFixture("radius-timeout");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://radius.pi.dev/v1/config failed transiently; retrying (attempt 2/3)",
+		);
 	});
 
 	it("still fails strict mode after exhausting transient model-catalog fetch retries", () => {
@@ -223,7 +252,13 @@ describe("strict model generation", () => {
 		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 		const typesafeCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/typesafe.all.json"), "utf8"),
-		) as Array<{ id: string; name: string; contextWindow: number; headers?: Record<string, string>; input?: string[] }>;
+		) as Array<{
+			id: string;
+			name: string;
+			contextWindow: number;
+			headers?: Record<string, string>;
+			input?: string[];
+		}>;
 		const headers = { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" };
 		assert.deepEqual(
 			typesafeCatalog.map(({ id, name, contextWindow, headers }) => ({ id, name, contextWindow, headers })),
