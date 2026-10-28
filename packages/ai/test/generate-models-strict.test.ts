@@ -20,6 +20,7 @@ function runOpenRouterRetryFixture(
 		| "body-timeout"
 		| "truncated-json"
 		| "radius-timeout"
+		| "stalled"
 		| "http-429"
 		| "http-400"
 		| "classifier-429"
@@ -83,10 +84,13 @@ function runOpenRouterRetryFixture(
 			`let classifierAttempts = 0;\n` +
 			`let catalogAttempts = 0;\n` +
 			`let radiusAttempts = 0;\n` +
-			`globalThis.fetch = async (input) => {\n` +
+			`globalThis.fetch = async (input, init) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") {\n` +
 			`    catalogAttempts += 1;\n` +
+			`    if (${JSON.stringify(mode)} === "stalled" && catalogAttempts === 1) {\n` +
+			`      return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));\n` +
+			`    }\n` +
 			`    if (${JSON.stringify(mode)} === "body-timeout" && catalogAttempts === 1) {\n` +
 			`      const timeout = Object.assign(new Error("Body Timeout Error"), { code: "UND_ERR_BODY_TIMEOUT" });\n` +
 			`      const body = new ReadableStream({ start(controller) { controller.error(new TypeError("terminated", { cause: timeout })); } });\n` +
@@ -107,7 +111,7 @@ function runOpenRouterRetryFixture(
 			`    openRouterAttempts += 1;\n` +
 			`    const mode = ${JSON.stringify(mode)};\n` +
 			`    if (mode === "truncated-json" && openRouterAttempts === 1) return new Response('{"data": [{"id": "cut', { status: 200 });\n` +
-			`    if (mode === "classifier-429" || mode === "body-timeout" || mode === "truncated-json" || mode === "radius-timeout" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
+			`    if (mode === "classifier-429" || mode === "body-timeout" || mode === "truncated-json" || mode === "radius-timeout" || mode === "stalled" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
 			`      return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`    }\n` +
 			`    if (mode === "http-429") return new Response("rate limited", { status: 429 });\n` +
@@ -155,6 +159,7 @@ function runOpenRouterRetryFixture(
 			cwd: isolatedPackageRoot,
 			encoding: "utf8",
 			timeout: 10_000,
+			env: { ...process.env, ATOMIC_MODEL_FETCH_TIMEOUT_MS: "1000" },
 		},
 	);
 	return Object.assign(result, { outputPath });
@@ -205,6 +210,16 @@ describe("strict model generation", () => {
 		expect(result.status, output).toBe(0);
 		expect(output).toContain(
 			"Model fetch from https://openrouter.ai/api/v1/models returned incomplete JSON; retrying (attempt 2/3)",
+		);
+	});
+
+	it("gives up on a catalog fetch that stalls and tries again", () => {
+		const result = runOpenRouterRetryFixture("stalled");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://models.dev/api.json failed transiently; retrying (attempt 2/3)",
 		);
 	});
 
