@@ -661,7 +661,7 @@ for (const auth of ["stored", "env"] as const) {
 		const f = await fixture();
 		const key = "synthetic-stage-jev-key";
 		if (auth === "env") vi.stubEnv("TYPESAFE_API_KEY", key);
-		else await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key });
+		else await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key }, { refreshCatalog: false });
 		vi.spyOn(f.modelRegistry, "getAvailable").mockReturnValue([decisionModel, OTHER_MODEL]);
 		const classify = vi.spyOn(f.modelRegistry, "classify");
 		const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -692,7 +692,11 @@ for (const routerModel of ["", "auto"]) {
 	test(`stage auto with routerModel=${JSON.stringify(routerModel)} routes on the current chat model even with classifier credentials`, async () => {
 		const f = await fixture();
 		vi.stubEnv("TYPESAFE_API_KEY", "synthetic-stage-jev-key");
-		await f.decisionRuntime.saveCredential("typesafe", { type: "api_key", key: "synthetic-stored-jev-key" });
+		await f.decisionRuntime.saveCredential(
+			"typesafe",
+			{ type: "api_key", key: "synthetic-stored-jev-key" },
+			{ refreshCatalog: false },
+		);
 		const classify = vi.spyOn(f.modelRegistry, "classify");
 		const fetch = vi.fn();
 		vi.stubGlobal("fetch", fetch);
@@ -730,7 +734,7 @@ test("stage auto sends stored classifier auth to the session's configured TypeSa
 			streamSimple: (model, context) => chatRouter()(model, context),
 		});
 		const key = "synthetic-stored-proxy-jev-key";
-		await runtime.saveCredential("typesafe", { type: "api_key", key });
+		await runtime.saveCredential("typesafe", { type: "api_key", key }, { refreshCatalog: false });
 		const modelRegistry = new ModelRegistry(runtime);
 		assert.equal(modelRegistry.getClassifierModel("typesafe", "jev-latest")?.baseUrl, "https://proxy.example/v1");
 		const endpoints: string[] = [];
