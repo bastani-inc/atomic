@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.50] - 2026-10-28
+
+RPC clients can answer questions.
+
+- **Questionnaires over RPC:** RPC clients that opt in receive each `ask_user_question` call as one request carrying all its questions and reply with the answers, so headless and embedded integrations can handle interactive prompts; clients that don't opt in see no change ([#4089](https://github.com/bastani-inc/atomic/pull/4089))
+
+### Added
+
+- RPC clients can answer `ask_user_question`: after `{"type": "set_extension_ui_capabilities", "questionnaire": true}`, each call reaches the client as one `extension_ui_request` with method `questionnaire` and all its questions, and the client replies with the answers. Clients that don't opt in see no change. `RpcClient.setExtensionUiCapabilities()` sends the command ([#4089](https://github.com/bastani-inc/atomic/pull/4089))
+
 ## [0.9.50-alpha.1] - 2026-10-27
 
 RPC clients can answer questions.
