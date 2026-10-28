@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.49-alpha.1] - 2026-10-27
+
+Faster workflow journals on remote databases.
+
+- **One request per journal batch:** `SqliteDatabase.batch` sends several statements in one write transaction and one request, so workflow journals on a remote database save a network round trip per statement ([#4083](https://github.com/bastani-inc/atomic/issues/4083), [#4084](https://github.com/bastani-inc/atomic/pull/4084))
+
 ### Added
 
 - `createSqliteDatabase` accepts an optional `batch` driver call that sends several statements in one write transaction and one request, exposed as `SqliteDatabase.batch`. Workflow journals use it to write a batch of events in one request, which saves a network round trip per statement on remote databases ([#4083](https://github.com/bastani-inc/atomic/issues/4083))
