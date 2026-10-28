@@ -7,7 +7,7 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import { RpcBashRequestOwners } from "./rpc-bash-request-owners.ts";
-import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import { createRpcModelCatalog } from "./rpc-model-catalog.ts";
 import { rejectUnsupportedProviderPrompt } from "./rpc-model-fallback-prompt.ts";
@@ -34,6 +34,7 @@ interface RpcCommandHandlerOptions {
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 	inputForm?: ProviderLoginInput;
 	pendingExtensionRequests?: RpcPendingExtensionRequests;
+	extensionUICapabilities?: RpcExtensionUICapabilities;
 	waitForResources?: () => Promise<void> | undefined;
 	reloadResources?: () => Promise<void>;
 	shouldRetryResources?: () => boolean;
@@ -53,6 +54,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "resume_queued_messages":
 		case "set_auto_compaction":
 		case "set_auto_retry":
+		case "set_extension_ui_capabilities":
 		case "set_follow_up_mode":
 		case "set_steering_mode":
 			return true;
@@ -73,6 +75,7 @@ export function createRpcCommandHandler({
 	reloadCoordinator,
 	inputForm,
 	pendingExtensionRequests,
+	extensionUICapabilities,
 	waitForResources,
 	reloadResources,
 	shouldRetryResources,
@@ -341,6 +344,11 @@ export function createRpcCommandHandler({
 			case "abort_compaction":
 				session.abortCompaction();
 				return createRpcSuccessResponse(id, "abort_compaction");
+			case "set_extension_ui_capabilities":
+				if (extensionUICapabilities && command.questionnaire !== undefined)
+					extensionUICapabilities.questionnaire = command.questionnaire === true;
+				return createRpcSuccessResponse(id, "set_extension_ui_capabilities");
+
 			case "set_auto_retry":
 				session.setAutoRetryEnabled(command.enabled);
 				return createRpcSuccessResponse(id, "set_auto_retry");

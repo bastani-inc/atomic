@@ -9,6 +9,7 @@ import type {
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.js";
 import type { FooterDataProvider } from "../../core/footer-data-provider.ts";
+import type { QuestionnaireResult, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
@@ -23,6 +24,12 @@ export interface RpcPendingExtensionRequest {
 
 export type RpcPendingExtensionRequests = Map<string, RpcPendingExtensionRequest>;
 
+/** What the RPC client said it can show, through `set_extension_ui_capabilities`. */
+export interface RpcExtensionUICapabilities {
+	/** The client answers `ask_user_question` as one `questionnaire` request. */
+	questionnaire: boolean;
+}
+
 interface CreateRpcExtensionUIContextOptions {
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
@@ -30,6 +37,7 @@ interface CreateRpcExtensionUIContextOptions {
 	sessionPicker?: EngineSessionPickerService;
 	inputForm?: EngineInputFormService;
 	footerDataProvider?: FooterDataProvider;
+	capabilities?: RpcExtensionUICapabilities;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -94,6 +102,7 @@ export function createRpcExtensionUIContext({
 	sessionPicker,
 	inputForm,
 	footerDataProvider,
+	capabilities,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
 	let toolsExpanded = false;
@@ -256,6 +265,27 @@ export function createRpcExtensionUIContext({
 			? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) }
 			: {}),
 		...(inputForm ? { hostInputForm: (request: HostInputFormRequest) => inputForm.open(request) } : {}),
+
+		// Plain RPC can't render the questionnaire; a client that said it can answer one gets it as one request.
+		// The interactive engine child keeps rendering it in the terminal host.
+		...(customUi
+			? {}
+			: {
+					hostQuestionnaire: (params: QuestionParams, signal?: AbortSignal) =>
+						capabilities?.questionnaire
+							? createDialogPromise<QuestionnaireResult>({
+									output,
+									pendingExtensionRequests,
+									dialogOptions: signal ? { signal } : undefined,
+									defaultValue: { answers: [], cancelled: true },
+									request: { method: "questionnaire", questions: params.questions },
+									parseResponse: (response) =>
+										"answers" in response
+											? { answers: response.answers, cancelled: false }
+											: { answers: [], cancelled: true },
+								})
+							: Promise.resolve(undefined),
+				}),
 
 		pasteToEditor(text: string): void {
 			// Paste handling not supported in RPC mode - falls back to setEditorText

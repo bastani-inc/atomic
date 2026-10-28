@@ -377,6 +377,16 @@ export interface ExtensionUIContext {
 	 */
 	hostInputForm?(request: HostInputFormRequest): Promise<Record<string, string> | undefined>;
 
+	/**
+	 * Ask a whole `ask_user_question` questionnaire through the host, as one request, instead of rendering it in the
+	 * terminal. Resolves the user's answers, or undefined when the host can't ask right now, in which case the caller
+	 * renders the questionnaire itself.
+	 */
+	hostQuestionnaire?(
+		params: import("../tools/ask-user-question/tool/types.js").QuestionParams,
+		signal?: AbortSignal,
+	): Promise<import("../tools/ask-user-question/tool/types.js").QuestionnaireResult | undefined>;
+
 	/** Paste text into the editor, triggering paste handling (collapse for large content). */
 	pasteToEditor(text: string): void;
 

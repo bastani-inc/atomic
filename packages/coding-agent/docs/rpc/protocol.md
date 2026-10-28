@@ -514,6 +514,23 @@ Response:
 {"type": "response", "command": "set_auto_compaction", "success": true}
 ```
 
+### Extension UI
+
+#### set_extension_ui_capabilities
+
+Say what extension UI the client can show. With `questionnaire: true`, `ask_user_question` reaches the client as one [`questionnaire`](extension-ui.md#questionnaire) request instead of failing for lack of a terminal. Off until the client turns it on; an omitted field keeps its value.
+
+```json
+{"type": "set_extension_ui_capabilities", "questionnaire": true}
+```
+
+Response:
+```json
+{"type": "response", "command": "set_extension_ui_capabilities", "success": true}
+```
+
+An Atomic without this command answers it with an error, so a client can send it at startup and keep its previous behavior when it fails.
+
 ### Retry
 
 #### set_auto_retry

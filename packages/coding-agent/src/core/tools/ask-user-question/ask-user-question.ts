@@ -151,6 +151,8 @@ export async function presentQuestionnaire(
 	signal?: AbortSignal,
 	chatAsOption?: boolean,
 ): Promise<QuestionnaireResult> {
+	const hosted = await ui.hostQuestionnaire?.(params, signal);
+	if (hosted !== undefined) return hosted;
 	const itemsByTab = params.questions.map(buildItemsForQuestion);
 	ui.setWorkingVisible?.(false);
 	try {

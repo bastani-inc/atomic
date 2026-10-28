@@ -215,6 +215,13 @@ export abstract class RpcClientApi {
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_compaction", enabled });
 	}
+	/**
+	 * Say what extension UI this client can show. With `questionnaire`, `ask_user_question` arrives as one
+	 * `extension_ui_request` with method `questionnaire` instead of failing for lack of a terminal.
+	 */
+	async setExtensionUiCapabilities(capabilities: { questionnaire?: boolean }): Promise<void> {
+		await this.request({ type: "set_extension_ui_capabilities", ...capabilities });
+	}
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		await this.request({ type: "set_auto_retry", enabled });
 	}
