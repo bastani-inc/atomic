@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.49-alpha.1] - 2026-10-27
+
+Self-hosted sqld namespaces and faster remote workflow journals.
+
+- **sqld namespaces and custom headers:** a `namespace` option targets a self-hosted sqld namespace, and `openLibsqlDatabase` takes extra request `headers` that stay redacted in errors ([#4083](https://github.com/bastani-inc/atomic/issues/4083), [#4084](https://github.com/bastani-inc/atomic/pull/4084))
+- **Faster remote journals:** a workflow journal's batch of appends reaches the database in one request instead of one per statement ([#4083](https://github.com/bastani-inc/atomic/issues/4083), [#4084](https://github.com/bastani-inc/atomic/pull/4084))
+
 ### Added
 
 - A `namespace` option selects a self-hosted sqld namespace (`sqld --enable-namespaces`), sent as the `x-namespace` header, and `openLibsqlDatabase` accepts extra request `headers`, whose values are redacted from errors ([#4083](https://github.com/bastani-inc/atomic/issues/4083))
