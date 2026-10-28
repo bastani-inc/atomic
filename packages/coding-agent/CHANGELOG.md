@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `createSqliteDatabase` accepts an optional `batch` driver call that sends several statements in one write transaction and one request, exposed as `SqliteDatabase.batch`. Workflow journals use it to write a batch of events in one request, which saves a network round trip per statement on remote databases ([#4083](https://github.com/bastani-inc/atomic/issues/4083))
+
 ## [0.9.47] - 2026-10-27
 
 Two fixes for model errors and MCP tool names.

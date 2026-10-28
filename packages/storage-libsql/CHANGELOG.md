@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- A `namespace` option selects a self-hosted sqld namespace (`sqld --enable-namespaces`), sent as the `x-namespace` header, and `openLibsqlDatabase` accepts extra request `headers`, whose values are redacted from errors ([#4083](https://github.com/bastani-inc/atomic/issues/4083))
+
+### Changed
+
+- A workflow journal's batch of appends now reaches the database in one request instead of one per statement, so writing workflow progress to a remote database is much faster ([#4083](https://github.com/bastani-inc/atomic/issues/4083))
+
 ## [0.9.42] - 2026-10-23
 
 ### Added

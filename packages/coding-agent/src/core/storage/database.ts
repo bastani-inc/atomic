@@ -17,8 +17,20 @@ export interface StorageDescriptor {
 	readonly location: string;
 }
 
+/** One statement of a batch: SQL with positional `?` parameters. */
+export interface SqliteStatement {
+	readonly sql: string;
+	readonly params: readonly SqliteValue[];
+}
+
 export interface SqliteDatabase extends SqliteExecutor {
 	readonly descriptor: StorageDescriptor;
 	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T>;
+	/**
+	 * Runs the statements in order, in one write transaction, as one call to the database: all of them commit or none
+	 * do. Resolves with each statement's rows. Present only when the driver can send a batch in one request, which
+	 * saves a round trip per statement against a remote database.
+	 */
+	batch?(statements: readonly SqliteStatement[]): Promise<SqliteRow[][]>;
 	close(): Promise<void>;
 }

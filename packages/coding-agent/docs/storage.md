@@ -53,6 +53,8 @@ Then select it in `~/.atomic/agent/settings.json`:
 }
 ```
 
+For a self-hosted sqld started with `--enable-namespaces`, add `"namespace": "<name>"` to `options`; the adapter sends it as the `x-namespace` header, so each namespace is its own database with its own token. `namespace` needs a `libsql:`, `https:`, or `http:` URL. SDK callers can also pass extra request `headers` to `openLibsqlDatabase`; their values are redacted from errors.
+
 Save the token with `turso db tokens create <db> > turso-token` and keep it readable only by you (`chmod 600`); a trailing newline is ignored. A relative `file` resolves against Atomic home, normally `~/.atomic`. Use `{ "env": "TURSO_TOKEN" }` instead to read it from an environment variable. For a local database file, use a `file:` URL such as `file:/home/me/shared.sqlite` and omit `secrets`. Every machine that uses the same `storage` block shares the same sessions, workflow runs, and Intercom routing; add a `prefix` to keep projects or teams apart. See [Sharing storage across hosts](#sharing-storage-across-hosts).
 
 Like any [adapter](#selecting-an-adapter), it runs with Atomic's privileges. To use a different driver, adapt it with [Bring your own driver](#bring-your-own-driver).
@@ -108,6 +110,7 @@ Atomic does not bundle remote database drivers. Install your chosen SQLite-compa
 - `executeMultiple(sql)`: runs zero or more statements that take no parameters.
 - `beginTransaction()`: begins a write transaction and returns its own `execute` and `executeMultiple`, plus `commit()`, `rollback()`, and an optional `close()` that releases it afterward.
 - `close()`: releases the connection.
+- `batch(statements)`, optional: runs `{ sql, params }` statements in order in one write transaction, sent as one request, and returns each statement's result; all of them commit or none do. Provide it only when your driver sends the whole batch at once. The facade then offers `SqliteDatabase.batch`, and workflow journals write a batch of events with one request instead of one per statement.
 - `redact(text)`, optional: removes credentials from diagnostic text. `redactSecrets(secrets)` builds one that also removes each secret's URI-encoded and decoded forms, longest first.
 
 Driver calls may return values or promises. The returned facade follows the rules described above: it queues operations in call order and keeps them outside active transactions, snapshots binary parameters when a call is made, rejects NUL text with `StorageInvalidTextError` before SQL runs, returns safe-range integers as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, and closes the driver once after draining accepted work. A failed driver call rejects with `StorageUnavailableError`, whose `cause` is the driver error with credentials redacted. A failed rollback rejects with `StorageRollbackError`, and callback failures are preserved. Do not fall back to memory after an opening failure.

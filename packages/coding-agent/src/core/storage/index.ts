@@ -3,6 +3,7 @@ export type {
 	SqliteExecutor,
 	SqliteRow,
 	SqliteRunResult,
+	SqliteStatement,
 	SqliteValue,
 	StorageDescriptor,
 } from "./database.js";

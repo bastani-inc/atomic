@@ -33,6 +33,7 @@ chmod 600 ~/.atomic/turso-token
 |---|---|---|
 | `url` | yes | A `libsql://`, `https://`, `wss://`, or `file:` URL. |
 | `authToken` | for remote databases | The database token. Pass it through `secrets` (`{ "file": ... }` or `{ "env": ... }`) so it stays out of settings. |
+| `namespace` | no | A self-hosted sqld namespace (`sqld --enable-namespaces`), sent as the `x-namespace` header. Needs a `libsql:`, `https:`, or `http:` URL. |
 
 The token is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence, per-process overrides, and the other storage options.
 
@@ -44,7 +45,7 @@ import { openLibsqlDatabase } from "@bastani/atomic-storage-libsql";
 const database = await openLibsqlDatabase({ url: "libsql://<db>.turso.io", authToken });
 ```
 
-The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`.
+`openLibsqlDatabase` also accepts `namespace` and `headers` (extra request headers, redacted from errors), both for `libsql:`, `https:`, or `http:` URLs. The returned `SqliteDatabase` can be passed as SDK `sessionStore: { kind: "database", database }` or workflow `journal: { database }`; it sends a workflow journal's batch of appends to the database in one request.
 
 The package ships plain ESM JavaScript with TypeScript declarations. This import works in supported Node versions without a TypeScript loader.
 

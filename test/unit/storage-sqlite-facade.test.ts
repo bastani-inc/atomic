@@ -7,6 +7,9 @@ import {
 	redactSecrets,
 	type SqliteDriver,
 	type SqliteDriverExecutor,
+	type SqliteDriverResult,
+	type SqliteDriverTransaction,
+	type SqliteStatement,
 	StorageError,
 	StorageInvalidTextError,
 	StorageRollbackError,
@@ -290,4 +293,62 @@ test("redactSecrets removes encoded forms and longer secrets first (#3856)", () 
 	const redact = redactSecrets(["user", "user-password", "a b/c", "", "\ud800"]);
 	assert.equal(redact("user-password user a b/c a%20b%2Fc"), "[redacted] [redacted] [redacted] [redacted]");
 	assert.equal(redact("nothing secret"), "nothing secret");
+});
+
+/** The node:sqlite driver with a `batch` that runs every statement in one immediate transaction. */
+function batchingDriver(path: string): SqliteDriver & { batches: number } {
+	const driver = nodeSqliteDriver(path);
+	const batching = {
+		...driver,
+		batches: 0,
+		batch(statements: readonly SqliteStatement[]): SqliteDriverResult[] {
+			batching.batches++;
+			const transaction = driver.beginTransaction() as SqliteDriverTransaction;
+			try {
+				const results = statements.map(({ sql, params }) => transaction.execute(sql, params) as SqliteDriverResult);
+				transaction.commit();
+				return results;
+			} catch (error) {
+				transaction.rollback();
+				throw error;
+			}
+		},
+	};
+	return batching;
+}
+
+test("createSqliteDatabase offers batch only for a driver that sends one (#4083)", async () => {
+	const directory = makeTempDirectory("storage-sqlite-facade-batch-");
+	try {
+		const plain = createSqliteDatabase(nodeSqliteDriver(join(directory, "plain.sqlite")));
+		assert.equal(plain.batch, undefined);
+		await plain.close();
+		const driver = batchingDriver(join(directory, "batch.sqlite"));
+		const database = createSqliteDatabase(driver);
+		await database.exec("CREATE TABLE t(value)");
+		const rows = await database.batch!([
+			{ sql: "INSERT INTO t VALUES (?)", params: [1] },
+			{ sql: "SELECT changes() AS inserted", params: [] },
+			{ sql: "SELECT value FROM t", params: [] },
+		]);
+		assert.equal(driver.batches, 1);
+		assert.deepEqual(rows, [[], [{ inserted: 1 }], [{ value: 1 }]]);
+		await assert.rejects(
+			database.batch!([
+				{ sql: "INSERT INTO t VALUES (?)", params: [2] },
+				{ sql: "INSERT INTO t VALUES (?)", params: ["bad\0text"] },
+			]),
+			StorageInvalidTextError,
+		);
+		assert.equal(driver.batches, 1, "a batch with NUL text never reaches the driver");
+		await assert.rejects(
+			database.batch!([{ sql: "INSERT INTO missing VALUES (1)", params: [] }]),
+			StorageUnavailableError,
+		);
+		assert.deepEqual(await database.all("SELECT value FROM t"), [{ value: 1 }]);
+		await database.close();
+		await assert.rejects(database.batch!([{ sql: "SELECT 1", params: [] }]), StoreClosedError);
+	} finally {
+		removeTempDirectory(directory);
+	}
 });
