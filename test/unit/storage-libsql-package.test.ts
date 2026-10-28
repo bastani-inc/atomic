@@ -182,3 +182,82 @@ test("the package requires a url option (#3857)", async () => {
 });
 
 afterAll(async () => removeTempDirectory(await agentDirectory));
+
+/** An HTTP server that records each request's headers and refuses it, standing in for a remote sqld. */
+async function recordingServer() {
+	const { createServer } = await import("node:http");
+	const seen: Record<string, string | string[] | undefined>[] = [];
+	const server = createServer((request, response) => {
+		seen.push(request.headers);
+		response.writeHead(500).end("refused");
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	return {
+		url: `http://127.0.0.1:${address.port}`,
+		seen,
+		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+	};
+}
+
+test("the namespace option reaches a namespaced sqld as x-namespace (#4083)", async () => {
+	const server = await recordingServer();
+	try {
+		const adapter = await packageAdapter("journal");
+		await assert.rejects(
+			adapter.openDatabase!(
+				{ url: server.url, namespace: "team-a" },
+				{ agentDir: await agentDirectory, domain: "journal" },
+			),
+			StorageUnavailableError,
+		);
+		assert.ok(server.seen.length > 0);
+		assert.ok(server.seen.every((headers) => headers["x-namespace"] === "team-a"));
+	} finally {
+		await server.close();
+	}
+});
+
+test("extra headers are sent and redacted from failures (#4083)", async () => {
+	const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
+	const server = await recordingServer();
+	const secret = "fixture-header-secret-4083";
+	try {
+		await assert.rejects(
+			openLibsqlDatabase({ url: server.url, headers: { "x-proxy-key": secret } }),
+			(error: Error) => {
+				assert.ok(error instanceof StorageUnavailableError);
+				assert.equal(inspect(error, { depth: null }).includes(secret), false);
+				return true;
+			},
+		);
+		assert.ok(server.seen.every((headers) => headers["x-proxy-key"] === secret));
+	} finally {
+		await server.close();
+	}
+});
+
+test("namespace and headers are refused where libSQL sends no HTTP request (#4083)", async () => {
+	const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
+	for (const url of ["file:/tmp/never-opened.sqlite", "wss://example.invalid", "ws://example.invalid"])
+		await assert.rejects(openLibsqlDatabase({ url, namespace: "team-a" }), /only over HTTP/);
+	await assert.rejects(openLibsqlDatabase({ url: "libsql://example.invalid", namespace: "" }), /non-empty string/);
+	await assert.rejects(
+		openLibsqlDatabase({ url: "libsql://example.invalid", headers: { "bad name": "x" } }),
+		/header name/,
+	);
+	await assert.rejects(
+		openLibsqlDatabase({ url: "libsql://example.invalid", headers: { "x-key": "a\r\nb" } }),
+		/value of header/,
+	);
+	const adapter = await packageAdapter("sessions");
+	assert.throws(
+		() =>
+			adapter.openDatabase?.(
+				{ url: "libsql://example.invalid", namespace: 1 },
+				{ agentDir: packageRoot, domain: "sessions" },
+			),
+		/non-empty string/,
+	);
+});

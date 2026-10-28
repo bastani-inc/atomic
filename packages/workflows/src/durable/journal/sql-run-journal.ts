@@ -5,6 +5,7 @@ import {
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
+	type SqliteStatement,
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageSchemaVersionError,
@@ -484,6 +485,14 @@ export class SqlRunJournal implements RunJournal {
 				return error as Error;
 			}
 		});
+		const batch = this.database.batch?.bind(this.database);
+		if (
+			batch &&
+			prepared.every(
+				(append) => append instanceof Error || (append.guard === undefined && typeof append.payload === "string"),
+			)
+		)
+			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
 		return this.operation(() =>
 			this.database.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
@@ -505,6 +514,88 @@ export class SqlRunJournal implements RunJournal {
 				return results;
 			}),
 		);
+	}
+
+	/**
+	 * `appendMany` as one `SqliteDatabase.batch` request, for a batch with no pool guards and no payload errors. Every
+	 * write checks the lease, the key and the sequence limit in SQL, so the outcomes match the savepoint path: a stale
+	 * lease writes nothing and rejects the batch, a known key reports `exists`, and each append settles alone, in order.
+	 */
+	private async appendInOneRequest(
+		batch: NonNullable<SqliteDatabase["batch"]>,
+		owned: Lease,
+		prepared: readonly (ReturnType<SqlRunJournal["prepare"]> | Error)[],
+	): Promise<readonly PromiseSettledResult<AppendOutcome>[]> {
+		const t = this.tables;
+		const holds = `EXISTS (SELECT 1 FROM ${t.leases} WHERE ${c.runId} = ? AND ${c.holderId} = ? AND ${c.epoch} = ?)`;
+		const held = [owned.runId, owned.holderId, owned.epoch] as const;
+		const latest = `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.seq} = (SELECT MAX(${c.seq}) FROM ${t.events} WHERE ${c.runId} = ?)`;
+		const statements: SqliteStatement[] = [
+			{ sql: `SELECT * FROM ${t.leases} WHERE ${c.runId} = ?`, params: [owned.runId] },
+		];
+		const at = (statement: SqliteStatement) => statements.push(statement) - 1;
+		const plans = prepared.map((append) => {
+			if (append instanceof Error) return append;
+			const { key, type, payload, status } = append;
+			const existing =
+				key === undefined
+					? undefined
+					: at({
+							sql: `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
+							params: [owned.runId, key],
+						});
+			at({
+				sql: `INSERT INTO ${t.events}
+					SELECT ?, current.latest + 1, ?, ?, ?, ?, ${STORE_NOW}
+					FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
+					WHERE current.latest < ? AND ${holds}${
+						key === undefined
+							? ""
+							: ` AND NOT EXISTS (SELECT 1 FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?)`
+					}`,
+				params: [
+					owned.runId,
+					owned.epoch,
+					key ?? null,
+					type,
+					payload as string,
+					owned.runId,
+					Number.MAX_SAFE_INTEGER,
+					...held,
+					...(key === undefined ? [] : [owned.runId, key]),
+				],
+			});
+			const inserted = at({ sql: "SELECT changes() AS inserted", params: [] });
+			// changes() still counts the insert: a SELECT does not reset it.
+			if (status !== undefined)
+				at({
+					sql: `UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ? AND changes() = 1`,
+					params: [status, owned.runId],
+				});
+			const row = at({ sql: latest, params: [owned.runId, owned.runId] });
+			return { existing, inserted, row };
+		});
+		const rows = await batch(statements);
+		const lease = rows[0]![0] as LeaseRow | undefined;
+		const epoch = lease === undefined ? undefined : journalCounter(owned.runId, "epoch", lease[c.epoch]);
+		if (lease?.[c.holderId] !== owned.holderId || epoch !== owned.epoch)
+			throw new StaleLeaseError(owned.runId, owned.epoch, epoch ?? JOURNAL_LEASE.absentEpoch);
+		return plans.map((plan): PromiseSettledResult<AppendOutcome> => {
+			if (plan instanceof Error) return { status: "rejected", reason: plan };
+			try {
+				const existing =
+					plan.existing === undefined ? undefined : (rows[plan.existing]![0] as EventRow | undefined);
+				if (existing) return { status: "fulfilled", value: { status: "exists", entry: entryFromRow(existing) } };
+				const row = rows[plan.row]![0] as EventRow | undefined;
+				if (Number(rows[plan.inserted]![0]!.inserted) === 1)
+					return { status: "fulfilled", value: { status: "appended", entry: entryFromRow(row!) } };
+				const actual = journalCounter(owned.runId, "seq", row?.[c.seq] ?? 0);
+				journalCounter(owned.runId, "seq", actual + 1, "overflow");
+				throw new StorageUnavailableError(this.descriptor, new Error("The batched append was not written."));
+			} catch (error) {
+				return { status: "rejected", reason: error };
+			}
+		});
 	}
 
 	/** Validate an append outside any transaction; its payload error is raised where `append` always raised it. */

@@ -1,4 +1,11 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteStatement,
+	SqliteValue,
+	StorageDescriptor,
+} from "./database.js";
 import {
 	StorageError,
 	type StorageFailureCause,
@@ -42,6 +49,11 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	readonly descriptor: StorageDescriptor;
 	/** Begins a write transaction that holds the database's write lock, like `BEGIN IMMEDIATE`. */
 	beginTransaction(): Awaitable<SqliteDriverTransaction>;
+	/**
+	 * Optional. Runs the statements in order in one write transaction, in one request: all commit or none do. Provide it
+	 * only when the driver sends the whole batch at once; the facade then offers `SqliteDatabase.batch`.
+	 */
+	batch?(statements: readonly SqliteStatement[]): Awaitable<readonly SqliteDriverResult[]>;
 	/** Releases the connection. Called once, after accepted work drains. */
 	close(): Awaitable<void>;
 	/** Removes credentials from diagnostic text: the descriptor location and driver failure messages and stacks. */
@@ -124,6 +136,7 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly queue = new CallQueue();
 	private closePromise?: Promise<void>;
 	private readonly executor: SqliteExecutor;
+	readonly batch?: (statements: readonly SqliteStatement[]) => Promise<SqliteRow[][]>;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
@@ -132,6 +145,26 @@ class DriverDatabase implements SqliteDatabase {
 		this.executor = this.createExecutor(driver, (operation) => {
 			if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 			return this.queue.push(operation);
+		});
+		const batch = driver.batch?.bind(driver);
+		if (batch) this.batch = (statements) => this.runBatch(batch, statements);
+	}
+
+	private runBatch(
+		batch: NonNullable<SqliteDriver["batch"]>,
+		statements: readonly SqliteStatement[],
+	): Promise<SqliteRow[][]> {
+		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
+		const bound = statements.map((statement) => ({ sql: statement.sql, params: snapshotParams(statement.params) }));
+		return this.queue.push(async () => {
+			for (const statement of bound) {
+				const invalidIndex = statement.params.findIndex(
+					(value) => typeof value === "string" && value.includes("\0"),
+				);
+				if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+			}
+			const results = await this.call(() => batch(bound));
+			return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
 		});
 	}
 

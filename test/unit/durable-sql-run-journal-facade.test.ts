@@ -395,3 +395,120 @@ test("session and journal write concurrently through separate connections to one
 		removeTempDirectory(directory);
 	}
 });
+
+/** A facade whose `batch` runs every statement in one transaction, as a driver that sends a batch in one request. */
+function batchingFacade(source: SqliteDatabase) {
+	const calls = { batches: 0, transactions: 0 };
+	const facade: SqliteDatabase = {
+		...executor(source),
+		descriptor: { adapter: "test-sqlite", location: "test database" },
+		transaction: (callback) => {
+			calls.transactions++;
+			return source.transaction((tx) => callback(executor(tx)));
+		},
+		batch: (statements) => {
+			calls.batches++;
+			return source.transaction(async (tx) => {
+				const rows: SqliteRow[][] = [];
+				for (const { sql, params } of statements) rows.push(await tx.all(sql, ...params));
+				return rows;
+			});
+		},
+		close: () => source.close(),
+	};
+	return { facade, calls };
+}
+
+registerRunJournalConformance(
+	test,
+	"facade that sends a batch in one request (#4083)",
+	async () => SqlRunJournal.open(batchingFacade(await database()).facade),
+	observeJournalRead,
+);
+
+const run = <R>(action: () => R): R => action();
+
+test("appendMany sends one batch and no transaction when the database can batch (#4083)", async () => {
+	const { facade, calls } = batchingFacade(await database());
+	const journal = await SqlRunJournal.open(facade);
+	const lease = await acquire(journal);
+	const before = { ...calls };
+	const results = await journal.appendMany!(lease, [
+		{ event: { type: "RunStarted", payload: null }, key: "start", context: run },
+		{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context: run },
+		{ event: { type: "RunFinished", payload: null }, key: "start", context: run },
+		{ event: { type: "RunFinished", payload: null }, key: "end", context: run },
+	]);
+	assert.deepEqual(calls, { batches: before.batches + 1, transactions: before.transactions });
+	assert.deepEqual(
+		results.map((result) => (result.status === "fulfilled" ? [result.value.status, result.value.entry.seq] : [])),
+		[
+			["appended", 1],
+			["appended", 2],
+			["exists", 1],
+			["appended", 3],
+		],
+	);
+	assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+	await journal.close();
+});
+
+test("appendMany in one request rejects a stale lease without writing (#4083)", async () => {
+	const { facade } = batchingFacade(await database());
+	const journal = await SqlRunJournal.open(facade);
+	const lease = await acquire(journal);
+	assert.equal((await journal.takeover(header.runId, "next", lease.holderId)).status, "acquired");
+	await assert.rejects(
+		journal.appendMany!(lease, [
+			{ event: { type: "StatusChanged", payload: { status: "stolen" } }, key: "stale", context: run },
+		]),
+		(error: Error) => {
+			assert.ok(error instanceof StaleLeaseError);
+			assert.equal(error.heldEpoch, lease.epoch);
+			assert.equal(error.currentEpoch, lease.epoch + 1);
+			return true;
+		},
+	);
+	assert.equal(await journal.readKey(header.runId, "stale"), undefined);
+	assert.deepEqual(await journal.getRun(header.runId), header);
+	await journal.close();
+});
+
+test("a storage failure in a one-request appendMany writes nothing (#4083)", async () => {
+	const source = await database();
+	const { facade } = batchingFacade(source);
+	const journal = await SqlRunJournal.open(facade);
+	const lease = await acquire(journal);
+	await source.exec("CREATE TRIGGER reject_status BEFORE UPDATE ON wf_runs BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+	await assert.rejects(
+		journal.appendMany!(lease, [
+			{ event: { type: "RunStarted", payload: null }, context: run },
+			{ event: { type: "StatusChanged", payload: { status: "paused" } }, context: run },
+		]),
+	);
+	assert.equal((await source.get("SELECT COUNT(*) AS count FROM wf_events"))?.count, 0);
+	await journal.close();
+});
+
+test("appendMany keeps the transaction path for a payload it can't serialize (#4083)", async () => {
+	const { facade, calls } = batchingFacade(await database());
+	const journal = await SqlRunJournal.open(facade);
+	const lease = await acquire(journal);
+	const unserializable = {};
+	Object.defineProperty(unserializable, "toJSON", {
+		value: () => {
+			throw new Error("serializer failed");
+		},
+	});
+	const before = { ...calls };
+	const results = await journal.appendMany!(lease, [
+		{ event: { type: "RunStarted", payload: null }, context: run },
+		{ event: { type: "RunFinished", payload: unserializable }, context: run },
+	]);
+	assert.deepEqual(calls, { batches: before.batches, transactions: before.transactions + 1 });
+	assert.deepEqual(
+		results.map((result) => result.status),
+		["fulfilled", "rejected"],
+	);
+	await journal.close();
+});
