@@ -17,6 +17,10 @@ function runOpenRouterRetryFixture(
 	mode:
 		| "transient-success"
 		| "transient-failure"
+		| "body-timeout"
+		| "truncated-json"
+		| "radius-timeout"
+		| "stalled"
 		| "http-429"
 		| "http-400"
 		| "classifier-429"
@@ -78,9 +82,21 @@ function runOpenRouterRetryFixture(
 		`const catalog = ${JSON.stringify(catalog)};\n` +
 			`let openRouterAttempts = 0;\n` +
 			`let classifierAttempts = 0;\n` +
-			`globalThis.fetch = async (input) => {\n` +
+			`let catalogAttempts = 0;\n` +
+			`let radiusAttempts = 0;\n` +
+			`globalThis.fetch = async (input, init) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") {\n` +
+			`    catalogAttempts += 1;\n` +
+			`    if (${JSON.stringify(mode)} === "stalled" && catalogAttempts === 1) {\n` +
+			`      const open = setInterval(() => {}, 1000);\n` +
+			`      return new Promise((_, reject) => init.signal.addEventListener("abort", () => { clearInterval(open); reject(init.signal.reason); }));\n` +
+			`    }\n` +
+			`    if (${JSON.stringify(mode)} === "body-timeout" && catalogAttempts === 1) {\n` +
+			`      const timeout = Object.assign(new Error("Body Timeout Error"), { code: "UND_ERR_BODY_TIMEOUT" });\n` +
+			`      const body = new ReadableStream({ start(controller) { controller.error(new TypeError("terminated", { cause: timeout })); } });\n` +
+			`      return new Response(body, { status: 200 });\n` +
+			`    }\n` +
 			`    return new Response(JSON.stringify(catalog), { status: 200 });\n` +
 			`  }\n` +
 			`  if (url === "https://models.dev/models.json?type=decision") {\n` +
@@ -95,7 +111,8 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://openrouter.ai/api/v1/models") {\n` +
 			`    openRouterAttempts += 1;\n` +
 			`    const mode = ${JSON.stringify(mode)};\n` +
-			`    if (mode === "classifier-429" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
+			`    if (mode === "truncated-json" && openRouterAttempts === 1) return new Response('{"data": [{"id": "cut', { status: 200 });\n` +
+			`    if (mode === "classifier-429" || mode === "body-timeout" || mode === "truncated-json" || mode === "radius-timeout" || mode === "stalled" || ((mode === "transient-success" || mode === "http-429") && openRouterAttempts > 1)) {\n` +
 			`      return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`    }\n` +
 			`    if (mode === "http-429") return new Response("rate limited", { status: 429 });\n` +
@@ -119,6 +136,9 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://ai-gateway.vercel.sh/v1/models") {\n` +
 			`    return new Response(JSON.stringify({ data: [] }), { status: 200 });\n` +
 			`  }\n` +
+			`  if (url === "https://radius.pi.dev/v1/config" && ${JSON.stringify(mode)} === "radius-timeout" && ++radiusAttempts === 1) {\n` +
+			`    throw new TypeError("fetch failed", { cause: Object.assign(new Error("Connect Timeout Error"), { code: "UND_ERR_CONNECT_TIMEOUT" }) });\n` +
+			`  }\n` +
 			`  if (url === "https://radius.pi.dev/v1/config") return Response.json({ baseUrl: "https://radius.pi.dev", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 4096, maxTokens: 4096 }] });\n` +
 			`  throw new Error(\`Unexpected fetch: \${url}\`);\n` +
 			`};\n`,
@@ -140,6 +160,7 @@ function runOpenRouterRetryFixture(
 			cwd: isolatedPackageRoot,
 			encoding: "utf8",
 			timeout: 10_000,
+			env: { ...process.env, ATOMIC_MODEL_FETCH_TIMEOUT_MS: "1000" },
 		},
 	);
 	return Object.assign(result, { outputPath });
@@ -151,7 +172,7 @@ describe("strict model generation", () => {
 
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
-			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/2)",
+			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/3)",
 		);
 		expect(result.stdout).toContain("Fetched 0 tool-capable, 1 image, and 0 classifier models from OpenRouter");
 		const individualCatalog = JSON.parse(
@@ -173,12 +194,52 @@ describe("strict model generation", () => {
 		assert.deepEqual(basetenCatalog["zai-org/GLM-5.2-Fast"]?.input, ["text"]);
 	});
 
+	it("retries a model catalog whose body times out mid-download", () => {
+		const result = runOpenRouterRetryFixture("body-timeout");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://models.dev/api.json failed transiently; retrying (attempt 2/3)",
+		);
+	});
+
+	it("retries a model catalog that arrives as cut-off JSON", () => {
+		const result = runOpenRouterRetryFixture("truncated-json");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://openrouter.ai/api/v1/models returned incomplete JSON; retrying (attempt 2/3)",
+		);
+	});
+
+	it("gives up on a catalog fetch that stalls and tries again", () => {
+		const result = runOpenRouterRetryFixture("stalled");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://models.dev/api.json failed transiently; retrying (attempt 2/3)",
+		);
+	});
+
+	it("retries the Radius config after a connect timeout", () => {
+		const result = runOpenRouterRetryFixture("radius-timeout");
+		const output = `${result.stdout}\n${result.stderr}`;
+
+		expect(result.status, output).toBe(0);
+		expect(output).toContain(
+			"Model fetch from https://radius.pi.dev/v1/config failed transiently; retrying (attempt 2/3)",
+		);
+	});
+
 	it("still fails strict mode after exhausting transient model-catalog fetch retries", () => {
 		const result = runOpenRouterRetryFixture("transient-failure");
 
 		expect(result.status).toBe(1);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
-			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/2)",
+			"Model fetch from https://openrouter.ai/api/v1/models failed transiently; retrying (attempt 2/3)",
 		);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
 			"Failed to fetch OpenRouter models: TypeError: fetch failed",
@@ -190,7 +251,7 @@ describe("strict model generation", () => {
 
 		expect(result.status).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
-			"Model fetch from https://openrouter.ai/api/v1/models returned 429; retrying (attempt 2/2)",
+			"Model fetch from https://openrouter.ai/api/v1/models returned 429; retrying (attempt 2/3)",
 		);
 	});
 
@@ -198,7 +259,7 @@ describe("strict model generation", () => {
 		const result = runOpenRouterRetryFixture("classifier-429");
 		expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
 		expect(`${result.stdout}\n${result.stderr}`).toContain(
-			"Model fetch from https://models.dev/models.json?type=decision returned 429; retrying (attempt 2/2)",
+			"Model fetch from https://models.dev/models.json?type=decision returned 429; retrying (attempt 2/3)",
 		);
 	});
 
@@ -207,7 +268,13 @@ describe("strict model generation", () => {
 		assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
 		const typesafeCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/typesafe.all.json"), "utf8"),
-		) as Array<{ id: string; name: string; contextWindow: number; headers?: Record<string, string>; input?: string[] }>;
+		) as Array<{
+			id: string;
+			name: string;
+			contextWindow: number;
+			headers?: Record<string, string>;
+			input?: string[];
+		}>;
 		const headers = { "TypeSafe-Danger-Zone-Long-Context": "true", "TypeSafe-Danger-Zone-Images": "true" };
 		assert.deepEqual(
 			typesafeCatalog.map(({ id, name, contextWindow, headers }) => ({ id, name, contextWindow, headers })),
