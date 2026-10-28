@@ -38,6 +38,7 @@ import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SessionEntry, SessionInfo, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
+import type { QuestionAnswer, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 
 // ============================================================================
@@ -127,6 +128,9 @@ export type RpcCommand =
 	| { id?: string; type: "compact" }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 	| { id?: string; type: "abort_compaction" }
+
+	// Extension UI
+	| { id?: string; type: "set_extension_ui_capabilities"; questionnaire?: boolean }
 
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
@@ -364,6 +368,9 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 
+	// Extension UI
+	| { id?: string; type: "response"; command: "set_extension_ui_capabilities"; success: true }
+
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
 	| { id?: string; type: "response"; command: "abort_retry"; success: true }
@@ -498,6 +505,12 @@ export type RpcExtensionUIRequest =
 	| {
 			type: "extension_ui_request";
 			id: string;
+			method: "questionnaire";
+			questions: QuestionParams["questions"];
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
 			method: "notify";
 			message: string;
 			notifyType?: "info" | "warning" | "error";
@@ -537,6 +550,7 @@ export type RpcExtensionUIRequest =
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; answers: QuestionAnswer[] }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================

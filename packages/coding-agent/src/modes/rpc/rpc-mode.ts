@@ -29,7 +29,7 @@ import { EngineSessionPickerService } from "../interactive-engine/engine-session
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
-import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import type { RpcExtensionUICapabilities, RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
 import { createRpcInputScheduler } from "./rpc-input-scheduler.ts";
 import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
@@ -66,6 +66,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const outputBuffer = new RpcOutputBuffer();
 	const output = outputBuffer.output;
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
+	const extensionUICapabilities: RpcExtensionUICapabilities = { questionnaire: false };
 	const signalCleanupHandlers: Array<() => void> = [];
 	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
 	const customUi = keybindings ? new EngineCustomUiService(writeRawStdout, keybindings) : undefined;
@@ -102,6 +103,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		runtimeHost,
 		output,
 		pendingExtensionRequests,
+		extensionUICapabilities,
 		requestShutdown,
 		customUi,
 		renderService,
@@ -146,6 +148,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		reloadCoordinator,
 		inputForm,
 		pendingExtensionRequests,
+		extensionUICapabilities,
 		waitForResources: deferInteractiveEngineResources ? () => resourceReadiness.wait() : undefined,
 		reloadResources: deferInteractiveEngineResources ? loadDeferredResources : undefined,
 		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,

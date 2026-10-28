@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- RPC clients can answer `ask_user_question`: after `{"type": "set_extension_ui_capabilities", "questionnaire": true}`, each call reaches the client as one `extension_ui_request` with method `questionnaire` and all its questions, and the client replies with the answers. Clients that don't opt in see no change. `RpcClient.setExtensionUiCapabilities()` sends the command.
+
 ## [0.9.49] - 2026-10-27
 
 Faster workflow journals on remote databases.

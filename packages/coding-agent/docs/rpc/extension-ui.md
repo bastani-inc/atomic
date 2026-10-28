@@ -11,7 +11,7 @@ Extensions can request user interaction via `ctx.ui.select()`, `ctx.ui.confirm()
 
 There are two categories of extension UI methods:
 
-- **Dialog methods** (`select`, `confirm`, `input`, `editor`): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
+- **Dialog methods** (`select`, `confirm`, `input`, `editor`, and `questionnaire` for a client that [opted in](/rpc/protocol#set_extension_ui_capabilities)): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
 - **Fire-and-forget methods** (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout but do not expect a response. The client can display the information or ignore it.
 
 If a dialog method includes a `timeout` field, the agent-side will auto-resolve with a default value when the timeout expires. The client does not need to track timeouts.
@@ -98,6 +98,45 @@ Open a multi-line text editor with optional prefilled content.
 
 Expected response: `extension_ui_response` with `value` (the edited text) or `cancelled: true`.
 
+#### questionnaire
+
+A whole `ask_user_question` call: one to four questions, each with a short `header`, its options (`label`, `description`, optional markdown `preview`) and `multiSelect`. Sent only to a client that turned the `questionnaire` capability on with [`set_extension_ui_capabilities`](/rpc/protocol#set_extension_ui_capabilities); otherwise `ask_user_question` fails in RPC mode, because it needs a terminal.
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-5",
+  "method": "questionnaire",
+  "questions": [
+    {
+      "question": "Which storage should runs use?",
+      "header": "Storage",
+      "options": [
+        { "label": "SQLite", "description": "A local file" },
+        { "label": "libSQL", "description": "A shared database" }
+      ]
+    }
+  ]
+}
+```
+
+Expected response: `extension_ui_response` with `answers`, one per answered question, or `cancelled: true`. Each answer names its `questionIndex` and repeats its `question`, and its `kind` says what the user chose:
+
+- `option`: one of the question's options; `answer` is its label.
+- `multi`: for a `multiSelect` question; `answer` is `null` and `selected` lists the chosen labels.
+- `custom`: free text typed instead of an option (single-select questions without previews); `answer` is the text.
+- `chat`: the user wants to talk it over instead; `answer` is their text or `null`.
+
+```json
+{
+  "type": "extension_ui_response",
+  "id": "uuid-5",
+  "answers": [{ "questionIndex": 0, "question": "Which storage should runs use?", "kind": "option", "answer": "libSQL" }]
+}
+```
+
+Answers that don't match the questions, such as an unknown label, are rejected and the tool call fails.
+
 #### notify
 
 Display a notification. Fire-and-forget, no response expected.
@@ -175,7 +214,7 @@ Set the text in the input editor. Fire-and-forget.
 
 ### Extension UI Responses (stdin)
 
-Responses are sent for dialog methods only (`select`, `confirm`, `input`, `editor`). The `id` must match the request.
+Responses are sent for dialog methods only (`select`, `confirm`, `input`, `editor`, `questionnaire`). The `id` must match the request. A `questionnaire` is answered with `answers` (see [questionnaire](#questionnaire)).
 
 #### Value response (select, input, editor)
 

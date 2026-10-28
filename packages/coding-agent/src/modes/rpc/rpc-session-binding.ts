@@ -11,7 +11,11 @@ import type { EngineSessionPickerService } from "../interactive-engine/engine-se
 import { forwardWorkflowActivity } from "../interactive-engine/engine-workflow-activity.ts";
 import { serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { toJsonEvent } from "../json-event.ts";
-import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import {
+	createRpcExtensionUIContext,
+	type RpcExtensionUICapabilities,
+	type RpcPendingExtensionRequests,
+} from "./rpc-extension-ui.ts";
 import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 import { bindEngineTaskWidget } from "./task-ui-bridge.js";
@@ -20,6 +24,7 @@ interface RpcSessionBindingOptions {
 	runtimeHost: AgentSessionRuntime;
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
+	extensionUICapabilities?: RpcExtensionUICapabilities;
 	customUi?: EngineCustomUiService;
 	renderService?: EngineRenderService;
 	sessionPicker?: EngineSessionPickerService;
@@ -40,6 +45,7 @@ export class RpcSessionBinding {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
+	private readonly extensionUICapabilities: RpcExtensionUICapabilities | undefined;
 	private readonly customUi: EngineCustomUiService | undefined;
 	private readonly renderService: EngineRenderService | undefined;
 	private readonly sessionPicker: EngineSessionPickerService | undefined;
@@ -53,6 +59,7 @@ export class RpcSessionBinding {
 		runtimeHost,
 		output,
 		pendingExtensionRequests,
+		extensionUICapabilities,
 		requestShutdown,
 		customUi,
 		renderService,
@@ -64,6 +71,7 @@ export class RpcSessionBinding {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
+		this.extensionUICapabilities = extensionUICapabilities;
 		this.requestShutdown = requestShutdown;
 		this.customUi = customUi;
 		this.renderService = renderService;
@@ -137,6 +145,7 @@ export class RpcSessionBinding {
 					sessionPicker: this.sessionPicker,
 					inputForm: this.inputForm,
 					footerDataProvider: this.footerDataProvider,
+					capabilities: this.extensionUICapabilities,
 				}),
 				mode: this.customUi ? "tui" : "rpc",
 				commandContextActions: {
