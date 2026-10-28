@@ -518,7 +518,7 @@ Response:
 
 #### set_extension_ui_capabilities
 
-Say what extension UI the client can show. With `questionnaire: true`, `ask_user_question` reaches the client as one [`questionnaire`](extension-ui.md#questionnaire) request instead of failing for lack of a terminal. Off until the client turns it on; an omitted field keeps its value.
+Say what extension UI the client can show. With `questionnaire: true`, `ask_user_question` reaches the client as one [`questionnaire`](/rpc/extension-ui#questionnaire) request instead of failing for lack of a terminal. Off until the client turns it on; an omitted field keeps its value.
 
 ```json
 {"type": "set_extension_ui_capabilities", "questionnaire": true}

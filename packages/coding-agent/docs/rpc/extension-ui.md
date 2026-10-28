@@ -11,7 +11,7 @@ Extensions can request user interaction via `ctx.ui.select()`, `ctx.ui.confirm()
 
 There are two categories of extension UI methods:
 
-- **Dialog methods** (`select`, `confirm`, `input`, `editor`, and `questionnaire` for a client that [opted in](protocol.md#set_extension_ui_capabilities)): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
+- **Dialog methods** (`select`, `confirm`, `input`, `editor`, and `questionnaire` for a client that [opted in](/rpc/protocol#set_extension_ui_capabilities)): emit an `extension_ui_request` on stdout and block until the client sends back an `extension_ui_response` on stdin with the matching `id`.
 - **Fire-and-forget methods** (`notify`, `setStatus`, `setWidget`, `setTitle`, `set_editor_text`): emit an `extension_ui_request` on stdout but do not expect a response. The client can display the information or ignore it.
 
 If a dialog method includes a `timeout` field, the agent-side will auto-resolve with a default value when the timeout expires. The client does not need to track timeouts.
@@ -100,7 +100,7 @@ Expected response: `extension_ui_response` with `value` (the edited text) or `ca
 
 #### questionnaire
 
-A whole `ask_user_question` call: one to four questions, each with a short `header`, its options (`label`, `description`, optional markdown `preview`) and `multiSelect`. Sent only to a client that turned the `questionnaire` capability on with [`set_extension_ui_capabilities`](protocol.md#set_extension_ui_capabilities); otherwise `ask_user_question` fails in RPC mode, because it needs a terminal.
+A whole `ask_user_question` call: one to four questions, each with a short `header`, its options (`label`, `description`, optional markdown `preview`) and `multiSelect`. Sent only to a client that turned the `questionnaire` capability on with [`set_extension_ui_capabilities`](/rpc/protocol#set_extension_ui_capabilities); otherwise `ask_user_question` fails in RPC mode, because it needs a terminal.
 
 ```json
 {
