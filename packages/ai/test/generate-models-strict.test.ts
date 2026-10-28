@@ -89,7 +89,8 @@ function runOpenRouterRetryFixture(
 			`  if (url === "https://models.dev/api.json") {\n` +
 			`    catalogAttempts += 1;\n` +
 			`    if (${JSON.stringify(mode)} === "stalled" && catalogAttempts === 1) {\n` +
-			`      return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));\n` +
+			`      const open = setInterval(() => {}, 1000);\n` +
+			`      return new Promise((_, reject) => init.signal.addEventListener("abort", () => { clearInterval(open); reject(init.signal.reason); }));\n` +
 			`    }\n` +
 			`    if (${JSON.stringify(mode)} === "body-timeout" && catalogAttempts === 1) {\n` +
 			`      const timeout = Object.assign(new Error("Body Timeout Error"), { code: "UND_ERR_BODY_TIMEOUT" });\n` +
