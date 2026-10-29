@@ -30,6 +30,21 @@ InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase)
 	}
 };
 
+/**
+ * A SIGINT signal, as opposed to the Ctrl+C key. In raw mode the keyboard sends Ctrl+C to the
+ * editor as input, so a signal came from outside the TUI: on Windows, any process attached to
+ * the same console that raises a console control event. It may interrupt running work, as the
+ * key does, but never clears the editor or counts toward the double-press exit.
+ */
+InteractiveModeBase.prototype.handleSigintSignal = function (this: InteractiveModeBase): void {
+	if (!process.stdin.isTTY || !process.stdin.isRaw) {
+		this.handleCtrlC();
+		return;
+	}
+	if (isWindowsSubshellActive(this)) return;
+	if (this.interruptActiveOperation()) this.lastSigintTime = 0;
+};
+
 InteractiveModeBase.prototype.interruptActiveOperation = function (this: InteractiveModeBase): boolean {
 	// Mirror the Escape interrupt paths so Ctrl+C aborts whichever operation is
 	// currently running. Returns true when something was aborted.
@@ -172,7 +187,7 @@ InteractiveModeBase.prototype.registerSignalHandlers = function (this: Interacti
 	}
 
 	const sigintHandler = () => {
-		this.handleCtrlC();
+		this.handleSigintSignal();
 	};
 	process.prependListener("SIGINT", sigintHandler);
 	this.signalCleanupHandlers.push(() => process.off("SIGINT", sigintHandler));

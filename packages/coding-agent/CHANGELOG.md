@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.51-alpha.1] - 2026-10-29
+
+Windows sessions resume as printed, and stay open.
+
+- **Resume commands that work in cmd.exe:** the command Atomic prints on exit quotes paths for Windows shells, so pasting it into `cmd.exe` or PowerShell resumes the session instead of failing to open the session store ([#4095](https://github.com/bastani-inc/atomic/issues/4095))
+- **No exits from stray signals:** a Ctrl+C signal that another process sends to the console no longer clears the editor or ends an idle session; it can still interrupt work that is running ([#4096](https://github.com/bastani-inc/atomic/issues/4096))
+
+### Fixed
+
+- The resume command printed on exit quotes paths for the shell on Windows: none for a plain path, double quotes for one with spaces, never single quotes, which `cmd.exe` passed through as part of the path ([#4095](https://github.com/bastani-inc/atomic/issues/4095))
+- A SIGINT signal that didn't come from the keyboard, such as a console control event another process in the same Windows console raises, no longer clears the editor or counts toward the double-Ctrl+C exit while the terminal is in raw mode; it still interrupts a running response, bash command, compaction or retry ([#4096](https://github.com/bastani-inc/atomic/issues/4096))
+
 ## [0.9.50] - 2026-10-28
 
 RPC clients can answer questions.
