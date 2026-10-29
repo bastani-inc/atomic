@@ -61,6 +61,18 @@ export interface FullSearchOptions extends SearchOptions {
 	includeContent?: boolean;
 }
 
+/** How to make a provider available. Shown whenever auto selection finds none that works. */
+function providerSetupHint(): string {
+	return "To configure a search provider, either:\n" +
+		"  1. Set EXA_API_KEY, PERPLEXITY_API_KEY, or GEMINI_API_KEY in the environment\n" +
+		`  2. Add exaApiKey, perplexityApiKey, or geminiApiKey to ~/${CONFIG_DIR_NAME}/web-search.json\n` +
+		"  3. Sign into gemini.google.com in a supported Chromium-based browser and allow browser cookies " +
+		`(allowBrowserCookies: true in ~/${CONFIG_DIR_NAME}/web-search.json)\n` +
+		"Without a key, Exa's keyless fallback needs network access to mcp.exa.ai.\n" +
+		"/curator only toggles the interactive review browser; it does not add a search provider. " +
+		"Run /curator off if the curator keeps failing to open.";
+}
+
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
@@ -171,16 +183,10 @@ export async function search(query: string, options: FullSearchOptions = {}): Pr
 	}
 
 	if (fallbackErrors.length > 0) {
-		throw new Error(`Auto provider search failed:\n  - ${fallbackErrors.join("\n  - ")}`);
+		throw new Error(`Auto provider search failed:\n  - ${fallbackErrors.join("\n  - ")}\n${providerSetupHint()}`);
 	}
 
-	throw new Error(
-		"No search provider available. Either:\n" +
-		`  1. Set perplexityApiKey in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-		`  2. Set EXA_API_KEY (or exaApiKey) in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-		`  3. Set GEMINI_API_KEY in ~/${CONFIG_DIR_NAME}/web-search.json\n` +
-		"  4. Sign into gemini.google.com in a supported Chromium-based browser"
-	);
+	throw new Error(`No search provider available.\n${providerSetupHint()}`);
 }
 
 async function searchWithGeminiApi(query: string, options: SearchOptions = {}): Promise<SearchResponse | null> {
