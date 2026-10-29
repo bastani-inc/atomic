@@ -19,6 +19,22 @@ import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.
 import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
 import { FakePromptEditor, makeFakeKeybindings, makeTestTui } from "../unit/stage-chat-view-helpers.js";
 
+/**
+ * Resolves, once the next skill submission is admitted, when that delivery settles, which is after
+ * the whole turn has ended. The turn persists through real I/O, so its end is a completion to await,
+ * not something a polling deadline can bound.
+ */
+function captureStageDelivery(fixture: Awaited<ReturnType<typeof createStageSkillFixture>>): Promise<unknown> {
+	const delivery = Promise.withResolvers<unknown>(); // adopts the admitted delivery promise
+	const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
+	fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
+		const admitted = admit(text, options, beforeDelivery);
+		delivery.resolve(admitted);
+		return admitted;
+	};
+	return delivery.promise;
+}
+
 // RFC #2884: discovery must never substitute the main session's catalog.
 test("editable stage chat expands its skill once into one admitted stage message", async () => {
 	const fixture = await createStageSkillFixture();
@@ -62,7 +78,8 @@ test("incremental real stage editor skill discovery does not attach or checkpoin
 		});
 		// Mount's compaction hydration is a separate attachment, not editor discovery.
 		await Promise.all(attach.mock.results.map((result) => result.value));
-		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		await fixture.stage.session.agent.waitForIdle();
+		assert.equal(fixture.handle.isStreaming, false);
 		assert.equal(fixture.handle.agentSession, fixture.stage.session);
 		assert.ok(provider);
 		const capturedProvider = provider;
@@ -207,12 +224,12 @@ test("qualified, unknown, ambiguous and unreadable selectors retain session sema
 		const view = fixture.mount();
 		async function submit(text: string) {
 			const count = fixture.userTexts().length;
+			const turnEnded = captureStageDelivery(fixture);
 			fixture.stage.appendResponses([fauxAssistantMessage("Selector acknowledged.")]);
 			submitStageSkillText(view, text);
-			await vi.waitFor(() => {
-				assert.equal(fixture.userTexts().length, count + 1);
-				assert.equal(fixture.stage.session.isStreaming, false);
-			});
+			await turnEnded;
+			assert.equal(fixture.stage.session.isStreaming, false);
+			assert.equal(fixture.userTexts().length, count + 1);
 			return fixture.userTexts().at(-1)!;
 		}
 		const qualified = await submit("/skill:fixture@user args");
@@ -239,12 +256,12 @@ test("disabled command registration does not authorize or forbid typed invocatio
 	try {
 		fixture.stage.settingsManager.setEnableSkillCommands(false);
 		const view = fixture.mount();
+		const turnEnded = captureStageDelivery(fixture);
 		fixture.stage.appendResponses([fauxAssistantMessage("Disabled discovery manual invocation acknowledged.")]);
 		submitStageSkillText(view, "/skill:fixture manual");
-		await vi.waitFor(() => {
-			assert.equal(fixture.userTexts().length, 2);
-			assert.equal(fixture.stage.session.isStreaming, false);
-		});
+		await turnEnded;
+		assert.equal(fixture.stage.session.isStreaming, false);
+		assert.equal(fixture.userTexts().length, 2);
 		assert.match(fixture.userTexts()[1]!, /STAGE SKILL BODY/);
 		const replacement = await fixture.skill("reloaded-project", "project", "RELOADED STAGE BODY.");
 		fixture.setCatalog(buildSkillCatalog([replacement]));
@@ -617,7 +634,8 @@ test("concurrent lazy discovery across stage panes attaches once and keeps the r
 	const checkpoint = vi.spyOn(fixture.store, "recordStageSession");
 	try {
 		await fixture.handle.ensureAttached();
-		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		await fixture.stage.session.agent.waitForIdle();
+		assert.equal(fixture.handle.isStreaming, false);
 		const file = fixture.stage.session.sessionFile;
 		assert.ok(file);
 		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
@@ -706,7 +724,8 @@ test("lazy stage skill discovery failures are contained, diagnosed and retryable
 	let restored: Awaited<ReturnType<typeof createHarness>> | undefined;
 	try {
 		await fixture.handle.ensureAttached();
-		await vi.waitFor(() => assert.equal(fixture.handle.isStreaming, false));
+		await fixture.stage.session.agent.waitForIdle();
+		assert.equal(fixture.handle.isStreaming, false);
 		const file = fixture.stage.session.sessionFile;
 		assert.ok(file);
 		const snapshot = { ...fixture.store.runs()[0]!.stages[0]!, status: "completed" as const, endedAt: Date.now() };
@@ -841,22 +860,6 @@ test("a stage question arriving during skill attachment keeps input ownership", 
 		await fixture.cleanup();
 	}
 });
-
-/**
- * Resolves, once the next skill submission is admitted, when that delivery settles, which is after
- * the whole turn has ended. The turn persists through real I/O, so its end is a completion to await,
- * not something a polling deadline can bound.
- */
-function captureStageDelivery(fixture: Awaited<ReturnType<typeof createStageSkillFixture>>): Promise<unknown> {
-	const delivery = Promise.withResolvers<unknown>(); // adopts the admitted delivery promise
-	const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
-	fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
-		const admitted = admit(text, options, beforeDelivery);
-		delivery.resolve(admitted);
-		return admitted;
-	};
-	return delivery.promise;
-}
 
 test.each(["stage", "native queue"] as const)(
 	"skill expansion diagnostics remain visible after a paused %s resumes",

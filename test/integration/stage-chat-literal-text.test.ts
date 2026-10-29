@@ -53,8 +53,9 @@ test("typed template-like text reaches a streaming stage literally, as it does a
 		assert.deepEqual(fixture.stage.session.getSteeringMessages(), ["/review steer.ts"]);
 		assert.deepEqual(fixture.stage.session.getFollowUpMessages(), ["/review follow.ts"]);
 		release.resolve();
+		// The delivery settles when the whole run does, queued steer/follow-up/continuation turns included.
 		await streaming;
-		await vi.waitFor(() => assert.equal(fixture.stage.session.isStreaming, false));
+		assert.equal(fixture.stage.session.isStreaming, false);
 
 		submitStageSkillText(view, "/review idle.ts");
 		await vi.waitFor(() => assert.ok(fixture.userTexts().includes("/review idle.ts")));
@@ -90,11 +91,14 @@ test("text typed while the stage is still preparing its turn reaches it literall
 		]);
 		// Records what the chat hands the stage, so the slow turn is released only once it has.
 		const submitted: string[] = [];
+		const deliveries: Promise<unknown>[] = [];
 		const target = fixture.handle;
 		const handle: StageControlHandle = Object.create(target);
 		handle.sendUserMessage = (text, options, beforeDelivery) => {
 			submitted.push(text);
-			return target.sendUserMessage!(text, options, beforeDelivery);
+			const delivery = target.sendUserMessage!(text, options, beforeDelivery);
+			deliveries.push(delivery);
+			return delivery;
 		};
 		handle.steer = (text) => {
 			submitted.push(text);
@@ -107,7 +111,9 @@ test("text typed while the stage is still preparing its turn reaches it literall
 		submitStageSkillText(view, "/review preparing.ts");
 		await vi.waitFor(() => assert.ok(submitted.includes("/review preparing.ts")));
 		releasePreflight.resolve();
-		await vi.waitFor(() => assert.ok(fixture.userTexts().some((text) => text.includes("preparing.ts"))));
+		// Each delivery settles when its run does, after the real persistence the typed text waits behind.
+		await Promise.all(deliveries);
+		assert.ok(fixture.userTexts().some((text) => text.includes("preparing.ts")));
 		assert.ok(fixture.userTexts().includes("/review preparing.ts"));
 		assertNothingExpanded(fixture.userTexts());
 	} finally {
