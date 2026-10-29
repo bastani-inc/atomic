@@ -128,7 +128,8 @@ test(
 				let hint: string | undefined;
 				try {
 					Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
-					hint = formatResumeCommand(manager);
+					// Atomic's bash shell runs it, Git Bash on Windows, so it takes the POSIX hint.
+					hint = formatResumeCommand(manager, "linux");
 				} finally {
 					if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
 					else Reflect.deleteProperty(process.stdout, "isTTY");
@@ -155,6 +156,68 @@ test(
 						hint,
 						`atomic --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session ${quoteIfNeeded(id)}`,
 					);
+				} finally {
+					await client.stop();
+				}
+			}
+		} finally {
+			await store.close();
+			vi.unstubAllEnvs();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	BUILT_ENGINE_RPC_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "win32")(
+	"the printed SQLite resume hint reopens the session from cmd.exe (#4095)",
+	async () => {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "sqlite-resume-hint-cmd-")));
+		const projectA = join(root, "project A's store");
+		const projectB = join(root, "project-b");
+		const agentDir = join(root, "agent");
+		const bin = join(root, "bin");
+		for (const directory of [projectA, projectB, agentDir, bin]) mkdirSync(directory, { recursive: true });
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		const path = join(projectA, "selected.sqlite");
+		const store = await resolveSessionStore(projectA, { sessionStore: { kind: "sqlite", path, prefix: "kept_" } });
+		const cli = fileURLToPath(new URL("../../packages/coding-agent/dist/cli.js", import.meta.url));
+		// `atomic` on cmd.exe's PATH, as a global npm install puts it.
+		writeFileSync(
+			join(bin, "atomic.cmd"),
+			`@"${process.execPath}" "${cli}" --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve %*\r\n`,
+		);
+		try {
+			for (const [index, id] of ["", "session's ID"].entries()) {
+				await store.create({ id, version: 4, cwd: projectB, createdAt: new Date().toISOString() }, []);
+				const manager = await SessionManager.open(store, id);
+				await manager.appendSessionInfo("conversation from A");
+				const tty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+				let hint: string | undefined;
+				try {
+					Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+					hint = formatResumeCommand(manager, "win32");
+				} finally {
+					if (tty) Object.defineProperty(process.stdout, "isTTY", tty);
+					else Reflect.deleteProperty(process.stdout, "isTTY");
+				}
+				assert.ok(hint);
+				assert.ok(!hint.includes("'C:") && !hint.includes(`'${root}`), hint);
+				// The hint exactly as printed, pasted into cmd.exe.
+				const script = join(root, `resume-${index}.cmd`);
+				writeFileSync(script, `@set "PATH=${bin};%PATH%"\r\n@${hint}\r\n`);
+				const client = new RpcClient({
+					cliPath: "",
+					cwd: projectB,
+					runtimeExecutable: process.env.ComSpec ?? "cmd.exe",
+					runtimeArgs: ["/d", "/c", script],
+					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
+				});
+				try {
+					await client.start();
+					const state = await client.getState();
+					assert.equal(state.sessionId, id);
+					assert.equal(state.sessionName, "conversation from A");
 				} finally {
 					await client.stop();
 				}

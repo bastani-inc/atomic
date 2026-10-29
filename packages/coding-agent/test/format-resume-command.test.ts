@@ -69,7 +69,7 @@ describe("formatResumeCommand", () => {
 		const sessionFile = createTempFile();
 		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
 
-		expect(formatResumeCommand(sessionManager)).toBe(
+		expect(formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/atomic-sessions --session test-session`,
 		);
 	});
@@ -81,7 +81,7 @@ describe("formatResumeCommand", () => {
 	])("preserves stored session ID %j in the shell resume command", (sessionId, argument) => {
 		setStdoutIsTTY(true);
 		const sessionManager = createSessionManager({ sessionFile: createTempFile(), sessionId });
-		expect(formatResumeCommand(sessionManager)).toBe(
+		expect(formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/atomic-sessions --session ${argument}`,
 		);
 	});
@@ -96,7 +96,7 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager)).toBe(
+		expect(formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir /tmp/custom-atomic-sessions --session test-session`,
 		);
 	});
@@ -111,7 +111,7 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager)).toBe(
+		expect(formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir '/tmp/custom atomic sessions' --session test-session`,
 		);
 	});
@@ -126,7 +126,7 @@ describe("formatResumeCommand", () => {
 			usesDefaultSessionDir: false,
 		});
 
-		expect(formatResumeCommand(sessionManager)).toBe(
+		expect(formatResumeCommand(sessionManager, "linux")).toBe(
 			`${APP_NAME} --session-dir '/tmp/custom atomic'\\''s sessions' --session test-session`,
 		);
 	});
@@ -179,7 +179,7 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
 			const selection = ` --session-store ${quoteIfNeeded(path)}${prefix ? ` --session-prefix ${prefix}` : ""}`;
-			assert.equal(formatResumeCommand(manager), `${APP_NAME}${selection} --session selected-session`);
+			assert.equal(formatResumeCommand(manager, "linux"), `${APP_NAME}${selection} --session selected-session`);
 		} finally {
 			await store.close();
 			vi.unstubAllEnvs();
@@ -197,7 +197,7 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, dir, { id: "selected-session" });
 			assert.equal(
-				formatResumeCommand(manager),
+				formatResumeCommand(manager, "linux"),
 				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
 			);
 		} finally {
@@ -223,7 +223,7 @@ describe("formatResumeCommand", () => {
 		try {
 			const manager = await SessionManager.create(store, cwd, { id: "selected-session" });
 			assert.equal(
-				formatResumeCommand(manager),
+				formatResumeCommand(manager, "linux"),
 				`${APP_NAME} --session-store ${quoteIfNeeded(path)} --session-prefix kept_ --session selected-session`,
 			);
 		} finally {
