@@ -661,7 +661,7 @@ when the action commit is pinned.
 
 ### Binary smoke tests
 
-Linux and Windows x64 each run `scripts/build-binaries.sh` for their platform, extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
+Linux and Windows x64 each hydrate `@bastani/pi-ai` model data once (`npm run hydrate:model-data`; the data directory is gitignored, so upstream catalogs are its only source), build the package with `build:offline`, and run `scripts/build-binaries.sh --offline-model-data` for their platform, so the script never regenerates the catalog a second time. They extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
 
 The `alpine-binary-smoke` matrix downloads each x64/arm64 musl binding, builds the matching archive, and passes it to `scripts/test-musl-release-archive.sh` on a matching runner. That script uses stock `alpine:3.22` with no package installation, checks the full payload and bundled `libgcc`/`libstdc++`, and runs `atomic --version`. A separate matching-architecture `node:22-alpine` container directly requires each extracted native package and checks its search exports.
 
