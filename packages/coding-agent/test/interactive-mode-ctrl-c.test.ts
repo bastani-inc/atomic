@@ -28,6 +28,9 @@ type CtrlCHost = {
 };
 
 const handleCtrlC = Reflect.get(InteractiveMode.prototype, "handleCtrlC") as (this: CtrlCHost) => void;
+const handleSigintSignal = Reflect.get(InteractiveMode.prototype, "handleSigintSignal") as (
+	this: CtrlCHost & { handleCtrlC: () => void },
+) => void;
 const interruptActiveOperation = Reflect.get(InteractiveMode.prototype, "interruptActiveOperation") as (
 	this: CtrlCHost,
 ) => boolean;
@@ -203,5 +206,78 @@ describe("InteractiveMode Ctrl+C", () => {
 		handleCtrlC.call(host);
 		expect(host.shutdown).toHaveBeenCalledTimes(1);
 		expect(host.session.queuedMessagesPaused).toBe(true);
+	});
+});
+
+describe("InteractiveMode SIGINT signals (#4096)", () => {
+	const descriptors = {
+		isTTY: Object.getOwnPropertyDescriptor(process.stdin, "isTTY"),
+		isRaw: Object.getOwnPropertyDescriptor(process.stdin, "isRaw"),
+	};
+	function stdinRaw(raw: boolean): void {
+		Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+		Object.defineProperty(process.stdin, "isRaw", { configurable: true, value: raw });
+	}
+	function restoreStdin(): void {
+		for (const [key, descriptor] of Object.entries(descriptors)) {
+			if (descriptor) Object.defineProperty(process.stdin, key, descriptor);
+			else Reflect.deleteProperty(process.stdin, key);
+		}
+	}
+	function signalHost(sessionOverrides: Partial<CtrlCSession> = {}) {
+		const host = createHost(sessionOverrides);
+		return Object.assign(host, { handleCtrlC: () => handleCtrlC.call(host) });
+	}
+
+	test("in raw mode, signals never clear the editor or exit an idle session, however many arrive", () => {
+		stdinRaw(true);
+		try {
+			const host = signalHost();
+			for (let index = 0; index < 4; index++) handleSigintSignal.call(host);
+			expect(host.clearEditor).not.toHaveBeenCalled();
+			expect(host.shutdown).not.toHaveBeenCalled();
+		} finally {
+			restoreStdin();
+		}
+	});
+
+	test("in raw mode, a signal still interrupts running work, as the key does", () => {
+		stdinRaw(true);
+		try {
+			const host = signalHost({ isStreaming: true });
+			host.lastSigintTime = Date.now();
+			handleSigintSignal.call(host);
+			expect(host.session.abort).toHaveBeenCalledTimes(1);
+			expect(host.shutdown).not.toHaveBeenCalled();
+			expect(host.lastSigintTime).toBe(0);
+		} finally {
+			restoreStdin();
+		}
+	});
+
+	test("a stray signal between two key presses doesn't turn the first press into an exit", () => {
+		stdinRaw(true);
+		try {
+			const host = signalHost();
+			handleCtrlC.call(host);
+			handleSigintSignal.call(host);
+			expect(host.shutdown).not.toHaveBeenCalled();
+			expect(host.clearEditor).toHaveBeenCalledTimes(1);
+		} finally {
+			restoreStdin();
+		}
+	});
+
+	test("outside raw mode a signal is the terminal's Ctrl+C and keeps the double-press exit", () => {
+		stdinRaw(false);
+		try {
+			const host = signalHost();
+			handleSigintSignal.call(host);
+			handleSigintSignal.call(host);
+			expect(host.clearEditor).toHaveBeenCalledTimes(1);
+			expect(host.shutdown).toHaveBeenCalledTimes(1);
+		} finally {
+			restoreStdin();
+		}
 	});
 });

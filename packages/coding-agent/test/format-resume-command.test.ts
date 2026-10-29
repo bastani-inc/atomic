@@ -8,7 +8,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.js";
 import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
-import { quoteIfNeeded } from "../src/modes/interactive/chat-input-actions.ts";
+import { quoteForShell, quoteIfNeeded } from "../src/modes/interactive/chat-input-actions.ts";
 import { formatResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
 
 const tempDirs: string[] = [];
@@ -230,5 +230,44 @@ describe("formatResumeCommand", () => {
 			await store.close();
 			vi.unstubAllEnvs();
 		}
+	});
+});
+
+describe("resume commands on Windows (#4095)", () => {
+	it.each([
+		["C:\\Users\\me\\.atomic\\workflows\\journal.sqlite", "C:\\Users\\me\\.atomic\\workflows\\journal.sqlite"],
+		[
+			"C:\\Users\\Jane Doe\\.atomic\\workflows\\journal.sqlite",
+			'"C:\\Users\\Jane Doe\\.atomic\\workflows\\journal.sqlite"',
+		],
+		["session's ID", '"session\'s ID"'],
+		["", '""'],
+	])("quotes %j for cmd.exe and PowerShell as %s", (value, quoted) => {
+		expect(quoteForShell(value, "win32")).toBe(quoted);
+	});
+
+	it("never single-quotes a path, which cmd.exe would pass through as part of it", () => {
+		setStdoutIsTTY(true);
+		const sessionManager = createSessionManager({
+			sessionFile: createTempFile(),
+			sessionId: "01a17743-3aec-778b-911e-6312704ca32b",
+			sessionDir: "C:\\Users\\Jane Doe\\.atomic\\sessions",
+		});
+		expect(formatResumeCommand(sessionManager, "win32")).toBe(
+			`${APP_NAME} --session-dir "C:\\Users\\Jane Doe\\.atomic\\sessions" --session 01a17743-3aec-778b-911e-6312704ca32b`,
+		);
+		const plain = createSessionManager({
+			sessionFile: createTempFile(),
+			sessionId: "01a17743-3aec-778b-911e-6312704ca32b",
+			sessionDir: "C:\\Users\\me\\.atomic\\sessions",
+		});
+		expect(formatResumeCommand(plain, "win32")).toBe(
+			`${APP_NAME} --session-dir C:\\Users\\me\\.atomic\\sessions --session 01a17743-3aec-778b-911e-6312704ca32b`,
+		);
+	});
+
+	it("keeps POSIX quoting elsewhere", () => {
+		expect(quoteForShell("/tmp/a b", "linux")).toBe("'/tmp/a b'");
+		expect(quoteForShell("/tmp/a b", "darwin")).toBe("'/tmp/a b'");
 	});
 });

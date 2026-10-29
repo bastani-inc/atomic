@@ -284,6 +284,7 @@ declare module "./interactive-mode-base.ts" {
 			resetStartupDisclosure?: boolean;
 		}): void;
 		handleCtrlC(): void;
+		handleSigintSignal(): void;
 		interruptActiveOperation(): boolean;
 		handleCtrlD(): void;
 		shutdown(options?: { fromSignal?: boolean }): Promise<void>;

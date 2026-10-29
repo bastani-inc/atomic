@@ -1,6 +1,6 @@
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { sqliteSessionResumeArgs } from "../../core/session-resume-args.js";
-import { quoteIfNeeded } from "./chat-input-actions.ts";
+import { quoteForShell } from "./chat-input-actions.ts";
 import {
 	APP_NAME,
 	type Api,
@@ -102,20 +102,25 @@ export function isUnknownModel(model: Model<Api> | undefined): boolean {
 	return !!model && model.provider === "unknown" && model.id === "unknown" && model.api === "unknown";
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+/** The command that resumes this session, quoted for the shell people use on `platform`. */
+export function formatResumeCommand(
+	sessionManager: SessionManager,
+	platform: NodeJS.Platform = process.platform,
+): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
 	const sessionFile = sessionManager.getSessionFile();
 	if (sessionFile && !fs.existsSync(sessionFile)) return undefined;
 
+	const quote = (value: string) => quoteForShell(value, platform);
 	const args = [APP_NAME];
 	if (sessionManager.getSessionStore().descriptor.adapter === "jsonl") {
-		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
+		args.push("--session-dir", quote(sessionManager.getSessionDir()));
 	} else {
-		args.push(...sqliteSessionResumeArgs(sessionManager.getSessionStore()).map(quoteIfNeeded));
+		args.push(...sqliteSessionResumeArgs(sessionManager.getSessionStore()).map(quote));
 	}
-	args.push("--session", quoteIfNeeded(sessionManager.getSessionId()));
+	args.push("--session", quote(sessionManager.getSessionId()));
 	return args.join(" ");
 }
 

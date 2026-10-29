@@ -68,6 +68,18 @@ export function combineQueuedMessagesForEditor(queuedMessages: readonly string[]
 	return [...queuedMessages, ...(currentText.trim() ? [currentText] : [])].join("\n\n");
 }
 
+/**
+ * Quote an argument for the shell a person pastes a command into on `platform`: double quotes on
+ * Windows, where cmd.exe passes single quotes through as part of the argument, and POSIX single
+ * quotes elsewhere. A Windows path needs no quotes unless it has a space or another special
+ * character.
+ */
+export function quoteForShell(value: string, platform: NodeJS.Platform = process.platform): string {
+	if (platform !== "win32") return quoteIfNeeded(value);
+	if (value.length > 0 && !/[^a-zA-Z0-9_\-./\\~:@]/.test(value)) return value;
+	return `"${value.replace(/"/g, '""')}"`;
+}
+
 /** Quote a shell argument unless it only contains characters that need no quoting. */
 export function quoteIfNeeded(value: string): string {
 	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) {
