@@ -1,6 +1,11 @@
-import { type AgentSessionEvent, ChatSessionHost, classifyChatCommand } from "@bastani/atomic";
+import {
+	type AgentSessionEvent,
+	ChatSessionHost,
+	classifyChatCommand,
+	type ReadonlyFooterDataProvider,
+} from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
-import { stageUiBroker } from "../shared/stage-ui-broker.js";
+import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { readGraphStoreRun, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -57,8 +62,8 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 	ctx.piEditorFactory = opts.piEditorFactory;
 	ctx.getToolsExpanded = opts.getToolsExpanded;
 	ctx.setToolsExpanded = opts.setToolsExpanded;
-	ctx.footerData = opts.footerData;
 	ctx.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
+	ctx.footerData = opts.footerData && stageFooterData(opts.footerData, ctx.stageUiBroker, opts.runId, opts.stageId);
 	ctx.canSubmitPrompt = opts.canSubmitPrompt;
 	ctx.mountedCustomUi = null;
 	ctx.mountingRequestId = null;
@@ -107,7 +112,14 @@ export function initializeStageChatView(ctx: StageChatViewContext, opts: StageCh
 		isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status);
 	if (initialChatIsTerminal) ctx.chatHost.clearBusyForTerminalWorkflowStage();
 	ctx._unsubscribeStore = subscribeStoreInvalidation(ctx.store, () => handleStoreUpdate(ctx));
-	ctx._unsubscribeFooterData = ctx.footerData?.onBranchChange(() => ctx.requestRender?.()) ?? null;
+	const unsubscribeBranch = ctx.footerData?.onBranchChange(() => ctx.requestRender?.());
+	const unsubscribeStatuses = ctx.footerData
+		? ctx.stageUiBroker.onStageStatusesChanged(() => ctx.requestRender?.())
+		: undefined;
+	ctx._unsubscribeFooterData = () => {
+		unsubscribeBranch?.();
+		unsubscribeStatuses?.();
+	};
 
 	if (ctx.handle) {
 		// Delivery activity first: its replay must be in place before the SDK
@@ -184,6 +196,25 @@ function installFocusHold(ctx: StageChatViewContext): void {
 		// from a streaming continuation.
 		if (ctx.mountedCustomUi !== null || !isStreaming(ctx)) ctx.requestFocus?.();
 	}, 150);
+}
+
+/**
+ * The stage chat footer describes the viewed stage's session. Git branch and provider count are
+ * host-wide and stay shared, but extension statuses are the stage session's own: the main
+ * session's would present its activity as the stage's.
+ */
+function stageFooterData(
+	hostFooterData: ReadonlyFooterDataProvider,
+	broker: StageUiBroker,
+	runId: string,
+	stageId: string,
+): ReadonlyFooterDataProvider {
+	return {
+		getGitBranch: (cwd) => hostFooterData.getGitBranch(cwd),
+		getAvailableProviderCount: () => hostFooterData.getAvailableProviderCount(),
+		onBranchChange: (callback, cwd) => hostFooterData.onBranchChange(callback, cwd),
+		getExtensionStatuses: () => broker.getStageStatuses(runId, stageId),
+	};
 }
 
 function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): ChatSessionHost<NoticeEntry> {
@@ -294,7 +325,7 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		editorFactory: opts.piEditorFactory,
 		editorTheme: editorThemeFromGraphTheme(ctx.theme),
 		getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
-		footerData: opts.footerData,
+		footerData: ctx.footerData,
 		renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
 	});
 }

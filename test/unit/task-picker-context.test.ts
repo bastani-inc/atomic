@@ -21,6 +21,7 @@ import {
 	makePendingPrompt,
 	makeTestTui,
 	StageChatView,
+	StageUiBroker,
 	setupRun,
 	stripAnsi,
 	submitStageChatText,
@@ -37,15 +38,17 @@ test("workflow compact picker retains exact owner context through empty, live an
 	session.state.thinkingLevel = "medium";
 	session.sessionManager.getCwd = () => join(process.env.HOME!, "Documents/projects/atomic");
 	bindOwnerTaskStore(session, tasks.store);
-	const statuses = new Map([["mcp", "MCP: 0/1 servers"]]);
 	const footerData: ReadonlyFooterDataProvider = {
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => statuses,
+		getExtensionStatuses: () => new Map([["mcp", "main session status"]]),
 		getAvailableProviderCount: () => 2,
 		onBranchChange: () => () => {},
 	};
 	const store = createStore();
 	setupRun(store, "picker-run", "stage-a");
+	// The picker keeps the owning chat's footer; here the owning chat is the stage, so its own statuses.
+	const stageUiBroker = new StageUiBroker(store);
+	stageUiBroker.setStageStatus("picker-run", "stage-a", "mcp", "MCP: 0/1 servers");
 	const { handle, state } = makeHandle(undefined, [], "running", session);
 	let rows = 30;
 	let renders = 0;
@@ -57,6 +60,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 		workflowName: "hidden parent chrome",
 		handle,
 		footerData,
+		stageUiBroker,
 		piTui: makeTestTui(() => rows),
 		requestRender: () => renders++,
 		onDetach() {},
@@ -71,6 +75,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 		const empty = render();
 		assert.ok(empty.includes(context), empty);
 		assert.ok(empty.includes("MCP: 0/1 servers"), empty);
+		assert.doesNotMatch(empty, /main session status/);
 		assert.match(empty, /Background tasks[\s\S]*0 active · 0 total/);
 		assert.match(empty, /Background agents and shells will appear here\./);
 		assert.doesNotMatch(empty, /hidden parent chrome|Main chat needs input — exit graph to answer\./);
