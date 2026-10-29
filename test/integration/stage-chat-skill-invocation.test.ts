@@ -842,6 +842,22 @@ test("a stage question arriving during skill attachment keeps input ownership", 
 	}
 });
 
+/**
+ * Resolves, once the next skill submission is admitted, when that delivery settles, which is after
+ * the whole turn has ended. The turn persists through real I/O, so its end is a completion to await,
+ * not something a polling deadline can bound.
+ */
+function captureStageDelivery(fixture: Awaited<ReturnType<typeof createStageSkillFixture>>): Promise<unknown> {
+	const delivery = Promise.withResolvers<unknown>(); // adopts the admitted delivery promise
+	const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
+	fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
+		const admitted = admit(text, options, beforeDelivery);
+		delivery.resolve(admitted);
+		return admitted;
+	};
+	return delivery.promise;
+}
+
 test.each(["stage", "native queue"] as const)(
 	"skill expansion diagnostics remain visible after a paused %s resumes",
 	async (pause) => {
@@ -849,13 +865,13 @@ test.each(["stage", "native queue"] as const)(
 		try {
 			if (pause === "stage") await fixture.handle.pause();
 			else fixture.stage.session.pauseQueuedMessages();
+			const turnEnded = captureStageDelivery(fixture);
 			const view = fixture.mount();
 			fixture.stage.appendResponses([fauxAssistantMessage("Unknown selector acknowledged literally.")]);
 			submitStageSkillText(view, "/skill:fixture@unknown paused-diagnostic");
-			await vi.waitFor(() => {
-				assert.equal(fixture.userTexts().length, 2);
-				assert.equal(fixture.stage.session.isStreaming, false);
-			});
+			await turnEnded;
+			assert.equal(fixture.stage.session.isStreaming, false);
+			assert.equal(fixture.userTexts().length, 2);
 			assert.equal(fixture.userTexts()[1], "/skill:fixture@unknown paused-diagnostic");
 			assert.match(view.render(140).map(stripVTControlCharacters).join("\n"), /Unknown skill selector/);
 		} finally {
@@ -868,13 +884,13 @@ test("a resolvable skill submitted to an already-paused native queue resumes and
 	const fixture = await createStageSkillFixture();
 	try {
 		fixture.stage.session.pauseQueuedMessages();
+		const turnEnded = captureStageDelivery(fixture);
 		const view = fixture.mount();
 		fixture.stage.appendResponses([fauxAssistantMessage("Native queue resumed skill acknowledged.")]);
 		submitStageSkillText(view, "/skill:fixture native-paused-args");
-		await vi.waitFor(() => {
-			assert.equal(fixture.userTexts().length, 2);
-			assert.equal(fixture.stage.session.isStreaming, false);
-		});
+		await turnEnded;
+		assert.equal(fixture.stage.session.isStreaming, false);
+		assert.equal(fixture.userTexts().length, 2);
 		const text = fixture.userTexts()[1]!;
 		assert.equal(fixture.stage.session.queuedMessagesPaused, false);
 		assert.match(text, /STAGE SKILL BODY/);
