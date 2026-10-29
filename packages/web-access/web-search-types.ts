@@ -32,6 +32,8 @@ export interface PendingCurate {
 	abortSearches: () => void;
 	finish: (value: unknown) => void;
 	cancel: (reason?: "user" | "stale") => void;
+	/** The curator window could not be opened; the search should continue and return raw results. */
+	curatorUnavailable: (reason: string) => void;
 	browserPromise?: Promise<void>;
 }
 

@@ -15,7 +15,7 @@ import {
 	resolveWorkflow,
 	type CuratorWorkflow,
 } from "./web-search-config.js";
-import { buildCurationCancelledReturn, extractDomain } from "./web-search-formatting.js";
+import { buildCurationCancelledReturn, collectAllResultsAndUrls, extractDomain } from "./web-search-formatting.js";
 import type { SearchReturnBuilder } from "./web-search-return.js";
 import { loadSummaryModelChoices } from "./web-search-summary.js";
 import type { PendingCurate, WebSearchRuntimeState } from "./web-search-types.js";
@@ -55,7 +55,10 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				: (params.query !== undefined ? [params.query] : []);
 			const queryList = normalizeQueryList(rawQueryList);
 			const configWorkflow = loadConfigForExtensionInit().workflow;
-			const workflow = resolveWorkflow(configWorkflow, ctx?.hasUI !== false);
+			// The curator needs a person at a browser. A session that renders UI but has no human input
+			// (a subagent or workflow stage) can never complete it, so it gets raw results instead.
+			const canCurate = ctx?.hasUI !== false && ctx?.hasHumanInput !== false;
+			const workflow = resolveWorkflow(configWorkflow, canCurate);
 			const shouldCurate = workflow !== "none";
 
 			if (queryList.length === 0) {
@@ -94,6 +97,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 					? AbortSignal.any([signal, searchAbort.signal])
 					: searchAbort.signal;
 				let cancelled = false;
+				let curatorFailure: string | undefined;
 
 				const bootstrap = await loadCuratorBootstrap(params.provider);
 				const availableProviders = bootstrap.availableProviders;
@@ -130,6 +134,7 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 					},
 					finish: () => {},
 					cancel: () => {},
+					curatorUnavailable: () => {},
 				};
 
 				const onAbort = () => deps.closeCurator();
@@ -147,8 +152,15 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 					finish(buildCurationCancelledReturn(reason));
 				};
 
+				const curatorUnavailable = (reason: string) => {
+					if (cancelled) return;
+					curatorFailure = reason;
+					if (deps.state.pendingCurate === pc) deps.state.pendingCurate = null;
+				};
+
 				pc.finish = finish;
 				pc.cancel = cancel;
+				pc.curatorUnavailable = curatorUnavailable;
 				deps.state.pendingCurate = pc;
 				signal?.addEventListener("abort", onAbort, { once: true });
 				pc.browserPromise = deps.openCuratorBrowser(pc, false);
@@ -195,6 +207,24 @@ export function registerWebSearchTool(pi: ExtensionAPI, deps: RegisterWebSearchT
 				}
 
 				await pc.browserPromise;
+				if (curatorFailure !== undefined) {
+					const all = collectAllResultsAndUrls(searchResults);
+					const raw = await deps.buildSearchReturn({
+						queryList: all.results.map(r => r.query),
+						results: all.results,
+						urls: all.urls,
+						includeContent,
+						inlineContent: allInlineContent.length > 0 ? allInlineContent : undefined,
+					});
+					const note = `Note: the search curator could not open (${curatorFailure}), so these are raw results. ` +
+						"Run /curator off to stop opening it.";
+					const [first, ...rest] = raw.content;
+					finish({
+						content: [{ type: "text", text: `${note}\n\n${first?.text ?? ""}`.trim() }, ...rest],
+						details: { ...raw.details, curatorUnavailable: curatorFailure },
+					});
+					return promise;
+				}
 				if (deps.state.activeCurator) {
 					deps.state.activeCurator.searchesDone();
 					pc.onUpdate?.({
