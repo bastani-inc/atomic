@@ -51,7 +51,7 @@ test.skipIf(process.platform === "win32")(
 				async run(ctx) {
 					const result = await ctx.workflow(child);
 					assert.equal(result.status, "completed");
-					assert.notEqual(Number(result.outputs.pid), result.outputs.first);
+					assert.notEqual(result.outputs.finalInstance, result.outputs.firstInstance);
 					return {};
 				},
 			});

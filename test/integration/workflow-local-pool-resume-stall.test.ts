@@ -32,7 +32,13 @@ const ROOT_PROCESS_COLD_STARTS = 4;
 interface ResumeOutcome {
 	readonly status: string;
 	readonly error: string | null;
-	readonly children: readonly { readonly status: string; readonly firstPid: number; readonly finalPid: number }[];
+	readonly children: readonly {
+		readonly status: string;
+		readonly firstPid: number;
+		readonly finalPid: number;
+		readonly firstInstance: string;
+		readonly finalInstance: string;
+	}[];
 	readonly workerPids: readonly number[];
 }
 
@@ -58,6 +64,7 @@ test.skipIf(process.platform === "win32")(
 			const [child] = outcome.children;
 			assert.equal(child?.status, "completed");
 			assert.equal(child.finalPid, child.firstPid, "the live worker kept its child through the stall");
+			assert.equal(child.finalInstance, child.firstInstance, "the live worker kept its child through the stall");
 			assert.deepEqual(outcome.workerPids, [child.firstPid]);
 		} finally {
 			removeTempDirectory(directory);
@@ -93,7 +100,11 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const [child] = outcome.children;
 			assert.equal(child?.status, "completed");
-			assert.notEqual(child.finalPid, child.firstPid, "a replacement worker finished the stopped worker's child");
+			assert.notEqual(
+				child.finalInstance,
+				child.firstInstance,
+				"a replacement worker finished the stopped worker's child",
+			);
 		} finally {
 			removeTempDirectory(directory);
 		}
