@@ -94,11 +94,26 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # The bindings depend only on these sources and the Rust compiler, and
+      # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
+      # a hit skips the toolchain and the build, and every week starts from source.
+      # Caches a pull request saves are scoped to it; a pull request reads main's.
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-${{ matrix.binary_platform }}-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
       # packages/subagents now drives its children through the Rust control
       # plane in crates/atomic-natives, so the bundled subagent extension fails
       # to load at import without a binding. That takes the root unit and
       # integration suites down with it, not just the in-process runner tests.
       - id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -115,9 +130,7 @@ jobs:
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
-          cache: |
-            npm
-            rust
+          cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -126,6 +139,7 @@ jobs:
         run: npm run build --workspace=@bastani/pi-ai
       # Measured at 42s Linux / 86s Windows, both inside the existing caps.
       - name: Build native bindings for the root suites
+        if: steps.natives.outputs.cache-hit != 'true'
         run: npm run build --workspace=@bastani/atomic-natives
       # Unit artifact tests require dist/ to retain their full coverage.
       - name: Build @bastani/atomic package
@@ -185,7 +199,22 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # The bindings depend only on these sources and the Rust compiler, and
+      # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
+      # a hit skips the toolchain and the build, and every week starts from source.
+      # Caches a pull request saves are scoped to it; a pull request reads main's.
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-${{ matrix.binary_platform }}-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
       - id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -201,9 +230,7 @@ jobs:
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
-          cache: |
-            npm
-            rust
+          cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -211,6 +238,7 @@ jobs:
       - name: Build @bastani/pi-ai
         run: npm run build --workspace=@bastani/pi-ai
       - name: Build native bindings for the root suites
+        if: steps.natives.outputs.cache-hit != 'true'
         run: npm run build --workspace=@bastani/atomic-natives
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
@@ -270,7 +298,22 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # The bindings depend only on these sources and the Rust compiler, and
+      # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
+      # a hit skips the toolchain and the build, and every week starts from source.
+      # Caches a pull request saves are scoped to it; a pull request reads main's.
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-${{ matrix.binary_platform }}-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
       - id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -287,9 +330,7 @@ jobs:
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
-          cache: |
-            npm
-            rust
+          cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
@@ -302,6 +343,7 @@ jobs:
       # by ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE below, so the vitest suite must
       # stay behind this build.
       - name: Build native bindings for package tests
+        if: steps.natives.outputs.cache-hit != 'true'
         run: npm run build --workspace=@bastani/atomic-natives
       - name: coding-agent vitest suite
         run: >-
@@ -352,11 +394,26 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
+      # The bindings depend only on these sources and the Rust compiler, and
+      # rust-toolchain.toml tracks `stable`, so the key also carries the ISO week:
+      # a hit skips the toolchain and the build, and every week starts from source.
+      # Caches a pull request saves are scoped to it; a pull request reads main's.
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-${{ matrix.binary_platform }}-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
       # scripts/build-binaries.sh reuses packages/natives/native/*.node when they
-      # exist and otherwise builds them, so this job needs the Rust toolchain and
-      # pays the native build again rather than waiting on agent-suite. That is a
-      # runner-second cost, not a wall-clock one.
+      # exist, as they do after a cache hit, and otherwise builds them. On a miss
+      # this job needs the Rust toolchain and pays the native build itself rather
+      # than waiting on agent-suite: a runner-second cost, not a wall-clock one.
       - id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         continue-on-error: true
         timeout-minutes: 4
@@ -372,9 +429,7 @@ jobs:
         uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
         with:
           spacectl-version: 0.12.3
-          cache: |
-            npm
-            rust
+          cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
