@@ -392,6 +392,7 @@ export function createWorkflowStageFactory(input: {
 				stageId,
 				new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`),
 			);
+			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
 			if (input.opts.onStageEnd) {
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },

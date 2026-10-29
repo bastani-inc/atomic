@@ -460,7 +460,12 @@ function makeStageExtensionUiContext(
 		notify: ui.notify ?? (() => undefined),
 		requestRender: noOpUIContext.requestRender,
 		onTerminalInput: ui.onTerminalInput ?? (() => () => undefined),
-		setStatus: ui.setStatus ?? (() => undefined),
+		// A stage session's statuses belong to that stage's chat footer, never the main session's.
+		setStatus:
+			meta === undefined
+				? (ui.setStatus ?? (() => undefined))
+				: (statusKey: string, text: string | undefined) =>
+						broker.setStageStatus(meta.runId, meta.stageId, statusKey, text),
 		setWorkingMessage: ui.setWorkingMessage ?? (() => undefined),
 		setWorkingVisible: ui.setWorkingVisible ?? (() => undefined),
 		setWorkingIndicator: ui.setWorkingIndicator ?? (() => undefined),
@@ -633,6 +638,8 @@ export function buildRuntimeAdapters(
 				)
 					throw new Error("Workflow stage fallback model unavailable under inherited policy.");
 				const sessionOptions = withWorkflowStageSessionOptions(inheritedOptions, meta, pi);
+				// A replacement session (retry, fallback) starts without its predecessor's statuses.
+				if (meta !== undefined) broker.clearStageStatuses(meta.runId, meta.stageId);
 				const stageUi = shouldBindStageUiContext(pi, meta)
 					? makeStageExtensionUiContext(
 							pi.ui ?? {},

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.js";
@@ -22,6 +23,62 @@ import { getShellConfig } from "../../packages/coding-agent/src/utils/shell.js";
 
 // A real built CLI child loads all startup resources and serves RPC over pipes.
 const BUILT_ENGINE_RPC_TIMEOUT_MS = 90_000;
+
+/**
+ * Normally well under a second after `client.stop()`. The bound only names an engine that never exits, inside the
+ * test's own limit, instead of leaving it to fail later as an unreadable EBUSY from removing its project directory.
+ */
+const ENGINE_EXIT_TIMEOUT_MS = 20_000;
+const ENGINE_EXIT_POLL_MS = 20;
+
+/**
+ * A `--require` module that records the pid of the node process it is loaded into.
+ *
+ * `client.stop()` ends the process the client spawned, which behind a shell is the shell, not the engine: on Windows,
+ * Git Bash's `exec` and cmd.exe's `/c` leave the shell running as node's parent. `stop()` then waits only a bounded
+ * time for the pipes the engine inherited, so it can return while the engine is still shutting down, and Windows
+ * refuses to remove a directory a live process has as its working directory (EBUSY on the project directory).
+ */
+function recordEnginePid(directory: string): { preload: string; pidFile: string } {
+	const preload = join(directory, "record-engine-pid.cjs");
+	const pidFile = join(directory, "engine.pid");
+	writeFileSync(preload, `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`);
+	return { preload, pidFile };
+}
+
+function isRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code !== "ESRCH";
+	}
+}
+
+/** Resolves once the engine whose pid `recordEnginePid` captured has exited and released its working directory. */
+async function waitForEngineExit(pidFile: string): Promise<void> {
+	let pid: number;
+	try {
+		pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+	} catch {
+		// The engine never started, so nothing holds the project directory.
+		return;
+	}
+	// Each session of a test starts its own engine; never read this one's pid for the next.
+	rmSync(pidFile, { force: true });
+	const deadline = performance.now() + ENGINE_EXIT_TIMEOUT_MS;
+	while (isRunning(pid)) {
+		if (performance.now() > deadline) {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// It exited just now; the deadline still passed.
+			}
+			throw new Error(`engine ${pid} still running ${ENGINE_EXIT_TIMEOUT_MS} ms after client.stop()`);
+		}
+		await sleep(ENGINE_EXIT_POLL_MS);
+	}
+}
 
 test(
 	"the built engine resumes the selected SQLite database and prefix from a different project",
@@ -118,6 +175,7 @@ test(
 		);
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 		const path = join(projectA, "selected.sqlite");
+		const { preload, pidFile } = recordEnginePid(root);
 		const store = await resolveSessionStore(projectA, { sessionStore: { kind: "sqlite", path, prefix: "kept_" } });
 		try {
 			for (const id of ["", "session's ID"]) {
@@ -143,7 +201,7 @@ test(
 					runtimeExecutable: shell.shell,
 					runtimeArgs: [
 						...shell.args,
-						`atomic() { exec ${quoteIfNeeded(process.execPath)} ${quoteIfNeeded(cli)} --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve "$@"; }; ${hint}`,
+						`atomic() { exec ${quoteIfNeeded(process.execPath)} --require ${quoteIfNeeded(preload)} ${quoteIfNeeded(cli)} --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve "$@"; }; ${hint}`,
 					],
 					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 				});
@@ -158,6 +216,7 @@ test(
 					);
 				} finally {
 					await client.stop();
+					await waitForEngineExit(pidFile);
 				}
 			}
 		} finally {
@@ -180,12 +239,13 @@ test.runIf(process.platform === "win32")(
 		for (const directory of [projectA, projectB, agentDir, bin]) mkdirSync(directory, { recursive: true });
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
 		const path = join(projectA, "selected.sqlite");
+		const { preload, pidFile } = recordEnginePid(root);
 		const store = await resolveSessionStore(projectA, { sessionStore: { kind: "sqlite", path, prefix: "kept_" } });
 		const cli = fileURLToPath(new URL("../../packages/coding-agent/dist/cli.js", import.meta.url));
 		// `atomic` on cmd.exe's PATH, as a global npm install puts it.
 		writeFileSync(
 			join(bin, "atomic.cmd"),
-			`@"${process.execPath}" "${cli}" --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve %*\r\n`,
+			`@"${process.execPath}" --require "${preload}" "${cli}" --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve %*\r\n`,
 		);
 		try {
 			for (const [index, id] of ["", "session's ID"].entries()) {
@@ -220,6 +280,7 @@ test.runIf(process.platform === "win32")(
 					assert.equal(state.sessionName, "conversation from A");
 				} finally {
 					await client.stop();
+					await waitForEngineExit(pidFile);
 				}
 			}
 		} finally {

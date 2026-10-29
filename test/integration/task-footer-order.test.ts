@@ -20,6 +20,7 @@ import {
 	makeHandle,
 	makeTestTui,
 	StageChatView,
+	StageUiBroker,
 	setupRun,
 } from "../unit/stage-chat-view-helpers.js";
 
@@ -34,6 +35,9 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 		footerData.setExtensionStatus("mcp", "MCP  1 server · 3 tools");
 		const store = createStore();
 		setupRun(store, "order-run", "stage-a");
+		// A stage chat shows its own session's statuses, not the main footer provider's.
+		const stageUiBroker = new StageUiBroker(store);
+		stageUiBroker.setStageStatus("order-run", "stage-a", "mcp", "MCP  1 server · 3 tools");
 		const main = surface !== "stage" ? createProductionFullscreenContext({ rows: 40, columns: 100 }) : undefined;
 		const stage =
 			surface === "stage"
@@ -45,6 +49,7 @@ test.each(["main", "stage", "engine-workflow-first", "engine-tasks-first"] as co
 						workflowName: "order",
 						handle: makeHandle(undefined, [], "running", session).handle,
 						footerData,
+						stageUiBroker,
 						piTui: makeTestTui(40),
 						onClose() {},
 						onDetach() {},

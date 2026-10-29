@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { workflow } from "@bastani/atomic/workflows";
 import { poolStageOptions } from "./pool-stage-options.js";
+import { processIdentity, processInstance } from "./process-instance.js";
 
 const leaf = workflow({
 	name: "pool-leaf", description: "", inputs: {}, outputs: { pid: Type.Number() },
@@ -25,18 +26,24 @@ export const child = workflow({
 	name: "pool-child",
 	description: "Local worker execution fixture",
 	inputs: { crash: Type.Boolean(), during: Type.Boolean(), journalPath: Type.String() },
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), stagePid: Type.String(), leafPid: Type.Number() },
+	outputs: {
+		firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String(),
+		stagePid: Type.String(), leafPid: Type.Number(),
+	},
 	async run(ctx) {
-		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
+		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
 		await awaitFanOut(ctx.inputs.journalPath);
-		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), ctx.inputs.crash && ctx.inputs.during, firstPid) as never);
+		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), ctx.inputs.crash && ctx.inputs.during, first.instance) as never);
 		const stagePid = await stage.complete("Reply with your PID.");
 		const nested = await ctx.workflow(leaf);
-		const finalPid = await ctx.tool("finish", {}, async () => {
-			if (ctx.inputs.crash && !ctx.inputs.during && firstPid === process.pid) process.kill(process.pid, "SIGKILL");
-			return process.pid;
+		const final = await ctx.tool("finish", {}, async () => {
+			if (ctx.inputs.crash && !ctx.inputs.during && first.instance === processInstance) process.kill(process.pid, "SIGKILL");
+			return processIdentity();
 		});
-		return { firstPid, finalPid, stagePid, leafPid: nested.outputs.pid! };
+		return {
+			firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance,
+			stagePid, leafPid: nested.outputs.pid!,
+		};
 	},
 });
 
@@ -44,12 +51,12 @@ export const stalledChild = workflow({
 	name: "stalled-pool-child",
 	description: "Stops renewing after a committed checkpoint",
 	inputs: {},
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
 	async run(ctx) {
-		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
-		if (firstPid === process.pid) process.kill(process.pid, "SIGSTOP");
-		const finalPid = await ctx.tool("finish", {}, async () => process.pid);
-		return { firstPid, finalPid };
+		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
+		if (first.instance === processInstance) process.kill(process.pid, "SIGSTOP");
+		const final = await ctx.tool("finish", {}, async () => processIdentity());
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
 	},
 });
 
@@ -71,16 +78,16 @@ export const billedCrashChild = workflow({
 	name: "billed-crash-child",
 	description: "Dies after a billed stage checkpoint commits; the first process never delivers a usage report",
 	inputs: {},
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
 	async run(ctx) {
-		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
-		if (firstPid === process.pid) withholdUsageReports();
-		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), false, firstPid) as never);
+		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
+		if (first.instance === processInstance) withholdUsageReports();
+		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), false, first.instance) as never);
 		await stage.complete("Reply with your PID.");
-		const finalPid = await ctx.tool("finish", {}, async () => {
-			if (firstPid === process.pid) process.kill(process.pid, "SIGKILL");
-			return process.pid;
+		const final = await ctx.tool("finish", {}, async () => {
+			if (first.instance === processInstance) process.kill(process.pid, "SIGKILL");
+			return processIdentity();
 		});
-		return { firstPid, finalPid };
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
 	},
 });

@@ -48,10 +48,13 @@ export interface AnswerStagePromptOptions {
 
 export type StagePromptResolvedListener = (event: StagePromptResolvedEvent) => void;
 export type StageRequestRegisteredListener = () => void;
+export type StageStatusesChangedListener = () => void;
 
 function key(runId: string, stageId: string): string {
 	return `${runId}\0${stageId}`;
 }
+
+const EMPTY_STATUSES: ReadonlyMap<string, string> = new Map();
 
 function nextRequestId(): string {
 	return `stage-ui-${randomUUID()}`;
@@ -69,9 +72,55 @@ export class StageUiBroker {
 	private readonly resolvedPromptIds = new Map<string, string>();
 	private readonly resolvedListeners = new Set<StagePromptResolvedListener>();
 	private readonly registeredListeners = new Set<StageRequestRegisteredListener>();
+	// Extension `ctx.ui.setStatus` writes per stage session, keyed by (runId, stageId).
+	// Stage sessions have no footer of their own; the attached stage chat renders these.
+	private readonly statuses = new Map<string, Map<string, string>>();
+	private readonly statusListeners = new Set<StageStatusesChangedListener>();
 
 	constructor(store: Store = currentWorkflowStore()) {
 		this.store = store;
+	}
+
+	/** Record (or, with `undefined`, remove) one extension status written by a stage's session. */
+	setStageStatus(runId: string, stageId: string, statusKey: string, text: string | undefined): void {
+		const stageKey = key(runId, stageId);
+		const current = this.statuses.get(stageKey);
+		if (text === undefined) {
+			if (!current?.delete(statusKey)) return;
+			if (current.size === 0) this.statuses.delete(stageKey);
+		} else {
+			if (current?.get(statusKey) === text) return;
+			if (current) current.set(statusKey, text);
+			else this.statuses.set(stageKey, new Map([[statusKey, text]]));
+		}
+		this.notifyStatusesChanged();
+	}
+
+	/** Extension statuses written by this stage's own session; never the main session's. */
+	getStageStatuses(runId: string, stageId: string): ReadonlyMap<string, string> {
+		return this.statuses.get(key(runId, stageId)) ?? EMPTY_STATUSES;
+	}
+
+	/** Drop a stage's statuses, e.g. when a new session replaces it or the stage ends. */
+	clearStageStatuses(runId: string, stageId: string): void {
+		if (this.statuses.delete(key(runId, stageId))) this.notifyStatusesChanged();
+	}
+
+	onStageStatusesChanged(listener: StageStatusesChangedListener): () => void {
+		this.statusListeners.add(listener);
+		return () => {
+			this.statusListeners.delete(listener);
+		};
+	}
+
+	private notifyStatusesChanged(): void {
+		for (const listener of this.statusListeners) {
+			try {
+				listener();
+			} catch {
+				// A viewer's repaint failure must not break the extension's status write.
+			}
+		}
 	}
 
 	/**

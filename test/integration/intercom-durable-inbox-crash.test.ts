@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { SessionEntry } from "@bastani/atomic";
-import { afterAll, test, vi } from "vitest";
+import { afterAll, beforeAll, test, vi } from "vitest";
+import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-durable-inbox-"));
@@ -14,13 +15,16 @@ const previousLegacyAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 
-const { getBrokerPidPath } = await import("../../packages/intercom/broker/paths.js");
+const { getBrokerPidPath, getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
 
 /** A real broker plus a separate recipient process loaded through jiti, then a sender wait past a kill. */
 const CRASH_RESUME_TEST_TIMEOUT_MS = 90_000;
 const CHILD_READY_TIMEOUT_MS = 30_000;
+/** The broker's own start-up, kept out of the tests' budget: it compiles through jiti before it can answer. */
+const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const SHOWN_TIMEOUT_MS = 20_000;
 const BUSY_UPDATES = 6;
 const RECIPIENT = "busy-parent";
@@ -34,19 +38,45 @@ interface ShownMessage {
 
 const children: ChildProcess[] = [];
 
-afterAll(() => {
-	for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+/**
+ * The broker for the whole file, with one session held on it. A broker retires once no session has been connected for
+ * its idle window (5 s), and every test here ends with all of its sessions gone while the next recipient is a jiti
+ * process whose start-up is about as long as that window on a loaded host. Left to retire between tests, it could
+ * exit as that recipient connected (`Connection closed before registration`), and the last test, which starts no
+ * recipient of its own, found no broker at all (`connect ENOENT`). The held session also makes the broker answer
+ * before the first test starts, so no recipient races its start-up.
+ * The fixture removes the directory it is given when it stops; the agent directory is removed below, with retries.
+ */
+const broker = new IntercomBrokerFixture(join(agentDir, "broker-fixture"));
+
+beforeAll(async () => {
+	const intercomDirectory = join(repoRoot, "packages/intercom");
+	broker.trackBroker(
+		spawn(process.execPath, [getJitiCliPath(intercomDirectory), join(intercomDirectory, "broker/broker.ts")], {
+			env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir },
+			stdio: "ignore",
+		}),
+	);
+	await broker.holdSession(getBrokerSocketPath(), BROKER_STARTUP_TIMEOUT_MS);
+}, CRASH_RESUME_TEST_TIMEOUT_MS);
+
+afterAll(async () => {
 	try {
-		const pid = Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10);
-		if (Number.isFinite(pid) && pid > 0) process.kill(pid, "SIGKILL");
-	} catch {
-		// No broker was spawned, or it already exited.
+		for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await broker.cleanup();
+	} finally {
+		try {
+			const pid = Number.parseInt(readFileSync(getBrokerPidPath(agentDir), "utf8").trim(), 10);
+			if (Number.isFinite(pid) && pid > 0) process.kill(pid, "SIGKILL");
+		} catch {
+			// The fixture's broker removed its pid file on the way out, and no other broker was spawned.
+		}
+		if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+		else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
+		if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
+		rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 	}
-	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
-	if (previousLegacyAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = previousLegacyAgentDir;
-	rmSync(agentDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 });
 
 /** Start the busy recipient in its own process and wait until it is registered with the broker. */

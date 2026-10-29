@@ -22,7 +22,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { initTheme } from "@bastani/atomic";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
@@ -46,6 +45,7 @@ import {
 	type PooledStageLease,
 } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
+import { type LagWindow, lagViolation, measureLag } from "./event-loop-lag.js";
 import { IntercomBrokerFixture } from "./intercom-broker-fixture.js";
 import { testRunId } from "./run-id.js";
 import {
@@ -75,14 +75,6 @@ const TOOL_INTERVAL_MS = 5_000;
 const LARGE_ENTRY_EVERY = 16;
 const LARGE_ENTRY_BYTES = 128 * 1024;
 
-/**
- * Main-thread lag bounds, asserted separately over worker startup (pool start until every
- * worker is active), the sustained traffic window, and the heartbeat-only window.
- */
-const MAIN_THREAD_LAG_P99_BOUND_MS = 100;
-const MAIN_THREAD_LAG_MAX_BOUND_MS = 250;
-/** Event-loop delay sampling resolution; reported lag excludes this interval. */
-const LAG_RESOLUTION_MS = 5;
 /** Journal growth allowed per worker over the whole heartbeat-only window, independent of its length. */
 const HEARTBEAT_GROWTH_ROWS_PER_WORKER = 1;
 const HEARTBEAT_GROWTH_BYTES_PER_WORKER = 256;
@@ -100,31 +92,6 @@ const STAGE_EVENT_BATCH_MS = 50;
 const STAGE_EVENTS_PER_BATCH = 8;
 /** The streamed partial message grows to about this size, then starts over. */
 const STAGE_PARTIAL_BYTES = 4_096;
-
-interface LagWindow {
-	readonly durationMs: number;
-	readonly samples: number;
-	readonly p50Ms: number;
-	readonly p99Ms: number;
-	readonly maxMs: number;
-}
-
-function measureLag(): () => LagWindow {
-	const histogram = monitorEventLoopDelay({ resolution: LAG_RESOLUTION_MS });
-	const startedAt = performance.now();
-	histogram.enable();
-	return () => {
-		histogram.disable();
-		const lag = (nanoseconds: number) => Math.round(Math.max(0, nanoseconds / 1e6 - LAG_RESOLUTION_MS) * 10) / 10;
-		return {
-			durationMs: Math.round(performance.now() - startedAt),
-			samples: histogram.count,
-			p50Ms: lag(histogram.percentile(50)),
-			p99Ms: lag(histogram.percentile(99)),
-			maxMs: lag(histogram.max),
-		};
-	};
-}
 
 interface TableFootprint {
 	readonly rows: number;
@@ -283,14 +250,8 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 		}
 	};
 	const assertLag = (name: string, window: LagWindow) => {
-		assert.ok(
-			window.p99Ms < MAIN_THREAD_LAG_P99_BOUND_MS,
-			`${name}: main-thread lag p99 ${window.p99Ms} ms exceeds ${MAIN_THREAD_LAG_P99_BOUND_MS} ms (max ${window.maxMs} ms over ${window.durationMs} ms)`,
-		);
-		assert.ok(
-			window.maxMs < MAIN_THREAD_LAG_MAX_BOUND_MS,
-			`${name}: main-thread lag max ${window.maxMs} ms exceeds ${MAIN_THREAD_LAG_MAX_BOUND_MS} ms (p99 ${window.p99Ms} ms over ${window.durationMs} ms)`,
-		);
+		const violation = lagViolation(name, window);
+		if (violation !== undefined) assert.fail(violation);
 	};
 	const store = createStore();
 	const rootRunId = testRunId(`pool-load-gate-root-${watches}${options.pane === true ? "-pane" : ""}`);

@@ -6,8 +6,21 @@ import { test, vi } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { OperationId, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { createHarness } from "../../packages/coding-agent/test/suite/harness.js";
+import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { makeTempDirectory } from "../helpers/runtime.js";
+
+/**
+ * Subscribes now and resolves at the session's next `agent_settled`, which follows the end of the whole
+ * run, queued continuations included. Settling waits on the run's real persistence, so it is an event to
+ * await, not a state a polling deadline can bound; subscribe before the run's last gate opens.
+ */
+function nextAgentSettled(session: Harness["session"]): Promise<void> {
+	const settled = Promise.withResolvers<void>();
+	const unsubscribe = session.subscribe((event) => {
+		if (event.type === "agent_settled") settled.resolve();
+	});
+	return settled.promise.finally(unsubscribe);
+}
 
 test("a file-backed session disposes cleanly after background completions settle while idle (#3925)", async () => {
 	const root = makeTempDirectory("atomic-idle-completion-dispose-");
@@ -80,9 +93,12 @@ test("a file-backed session disposes cleanly after background completions settle
 			gates[2]!.resolve(failed);
 			await vi.waitFor(() => assert.ok(heldCards.has(lastTaskId)));
 			// The parent finishes its turn and its last drain, then goes idle.
+			const parentSettled = nextAgentSettled(harness.session);
 			firstTurn.resolve();
-			await vi.waitFor(() => assert.equal(harness.session.isStreaming, false));
+			await parentSettled;
+			assert.equal(harness.session.isStreaming, false);
 			// Only now does the card write finish and queue its reconciliation.
+			const reconciliationSettled = nextAgentSettled(harness.session);
 			cardWrites.resolve();
 			await Promise.all(taskIds.map((taskId) => host.waitForTask(taskId as never)));
 
@@ -117,11 +133,10 @@ test("a file-backed session disposes cleanly after background completions settle
 			};
 			const onePerTask = taskIds.map(() => 1);
 			// Every completion's hidden reconciliation turn runs while the parent is otherwise idle.
-			await vi.waitFor(() => {
-				for (const taskId of taskIds) assert.equal(notices(taskId), 1, `notice for ${taskId}`);
-				assert.deepEqual(reconciliationsPerTask(), onePerTask);
-				assert.equal(harness.session.isStreaming, false);
-			});
+			await reconciliationSettled;
+			for (const taskId of taskIds) assert.equal(notices(taskId), 1, `notice for ${taskId}`);
+			assert.deepEqual(reconciliationsPerTask(), onePerTask);
+			assert.equal(harness.session.isStreaming, false);
 
 			disposed = true;
 			await harness.cleanup();

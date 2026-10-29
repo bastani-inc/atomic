@@ -231,9 +231,9 @@ export default workflow({ name: "host-parity", description: "host routing fixtur
 );
 
 // #3105: exact authored questionnaire through actual factory/stage/broker, no renderer.
-test.each(["approval", "nested", "cancelled", "invalid", "missing", "stay"] as const)(
+test.for(["approval", "nested", "cancelled", "invalid", "missing", "stay"] as const)(
 	"Node stage questionnaire preserves original params and readiness: %s",
-	async (scenario) => {
+	async (scenario, { signal }) => {
 		vi.stubEnv("NODE_ENV", "production");
 		vi.stubEnv("NODE_TEST_CONTEXT", undefined);
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-stage-host-"));
@@ -280,6 +280,16 @@ export default ${scenario === "nested" ? 'workflow({ name: "stage-host", descrip
 		);
 		const received: unknown[] = [];
 		const identities: HostInputOptions[] = [];
+		// The host is asked once the stage session publishes the question's tool event, and a session publishes its
+		// events in order behind the persistence of every earlier message, so the first question arrives at the
+		// session store's pace. Wait for the host call itself; only the runner's own per-test signal bounds a hang.
+		const waiting: { count: number; resolve: () => void }[] = [];
+		const askedAtLeast = (count: number): Promise<void> =>
+			new Promise((resolve, reject) => {
+				if (received.length >= count) return resolve();
+				waiting.push({ count, resolve });
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+			});
 		const lateReadiness =
 			Promise.withResolvers<import("../../packages/coding-agent/src/index.js").QuestionnaireResult>();
 		const { session } = await createAgentSession({
@@ -297,6 +307,10 @@ export default ${scenario === "nested" ? 'workflow({ name: "stage-host", descrip
 					questionnaire: async (questions, options) => {
 						received.push(questions);
 						identities.push(options);
+						for (const waiter of waiting.splice(0)) {
+							if (received.length >= waiter.count) waiter.resolve();
+							else waiting.push(waiter);
+						}
 						if (received.length === 2) {
 							if (scenario === "missing") return lateReadiness.promise;
 							if (scenario === "cancelled") return { cancelled: true, answers: [] };
@@ -354,18 +368,21 @@ export default ${scenario === "nested" ? 'workflow({ name: "stage-host", descrip
 		try {
 			await session.prompt("/workflow stage-host --no-picker");
 			const tool = session.agent.state.tools.find((entry) => entry.name === "workflow")!;
-			await vi.waitFor(
-				async () =>
-					assert.ok(
-						received.length >= 1,
-						JSON.stringify(
-							(await tool.execute("status", { action: "status" }, new AbortController().signal)).details,
-						),
-					),
-				{ timeout: 10000 },
+			// A hang reports where the workflow stopped instead of only the runner's timeout.
+			signal.addEventListener(
+				"abort",
+				() => {
+					void tool.execute("status", { action: "status" }, new AbortController().signal).then(
+						(status) => console.error(`stage question never reached the host: ${JSON.stringify(status.details)}`),
+						() => undefined,
+					);
+				},
+				{ once: true },
 			);
+			await askedAtLeast(1);
 			assert.deepEqual(received[0], params);
-			await vi.waitFor(() => assert.equal(received.length, 2), { timeout: 10000 });
+			await askedAtLeast(2);
+			assert.equal(received.length, 2);
 			assert.deepEqual(received[1], {
 				questions: [
 					{

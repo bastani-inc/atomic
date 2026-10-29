@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { workflow } from "@bastani/atomic/workflows";
+import { processIdentity } from "./process-instance.js";
 
 const UNANSWERED_REQUESTS = 3;
 
@@ -14,12 +15,12 @@ export const unansweredChild = workflow({
 	name: "unanswered-pool-child",
 	description: "Dies after sending requests the root has not answered",
 	inputs: { directory: Type.String(), index: Type.Number() },
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
 	async run(ctx) {
-		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
-		const finalPid = await ctx.tool("die", {}, async () => {
+		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
+		const final = await ctx.tool("die", {}, async () => {
 			const dying = join(ctx.inputs.directory, "dying");
-			if (existsSync(dying)) return process.pid;
+			if (existsSync(dying)) return processIdentity();
 			writeFileSync(dying, String(process.pid));
 			await waitFor(join(ctx.inputs.directory, "go"));
 			for (let index = 1; index <= UNANSWERED_REQUESTS; index++) {
@@ -27,9 +28,9 @@ export const unansweredChild = workflow({
 				if (index < UNANSWERED_REQUESTS) process.send?.(request);
 				else process.send?.(request, () => process.kill(process.pid, "SIGKILL"));
 			}
-			return new Promise<number>(() => {});
+			return new Promise<ReturnType<typeof processIdentity>>(() => {});
 		});
-		return { firstPid, finalPid };
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
 	},
 });
 
@@ -37,14 +38,14 @@ export const releasedChild = workflow({
 	name: "released-pool-child",
 	description: "Waits for a release file after a committed checkpoint",
 	inputs: { directory: Type.String(), index: Type.Number() },
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
 	async run(ctx) {
-		const firstPid = await ctx.tool("checkpoint", {}, async () => process.pid);
-		const finalPid = await ctx.tool("wait", {}, async () => {
+		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
+		const final = await ctx.tool("wait", {}, async () => {
 			writeFileSync(join(ctx.inputs.directory, `started-${ctx.inputs.index}`), String(process.pid));
 			await waitFor(join(ctx.inputs.directory, "release"));
-			return process.pid;
+			return processIdentity();
 		});
-		return { firstPid, finalPid };
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
 	},
 });
