@@ -379,14 +379,20 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
         run: node scripts/alias-pi-ai.mjs
+      # Model data (packages/ai/src/providers/data/) is gitignored, so a fresh checkout has none and the
+      # only source is the upstream catalogs. Hydrate it exactly once, as publish.yml does, and build from
+      # it offline: `npm run build` regenerates it, and build-binaries.sh used to regenerate it a second
+      # time because this job did not pass --offline-model-data. See docs/ci.md ("Binary smoke tests").
+      - name: Hydrate @bastani/pi-ai model data
+        run: npm run hydrate:model-data
       - name: Build @bastani/pi-ai
-        run: npm run build --workspace=@bastani/pi-ai
+        run: npm run build:offline --workspace=@bastani/pi-ai
       - name: Build @bastani/atomic package
         working-directory: packages/coding-agent
         run: npm run build
       - name: Build native release binary
         shell: bash
-        run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
+        run: ./scripts/build-binaries.sh --skip-install --skip-package-build --offline-model-data --platform "${{ matrix.binary_platform }}"
       - name: Smoke test Linux release archive
         if: runner.os == 'Linux'
         shell: bash
