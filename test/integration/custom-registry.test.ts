@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, test } from "vitest";
 import type { DiscoveryResult } from "../../packages/workflows/src/extension/discovery.js";
 import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
 import factory, {
@@ -104,7 +104,12 @@ beforeAll(async () => {
 		homeDir: join(tempRoot, "home"),
 		includeBundled: true,
 	});
+});
 
+// The runtime captures the store's durable backend when it is created. The shared setup file injects the isolated
+// in-memory backend in its own `beforeEach`, which runs after `beforeAll`; a runtime built in `beforeAll` therefore
+// misses it and opens the real `~/.atomic/workflows/journal.sqlite`, which every parallel test worker shares.
+beforeEach(() => {
 	runtime = createExtensionRuntime({ registry: discoveryResult.registry });
 });
 
