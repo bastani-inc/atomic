@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- An attached stage chat's footer now shows the extension status lines (such as a tokens-per-second counter) written by that stage's own session, and no longer shows the main session's. Status writes from a stage's extensions used to be dropped, while the chat footer displayed the main chat's statuses: a sleeping stage showed a live counter driven by the main agent, and a streaming stage showed a stale one. The main chat footer keeps showing only the main session's statuses ([#4094](https://github.com/bastani-inc/atomic/issues/4094))
+
 ## [0.9.46] - 2026-10-27
 
 ### Added
