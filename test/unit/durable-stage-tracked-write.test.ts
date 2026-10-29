@@ -5,7 +5,7 @@ import { StorageUnavailableError } from "../../packages/coding-agent/src/core/st
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { moduleDir, spawnProcess } from "../helpers/runtime.js";
+import { decodeStream, moduleDir, readStreamText, spawnProcess } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 for (const boundary of ["tool", "task", "prompt", "ui", "checkpoint", "finalize"] as const) {
@@ -302,31 +302,64 @@ for (const cached of [false, true]) {
 	});
 }
 
-const CACHED_STAGE_UI_CHILD_TIMEOUT_MS = 20_000;
-test("cached-stage UI drains pending metadata and returns from successive prompts", async () => {
-	const child = spawnProcess([
-		process.execPath,
-		"--import",
-		"jiti/register",
-		join(moduleDir(import.meta.url), "../fixtures/journal-cached-stage-ui.ts"),
-	]);
-	const stdout = new Response(child.stdout).text();
-	const stderr = new Response(child.stderr).text();
-	let timedOut = false;
-	const deadline = setTimeout(() => {
-		timedOut = true;
-		child.kill("SIGKILL");
-	}, CACHED_STAGE_UI_CHILD_TIMEOUT_MS);
-	try {
-		const code = await child.exited;
-		assert.equal(timedOut, false, "UI child exceeded its parent deadline");
-		assert.equal(code, 0, (await stdout) + (await stderr));
-		assert.equal((await stdout).trim(), "cached-stage-ui-drained");
-	} finally {
-		clearTimeout(deadline);
-		if (child.exitCode === null) child.kill("SIGKILL");
-		await child.exited;
-		await stdout;
-		await stderr;
-	}
-});
+// The child is a separate `node --import jiti/register` process, so it first has to transpile
+// the workflows module graph before it runs a single line of the scenario. That start-up cost is
+// unrelated to the behavior under test and swings from ~6 s to ~40 s with host load and a cold
+// jiti cache (measured under CPU saturation; the scenario itself takes ~0.1 s). The fixture
+// announces the end of start-up, and each phase gets its own deadline: a generous one for the
+// start-up, and a tight one for the scenario so a drain/prompt deadlock still fails fast.
+const CACHED_STAGE_UI_STARTUP_TIMEOUT_MS = 120_000;
+const CACHED_STAGE_UI_WORK_TIMEOUT_MS = 20_000;
+const CACHED_STAGE_UI_TEST_TIMEOUT_MS = CACHED_STAGE_UI_STARTUP_TIMEOUT_MS + CACHED_STAGE_UI_WORK_TIMEOUT_MS + 10_000;
+const CACHED_STAGE_UI_READY = "cached-stage-ui-ready";
+test(
+	"cached-stage UI drains pending metadata and returns from successive prompts",
+	async () => {
+		const child = spawnProcess([
+			process.execPath,
+			"--import",
+			"jiti/register",
+			join(moduleDir(import.meta.url), "../fixtures/journal-cached-stage-ui.ts"),
+		]);
+		assert.ok(child.stdout, "UI child has no stdout pipe");
+		const ready = Promise.withResolvers<void>();
+		const stdoutReader = decodeStream(child.stdout).getReader();
+		const stdout = (async () => {
+			let text = "";
+			for (;;) {
+				const { done, value } = await stdoutReader.read();
+				if (done) break;
+				text += value;
+				if (text.includes(CACHED_STAGE_UI_READY)) ready.resolve();
+			}
+			ready.resolve();
+			return text;
+		})();
+		const stderr = readStreamText(child.stderr);
+		let timedOut: "startup" | "work" | undefined;
+		const killAfter = (phase: "startup" | "work", ms: number) =>
+			setTimeout(() => {
+				timedOut = phase;
+				child.kill("SIGKILL");
+			}, ms);
+		let deadline = killAfter("startup", CACHED_STAGE_UI_STARTUP_TIMEOUT_MS);
+		try {
+			await Promise.race([ready.promise, child.exited]);
+			if (timedOut === undefined) {
+				clearTimeout(deadline);
+				deadline = killAfter("work", CACHED_STAGE_UI_WORK_TIMEOUT_MS);
+			}
+			const code = await child.exited;
+			assert.equal(timedOut, undefined, `UI child exceeded its ${timedOut} deadline`);
+			assert.equal(code, 0, (await stdout) + (await stderr));
+			assert.equal((await stdout).trim(), `${CACHED_STAGE_UI_READY}\ncached-stage-ui-drained`);
+		} finally {
+			clearTimeout(deadline);
+			if (child.exitCode === null) child.kill("SIGKILL");
+			await child.exited;
+			await stdout;
+			await stderr;
+		}
+	},
+	CACHED_STAGE_UI_TEST_TIMEOUT_MS,
+);
