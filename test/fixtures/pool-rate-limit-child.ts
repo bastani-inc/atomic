@@ -1,5 +1,4 @@
 import { setTimeout as delay } from "node:timers/promises";
-import * as atomic from "@bastani/atomic";
 import { AuthStorage, ModelRuntime, providerCooldownMs, providerUnavailableMs, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
@@ -66,8 +65,6 @@ export const child = workflow({
 	inputs: { role: Type.String(), baseUrl: Type.String() },
 	outputs: {
 		sawLimits: Type.Boolean(),
-		/** Wall-clock end of the rate-limited model's cooldown the first worker recorded from the 429. */
-		limitedUntil: Type.Number(),
 		earlyCooldownEnd: Type.Number(),
 		replies: Type.Array(Type.String()),
 	},
@@ -83,29 +80,20 @@ export const child = workflow({
 		};
 		if (ctx.inputs.role === "early") {
 			const earlyCooldownEnd = await ctx.tool("early-cooldown", {}, async () => Date.now() + providerCooldownMs(EARLY_PROVIDER));
-			return { sawLimits: false, limitedUntil: 0, earlyCooldownEnd, replies: [] };
+			return { sawLimits: false, earlyCooldownEnd, replies: [] };
 		}
 		if (ctx.inputs.role === "first") {
-			let limitedUntil = 0;
-			// Looked up by name: a build without limit observers then fails on the pool's behavior, not here.
-			const stop =
-				"observeProviderRateLimits" in atomic
-					? atomic.observeProviderRateLimits((limit) => {
-							if (limit.model === LIMITED_MODEL && limit.kind === "cooldown") limitedUntil = limit.untilEpochMs;
-						})
-					: () => {};
 			let done = "the first worker's stages threw";
 			try {
 				// The 429 first: the pool sends each scope's first limit at once over ordered channels, so a worker
 				// that holds the later quota mark has already applied this cooldown, unless it had ended.
 				const replies = [await ask("limited", LIMITED_MODEL), await ask("quota", QUOTA_MODEL)];
 				done = replies.join("; ");
-				return { sawLimits: true, limitedUntil, earlyCooldownEnd: 0, replies };
+				return { sawLimits: true, earlyCooldownEnd: 0, replies };
 			} catch (error) {
 				done = error instanceof Error ? error.message : String(error);
 				throw error;
 			} finally {
-				stop();
 				// Tells a waiting second worker this worker is done, with or without the provider's limits.
 				await fetch(`${ctx.inputs.baseUrl}/first-done`, { method: "POST", body: done });
 			}
@@ -139,6 +127,6 @@ export const child = workflow({
 			await ask("spare", SPARE_MODEL),
 			await ask("limited", LIMITED_MODEL),
 		];
-		return { sawLimits, limitedUntil: 0, earlyCooldownEnd: 0, replies };
+		return { sawLimits, earlyCooldownEnd: 0, replies };
 	},
 });
