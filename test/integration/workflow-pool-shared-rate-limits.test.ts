@@ -211,7 +211,6 @@ async function withPool(
 test(
 	"a 429 or exhausted quota one local worker meets holds back the other workers and the root (#4023)",
 	async () => {
-		let cooldownEnd = 0;
 		const result = await withPool("shared-limits-root", 2, (child) => async (ctx) => {
 			const [first, second] = await Promise.all(
 				["first", "second"].map((role) => ctx.workflow(child, { inputs: { role, baseUrl } })),
@@ -219,8 +218,6 @@ test(
 			assert.equal(first!.status, "completed", JSON.stringify(first));
 			assert.equal(second!.status, "completed", JSON.stringify(second));
 			assert.equal(second!.outputs.sawLimits, true, "the second worker received the first worker's quota mark");
-			// The cooldown end the first worker recorded from the 429.
-			cooldownEnd = Number(first!.outputs.limitedUntil);
 			// The root's own fallback walk skips the model a worker found exhausted.
 			assert.ok(providerUnavailableMs(LIMITED_PROVIDER, QUOTA_MODEL) > 0);
 			const rootOptions = await limitedStageOptions(ctx.cwd ?? process.cwd(), baseUrl, QUOTA_MODEL, [SPARE_MODEL]);
@@ -237,8 +234,6 @@ test(
 		assert.deepEqual(of("second", QUOTA_MODEL), []);
 		assert.deepEqual(of("root", QUOTA_MODEL), []);
 		assert.equal(of("root", SPARE_MODEL).length, 1);
-		// That end came from the 429's Retry-After, counted from after the provider sent it.
-		assert.ok(cooldownEnd >= limited.at + RETRY_AFTER_SECONDS * 1000, String(cooldownEnd - limited.at));
 		// The 429 named its model: the spare model on the same provider answered the second worker while its
 		// request to the rate-limited model was held back.
 		const held = of("second", LIMITED_MODEL);
@@ -246,8 +241,14 @@ test(
 		const spare = of("second", SPARE_MODEL);
 		assert.equal(spare.length, 2, JSON.stringify(provider.requests));
 		assert.ok(spare.every((request) => request.sequence < held[0]!.sequence));
-		// The rate-limited model saw nothing from the second worker until that cooldown ended.
-		assert.ok(held[0]!.at >= cooldownEnd, `${held[0]!.at - cooldownEnd} ms after the cooldown's end`);
+		// The rate-limited model saw nothing from the second worker until the 429's Retry-After had passed. Both
+		// times are the provider's own clock: a worker's clock is its own process's, and on Windows one process's
+		// Date.now() can differ from another's by seconds, so a worker's cooldown end is not comparable to them.
+		const heldForMs = held[0]!.at - limited.at;
+		assert.ok(
+			heldForMs >= RETRY_AFTER_SECONDS * 1000,
+			`held back ${heldForMs} ms after the 429; its Retry-After is ${RETRY_AFTER_SECONDS} s`,
+		);
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
