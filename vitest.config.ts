@@ -13,6 +13,12 @@ export { TEST_TIMEOUT_MS };
 const setupFiles = ["./test/setup-workflow-durability.ts", "./test/helpers/provider-rate-limit-isolation.ts"];
 
 /**
+ * Integration tests start local workers from the shipped bundle, not by transpiling the workflow sources through jiti in
+ * every coordinator and worker process; the file explains why. Unit tests keep the source loader.
+ */
+const packagedWorkerSetup = "./test/setup-packaged-local-worker.ts";
+
+/**
  * Global setups run once per project in the orchestrator process, before any
  * file is collected.
  *
@@ -43,7 +49,11 @@ const nativeSetup = "./test/global-setup-natives.ts";
 const project = (
 	name: string,
 	include: string,
-	options: { readonly exclude?: readonly string[]; readonly groupOrder?: number } = {},
+	options: {
+		readonly exclude?: readonly string[];
+		readonly groupOrder?: number;
+		readonly extraSetupFiles?: readonly string[];
+	} = {},
 ) => ({
 	resolve: { alias: sharedAliases },
 	test: {
@@ -54,7 +64,7 @@ const project = (
 		include: [include],
 		exclude: ["**/node_modules/**", ...(options.exclude ?? [])],
 		sequence: { groupOrder: options.groupOrder ?? 0 },
-		setupFiles,
+		setupFiles: [...setupFiles, ...(options.extraSetupFiles ?? [])],
 		globalSetup: [herdrSetup, providerCredentialSetup, artifactSetup, nativeSetup],
 		testTimeout: TEST_TIMEOUT_MS,
 		hookTimeout: TEST_TIMEOUT_MS,
@@ -88,7 +98,10 @@ export default defineConfig({
 		sequence: { sequencer: DurationSequencer },
 		projects: [
 			project("unit", "test/unit/**/*.test.ts"),
-			project("integration", "test/integration/**/*.test.ts", { exclude: [loadGate] }),
+			project("integration", "test/integration/**/*.test.ts", {
+				exclude: [loadGate],
+				extraSetupFiles: [packagedWorkerSetup],
+			}),
 			project("integration-load-gate", loadGate, { groupOrder: 1 }),
 			project("ci", "test/ci/**/*.test.ts"),
 		],

@@ -1,7 +1,10 @@
 /**
- * One local worker pool's cold start to its child running: its coordinator and worker processes each load the workflow
- * runtime through jiti, several CPU-seconds apiece, which took about 45 s with the CPU three times oversubscribed.
- * Waits and run signals in pool tests are multiples of this, one per pool the test starts (#4011).
+ * One local worker pool's cold start to its child running: its coordinator and worker processes. Sized (#4011) when both
+ * loaded the workflow runtime through jiti, several CPU-seconds apiece, which took about 45 s with the CPU three times
+ * oversubscribed. Integration tests now start the shipped bundle instead (`test/setup-packaged-local-worker.ts`), which
+ * takes a quarter or less of that CPU, so this is headroom for slow hosts rather than a measured start-up. It was left
+ * as it was because no Windows numbers back a smaller one.
+ * Waits and run signals in pool tests are multiples of this, one per pool the test starts.
  */
 export const POOL_COLD_START_BUDGET_MS = 75_000;
 
