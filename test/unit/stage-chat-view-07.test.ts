@@ -17,6 +17,7 @@ import {
 	RETURN_HINT_TEXT,
 	StageChatView,
 	type StageControlHandle,
+	StageUiBroker,
 	setupRun,
 	stripAnsi,
 } from "./stage-chat-view-helpers.js";
@@ -306,7 +307,7 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
-	test("idle footer shows themed cwd, branch, and live MCP extension status", () => {
+	test("idle footer shows themed cwd, branch, and the stage session's live MCP extension status", () => {
 		// Match production replaceHome() exactly: HOME on POSIX, USERPROFILE on
 		// Windows. Build the cwd and expectation with native separators so the
 		// test passes on both platforms.
@@ -321,7 +322,8 @@ describe("StageChatView", () => {
 			getCwd: () => cwd,
 		});
 		const { handle } = makeHandle(undefined, [], "running", agentSession);
-		const statuses = new Map([["mcp", "MCP: 1/1 servers connected (3 tools)"]]);
+		const broker = new StageUiBroker(store);
+		broker.setStageStatus("run-1", "stage-a", "mcp", "MCP: 1/1 servers connected (3 tools)");
 		let branch = "main";
 		const branchChanged = new Set<() => void>();
 		let renderRequests = 0;
@@ -339,7 +341,7 @@ describe("StageChatView", () => {
 			handle,
 			footerData: {
 				getGitBranch: () => branch,
-				getExtensionStatuses: () => statuses,
+				getExtensionStatuses: () => new Map(),
 				getAvailableProviderCount: () => 2,
 				onBranchChange: (listener) => {
 					branchChanged.add(listener);
@@ -349,6 +351,7 @@ describe("StageChatView", () => {
 					};
 				},
 			},
+			stageUiBroker: broker,
 			requestRender: () => {
 				renderRequests += 1;
 			},
@@ -366,9 +369,10 @@ describe("StageChatView", () => {
 		);
 
 		branch = "feature/footer-parity";
-		statuses.set("mcp", "MCP: 0/1 servers");
 		for (const listener of branchChanged) listener();
 		assert.equal(renderRequests, 1);
+		broker.setStageStatus("run-1", "stage-a", "mcp", "MCP: 0/1 servers");
+		assert.equal(renderRequests, 2, "a stage status write repaints the attached chat");
 		const updated = view.render(120).map(stripAnsi).join("\n");
 		assert.ok(updated.includes(`${shortCwd} (feature/footer-parity)`), "expected updated branch after invalidation");
 		assert.match(updated, /MCP: 0\/1 servers/);
@@ -377,6 +381,43 @@ describe("StageChatView", () => {
 		view.dispose();
 		assert.equal(unsubscribed, true);
 		assert.equal(branchChanged.size, 0, "disposal releases both repaint and cwd subscriptions");
+		broker.setStageStatus("run-1", "stage-a", "mcp", "MCP: 1/1 servers");
+		assert.equal(renderRequests, 2, "disposal releases the status repaint subscription");
+	});
+
+	test("stage chat footer shows only the viewed stage's extension statuses, never the main session's (#4094)", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const { handle } = makeHandle(undefined, [], "running", fakeFooterAgentSession(false));
+		const broker = new StageUiBroker(store);
+		const mainStatuses = new Map([["tps", "TPS: 99 (main streaming)"]]);
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			footerData: {
+				getGitBranch: () => "main",
+				getExtensionStatuses: () => mainStatuses,
+				getAvailableProviderCount: () => 2,
+				onBranchChange: () => () => {},
+			},
+			stageUiBroker: broker,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const idle = view.render(120).map(stripAnsi).join("\n");
+		assert.doesNotMatch(idle, /TPS/, "the main session's statuses must not appear under a stage");
+
+		broker.setStageStatus("run-1", "stage-a", "tps", "TPS: 7 (stage)");
+		broker.setStageStatus("run-1", "stage-b", "tps", "TPS: 1 (other stage)");
+		const streaming = view.render(120).map(stripAnsi).join("\n");
+		assert.match(streaming, /TPS: 7 \(stage\)/);
+		assert.doesNotMatch(streaming, /TPS: 99|other stage/);
+		view.dispose();
 	});
 
 	test("footer keeps model context and Ctrl+X hierarchy hint on one line", () => {

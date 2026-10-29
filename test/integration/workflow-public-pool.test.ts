@@ -34,7 +34,7 @@ test.skipIf(process.platform === "win32").each(["sdk", "cli"] as const)(
 				);
 				assert.ok(children.every((result) => result.status === "completed"));
 				assert.equal(new Set(children.map((result) => result.outputs.firstPid)).size, 2);
-				assert.notEqual(children[0]!.outputs.firstPid, children[0]!.outputs.finalPid);
+				assert.notEqual(children[0]!.outputs.firstInstance, children[0]!.outputs.finalInstance);
 				return {};
 			},
 		});

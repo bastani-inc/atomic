@@ -38,6 +38,8 @@ const options = {
 };
 const entered = Promise.withResolvers<void>();
 const release = Promise.withResolvers<void>();
+// Module graph is loaded and the backend exists: the parent starts its scenario deadline here.
+console.log("cached-stage-ui-ready");
 try {
 	assert.equal((await run(definition, {}, { ...options, store: createStore() })).status, "completed");
 	const commit = backend.commitCheckpoint.bind(backend);

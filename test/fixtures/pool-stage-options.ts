@@ -1,14 +1,19 @@
 import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { processInstance } from "./process-instance.js";
 
-export async function poolStageOptions(cwd: string, crashDuring: boolean, firstPid: number, pauseDuring = false) {
+/**
+ * `firstInstance` is the instance id of the process that took the child's first checkpoint: only that process crashes
+ * or pauses during the stage, its replacement runs it through. Callers that never crash or pause pass anything else.
+ */
+export async function poolStageOptions(cwd: string, crashDuring: boolean, firstInstance: string | number, pauseDuring = false) {
 	const modelRuntime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null, allowModelNetwork: false });
 	modelRuntime.registerProvider("pool-fixture", {
 		api: "openai-completions", baseUrl: "https://example.invalid", apiKey: "fixture",
 		models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 1000 }],
 		streamSimple(model) {
-			if (crashDuring && firstPid === process.pid) process.kill(process.pid, "SIGKILL");
-			if (pauseDuring && firstPid === process.pid) process.kill(process.pid, "SIGSTOP");
+			if (crashDuring && firstInstance === processInstance) process.kill(process.pid, "SIGKILL");
+			if (pauseDuring && firstInstance === processInstance) process.kill(process.pid, "SIGSTOP");
 			const stream = createAssistantMessageEventStream();
 			stream.push({ type: "done", reason: "stop", message: {
 				role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),

@@ -64,9 +64,13 @@ test(
 			const [after] = await recovered.inspect(f.root);
 			assert.equal(after!.id, before!.id);
 			assert.equal(after!.state, "completed");
-			const outputs = ((await recovered.result(f.root, after!.id)) as { result: Record<string, number> }).result;
+			const outputs = ((await recovered.result(f.root, after!.id)) as { result: Record<string, number | string> })
+				.result;
+			// The checkpoint was taken by the first worker process and replayed, not re-run by the restarted one.
 			assert.equal(outputs.firstPid, firstPid);
-			assert.notEqual(outputs.finalPid, firstPid);
+			// The restarted root's worker finished the work. Its instance id, unlike its pid (which the operating
+			// system may reuse once the first worker exits), differs from the first worker's in every new process.
+			assert.notEqual(outputs.finalInstance, outputs.firstInstance);
 		} finally {
 			if (!originalClosed) {
 				if (toolControlRegistry.runControl(f.root)?.paused) await toolControlRegistry.runControl(f.root)!.resume();

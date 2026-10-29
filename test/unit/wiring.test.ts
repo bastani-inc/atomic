@@ -9,6 +9,8 @@ import type { RuntimeWiringSurface } from "../../packages/workflows/src/extensio
 import { buildRuntimeAdapters } from "../../packages/workflows/src/extension/wiring.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStageContext } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { StageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 
 function fakeSession(): StageSessionRuntime {
 	let last = "";
@@ -285,5 +287,63 @@ describe("buildRuntimeAdapters — SDK sessions", () => {
 		assert.equal(typeof uiContext.theme.fg("dim", "x"), "string");
 		assert.doesNotThrow(() => uiContext.requestRender());
 		assert.equal(typeof uiContext.getFooterDataProvider(), "object");
+	});
+	describe("stage extension statuses (#4094)", () => {
+		type StatusWriter = (key: string, text: string | undefined) => void;
+		const meta = (stageId: string) => ({
+			runId: "run-1",
+			stageId,
+			stageName: stageId,
+			signal: new AbortController().signal,
+		});
+
+		async function bindStage(
+			broker: StageUiBroker,
+			stageId: string,
+			hostUi: Record<string, unknown> = {},
+		): Promise<StatusWriter> {
+			const bindCalls: Array<{ uiContext?: Record<string, unknown> }> = [];
+			const session = {
+				...fakeSession(),
+				async bindExtensions(bindings: { uiContext?: Record<string, unknown> }): Promise<void> {
+					bindCalls.push(bindings);
+				},
+			};
+			const adapters = buildRuntimeAdapters(
+				{ ui: hostUi },
+				{ createAgentSession: async () => ({ session }), stageUiBroker: broker },
+			);
+			await adapters.agentSession!.create({}, meta(stageId));
+			return bindCalls[0]!.uiContext!.setStatus as StatusWriter;
+		}
+
+		test("keeps each stage session's statuses separate and out of the host footer", async () => {
+			const broker = new StageUiBroker(createStore());
+			const hostWrites: Array<[string, string | undefined]> = [];
+			const hostUi = { setStatus: (key: string, text: string | undefined) => hostWrites.push([key, text]) };
+			const setStatusA = await bindStage(broker, "stage-a", hostUi);
+			const setStatusB = await bindStage(broker, "stage-b", hostUi);
+
+			setStatusA("tps", "TPS: 42");
+			setStatusB("tps", "TPS: --");
+
+			assert.deepEqual([...broker.getStageStatuses("run-1", "stage-a")], [["tps", "TPS: 42"]]);
+			assert.deepEqual([...broker.getStageStatuses("run-1", "stage-b")], [["tps", "TPS: --"]]);
+			assert.deepEqual(hostWrites, [], "stage statuses must never reach the main chat footer");
+
+			setStatusA("tps", undefined);
+			assert.equal(broker.getStageStatuses("run-1", "stage-a").size, 0);
+			assert.equal(broker.getStageStatuses("run-1", "stage-b").size, 1);
+		});
+
+		test("a replacement session for the same stage starts without its predecessor's statuses", async () => {
+			const broker = new StageUiBroker(createStore());
+			const first = await bindStage(broker, "stage-a");
+			first("tps", "TPS: 42");
+
+			await bindStage(broker, "stage-a");
+
+			assert.equal(broker.getStageStatuses("run-1", "stage-a").size, 0);
+		});
 	});
 });

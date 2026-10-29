@@ -24,9 +24,10 @@ const childPath = fileURLToPath(new URL("../fixtures/pool-lifecycle-child.ts", i
 interface CoordinatorEvent {
 	event: string;
 	pid?: number;
+	instance?: string;
 	command?: string;
 	status?: string;
-	outputs?: { firstPid: number; finalPid: number } | null;
+	outputs?: { firstPid: number; finalPid: number; firstInstance: string; finalInstance: string } | null;
 	error?: string | null;
 	message?: string;
 }
@@ -107,15 +108,21 @@ async function until<T>(description: string, read: () => T | undefined): Promise
 	}
 }
 
-function committedWorkerPid(directory: string): Promise<number> {
+/** The worker process that took the child's checkpoint: its pid, and its instance id (a pid can be reused). */
+interface Worker {
+	pid: number;
+	instance: string;
+}
+
+function committedWorker(directory: string): Promise<Worker> {
 	return until("the child's first checkpoint", () =>
 		observe(directory, (database) => {
 			const row = database
 				.query(
-					`SELECT json_extract(payload, '$.output') AS pid FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint' LIMIT 1`,
+					`SELECT json_extract(payload, '$.output') AS worker FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint' LIMIT 1`,
 				)
 				.get();
-			return row?.pid === undefined ? undefined : Number(row.pid);
+			return row?.worker === undefined ? undefined : (JSON.parse(String(row.worker)) as Worker);
 		}),
 	);
 }
@@ -139,24 +146,29 @@ function workItems(directory: string) {
 
 function assertSingleRootRecovered(
 	directory: string,
-	firstPid: number,
+	first: Worker,
 	result: CoordinatorEvent,
-	coordinators: number[],
+	coordinators: CoordinatorEvent[],
 ): void {
 	assert.equal(result.status, "completed", JSON.stringify(result));
-	assert.equal(result.outputs?.firstPid, firstPid, "the committed checkpoint is not repeated");
-	assert.notEqual(result.outputs?.finalPid, firstPid);
-	assert.ok(!coordinators.includes(result.outputs!.finalPid), "the child ran on a worker, not the coordinator");
-	const pids = observe(directory, (database) =>
+	assert.equal(result.outputs?.firstPid, first.pid, "the committed checkpoint is not repeated");
+	assert.equal(result.outputs?.firstInstance, first.instance, "the committed checkpoint is not repeated");
+	// A new process finished the work: its instance id differs from the first worker's, which its pid may not.
+	assert.notEqual(result.outputs?.finalInstance, first.instance);
+	assert.ok(
+		!coordinators.some((coordinator) => coordinator.instance === result.outputs!.finalInstance),
+		"the child ran on a worker, not the coordinator",
+	);
+	const workers = observe(directory, (database) =>
 		database
 			.query(
-				`SELECT DISTINCT json_extract(payload, '$.output') AS pid FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'`,
+				`SELECT DISTINCT json_extract(payload, '$.output') AS worker FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'`,
 			)
 			.all(),
 	);
 	assert.deepEqual(
-		pids.map((row) => Number(row.pid)),
-		[firstPid],
+		workers.map((row) => JSON.parse(String(row.worker))),
+		[first],
 	);
 	assert.equal(
 		observe(directory, (database) => Number(database.query("SELECT COUNT(*) AS count FROM wf_runs").get()!.count)),
@@ -177,7 +189,8 @@ test.skipIf(process.platform === "win32")(
 			);
 		try {
 			const firstReady = await first.next("ready");
-			const workerPid = await committedWorkerPid(directory);
+			const worker = await committedWorker(directory);
+			const workerPid = worker.pid;
 			const [before] = workItems(directory);
 			first.send("pause");
 			await first.next("controlled");
@@ -197,7 +210,7 @@ test.skipIf(process.platform === "win32")(
 			second = startCoordinator(directory, "restart");
 			const secondReady = await second.next("ready");
 			const result = await second.next("result");
-			assertSingleRootRecovered(directory, workerPid, result, [firstReady.pid!, secondReady.pid!]);
+			assertSingleRootRecovered(directory, worker, result, [firstReady, secondReady]);
 			const after = workItems(directory);
 			assert.equal(after.length, 1);
 			assert.equal(after[0]!.id, before!.id);

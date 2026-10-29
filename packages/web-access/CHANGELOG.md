@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `web_search` no longer ends with `Search curation cancelled (stale).` when the search curator is enabled but cannot open (for example on a machine with no desktop browser), or when the session has no human to answer it, such as a subagent or workflow stage. It returns the raw results, with a note that points to `/curator off` when the curator failed to open. When no search provider is reachable, the error now names the `EXA_API_KEY`, `PERPLEXITY_API_KEY`, and `GEMINI_API_KEY` environment variables, the `exaApiKey`, `perplexityApiKey`, and `geminiApiKey` fields in `~/.atomic/web-search.json`, and `/curator` ([#4087](https://github.com/bastani-inc/atomic/issues/4087)).
+
 ## [0.9.40] - 2026-10-20
 
 ### Changed

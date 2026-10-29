@@ -1,8 +1,46 @@
-# Fetching web content
+# Web access
+
+Atomic bundles `web_search` for searching the web and `fetch_content` for reading pages. `web_search` works with no setup; the sections below cover how it picks a provider and how to configure one.
+
+## Searching with `web_search`
+
+Pass `query`, or `queries` for several angles at once. `provider` can be `auto` (the default), `exa`, `perplexity`, or `gemini`.
+
+With `auto`, Atomic uses the first provider that works:
+
+1. **Exa**: with a key it calls the Exa API; without one it uses Exa's free keyless MCP endpoint (`mcp.exa.ai`), so an unconfigured machine with network access still gets results.
+2. **Perplexity**, with a key.
+3. **Gemini API**, with a key.
+4. **Gemini Web**, using your signed-in Chromium-based browser. Browser cookie access is off by default; enable it with `allowBrowserCookies: true` or `ATOMIC_ALLOW_BROWSER_COOKIES=1`.
+
+Keys come from the environment or from `~/.atomic/web-search.json`:
+
+| Provider | Environment variable | `web-search.json` field |
+| --- | --- | --- |
+| Exa | `EXA_API_KEY` | `exaApiKey` |
+| Perplexity | `PERPLEXITY_API_KEY` | `perplexityApiKey` |
+| Gemini API | `GEMINI_API_KEY` | `geminiApiKey` |
+
+```json
+{
+  "exaApiKey": "your-key",
+  "provider": "auto"
+}
+```
+
+`provider` sets the default provider. When no provider can be reached, the error names these settings.
+
+### The search curator
+
+By default `web_search` returns raw results. `/curator on` (or `"workflow": "summary-review"` in `web-search.json`) opens a browser page where you review the results and approve a summary before the agent sees them; `/curator off` turns it back off. The curator changes how results are reviewed, not which provider is used.
+
+It needs an interactive session with a person at a browser. Subagents, workflow stages, and non-interactive runs skip it and return raw results. If the page cannot open, for example on a machine with no desktop browser, `web_search` returns raw results with a note instead of failing; run `/curator off` to stop trying.
+
+## Fetching with `fetch_content`
 
 Atomic's bundled `fetch_content` tool reads webpages, PDFs, GitHub repositories, YouTube videos, and local video files.
 
-## Arguments
+### Arguments
 
 Always pass the lowercase `urls` field as a nonempty array of strings, even for one URL:
 
@@ -38,7 +76,7 @@ Existing prompts or integrations using `{"url": "..."}` must change to `{"urls":
 
 Atomic can normalize a scalar `urls` string into a one-item array. Always use the documented array form in prompts and integrations; the legacy `url` field is not normalized.
 
-## Troubleshooting
+### Troubleshooting
 
 If argument validation fails, check that:
 

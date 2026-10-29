@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
@@ -15,10 +16,16 @@ const parent = workflow({
 	name: "public-lifecycle-root",
 	description: "Public local-worker lifecycle fixture",
 	inputs: {},
-	outputs: { firstPid: Type.Number(), finalPid: Type.Number() },
+	outputs: {
+		firstPid: Type.Number(),
+		finalPid: Type.Number(),
+		firstInstance: Type.String(),
+		finalInstance: Type.String(),
+	},
 	async run(ctx) {
 		const result = await ctx.workflow(child, { inputs: { releasePath } });
-		return { firstPid: result.outputs.firstPid, finalPid: result.outputs.finalPid };
+		const { firstPid, finalPid, firstInstance, finalInstance } = result.outputs;
+		return { firstPid, finalPid, firstInstance, finalInstance };
 	},
 });
 
@@ -34,7 +41,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	control(command).catch((error) => send({ event: "error", message: String(error?.message ?? error) }));
 });
 
-send({ event: "ready", pid: process.pid });
+// The same instance id the fixture children report (test/fixtures/process-instance.ts), so a child that wrongly ran in
+// this process would report this one.
+const instanceKey = Symbol.for("atomic.test.processInstance");
+globalThis[instanceKey] ??= randomUUID();
+send({ event: "ready", pid: process.pid, instance: globalThis[instanceKey] });
 try {
 	const result = await run(
 		parent,

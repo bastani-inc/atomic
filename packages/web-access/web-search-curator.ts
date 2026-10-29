@@ -208,8 +208,12 @@ export async function openCuratorBrowser(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (!reportOwnedWebDiagnostic()) console.error(`Failed to open curator UI: ${message}`);
-		if (deps.state.pendingCurate === pc || (handle && deps.state.activeCurator === handle)) {
-			deps.closeCurator();
+		// Detach the pending search before closing the handle: closing a live handle reports a "stale"
+		// cancellation, which would discard searches that can still return raw results.
+		if (deps.state.pendingCurate === pc) pc.curatorUnavailable(message);
+		if (handle && deps.state.activeCurator === handle) {
+			deps.state.activeCurator = null;
+			handle.close();
 		}
 	}
 }
