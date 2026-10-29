@@ -11,7 +11,13 @@ const rootFixture = fileURLToPath(new URL("../fixtures/pool-worker-failure-root.
 interface RootOutcome {
 	readonly status: string;
 	readonly error: string | null;
-	readonly children: readonly { readonly status: string; readonly firstPid: number; readonly finalPid: number }[];
+	readonly children: readonly {
+		readonly status: string;
+		readonly firstPid: number;
+		readonly finalPid: number;
+		readonly firstInstance: string;
+		readonly finalInstance: string;
+	}[];
 	readonly workerPids: readonly number[];
 	readonly failedWorker: number;
 }
@@ -33,7 +39,8 @@ function assertReplayedOnReplacement(outcome: RootOutcome, index: number): void 
 	assert.ok(child, JSON.stringify(outcome));
 	assert.equal(child.status, "completed");
 	assert.equal(child.firstPid, outcome.failedWorker, "the committed checkpoint is replayed, not repeated");
-	assert.notEqual(child.finalPid, outcome.failedWorker);
+	// The checkpoint was taken by the failed worker (above), so its instance id names that process.
+	assert.notEqual(child.finalInstance, child.firstInstance);
 	assert.ok(outcome.workerPids.includes(child.finalPid), "a replacement worker finished the child");
 	assert.ok(!outcome.workerPids.includes(outcome.failedWorker));
 }

@@ -84,13 +84,21 @@ test.each([
 						),
 					);
 					assert.ok(results.every((result) => result.outputs.leafPid === Number(result.outputs.stagePid)));
-					if (crash) assert.notEqual(results[0]!.outputs.firstPid, results[0]!.outputs.finalPid);
+					// A pid may be reused by a replacement once its worker dies; the instance id of a process never is.
+					if (crash) assert.notEqual(results[0]!.outputs.firstInstance, results[0]!.outputs.finalInstance);
+					for (const [index, result] of results.entries())
+						if (!(crash && index === 0))
+							assert.equal(
+								result.outputs.firstInstance,
+								result.outputs.finalInstance,
+								"a child no worker died under finishes on the worker that took its checkpoint",
+							);
 					if (crash && !during)
 						for (let index = 0; index < 3; index++) {
 							const recovered = await ctx.workflow(child, {
 								inputs: { crash: true, during: false, journalPath: path },
 							});
-							assert.notEqual(recovered.outputs.firstPid, recovered.outputs.finalPid);
+							assert.notEqual(recovered.outputs.firstInstance, recovered.outputs.finalInstance);
 							assert.equal(Number(recovered.outputs.stagePid), recovered.outputs.firstPid);
 						}
 					return {};
@@ -215,7 +223,7 @@ test.skipIf(process.platform === "win32")(
 				async run(ctx) {
 					const result = await ctx.workflow(child);
 					assert.equal(result.status, "completed");
-					assert.notEqual(result.outputs.firstPid, result.outputs.finalPid);
+					assert.notEqual(result.outputs.firstInstance, result.outputs.finalInstance);
 					assert.deepEqual(pool.workerPids, [result.outputs.finalPid]);
 					return {};
 				},
