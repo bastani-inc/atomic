@@ -16,7 +16,7 @@ import {
 } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const { work, boundary } = poolWorkFixture();
 const run = { ...boundary.topology!.boundary!.child };
@@ -454,4 +454,39 @@ test("a read of a slow journal sees each checkpoint once when another commit's r
 	assert.deepEqual(ids(await slowView), ["a", "b", "c", "d", "e"]);
 	slow.commit();
 	assert.deepEqual(ids(await index.begin("root").readEntries(stream(history))), ["a", "b", "c", "d", "e"]);
+});
+
+test("a claim made while another is delivering the outbox waits for that delivery", async () => {
+	const f = await fixture();
+	try {
+		vi.spyOn(f.durable, "append").mockRejectedValueOnce(new Error("journal unavailable"));
+		await assert.rejects(f.pool.commit(f.lease, f.attempt, "tool", toolMutation), /journal unavailable/);
+		vi.restoreAllMocks();
+		assert.equal(await f.pool.releaseExited(f.lease, f.attempt), true);
+
+		// The first claim delivers the accepted checkpoint; the journal holds its write.
+		const append = f.durable.append.bind(f.durable);
+		const reached = Promise.withResolvers<void>();
+		const proceed = Promise.withResolvers<void>();
+		vi.spyOn(f.durable, "append").mockImplementationOnce(async (...args) => {
+			reached.resolve();
+			await proceed.promise;
+			return append(...args);
+		});
+		const first = f.pool.claim(f.lease, "replacement-1", [work], 60_000);
+		await reached.promise;
+
+		// A second claim in that interval must not start work the journal does not yet hold the history of.
+		const second = f.pool.claim(f.lease, "replacement-2", [work], 60_000);
+		const early = await Promise.race([second.then(() => "returned"), sleep(150).then(() => "waiting")]);
+		assert.equal(early, "waiting", "the second claim returned before the checkpoint reached the journal");
+		assert.equal((await f.events()).filter((entry) => entry.key === checkpointKey(tool)).length, 0);
+
+		proceed.resolve();
+		const claims = await Promise.all([first, second]);
+		assert.equal(claims.filter((claim) => claim !== undefined).length, 1, "the one work item goes to one worker");
+		assert.equal((await f.events()).filter((entry) => entry.key === checkpointKey(tool)).length, 1);
+	} finally {
+		await f.close();
+	}
 });

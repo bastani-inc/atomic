@@ -480,14 +480,15 @@ export class SqlPoolQueue {
 		if (this.remote) {
 			await this.remote.fresh(lease);
 			// No work is handed out while an event this root's workers were told is committed is missing from the
-			// journal: a replacement attempt replays the journal, so it must find that event there.
-			if (this.outboxPending)
-				try {
-					await this.drainOutbox(lease);
-				} catch (error) {
-					if (error instanceof StaleLeaseError) throw error;
-					return undefined;
-				}
+			// journal: a replacement attempt replays the journal, so it must find that event there. A delivery in
+			// flight counts as missing events too, since it clears the pending flag when it starts, not when it ends;
+			// and a commit can stage another row after the pass this claim joined has read its rows, so ask again.
+			try {
+				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
+			} catch (error) {
+				if (error instanceof StaleLeaseError) throw error;
+				return undefined;
+			}
 		}
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
