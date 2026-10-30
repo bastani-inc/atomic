@@ -3,7 +3,11 @@ import { createSyntheticSourceInfo, type PromptTemplate } from "@bastani/atomic"
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { test, vi } from "vitest";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
-import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
+import {
+	captureStageDelivery,
+	createStageSkillFixture,
+	submitStageSkillText,
+} from "../fixtures/stage-chat-skill-session.js";
 
 // The stage composer expands only `/skill:` commands; every other submission reaches the
 // stage literally, whether the stage was idle, streaming, or still preparing a turn.
@@ -57,8 +61,10 @@ test("typed template-like text reaches a streaming stage literally, as it does a
 		await streaming;
 		assert.equal(fixture.stage.session.isStreaming, false);
 
+		const idleTurnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/review idle.ts");
-		await vi.waitFor(() => assert.ok(fixture.userTexts().includes("/review idle.ts")));
+		await idleTurnEnded;
+		assert.ok(fixture.userTexts().includes("/review idle.ts"));
 		for (const text of ["/review steer.ts", "/review follow.ts"]) assert.ok(fixture.userTexts().includes(text));
 		assertNothingExpanded(fixture.userTexts());
 	} finally {
