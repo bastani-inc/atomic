@@ -6,11 +6,10 @@
  * reaches the worker.
  */
 import assert from "node:assert/strict";
-import type { ForkOptions } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { beforeAll, test, vi } from "vitest";
+import { beforeAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -27,22 +26,6 @@ import { untilOrRunEnds } from "../helpers/until-run.js";
 /** Structural: a coordinator process and a worker process running a child workflow. */
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 const CONDITION_TIMEOUT_MS = 60_000;
-
-vi.mock("node:child_process", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:child_process")>();
-	const { fileURLToPath } = await import("node:url");
-	const sourceEntry = fileURLToPath(
-		new URL("../../packages/workflows/src/workers/local-worker-entry.mjs", import.meta.url),
-	);
-	const packagedEntry = fileURLToPath(
-		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
-	);
-	return {
-		...actual,
-		fork: (modulePath: string | URL, args: readonly string[], options: ForkOptions) =>
-			actual.fork(modulePath === sourceEntry ? packagedEntry : modulePath, args, options),
-	};
-});
 
 beforeAll(async () => {
 	const workerEntry = fileURLToPath(
