@@ -1,12 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 
 const [mode, directory, workerCount] = process.argv.slice(2);
 const CHILDREN = 3;
-const ROOT = "3890e5c0-0000-4000-8000-000000003890";
+const ROOT = process.env.POOL_RESUME_ROOT ?? "3890e5c0-0000-4000-8000-000000003890";
 const jiti = createJiti(import.meta.url, { fsCache: false });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 const { workflow } = await load("../../packages/workflows/src/authoring/workflow.ts");
@@ -22,20 +22,26 @@ const { LocalWorkerPool } = await load("../../packages/workflows/src/workers/loc
 const { coordinationPath, poolDurableJournal } = await load("../../packages/workflows/src/workers/pool-journal.ts");
 
 const path = join(directory, "journal.sqlite");
-// `adapter`: the journal is opened through a storage adapter that is not a SQL journal to the pool, so the pool keeps its
-// tables in a coordination database of its own and `path` is only the adapter's file.
-const remote = process.env.POOL_RESUME_JOURNAL === "adapter";
+// The journal is opened through a storage adapter, so the pool keeps its tables in a coordination database of its own:
+//   adapter  a delegating adapter that is not a SQL journal to the pool, over the SQLite file `path`;
+//   libsql   the libSQL adapter over `path` as a file: URL;
+//   sqld     the libSQL adapter over the server at POOL_RESUME_LIBSQL_URL.
+// Unset, the journal is `path` itself and the pool shares it.
+const kind = process.env.POOL_RESUME_JOURNAL;
+const remote = kind !== undefined;
+const libsqlUrl = kind === "sqld" ? process.env.POOL_RESUME_LIBSQL_URL : pathToFileURL(path).href;
+const adapterOptions = {
+	adapter: fileURLToPath(
+		new URL(kind === "adapter" ? "./delegating-run-journal-adapter.mjs" : "../../packages/storage-libsql/libsql.js", import.meta.url),
+	),
+	options:
+		kind === "adapter"
+			? { path }
+			: { url: libsqlUrl, ...(process.env.POOL_RESUME_LIBSQL_NAMESPACE ? { namespace: process.env.POOL_RESUME_LIBSQL_NAMESPACE } : {}) },
+};
 const open = () =>
 	resolveRunJournal(
-		remote
-			? {
-					agentDir: join(directory, "home", "agent"),
-					journal: {
-						adapter: fileURLToPath(new URL("./delegating-run-journal-adapter.mjs", import.meta.url)),
-						options: { path },
-					},
-				}
-			: { journal: { path } },
+		remote ? { agentDir: join(directory, "home", "agent"), journal: adapterOptions } : { journal: { path } },
 	);
 let journal = remote ? await open() : undefined;
 const poolPath = remote ? coordinationPath(poolDurableJournal(journal)) : path;
@@ -43,9 +49,18 @@ const childPath = fileURLToPath(new URL("./pool-resume-child.ts", import.meta.ur
 const exportName = "resumedChild";
 
 if (mode === "resume") {
-	const database = new DatabaseSync(path);
-	database.exec("UPDATE wf_leases SET renewed_at = 0");
-	database.close();
+	if (kind === "libsql" || kind === "sqld") {
+		// Through the adapter that owns the journal: another SQLite library writing a libSQL file in WAL mode is not safe.
+		const { openLibsqlDatabase } = await import("../../packages/storage-libsql/libsql.js");
+		const database = await openLibsqlDatabase(adapterOptions.options);
+		await database.run("UPDATE wf_leases SET renewed_at = 0 WHERE run_id = ?", ROOT);
+		await database.close();
+	} else {
+		const database = new DatabaseSync(path);
+		database.exec("PRAGMA busy_timeout=5000");
+		database.exec("UPDATE wf_leases SET renewed_at = 0");
+		database.close();
+	}
 	const work = new DatabaseSync(poolPath);
 	work.exec("UPDATE wf_runs_work SET expires_at = expires_at + 3600000 WHERE state = 'leased'");
 	work.close();
