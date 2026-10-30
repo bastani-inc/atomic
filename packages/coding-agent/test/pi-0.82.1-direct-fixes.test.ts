@@ -56,9 +56,10 @@ describe("Pi 0.82.1 remaining direct coding-agent parity", () => {
 		};
 		const component = new CustomMessageComponent(customMessage(), renderer, undefined, 0);
 		component.setExpanded(true);
-		expect(seen.at(-1)).toEqual({ expanded: true, outputPad: 0 });
+		// The options also carry the host's keyText and keyHint.
+		expect(seen.at(-1)).toMatchObject({ expanded: true, outputPad: 0 });
 		component.setOutputPad(1);
-		expect(seen.at(-1)).toEqual({ expanded: true, outputPad: 1 });
+		expect(seen.at(-1)).toMatchObject({ expanded: true, outputPad: 1 });
 
 		const commands: InteractiveEngineCommand[] = [];
 		const runtime = {

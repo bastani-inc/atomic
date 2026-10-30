@@ -47,6 +47,8 @@ import {
 	getSelfUpdateCommandForRuntime,
 	getSelfUpdateUnavailableInstructionForRuntime,
 	getUpdateInstructionForRuntime,
+	makeSelfUpdateCommandStep,
+	type SelfUpdateCommand,
 	type SelfUpdateRuntime,
 } from "./config-self-update.ts";
 
@@ -79,6 +81,33 @@ export function getSelfUpdateUnavailableInstruction(
 	updateTarget: import("./config-self-update.ts").SelfUpdateTarget = { packageName, installSpec: packageName },
 ): string {
 	return getSelfUpdateUnavailableInstructionForRuntime(selfUpdateRuntime(), packageName, npmCommand, updateTarget);
+}
+
+/**
+ * The self-update command configured by the user: `ATOMIC_SELF_UPDATE_COMMAND` (or its `PI_SELF_UPDATE_COMMAND`
+ * alias; whitespace-separated argv, no quoting), else the global `selfUpdateCommand` setting. Overrides
+ * install-method detection.
+ */
+export function getConfiguredSelfUpdateArgv(setting: string[] | undefined): string[] | undefined {
+	const fromEnv = getEnvValue(ENV_SELF_UPDATE_COMMAND)?.trim().split(/\s+/).filter(Boolean);
+	if (fromEnv?.length) return fromEnv;
+	return setting?.length ? setting : undefined;
+}
+
+/** Fill the `{packageName}`, `{version}`, and `{installSpec}` placeholders of a configured self-update command. */
+export function makeConfiguredSelfUpdateCommand(
+	argv: string[],
+	release: { packageName: string; version: string },
+): SelfUpdateCommand {
+	const values: Record<string, string> = {
+		packageName: release.packageName,
+		version: release.version,
+		installSpec: `${release.packageName}@${release.version}`,
+	};
+	const [command = "", ...args] = argv.map((arg) =>
+		arg.replace(/\{(packageName|version|installSpec)\}/g, (_, name: string) => values[name]),
+	);
+	return makeSelfUpdateCommandStep(command, args);
 }
 
 export function getUpdateInstruction(packageName: string): string {
@@ -309,6 +338,7 @@ export const ENV_CLIPBOARD_OSC52 = `${ENV_PREFIX}_CLIPBOARD_OSC52`;
 export const ENV_TIMING = `${ENV_PREFIX}_TIMING`;
 export const ENV_HEAP_MB = `${ENV_PREFIX}_HEAP_MB`;
 export const ENV_CODEMODE_MAX_WORKERS = `${ENV_PREFIX}_CODEMODE_MAX_WORKERS`;
+export const ENV_SELF_UPDATE_COMMAND = `${ENV_PREFIX}_SELF_UPDATE_COMMAND`;
 export const WORKFLOW_STAGE_SUBAGENT_GUARD_ENV = `${ENV_PREFIX}_WORKFLOW_STAGE_SUBAGENT_GUARD`;
 export function getEnvNames(name: string): string[] {
 	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];

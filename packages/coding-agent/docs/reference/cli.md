@@ -35,6 +35,18 @@ These commands manage Atomic packages and `atomic update` can update the Atomic 
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
+### Custom update command
+
+If a wrapper or another package manager provides Atomic, set `ATOMIC_SELF_UPDATE_COMMAND` so `atomic update` runs its update command:
+
+```sh
+export ATOMIC_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
+```
+
+`atomic update` runs it only when a newer release exists, replacing `{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that release. It replaces install-method detection, so it also works for installs Atomic cannot update itself. The value is split on spaces; `PI_SELF_UPDATE_COMMAND` is accepted as an alias. For arguments with spaces, use the `selfUpdateCommand` setting in `~/.atomic/agent/settings.json` instead, an argv array such as `["nix", "profile", "upgrade", "atomic"]`. Project settings are ignored for it.
+
+Afterwards Atomic reports the version it finds installed: the one on disk, or what `atomic --version` prints on `PATH`. A wrapper that installs each version into a new directory therefore still reports success, and a command that exits `0` without installing the new version prints a warning instead.
+
 ## Credential Commands
 
 ```bash
@@ -148,12 +160,12 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 
 | Option | Description |
 |--------|-------------|
-| `-c`, `--continue` | Continue the most recent session |
+| `-c`, `--continue` | Continue the most recent session for the current directory |
 | `-r`, `--resume` | Browse and select a session |
-| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix |
+| `--session <id\|prefix>` | Use an exact ID or unique 8-hex UUID prefix, and run it in its working directory. If it only matches a session from another directory, Atomic offers to fork it into the current directory |
 | `--import <file>` | Import a format-4 JSONL export into session storage |
 | `--session-id <id>` | Use an exact project session ID; warn and create it when missing |
-| `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session |
+| `--fork <id\|prefix>` | Fork an exact ID or unique 8-hex UUID prefix into a new session in the current directory |
 | `--session-dir <dir>` | Custom session storage directory |
 | `--session-store <path>` | Select a SQLite session database; relative paths resolve from the working directory |
 | `--session-prefix <prefix>` | Use a non-default table prefix with `--session-store` |

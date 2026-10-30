@@ -10,7 +10,7 @@ import type {
 } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
-import type { KeybindingsManager } from "../keybindings.ts";
+import type { Keybinding, KeybindingsManager } from "../keybindings.ts";
 import type { MarkdownTransformer, MessageRenderer } from "./message-types.ts";
 import type { ToolRenderers } from "./tool-types.ts";
 
@@ -64,6 +64,19 @@ export interface WorkingIndicatorOptions {
 
 /** Wrap the current autocomplete provider with additional behavior. */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
+/**
+ * Formats the host's configured keybindings for display.
+ * Extensions should use these instead of importing `keyText`/`keyHint`: an import may resolve to another copy of
+ * the coding-agent package, which does not see the host's keybindings.
+ */
+export interface KeybindingHints {
+	/** Configured keys for a keybinding id, for example `"ctrl+o"`. Empty when the id has no keys. */
+	keyText(keybinding: Keybinding): string;
+
+	/** Configured keys followed by a description, styled as a hint, for example `"ctrl+o to expand"`. */
+	keyHint(keybinding: Keybinding, description: string): string;
+}
+
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
 /** Component returned by `ctx.ui.custom()`. Input handlers must report whether they consumed the key. */
 export type ExtensionCustomComponent = Omit<Component, "handleInput"> & {

@@ -98,10 +98,15 @@ test("entry renderer registration is discoverable", async () => {
 		customType: "state",
 		data: 1,
 	} as const;
-	assert.deepEqual(runner.renderEntry("state", entry, { expanded: false }, theme)?.render(5), ["entry"]);
+	assert.deepEqual(runner.renderEntry("state", entry, { expanded: false, ...keyHints }, theme)?.render(5), ["entry"]);
 	runner.invalidate();
-	assert.throws(() => runner.renderEntry("state", entry, { expanded: false }, theme), /stale|no longer active/i);
+	assert.throws(
+		() => runner.renderEntry("state", entry, { expanded: false, ...keyHints }, theme),
+		/stale|no longer active/i,
+	);
 });
+
+const keyHints = { keyText: () => "", keyHint: () => "" };
 
 test("CustomEntryComponent renders, suppresses empty output, propagates expansion, and boxes failures", () => {
 	initTheme("dark");

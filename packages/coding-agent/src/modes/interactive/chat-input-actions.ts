@@ -17,6 +17,8 @@ export interface ExternalEditorHost {
 export interface ExternalEditorOptions {
 	editorCommand?: string;
 	showWarning?: (message: string) => void;
+	/** Reports an editor that failed to launch or exited unsuccessfully, which leaves the text unchanged. */
+	showStatus?: (message: string) => void;
 }
 
 export interface ClipboardImageEditorOptions {
@@ -177,7 +179,9 @@ export async function openExternalEditorForText(
 			command: editorCommand,
 			content: text,
 		});
-		return result.status === "complete" ? result.content : undefined;
+		if (result.status === "complete") return result.content;
+		options.showStatus?.(result.message);
+		return undefined;
 	} catch (error) {
 		options.showWarning?.(`Failed to open editor: ${error instanceof Error ? error.message : String(error)}`);
 		return undefined;

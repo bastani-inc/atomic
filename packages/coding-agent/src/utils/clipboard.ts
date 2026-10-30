@@ -15,7 +15,15 @@ type NativeClipboardExecOptions = {
 	stdio: ["pipe", "ignore", "ignore"];
 	env: NodeJS.ProcessEnv;
 	detached: boolean;
+	cwd: string;
 };
+
+/**
+ * Clipboard tools ignore the working directory, and WSL cannot start Windows executables (powershell.exe)
+ * when the cwd's \\wsl.localhost\... path exceeds MAX_PATH (pi#11592). Running them from / (the current
+ * drive root on Windows) also keeps a daemonizing clipboard owner from pinning the cwd.
+ */
+const CLIPBOARD_CWD = "/";
 
 function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 	try {
@@ -62,6 +70,7 @@ function copyViaWindowsClipboard(text: string): boolean {
 			timeout: 1000,
 			stdio: ["ignore", "pipe", "ignore"],
 			env,
+			cwd: CLIPBOARD_CWD,
 		})
 			.toString("utf8")
 			.trim();
@@ -71,6 +80,7 @@ function copyViaWindowsClipboard(text: string): boolean {
 			timeout: 5000,
 			stdio: ["ignore", "ignore", "ignore"],
 			env,
+			cwd: CLIPBOARD_CWD,
 		});
 		return true;
 	} catch {
@@ -188,6 +198,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 		// Clipboard writers can daemonize. Detach on POSIX so the daemon leaves Atomic's process group
 		// and Ctrl+Z suspend (SIGTSTP to the group) does not stop the clipboard owner (earendil-works/pi#11179).
 		detached: p !== "win32",
+		cwd: CLIPBOARD_CWD,
 	};
 
 	if (!copied) {
@@ -224,6 +235,7 @@ export async function copyToClipboard(text: string): Promise<void> {
 									stdio: ["pipe", "ignore", "ignore"],
 									env: createChildProcessEnvironment(),
 									detached: options.detached,
+									cwd: options.cwd,
 								});
 								let settled = false;
 								const finish = (code: number) => {

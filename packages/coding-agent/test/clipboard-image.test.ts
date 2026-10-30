@@ -114,7 +114,9 @@ describe("readClipboardImage", () => {
 		});
 
 		let tmpFile: string | undefined;
+		const cwds: Record<string, unknown> = {};
 		mocks.spawnSync.mockImplementation((command, args, options) => {
+			cwds[command] = (options as { cwd?: string }).cwd;
 			if (command === "wl-paste" || command === "xclip") {
 				return spawnOk(Buffer.alloc(0));
 			}
@@ -143,6 +145,8 @@ describe("readClipboardImage", () => {
 		expect(result).not.toBeNull();
 		expect(result?.mimeType).toBe("image/png");
 		expect(Array.from(result?.bytes ?? [])).toEqual([4, 5, 6]);
+		// pi#11592: WSL cannot start powershell.exe from a cwd whose \\wsl.localhost\... path exceeds MAX_PATH.
+		expect(cwds).toMatchObject({ wslpath: "/", "powershell.exe": "/" });
 	});
 
 	test("Non-Wayland: uses clipboard", async () => {

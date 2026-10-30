@@ -3,6 +3,7 @@ import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { EntryRenderer } from "../../../core/extensions/types.ts";
 import type { CustomEntry } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
+import { keyHint, keyText } from "./keybinding-hints.js";
 
 /** Renders an extension-owned persistent session entry. */
 export class CustomEntryComponent extends Container {
@@ -46,7 +47,7 @@ export class CustomEntryComponent extends Container {
 		this.customComponent = undefined;
 		let component: Component | undefined;
 		try {
-			component = this.renderer(this.entry, { expanded: this.expanded }, theme);
+			component = this.renderer(this.entry, { expanded: this.expanded, keyText, keyHint }, theme);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const box = new Box(this.outputPad, 1, (text) => theme.bg("customMessageBg", text));

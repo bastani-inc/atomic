@@ -19,7 +19,9 @@ export function openBrowser(target: string): void {
 	// spawn reports launcher failures (for example, missing xdg-open) via an
 	// error event. Browser launch is best-effort: callers still present the target
 	// to the user, so keep the launcher failure from becoming a process crash.
-	spawn(cmd, args, { stdio: "ignore", detached: true, env: createChildProcessEnvironment() })
+	// On WSL, xdg-open launches explorer.exe, which fails when the cwd's \\wsl.localhost\... path exceeds
+	// MAX_PATH (pi#11592). The target is a URL, so no launcher needs the cwd.
+	spawn(cmd, args, { stdio: "ignore", detached: true, cwd: "/", env: createChildProcessEnvironment() })
 		.on("error", () => {})
 		.unref();
 }

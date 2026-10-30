@@ -632,6 +632,7 @@ pi.registerTool({
 - `toolCallId`, `cwd`, `executionStarted`, `argsComplete`, `isPartial`, `expanded`, `showImages`, `isError`
 - `durationMs` - recorded execution time of the final result; `undefined` while running, when the tool did not run, or for older saved results
 - `outputPad` - configured horizontal padding; renderers with `renderShell: "self"` apply it themselves
+- `keyText()`, `keyHint()` - format the user's configured keybindings, see [Keybinding Hints](#keybinding-hints)
 
 Use `context.state` for cross-slot shared state. Keep slot-local caches on the returned component instance when you want to reuse and mutate the same component across renders.
 
@@ -682,26 +683,24 @@ If a slot intentionally has no visible content, return an empty `Component` such
 
 #### Keybinding Hints
 
-Use `keyHintIfBound()` when an affordance should disappear if the action has no effective keybinding. Add surrounding punctuation only when the helper returns text:
+Use `keyHint()` and `keyText()` from the render context to display keybinding hints that respect the user's keybinding configuration. Test `keyText()` for an empty string when an affordance should disappear if the action has no effective keybinding, and add surrounding punctuation only when there is text:
 
 ```typescript
-import { keyHintIfBound } from "@bastani/atomic";
-
 renderResult(result, { expanded }, theme, context) {
   let text = theme.fg("success", "✓ Done");
-  const expandHint = keyHintIfBound("app.tools.expand", "to expand");
-  if (!expanded && expandHint) {
-    text += ` (${expandHint})`;
+  if (!expanded && context.keyText("app.tools.expand")) {
+    text += ` (${context.keyHint("app.tools.expand", "to expand")})`;
   }
   return new Text(text, 0, 0);
 }
 ```
 
-Available functions:
-- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`; use it when the binding is required by the surrounding UI
-- `keyHintIfBound(keybinding, description)` - Formats the hint only when the action has an effective key list; use it for optional affordances and conditionally compose parentheses or separators
-- `keyText(keybinding)` - Returns the raw configured key text for a keybinding id
-- `rawKeyHint(key, description)` - Format a raw key string
+The same functions are available as `options.keyHint()` and `options.keyText()` in message and entry renderers:
+
+- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`, followed by the description
+- `keyText(keybinding)` - Returns the raw configured key text for a keybinding id, or `""` if the id has no keys
+
+In renderers, use these instead of importing `keyHint()`, `keyHintIfBound()` or `keyText()` from `@bastani/atomic`. An extension can resolve its own copy of the package, for example from its own `node_modules`, and that copy does not see Atomic's configured keybindings: `app.*` ids then format as `""`. `rawKeyHint(key, description)` formats a literal key string and is safe to import.
 
 Use namespaced keybinding ids:
 - Coding-agent ids use the `app.*` namespace, for example `app.tools.expand`, `app.editor.external`, `app.session.rename`

@@ -10,6 +10,7 @@ import {
 	ENV_AGENT_DIR,
 	ENV_OFFLINE,
 	ENV_PACKAGE_DIR,
+	ENV_SELF_UPDATE_COMMAND,
 	ENV_SESSION_DIR,
 	ENV_SHARE_VIEWER_URL,
 	ENV_TELEMETRY,
@@ -335,12 +336,12 @@ ${chalk.bold("Options:")}
   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
   --mode <mode>                  Output mode: text (default), json, or rpc
   --print, -p                    Non-interactive mode: process prompt and exit
-  --continue, -c                 Continue previous session
+  --continue, -c                 Continue the most recent session for the current directory
   --resume, -r                   Select a session to resume
   --session <id|prefix>          Use exact ID or unique 8-hex UUID prefix
   --import <file>                Import a format-4 JSONL export into session storage
   --session-id <id>              Use exact project session ID, creating it if missing
-  --fork <id|prefix>             Fork exact ID or unique 8-hex UUID prefix into a new session
+  --fork <id|prefix>             Fork exact ID or unique 8-hex UUID prefix into a new session in the current directory
   --session-dir <dir>            Select JSONL session storage and lookup directory
   --session-store <path>         Select a SQLite session database
   --session-prefix <prefix>      Table prefix for --session-store (default: empty)
@@ -495,6 +496,7 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_SESSION_DIR.padEnd(32)} - Select JSONL session directory (overridden by --session-dir)
   ${ENV_PACKAGE_DIR.padEnd(32)} - Override package directory (for Nix/Guix store paths)
   ${ENV_OFFLINE.padEnd(32)} - Disable startup network operations when set to 1/true/yes
+  ${ENV_SELF_UPDATE_COMMAND.padEnd(32)} - Command ${APP_NAME} update runs to update ${APP_NAME} itself ({packageName}, {version}, {installSpec})
   ${ENV_TELEMETRY.padEnd(32)} - Override install telemetry when set to 1/true/yes or 0/false/no
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://pi.dev/session/)
   PI_* aliases are also supported for app-specific variables above.

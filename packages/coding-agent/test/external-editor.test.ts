@@ -74,8 +74,17 @@ describe("editInExternalEditor", () => {
 
 	it("keeps the original when the editor fails and recursively cleans up", async () => {
 		const { result, capture } = await runEditor("--fail");
-		expect(result).toEqual({ status: "failed" });
+		expect(result).toEqual({ status: "failed", message: "External editor exited with code 1; prompt unchanged" });
 		expect(existsSync(dirname(capture.filePath))).toBe(false);
+	});
+
+	// pi#11592: launch failures must be reported, not silently ignored.
+	it.skipIf(process.platform === "win32")("reports an editor that cannot be launched", async () => {
+		const command = `${APP_NAME}-external-editor-does-not-exist`;
+		expect(await editInExternalEditor({ command, content: "original" })).toEqual({
+			status: "failed",
+			message: `Failed to launch external editor: ${command}`,
+		});
 	});
 
 	it("distinguishes a successful empty edit from failure", async () => {
@@ -232,6 +241,21 @@ describe("external editor selection and hosts", () => {
 
 		expect(updated).toBeUndefined();
 		expect(lifecycle).toEqual(["stop", "start", "render:true"]);
+	});
+
+	it("tells the user when the editor fails and leaves the prompt unchanged", async () => {
+		const captureDirectory = mkdtempSync(join(tmpdir(), `${APP_NAME}-status-editor-test-`));
+		temporaryDirectories.push(captureDirectory);
+		const command = `${quote(process.execPath)} ${quote(fixturePath)} ${quote(join(captureDirectory, "capture.json"))} --fail`;
+		const statuses: string[] = [];
+		const updated = await openExternalEditorForText(
+			"original",
+			{ stop: () => {}, start: () => {}, requestRender: () => {} },
+			{ editorCommand: command, showStatus: (message) => statuses.push(message) },
+		);
+
+		expect(updated).toBeUndefined();
+		expect(statuses).toEqual(["External editor exited with code 1; prompt unchanged"]);
 	});
 
 	it("returns a successful empty edit while still restoring the main host", async () => {

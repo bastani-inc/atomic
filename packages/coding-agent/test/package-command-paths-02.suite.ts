@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
 import { main } from "../src/main.ts";
@@ -225,6 +225,166 @@ if(args.includes("install")) process.exit(23);
 			errorSpy.mockRestore();
 		}
 	});
+	function writeNodeShim(binDir: string, name: string, scriptPath: string): void {
+		const shimPath = join(binDir, process.platform === "win32" ? `${name}.cmd` : name);
+		writeFileSync(
+			shimPath,
+			process.platform === "win32"
+				? `@echo off\r\n"${originalExecPath}" "${scriptPath}" %*\r\n`
+				: `#!/bin/sh\nexec "${originalExecPath}" "${scriptPath}" "$@"\n`,
+		);
+		chmodSync(shimPath, 0o755);
+	}
+
+	/** Put an `atomic-wrapper` update command that records its arguments and exits `exitCode`, and an `atomic` that prints `atomicVersion`, first on PATH. */
+	function prepareSelfUpdateCommand(atomicVersion: string, exitCode = 0): { scriptPath: string; recordPath: string } {
+		const binDir = join(tempDir, "self-update-bin");
+		const scriptPath = join(tempDir, "self-update.cjs");
+		const atomicScriptPath = join(tempDir, "fake-atomic.cjs");
+		const recordPath = join(tempDir, "self-update-record.json");
+		mkdirSync(binDir, { recursive: true });
+		writeFileSync(
+			scriptPath,
+			`require("node:fs").writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(${exitCode});\n`,
+		);
+		writeFileSync(atomicScriptPath, `console.log(${JSON.stringify(atomicVersion)});\n`);
+		writeNodeShim(binDir, "atomic-wrapper", scriptPath);
+		writeNodeShim(binDir, "atomic", atomicScriptPath);
+		vi.stubEnv("PATH", `${binDir}${delimiter}${process.env.PATH ?? ""}`);
+		return { scriptPath, recordPath };
+	}
+
+	it("runs ATOMIC_SELF_UPDATE_COMMAND instead of the selfUpdateCommand setting and the detected install method", async () => {
+		const targetVersion = getNewerPatchVersion();
+		const { scriptPath, recordPath } = prepareSelfUpdateCommand(targetVersion);
+		const settingRecordPath = join(tempDir, "setting-record.json");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ selfUpdateCommand: [originalExecPath, scriptPath, settingRecordPath] }),
+		);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade {installSpec} {version}");
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			vi.fn(async () => Response.json({ name: "@new-scope/pi", version: targetVersion, note: "Read me" })),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(JSON.parse(readFileSync(recordPath, "utf8")) as string[]).toEqual([
+				"upgrade",
+				`@new-scope/pi@${targetVersion}`,
+				targetVersion,
+			]);
+			expect(existsSync(settingRecordPath)).toBe(false);
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stdout).toContain("Read me");
+			// A wrapper leaves this installation untouched; the atomic on PATH reports the new version.
+			expect(stdout).toContain(`Updated atomic from ${VERSION} to ${targetVersion}`);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expectSuccessfulExitCode();
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("also reads the legacy PI_SELF_UPDATE_COMMAND alias", async () => {
+		const targetVersion = getNewerPatchVersion();
+		const { recordPath } = prepareSelfUpdateCommand(targetVersion);
+		vi.stubEnv("PI_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade {packageName}");
+		vi.spyOn(globalThis, "fetch").mockImplementation(vi.fn(async () => Response.json({ version: targetVersion })));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(JSON.parse(readFileSync(recordPath, "utf8")) as string[]).toEqual(["upgrade", PACKAGE_NAME]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("runs the global selfUpdateCommand setting, never the project's, and only when a newer release exists", async () => {
+		const targetVersion = getNewerPatchVersion();
+		const { scriptPath, recordPath } = prepareSelfUpdateCommand(targetVersion);
+		const projectRecordPath = join(tempDir, "project-record.json");
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ selfUpdateCommand: [originalExecPath, scriptPath, "{packageName}"] }),
+		);
+		mkdirSync(join(projectDir, ".atomic"), { recursive: true });
+		writeFileSync(
+			join(projectDir, ".atomic", "settings.json"),
+			JSON.stringify({ selfUpdateCommand: [originalExecPath, scriptPath, projectRecordPath] }),
+		);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "");
+		vi.stubEnv("PI_SELF_UPDATE_COMMAND", "");
+		const fetchMock = vi.fn(async () => Response.json({ version: VERSION }));
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+			expect(existsSync(recordPath)).toBe(false);
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				`atomic is already up to date (v${VERSION})`,
+			);
+
+			fetchMock.mockImplementation(async () => Response.json({ version: targetVersion }));
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+			expect(JSON.parse(readFileSync(recordPath, "utf8")) as string[]).toEqual([PACKAGE_NAME]);
+			expect(existsSync(projectRecordPath)).toBe(false);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("warns when the atomic on PATH does not report the new version", async () => {
+		const targetVersion = getNewerPatchVersion();
+		prepareSelfUpdateCommand(VERSION);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade");
+		vi.spyOn(globalThis, "fetch").mockImplementation(vi.fn(async () => Response.json({ version: targetVersion })));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stdout).toContain(
+				`Ran atomic-wrapper upgrade, but \`atomic --version\` reports ${VERSION}, not ${targetVersion}.`,
+			);
+			expect(stdout).not.toContain("Updated atomic from");
+			expectSuccessfulExitCode();
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("fails when the configured self-update command fails", async () => {
+		prepareSelfUpdateCommand(VERSION, 23);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade");
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			vi.fn(async () => Response.json({ version: getNewerPatchVersion() })),
+		);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				"atomic-wrapper upgrade exited with code 23",
+			);
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain("Ran atomic-wrapper");
+			expect(process.exitCode).toBe(1);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("suggests the configured source when update input omits the npm prefix", async () => {
 		const settingsPath = join(agentDir, "settings.json");
 		writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:pi-formatter"] }, null, 2));

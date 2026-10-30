@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- `atomic update` can update Atomic through a wrapper or another package manager. Set `ATOMIC_SELF_UPDATE_COMMAND` (or its `PI_SELF_UPDATE_COMMAND` alias), for example `mise use -g npm:{packageName}@{version}`, or the global `selfUpdateCommand` setting; `atomic update` runs it when a newer release exists and fills `{packageName}`, `{version}`, and `{installSpec}` from that release. See [Custom update command](docs/reference/cli.md#custom-update-command) ([#7756](https://github.com/earendil-works/pi/issues/7756), [#5607](https://github.com/earendil-works/pi/issues/5607))
+- Extensions can format the user's configured keybindings with `keyText()` and `keyHint()` from the tool render context and the message and entry renderer options. Importing these functions from `@bastani/atomic` can resolve the extension's own copy of the package, which does not see Atomic's keybindings, so hints such as `keyHint("app.tools.expand", "to expand")` rendered without the key. The docs now recommend the injected functions ([#4748](https://github.com/earendil-works/pi/issues/4748))
+
+### Fixed
+
+- Fixed `atomic mcp login -l` and `atomic mcp logout -l` failing with `Unknown option --local.` although `atomic mcp add` and `atomic mcp remove` accept `-l`. With `-l`, they now require the server to be a project server. Unknown options are now reported as typed, and a mistyped server name gets a suggestion, for example `Did you mean "gurker"?`
+- Fixed `atomic update` naming pnpm for installs that only live under `PNPM_HOME`, for example a wrapper under `$PNPM_HOME/global-nub/`. It said "not managed by a global pnpm install"; it now names the package manager only when that manager owns the install ([#7756](https://github.com/earendil-works/pi/issues/7756))
+- Fixed image paste, copy, and opening the browser for sign-in failing silently on WSL when the working directory is deep. Windows programs such as `powershell.exe` and `explorer.exe` cannot start from a directory whose `\\wsl.localhost\...` path exceeds 260 characters; Atomic now starts these helpers from `/` ([#11592](https://github.com/earendil-works/pi/issues/11592))
+- Fixed the external editor failing silently, for example when the editor command is wrong or a Windows editor cannot start from a deep WSL directory. Atomic now shows a status message such as `External editor exited with code 1; prompt unchanged` ([#11592](https://github.com/earendil-works/pi/issues/11592))
+- Fixed `tool_search` and codemode `searchTools()` ranking a tool below tools that only mention its name in their descriptions, for example `peekaboo app` ranking `mcp__peekaboo__app` 14th. A tool matching more of the query's words now ranks above one matching fewer, a query word in a tool's name scores more than any number of mentions in its description, a tool whose whole name is in the query gets a large bonus, and long server instructions no longer lower the scores of that server's tools. Queries that name a tool, including the dotted `mcp.<server>.<tool>` forms, still rank it first ([#11331](https://github.com/earendil-works/pi/issues/11331))
+- Fixed `tool_search` and codemode `searchTools()` finding nothing for Chinese, Japanese, Thai, and other non-ASCII queries, because the tokenizer kept only ASCII letters and digits. Words in any script now match, text without spaces between words such as `搜索记录` is split into words, and canonically equivalent text such as `café` and `cafe\u0301` matches ([#10816](https://github.com/earendil-works/pi/issues/10816), [#11037](https://github.com/earendil-works/pi/pull/11037) by [@haoqixu](https://github.com/haoqixu))
+
 ## [0.9.55] - 2026-10-30
 
 ### Fixed

@@ -228,6 +228,7 @@ async function openChatSessionExternalEditor<TExtraEntry extends ChatTranscriptE
 	const currentText = state.editor.getExpandedText?.() ?? state.editor.getText();
 	const updated = await openExternalEditorForText(currentText, host, {
 		showWarning: (message) => notifyChatSessionWarning(state, message),
+		showStatus: (message) => notifyChatSessionStatus(state, message),
 	});
 	if (updated !== undefined) setChatSessionEditorText(state, updated);
 }
