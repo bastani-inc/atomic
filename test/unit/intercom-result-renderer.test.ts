@@ -26,6 +26,8 @@ function render(details: { delivered: boolean; queued?: boolean }, text: string)
 		isError: false,
 		durationMs: undefined,
 		outputPad: 1,
+		keyText: () => "",
+		keyHint: () => "",
 	})
 		.render(200)
 		.join("\n");

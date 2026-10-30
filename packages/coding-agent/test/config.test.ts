@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	detectInstallChange,
 	detectInstallMethod,
+	getConfiguredSelfUpdateArgv,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getUpdateInstruction,
+	makeConfiguredSelfUpdateCommand,
 	VERSION,
 } from "../src/config.ts";
 
@@ -169,6 +171,32 @@ describe("detectInstallMethod", () => {
 		expect(detectInstallMethod()).toBe("unknown");
 		expect(getSelfUpdateCommand("@bastani/atomic")).toBeUndefined();
 		expect(getUpdateInstruction("@bastani/atomic")).toBe(
+			"Update @bastani/atomic using the package manager, wrapper, or source checkout that provides this installation.",
+		);
+	});
+
+	// pi#7756: a wrapper that only lives under PNPM_HOME is not managed by pnpm.
+	test("does not name pnpm for unmanaged installs under PNPM_HOME", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "atomic-pnpm-home-"));
+		const packageDir = join(
+			tempDir,
+			".local",
+			"share",
+			"pnpm",
+			"global-nub",
+			"5",
+			"node_modules",
+			"@bastani",
+			"atomic",
+		);
+		mkdirSync(packageDir, { recursive: true });
+		process.env.ATOMIC_PACKAGE_DIR = packageDir;
+		process.env.PATH = "";
+		setExecPath(join(packageDir, "dist", "cli.js"));
+
+		expect(detectInstallMethod()).toBe("pnpm");
+		expect(getSelfUpdateCommand("@bastani/atomic")).toBeUndefined();
+		expect(getSelfUpdateUnavailableInstruction("@bastani/atomic")).toBe(
 			"Update @bastani/atomic using the package manager, wrapper, or source checkout that provides this installation.",
 		);
 	});
@@ -386,4 +414,51 @@ test("detects changed installs without falling back to an unrelated parent packa
 	writeFileSync(join(tempDir, "package.json"), JSON.stringify({ version: "0.0.1" }));
 	rmSync(installDir, { recursive: true, force: true });
 	assert.deepEqual(detectInstallChange(path), { kind: "removed" });
+});
+
+describe("configured self-update command", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	test("prefers ATOMIC_SELF_UPDATE_COMMAND over the setting and splits it on whitespace", () => {
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "  nub   upgrade {installSpec} ");
+
+		expect(getConfiguredSelfUpdateArgv(["mise", "upgrade"])).toEqual(["nub", "upgrade", "{installSpec}"]);
+	});
+
+	test("reads the PI_ alias, with the ATOMIC_ name taking precedence", () => {
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", undefined);
+		vi.stubEnv("PI_SELF_UPDATE_COMMAND", "legacy upgrade");
+		expect(getConfiguredSelfUpdateArgv(undefined)).toEqual(["legacy", "upgrade"]);
+
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic upgrade");
+		expect(getConfiguredSelfUpdateArgv(undefined)).toEqual(["atomic", "upgrade"]);
+	});
+
+	test("uses the setting when the variable is unset or blank", () => {
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", " ");
+		vi.stubEnv("PI_SELF_UPDATE_COMMAND", "");
+
+		expect(getConfiguredSelfUpdateArgv(["mise", "upgrade", "npm:{packageName}"])).toEqual([
+			"mise",
+			"upgrade",
+			"npm:{packageName}",
+		]);
+		expect(getConfiguredSelfUpdateArgv([])).toBeUndefined();
+		expect(getConfiguredSelfUpdateArgv(undefined)).toBeUndefined();
+	});
+
+	test("fills placeholders in every argument", () => {
+		const command = makeConfiguredSelfUpdateCommand(
+			["wrapper", "install", "{installSpec}", "--name={packageName}", "--version", "{version}", "{unknown}"],
+			{ packageName: "@bastani/atomic", version: "1.2.3" },
+		);
+
+		expect(command).toEqual({
+			command: "wrapper",
+			args: ["install", "@bastani/atomic@1.2.3", "--name=@bastani/atomic", "--version", "1.2.3", "{unknown}"],
+			display: "wrapper install @bastani/atomic@1.2.3 --name=@bastani/atomic --version 1.2.3 {unknown}",
+		});
+	});
 });

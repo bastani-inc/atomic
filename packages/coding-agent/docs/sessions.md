@@ -89,6 +89,16 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
+Each session records the working directory it was created in and never changes it. Atomic runs a session in its working directory, so tools, `@path` references, project configuration, and context files resolve from there.
+
+| Entry point | Working directory |
+|---|---|
+| `--continue` | The current directory |
+| `--resume`, `/resume`, `--session` | The session's working directory, which can differ from the current directory |
+| `--fork`, or a `--session` ID from another directory that you choose to fork | The current directory, in a new session |
+
+If a session's working directory no longer exists, interactive mode offers to continue in the current directory instead; other modes exit with an error that names both directories.
+
 Sessions written in formats 1, 2, and 3, and early 0.9.38 alpha sessions whose header uses `timestamp`, appear in the picker and upgrade automatically to format 4. In the default store this happens when you first open one. In an explicit JSONL store it happens when you open them, including with `--continue`, `--session`, or `--fork`; browsing the picker does not change session files, and opening an older session rewrites only that file. No flag or confirmation is needed.
 
 If the default store's earlier sessions folder holds several copies of one session, such as conflict copies left by a file-sync tool, the picker lists the copy with the newest message and opening the session imports that copy. Other copies stay on disk unchanged.

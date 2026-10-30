@@ -111,6 +111,7 @@ InteractiveModeBase.prototype.openExternalEditor = async function (this: Interac
 	const updated = await openExternalEditorForText(currentText, this.ui, {
 		editorCommand: this.settingsManager.getExternalEditorCommand(),
 		showWarning: (message) => this.showWarning(message),
+		showStatus: (message) => this.showStatus(message),
 	});
 	if (updated !== undefined) this.editor.setText(updated);
 };

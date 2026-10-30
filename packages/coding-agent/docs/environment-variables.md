@@ -11,6 +11,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 | `ATOMIC_PACKAGE_DIR` | `PI_PACKAGE_DIR` | Package directory override |
 | `ATOMIC_OFFLINE` | `PI_OFFLINE` | Disable automatic network activity, including update checks, package updates, telemetry, and model catalog refreshes |
 | `ATOMIC_SKIP_VERSION_CHECK` | `PI_SKIP_VERSION_CHECK` | Skip automatic startup version checks; explicit self-update still checks |
+| `ATOMIC_SELF_UPDATE_COMMAND` | `PI_SELF_UPDATE_COMMAND` | Command `atomic update` runs to update Atomic itself, split on whitespace, with `{packageName}`, `{version}`, and `{installSpec}` placeholders. Takes precedence over the `selfUpdateCommand` setting. See [Custom update command](/reference/cli#custom-update-command) |
 | `ATOMIC_TELEMETRY` | `PI_TELEMETRY` | Override version-adoption / first-interactive-launch pings (`1`/`true`/`yes` or `0`/`false`/`no`). Does not disable update checks. The Atomic-prefixed value wins when both are set |
 | `ATOMIC_REDUCED_MOTION` | `PI_REDUCED_MOTION` | Use static reduced-motion presentation |
 | `ATOMIC_EXPERIMENTAL` | `PI_EXPERIMENTAL` | Set to `1` to enable experimental features and preferred strict JSON-schema constrained sampling for additional built-in tools; `read`, `edit`, `write`, `bash`, and PowerShell already prefer strict sampling by default. The footer shows an `xp` badge |

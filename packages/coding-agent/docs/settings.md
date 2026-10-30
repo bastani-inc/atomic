@@ -433,6 +433,7 @@ When `images.autoResize` is enabled, Atomic normalizes images before sending the
 | `search.contextBefore` | number | `1` | Number of context lines before each `search` match. |
 | `search.contextAfter` | number | `3` | Number of context lines after each `search` match. |
 | `npmCommand` | string[] | - | Command argv used for npm package lookup/install operations (e.g., `["mise", "exec", "node@20", "--", "npm"]`) |
+| `selfUpdateCommand` | string[] | - | Command argv `atomic update` runs to update Atomic itself, with `{packageName}`, `{version}`, and `{installSpec}` placeholders. `ATOMIC_SELF_UPDATE_COMMAND` takes precedence. **Read only from the global settings file.** See [Custom update command](/reference/cli#custom-update-command) |
 
 ```json
 {

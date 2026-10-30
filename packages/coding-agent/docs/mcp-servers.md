@@ -102,11 +102,11 @@ atomic mcp add <server> [options] -- <command> [args...]
 atomic mcp add <server> [options] --url <url>
 atomic mcp remove <server> [-l]
 atomic mcp list [--json]
-atomic mcp login <server> [--timeout <seconds>]
-atomic mcp logout <server>
+atomic mcp login <server> [-l] [--timeout <seconds>]
+atomic mcp logout <server> [-l]
 ```
 
-`add` replaces an existing entry of the same name. `add` and `remove` accept `--local` (`-l`) for the project file. For stdio, use repeatable `--env KEY=VALUE` and `--cwd`. For HTTP, use repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Run `atomic mcp --help` for usage.
+`add` replaces an existing entry of the same name. `add` and `remove` accept `--local` (`-l`) for the project file. `login` and `logout` accept `-l` to require that the server is defined in the project's file; without it they find the server in either file. For stdio, use repeatable `--env KEY=VALUE` and `--cwd`. For HTTP, use repeatable `--header KEY=VALUE`, `--bearer-token-env-var NAME`, and `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, or `--oauth-client-name`. Both transports accept `--exposure` and `--description`. Run `atomic mcp --help` for usage.
 
 `list` connects to enabled servers and reports state, tools, and errors; it exits with status 1 for invalid configuration or an enabled server that is not connected. `--json` produces a machine-readable report. Login gives up after 300 seconds by default; `--timeout` limits the whole sign-in, including requests to the authorization server, but not the MCP server request timeout. A running session uses new credentials on its next turn.
 

@@ -9,6 +9,7 @@ import type { ToolConcurrency } from "../tools/tool-concurrency.ts";
 export type { ToolConcurrency, ToolConcurrencyMode } from "../tools/tool-concurrency.ts";
 
 import type { ExtensionToolContext } from "./context-types.ts";
+import type { KeybindingHints } from "./ui-types.js";
 
 /** Rendering options for tool results */
 export interface ToolRenderResultOptions {
@@ -19,7 +20,7 @@ export interface ToolRenderResultOptions {
 }
 
 /** Context passed to tool renderers. */
-export interface ToolRenderContext<TState = unknown, TArgs = unknown> {
+export interface ToolRenderContext<TState = unknown, TArgs = unknown> extends KeybindingHints {
 	/** Current tool call arguments. Shared across call/result renders for the same tool call. */
 	args: TArgs;
 	/** Unique id for this tool execution. Stable across call/result renders for the same tool call. */

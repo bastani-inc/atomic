@@ -2,6 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { CustomMessage } from "../messages.ts";
 import type { CustomEntry } from "../session-manager.ts";
+import type { KeybindingHints } from "./ui-types.js";
 
 export type CustomMessageDelivery = "steer" | "followUp" | "nextTurn" | "interrupt";
 
@@ -42,7 +43,7 @@ export type SendMessagesOptions = Omit<SendMessageOptions, "deliverAs" | "interr
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 };
 
-export interface MessageRenderOptions {
+export interface MessageRenderOptions extends KeybindingHints {
 	expanded: boolean;
 	/** Horizontal padding configured by the outputPad setting. */
 	outputPad: number;
@@ -60,7 +61,7 @@ export interface MarkdownTransformContext {
 
 export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
 
-export interface EntryRenderOptions {
+export interface EntryRenderOptions extends KeybindingHints {
 	expanded: boolean;
 }
 

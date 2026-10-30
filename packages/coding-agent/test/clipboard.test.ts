@@ -73,12 +73,12 @@ function execFileSyncFiles(): string[] {
 function spawnCalls(): {
 	command: string;
 	args: readonly string[];
-	options: { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean };
+	options: { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean; cwd?: string };
 }[] {
 	return mockedSpawn.mock.calls.map(([command, args, options]) => ({
 		command: command as string,
 		args: args as readonly string[],
-		options: options as { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean },
+		options: options as { stdio?: unknown; env?: NodeJS.ProcessEnv; detached?: boolean; cwd?: string },
 	}));
 }
 
@@ -329,6 +329,21 @@ describe("copyToClipboard", () => {
 		assert.equal((mockedExecSync.mock.calls[1]![1] as { detached?: boolean }).detached, true);
 	});
 
+	// pi#11592: clipboard tools ignore the cwd, and WSL cannot start Windows executables from a long one.
+	test("runs clipboard writers from the filesystem root", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		mocks.isWaylandSession.mockReturnValue(true);
+		vi.stubEnv("WAYLAND_DISPLAY", "wayland-1");
+		vi.stubEnv("DISPLAY", ":0");
+		mockWlCopyExit(1);
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		assert.equal(spawnCalls()[0]!.options.cwd, "/");
+		assert.equal((mockedExecSync.mock.calls[1]![1] as { cwd?: string }).cwd, "/");
+	});
+
 	test("keeps the Windows clip command in Atomic's process group", async () => {
 		mockedPlatform.mockReturnValue("win32");
 		mocks.clipboard.setText.mockRejectedValue(new Error("native failed"));
@@ -383,6 +398,7 @@ describe("copyToClipboard", () => {
 		assert.equal(existsSync(wslpathArgs[1]!), false);
 		const [, powershellArgs] = mockedExecFileSync.mock.calls[1]!;
 		assert.match(powershellArgs[2]!, /Set-Clipboard/);
+		for (const call of mockedExecFileSync.mock.calls) assert.equal((call[2] as { cwd?: string }).cwd, "/");
 		assert.ok(powershellArgs[2]!.includes("'\\\\wsl.localhost\\Ubuntu\\tmp\\clip.txt'"));
 		assert.equal(osc52Writes().length, 0);
 	});

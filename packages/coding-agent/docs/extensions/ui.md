@@ -414,6 +414,8 @@ pi.registerMessageRenderer("my-extension", (message, options, theme) => {
 
   if (expanded && message.details) {
     text += "\n" + theme.fg("dim", JSON.stringify(message.details, null, 2));
+  } else if (message.details) {
+    text += ` (${options.keyHint("app.tools.expand", "to expand")})`;
   }
 
   return new Text(text, outputPad, 0);

@@ -99,6 +99,8 @@ function runCommand(
 	const result = spawnSync(command, args, {
 		timeout: timeoutMs,
 		maxBuffer: maxBufferBytes,
+		// Clipboard tools ignore the cwd, and WSL cannot start powershell.exe from a deep \\wsl.localhost\... path (pi#11592).
+		cwd: "/",
 		env: options?.env ? createChildProcessEnvironment(undefined, options.env) : createChildProcessEnvironment(),
 	});
 

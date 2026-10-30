@@ -5,6 +5,7 @@ import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { keyHint, keyText } from "./keybinding-hints.js";
 import { completionNoticeFromDetails, TaskCompletionMessage } from "./task-completion-message.js";
 
 /**
@@ -100,7 +101,7 @@ export class CustomMessageComponent extends Container {
 			try {
 				const component = this.customRenderer(
 					this.message,
-					{ expanded: this._expanded, outputPad: this.outputPad },
+					{ expanded: this._expanded, outputPad: this.outputPad, keyText, keyHint },
 					theme,
 				);
 				// Explicit null = "handled; render nothing". Skip the leading spacer

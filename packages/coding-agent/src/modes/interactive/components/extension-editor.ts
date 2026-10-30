@@ -26,6 +26,8 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 	private tui: TUI;
 	private keybindings: KeybindingsManager;
 	private externalEditorCommand: string;
+	/** Shows external editor failures; renders nothing while empty. */
+	private externalEditorStatus = new Text("", 1, 0);
 
 	private _focused = false;
 	get focused(): boolean {
@@ -65,6 +67,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 			this.onSubmitCallback(text);
 		};
 		this.addChild(this.editor);
+		this.addChild(this.externalEditorStatus);
 		this.addChild(new Spacer(1));
 
 		const hint =
@@ -104,6 +107,7 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 				command: this.externalEditorCommand,
 				content,
 			});
+			this.externalEditorStatus.setText(result.status === "failed" ? theme.fg("warning", result.message) : "");
 			if (result.status === "complete") this.editor.setText(result.content);
 		} finally {
 			this.tui.start();

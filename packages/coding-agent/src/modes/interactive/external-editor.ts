@@ -11,7 +11,7 @@ export interface ExternalEditorRequest {
 	content: string;
 }
 
-export type ExternalEditorResult = { status: "complete"; content: string } | { status: "failed" };
+export type ExternalEditorResult = { status: "complete"; content: string } | { status: "failed"; message: string };
 
 function parseEditorCommand(command: string): string[] {
 	const args: string[] = [];
@@ -96,7 +96,7 @@ export async function editInExternalEditor(request: ExternalEditorRequest): Prom
 			mode: 0o600,
 		});
 		const [editor, ...editorArgs] = parseEditorCommand(request.command);
-		if (!editor) return { status: "failed" };
+		if (!editor) return { status: "failed", message: `Failed to launch external editor: ${request.command}` };
 
 		process.stdout.write(
 			`Launching external editor: ${request.command}\n${APP_NAME} will resume when the editor exits.\n`,
@@ -110,17 +110,27 @@ export async function editInExternalEditor(request: ExternalEditorRequest): Prom
 		// quote every token here or paths containing spaces get split apart.
 		const useShell = process.platform === "win32";
 		const spawnArgs = [...editorArgs, filePath];
-		const exitCode = await new Promise<number | null>((resolve) => {
+		// Null means the editor could not be launched. The editor inherits the cwd so project-relative paths and
+		// integrated terminals keep working. A long cwd can break Windows editors: Windows rejects working
+		// directories over MAX_PATH, and WSL launches Windows editors (code, notepad.exe) from the cwd's
+		// \\wsl.localhost\... path (pi#11592). The cwd is intentionally not changed; failures are reported instead.
+		const exit = await new Promise<number | NodeJS.Signals | null>((resolve) => {
 			const child = spawn(
 				useShell ? quoteWindowsShellArgument(editor) : editor,
 				useShell ? spawnArgs.map(quoteWindowsShellArgument) : spawnArgs,
 				{ stdio: "inherit", shell: useShell, env: createChildProcessEnvironment() },
 			);
 			child.once("error", () => resolve(null));
-			child.once("close", (code) => resolve(code));
+			child.once("close", (code, signal) => resolve(code ?? signal));
 		});
 
-		if (exitCode !== 0) return { status: "failed" };
+		if (exit === null) return { status: "failed", message: `Failed to launch external editor: ${request.command}` };
+		if (exit !== 0) {
+			return {
+				status: "failed",
+				message: `External editor exited with ${typeof exit === "number" ? `code ${exit}` : exit}; prompt unchanged`,
+			};
+		}
 		return {
 			status: "complete",
 			content: stripBom(readFileSync(filePath, "utf-8")).replace(/\n$/, ""),

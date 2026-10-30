@@ -73,6 +73,7 @@ export type {
 	InputEventResult,
 	InputSource,
 	InstallReactiveWidgetOptions,
+	KeybindingHints,
 	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,

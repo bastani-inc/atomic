@@ -5,12 +5,18 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
+	detectInstallChange,
 	detectInstallMethod,
+	ENV_PACKAGE_DIR,
+	ENV_SELF_UPDATE_COMMAND,
 	getAgentConfigPaths,
 	getAgentDir,
+	getConfiguredSelfUpdateArgv,
+	getEnvNames,
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
+	makeConfiguredSelfUpdateCommand,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
 	type SelfUpdateTarget,
@@ -32,8 +38,8 @@ import {
 	printPackageCommandHelp,
 	type UpdateTarget,
 } from "./package-manager-cli-parser.ts";
-import { renderSelfUpdateNote, resolveSelfUpdatePlan } from "./self-update-plan.ts";
-import { spawnProcess } from "./utils/child-process.ts";
+import { renderSelfUpdateNote, resolveSelfUpdatePlan, type SelfUpdatePlan } from "./self-update-plan.ts";
+import { spawnProcess, spawnProcessSync } from "./utils/child-process.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
 	quarantineWindowsNativeDependencies,
@@ -112,6 +118,9 @@ export async function refreshModelCatalogs(
 function printSelfUpdateUnavailable(npmCommand: string[] | undefined, updateTarget: SelfUpdateTarget): void {
 	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
 	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updateTarget));
+	console.error(
+		`To make \`${APP_NAME} update\` run your own update command, set ${ENV_SELF_UPDATE_COMMAND} or the selfUpdateCommand setting.`,
+	);
 	const entrypoint = process.argv[1];
 	if (entrypoint) {
 		console.error("");
@@ -152,6 +161,47 @@ async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 			});
 		});
 	}
+}
+
+/** Run the user-configured self-update command, then report the version installed on disk. */
+async function runConfiguredSelfUpdate(argv: string[], plan: SelfUpdatePlan): Promise<void> {
+	const command = makeConfiguredSelfUpdateCommand(argv, plan);
+	if (plan.note) printSelfUpdateNote(plan.note);
+	try {
+		await runSelfUpdate(command);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : "Unknown self-update command error";
+		console.error(chalk.red(`Error: ${message}`));
+		process.exitCode = 1;
+		return;
+	}
+	// Exit code 0 does not prove an update. Wrappers such as mise or Nix install each version into a new
+	// directory and leave this installation untouched, so fall back to the executable on PATH.
+	const change = detectInstallChange();
+	const installedVersion =
+		change?.kind === "updated" && change.version === plan.version ? change.version : readVersionOnPath();
+	if (installedVersion === plan.version) {
+		console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${plan.version}`));
+		return;
+	}
+	console.log(
+		chalk.yellow(
+			`Ran ${command.display}, but \`${APP_NAME} --version\` reports ${installedVersion ?? "no version"}, not ${plan.version}.`,
+		),
+	);
+}
+
+/** Version printed by `atomic --version` as resolved from PATH, the Atomic the user runs next. */
+function readVersionOnPath(): string | undefined {
+	// The package directory override points at this installation and would make the new Atomic report the old version.
+	const env = { ...process.env };
+	for (const name of getEnvNames(ENV_PACKAGE_DIR)) delete env[name];
+	const result = spawnProcessSync(APP_NAME, ["--version"], {
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "pipe"],
+		env,
+	});
+	return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 function prepareWindowsNpmSelfUpdate(): void {
@@ -451,6 +501,14 @@ export async function handlePackageCommand(
 					const selfUpdatePlan = await resolveSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
 						console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
+						return true;
+					}
+					// A configured command is explicit user intent, so it replaces install-method detection.
+					const configuredSelfUpdateArgv = getConfiguredSelfUpdateArgv(
+						settingsManager.getGlobalSettings().selfUpdateCommand,
+					);
+					if (configuredSelfUpdateArgv) {
+						await runConfiguredSelfUpdate(configuredSelfUpdateArgv, selfUpdatePlan);
 						return true;
 					}
 					const installMethod = detectInstallMethod();

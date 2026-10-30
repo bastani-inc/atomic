@@ -35,8 +35,8 @@ const HELP = `${chalk.bold("Usage:")}
   ${APP_NAME} mcp add <server> [options] --url <url>
   ${APP_NAME} mcp remove <server> [-l]
   ${APP_NAME} mcp list [--json]
-  ${APP_NAME} mcp login <server> [--timeout <seconds>]
-  ${APP_NAME} mcp logout <server>
+  ${APP_NAME} mcp login <server> [-l] [--timeout <seconds>]
+  ${APP_NAME} mcp logout <server> [-l]
 
 Configure and check MCP servers and sign in to OAuth servers without starting a session.
 Reads ~/${CONFIG_DIR_NAME}/agent/mcp.json and, in trusted projects, ${CONFIG_DIR_NAME}/mcp.json.
@@ -48,7 +48,7 @@ Commands:
   login <server>          Sign in through the browser
   logout <server>         Delete the stored OAuth credentials
 
-Options for add and remove:
+Options for add, remove, login, and logout:
   -l, --local             Use ${CONFIG_DIR_NAME}/mcp.json in the current project instead of the global file
 
 Options for add:
@@ -150,7 +150,8 @@ function parseOptions(
 	const values = new Map<string, string | true>();
 	const lists = new Map<string, string[]>();
 	for (let index = 0; index < args.length; index++) {
-		const arg = OPTION_ALIASES.get(args[index]) ?? args[index];
+		const typed = args[index];
+		const arg = OPTION_ALIASES.get(typed) ?? typed;
 		if (arg === "--" || positional.length >= maxPositionals) {
 			positional.push(...args.slice(arg === "--" ? index + 1 : index));
 			break;
@@ -162,7 +163,7 @@ function parseOptions(
 		const name = arg.slice(2);
 		const kind = known[name];
 		if (!kind) {
-			error(`Unknown option ${arg}.\n${HELP_HINT}`);
+			error(`Unknown option ${typed}.\n${HELP_HINT}`);
 			return undefined;
 		}
 		if (kind === "flag") {
@@ -216,18 +217,28 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 		}
 		case "login":
 		case "logout": {
-			const parsed = parseOptions(rest, command === "login" ? { timeout: "value" } : {}, error);
+			const parsed = parseOptions(
+				rest,
+				command === "login" ? { local: "flag", timeout: "value" } : { local: "flag" },
+				error,
+			);
 			if (!parsed) return 1;
 			const [name, ...extra] = parsed.positional;
 			if (!name || extra.length > 0) {
-				error(`Usage: ${APP_NAME} mcp ${command} <server>\n${HELP_HINT}`);
+				error(`Usage: ${APP_NAME} mcp ${command} <server> [-l]\n${HELP_HINT}`);
 				return 1;
 			}
 			const entry = loaded.servers.find((server) => server.name === name);
 			if (!entry) {
+				const names = loaded.servers.map((server) => server.name);
+				const suggestion = names.find((candidate) => editDistance(candidate, name) <= 2);
 				error(
-					`No MCP server named "${name}".${untrustedNote ? ` ${untrustedNote}` : ""} Configured: ${loaded.servers.map((server) => server.name).join(", ") || "none"}.`,
+					`No MCP server named "${name}".${suggestion ? ` Did you mean "${suggestion}"?` : ""}${untrustedNote ? ` ${untrustedNote}` : ""} Configured: ${names.join(", ") || "none"}.`,
 				);
+				return 1;
+			}
+			if (parsed.values.has("local") && entry.scope !== "project") {
+				error(`MCP server "${name}" is defined in ${entry.source}, not in the project; omit --local.`);
 				return 1;
 			}
 			const connection = createConnection(entry, options, credentials);
@@ -256,6 +267,19 @@ export async function runMcpCommand(args: string[], options: McpCommandOptions):
 			error(`Unknown mcp command "${command}".\n${HELP_HINT}`);
 			return 1;
 	}
+}
+
+/** Levenshtein distance, to suggest a configured server name for a mistyped one. */
+function editDistance(a: string, b: string): number {
+	let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+	for (let i = 1; i <= a.length; i++) {
+		const current = [i];
+		for (let j = 1; j <= b.length; j++) {
+			current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+		}
+		previous = current;
+	}
+	return previous[b.length];
 }
 
 /** Parse `KEY=VALUE` pairs of a repeatable option into a record. */

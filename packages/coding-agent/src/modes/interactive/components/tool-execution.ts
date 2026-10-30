@@ -6,7 +6,7 @@ import { createAllToolDefinitions, type ToolName } from "../../../core/tools/ind
 import { formatToolCallWithArgs, getTextOutput as getRenderedTextOutput } from "../../../core/tools/render-utils.ts";
 import { ensurePngTranscoder } from "../../../utils/image-convert.ts";
 import { theme } from "../theme/theme.js";
-import { parenthesizedKeyHint } from "./keybinding-hints.js";
+import { keyHint, keyText, parenthesizedKeyHint } from "./keybinding-hints.js";
 
 /** Extension tools without a renderer show this many output lines before collapsing. */
 const FALLBACK_PREVIEW_LINES = 10;
@@ -155,6 +155,8 @@ export class ToolExecutionComponent extends Container {
 			isError: this.result?.isError ?? false,
 			durationMs: this.isPartial ? undefined : this.result?.durationMs,
 			outputPad: this.outputPad,
+			keyText,
+			keyHint,
 		};
 	}
 
