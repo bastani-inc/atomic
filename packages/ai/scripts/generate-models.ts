@@ -859,6 +859,9 @@ function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
 
 function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 	return (
+		// OpenRouter's `~anthropic/claude-*-latest` aliases follow the newest model of each family,
+		// all of which use adaptive thinking.
+		/^~anthropic\/claude-[a-z]+-latest$/.test(modelId) ||
 		modelId.includes("opus-4-6") ||
 		modelId.includes("opus-4.6") ||
 		modelId.includes("opus-4-7") ||
@@ -1172,9 +1175,15 @@ function applyForcedToolChoiceCompatMetadata(model: Model<Api>): void {
 // Deliberately *not* driven from provider metadata: 79 of OpenRouter's 419 models omit
 // `temperature` from `supported_parameters`, including the GPT-5 family, and OpenRouter reports it
 // as supported for Opus 5 and Opus 4.8 in contradiction of Anthropic's own docs.
+//
+// OpenRouter's `~anthropic/claude-fable-latest` alias is an Anthropic Messages entry (upstream pi
+// 44f6851b), whose id names no version, so `isAnthropicTemperatureUnsupportedModel` cannot reach it
+// either: this family match covers it on that path too.
 function applyFableTemperatureCompatMetadata(model: Model<Api>): void {
 	if (!/claude-fable/.test(model.id)) return;
-	if (model.api === "bedrock-converse-stream") {
+	if (model.api === "anthropic-messages") {
+		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
+	} else if (model.api === "bedrock-converse-stream") {
 		model.compat = { ...(model.compat as BedrockCompat | undefined), supportsTemperature: false };
 	} else if (model.api === "openai-completions") {
 		model.compat = { ...(model.compat as OpenAICompletionsCompat | undefined), supportsTemperature: false };
