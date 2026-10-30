@@ -4,6 +4,8 @@ import { createWriteStream } from "node:fs";
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { sqlPoolStorage } from "../durable/journal/internal.js";
+import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import "../durable/journal/workflows-host-module.js";
 import {
@@ -43,6 +45,7 @@ import type {
 } from "./coordinator-protocol.js";
 import { POOL_SUMMARY_INTERVAL_MS } from "./coordinator-protocol.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV } from "./pool-journal.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRateLimits, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { RateLimitObservationOutbox, RateLimitObservationSet } from "./rate-limit-sharing.js";
@@ -79,6 +82,8 @@ const RECOVERY_INTERVAL_MS = 500;
 const TICK_INTERVAL_MS = 100;
 const STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
+/** How often a pool on a journal in another database reads the root's lease there, well inside {@link COORDINATOR_LEASE_MS}. */
+const MIRROR_INTERVAL_MS = 10_000;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
 /** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
@@ -410,7 +415,12 @@ export class PoolCoordinator {
 	private root?: string;
 	private lease?: Lease;
 	private options?: PoolCoordinatorOptions;
+	/** The database holding the pool's tables. */
 	private journal?: RunJournal;
+	/** The root's durable journal when it lives in another database than `journal` (see {@link PoolRemoteJournal}). */
+	private durable?: RunJournal;
+	private remote?: PoolRemoteJournal;
+	private mirrorTimer?: NodeJS.Timeout;
 	private queue?: SqlPoolQueue;
 	private usageLedger?: SqlPoolUsage;
 	private usageTotal?: PoolUsage;
@@ -455,6 +465,7 @@ export class PoolCoordinator {
 		await this.closing?.catch(() => {});
 		while (this.inflight.size > 0) await Promise.allSettled([...this.inflight]);
 		await this.journal?.close().catch(() => {});
+		await this.durable?.close().catch(() => {});
 	}
 
 	private receive(message: CoordinatorInbound): void {
@@ -552,11 +563,25 @@ export class PoolCoordinator {
 		this.desiredControl ??= control;
 		configurePooledWatchTrace(options.journalPath, "coordinator");
 		this.journal ??= await resolveRunJournal({ journal: { path: options.journalPath } });
+		if (options.durable !== undefined && this.remote === undefined) {
+			this.durable = await openDurableJournal(options.durable);
+			this.remote = new PoolRemoteJournal(this.durable, sqlPoolStorage(this.journal)!);
+		}
+		// The queue reads the root's status and lease from the database it shares with them: bring them up to date first.
+		await this.remote?.mirror(lease);
 		this.usageLedger ??= await openSqlPoolUsage(this.journal);
 		this.usageTotal = await this.usageLedger.total(root);
 		this.lease = lease;
-		const queue = await openSqlPoolQueue(this.journal);
+		const queue = await openSqlPoolQueue(this.journal, this.remote);
 		await queue.initialize(lease, COORDINATOR_LEASE_MS);
+		// Events an earlier incarnation of this root accepted and never delivered reach the journal before any attempt runs.
+		await queue.drainOutbox(lease);
+		if (this.remote !== undefined) {
+			const remote = this.remote;
+			// Keeps the lease the queue sees as fresh as the journal's own while no worker asks; a lease lost for good fails
+			// every worker's next request, which is how a pool learns it.
+			this.mirrorTimer = setInterval(() => void remote.fresh(lease, 0).catch(() => {}), MIRROR_INTERVAL_MS).unref();
+		}
 		// An earlier incarnation's attempt whose process groups are not confirmed gone stays leased: replaying it
 		// would run alongside them. Its groups on this host are reaped below; recovery releases it once they are gone.
 		const retained: PoolWork[] = [];
@@ -1087,7 +1112,14 @@ export class PoolCoordinator {
 					...(this.promptNodes ? { promptNodes: true } : {}),
 				}),
 			],
-			{ stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv: [] },
+			{
+				stdio: ["ignore", "ignore", "pipe", "ipc"],
+				execArgv: [],
+				// The durable journal's selection goes through the environment: argv is readable by every process on the host.
+				...(options.durable === undefined
+					? {}
+					: { env: { ...process.env, [POOL_DURABLE_JOURNAL_ENV]: JSON.stringify(options.durable) } }),
+			},
 		);
 		const disconnected = new Promise<void>((resolve) => child.once("disconnect", () => resolve()));
 		this.children.add(child);
@@ -1525,6 +1557,7 @@ export class PoolCoordinator {
 		this.closed = true;
 		clearInterval(this.ticker);
 		clearInterval(this.recoveryTimer);
+		clearInterval(this.mirrorTimer);
 		this.rateLimitOutbox.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];

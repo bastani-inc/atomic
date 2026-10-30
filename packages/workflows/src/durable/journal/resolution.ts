@@ -105,14 +105,28 @@ export async function resolveRunJournal(options: RunJournalResolutionOptions = {
 	return openSelectedRunJournal(selectRunJournal(options), options.agentDir);
 }
 
+/** The storage selection a journal was opened from, so another process can open the same journal. */
+export interface RunJournalOrigin {
+	readonly selection: StorageSelection;
+	readonly agentDir: string;
+}
+const journalOrigins = new WeakMap<RunJournal, RunJournalOrigin>();
+
+/** Where a journal came from; undefined for a journal an SDK caller passed as an object, which no other process can open. */
+export function runJournalOrigin(journal: RunJournal): RunJournalOrigin | undefined {
+	return journalOrigins.get(journal);
+}
+
 export async function openSelectedRunJournal(
 	selection: StorageSelection | RunJournal,
 	agentDir: string = getAgentDir(),
 ): Promise<RunJournal> {
 	if ("createRun" in selection) return selection;
-	return withRunJournalConfigSource(selection, () =>
+	const journal = await withRunJournalConfigSource(selection, () =>
 		provider.openRunJournal(selection, { agentDir, domain: "journal" }),
 	);
+	if (!journalOrigins.has(journal)) journalOrigins.set(journal, { selection, agentDir });
+	return journal;
 }
 
 export async function withRunJournalConfigSource<T>(

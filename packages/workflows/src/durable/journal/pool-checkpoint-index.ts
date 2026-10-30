@@ -1,7 +1,7 @@
 import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { durableStageGroupKey } from "../stage-topology-validation.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../types.js";
-import { RUN_EVENT_TYPES } from "./types.js";
+import { type JournalEntry, RUN_EVENT_TYPES } from "./types.js";
 
 /** Every recorded checkpoint pool validation reads; UI checkpoints are never consulted. */
 export type IndexedCheckpoint = Exclude<DurableCheckpoint, { kind: "ui" }>;
@@ -91,8 +91,13 @@ export class PoolCheckpointView {
 	}
 }
 
+/** What pool validation reads a root's recorded checkpoints through. */
+export interface PoolCheckpointSource {
+	read(tx: SqliteExecutor, events: string): Promise<PoolCheckpointView>;
+}
+
 /** One transaction's read of a root's checkpoints; {@link commit} it only once that transaction has committed. */
-export class PoolCheckpointRead {
+export class PoolCheckpointRead implements PoolCheckpointSource {
 	private pending?: () => void;
 	constructor(
 		private readonly index: PoolCheckpointIndex,
@@ -100,6 +105,12 @@ export class PoolCheckpointRead {
 	) {}
 	read(tx: SqliteExecutor, events: string): Promise<PoolCheckpointView> {
 		return this.index.read(tx, events, this.root, (apply) => {
+			this.pending = apply;
+		});
+	}
+	/** Reads the root's checkpoints through a journal's own `read`, outside any transaction (see {@link PoolCheckpointIndex.readEntries}). */
+	readEntries(stream: (fromSeq: number) => AsyncIterable<JournalEntry>): Promise<PoolCheckpointView> {
+		return this.index.readEntries(this.root, stream, (apply) => {
 			this.pending = apply;
 		});
 	}
@@ -145,7 +156,6 @@ export class PoolCheckpointIndex {
 		}
 		const from = base?.seq ?? 0;
 		const to = head ? Number(head.seq) : 0;
-		const delta = new Partitions();
 		const added: IndexedEntry[] = [];
 		if (to > from) {
 			const rows = await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
@@ -158,15 +168,74 @@ export class PoolCheckpointIndex {
 			for (const row of rows) {
 				const checkpoint = JSON.parse(String(row.payload)) as DurableCheckpoint;
 				if (checkpoint.kind === "ui") continue;
-				const entry = {
+				added.push({
 					seq: Number(row.seq),
 					order: row.key === null ? Buffer.alloc(0) : Buffer.from(row.key, "utf8"),
 					checkpoint,
-				};
-				delta.add(entry);
-				added.push(entry);
+				});
 			}
 		}
+		return this.view(root, current, base, from, to, head, added, onCommit);
+	}
+
+	/**
+	 * The same index over a journal that is not a SQL database in this transaction's reach, such as an adapter's
+	 * remote one: the root's events are read through the journal's own `read`, from the index's watermark on.
+	 */
+	async readEntries(
+		root: string,
+		stream: (fromSeq: number) => AsyncIterable<JournalEntry>,
+		onCommit: (apply: () => void) => void,
+	): Promise<PoolCheckpointView> {
+		const current = this.roots.get(root);
+		let base = current;
+		for (;;) {
+			const marked = base !== undefined && base.seq > 0;
+			let verified = !marked;
+			let mismatch = false;
+			let head: { seq: number; key: string | null; at: number } | undefined;
+			const added: IndexedEntry[] = [];
+			for await (const entry of stream(marked ? base!.seq : 1)) {
+				if (marked && entry.seq === base!.seq) {
+					if ((entry.key ?? null) !== base!.key || entry.at !== base!.at) {
+						mismatch = true;
+						break;
+					}
+					verified = true;
+					head = { seq: entry.seq, key: entry.key ?? null, at: entry.at };
+					continue;
+				}
+				head = { seq: entry.seq, key: entry.key ?? null, at: entry.at };
+				if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded) continue;
+				const checkpoint = entry.event.payload as unknown as DurableCheckpoint;
+				if (checkpoint.kind === "ui") continue;
+				added.push({
+					seq: entry.seq,
+					order: entry.key === undefined ? Buffer.alloc(0) : Buffer.from(entry.key, "utf8"),
+					checkpoint,
+				});
+			}
+			// A watermark the journal no longer has, or has replaced, means the root was deleted and recorded again.
+			if (marked && (mismatch || !verified)) {
+				base = undefined;
+				continue;
+			}
+			return this.view(root, current, base, base?.seq ?? 0, head?.seq ?? 0, head, added, onCommit);
+		}
+	}
+
+	private view(
+		root: string,
+		current: RootCheckpoints | undefined,
+		base: RootCheckpoints | undefined,
+		from: number,
+		to: number,
+		head: { key: string | null; at: number | string } | undefined,
+		added: readonly IndexedEntry[],
+		onCommit: (apply: () => void) => void,
+	): PoolCheckpointView {
+		const delta = new Partitions();
+		for (const entry of added) delta.add(entry);
 		onCommit(() => {
 			const latest = this.roots.get(root);
 			if (!base) {

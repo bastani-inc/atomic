@@ -9,6 +9,7 @@ import {
 	agentSessionAdapterDefaultCwd,
 	setAgentSessionAdapterDefaultCwd,
 } from "../runs/foreground/stage-runner-session-options.js";
+import { poolJournalFor } from "./pool-journal.js";
 import { type AdmissionConfiguration, SqlResourceAdmission } from "./resource-admission.js";
 
 export const workflowResourceAdmission = new WeakMap<DurableWorkflowBackend, AdmissionConfiguration>();
@@ -93,7 +94,7 @@ export async function admitWorkflowSessions(
 	if (!config) return callback(opts);
 	if (!(rootBackend instanceof JournalDurableBackend))
 		throw new Error("Resource admission requires a journal backend");
-	const admission = await SqlResourceAdmission.open(rootBackend.journal, {
+	const admission = await SqlResourceAdmission.open(poolJournalFor(rootBackend.journal), {
 		...config,
 		root: opts.parentRun?.rootRunId ?? opts.runId,
 		holder: randomUUID(),

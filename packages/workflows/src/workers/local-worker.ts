@@ -12,6 +12,7 @@ import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
 import { PromptReservationState, type PromptReservationToken } from "../durable/prompt-reservation-state.js";
+import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV, type PoolDurableJournal } from "./pool-journal.js";
 import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
@@ -221,7 +222,15 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			});
 		});
 	const definitions = await Promise.all(start.definitions.map(loadWorkerDefinition));
-	const journal = await resolveRunJournal({ journal: { path: start.journalPath } });
+	// The database holding the pool's tables: the root's journal itself, or the coordination database beside it.
+	const poolJournal = await resolveRunJournal({ journal: { path: start.journalPath } });
+	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
+	// Read once and removed, so the tools this worker starts do not inherit it.
+	delete process.env[POOL_DURABLE_JOURNAL_ENV];
+	const journal =
+		durableSelection === undefined
+			? poolJournal
+			: await openDurableJournal(JSON.parse(durableSelection) as PoolDurableJournal);
 	const journalReads = new Set(["descriptor", "getRun", "listRuns", "read", "readKey", "leaseState", "close"]);
 	const readOnlyJournal = new Proxy(journal, {
 		get(target, key) {
@@ -236,7 +245,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const reader = await JournalDurableBackend.open(readOnlyJournal, { runs: [] });
 	configurePooledWatchTrace(start.journalPath, `worker:${process.pid}`);
 	const sessions = await new StorageProvider().openSessionStore(
-		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(journal)!.tables.runs}_pool_` },
+		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(poolJournal)!.tables.runs}_pool_` },
 		{ agentDir: "", domain: "sessions" },
 	);
 	const commit = poolWorkerCommit({
@@ -405,7 +414,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			};
 			const unsubscribe = store.subscribeInvalidation(publish);
 			const admission = start.admission
-				? await SqlResourceAdmission.open(journal, {
+				? await SqlResourceAdmission.open(poolJournal, {
 						...start.admission,
 						root: start.root,
 						holder: work.worker!,
@@ -564,6 +573,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	} finally {
 		await reader.close();
 		await sessions.close();
+		if (poolJournal !== journal) await poolJournal.close().catch(() => {});
 	}
 	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
 	if (rootLeaseLost) process.disconnect?.();

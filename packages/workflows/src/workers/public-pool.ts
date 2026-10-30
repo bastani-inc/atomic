@@ -1,15 +1,23 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
-import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
+import type { RunJournal } from "../durable/journal/types.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { admissionBootIdentity } from "./admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
+import {
+	coordinationPath,
+	isLocalPoolJournal,
+	openCoordinationJournal,
+	type PoolDurableJournal,
+	poolDurableJournal,
+	poolHostId,
+	registerPoolJournal,
+} from "./pool-journal.js";
 import type { WorkflowExecutionResources } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 
@@ -63,13 +71,20 @@ export async function activatePublicPool(
 		!(await admissionBootIdentity())
 	)
 		throw new Error("Local worker containment requires native process identity support");
-	if (
-		!(backend instanceof JournalDurableBackend) ||
-		!(backend.journal instanceof SqlRunJournal) ||
-		backend.journal.path === ":memory:" ||
-		sqlPoolStorage(backend.journal)?.tables.runs !== "wf_runs"
-	)
-		throw new Error("Local workers require a default-prefix local SQLite journal");
+	if (!(backend instanceof JournalDurableBackend)) throw new Error("Local workers require a journal backend");
+	// A journal that is a default-prefix SQLite file is shared with the pool as it is. Any other journal, such as a
+	// libSQL database or another storage adapter, stays the root's durable record, and the pool keeps its queue,
+	// leases, usage, admission and pooled-stage sessions in a SQLite database on this machine.
+	const local = isLocalPoolJournal(backend.journal);
+	let durable: PoolDurableJournal | undefined;
+	let poolJournal: RunJournal = backend.journal;
+	let poolPath = local ? backend.journal.path : "";
+	if (!local) {
+		durable = poolDurableJournal(backend.journal);
+		poolPath = coordinationPath(durable);
+		poolJournal = await openCoordinationJournal(poolPath);
+		registerPoolJournal(backend.journal, poolJournal);
+	}
 	const cwd = options.cwd ?? process.cwd();
 	const localWorkers = options.localWorkers && {
 		...options.localWorkers,
@@ -81,6 +96,15 @@ export async function activatePublicPool(
 		...options.admission,
 		...(options.admission.userDatabase ? { userDatabase: resolve(cwd, options.admission.userDatabase) } : {}),
 	};
+	if (durable !== undefined && admission?.userLimits) {
+		// User limits count across the roots sharing one database; for a journal in another database that is this
+		// machine's pool database, whose path is the only `userDatabase` that fits.
+		if (admission.userDatabase !== undefined && admission.userDatabase !== resolve(poolPath))
+			throw new Error(
+				`admission.userDatabase must be omitted, or ${resolve(poolPath)}, for a journal that is not a local SQLite file`,
+			);
+		(admission as { userDatabase?: string }).userDatabase = resolve(poolPath);
+	}
 	const sources =
 		localWorkers &&
 		(await Promise.all(
@@ -90,13 +114,19 @@ export async function activatePublicPool(
 		JSON.stringify({
 			...(localWorkers ? { localWorkers, definitions: sources } : {}),
 			...(admission ? { admission } : {}),
+			...(durable !== undefined && localWorkers ? { coordinator: { host: poolHostId(durable.agentDir) } } : {}),
 		}),
 	) as WorkflowExecutionResources;
+	const saved = options.effectiveResources?.coordinator;
+	if (saved !== undefined && resources.coordinator !== undefined && saved.host !== resources.coordinator.host)
+		throw new Error(
+			`This root's local workers ran on another machine (${saved.host}). Their work queue and leases are in that machine's pool database, which this machine cannot see, and its workers may still be running children. Resume the root on that machine.`,
+		);
 	if (options.effectiveResources && !isDeepStrictEqual(options.effectiveResources, resources))
 		throw new Error("Worker definition compatibility or immutable resource configuration changed");
 	options.effectiveResources = resources;
 	if (resources.admission)
-		await SqlResourceAdmission.open(backend.journal, {
+		await SqlResourceAdmission.open(poolJournal, {
 			...resources.admission,
 			root: options.runId!,
 			holder: "preflight",
@@ -107,7 +137,8 @@ export async function activatePublicPool(
 	);
 	const pool = new LocalWorkerPool(backend, {
 		rootId: options.runId!,
-		journalPath: backend.journal.path,
+		journalPath: poolPath,
+		...(durable === undefined ? {} : { durable }),
 		workers: localWorkers.count,
 		definitions,
 		admission: resources.admission ?? {},

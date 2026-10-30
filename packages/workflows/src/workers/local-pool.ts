@@ -12,6 +12,7 @@ import {
 } from "@bastani/atomic";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,
@@ -21,7 +22,7 @@ import {
 } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
-import type { Lease } from "../durable/journal/types.js";
+import type { Lease, RunJournal } from "../durable/journal/types.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../durable/types.js";
 import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
@@ -78,6 +79,12 @@ import {
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
+import {
+	isLocalPoolJournal,
+	openCoordinationJournal,
+	type PoolDurableJournal,
+	registerPoolJournal,
+} from "./pool-journal.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
@@ -335,7 +342,10 @@ export class LocalWorkerPool {
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
+			/** The SQLite database holding the pool's tables: the root's journal, or its coordination database. */
 			readonly journalPath: string;
+			/** Where the root's durable journal is when it is not the database at `journalPath`. */
+			readonly durable?: PoolDurableJournal;
 			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
@@ -393,12 +403,7 @@ export class LocalWorkerPool {
 	}
 	async prepare(root: string, store?: Store): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
-		if (
-			!(this.backend.journal instanceof SqlRunJournal) ||
-			resolve(this.options.journalPath) !== resolve(this.backend.journal.path) ||
-			sqlPoolStorage(this.backend.journal)?.tables.runs !== "wf_runs"
-		)
-			throw new Error("Local workers require the same default-prefix SQLite journal");
+		const poolJournal = await this.poolJournal();
 		if (this.root !== undefined && this.root !== root) throw new Error("Local worker pool belongs to another root");
 		this.root = root;
 		if (store) this.store = store;
@@ -415,6 +420,7 @@ export class LocalWorkerPool {
 			lease: this.lease,
 			options: {
 				journalPath: this.options.journalPath,
+				...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
 				workers: this.options.workers,
 				leaseMs: this.leaseMs,
 				startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
@@ -423,8 +429,34 @@ export class LocalWorkerPool {
 			},
 			...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
 		})) as PoolUsage;
-		// Read only: a delivery receipt checks its work lease inside the root's own journal append.
-		this.queue ??= await openSqlPoolQueue(this.backend.journal);
+		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
+		// another database, in the pool's database just before it.
+		this.queue ??= await openSqlPoolQueue(
+			poolJournal,
+			this.options.durable === undefined
+				? undefined
+				: new PoolRemoteJournal(this.backend.journal, sqlPoolStorage(poolJournal)!),
+		);
+	}
+	/** The journal whose database holds the pool's tables: the root's own, or the coordination database. */
+	private async poolJournal(): Promise<RunJournal> {
+		const journal = this.backend.journal;
+		if (this.options.durable === undefined) {
+			if (
+				!(journal instanceof SqlRunJournal) ||
+				resolve(this.options.journalPath) !== resolve(journal.path) ||
+				sqlPoolStorage(journal)?.tables.runs !== "wf_runs"
+			)
+				throw new Error("Local workers require the same default-prefix SQLite journal");
+			return journal;
+		}
+		if (isLocalPoolJournal(journal))
+			throw new Error(
+				"Local workers share a local SQLite journal as it is; a durable journal selection does not apply",
+			);
+		const coordination = await openCoordinationJournal(this.options.journalPath);
+		registerPoolJournal(journal, coordination);
+		return coordination;
 	}
 	async control(state: PoolControl["state"]): Promise<void> {
 		this.desiredControl = state;
