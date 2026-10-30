@@ -1,6 +1,7 @@
 import type { SessionStore, SqliteDatabase } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
+import { poolJournalOf } from "./pool-journal.js";
 
 /**
  * The sessions of stages that ran on local workers (#3996).
@@ -13,7 +14,8 @@ import { sqlPoolStorage } from "../durable/journal/internal.js";
  */
 export async function poolSessionStore(backend: DurableWorkflowBackend): Promise<SessionStore | undefined> {
 	const journal = (backend as { readonly journal?: Parameters<typeof sqlPoolStorage>[0] }).journal;
-	return journal === undefined ? undefined : openPoolSessionStore(journal);
+	// A journal in another database keeps its pool's sessions in the machine's coordination database.
+	return journal === undefined ? undefined : openPoolSessionStore(await poolJournalOf(journal));
 }
 
 async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0]): Promise<SessionStore | undefined> {

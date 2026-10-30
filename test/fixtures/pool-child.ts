@@ -1,4 +1,6 @@
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
+import { readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Type } from "typebox";
 import { workflow } from "@bastani/atomic/workflows";
@@ -22,17 +24,32 @@ async function awaitFanOut(path: string) {
 	} finally { database.close(); }
 }
 
+/** The same barrier for a journal with no file to read: each child leaves a marker and waits for another's. */
+async function awaitArrivals(directory: string, own: string) {
+	writeFileSync(join(directory, `arrived-${own}`), "");
+	const deadline = Date.now() + 30_000;
+	while (readdirSync(directory).filter((name) => name.startsWith("arrived-")).length < 2) {
+		if (Date.now() >= deadline) throw new Error("Fan-out arrival barrier timed out");
+		await delay(20);
+	}
+}
+
 export const child = workflow({
 	name: "pool-child",
 	description: "Local worker execution fixture",
-	inputs: { crash: Type.Boolean(), during: Type.Boolean(), journalPath: Type.String() },
+	inputs: {
+		crash: Type.Boolean(), during: Type.Boolean(), journalPath: Type.String(),
+		// A directory shared by the fan-out's children, for a journal that is not a file on this machine.
+		barrierDirectory: Type.Optional(Type.String()),
+	},
 	outputs: {
 		firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String(),
 		stagePid: Type.String(), leafPid: Type.Number(),
 	},
 	async run(ctx) {
 		const first = await ctx.tool("checkpoint", {}, async () => processIdentity());
-		await awaitFanOut(ctx.inputs.journalPath);
+		if (ctx.inputs.barrierDirectory === undefined) await awaitFanOut(ctx.inputs.journalPath);
+		else await awaitArrivals(ctx.inputs.barrierDirectory, `${first.pid}`);
 		const stage = ctx.stage("agent", await poolStageOptions(ctx.cwd ?? process.cwd(), ctx.inputs.crash && ctx.inputs.during, first.instance) as never);
 		const stagePid = await stage.complete("Reply with your PID.");
 		const nested = await ctx.workflow(leaf);

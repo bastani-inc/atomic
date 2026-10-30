@@ -6,6 +6,7 @@ import type { DurableStageCheckpoint } from "../durable/types.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type {
@@ -50,7 +51,10 @@ export interface PoolRootProjection {
 }
 
 export interface PoolCoordinatorOptions {
+	/** The SQLite database holding the pool's tables: the root's journal itself, or its coordination database beside it. */
 	readonly journalPath: string;
+	/** Where the root's durable journal is when it is not the database at `journalPath`. */
+	readonly durable?: PoolDurableJournal;
 	readonly workers: number;
 	readonly leaseMs: number;
 	readonly startupTimeoutMs: number;

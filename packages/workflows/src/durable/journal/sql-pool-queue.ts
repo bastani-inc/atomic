@@ -7,11 +7,12 @@ import { durableHash } from "../durable-hash.js";
 import {
 	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
 	DURABLE_STAGE_TOPOLOGY_VERSION,
+	type DurableCheckpoint,
 	type DurableStageCheckpoint,
 } from "../types.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { PoolCheckpointIndex, type PoolCheckpointRead } from "./pool-checkpoint-index.js";
+import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import {
 	applyPoolSession,
 	type PoolCheckpointMutation,
@@ -19,6 +20,7 @@ import {
 	type PoolSessionAppend,
 	validatePoolMutation,
 } from "./pool-mutations.js";
+import { isRecordedCheckpointValue, isSameCheckpointValue, type PoolRemoteJournal } from "./pool-remote-journal.js";
 import { poolCheckpointUsage, poolUsageSchema, upsertPoolUsage } from "./pool-stage-usage.js";
 import { JournalError, type Lease, RUN_EVENT_TYPES, type RunJournal, StaleLeaseError } from "./types.js";
 import { journalCounter, serializeJson, validateText } from "./values.js";
@@ -85,6 +87,15 @@ type WorkRow = SqliteRow & {
 	fingerprint: string;
 };
 type WorkLease = Pick<PoolWork, "id" | "generation" | "worker" | "epoch">;
+type OutboxRow = SqliteRow & {
+	work: string;
+	generation: number;
+	operation: string;
+	request: string;
+	event_key: string;
+	payload: string;
+	last_seq: number | null;
+};
 export interface PoolCommitReceipt {
 	/** Journal sequence of the recorded checkpoint; absent for a session append, which journals none. */
 	readonly seq?: number;
@@ -123,10 +134,21 @@ export class SqlPoolQueue {
 	private readonly roots: string;
 	private readonly work: string;
 	private readonly operations: string;
+	/** Checkpoint events a commit accepted that the durable journal has not recorded yet (remote journals only). */
+	private readonly outbox: string;
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
 	private readonly checkpoints = new PoolCheckpointIndex();
-	private constructor(private readonly storage: SqlPoolStorage) {
+	/** Commits in flight by work, generation and operation, so a duplicate joins the first instead of racing it. */
+	private readonly committing = new Map<string, Promise<PoolCommitReceipt>>();
+	private draining: Promise<number> | undefined;
+	/** Whether the outbox may hold an event, so a claim reads it only after a commit staged one. */
+	private outboxPending = false;
+	private constructor(
+		private readonly storage: SqlPoolStorage,
+		/** The durable journal when it is not this storage's own database; undefined when it is. */
+		private readonly remote?: PoolRemoteJournal,
+	) {
 		const { transaction, tables: journal } = storage;
 		this.transaction = transaction;
 		this.journal = journal;
@@ -134,10 +156,16 @@ export class SqlPoolQueue {
 		this.roots = `${journal.runs}_pool`;
 		this.work = `${journal.runs}_work`;
 		this.operations = `${journal.runs}_pool_operations`;
+		this.outbox = `${journal.runs}_pool_outbox`;
 	}
-	static async open(storage: SqlPoolStorage): Promise<SqlPoolQueue> {
+	/**
+	 * `remote` is the root's durable journal when it lives in another database than `storage`, whose run and lease rows
+	 * then mirror the journal's (see {@link PoolRemoteJournal}). Without it the journal and the pool share `storage`'s
+	 * database, and every commit is one transaction in it.
+	 */
+	static async open(storage: SqlPoolStorage, remote?: PoolRemoteJournal): Promise<SqlPoolQueue> {
 		const journal = storage.tables;
-		const pool = new SqlPoolQueue(storage);
+		const pool = new SqlPoolQueue(storage, remote);
 		await storage.transaction(async (tx) => {
 			if ((await tx.get("PRAGMA foreign_keys"))?.foreign_keys !== 1)
 				throw new Error("Pool requires SQLite foreign keys");
@@ -177,6 +205,14 @@ export class SqlPoolQueue {
 				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
 			)`);
 			await tx.exec(poolUsageSchema(journal.runs));
+			if (remote)
+				await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.outbox}(
+					work TEXT NOT NULL REFERENCES ${pool.work}(id) ON DELETE CASCADE,
+					generation INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,
+					event_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq INTEGER,
+					PRIMARY KEY(work, generation, operation)
+				)`);
+			if (remote) pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			if (version === 1) await pool.migrateFromVersion1(tx);
 		});
 		return pool;
@@ -256,6 +292,7 @@ export class SqlPoolQueue {
 		});
 	}
 	async setControl(lease: Lease, state: PoolControl["state"]): Promise<PoolControl> {
+		await this.remote?.fresh(lease);
 		return this.transaction(async (tx) => {
 			await this.authority(tx, lease);
 			await tx.run(
@@ -276,7 +313,7 @@ export class SqlPoolQueue {
 	): Promise<T> {
 		lease = snapshotLease(lease);
 		token = { ...token };
-		return this.storage.withAppendGuard(async (tx, runId) => {
+		const guard = async (tx: SqliteExecutor, runId: string): Promise<void> => {
 			try {
 				if (runId !== lease.runId) throw new Error("Pool delivery cannot write another root");
 				await this.authority(tx, lease).catch((error: Error) => {
@@ -294,7 +331,12 @@ export class SqlPoolQueue {
 					throw error;
 				throw new PoolAppendRefusedError(error.message, { cause: error });
 			}
-		}, action);
+		};
+		// A journal in another database cannot run the guard inside its own append transaction. The attempt is checked
+		// in the coordination database right before the append starts, so only a fence that lands while the append is
+		// on its way to the journal can still be missed.
+		if (this.remote) return this.transaction((tx) => guard(tx, lease.runId)).then(action);
+		return this.storage.withAppendGuard(guard, action);
 	}
 
 	async assertCurrent(lease: Lease, token: WorkLease): Promise<void> {
@@ -345,6 +387,9 @@ export class SqlPoolQueue {
 		const payload = serializeJson(boundary);
 		const fingerprint = durableHash({ descriptor: JSON.parse(json), boundary: JSON.parse(payload) });
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, boundary.kind, boundary.checkpointId]);
+		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
+		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
+		if (this.remote) await this.recordBoundaryStart(lease, key, boundary);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const previous = await tx.get<WorkRow>(
@@ -380,29 +425,44 @@ export class SqlPoolQueue {
 				lease.epoch,
 				now,
 			);
-			const seq = await tx.get<SqliteRow & { seq: number }>(
-				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
-				lease.runId,
-			);
-			const existing = await tx.get(
-				`SELECT payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
-				lease.runId,
-				key,
-			);
-			if (existing && existing.payload !== payload) throw new Error("Pool boundary identity conflict");
-			if (!existing)
-				await tx.run(
-					`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			if (!this.remote) {
+				const seq = await tx.get<SqliteRow & { seq: number }>(
+					`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
 					lease.runId,
-					journalCounter(lease.runId, "seq", Number(seq!.seq) + 1, "overflow"),
-					lease.epoch,
-					key,
-					RUN_EVENT_TYPES.checkpointRecorded,
-					payload,
-					now,
 				);
+				const existing = await tx.get(
+					`SELECT payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
+					lease.runId,
+					key,
+				);
+				if (existing && existing.payload !== payload) throw new Error("Pool boundary identity conflict");
+				if (!existing)
+					await tx.run(
+						`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+						lease.runId,
+						journalCounter(lease.runId, "seq", Number(seq!.seq) + 1, "overflow"),
+						lease.epoch,
+						key,
+						RUN_EVENT_TYPES.checkpointRecorded,
+						payload,
+						now,
+					);
+			}
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
+	}
+	private async recordBoundaryStart(lease: Lease, key: string, boundary: DurableStageCheckpoint): Promise<void> {
+		const remote = this.remote!;
+		await remote.fresh(lease);
+		const existing = await remote.entry(lease.runId, key);
+		if (existing) {
+			if (!isSameCheckpointValue(existing.event.payload, boundary))
+				throw new Error("Pool boundary identity conflict");
+			return;
+		}
+		const outcome = await remote.append(lease, key, boundary);
+		if (outcome.status === "exists" && !isSameCheckpointValue(outcome.entry.event.payload, boundary))
+			throw new Error("Pool boundary identity conflict");
 	}
 	async claim(
 		lease: Lease,
@@ -417,6 +477,19 @@ export class SqlPoolQueue {
 		const compatible = definitions
 			.map(() => "(json_extract(descriptor, '$.definition') = ? AND json_extract(descriptor, '$.digest') = ?)")
 			.join(" OR ");
+		if (this.remote) {
+			await this.remote.fresh(lease);
+			// No work is handed out while an event this root's workers were told is committed is missing from the
+			// journal: a replacement attempt replays the journal, so it must find that event there. A delivery in
+			// flight counts as missing events too, since it clears the pending flag when it starts, not when it ends;
+			// and a commit can stage another row after the pass this claim joined has read its rows, so ask again.
+			try {
+				while (this.outboxPending || this.draining !== undefined) await this.drainOutbox(lease);
+			} catch (error) {
+				if (error instanceof StaleLeaseError) throw error;
+				return undefined;
+			}
+		}
 		return this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
@@ -468,6 +541,7 @@ export class SqlPoolQueue {
 		positive(durationMs);
 		lease = snapshotLease(lease);
 		token = { ...token };
+		await this.remote?.fresh(lease);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
@@ -490,6 +564,8 @@ export class SqlPoolQueue {
 		const request = serializeJson({ epoch: token.epoch, worker: token.worker, mutation });
 		const identity = requestIdentity(request);
 		mutation = JSON.parse(request).mutation as PoolMutation;
+		if (this.remote && mutation.kind !== "session-append")
+			return this.commitRemote(lease, token, operationId, mutation, identity);
 		const checkpoints = this.checkpoints.begin(lease.runId);
 		const receipt = await this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
@@ -524,6 +600,204 @@ export class SqlPoolQueue {
 		// Only now has the transaction committed what validation read; a rolled-back read never reaches the index.
 		checkpoints.commit();
 		return receipt;
+	}
+	/**
+	 * A checkpoint commit when the durable journal is in another database. The journal and the pool's tables cannot
+	 * share a transaction, so the commit is three steps in an order that makes every crash between them recoverable:
+	 *
+	 * 1. One local transaction decides, as the single-database commit does, whether the attempt may write at all
+	 *    (root lease, work lease, generation, worker, epoch, root status), validates the checkpoint, applies the
+	 *    session it carries, bills its usage, and records the accepted event in the outbox. The commit point is here:
+	 *    a fenced or stale attempt is refused before anything exists, exactly as before.
+	 * 2. The event goes to the durable journal through its own `append`, keyed by the checkpoint's event key. A key is
+	 *    recorded once, so repeating this step, after a crash or a lost reply, finds the same event.
+	 * 3. One local transaction stores the receipt (the journal's sequence and time) as the operation's result and
+	 *    deletes the outbox row.
+	 *
+	 * The journal therefore never holds an event whose session, billing or fence was not recorded first, and the pool
+	 * never has an accepted event the journal will not get: a commit retried with the same operation, the next claim
+	 * (which first delivers every outbox row), and a resumed root's coordinator all finish step 2 and 3. Reads of the
+	 * journal happen outside the transaction, so nothing waits on the network while holding the local write lock.
+	 */
+	private commitRemote(
+		lease: Lease,
+		token: WorkLease,
+		operationId: string,
+		mutation: PoolCheckpointMutation,
+		identity: string,
+	): Promise<PoolCommitReceipt> {
+		const flight = JSON.stringify([token.id, token.generation, operationId]);
+		const running = this.committing.get(flight);
+		if (running) return running;
+		const commit = this.stageAndDeliver(lease, token, operationId, mutation, identity).finally(() => {
+			this.committing.delete(flight);
+		});
+		this.committing.set(flight, commit);
+		return commit;
+	}
+	private async stageAndDeliver(
+		lease: Lease,
+		token: WorkLease,
+		operationId: string,
+		mutation: PoolCheckpointMutation,
+		identity: string,
+	): Promise<PoolCommitReceipt> {
+		const remote = this.remote!;
+		await remote.fresh(lease);
+		const checkpoint = mutation.checkpoint;
+		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
+		const reads = this.checkpoints.begin(lease.runId);
+		const [existing, view] = await Promise.all([
+			remote.entry(lease.runId, key),
+			checkpoint.kind === "ui" ? undefined : reads.readEntries(remote.events(lease.runId)),
+		]);
+		// What the reads saw is the journal's own state, whatever the transaction below decides.
+		reads.commit();
+		const source: PoolCheckpointSource = {
+			read: async () => view ?? Promise.reject(new Error("Pool checkpoint view is unavailable")),
+		};
+		const staged = await this.transaction(async (tx) => {
+			const { now, status } = await this.authority(tx, lease);
+			const row = await this.current(tx, lease, token);
+			if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
+			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
+				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			);
+			if (previous) {
+				if (previous.request !== identity) throw new Error("Pool operation identity conflict");
+				return { receipt: JSON.parse(previous.receipt) as PoolCommitReceipt };
+			}
+			const held = await tx.get<OutboxRow>(
+				`SELECT * FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			);
+			if (held) {
+				if (held.request !== identity) throw new Error("Pool operation identity conflict");
+				return { held };
+			}
+			if (row.expires_at < now) throw new Error(STALE_WORK_LEASE);
+			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw new Error("Pool root is not running");
+			await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation, source);
+			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+				throw new Error("Pool checkpoint timestamp is in the future");
+			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+			if (existing && !isRecordedCheckpointValue(existing.event.payload, checkpoint))
+				throw new Error("Pool checkpoint identity conflict");
+			if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
+			const lastSeq =
+				mutation.kind === "checkpoint"
+					? undefined
+					: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
+			const billed = poolCheckpointUsage(checkpoint);
+			if (billed && !existing)
+				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
+			if (existing) {
+				const receipt: PoolCommitReceipt = { seq: existing.seq, at: existing.at };
+				await tx.run(
+					`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
+					token.id,
+					token.generation,
+					operationId,
+					identity,
+					JSON.stringify(receipt),
+				);
+				return { receipt };
+			}
+			const entry: OutboxRow = {
+				work: token.id,
+				generation: token.generation,
+				operation: operationId,
+				request: identity,
+				event_key: key,
+				payload: serializeJson(checkpoint),
+				last_seq: lastSeq ?? null,
+			};
+			await tx.run(
+				`INSERT INTO ${this.outbox} VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				entry.work,
+				entry.generation,
+				entry.operation,
+				entry.request,
+				entry.event_key,
+				entry.payload,
+				entry.last_seq,
+			);
+			return { held: entry };
+		});
+		if (staged.receipt !== undefined) return staged.receipt;
+		this.outboxPending = true;
+		return this.deliver(lease, staged.held!);
+	}
+	/** Steps 2 and 3 of {@link commitRemote} for one accepted event. */
+	private async deliver(lease: Lease, held: OutboxRow): Promise<PoolCommitReceipt> {
+		const remote = this.remote!;
+		const checkpoint = JSON.parse(held.payload) as DurableCheckpoint;
+		const outcome = await remote.append(lease, held.event_key, checkpoint);
+		const forget = (tx: SqliteExecutor) =>
+			tx.run(
+				`DELETE FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,
+				held.work,
+				held.generation,
+				held.operation,
+			);
+		if (outcome.status === "exists" && !isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint)) {
+			// Another attempt recorded a different checkpoint under this key first; there is nothing left to record.
+			await this.transaction(forget);
+			throw new Error("Pool checkpoint identity conflict");
+		}
+		const receipt: PoolCommitReceipt = {
+			seq: outcome.entry.seq,
+			at: outcome.entry.at,
+			...(held.last_seq === null ? {} : { lastSeq: Number(held.last_seq) }),
+		};
+		await this.transaction(async (tx) => {
+			await tx.run(
+				`INSERT OR IGNORE INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
+				held.work,
+				held.generation,
+				held.operation,
+				held.request,
+				JSON.stringify(receipt),
+			);
+			await forget(tx);
+		});
+		return receipt;
+	}
+	/**
+	 * Delivers every accepted event the durable journal has not recorded for the root, in the order they were accepted
+	 * (remote journals only). A coordinator calls it first thing for a root it resumes, and a claim calls it while any
+	 * may be held, so no attempt starts before the journal holds what the attempts before it were told is committed.
+	 * Calls in flight together share one pass.
+	 */
+	drainOutbox(lease: Lease): Promise<number> {
+		if (!this.remote) return Promise.resolve(0);
+		lease = snapshotLease(lease);
+		this.draining ??= this.deliverAll(lease).finally(() => {
+			this.draining = undefined;
+		});
+		return this.draining;
+	}
+	private async deliverAll(lease: Lease): Promise<number> {
+		// Cleared before reading, so a commit staging one meanwhile marks it held again.
+		this.outboxPending = false;
+		const rows = await this.transaction((tx) =>
+			tx.all<OutboxRow>(
+				`SELECT o.* FROM ${this.outbox} o JOIN ${this.work} w ON w.id = o.work WHERE w.root = ? ORDER BY o.rowid`,
+				lease.runId,
+			),
+		);
+		try {
+			for (const row of rows) await this.deliver(lease, row);
+		} catch (error) {
+			this.outboxPending = true;
+			throw error;
+		}
+		return rows.length;
 	}
 	private async appendSession(
 		tx: SqliteExecutor,
@@ -593,6 +867,7 @@ export class SqlPoolQueue {
 		token = { ...token };
 		assertWorkflowSerializableObject(result, "Pool result");
 		const payload = serializeJson(result);
+		await this.remote?.fresh(lease);
 		await this.transaction(async (tx) => {
 			const { now, status } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token, true);
@@ -605,6 +880,9 @@ export class SqlPoolQueue {
 			if (row.expires_at < now || !(await this.admitsAttemptWrites(tx, lease, status)))
 				throw new Error(STALE_WORK_LEASE);
 			if (JSON.parse(payload).runId !== fromRow(row).childRunId) throw new Error("Pool result identity mismatch");
+			// A child's result is its journal checkpoint: it completes only once every event it was told is committed is.
+			if (this.remote && (await tx.get(`SELECT 1 AS held FROM ${this.outbox} WHERE work = ? LIMIT 1`, token.id)))
+				throw new Error("Pool work has journal events not yet recorded");
 			await tx.run(`INSERT INTO ${this.work}_results VALUES (?, ?)`, token.id, payload);
 			await tx.run(`UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, token.id);
 		});
@@ -634,6 +912,7 @@ export class SqlPoolQueue {
 		positive(durationMs);
 		lease = snapshotLease(lease);
 		token = { ...token };
+		await this.remote?.fresh(lease);
 		return this.transaction(async (tx) => {
 			const { now } = await this.authority(tx, lease);
 			const row = await this.current(tx, lease, token);
@@ -753,8 +1032,12 @@ function isRecordedCheckpoint(stored: string, payload: string): boolean {
 	return serializeJson({ ...next, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }) === stored;
 }
 
-export function openSqlPoolQueue(journal: RunJournal): Promise<SqlPoolQueue> {
+/**
+ * The pool queue in the database of `journal`, which must be a SQL journal. `remote` is the root's durable journal when
+ * that lives in another database.
+ */
+export function openSqlPoolQueue(journal: RunJournal, remote?: PoolRemoteJournal): Promise<SqlPoolQueue> {
 	const storage = sqlPoolStorage(journal);
 	if (!storage) return Promise.reject(new Error("Worker pool requires a SQL run journal"));
-	return SqlPoolQueue.open(storage);
+	return SqlPoolQueue.open(storage, remote);
 }

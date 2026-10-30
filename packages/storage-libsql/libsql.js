@@ -96,6 +96,13 @@ function driverResult(result) {
 }
 
 /**
+ * How long a connection to a local `file:` database waits for a lock another connection holds before failing with
+ * `SQLITE_BUSY`, as Atomic's own SQLite stores wait. Without it the driver fails at once, so two processes writing
+ * one file, such as a workflow root, its coordinator and its workers, lose statements to each other.
+ */
+const FILE_BUSY_TIMEOUT_MS = 5000;
+
+/**
  * @param {LibsqlDatabaseOptions} options
  * @returns {Promise<import("@bastani/atomic/storage").SqliteDatabase>}
  */
@@ -108,11 +115,20 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	} catch (cause) {
 		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
+	const local = /^file:/i.test(url);
 	/** @type {import("@libsql/client").Client | undefined} */
 	let client;
-	// Create the client inside a driver call, so the facade redacts credentials from its failures.
+	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
+	// client option, not a PRAGMA, because the client opens more connections than the one that ran the PRAGMA, and
+	// each needs it; a connection waits for a lock on the calling thread.
 	const connection = () =>
-		(client ??= createClient({ url, authToken, intMode: "bigint", ...(added.length > 0 ? { fetch: fetchWith(added) } : {}) }));
+		(client ??= createClient({
+			url,
+			authToken,
+			intMode: "bigint",
+			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
+			...(added.length > 0 ? { fetch: fetchWith(added) } : {}),
+		}));
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "libsql", location: url },
 		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
@@ -138,6 +154,10 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	});
 	try {
 		await database.exec("PRAGMA foreign_keys = ON");
+		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;
+		// in the default rollback journal a read refuses a writer's commit and the other way round. The mode is stored
+		// in the file, so this changes it once and costs nothing afterwards.
+		if (local) await database.exec("PRAGMA journal_mode = WAL");
 		return database;
 	} catch (error) {
 		await database.close().catch(() => {});

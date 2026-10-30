@@ -5,7 +5,7 @@ import { directChildTopologyError, durableStageGroupKey, sameRun, sameStrings } 
 import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableStageCheckpoint } from "../types.js";
 import { parseWorkflowChildResult } from "../workflow-child-result.js";
 import type { SqlPoolStorage } from "./internal.js";
-import { type IndexedStage, inKeyOrder, type PoolCheckpointRead } from "./pool-checkpoint-index.js";
+import { type IndexedStage, inKeyOrder, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
 import type { PoolWork } from "./sql-pool-queue.js";
 
 /** Creating or replacing a pool session binds it to its stage with one checkpoint. */
@@ -46,7 +46,7 @@ export async function validatePoolMutation(
 	root: string,
 	work: PoolWork,
 	mutation: PoolCheckpointMutation,
-	checkpoints: PoolCheckpointRead,
+	checkpoints: PoolCheckpointSource,
 ): Promise<void> {
 	if (!["checkpoint", "session-create", "session-replace"].includes(mutation.kind))
 		throw new Error("Invalid pool mutation");
