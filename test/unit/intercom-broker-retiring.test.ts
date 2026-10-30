@@ -37,9 +37,35 @@ const {
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 
+/** The one `node:timers/promises` delay a test holds with `holdNextDelay`; every other delay runs as it always does. */
+const heldDelay = vi.hoisted(() => ({
+	next: undefined as { entered: PromiseWithResolvers<void>; ends: PromiseWithResolvers<void> } | undefined,
+}));
+vi.mock("node:timers/promises", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:timers/promises")>();
+	return {
+		...original,
+		setTimeout: (delay?: number, value?: unknown, options?: { signal?: AbortSignal }) => {
+			const held = heldDelay.next;
+			if (held === undefined) return original.setTimeout(delay, value, options);
+			heldDelay.next = undefined;
+			held.entered.resolve();
+			return held.ends.promise.then(() => value);
+		},
+	};
+});
+
+/** Hold the next delay the extension asks for: `entered` resolves once it is waiting, and it ends when `end` is called. */
+function holdNextDelay(): { entered: Promise<void>; end(): void } {
+	const held = { entered: Promise.withResolvers<void>(), ends: Promise.withResolvers<void>() };
+	heldDelay.next = held;
+	return { entered: held.entered.promise, end: () => held.ends.resolve() };
+}
+
 const servers: net.Server[] = [];
 
 afterEach(async () => {
+	heldDelay.next = undefined;
 	vi.restoreAllMocks();
 	for (const server of servers.splice(0)) {
 		if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -187,7 +213,8 @@ describe("a session that starts while its broker retires", () => {
 		vi.mocked(spawnBrokerIfNeeded).mockResolvedValue(undefined);
 	});
 
-	async function startSession(): Promise<() => Promise<void>> {
+	/** One extension instance, which sees one session after another through its `session_start` and `session_shutdown`. */
+	function createExtension() {
 		const pi = {
 			on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
 				handlers.set(name, [...(handlers.get(name) ?? []), handler]);
@@ -201,18 +228,27 @@ describe("a session that starts while its broker retires", () => {
 			events,
 		};
 		intercomHeavy(pi as never);
-		const ctx = {
-			hasUI: false,
-			cwd: process.cwd(),
-			isIdle: () => true,
-			ui: { notify() {} },
-			sessionManager: { getSessionId: () => "retiring-startup", getEntries: () => [], getBranch: () => [] },
-		} as unknown as ExtensionContext;
-		const fire = async (name: string) => {
-			for (const handler of handlers.get(name) ?? []) await handler({ type: name, reason: "startup" } as never, ctx);
+		return {
+			contextFor: (sessionId: string) =>
+				({
+					hasUI: false,
+					cwd: process.cwd(),
+					isIdle: () => true,
+					ui: { notify() {} },
+					sessionManager: { getSessionId: () => sessionId, getEntries: () => [], getBranch: () => [] },
+				}) as unknown as ExtensionContext,
+			fire: async (name: string, ctx: ExtensionContext) => {
+				for (const handler of handlers.get(name) ?? [])
+					await handler({ type: name, reason: "startup" } as never, ctx);
+			},
 		};
-		await fire("session_start");
-		return () => fire("session_shutdown");
+	}
+
+	async function startSession(): Promise<() => Promise<void>> {
+		const extension = createExtension();
+		const ctx = extension.contextFor("retiring-startup");
+		await extension.fire("session_start", ctx);
+		return () => extension.fire("session_shutdown", ctx);
 	}
 
 	async function connectThroughExtension(): Promise<unknown[]> {
@@ -271,6 +307,42 @@ describe("a session that starts while its broker retires", () => {
 			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 1);
 		} finally {
 			await shutdown();
+		}
+	});
+	test("keeps a retry that wakes after its session was replaced from touching the replacement's connection", async () => {
+		let registrations = 0;
+		await fakeBroker((socket, _server, count) => {
+			registrations = count;
+			if (count === 1) retiring(socket);
+			else registered(socket);
+		});
+		const extension = createExtension();
+		await extension.fire("session_start", extension.contextFor("retiring-replaced"));
+		const replacement = extension.contextFor("retiring-replacement");
+		try {
+			// The first session's registration is refused as retiring, and its retry is waiting out its delay.
+			const retryDelay = holdNextDelay();
+			const replacedAttempt = connectThroughExtension().then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await retryDelay.entered;
+
+			// The session is replaced during that delay, and the replacement registers.
+			await extension.fire("session_start", replacement);
+			assert.deepEqual(await connectThroughExtension(), []);
+			assert.equal(registrations, 2);
+
+			// The first session's retry wakes. Its session is gone, so it gives up without spawning a broker or
+			// registering a session of its own, and the replacement's connection is still the one the extension uses.
+			retryDelay.end();
+			assert.ok((await replacedAttempt) instanceof Error);
+			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 2);
+			assert.equal(registrations, 2, "the retry of a replaced session registered a session of its own");
+			assert.deepEqual(await connectThroughExtension(), []);
+			assert.equal(registrations, 2, "the replacement's connection was lost, so asking for peers registered again");
+		} finally {
+			await extension.fire("session_shutdown", replacement);
 		}
 	});
 });

@@ -1423,7 +1423,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 getLiveContext(contextAtStart, generationAtStart)
               ) {
                 await delay(brokerRetiringRetryDelayMs(retiringRetries++));
-                continue;
+                // The session can be replaced during the wait: the next attempt would then assign its client over the
+                // replacement's and register a session that is gone, so the retry goes on only while it is still this one.
+                if (getLiveContext(contextAtStart, generationAtStart)) continue;
               }
             }
             connectFailed = true;
