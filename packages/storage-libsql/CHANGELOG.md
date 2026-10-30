@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.55] - 2026-10-30
+
+### Fixed
+
+- A `file:` database opened through the adapter now waits up to 5 seconds for a lock another connection holds, and uses the write-ahead log like Atomic's own SQLite stores. Several processes can write one file, for example a workflow root, its coordinator and its workers; before, they lost statements to each other at once with `SQLITE_BUSY: database is locked`. The first open changes an existing file to WAL mode.
+
+## [0.9.55-alpha.1] - 2026-10-30
+
 ### Fixed
 
 - A `file:` database opened through the adapter now waits up to 5 seconds for a lock another connection holds, and uses the write-ahead log like Atomic's own SQLite stores. Several processes can write one file, for example a workflow root, its coordinator and its workers; before, they lost statements to each other at once with `SQLITE_BUSY: database is locked`. The first open changes an existing file to WAL mode.
