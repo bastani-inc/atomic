@@ -273,7 +273,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const routeClientConnectGate = createConcurrencyGate(ROUTE_CLIENT_CONNECT_CONCURRENCY);
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   const releasedStagePeers = new ReleasedStagePeers({
-    prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs),
+    prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs),
     createClient: (returnAddress) => new IntercomClient(returnAddress),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
@@ -1051,7 +1051,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const owner = connection;
     const promise = routeClientConnectGate
       .run(async () => {
-        await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+        await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
         if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
         const routeReturnAddress = `${currentSessionId}:pending-stage-route:${key}`;
         const nextClient = new IntercomClient(routeReturnAddress, {
@@ -1322,7 +1322,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           attachClientHandlers(nextClient);
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
-            await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+            await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
             const childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.

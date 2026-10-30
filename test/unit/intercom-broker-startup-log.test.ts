@@ -320,7 +320,9 @@ describe("broker startup failures name the log", () => {
 			() => spawnModule.waitForBroker(50),
 			(error: unknown) => {
 				assert.ok(error instanceof Error);
-				assert.match(error.message, /Broker failed to start within timeout/u);
+				assert.match(error.message, /Broker failed to start within timeout \(50 ms\)/u);
+				// It says what to do about it.
+				assert.match(error.message, /brokerStartupTimeoutMs/u);
 				assert.ok(error.message.includes(logPath), error.message);
 				assert.ok(error.message.includes(marker), error.message);
 				return true;
@@ -665,6 +667,53 @@ describe("readiness polling", () => {
 		assert.equal(spawnModule.BROKER_POLL_MAX_INTERVAL_MS, 100);
 		assert.ok(spawnModule.BROKER_POLL_INITIAL_INTERVAL_MS < spawnModule.BROKER_POLL_MAX_INTERVAL_MS);
 	});
+});
+
+describe("a broker that is slow to start", () => {
+	/** The wait a spawn attempt gave a new broker before the budget was sized from measurements. */
+	const FORMER_BROKER_READY_TIMEOUT_MS = 5_000;
+	/** Past the former budget by more than any scheduling jitter, as a cold jiti cache on a busy host is. */
+	const SLOW_LISTEN_DELAY_MS = FORMER_BROKER_READY_TIMEOUT_MS + 600;
+
+	test(
+		"is waited for past the former five-second budget by default",
+		async () => {
+			const socketPath = pathsModule.getBrokerSocketPath();
+			const pidPath = join(pathsModule.getIntercomDirPath(), "slow-broker.pid");
+			// A stand-in that listens late, as the real broker does after transpiling its modules, and keeps no state
+			// the spawn logic could mistake for a crash. Written without `<`, `>`, `&` or `|` so every launcher passes it on.
+			const script = [
+				'const net = require("node:net"); const fs = require("node:fs");',
+				`fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+				"setTimeout(function () {",
+				"  const server = net.createServer(function (socket) { socket.on('error', function () {}); });",
+				`  server.listen(${JSON.stringify(socketPath)});`,
+				"  process.on('SIGTERM', function () { server.close(); process.exit(0); });",
+				`}, ${SLOW_LISTEN_DELAY_MS});`,
+				"setInterval(function () {}, 1000);",
+			].join(" ");
+			const started = Date.now();
+			try {
+				await spawnModule.spawnBrokerIfNeeded(process.execPath, ["-e", script]);
+
+				assert.ok(
+					Date.now() - started >= FORMER_BROKER_READY_TIMEOUT_MS,
+					"the broker answered before the former budget ran out, so this proved nothing",
+				);
+				assert.equal(await connectable(socketPath), true);
+			} finally {
+				try {
+					process.kill(Number.parseInt(readFileSync(pidPath, "utf8"), 10), "SIGTERM");
+				} catch {
+					// The stand-in never started or already exited.
+				}
+				for (let attempt = 0; attempt < 100 && (await connectable(socketPath)); attempt++) {
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+			}
+		},
+		SLOW_LISTEN_DELAY_MS + REAL_BROKER_STARTUP_TIMEOUT_MS,
+	);
 });
 
 describe("real broker startup", () => {

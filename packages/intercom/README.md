@@ -425,6 +425,7 @@ The default `npx --no-install tsx` pair is a compatibility sentinel: intercom re
 |---------|---------|-------------|
 | `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
+| `brokerStartupTimeoutMs` | `30000` | How long a session waits for a newly spawned broker to answer on its socket, in milliseconds (at least `1000`). A broker loads its modules through jiti, which takes about 0.5 s on an idle machine and several seconds on a busy one or with an empty jiti cache (the first start after a reboot); raise it if Intercom start-up reports `Broker failed to start within timeout` on a very slow machine |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |

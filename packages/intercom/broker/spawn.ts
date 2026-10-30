@@ -4,6 +4,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import { createChildProcessEnvironment, isBunBinary, processSharedStorageSelection } from "@bastani/atomic";
 import {
   BROKER_STORAGE_ENV,
@@ -58,8 +59,7 @@ export const BROKER_POLL_INITIAL_INTERVAL_MS = 10;
 /** Upper bound for the readiness poll interval, matching the historic flat poll. */
 export const BROKER_POLL_MAX_INTERVAL_MS = 100;
 
-/** How long one spawn attempt waits for the broker socket to answer. */
-export const BROKER_READY_TIMEOUT_MS = 5000;
+export { BROKER_READY_TIMEOUT_MS };
 
 /** Backstop only: a spawn lock normally ends when its broker is ready or the processes it names are gone. */
 export const BROKER_SPAWN_LOCK_MAX_AGE_MS = 60_000;
@@ -560,5 +560,10 @@ export async function waitForBroker(timeoutMs = BROKER_READY_TIMEOUT_MS): Promis
     await sleep(interval);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
-  throw new Error(`Broker failed to start within timeout\n${describeBrokerLog()}`);
+  throw new Error(
+    `Broker failed to start within timeout (${timeoutMs} ms)\n`
+      + "The broker did not answer on its socket in time; it may still be starting, which a busy machine or an empty jiti "
+      + "cache slows. Try again, or raise `brokerStartupTimeoutMs` in the Intercom config.json (default "
+      + `${BROKER_READY_TIMEOUT_MS} ms).\n${describeBrokerLog()}`,
+  );
 }

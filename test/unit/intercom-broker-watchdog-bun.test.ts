@@ -25,7 +25,7 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 const { getBrokerPidPath, getBrokerWatchdogLogPath, getIntercomDirPath } = await import(
 	"../../packages/intercom/broker/paths.js"
 );
-const { spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spawn.js");
+const { BROKER_READY_TIMEOUT_MS, spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spawn.js");
 const clients: InstanceType<typeof IntercomClient>[] = [];
 const ownedPids = new Set<number>();
 const REAL_STALLED_BROKER_TIMEOUT_MS = 100_000;
@@ -33,15 +33,11 @@ const WATCHDOG_EXIT_BUDGET_MS = 80_000;
 const STARTUP_BUDGET_MS = 10_000;
 const SLOW_PROBE_DELAY_MS = 12_000;
 /**
- * How long the replacement broker gets to start listening. It is a new detached process that loads jiti and the
- * broker's module graph (on Windows behind a hidden wscript and cmd launcher too), so how long it takes depends on
- * how busy the host is. With eight concurrent `spawnBrokerIfNeeded` calls it took 0.5 s on an idle host, 3 s with
- * five processes per core, and 9 s with five per core and a cold jiti cache. The 5 s default of `spawnBrokerIfNeeded`
- * fits an idle host: a loaded one failed this test with "Broker failed to start within timeout" and an empty broker
- * log while the replacement was still loading its modules. This only bounds a replacement that never starts; the
- * watchdog's own exit stays bounded by `WATCHDOG_EXIT_BUDGET_MS`.
+ * How long the replacement broker gets to start listening: `spawnBrokerIfNeeded`'s own default, sized from how long the
+ * broker takes to load jiti and its module graph on a busy host with a cold cache (see `startup-timeout.ts`). This only
+ * bounds a replacement that never starts; the watchdog's own exit stays bounded by `WATCHDOG_EXIT_BUDGET_MS`.
  */
-const REPLACEMENT_STARTUP_BUDGET_MS = 30_000;
+const REPLACEMENT_STARTUP_BUDGET_MS = BROKER_READY_TIMEOUT_MS;
 const extensionDir = join(process.cwd(), "packages/intercom");
 
 function captureOutput(streams: readonly (ReadableStream<Uint8Array> | null)[]): () => string {
@@ -188,11 +184,7 @@ setInterval(() => {
 		assert.ok(Buffer.byteLength(diagnostic) < 1024);
 		ownedPids.delete(child.pid);
 		removePathSync(gate, { force: true });
-		await Promise.all(
-			Array.from({ length: 8 }, () =>
-				spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], REPLACEMENT_STARTUP_BUDGET_MS),
-			),
-		);
+		await Promise.all(Array.from({ length: 8 }, () => spawnBrokerIfNeeded("npx", ["--no-install", "tsx"])));
 		const replacementPid = Number(readTextSync(getBrokerPidPath(), "utf8"));
 		ownedPids.add(replacementPid);
 		assert.notEqual(replacementPid, child.pid);

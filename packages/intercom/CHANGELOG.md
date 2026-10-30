@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Intercom no longer fails to start on a busy machine or with an empty jiti cache because the broker was still starting. A new broker now gets 30 seconds, not 5, to answer on its socket. That is sized from measured start-up: 0.5 s on an idle machine, 2.6 s with five processes per core, and 8.7 s, 15 s and 28 s with an empty jiti cache at five, nine and seventeen. `brokerStartupTimeoutMs` in the Intercom `config.json` changes it, and the `Broker failed to start within timeout` error now names that setting.
+
 ## [0.9.48] - 2026-10-27
 
 ### Fixed
