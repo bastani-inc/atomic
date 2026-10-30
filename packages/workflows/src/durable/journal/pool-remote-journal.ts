@@ -45,6 +45,11 @@ export class PoolRemoteJournal {
 	 */
 	async mirror(lease: Lease): Promise<void> {
 		const root = lease.runId;
+		// The journal's answer is how old the lease was at some moment after this read started. The copy is written
+		// later, after the slower of the two answers and the local write lock, so its age is counted from the start
+		// of the read: that can overstate the age by up to a round trip and never understate it, which keeps a lease
+		// the journal sampled as old from looking renewed by the time spent waiting.
+		const sampledAt = performance.now();
 		const [run, state] = await Promise.all([this.journal.getRun(root), this.journal.leaseState(root)]);
 		if (run === undefined) throw new RunNotFoundError(root);
 		const { runs, leases } = this.storage.tables;
@@ -67,12 +72,12 @@ export class PoolRemoteJournal {
 					root,
 					state.holderId,
 					state.epoch,
-					Math.max(0, state.ageMs),
+					Math.ceil(Math.max(0, state.ageMs) + (performance.now() - sampledAt)),
 				);
 		});
 		if (state === undefined || state.holderId !== lease.holderId || state.epoch !== lease.epoch)
 			throw new StaleLeaseError(root, lease.epoch, state?.epoch ?? 0);
-		this.mirrored = { lease, at: performance.now() };
+		this.mirrored = { lease, at: sampledAt };
 	}
 
 	/**

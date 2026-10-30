@@ -490,3 +490,26 @@ test("a claim made while another is delivering the outbox waits for that deliver
 		await f.close();
 	}
 });
+
+test("a slow journal read does not make the pool's copy of the lease look newer than the journal's", async () => {
+	const f = await fixture();
+	try {
+		// The journal answers about the lease at once and about the run only after a while.
+		const getRun = f.durable.getRun.bind(f.durable);
+		vi.spyOn(f.durable, "getRun").mockImplementationOnce(async (...args) => {
+			await sleep(400);
+			return getRun(...args);
+		});
+		await f.remote.mirror(f.lease);
+		const copy = await f.storage.read((tx) =>
+			tx.get(
+				"SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) - renewed_at AS age FROM wf_leases WHERE run_id = ?",
+				"root",
+			),
+		);
+		// The lease was sampled before the 400 ms wait, so the copy is at least that old, never fresher.
+		assert.ok(Number(copy!.age) >= 380, `the copy of the lease is ${copy!.age} ms old, 400 ms after it was read`);
+	} finally {
+		await f.close();
+	}
+});
