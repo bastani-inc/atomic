@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -8,6 +9,7 @@ import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
 import { createChildProcessEnvironment, isBunBinary, processSharedStorageSelection } from "@bastani/atomic";
 import {
   BROKER_STORAGE_ENV,
+  getBrokerLauncherExitPath,
   getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPath,
@@ -38,6 +40,7 @@ const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
 const BROKER_LOG = getBrokerLogPath();
+const BROKER_LAUNCHER_EXIT = getBrokerLauncherExitPath();
 
 function ensurePrivateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -65,6 +68,20 @@ export { BROKER_READY_TIMEOUT_MS };
 export const BROKER_SPAWN_LOCK_MAX_AGE_MS = 60_000;
 
 type BrokerRuntime = "node" | "bun-source" | "bun-binary";
+
+/**
+ * Where, and under which token, the Windows launcher chain reports that the broker process ended. The token is
+ * unique to one spawn, so a broker that is retiring and ends late cannot be taken for the exit of its successor.
+ */
+export interface BrokerLauncherExit {
+  readonly path: string;
+  readonly token: string;
+}
+
+/** How the broker process a Windows launcher ran ended: with status 0, or not. */
+export interface BrokerLauncherStatus {
+  readonly clean: boolean;
+}
 
 export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
 
@@ -168,6 +185,14 @@ export function getWindowsBrokerCommandLine(
  * `cmd.exe /s /c` instead and append its stderr to the same log the direct path writes.
  * `/s` makes cmd strip exactly the outer quote pair and use the remainder verbatim.
  *
+ * The launcher also hides the broker's pid and exit: `wscript.exe` returns at once, so the parent cannot tell a
+ * broker that crashed at start-up from one that is still loading, and would wait out the whole start-up budget for
+ * either. With `exit`, the same `cmd.exe` (which stays resident while the broker runs) reports how the broker ended
+ * once its command returns: `&&` writes `<token> ok` for status 0 and `||` writes `<token> failed` otherwise, after
+ * the redirect has closed the log, so a parent that sees the file reads a complete log. The parent watches the file
+ * (`readBrokerLauncherExit`). The marker is left out when `exit` has a `%` in its path or an unsafe token, for the
+ * reason below.
+ *
  * Returns the command line unchanged when it contains a `%`. cmd expands `%NAME%` at parse time
  * and there is no reliable way to escape a literal percent on a `cmd /c` command line — `^` does
  * not cover it, and `%%` is a batch-file escape rather than a command-line one. Wrapping such a
@@ -176,9 +201,36 @@ export function getWindowsBrokerCommandLine(
  * A `%` reaches here only from a custom `brokerCommand`/`brokerArgs` or an install path that
  * contains one, and the direct (non-launcher) Windows path still captures stderr normally.
  */
-export function getWindowsStderrRedirectCommandLine(commandLine: string, logPath: string): string {
+export function getWindowsStderrRedirectCommandLine(
+  commandLine: string,
+  logPath: string,
+  exit?: BrokerLauncherExit,
+): string {
   if (commandLine.includes("%")) return commandLine;
-  return `cmd.exe /s /c "${commandLine} 2>>${quoteWindowsArg(logPath)}"`;
+  const redirected = `${commandLine} 2>>${quoteWindowsArg(logPath)}`;
+  if (exit === undefined || exit.path.includes("%") || !/^[A-Za-z0-9-]+$/u.test(exit.token)) {
+    return `cmd.exe /s /c "${redirected}"`;
+  }
+  const marker = (status: "ok" | "failed") => `echo ${exit.token} ${status} >${quoteWindowsArg(exit.path)}`;
+  return `cmd.exe /s /c "${redirected} && ${marker("ok")} || ${marker("failed")}"`;
+}
+
+/**
+ * How the Windows launcher chain says the broker process ended, or undefined while it has not, or when the file
+ * belongs to another spawn (another token) or is not yet fully written.
+ */
+export function readBrokerLauncherExit(exit: BrokerLauncherExit): BrokerLauncherStatus | undefined {
+  let text: string;
+  try {
+    text = readFileSync(exit.path, "utf-8");
+  } catch {
+    return undefined;
+  }
+  const [token, status] = text.trim().split(/\s+/u);
+  if (token !== exit.token) return undefined;
+  if (status === "ok") return { clean: true };
+  if (status === "failed") return { clean: false };
+  return undefined;
 }
 
 export function getWindowsHiddenLauncherScript(commandLine: string): string {
@@ -209,6 +261,7 @@ export function getBrokerLaunchSpec(
   nodePath: string = process.execPath,
   runtime: BrokerRuntime = getCurrentBrokerRuntime(),
   logPath: string = BROKER_LOG,
+  launcherExit?: BrokerLauncherExit,
 ): BrokerLaunchSpec {
   if (platform === "win32") {
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
@@ -220,6 +273,7 @@ export function getBrokerLaunchSpec(
       launcherCommandLine: getWindowsStderrRedirectCommandLine(
         getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs, runtime),
         logPath,
+        launcherExit,
       ),
     };
   }
@@ -356,7 +410,28 @@ export async function spawnBrokerIfNeeded(
     }
 
     const brokerPath = resolveBrokerEntrypoint(extensionDir);
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
+    // Where the launcher is a Windows chain that hides the broker's exit, it reports the exit through this file.
+    const launcherExit: BrokerLauncherExit | undefined =
+      process.platform === "win32" ? { path: BROKER_LAUNCHER_EXIT, token: randomUUID() } : undefined;
+    if (launcherExit !== undefined) {
+      try {
+        unlinkSync(launcherExit.path);
+      } catch {
+        // No earlier spawn left one, or it is not removable: its token differs from this spawn's, so it is ignored.
+      }
+    }
+    const launch = getBrokerLaunchSpec(
+      brokerPath,
+      brokerCommand,
+      brokerArgs,
+      extensionDir,
+      process.platform,
+      INTERCOM_DIR,
+      process.execPath,
+      getCurrentBrokerRuntime(),
+      BROKER_LOG,
+      launcherExit,
+    );
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
@@ -411,7 +486,10 @@ export async function spawnBrokerIfNeeded(
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker(readyTimeoutMs).then(() => {
+      waitForBroker(
+        readyTimeoutMs,
+        launcherExit === undefined ? undefined : () => readBrokerLauncherExit(launcherExit),
+      ).then(() => {
         cleanup();
         resolve();
       }, (error) => {
@@ -549,13 +627,27 @@ export function releaseSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_
  * Poll the broker socket with a short initial interval and bounded exponential backoff.
  * Startup is tens of milliseconds, so the previous flat 100 ms sleep dominated it; the
  * overall timeout semantics are unchanged.
+ *
+ * `launcherExit` reports a broker process this spawner cannot watch directly (behind the Windows launcher), and ends
+ * the wait at once: only a broker that is alive and not yet listening is waited for the whole budget.
  */
-export async function waitForBroker(timeoutMs = BROKER_READY_TIMEOUT_MS): Promise<void> {
+export async function waitForBroker(
+  timeoutMs = BROKER_READY_TIMEOUT_MS,
+  launcherExit?: () => BrokerLauncherStatus | undefined,
+): Promise<void> {
   const start = Date.now();
   let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
   while (Date.now() - start < timeoutMs) {
     if (await checkSocketConnectable()) {
       return;
+    }
+    const exited = launcherExit?.();
+    if (exited !== undefined) {
+      // A broker that finds a live broker on the socket yields with a clean exit.
+      if (exited.clean && (await checkSocketConnectable())) return;
+      throw new Error(
+        `Intercom broker exited before startup ${exited.clean ? "with code 0" : "with a failure status"}\n${describeBrokerLog()}`,
+      );
     }
     await sleep(interval);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);

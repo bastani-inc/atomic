@@ -75,6 +75,14 @@ export function getBrokerLogPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "broker.log");
 }
 
+/**
+ * Where the Windows launcher chain writes how the broker process ended. The parent cannot see that process's exit
+ * there (the launcher hides its pid), so it watches this file instead; see `getWindowsStderrRedirectCommandLine`.
+ */
+export function getBrokerLauncherExitPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker-launch.exit");
+}
+
 export function getBrokerWatchdogLogPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "broker-watchdog.log");
 }

@@ -74,6 +74,14 @@ const REAL_BROKER_STARTUP_TIMEOUT_MS = 30_000;
 /** Generous ceiling for one real broker startup. Measured at ~100 ms on an idle dev machine. */
 const BROKER_STARTUP_BUDGET_MS = 8_000;
 
+/**
+ * How long a broker that crashes at start-up may take to be reported, on every platform: half the default start-up
+ * budget. Reporting a crash is not waiting out the budget, which is for a broker that is alive and not yet listening
+ * (behind the Windows launcher, a crash used to be found only when the whole budget ran out). The bound is also the
+ * budget these tests give the spawn, so only noticing the exit can produce the exit wording they require.
+ */
+const PROMPT_EXIT_BOUND_MS = 15_000;
+
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-broker-log-"));
 // Both agent-dir variables are restored in afterAll. Vitest's default `forks`
 // pool already isolates each file in its own process, so today this cannot leak
@@ -187,6 +195,192 @@ describe("broker stderr capture shape", () => {
 	});
 });
 
+describe("the Windows launcher reports the broker's exit", () => {
+	const inner = String.raw`"C:\node.exe" "C:\ext\cli.mjs" "C:\ext\broker.ts"`;
+	const log = String.raw`C:\agent\intercom\broker.log`;
+	const exitPath = String.raw`C:\agent\intercom\broker-launch.exit`;
+	const exit = { path: exitPath, token: "0f1e2d3c-4b5a" };
+
+	test("appends a marker that says whether the broker's command succeeded, after the log redirect closes", () => {
+		const commandLine = spawnModule.getWindowsStderrRedirectCommandLine(inner, log, exit);
+
+		// `&&` and `||` run once the broker's command returns, and cmd.exe stays resident until then. Neither
+		// echo has a digit before `>`, which cmd would read as a handle redirect.
+		assert.equal(
+			commandLine,
+			`cmd.exe /s /c "${inner} 2>>"${log}" && echo 0f1e2d3c-4b5a ok >"${exitPath}" || echo 0f1e2d3c-4b5a failed >"${exitPath}""`,
+		);
+		const script = spawnModule.getWindowsHiddenLauncherScript(commandLine);
+		assert.ok(
+			script.includes(`&& echo 0f1e2d3c-4b5a ok >""${exitPath}"" || echo 0f1e2d3c-4b5a failed >""${exitPath}""`),
+		);
+	});
+
+	test("keeps the form without a marker when none is asked for", () => {
+		assert.equal(spawnModule.getWindowsStderrRedirectCommandLine(inner, log), `cmd.exe /s /c "${inner} 2>>"${log}""`);
+	});
+
+	test("leaves the marker out where cmd.exe would expand a percent sign or a token is not plain", () => {
+		const redirectOnly = `cmd.exe /s /c "${inner} 2>>"${log}""`;
+		assert.equal(
+			spawnModule.getWindowsStderrRedirectCommandLine(inner, log, {
+				...exit,
+				path: String.raw`C:\100%\broker-launch.exit`,
+			}),
+			redirectOnly,
+		);
+		assert.equal(
+			spawnModule.getWindowsStderrRedirectCommandLine(inner, log, { ...exit, token: "a & del *" }),
+			redirectOnly,
+		);
+		// A percent sign in the command itself still drops the redirect and the marker together.
+		const withPercent = String.raw`"C:\100%\node.exe" "C:\ext\broker.ts"`;
+		assert.equal(spawnModule.getWindowsStderrRedirectCommandLine(withPercent, log, exit), withPercent);
+	});
+
+	test("the launch spec carries the marker for the spawn it was built for", () => {
+		const spec = spawnModule.getBrokerLaunchSpec(
+			String.raw`C:\ext\broker\broker.ts`,
+			"npx",
+			["--no-install", "tsx"],
+			String.raw`C:\ext`,
+			"win32",
+			String.raw`C:\agent\intercom`,
+			String.raw`C:\node.exe`,
+			"node",
+			log,
+			exit,
+		);
+
+		assert.ok(spec.kind === "windows-launcher");
+		assert.ok(
+			spec.launcherCommandLine.includes(`echo ${exit.token} failed >"${exitPath}"`),
+			spec.launcherCommandLine,
+		);
+	});
+});
+
+describe("watching the launcher's exit marker", () => {
+	let exit: { path: string; token: string };
+
+	beforeAll(() => {
+		exit = { path: pathsModule.getBrokerLauncherExitPath(), token: "11111111-aaaa" };
+	});
+
+	test("lives beside the other broker runtime files", () => {
+		assert.equal(exit.path, join(agentDir, "intercom", "broker-launch.exit"));
+	});
+
+	test("reads nothing until this spawn's own marker is complete", () => {
+		removePathSync(exit.path, { force: true });
+		assert.equal(spawnModule.readBrokerLauncherExit(exit), undefined);
+
+		// Another spawn's marker, such as a retiring broker's late exit, is not this spawn's.
+		writeFileSync(exit.path, "22222222-bbbb failed \r\n");
+		assert.equal(spawnModule.readBrokerLauncherExit(exit), undefined);
+
+		// A marker still being written.
+		writeFileSync(exit.path, "11111111-aaaa fai");
+		assert.equal(spawnModule.readBrokerLauncherExit(exit), undefined);
+	});
+
+	test("reads whether the broker's command succeeded, as cmd.exe's echo writes it", () => {
+		writeFileSync(exit.path, "11111111-aaaa ok \r\n");
+		assert.deepEqual(spawnModule.readBrokerLauncherExit(exit), { clean: true });
+
+		writeFileSync(exit.path, "11111111-aaaa failed \r\n");
+		assert.deepEqual(spawnModule.readBrokerLauncherExit(exit), { clean: false });
+		removePathSync(exit.path, { force: true });
+	});
+});
+
+describe("a broker the launcher reports as exited ends the wait at once", () => {
+	const launcherExit = () => ({
+		path: pathsModule.getBrokerLauncherExitPath(),
+		token: `t-${process.pid}-${Date.now()}`,
+	});
+
+	/**
+	 * Stands in for the launcher chain on every platform: runs the broker, which writes `marker` to the log and exits
+	 * with `code`, and then writes the marker file the way cmd.exe's `&&` and `||` do.
+	 */
+	function runLauncherChain(exit: { path: string; token: string }, marker: string, code: number): void {
+		const chain = [
+			'const { spawnSync } = require("node:child_process"); const fs = require("node:fs");',
+			"const [log, exitPath, token, marker, code] = process.argv.slice(1);",
+			'const fd = fs.openSync(log, "a");',
+			"const result = spawnSync(process.execPath, [",
+			'  "-e", "console.error(process.argv[1]); process.exit(Number(process.argv[2]));", marker, code,',
+			'], { stdio: ["ignore", "ignore", fd] });',
+			"fs.closeSync(fd);",
+			'fs.writeFileSync(exitPath, token + (result.status === 0 ? " ok" : " failed") + "\\r\\n");',
+		].join("\n");
+		const child = spawn(process.execPath, ["-e", chain, logPath, exit.path, exit.token, marker, String(code)], {
+			detached: true,
+			stdio: "ignore",
+		});
+		child.unref();
+	}
+
+	test("a crash is reported with the broker's log long before the start-up budget", async () => {
+		writeFileSync(logPath, "");
+		const exit = launcherExit();
+		const marker = `LAUNCHER-CRASH-${Date.now()}`;
+		const started = Date.now();
+		runLauncherChain(exit, marker, 3);
+
+		await assert.rejects(
+			// The budget is the bound, so only the marker can have ended the wait with the exit wording.
+			() => spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => spawnModule.readBrokerLauncherExit(exit)),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /Intercom broker exited before startup with a failure status/u, error.message);
+				assert.ok(error.message.includes(marker), error.message);
+				return true;
+			},
+		);
+		assert.ok(Date.now() - started < PROMPT_EXIT_BOUND_MS);
+		removePathSync(exit.path, { force: true });
+	});
+
+	test("a clean exit that left nothing answering is reported too", async () => {
+		const exit = launcherExit();
+		writeFileSync(exit.path, `${exit.token} ok \r\n`);
+
+		await assert.rejects(
+			() => spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => spawnModule.readBrokerLauncherExit(exit)),
+			/Intercom broker exited before startup with code 0/u,
+		);
+		removePathSync(exit.path, { force: true });
+	});
+
+	test("a clean exit by a broker that found a live one on the socket is a success", async () => {
+		let live: net.Server | undefined;
+		try {
+			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => {
+				// The live broker appears between the wait's socket check and the exit it then reads (the listen is
+				// synchronous), as the incumbent answers a yielding newcomer's probe.
+				live ??= net.createServer((socket) => socket.on("error", () => {})).listen(getBrokerSocketPath());
+				return { clean: true };
+			});
+			assert.ok(live);
+		} finally {
+			await new Promise<void>((resolve) => (live ? live.close(() => resolve()) : resolve()));
+		}
+	});
+
+	test("another spawn's marker is not this spawn's exit, so a broker still loading is waited for", async () => {
+		const exit = launcherExit();
+		writeFileSync(exit.path, `${exit.token}-other failed \r\n`);
+
+		await assert.rejects(
+			() => spawnModule.waitForBroker(400, () => spawnModule.readBrokerLauncherExit(exit)),
+			/Broker failed to start within timeout \(400 ms\)/u,
+		);
+		removePathSync(exit.path, { force: true });
+	});
+});
+
 describe("bounded broker log tail", () => {
 	test("reads only the trailing bytes of an oversized log", () => {
 		const noisy = join(agentDir, "intercom", "noisy.log");
@@ -218,37 +412,39 @@ describe("bounded broker log tail", () => {
 });
 
 describe("broker startup failures name the log", () => {
-	test("a broker that exits during startup reports its captured stderr", async () => {
-		const marker = `EXIT-MARKER-${Date.now()}`;
+	/** Spawns a broker that writes `marker` to stderr and exits with `code`, and checks how the failure is reported. */
+	async function assertCrashReportedPromptly(marker: string, code: number): Promise<Error> {
+		const started = Date.now();
+		let reported: Error | undefined;
 		await assert.rejects(
 			() =>
-				spawnModule.spawnBrokerIfNeeded(process.execPath, [
-					"-e",
-					`console.error(${JSON.stringify(marker)}); process.exit(3);`,
-				]),
+				spawnModule.spawnBrokerIfNeeded(
+					process.execPath,
+					["-e", `console.error(${JSON.stringify(marker)}); process.exit(${code});`],
+					PROMPT_EXIT_BOUND_MS,
+				),
 			(error: unknown) => {
 				assert.ok(error instanceof Error);
-				// Which failure path reports this is platform-dependent, and the
-				// contract being tested is the diagnostic, not the wording.
-				//
-				// On Windows the broker is launched through the hidden VBS
-				// launcher, so the direct child is the launcher: it exits 0
-				// immediately and getBrokerSpawnOptions' onExit deliberately
-				// ignores that (`windows-launcher && code === 0 && signal === null`).
-				// The real broker's failure therefore surfaces through the
-				// waitForBroker() timeout instead of an exit code. Asserting the
-				// exit-code wording there tested the launcher, not the fix.
-				const reportsFailure =
-					/Intercom broker exited before startup with code 3/u.test(error.message) ||
-					/Broker failed to start within timeout/u.test(error.message);
-				assert.ok(reportsFailure, error.message);
-				assert.ok(error.message.includes(logPath), error.message);
-				// Proof the descriptor really captured the child's stderr, not just that a path was named.
-				// This must hold on BOTH paths -- it is the whole point of the change.
-				assert.ok(error.message.includes(marker), error.message);
+				reported = error;
 				return true;
 			},
 		);
+		assert.ok(reported);
+		// The same wording on every platform: the broker exited, and it is not "still starting". Behind the Windows
+		// launcher the exit reaches the parent through the launcher's marker file rather than a child exit event.
+		assert.match(reported.message, /Intercom broker exited before startup/u, reported.message);
+		assert.doesNotMatch(reported.message, /failed to start within timeout/u, reported.message);
+		assert.ok(Date.now() - started < PROMPT_EXIT_BOUND_MS, `reported after ${Date.now() - started} ms`);
+		assert.ok(reported.message.includes(logPath), reported.message);
+		// Proof the descriptor really captured the child's stderr, not just that a path was named.
+		assert.ok(reported.message.includes(marker), reported.message);
+		return reported;
+	}
+
+	test("a broker that exits during startup is reported at once with its captured stderr", async () => {
+		const marker = `EXIT-MARKER-${Date.now()}`;
+
+		await assertCrashReportedPromptly(marker, 3);
 
 		assert.ok(readFileSync(logPath, "utf8").includes(marker));
 	});
@@ -256,33 +452,19 @@ describe("broker startup failures name the log", () => {
 	test("the exit-code path names the code where the platform reports one", {
 		skip: process.platform === "win32",
 	}, async () => {
-		// Kept as a distinct assertion so the non-Windows exit path cannot
-		// regress behind the platform-tolerant check above.
+		// Behind the Windows launcher the marker file says whether the broker's status was 0, not what it was.
 		const marker = `EXIT-CODE-MARKER-${Date.now()}`;
-		await assert.rejects(
-			() =>
-				spawnModule.spawnBrokerIfNeeded(process.execPath, [
-					"-e",
-					`console.error(${JSON.stringify(marker)}); process.exit(3);`,
-				]),
-			(error: unknown) => {
-				assert.ok(error instanceof Error);
-				assert.match(error.message, /Intercom broker exited before startup with code 3/u);
-				return true;
-			},
-		);
+
+		const reported = await assertCrashReportedPromptly(marker, 3);
+
+		assert.match(reported.message, /Intercom broker exited before startup with code 3/u);
 	});
 
 	test("each spawn keeps one bounded previous log instead of erasing it (#3862)", async () => {
 		appendFileSync(logPath, `${"z".repeat(4096)}\n`, "utf8");
 		const marker = `SECOND-MARKER-${Date.now()}`;
 
-		await assert.rejects(() =>
-			spawnModule.spawnBrokerIfNeeded(process.execPath, [
-				"-e",
-				`console.error(${JSON.stringify(marker)}); process.exit(4);`,
-			]),
-		);
+		await assertCrashReportedPromptly(marker, 4);
 
 		const contents = readFileSync(logPath, "utf8");
 		assert.ok(contents.includes(marker));
@@ -299,14 +481,7 @@ describe("broker startup failures name the log", () => {
 		writeFileSync(logPath, "previous broker diagnosis\n");
 		const marker = "BROKER-STARTED-WITHOUT-BACKUP";
 		try {
-			await assert.rejects(
-				() =>
-					spawnModule.spawnBrokerIfNeeded(process.execPath, [
-						"-e",
-						`console.error(${JSON.stringify(marker)}); process.exit(4);`,
-					]),
-				(error: Error) => error.message.includes(marker),
-			);
+			await assertCrashReportedPromptly(marker, 4);
 		} finally {
 			removePathSync(previous, { recursive: true, force: true });
 		}
