@@ -47,6 +47,6 @@ test("several processes write one libSQL file at once without a failed statement
 			await database.close();
 		}
 	} finally {
-		removeLibsqlDirectory(directory);
+		await removeLibsqlDirectory(directory);
 	}
 }, 120_000);

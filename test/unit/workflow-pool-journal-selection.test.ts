@@ -21,6 +21,7 @@ import {
 	poolJournalOf,
 	registerPoolJournal,
 } from "../../packages/workflows/src/workers/pool-journal.js";
+import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const adapter = fileURLToPath(new URL("../fixtures/delegating-run-journal-adapter.mjs", import.meta.url));
@@ -82,7 +83,8 @@ test("only journals another process can open by selection get a pool, and the on
 });
 
 test("the pool shares a default-prefix SQLite file as it is, and every other journal gets a coordination database", async () => {
-	const directory = makeTempDirectory("pool-journal-local-");
+	// A libSQL file cannot be deleted on Windows until its native handles are collected.
+	const directory = makeLibsqlDirectory();
 	try {
 		const agentDir = join(directory, "home", "agent");
 		const local = await resolveRunJournal({ agentDir, journal: { path: join(directory, "journal.sqlite") } });
@@ -120,7 +122,7 @@ test("the pool shares a default-prefix SQLite file as it is, and every other jou
 			await Promise.all([local.close(), prefixed.close(), remote.close(), libsql.close()]);
 		}
 	} finally {
-		removeTempDirectory(directory);
+		await removeLibsqlDirectory(directory);
 	}
 });
 
@@ -187,6 +189,8 @@ test("a journal in another database finds the coordination database this machine
 			await local.close();
 		}
 	} finally {
+		// The coordination database is cached for the process; Windows cannot delete it while it is open.
+		await closeCoordinationJournals();
 		removeTempDirectory(directory);
 	}
 });
