@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { gt, maxSatisfying, rcompare, satisfies } from "semver";
 import { APP_NAME, CONFIG_DIR_NAME, getProjectConfigDirs } from "../config.js";
@@ -89,7 +89,9 @@ export function getGitDependencyInstallArgs(context: PackageManagerContext): str
 	}
 }
 
-export function getNpmInstallArgs(context: PackageManagerContext, specs: string[], installRoot: string): string[] {
+export function getNpmInstallArgs(context: PackageManagerContext, specs: string[], root: string): string[] {
+	// npm writes broken nested package-lock.json paths when --prefix goes through a symlink.
+	const installRoot = existsSync(root) ? realpathSync(root) : root;
 	const packageManagerName = getPackageManagerName(context);
 	if (packageManagerName === "bun") {
 		return ["install", ...specs, "--cwd", installRoot, "--omit=peer"];
@@ -125,10 +127,12 @@ export async function uninstallNpm(
 	source: NpmSource,
 	scope: SourceScope,
 ): Promise<void> {
-	const installRoot = getNpmInstallRoot(context, scope, false);
-	if (!existsSync(installRoot)) {
+	const root = getNpmInstallRoot(context, scope, false);
+	if (!existsSync(root)) {
 		return;
 	}
+	// npm writes broken nested package-lock.json paths when --prefix goes through a symlink.
+	const installRoot = realpathSync(root);
 	if (getPackageManagerName(context) === "bun") {
 		await runNpmCommand(context, ["uninstall", source.name, "--cwd", installRoot]);
 		return;

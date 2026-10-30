@@ -1,7 +1,7 @@
 import { relative } from "node:path";
 import { valid, validRange } from "semver";
 import { parseGitUrl } from "../utils/git.ts";
-import { isLocalPath } from "../utils/paths.ts";
+import { getPathComparisonKey, isLocalPath } from "../utils/paths.ts";
 import { getBaseDirForScope, resolveManagerPath, resolvePathFromBase } from "./package-manager-paths.ts";
 import type { PackageManagerContext, ParsedSource, SourceScope } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
@@ -63,7 +63,7 @@ function getSourceMatchKeyForInput(context: PackageManagerContext, source: strin
 	if (parsed.type === "git") {
 		return `git:${parsed.host}/${parsed.path}`;
 	}
-	return `local:${resolveManagerPath(context, parsed.path)}`;
+	return `local:${getPathComparisonKey(resolveManagerPath(context, parsed.path))}`;
 }
 
 function getSourceMatchKeyForSettings(context: PackageManagerContext, source: string, scope: SourceScope): string {
@@ -75,7 +75,7 @@ function getSourceMatchKeyForSettings(context: PackageManagerContext, source: st
 		return `git:${parsed.host}/${parsed.path}`;
 	}
 	const baseDir = getBaseDirForScope(context, scope);
-	return `local:${resolvePathFromBase(parsed.path, baseDir)}`;
+	return `local:${getPathComparisonKey(resolvePathFromBase(parsed.path, baseDir))}`;
 }
 
 export function packageSourcesMatch(
@@ -114,9 +114,9 @@ export function getPackageIdentity(context: PackageManagerContext, source: strin
 	}
 	if (scope) {
 		const baseDir = getBaseDirForScope(context, scope);
-		return `local:${resolvePathFromBase(parsed.path, baseDir)}`;
+		return `local:${getPathComparisonKey(resolvePathFromBase(parsed.path, baseDir))}`;
 	}
-	return `local:${resolveManagerPath(context, parsed.path)}`;
+	return `local:${getPathComparisonKey(resolveManagerPath(context, parsed.path))}`;
 }
 
 export function dedupePackages(

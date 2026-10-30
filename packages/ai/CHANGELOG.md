@@ -4,6 +4,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Zhipu/Z.ai usage-limit errors (code 1308, sent as HTTP 429) being retried, although the limit resets after hours ([#11537](https://github.com/earendil-works/pi/issues/11537)).
+- Fixed OpenRouter's `~anthropic/claude-*-latest` aliases using the Chat Completions API. They now use Anthropic Messages with adaptive thinking ([pi 44f6851b](https://github.com/earendil-works/pi/commit/44f6851bf)).
+
 ## [0.9.47] - 2026-10-27
 
 ### Fixed

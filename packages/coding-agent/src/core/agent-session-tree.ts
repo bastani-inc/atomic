@@ -1,4 +1,5 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./compaction/index.ts";
 import type { SessionBeforeTreeResult, TreePreparation } from "./extensions/index.js";
 import { assertSessionOpen } from "./session-lifecycle-work.ts";
@@ -141,7 +142,7 @@ export async function navigateTree(
 		let summaryUsage: import("@bastani/pi-ai/compat").Usage | undefined;
 		if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
 			const model = this.model!;
-			const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
+			const { apiKey, headers, baseUrl } = authForStream(this, await this._getRequiredRequestAuth(model));
 			assertSessionOpen(this);
 			const branchSummarySettings = this.settingsManager.getBranchSummarySettings();
 			const result = await generateBranchSummary(entriesToSummarize, {

@@ -1,5 +1,6 @@
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
+import { pathsEqual } from "../utils/paths.ts";
 import { getBaseDirsForScope, getHomeDir } from "./package-manager-paths.ts";
 import { addResource, getTargetMap } from "./package-manager-resource-accumulator.ts";
 import {
@@ -121,9 +122,7 @@ export async function addAutoDiscoveredResources(
 	const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
 	const projectTrusted = context.settingsManager.isProjectTrusted();
 	const projectAgentsSkillDirs = projectTrusted
-		? (await collectAncestorAgentsSkillDirs(context.cwd)).filter(
-				(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
-			)
+		? (await collectAncestorAgentsSkillDirs(context.cwd)).filter((dir) => !pathsEqual(dir, userAgentsSkillsDir))
 		: [];
 	const addResources = (
 		resourceType: ResourceType,

@@ -226,11 +226,23 @@ export async function refreshTemporaryGitSource(
 	context: PackageManagerContext,
 	source: GitSource,
 	sourceStr: string,
+	installedPath: string,
 ): Promise<void> {
 	if (isOfflineModeEnabled()) {
 		return;
 	}
 	try {
+		// A ref can name a moving branch, so refresh refs too. Skip the network call only when the
+		// ref is a commit hash that is already checked out.
+		if (source.ref && /^[0-9a-f]{7,64}$/i.test(source.ref)) {
+			const head = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+				cwd: installedPath,
+				timeoutMs: NETWORK_TIMEOUT_MS,
+			});
+			if (head.trim().toLowerCase().startsWith(source.ref.toLowerCase())) {
+				return;
+			}
+		}
 		await withProgress(context, "pull", sourceStr, `Refreshing ${sourceStr}...`, async () => {
 			await updateGit(context, source, "temporary");
 		});

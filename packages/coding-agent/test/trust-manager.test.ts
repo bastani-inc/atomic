@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -149,5 +149,51 @@ describe("ProjectTrustStore", () => {
 		writeFileSync(trustPath, `\uFEFF${JSON.stringify({ [getProjectTrustPath(cwd)]: true })}`);
 
 		expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(true);
+	});
+});
+
+describe("project trust on Windows paths", () => {
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+	const homeEnv = ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"] as const;
+	const originalEnv = new Map(homeEnv.map((name) => [name, process.env[name]]));
+
+	afterEach(() => {
+		if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+		for (const [name, value] of originalEnv) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	});
+
+	// Regression test for upstream https://github.com/earendil-works/pi/issues/10488
+	it("ignores the user .agents/skills dir when the home directory differs only by case", () => {
+		const mixedCaseHome = join(createTempProject(), "Home");
+		const projectDir = join(mixedCaseHome, "project");
+		mkdirSync(join(mixedCaseHome, ".agents", "skills"), { recursive: true });
+		mkdirSync(projectDir, { recursive: true });
+		for (const name of homeEnv) delete process.env[name];
+		process.env.USERPROFILE = mixedCaseHome.toLowerCase();
+		Object.defineProperty(process, "platform", { value: "win32" });
+
+		expect(hasTrustRequiringProjectResources(projectDir)).toBe(false);
+		expect(hasProjectTrustInputs(projectDir)).toBe(false);
+	});
+
+	// Regression test for upstream https://github.com/earendil-works/pi/issues/10488
+	it("matches saved decisions regardless of casing", () => {
+		const root = createTempProject();
+		const agentDir = join(root, "agent");
+		const projectDir = join(root, "Project-Mixed");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(projectDir, { recursive: true });
+		const store = new ProjectTrustStore(agentDir);
+		store.set(projectDir, true);
+		Object.defineProperty(process, "platform", { value: "win32" });
+
+		expect(store.get(projectDir.toLowerCase())).toBe(true);
+		store.set(projectDir.toLowerCase(), false);
+		const saved = JSON.parse(readFileSync(join(agentDir, "trust.json"), "utf-8")) as Record<string, boolean>;
+		expect(Object.values(saved)).toEqual([false]);
+		expect(store.get(projectDir)).toBe(false);
 	});
 });

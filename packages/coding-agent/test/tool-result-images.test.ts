@@ -48,9 +48,22 @@ function createTinyBmp1x1Red24bpp(): Buffer {
 	return buffer;
 }
 
-function pngDimensions(base64: string): { width: number; height: number } {
-	const bytes = Buffer.from(base64, "base64");
-	return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+/** Width and height of a PNG or JPEG: resizing returns whichever of the two is smaller (upstream #11551). */
+function imageDimensions(image: { data: string; mimeType: string }): { width: number; height: number } {
+	const bytes = Buffer.from(image.data, "base64");
+	if (image.mimeType === "image/png") return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+	expect(image.mimeType).toBe("image/jpeg");
+	// Walk the JPEG segments to the first start-of-frame marker, which carries the dimensions.
+	let offset = 2;
+	while (offset + 9 < bytes.length) {
+		const marker = bytes[offset + 1];
+		const length = bytes.readUInt16BE(offset + 2);
+		const isStartOfFrame =
+			marker !== undefined && marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+		if (isStartOfFrame) return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
+		offset += 2 + length;
+	}
+	throw new Error("no JPEG start-of-frame marker");
 }
 
 function imageBlock(bytes: Buffer, mimeType: string): ToolResultContent {
@@ -82,7 +95,7 @@ test("normalizes oversized tool-result images before history", async () => {
 	const image = normalized[0];
 	expect(image?.type).toBe("image");
 	if (image?.type !== "image") return;
-	const dimensions = pngDimensions(image.data);
+	const dimensions = imageDimensions(image);
 	expect(dimensions.width).toBeLessThanOrEqual(2000);
 	expect(dimensions.height).toBeLessThanOrEqual(2000);
 	expect(normalized[1]).toMatchObject({ type: "text", text: expect.stringContaining("original 2400x2100") });

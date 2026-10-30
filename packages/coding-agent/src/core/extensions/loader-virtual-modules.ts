@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
 import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
-import { resolvePath } from "../../utils/paths.ts";
+import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
 import { installHostModuleBridge } from "./host-module-bridge.ts";
 import { getVirtualModules, loadVirtualModules } from "./loader-host-modules.js";
@@ -342,7 +342,7 @@ export function clearExtensionCache(): void {
 
 export function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
 	const resolvedCwd = resolvePath(cwd);
-	if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
+	if (extensionCacheCwd !== undefined && !pathsEqual(extensionCacheCwd, resolvedCwd)) {
 		clearExtensionCache();
 	}
 	extensionCacheCwd = resolvedCwd;

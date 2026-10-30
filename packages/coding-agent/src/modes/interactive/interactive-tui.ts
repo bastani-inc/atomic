@@ -606,7 +606,7 @@ function createProcessTerminal(): ProcessTerminal {
 	return isLifecycleTimingEnabled() ? new LifecycleTimingTerminal() : new ProcessTerminal();
 }
 
-function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
+export function shouldUseFullscreenTui(usesInjectedTerminal: boolean): boolean {
 	if (process.env.TERM?.toLowerCase() === "dumb") return false;
 	if (usesInjectedTerminal) return true;
 	return process.stdin.isTTY === true && process.stdout.isTTY === true && !isCiEnvironment(process.env.CI);

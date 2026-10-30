@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { getCurrentSystemMessage } from "@bastani/pi-ai";
 import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
 import { getAgentDir } from "../config.js";
-import { createSessionCwdMatcher, normalizePath, resolvePath } from "../utils/paths.ts";
+import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
@@ -243,7 +243,7 @@ export class SessionManager {
 	}
 
 	usesDefaultSessionDir(): boolean {
-		return this.sessionDir === getDefaultSessionDirPath(this.cwd);
+		return pathsEqual(this.sessionDir, getDefaultSessionDirPath(this.cwd));
 	}
 
 	getSessionId(): string {

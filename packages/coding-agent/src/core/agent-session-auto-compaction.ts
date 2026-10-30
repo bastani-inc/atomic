@@ -2,6 +2,7 @@ import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { isContextOverflow, isRecoverableLength } from "@bastani/pi-ai/compat";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import {
 	type CompactionUrgency,
 	calculateContextTokens,
@@ -566,7 +567,7 @@ export async function _runAutoCompaction(
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async (candidate) => {
 				const authResult = await this._getRequiredRequestAuth(candidate, controller.signal);
-				return authResult.apiKey || authResult.headers ? authResult : undefined;
+				return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
 			},
 			abortController: controller,
 			backupLabel: urgency === "load_bearing" ? "overflow-auto-compact" : "auto-compact",

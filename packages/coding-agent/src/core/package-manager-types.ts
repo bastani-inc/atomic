@@ -112,7 +112,7 @@ export interface PackageManagerDriver {
 	installParsedSource(parsed: ParsedSource, scope: SourceScope): Promise<void>;
 	updateGit(source: GitSource, scope: SourceScope): Promise<void>;
 	gitHasAvailableUpdate(installedPath: string): Promise<boolean>;
-	refreshTemporaryGitSource(source: GitSource, sourceStr: string): Promise<void>;
+	refreshTemporaryGitSource(source: GitSource, sourceStr: string, installedPath: string): Promise<void>;
 	getLocalGitUpdateTarget(installedPath: string): Promise<GitUpdateTargetInfo>;
 	getGlobalNpmRoot(): string;
 	parseSource(source: string): ParsedSource;
@@ -162,6 +162,10 @@ export interface ConfiguredUpdateSource {
 
 export interface NpmUpdateTarget extends ConfiguredUpdateSource {
 	parsed: NpmSource;
+	/** Version installed before the update, if any. */
+	installedVersion?: string;
+	/** Newer version reported by the registry, if the lookup succeeded. */
+	targetVersion?: string;
 }
 
 export interface GitUpdateTarget extends ConfiguredUpdateSource {

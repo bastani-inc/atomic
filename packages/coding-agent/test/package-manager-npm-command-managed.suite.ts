@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,7 +153,7 @@ describe("DefaultPackageManager", () => {
 						"install",
 						"pnpm-pkg",
 						"--prefix",
-						join(agentDir, "npm"),
+						realpathSync(join(agentDir, "npm")),
 						"--config.auto-install-peers=false",
 						"--config.strict-peer-dependencies=false",
 						"--config.strict-dep-builds=false",
@@ -218,7 +218,7 @@ describe("DefaultPackageManager", () => {
 						"install",
 						"example@^2.0.0",
 						"--prefix",
-						join(agentDir, "npm"),
+						realpathSync(join(agentDir, "npm")),
 						"--legacy-peer-deps",
 						"--no-audit",
 						"--no-fund",
@@ -286,7 +286,7 @@ describe("DefaultPackageManager", () => {
 						"install",
 						"example@beta",
 						"--prefix",
-						join(agentDir, "npm"),
+						realpathSync(join(agentDir, "npm")),
 						"--legacy-peer-deps",
 						"--no-audit",
 						"--no-fund",

@@ -439,7 +439,9 @@ describe("DefaultPackageManager git update", () => {
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// fresh");
 		});
 
-		it("should not refresh pinned temporary git sources", async () => {
+		// A ref can name a moving branch (upstream #11375), so a temporary source pinned to one refreshes. One pinned
+		// to a commit that is already checked out does not: see the offline-resolve suite.
+		it("should refresh temporary git sources pinned to a branch ref", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
 			const pinnedSource = `${gitSource}@main`;
 			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(pinnedSource), "temporary");
@@ -463,7 +465,7 @@ describe("DefaultPackageManager git update", () => {
 
 			await packageManager.resolveExtensionSources([pinnedSource], { temporary: true });
 
-			expect(executedCommands).toEqual([]);
+			expect(executedCommands).toContain("git fetch origin -- main");
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// pinned");
 		});
 	});

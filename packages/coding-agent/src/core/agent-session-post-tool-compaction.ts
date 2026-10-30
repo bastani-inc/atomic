@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 
@@ -65,7 +66,7 @@ export async function _preflightPostToolContext(
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async (candidate) => {
 				const auth = await this._getRequiredRequestAuth(candidate);
-				return auth.apiKey || auth.headers ? auth : undefined;
+				return auth.apiKey || auth.headers ? authForStream(this, auth) : undefined;
 			},
 			abortController,
 			backupLabel: "auto-compact",

@@ -87,7 +87,8 @@ export class DefaultPackageManager implements PackageManager {
 			installParsedSource: (parsed, scope) => this.installParsedSource(parsed, scope),
 			updateGit: (source, scope) => this.updateGit(source, scope),
 			gitHasAvailableUpdate: (installedPath) => this.gitHasAvailableUpdate(installedPath),
-			refreshTemporaryGitSource: (source, sourceStr) => this.refreshTemporaryGitSource(source, sourceStr),
+			refreshTemporaryGitSource: (source, sourceStr, installedPath) =>
+				this.refreshTemporaryGitSource(source, sourceStr, installedPath),
 			getLocalGitUpdateTarget: (installedPath) => this.getLocalGitUpdateTarget(installedPath),
 			getGlobalNpmRoot: () => this.getGlobalNpmRoot(),
 			parseSource: (source) => this.parseSource(source),
@@ -178,8 +179,8 @@ export class DefaultPackageManager implements PackageManager {
 		return gitHasAvailableUpdateFromContext(this.context, installedPath);
 	}
 
-	private async refreshTemporaryGitSource(source: GitSource, sourceStr: string): Promise<void> {
-		await refreshTemporaryGitSourceFromContext(this.context, source, sourceStr);
+	private async refreshTemporaryGitSource(source: GitSource, sourceStr: string, installedPath: string): Promise<void> {
+		await refreshTemporaryGitSourceFromContext(this.context, source, sourceStr, installedPath);
 	}
 
 	private async getLocalGitUpdateTarget(installedPath: string): Promise<GitUpdateTargetInfo> {

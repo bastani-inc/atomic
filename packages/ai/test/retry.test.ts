@@ -42,6 +42,24 @@ describe("provider retry classification", () => {
 		).toBe(true);
 	});
 
+	// Upstream #11537: Zhipu/Z.ai sends its plan usage limit (code 1308) as HTTP 429, and it resets after hours.
+	it("does not retry a Zhipu usage limit sent as HTTP 429", () => {
+		const usageLimit =
+			'429 {"error":{"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-29 21:00:00"}}';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: usageLimit })),
+		).toBe(false);
+		// Another 429 whose code merely starts with 1308 digits stays retryable.
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: '429 {"error":{"code":"13081","message":"busy"}}',
+				}),
+			),
+		).toBe(true);
+	});
+
 	it("matches Bun fetch socket drop wording", () => {
 		expect(
 			isRetryableAssistantError(

@@ -5,6 +5,7 @@ import { replaceControlCharacters } from "../../utils/ansi.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { setMarkitDiagnosticSink } from "../../utils/markit.js";
+import { shortenHomePath } from "../../utils/paths.ts";
 import type { ToolStatus } from "../../utils/tools-manager.ts";
 import { renderDiagnosticStatus } from "../interactive-engine/engine-diagnostic-view.js";
 import {
@@ -47,7 +48,6 @@ import {
 	type MarkdownTheme,
 	normalizeChangelogLinks,
 	onThemeChange,
-	os,
 	parseChangelog,
 	path,
 	recordTimeSinceReset,
@@ -306,6 +306,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.builtInHeader = new Text("", 0, 0);
 		this.headerContainer.addChild(this.builtInHeader);
 	}
+	this.showFullscreenModelScopeNotice();
 	markLifecycleTiming("header-mounted");
 	this.ui.requestRender();
 	// This legacy mark now means the first requested identity frame. The settled
@@ -574,15 +575,7 @@ InteractiveModeBase.prototype.getMarkdownThemeWithSettings = function (this: Int
 };
 
 InteractiveModeBase.prototype.formatDisplayPath = function (this: InteractiveModeBase, p: string): string {
-	const home = os.homedir();
-	let result = p;
-
-	// Replace home directory with ~
-	if (result.startsWith(home)) {
-		result = `~${result.slice(home.length)}`;
-	}
-
-	return result;
+	return shortenHomePath(p);
 };
 
 InteractiveModeBase.prototype.formatExtensionDisplayPath = function (this: InteractiveModeBase, path: string): string {
@@ -646,6 +639,17 @@ InteractiveModeBase.prototype.getAtomicAnsiMarkLines = function (this: Interacti
 
 InteractiveModeBase.prototype.getStartupExpansionState = function (this: InteractiveModeBase): boolean {
 	return this.options.verbose || this.toolOutputExpanded;
+};
+
+/**
+ * Fullscreen paints on the alternate screen, so the "Model scope" line cannot be printed to stdout there
+ * (it would stay in the shell after exit); it goes below the header instead (upstream #11508).
+ */
+InteractiveModeBase.prototype.showFullscreenModelScopeNotice = function (this: InteractiveModeBase): void {
+	const notice = this.options.modelScopeNotice;
+	if (!notice || !this.usesFullscreenRenderer) return;
+	this.headerContainer.addChild(new ThemedText(() => theme.fg("dim", notice), 1, 0));
+	this.headerContainer.addChild(new Spacer(1));
 };
 
 InteractiveModeBase.prototype.shouldShowStartupHeader = function (this: InteractiveModeBase): boolean {

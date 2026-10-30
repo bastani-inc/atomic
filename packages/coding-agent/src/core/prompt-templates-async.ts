@@ -1,9 +1,9 @@
 import { access, readdir, readFile, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { resolvePath } from "../utils/paths.ts";
+import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { LoadPromptTemplatesOptions, LoadPromptTemplatesResult, PromptTemplate } from "./prompt-templates.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -108,18 +108,11 @@ export async function loadPromptTemplatesAsync(
 	};
 	const globalPromptsDir = join(resolvedAgentDir, "prompts");
 	const projectPromptsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "prompts");
-	const isUnderPath = (target: string, root: string): boolean => {
-		const normalizedRoot = resolve(root);
-		return (
-			target === normalizedRoot ||
-			target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`)
-		);
-	};
 	const getSourceInfo = async (resolvedPath: string): Promise<SourceInfo> => {
-		if (isUnderPath(resolvedPath, globalPromptsDir)) {
+		if (isPathWithin(globalPromptsDir, resolvedPath)) {
 			return createSyntheticSourceInfo(resolvedPath, { source: "local", scope: "user", baseDir: globalPromptsDir });
 		}
-		if (isUnderPath(resolvedPath, projectPromptsDir)) {
+		if (isPathWithin(projectPromptsDir, resolvedPath)) {
 			return createSyntheticSourceInfo(resolvedPath, {
 				source: "local",
 				scope: "project",

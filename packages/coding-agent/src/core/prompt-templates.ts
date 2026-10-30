@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { resolvePath } from "../utils/paths.ts";
+import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 
@@ -242,24 +242,15 @@ export function loadPromptTemplates(options: LoadPromptTemplatesOptions): LoadPr
 	const globalPromptsDir = join(resolvedAgentDir, "prompts");
 	const projectPromptsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "prompts");
 
-	const isUnderPath = (target: string, root: string): boolean => {
-		const normalizedRoot = resolve(root);
-		if (target === normalizedRoot) {
-			return true;
-		}
-		const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-		return target.startsWith(prefix);
-	};
-
 	const getSourceInfo = (resolvedPath: string): SourceInfo => {
-		if (isUnderPath(resolvedPath, globalPromptsDir)) {
+		if (isPathWithin(globalPromptsDir, resolvedPath)) {
 			return createSyntheticSourceInfo(resolvedPath, {
 				source: "local",
 				scope: "user",
 				baseDir: globalPromptsDir,
 			});
 		}
-		if (isUnderPath(resolvedPath, projectPromptsDir)) {
+		if (isPathWithin(projectPromptsDir, resolvedPath)) {
 			return createSyntheticSourceInfo(resolvedPath, {
 				source: "local",
 				scope: "project",

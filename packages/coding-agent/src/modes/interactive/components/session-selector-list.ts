@@ -13,7 +13,7 @@ import { theme } from "../theme/theme.js";
 import { keyText } from "./keybinding-hints.js";
 import { filterAndSortSessions, hasSessionName, type NameFilter, type SortMode } from "./session-selector-search.ts";
 import { buildSessionTree, type FlatSessionNode, flattenSessionTree } from "./session-selector-tree.ts";
-import { canonicalizePath, formatSessionDate, shortenPath } from "./session-selector-utils.ts";
+import { formatSessionDate, getSessionPathKey, shortenPath } from "./session-selector-utils.ts";
 
 /**
  * Custom session list component with multi-line items and search
@@ -147,7 +147,7 @@ export class SessionList implements Component, Focusable {
 			this.currentSession !== undefined &&
 			session.id === this.currentSession.id &&
 			(this.currentSession.directory === undefined ||
-				canonicalizePath(dirname(session.path)) === canonicalizePath(this.currentSession.directory))
+				getSessionPathKey(dirname(session.path)) === getSessionPathKey(this.currentSession.directory))
 		);
 	}
 

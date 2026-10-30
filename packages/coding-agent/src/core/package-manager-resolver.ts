@@ -4,7 +4,11 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { addAutoDiscoveredResources, collectProjectLocalResources } from "./package-manager-auto-resources.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { getExistingGitInstallPath, refreshTemporaryGitSource } from "./package-manager-git.ts";
-import { getExistingNpmInstallPath, installedNpmMatchesConfiguredVersion } from "./package-manager-npm.ts";
+import {
+	getExistingNpmInstallPath,
+	installedNpmMatchesConfiguredVersion,
+	npmHasAvailableUpdate,
+} from "./package-manager-npm.ts";
 import { installParsedSource } from "./package-manager-operations.ts";
 import { getBaseDirsForScope, getGitInstallPath, resolvePathFromBase } from "./package-manager-paths.ts";
 import {
@@ -261,6 +265,23 @@ async function resolvePackageSources(
 				}
 			}
 			if (!installedPath) continue;
+			if (
+				!needsInstall &&
+				resolvedScope === "temporary" &&
+				!parsed.pinned &&
+				(await npmHasAvailableUpdate(context, parsed, installedPath))
+			) {
+				// Temporary (-e) sources have no `update` path, so refresh unpinned ones on load like temporary git
+				// sources. Like `update`, install `name@latest` for unversioned specs because a bare `npm install name`
+				// keeps the range already saved in the temporary package.json.
+				const refreshed = { ...parsed, spec: parsed.version ? parsed.spec : `${parsed.name}@latest` };
+				try {
+					if (context.driver) await context.driver.installParsedSource(refreshed, resolvedScope);
+					else await installParsedSource(context, refreshed, resolvedScope);
+				} catch {
+					// Keep the cached install if the refresh fails.
+				}
+			}
 			metadata.baseDir = installedPath;
 			metadata.packageRoot = installedPath;
 			await collectPackageResources(installedPath, accumulator, filter, metadata);
@@ -272,9 +293,9 @@ async function resolvePackageSources(
 		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;
-		} else if (resolvedScope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
-			if (context.driver) await context.driver.refreshTemporaryGitSource(parsed, sourceStr);
-			else await refreshTemporaryGitSource(context, parsed, sourceStr);
+		} else if (resolvedScope === "temporary" && !isOfflineModeEnabled()) {
+			if (context.driver) await context.driver.refreshTemporaryGitSource(parsed, sourceStr, installedPath);
+			else await refreshTemporaryGitSource(context, parsed, sourceStr, installedPath);
 		}
 		metadata.baseDir = installedPath;
 		metadata.packageRoot = installedPath;
