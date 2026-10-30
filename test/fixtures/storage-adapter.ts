@@ -29,6 +29,37 @@ function withCallDelay(database: SqliteDatabase, ms: number): SqliteDatabase {
 }
 
 /**
+ * Parks the write that records one session's registration, which is the first shared-store call the broker makes for
+ * it: the broker has taken the registration and cannot answer it until the write returns. The file at `gate` names
+ * the session to park (its registered name); once the adapter has parked it, it appends the name to `<gate>.parked`,
+ * the signal a test waits for. Removing the file lets the write go.
+ */
+function withRegistrationGate(database: SqliteDatabase, gate: string): SqliteDatabase {
+	const parkIfNamed = async (sql: string, params: readonly SqliteValue[]): Promise<void> => {
+		if (!/^\s*INSERT INTO \w*intercom_known_sessions\b/u.test(sql)) return;
+		let parked = false;
+		for (;;) {
+			const name = await readFile(gate, "utf8").catch(() => "");
+			if (name === "" || params[2] !== JSON.stringify(name)) return;
+			if (!parked) {
+				parked = true;
+				await appendFile(`${gate}.parked`, `${name}\n`);
+			}
+			await new Promise<void>((resolveWait) => setTimeout(resolveWait, 20));
+		}
+	};
+	return {
+		descriptor: database.descriptor,
+		exec: (sql) => database.exec(sql),
+		run: async (sql, ...params) => (await parkIfNamed(sql, params), database.run(sql, ...params)),
+		get: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.get<T>(sql, ...params),
+		all: <T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) => database.all<T>(sql, ...params),
+		transaction: (callback) => database.transaction(callback),
+		close: () => database.close(),
+	};
+}
+
+/**
  * Holds the Intercom broker's opening (domain "intercom") on the file at `gate`: missing, it waits; `fail`, the
  * opening fails; `open`, it proceeds.
  */
@@ -64,8 +95,10 @@ export default {
 				}
 			};
 		}
-		if (typeof options.callDelayMs === "number") return withCallDelay(database, options.callDelayMs);
-		return database;
+		const gated =
+			typeof options.registrationGate === "string" ? withRegistrationGate(database, options.registrationGate) : database;
+		if (typeof options.callDelayMs === "number") return withCallDelay(gated, options.callDelayMs);
+		return gated;
 	},
 } satisfies StorageAdapterModule & {
 	readonly cleanupFailure: StorageUnavailableError;

@@ -16,7 +16,7 @@ const SESSIONS_HELD_ON_THE_RETIRING_BROKER = 4;
 let harness: TwoBrokerHarness;
 
 beforeAll(async () => {
-	harness = await TwoBrokerHarness.start({ databaseCallDelayMs: DATABASE_CALL_DELAY_MS });
+	harness = await TwoBrokerHarness.start({ databaseCallDelayMs: DATABASE_CALL_DELAY_MS, parkableRegistrations: true });
 }, REAL_BROKERS_HOOK_TIMEOUT_MS);
 afterAll(() => harness?.cleanup(), REAL_BROKERS_HOOK_TIMEOUT_MS);
 
@@ -65,5 +65,39 @@ test("a broker that is closing refuses a registration as retiring instead of reg
 	await harness.stopBroker("a", "SIGKILL").catch(() => undefined);
 	await harness.startBroker("a");
 	const registered = await harness.connect("a", unique("after"), { group });
+	assert.equal(registered.disconnected, false);
+});
+
+test("a registration still waiting for its shared-store write is refused as retiring when its broker shuts down", async () => {
+	assert.equal(harness.multiNodeRouting, true);
+	const group = unique("pending");
+	const name = unique("pending-registration");
+
+	// The broker takes this registration and parks on the shared-store write that records it, as it does while the
+	// store is slow: the session is routable, its frames are held, and nothing has answered its registration.
+	harness.holdRegistration(name);
+	const registering = harness.connect("a", name, { group }).then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	try {
+		await harness.registrationParked(name);
+		await harness.requestShutdown("a");
+		// The broker gives the refusal before it ends the socket, so the client is not left to guess from a closed one.
+		const failure = await registering;
+
+		assert.ok(failure instanceof Error, "the registration was answered as accepted by a broker that is closing");
+		assert.equal(failure.name, "IntercomBrokerRetiringError", String(failure));
+		assert.equal((failure as { intercomRecoverableDisconnect?: boolean }).intercomRecoverableDisconnect, true);
+		assert.match(failure.message, /broker is retiring/u);
+		// Still waiting for the parked write when it answered: the answer is the broker's, not its exit's.
+		assert.equal(harness.isBrokerRunning("a"), true);
+	} finally {
+		harness.releaseRegistration();
+	}
+
+	await harness.stopBroker("a", "SIGKILL").catch(() => undefined);
+	await harness.startBroker("a");
+	const registered = await harness.connect("a", unique("after-pending"), { group });
 	assert.equal(registered.disconnected, false);
 });

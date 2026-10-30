@@ -129,6 +129,11 @@ export function holdWrites(socket: net.Socket): void {
 	if (!heldWrites.has(socket)) heldWrites.set(socket, []);
 }
 
+/** Whether `socket`'s frames are being held, that is, its deferred `registered` has not been written. */
+export function isHoldingWrites(socket: net.Socket): boolean {
+	return heldWrites.has(socket);
+}
+
 /** Stop holding frames for `socket`; returns the frames held, in the order they were written. */
 export function releaseHeldWrites(socket: net.Socket): HeldWrite[] {
 	const held = heldWrites.get(socket) ?? [];

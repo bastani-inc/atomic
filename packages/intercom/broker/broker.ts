@@ -13,6 +13,7 @@ import {
   flushHeldWrites,
   type HeldWrite,
   holdWrites,
+  isHoldingWrites,
   releaseHeldWrites,
   writeMessageIfOpen,
   writeMessageWithOutcome,
@@ -106,6 +107,12 @@ const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
 const MULTI_NODE_CLOSE_BOUND_MS = 2_000;
+/** What a registration is answered with once this broker is closing: the client spawns the replacement and registers again. */
+const RETIRING_REFUSAL = {
+  type: "registration_failed",
+  reason: BROKER_RETIRING_REASON,
+  code: BROKER_RETIRING_CODE,
+} as const;
 const NO_SHARED_STORAGE_REASON = "no shared storage selection (top-level `storage` in global settings, or ATOMIC_STORAGE)";
 /** The off reasons `resolveBrokerStateSource` reports without an error, as the log and `broker_status` state them. */
 const MULTI_NODE_OFF_REASONS: Readonly<Record<string, string>> = {
@@ -1636,7 +1643,7 @@ class IntercomBroker {
         if (this.shuttingDown) {
           // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
           // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
-          writeMessageIfOpen(socket, { type: "registration_failed", reason: BROKER_RETIRING_REASON, code: BROKER_RETIRING_CODE });
+          writeMessageIfOpen(socket, RETIRING_REFUSAL);
           socket.end();
           return;
         }
@@ -2552,6 +2559,14 @@ class IntercomBroker {
     console.log("Broker shutting down");
 
     for (const session of this.sessions.values()) {
+      // A registration still waiting for its presence write has been taken but not answered, and its frames are held
+      // behind the `registered` it is owed. It gets the same refusal a registration arriving now gets: the held
+      // frames go (each confirmed write reports `false`, as for a session that is gone) and the refusal is written
+      // before the socket ends, so its client registers with the replacement instead of finding the socket closed.
+      if (isHoldingWrites(session.socket)) {
+        discardHeldWrites(releaseHeldWrites(session.socket));
+        writeMessageIfOpen(session.socket, RETIRING_REFUSAL);
+      }
       session.socket.end();
     }
     this.sessions.clear();
