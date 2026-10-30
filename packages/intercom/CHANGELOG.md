@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.56] - 2026-10-30
+
+### Fixed
+
+- A workflow stage whose session was replaced while it waited for its workflow's owner to register no longer registers a session of its own afterwards. The wait checked that the session was still live before it, not after, so the stage's start-up went on to spawn the broker and register again for a session that was gone, and the connection it opened was never closed. It now stops when the wait ends if the session was replaced ([#4129](https://github.com/bastani-inc/atomic/issues/4129))
+
+## [0.9.56-alpha.1] - 2026-10-30
+
 ### Fixed
 
 - A workflow stage whose session was replaced while it waited for its workflow's owner to register no longer registers a session of its own afterwards. The wait checked that the session was still live before it, not after, so the stage's start-up went on to spawn the broker and register again for a session that was gone, and the connection it opened was never closed. It now stops when the wait ends if the session was replaced ([#4129](https://github.com/bastani-inc/atomic/issues/4129))
