@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { type AdapterOptions, type StorageSelection, storageSelectionKey } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import "../durable/journal/workflows-host-module.js";
@@ -112,14 +112,31 @@ export function poolStateDirectory(agentDir: string): string {
 }
 
 /**
+ * Which database a selection opens: what `storageSelectionKey` keys an open connection by, without the references an
+ * adapter reads its credentials through. That key tells connections apart, so it includes where a secret is read from;
+ * the same token read from another environment variable opens the same database, and must find the same pool state.
+ */
+function databaseIdentity(selection: DurableSelection, agentDir: string): string {
+	return storageSelectionKey(
+		selection.kind === "adapter" ? { ...selection, secrets: undefined } : selection,
+		agentDir,
+	);
+}
+
+/**
  * The local SQLite database holding the work queue, leases, usage, admission permits and pooled-stage sessions of every
  * root whose durable journal is `durable`, on this machine. It belongs to the journal's identity, not to one root, so
  * a root resumed on this machine reopens it.
  */
 export function coordinationPath(durable: PoolDurableJournal): string {
 	const selection = decodeSelection(durable.selection);
-	const identity = createHash("sha256").update(storageSelectionKey(selection, durable.agentDir)).digest("hex");
+	const identity = createHash("sha256").update(databaseIdentity(selection, durable.agentDir)).digest("hex");
 	return join(poolStateDirectory(durable.agentDir), `${identity.slice(0, 24)}.sqlite`);
+}
+
+/** The name of {@link coordinationPath}'s database, which a root records so a resume can tell it is still the same. */
+export function coordinationDatabase(durable: PoolDurableJournal): string {
+	return basename(coordinationPath(durable), ".sqlite");
 }
 
 const coordinationJournals = new Map<string, Promise<RunJournal>>();

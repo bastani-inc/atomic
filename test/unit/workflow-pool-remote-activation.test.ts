@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import {
 	closeCoordinationJournals,
+	coordinationDatabase,
 	coordinationPath,
 	poolDurableJournal,
 	poolHostId,
@@ -21,6 +22,7 @@ const childPath = fileURLToPath(new URL("../fixtures/pool-child.ts", import.meta
 const workers = { count: 1, definitions: [{ path: childPath, exportName: "child" }] };
 
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	await closeCoordinationJournals();
 });
 
@@ -51,7 +53,10 @@ test.skipIf(process.platform === "win32")(
 			assert.ok(pool);
 			try {
 				const host = poolHostId(agentDir);
-				assert.deepEqual(options.effectiveResources?.coordinator, { host });
+				assert.deepEqual(options.effectiveResources?.coordinator, {
+					host,
+					database: coordinationDatabase(poolDurableJournal(backend.journal)),
+				});
 				assert.ok(existsSync(coordinationPath(poolDurableJournal(backend.journal))));
 
 				// The same machine resumes: the recorded resources match what it would run.
@@ -65,7 +70,7 @@ test.skipIf(process.platform === "win32")(
 				assert.ok(saved);
 
 				// Another machine: its pool database is somewhere this one cannot see.
-				const elsewhere = { ...saved, coordinator: { host: "another-machine" } };
+				const elsewhere = { ...saved, coordinator: { ...saved.coordinator!, host: "another-machine" } };
 				await assert.rejects(
 					activatePublicPool(backend, {
 						runId: "root",
@@ -152,4 +157,66 @@ test.skipIf(process.platform === "win32")(
 			removeTempDirectory(directory);
 		}
 	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a root resumes in the same pool database when only the name of a credential reference changed, and is refused when the selection now means another",
+	async () => {
+		const directory = makeTempDirectory("pool-identity-");
+		const agentDir = join(directory, "home", "agent");
+		vi.stubEnv("POOL_TEST_TOKEN", "same-token");
+		vi.stubEnv("POOL_TEST_TOKEN_RENAMED", "same-token");
+		const open = async (env: string, path = join(directory, "r.sqlite")) =>
+			JournalDurableBackend.open(
+				await resolveRunJournal({
+					agentDir,
+					journal: { adapter, options: { path }, secrets: { token: { env } } },
+				}),
+			);
+		const started = await open("POOL_TEST_TOKEN");
+		const options: RunOpts = { runId: "root", cwd: directory, localWorkers: workers };
+		try {
+			await (await activatePublicPool(started, options))?.close();
+			const saved = options.effectiveResources;
+			assert.ok(saved?.coordinator);
+			const original = coordinationPath(poolDurableJournal(started.journal));
+
+			// The same token, read from another variable: the same database, so the saved queue is found.
+			const renamed = await open("POOL_TEST_TOKEN_RENAMED");
+			try {
+				assert.equal(coordinationPath(poolDurableJournal(renamed.journal)), original);
+				await (
+					await activatePublicPool(renamed, {
+						runId: "root",
+						cwd: directory,
+						localWorkers: workers,
+						effectiveResources: saved,
+					})
+				)?.close();
+			} finally {
+				await renamed.close();
+			}
+
+			// Another database file: the saved queue is in a pool database this selection no longer reaches.
+			const moved = await open("POOL_TEST_TOKEN", join(directory, "elsewhere.sqlite"));
+			try {
+				await assert.rejects(
+					activatePublicPool(moved, {
+						runId: "root",
+						cwd: directory,
+						localWorkers: workers,
+						effectiveResources: saved,
+					}),
+					/pool database [0-9a-f]+ on this machine[\s\S]*selected as it was when the root started/,
+				);
+			} finally {
+				await moved.close();
+			}
+		} finally {
+			await started.close();
+			await closeCoordinationJournals();
+			removeTempDirectory(directory);
+		}
+	},
+	60_000,
 );

@@ -10,6 +10,7 @@ import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
 import {
+	coordinationDatabase,
 	coordinationPath,
 	isLocalPoolJournal,
 	openCoordinationJournal,
@@ -114,13 +115,27 @@ export async function activatePublicPool(
 		JSON.stringify({
 			...(localWorkers ? { localWorkers, definitions: sources } : {}),
 			...(admission ? { admission } : {}),
-			...(durable !== undefined && localWorkers ? { coordinator: { host: poolHostId(durable.agentDir) } } : {}),
+			...(durable !== undefined && localWorkers
+				? { coordinator: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) } }
+				: {}),
 		}),
 	) as WorkflowExecutionResources;
 	const saved = options.effectiveResources?.coordinator;
 	if (saved !== undefined && resources.coordinator !== undefined && saved.host !== resources.coordinator.host)
 		throw new Error(
 			`This root's local workers ran on another machine (${saved.host}). Their work queue and leases are in that machine's pool database, which this machine cannot see, and its workers may still be running children. Resume the root on that machine.`,
+		);
+	// The queue and leases are in the pool database the root started with. A selection that now names another one,
+	// because the adapter, its options, its prefix or the agent directory changed, would find it empty and run the
+	// root's children again beside whatever the old one still holds.
+	if (
+		saved !== undefined &&
+		resources.coordinator !== undefined &&
+		saved.host === resources.coordinator.host &&
+		saved.database !== resources.coordinator.database
+	)
+		throw new Error(
+			`This root's local workers keep their work queue and leases in the pool database ${saved.database} on this machine, but the journal is now selected in a way that uses ${resources.coordinator.database}: its adapter, options, prefix or the agent directory changed. Resume the root with the journal selected as it was when the root started.`,
 		);
 	if (options.effectiveResources && !isDeepStrictEqual(options.effectiveResources, resources))
 		throw new Error("Worker definition compatibility or immutable resource configuration changed");

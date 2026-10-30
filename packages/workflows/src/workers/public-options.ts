@@ -16,9 +16,9 @@ export interface WorkflowExecutionResources {
 	readonly localWorkers?: LocalWorkerOptions;
 	/**
 	 * Set when the root's journal is in another database than the pool's: the machine whose pool database holds the
-	 * root's work queue and leases, which only that machine's coordinator can see.
+	 * root's work queue and leases, which only that machine's coordinator can see, and the name of that database.
 	 */
-	readonly coordinator?: { readonly host: string };
+	readonly coordinator?: { readonly host: string; readonly database: string };
 	readonly admission?: WorkflowAdmissionOptions;
 	readonly definitions?: readonly { readonly path: string; readonly exportName: string; readonly digest: string }[];
 }

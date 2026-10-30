@@ -136,6 +136,18 @@ test("a journal's coordination database is the same on this machine every time, 
 	assert.equal(first, coordinationPath(select({ url: "libsql://a" })));
 	assert.ok(first.startsWith(join("/tmp", "pool-home", "workflows", "pool")), first);
 	assert.match(first, /\.sqlite$/);
+	// A credential reference names where a secret is read from, not which database it opens: renaming it keeps the database.
+	const withToken = (env: string) => ({
+		agentDir,
+		selection: encodeSelection({
+			kind: "adapter",
+			module: "@acme/storage",
+			options: { url: "libsql://a" },
+			secrets: { authToken: { env } },
+		}),
+	});
+	assert.equal(coordinationPath(withToken("ACME_TOKEN")), coordinationPath(withToken("ACME_TOKEN_RENAMED")));
+	assert.equal(coordinationPath(withToken("ACME_TOKEN")), first);
 	assert.notEqual(first, coordinationPath(select({ url: "libsql://b" })));
 	assert.notEqual(first, coordinationPath(select({ url: "libsql://a" }, "other_")));
 	assert.notEqual(
