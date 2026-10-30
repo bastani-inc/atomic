@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { resolveCandidateModel } from "../../subagents/src/shared/model-resolution.js";
 import { buildRuntimeAdapters } from "../../workflows/src/extension/wiring.js";
 import type { StageSessionCreateResult } from "../../workflows/src/runs/foreground/stage-runner.js";
@@ -16,8 +16,15 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { stubOfflineModelCatalog } from "./helpers/offline-model-catalog.js";
 
 const legacy = "azure-openai-responses";
+
+beforeEach(stubOfflineModelCatalog);
+afterEach(() => {
+	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
+});
 
 test("Azure settings normalization preserves invalid shapes for settings validation", () => {
 	for (const invalid of [null, false, 7, "not-an-array", {}, [7], [null]]) {
