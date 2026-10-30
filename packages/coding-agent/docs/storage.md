@@ -359,6 +359,8 @@ Selecting the same top-level `storage` on every host, in global settings or with
 
 The database stores sessions, workflow checkpoints, and, when Intercom brokers share it, Intercom messages and session routing state. To resume a run on another host, that host also needs the same workflow definition and the run's original working directory, including any worktrees and artifacts the run uses. Effects that were not checkpointed may run again after a takeover, so make external effects idempotent. Every checkpoint commits before it is reported, so a remote database adds network latency to each durable `ctx.*` step. Backends may also enforce payload limits that raise `StoragePayloadTooLargeError`.
 
+[Local workflow workers](/workflows/operations#local-workflow-workers) work on a shared journal: the workers run on the machine that runs the root and open the same database, and the pool keeps its work queue and leases in a SQLite file on that machine, so a pooled run resumes on the machine where it started.
+
 Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. The built-in journal uses SQLite SQL, so `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
 
 ## Storage errors

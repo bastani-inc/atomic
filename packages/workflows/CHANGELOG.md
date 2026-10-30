@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Local worker pools (`workflows.localWorkers`, `RunOpts.localWorkers`) now work when the workflow journal is not the default local SQLite file: a libSQL or Turso database, any other storage adapter, or a SQLite file with a custom prefix. The workers open the same journal the root uses, and the pool keeps its work queue, leases, admission state and worker logs in a SQLite file under `~/.atomic/workflows/pool/`. A pooled root on such a journal resumes on the machine where it ran; resuming it elsewhere fails with an error naming that machine. A memory journal and a journal passed to the SDK as an object still cannot host workers.
+
 ## [0.9.52] - 2026-10-29
 
 Stage chats show their own status lines, and web search keeps its results.
