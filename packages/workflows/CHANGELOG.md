@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.55] - 2026-10-30
+
+Local worker pools on remote databases, and sturdier start-up on busy and Windows machines.
+
+- **Worker pools on any journal:** local worker pools (`workflows.localWorkers`) now run when the workflow journal is a libSQL or Turso database or another journal adapter, not only the default local SQLite file. Runs and events go to the journal; the pool's queue, leases and pooled-stage sessions stay in a local database on your machine ([#4128](https://github.com/bastani-inc/atomic/pull/4128))
+- **Intercom that starts when the machine is busy:** a new broker gets 30 seconds to start (`brokerStartupTimeoutMs`), a broker that crashes at start-up is reported at once on Windows too, and a session that connects as its broker retires reconnects instead of failing ([#4126](https://github.com/bastani-inc/atomic/pull/4126))
+- **Session writes on Windows:** a session lock directory Windows won't remove at once no longer fails a write or holds up the next one for ten seconds ([#4124](https://github.com/bastani-inc/atomic/pull/4124))
+- **libSQL files shared between processes:** a `file:` database opened through `@bastani/atomic-storage-libsql` waits for another process's lock instead of failing
+
+### Added
+
+- Local worker pools (`workflows.localWorkers`, `RunOpts.localWorkers`) now work when the workflow journal is not the default local SQLite file: a libSQL or Turso database, any other storage adapter, or a SQLite file with a custom prefix. The workers open the same journal the root uses, and the pool keeps its work queue, leases, admission state and worker logs in a SQLite file under `~/.atomic/workflows/pool/`. A pooled root on such a journal resumes on the machine where it ran; resuming it elsewhere fails with an error naming that machine. A memory journal and a journal passed to the SDK as an object still cannot host workers.
+
+## [0.9.55-alpha.1] - 2026-10-30
+
+Local worker pools on remote databases, and sturdier start-up on busy and Windows machines.
+
+- **Worker pools on any journal:** local worker pools (`workflows.localWorkers`) now run when the workflow journal is a libSQL or Turso database or another journal adapter, not only the default local SQLite file. Runs and events go to the journal; the pool's queue, leases and pooled-stage sessions stay in a local database on your machine ([#4128](https://github.com/bastani-inc/atomic/pull/4128))
+- **Intercom that starts when the machine is busy:** a new broker gets 30 seconds to start (`brokerStartupTimeoutMs`), a broker that crashes at start-up is reported at once on Windows too, and a session that connects as its broker retires reconnects instead of failing ([#4126](https://github.com/bastani-inc/atomic/pull/4126))
+- **Session writes on Windows:** a session lock directory Windows won't remove at once no longer fails a write or holds up the next one for ten seconds ([#4124](https://github.com/bastani-inc/atomic/pull/4124))
+- **libSQL files shared between processes:** a `file:` database opened through `@bastani/atomic-storage-libsql` waits for another process's lock instead of failing
+
 ### Added
 
 - Local worker pools (`workflows.localWorkers`, `RunOpts.localWorkers`) now work when the workflow journal is not the default local SQLite file: a libSQL or Turso database, any other storage adapter, or a SQLite file with a custom prefix. The workers open the same journal the root uses, and the pool keeps its work queue, leases, admission state and worker logs in a SQLite file under `~/.atomic/workflows/pool/`. A pooled root on such a journal resumes on the machine where it ran; resuming it elsewhere fails with an error naming that machine. A memory journal and a journal passed to the SDK as an object still cannot host workers.
