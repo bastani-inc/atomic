@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -113,7 +113,7 @@ describe("DefaultPackageManager", () => {
 					"install",
 					"example@latest",
 					"--prefix",
-					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					realpathSync(join(tempDir, CONFIG_DIR_NAME, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -145,7 +145,7 @@ describe("DefaultPackageManager", () => {
 					"install",
 					"example@^1.0.0",
 					"--prefix",
-					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					realpathSync(join(tempDir, CONFIG_DIR_NAME, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -177,7 +177,7 @@ describe("DefaultPackageManager", () => {
 					"install",
 					"example@beta",
 					"--prefix",
-					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					realpathSync(join(tempDir, CONFIG_DIR_NAME, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -246,7 +246,7 @@ describe("DefaultPackageManager", () => {
 						"install",
 						"legacy-pkg@latest",
 						"--prefix",
-						join(agentDir, "npm"),
+						realpathSync(join(agentDir, "npm")),
 						"--legacy-peer-deps",
 						"--no-audit",
 						"--no-fund",
@@ -364,7 +364,7 @@ describe("DefaultPackageManager", () => {
 					"user-old@latest",
 					"user-unknown@latest",
 					"--prefix",
-					join(agentDir, "npm"),
+					realpathSync(join(agentDir, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -378,7 +378,7 @@ describe("DefaultPackageManager", () => {
 					"project-old@latest",
 					"project-missing@latest",
 					"--prefix",
-					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					realpathSync(join(tempDir, CONFIG_DIR_NAME, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -388,6 +388,34 @@ describe("DefaultPackageManager", () => {
 			expect(updateGitSpy).toHaveBeenCalledTimes(4);
 			expect(maxConcurrentNpmUpdates).toBeGreaterThan(1);
 			expect(maxConcurrentGitUpdates).toBeGreaterThan(1);
+		});
+
+		// Upstream #11571: npm can install a stale version after a publish without an error.
+		it("should warn when an npm update leaves the installed version unchanged", async () => {
+			const stalePath = join(agentDir, "npm", "node_modules", "stale-pkg");
+			const freshPath = join(agentDir, "npm", "node_modules", "fresh-pkg");
+			mkdirSync(stalePath, { recursive: true });
+			mkdirSync(freshPath, { recursive: true });
+			writeFileSync(join(stalePath, "package.json"), JSON.stringify({ name: "stale-pkg", version: "1.0.0" }));
+			writeFileSync(join(freshPath, "package.json"), JSON.stringify({ name: "fresh-pkg", version: "1.0.0" }));
+			settingsManager.setPackages(["npm:stale-pkg", "npm:fresh-pkg"]);
+
+			vi.spyOn(packageManager as any, "runCommandCapture").mockResolvedValue('"1.0.1"');
+			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async () => {
+				// Simulate npm resolving stale metadata for stale-pkg only.
+				writeFileSync(join(freshPath, "package.json"), JSON.stringify({ name: "fresh-pkg", version: "1.0.1" }));
+			});
+
+			const events: Array<{ type: string; source: string; message?: string }> = [];
+			packageManager.setProgressCallback((event) => events.push(event));
+
+			await packageManager.update();
+
+			const warnings = events.filter((event) => event.type === "progress");
+			assert.equal(warnings.length, 1);
+			assert.equal(warnings[0].source, "npm:stale-pkg");
+			assert.ok(warnings[0].message?.includes("is still 1.0.0"));
+			assert.ok(warnings[0].message?.includes("1.0.1"));
 		});
 
 		it("should suggest npm source prefixes for update lookups", async () => {

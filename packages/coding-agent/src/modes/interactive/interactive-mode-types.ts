@@ -35,6 +35,12 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/**
+	 * The "Model scope: …" startup line, when startup details are shown. Fullscreen paints on the alternate
+	 * screen, so text printed to stdout would stay in the shell after exit: there the header shows it, and
+	 * main.ts prints it otherwise (upstream #11508).
+	 */
+	modelScopeNotice?: string;
 	/** Initial interactive theme setting for this invocation (from --use-theme; never persisted). */
 	initialThemeSetting?: string;
 	holdTuiForStartupTrust?: boolean;

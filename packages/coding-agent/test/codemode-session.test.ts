@@ -1020,6 +1020,62 @@ test("codemode tells declared tools how scripts call them instead of repeating t
 	}
 });
 
+// Upstream #11501
+test("codemode summarizes union and multi-line output types instead of inlining them", async () => {
+	const outputTool = (name: string, outputSchema: ReturnType<typeof Type.Object> | ReturnType<typeof Type.Union>) => ({
+		name,
+		label: name,
+		description: `${name} tool`,
+		parameters: Type.Object({}),
+		outputSchema,
+		execute: async () => ({ content: [], details: {} }),
+	});
+	const harness = await createHarness({
+		extensionFactories: [
+			createCodemodeExtension(),
+			(pi) => {
+				pi.registerTool(
+					outputTool(
+						"process",
+						Type.Union([
+							Type.Object({
+								action: Type.Literal("start"),
+								process: Type.Object({ id: Type.String({ description: "Process id" }), pid: Type.Integer() }),
+							}),
+							Type.Object({
+								action: Type.Literal("list"),
+								processes: Type.Array(Type.Object({ id: Type.String() })),
+								truncated: Type.Optional(Type.Boolean()),
+							}),
+						]),
+					),
+				);
+				pi.registerTool(
+					outputTool("entries", Type.Array(Type.Object({ id: Type.String(), size: Type.Integer() })) as never),
+				);
+				pi.registerTool(outputTool("count", Type.Number() as never));
+			},
+		],
+		initialActiveToolNames: ["process", "entries", "count", "codemode"],
+	});
+	try {
+		const description = (name: string) =>
+			harness.session.agent.state.tools.find((tool) => tool.name === name)?.description;
+
+		assert.equal(
+			description("process"),
+			'process tool\n\nCodemode: `tools.process(args)` resolves to `{ action: "start", process } | { action: "list", processes, truncated? }`.',
+		);
+		assert.equal(
+			description("entries"),
+			'entries tool\n\nCodemode: `tools.entries(args)` resolves to a value; `await describeTool("entries")` shows its type.',
+		);
+		assert.equal(description("count"), "count tool\n\nCodemode: `tools.count(args)` resolves to `number`.");
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode tells scripts the fields of an MCP tool's structured content", async () => {
 	const harness = await createHarness({
 		extensionFactories: [

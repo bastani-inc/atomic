@@ -619,6 +619,11 @@ export class InteractiveModeBase {
 		}
 	}
 
+	/** Whether the renderer paints on the alternate screen. */
+	get usesFullscreenRenderer(): boolean {
+		return this.renderer.mode === "fullscreen";
+	}
+
 	stopInteractiveTui(fullscreenExitOutput: FullscreenExitOutput): void {
 		const isFullscreen = this.renderer.mode === "fullscreen";
 		if (isFullscreen && fullscreenExitOutput === "transcript") {

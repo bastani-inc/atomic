@@ -4,10 +4,10 @@ import ignore from "ignore";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { isPathWithin, resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { LoadSkillsOptions, LoadSkillsResult, Skill, SkillFrontmatter } from "./skills.ts";
-import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import { createSyntheticSourceInfo, getResourcePathKey, type SourceInfo } from "./source-info.ts";
 
 const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -203,7 +203,7 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 	const addSkills = (result: LoadSkillsResult) => {
 		allDiagnostics.push(...result.diagnostics);
 		for (const skill of result.skills) {
-			const realPath = canonicalizePath(skill.filePath);
+			const realPath = getResourcePathKey(skill.filePath);
 			if (realPathSet.has(realPath)) continue;
 			realPathSet.add(realPath);
 			candidates.push(skill);
@@ -229,17 +229,10 @@ export async function loadSkillsAsync(options: LoadSkillsOptions): Promise<LoadS
 		addSkills(await loadSkillsFromDirInternal(userSkillsDir, "user", true));
 		addSkills(await loadSkillsFromDirInternal(projectSkillsDir, "project", true));
 	}
-	const isUnderPath = (target: string, root: string): boolean => {
-		const normalizedRoot = resolve(root);
-		return (
-			target === normalizedRoot ||
-			target.startsWith(normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`)
-		);
-	};
 	const getSource = (resolvedPath: string): "user" | "project" | "path" => {
 		if (!includeDefaults) {
-			if (isUnderPath(resolvedPath, userSkillsDir)) return "user";
-			if (isUnderPath(resolvedPath, projectSkillsDir)) return "project";
+			if (isPathWithin(userSkillsDir, resolvedPath)) return "user";
+			if (isPathWithin(projectSkillsDir, resolvedPath)) return "project";
 		}
 		return "path";
 	};

@@ -8,8 +8,14 @@ const hiddenDeclarations = new WeakMap<AgentSession, ReadonlySet<string>>();
 export function isToolDeclarationHidden(session: AgentSession, name: string): boolean {
 	return hiddenDeclarations.get(session)?.has(name) ?? false;
 }
+/**
+ * The active tools are a set: tools that stay active keep their current order and newly active ones are
+ * appended, so reordering the same names does not change the prompt (#11495).
+ */
 export function applyToolLoadout(session: AgentSession, names: readonly string[]): AgentTool[] {
-	const tools = [...new Set(names)].flatMap((name) => {
+	const requested = new Set(names);
+	const kept = session.getActiveToolNames().filter((name) => requested.has(name));
+	const tools = [...new Set([...kept, ...requested])].flatMap((name) => {
 		const tool = session._toolRegistry.get(name);
 		const exposure = session.getToolDefinition(name)?.exposure ?? "direct";
 		return tool &&

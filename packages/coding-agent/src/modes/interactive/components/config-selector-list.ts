@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import {
 	type Component,
@@ -12,6 +11,7 @@ import { CONFIG_DIR_NAME } from "../../../config.js";
 import type { PathMetadata, ResolvedPaths, ResolvedResource } from "../../../core/package-manager.ts";
 import type { PackageSource, SettingsManager } from "../../../core/settings-manager.ts";
 import { BUILTIN_PATH_PREFIX } from "../../../core/source-info.ts";
+import { shortenHomePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.js";
 import { toggleProjectResource } from "./config-selector-project-scope.ts";
 
@@ -51,17 +51,7 @@ export interface ResourceGroup {
 }
 
 function formatBaseDir(baseDir: string): string {
-	const homeDir = homedir();
-	let displayPath: string;
-
-	if (baseDir === homeDir) {
-		displayPath = "~";
-	} else if (baseDir.startsWith(homeDir)) {
-		const rest = baseDir.slice(homeDir.length);
-		displayPath = `~${rest.replace(/\\/g, "/")}`;
-	} else {
-		displayPath = baseDir.replace(/\\/g, "/");
-	}
+	const displayPath = shortenHomePath(baseDir).replace(/\\/g, "/");
 
 	return displayPath.endsWith("/") ? displayPath : `${displayPath}/`;
 }

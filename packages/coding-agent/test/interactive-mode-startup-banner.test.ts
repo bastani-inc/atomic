@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { Container, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
@@ -349,5 +349,48 @@ describe("InteractiveMode startup banner", () => {
 		const final = plain(composeStartupIdentity(mark, meta, 64, renderStartupManifesto(4)));
 		expect(final).toContain("Engineering matters.");
 		expect(final.split("\n").every((line) => line.length <= 64)).toBe(true);
+	});
+});
+
+describe("InteractiveMode model scope notice", () => {
+	beforeEach(() => initTheme("dark"));
+
+	function noticeContext(options: { notice?: string }) {
+		return Object.assign(Object.create(InteractiveMode.prototype), {
+			options: { modelScopeNotice: options.notice },
+			headerContainer: new Container(),
+		}) as InteractiveMode & { headerContainer: Container };
+	}
+
+	function withRenderer(mode: InteractiveMode & { headerContainer: Container }, fullscreen: boolean) {
+		Object.defineProperty(mode, "usesFullscreenRenderer", { value: fullscreen });
+		return mode;
+	}
+
+	// Upstream #11508: fullscreen must not print the notice to the shell's main screen.
+	it("shows the model scope in the fullscreen header instead of printing it", () => {
+		const mode = withRenderer(noticeContext({ notice: "Model scope: model-a:high, model-b (ctrl+p cycle)" }), true);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			(mode as unknown as { showFullscreenModelScopeNotice(): void }).showFullscreenModelScopeNotice();
+			expect(log).not.toHaveBeenCalled();
+		} finally {
+			log.mockRestore();
+		}
+
+		assert.match(
+			plain(mode.headerContainer.render(120).join("\n")),
+			/Model scope: model-a:high, model-b \(ctrl\+p cycle\)/,
+		);
+	});
+
+	it("adds nothing to the header when startup details are hidden or the renderer is not fullscreen", () => {
+		const hidden = withRenderer(noticeContext({}), true);
+		(hidden as unknown as { showFullscreenModelScopeNotice(): void }).showFullscreenModelScopeNotice();
+		assert.equal(hidden.headerContainer.children.length, 0);
+
+		const inline = withRenderer(noticeContext({ notice: "Model scope: model-a" }), false);
+		(inline as unknown as { showFullscreenModelScopeNotice(): void }).showFullscreenModelScopeNotice();
+		assert.equal(inline.headerContainer.children.length, 0);
 	});
 });

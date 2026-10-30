@@ -1,13 +1,7 @@
-import * as os from "node:os";
-import { canonicalizePath as canonicalizeFilesystemPath } from "../../../utils/paths.ts";
+import { canonicalizePath, getPathComparisonKey, shortenHomePath } from "../../../utils/paths.ts";
 
 export function shortenPath(path: string): string {
-	const home = os.homedir();
-	if (!path) return path;
-	if (path.startsWith(home)) {
-		return `~${path.slice(home.length)}`;
-	}
-	return path;
+	return shortenHomePath(path);
 }
 
 export function formatSessionDate(date: Date): string {
@@ -26,7 +20,7 @@ export function formatSessionDate(date: Date): string {
 	return `${Math.floor(diffDays / 365)}y`;
 }
 
-export function canonicalizePath(path: string | undefined): string | undefined {
-	if (!path) return path;
-	return canonicalizeFilesystemPath(path);
+/** Comparison key for a session file path; follows symlinks and ignores case on Windows. */
+export function getSessionPathKey(path: string): string {
+	return getPathComparisonKey(canonicalizePath(path));
 }

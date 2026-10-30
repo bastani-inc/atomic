@@ -142,6 +142,7 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 		sessionManager: { getEntries: () => [], getLeafId: () => null, getCwd: () => projectDir },
 		getStartupIdentityText: () => "Atomic v0.0.0",
 		shouldShowStartupHeader: () => true,
+		showFullscreenModelScopeNotice: () => {},
 		ensureManagedToolsReady: vi.fn(async () => {}),
 		attachStartupNoticesContainer: vi.fn(),
 		renderSessionEntries: vi.fn(),

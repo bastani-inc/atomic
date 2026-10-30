@@ -7,6 +7,7 @@ import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
+import { markRuntimeStreamFunction } from "./agent-session-models.ts";
 import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { getBuiltinPackageLocations, getBuiltinPackagePaths } from "./builtin-packages.ts";
@@ -661,6 +662,8 @@ async function constructAgentSession(
 		thinkingBudgets: settingsManager.getThinkingBudgets(),
 		maxRetryDelayMs: settingsManager.getProviderRetrySettings().maxRetryDelayMs,
 	});
+	// This stream resolves auth through modelRuntime, so summaries must not pre-resolve it (upstream #11520).
+	markRuntimeStreamFunction(agent.streamFunction, modelRuntime);
 
 	// The isolated host mirrors child-owned storage without writing startup metadata.
 	if (persistInitialState) {

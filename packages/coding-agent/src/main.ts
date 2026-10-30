@@ -117,6 +117,7 @@ import type { MainOptions } from "./main-types.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { isUnknownModel } from "./modes/interactive/interactive-mode-helpers.ts";
+import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
@@ -329,8 +330,19 @@ export async function main(argv: string[], options?: MainOptions) {
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
 	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
-	const cwd = process.cwd(),
-		agentDir = getAgentDir();
+	let cwd: string;
+	try {
+		cwd = process.cwd();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		console.error(
+			chalk.red(
+				"Error: The current working directory no longer exists. Change to an existing directory and try again.",
+			),
+		);
+		process.exit(1);
+	}
+	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher();
@@ -604,7 +616,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	}) => {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = hasProjectTrustInputs(cwd);
-		const storedProjectTrust = hasTrustInputs ? projectTrustStore.get(cwd) : null;
+		const storedProjectTrust = projectTrustStore.get(cwd);
 		const initialProjectTrusted =
 			parsed.projectTrustOverride ?? cachedProjectTrust ?? storedProjectTrust ?? !hasTrustInputs;
 		const shouldResolveProjectTrust =
@@ -1005,7 +1017,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime, { deferInteractiveEngineResources: deferredExtensionLoad });
 	} else if (appMode === "interactive") {
-		if (scopedModels.length > 0 && (parsed.verbose || settingsManager.getQuietStartup() === false)) {
+		const modelScopeNotice =
+			scopedModels.length > 0 && (parsed.verbose || settingsManager.getQuietStartup() === false)
+				? `Model scope: ${formatScopedModelList(scopedModels)} (ctrl+p cycle)`
+				: undefined;
+		// Fullscreen paints on the alternate screen, so a line printed here would stay in the shell after exit
+		// (upstream #11508); the interactive mode shows it in the header instead.
+		if (modelScopeNotice && !shouldUseFullscreenTui(options?.internalInteractiveHarness?.terminal !== undefined)) {
 			console.log(chalk.dim(`Model scope: ${formatScopedModelList(scopedModels)} ${chalk.gray("(ctrl+p cycle)")}`));
 		}
 
@@ -1026,6 +1044,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
+			modelScopeNotice,
 			initialThemeSetting: parsed.useTheme,
 			deferredExtensionLoad,
 			startupInputCapture: startupEarlyInputCapture,

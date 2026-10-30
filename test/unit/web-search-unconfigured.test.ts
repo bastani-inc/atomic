@@ -81,7 +81,7 @@ function createPi(): ExtensionAPI {
 		// Stands in for the host's browser launcher: records the attempt and fails like a machine without a desktop.
 		exec: (async (command: string) => {
 			execCalls.push(command);
-			return { stdout: "", stderr: `${command}: not found`, code: 127, killed: false };
+			return { stdout: "", stderr: `${command}: not found`, code: 127, killed: false, truncated: false };
 		}) as ExtensionAPI["exec"],
 	};
 	return fixture as ExtensionAPI;

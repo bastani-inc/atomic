@@ -1,7 +1,7 @@
 import type { ProviderHeaders } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
@@ -9,6 +9,30 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
+
+/**
+ * Stream functions that resolve auth through a given ModelRuntime themselves, such as the one
+ * createAgentSession installs. Summaries sent through them must not pass pre-resolved credentials:
+ * the runtime would take them as an explicit API key instead of the stored OAuth login (upstream #11520).
+ */
+const runtimeStreamFunctions = new WeakMap<StreamFn, AgentSession["_modelRuntime"]>();
+
+/** Mark `streamFn` as resolving auth through `modelRuntime` on its own. */
+export function markRuntimeStreamFunction(streamFn: StreamFn, modelRuntime: AgentSession["_modelRuntime"]): void {
+	runtimeStreamFunctions.set(streamFn, modelRuntime);
+}
+
+type RequestAuth = { apiKey?: string; headers?: ProviderHeaders; baseUrl?: string; env?: Record<string, string> };
+
+/**
+ * The request auth to hand the session's stream function for a summary or compaction request. Auth
+ * is resolved first, so a missing or expired login still fails early with its actionable message.
+ * A stream function that resolves auth through the session's own runtime gets none of it, and
+ * resolves the stored login itself.
+ */
+export function authForStream<A extends RequestAuth>(session: AgentSession, auth: A): A {
+	return runtimeStreamFunctions.get(session.agent.streamFunction) === session._modelRuntime ? ({} as A) : auth;
+}
 
 export async function _getRequiredRequestAuth(
 	this: AgentSession,

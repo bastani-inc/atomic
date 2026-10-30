@@ -3,6 +3,7 @@ import type { Provider } from "@bastani/pi-ai";
 import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import { executeNestedToolCall, getCallableTools } from "./agent-session-nested-tools.js";
 import {
 	activatesAfterRecordedLoadout,
@@ -671,7 +672,7 @@ export function _bindExtensionCore(
 				const generate = async (signal: AbortSignal) => {
 					try {
 						if (signal.aborted) return undefined;
-						const auth = await this._getRequiredRequestAuth(model);
+						const auth = authForStream(this, await this._getRequiredRequestAuth(model));
 						if (signal.aborted) return undefined;
 						const result = await generateWorkflowSummary(text, {
 							model,

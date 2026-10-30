@@ -1,6 +1,6 @@
 import { getAgentDir, getAgentDirs } from "../config.js";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
-import { isSyntheticPath } from "./source-info.ts";
+import { resolvePath } from "../utils/paths.ts";
+import { getResourcePathKey, isSyntheticPath } from "./source-info.ts";
 
 export function getLoaderAgentDirs(agentDir: string): string[] {
 	return agentDir === getAgentDir() ? getAgentDirs() : [agentDir];
@@ -16,9 +16,9 @@ export function mergeResourcePaths(cwd: string, primary: string[], additional: s
 
 	for (const p of [...primary, ...additional]) {
 		const resolved = resolveResourcePath(cwd, p);
-		const canonicalPath = canonicalizePath(resolved);
-		if (seen.has(canonicalPath)) continue;
-		seen.add(canonicalPath);
+		const pathKey = getResourcePathKey(resolved);
+		if (seen.has(pathKey)) continue;
+		seen.add(pathKey);
 		merged.push(resolved);
 	}
 

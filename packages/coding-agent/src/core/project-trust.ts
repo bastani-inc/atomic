@@ -64,7 +64,8 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return options.trustOverride;
 	}
 	if (!hasProjectTrustInputs(options.cwd)) {
-		return true;
+		// Nothing to gate, but a saved "Do not trust" still applies (upstream #10947).
+		return options.trustStore.get(options.cwd) ?? true;
 	}
 
 	if (options.extensionsResult) {

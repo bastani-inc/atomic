@@ -1,4 +1,3 @@
-import { canonicalizePath } from "../utils/paths.ts";
 import type {
 	PathMetadata,
 	ResolvedPaths,
@@ -7,6 +6,7 @@ import type {
 	ResourceMap,
 	ResourceType,
 } from "./package-manager-types.ts";
+import { getResourcePathKey } from "./source-info.ts";
 
 function resourcePrecedenceRank(m: PathMetadata): number {
 	if (m.source === "builtin") return 6;
@@ -62,9 +62,9 @@ export function toResolvedPaths(accumulator: ResourceAccumulator): ResolvedPaths
 
 		const seen = new Set<string>();
 		return resolved.filter((entry) => {
-			const canonicalPath = canonicalizePath(entry.path);
-			if (seen.has(canonicalPath)) return false;
-			seen.add(canonicalPath);
+			const pathKey = getResourcePathKey(entry.path);
+			if (seen.has(pathKey)) return false;
+			seen.add(pathKey);
 			return true;
 		});
 	};

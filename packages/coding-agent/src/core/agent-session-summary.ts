@@ -6,6 +6,7 @@
  */
 
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import { generateSessionSummary } from "./compaction/index.ts";
 import { sessionGenerationClosing, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
 import { getLastConversationMessageId, getLatestSessionSummary } from "./session-manager-entries.ts";
@@ -120,7 +121,7 @@ async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
 		run = { throughId, done };
 		this._sessionSummaryRun = run;
 
-		const { apiKey, headers, baseUrl } = await this._getRequiredRequestAuth(model);
+		const { apiKey, headers, baseUrl } = authForStream(this, await this._getRequiredRequestAuth(model));
 
 		// Disposal or a newer turn can land while credentials resolve; nothing past this point
 		// should reach the provider.

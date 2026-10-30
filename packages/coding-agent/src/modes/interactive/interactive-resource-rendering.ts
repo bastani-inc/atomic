@@ -285,7 +285,7 @@ InteractiveModeBase.prototype.showLoadedResources = function (
 			targetContainer.addChild(
 				new ThemedText(
 					() =>
-						`${theme.fg("warning", "[Skill conflicts]")}\n${this.formatDiagnostics(skillDiagnostics, sourceInfos)}`,
+						`${theme.fg("warning", "[Skill warnings]")}\n${this.formatDiagnostics(skillDiagnostics, sourceInfos)}`,
 					0,
 					0,
 				),

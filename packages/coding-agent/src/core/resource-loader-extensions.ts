@@ -7,7 +7,7 @@ import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extens
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
 import { resourceInternals } from "./resource-loader-internals.ts";
 import type { DefaultResourceLoaderInheritanceSnapshot } from "./resource-loader-types.ts";
-import { BUILTIN_PATH_PREFIX, isSyntheticPath } from "./source-info.ts";
+import { BUILTIN_PATH_PREFIX, getResourcePathKey, isSyntheticPath } from "./source-info.ts";
 import { endTimingSpan, startTimingSpan } from "./timings.ts";
 
 function resolveExtensionLoadPath(loader: DefaultResourceLoader, path: string): string {
@@ -95,14 +95,13 @@ export async function loadFinalExtensionSet(
 	const preloadedByPath = new Map(
 		preTrustExtensions.extensions
 			.filter((extension) => !extension.path.startsWith("<inline:"))
-			.map((extension) => [extension.resolvedPath, extension]),
+			.map((extension) => [getResourcePathKey(extension.resolvedPath), extension]),
 	);
-	const failedPreloadPaths = new Set(
-		preTrustExtensions.errors.map((error) => resolveExtensionLoadPath(loader, error.path)),
-	);
+	const extensionPathKey = (path: string) => getResourcePathKey(resolveExtensionLoadPath(loader, path));
+	const failedPreloadPaths = new Set(preTrustExtensions.errors.map((error) => extensionPathKey(error.path)));
 	const remainingPaths = extensionPaths.filter((path) => {
-		const resolvedPath = resolveExtensionLoadPath(loader, path);
-		return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
+		const pathKey = extensionPathKey(path);
+		return !preloadedByPath.has(pathKey) && !failedPreloadPaths.has(pathKey);
 	});
 	const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
 	const remainingExtensions = await loadExtensionPaths(
@@ -115,12 +114,12 @@ export async function loadFinalExtensionSet(
 	endTimingSpan(loadExtensionsSpan);
 	const loadedByPath = new Map(preloadedByPath);
 	for (const extension of remainingExtensions.extensions) {
-		loadedByPath.set(extension.resolvedPath, extension);
+		loadedByPath.set(getResourcePathKey(extension.resolvedPath), extension);
 	}
 
 	const inlineExtensions = preTrustExtensions.extensions.filter((extension) => extension.path.startsWith("<inline:"));
 	const orderedExtensions = extensionPaths
-		.map((path) => loadedByPath.get(resolveExtensionLoadPath(loader, path)))
+		.map((path) => loadedByPath.get(extensionPathKey(path)))
 		.filter((extension): extension is Extension => extension !== undefined);
 	orderedExtensions.push(...inlineExtensions);
 

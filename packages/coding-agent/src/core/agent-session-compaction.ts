@@ -4,6 +4,7 @@ import type {
 	SessionCompactOptions,
 	VerbatimCompactionApplyOptions,
 } from "./agent-session-methods.ts";
+import { authForStream } from "./agent-session-models.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
 	type CompactionPlannerModel,
@@ -357,7 +358,8 @@ async function runOwnedManualCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 			...(options.compactionModel === undefined ? {} : { compactionModel: options.compactionModel }),
-			resolvePlannerAuth: (candidate) => this._getRequiredRequestAuth(candidate, controller.signal),
+			resolvePlannerAuth: async (candidate) =>
+				authForStream(this, await this._getRequiredRequestAuth(candidate, controller.signal)),
 			abortController: controller,
 			backupLabel: "compact",
 			reason: "manual",

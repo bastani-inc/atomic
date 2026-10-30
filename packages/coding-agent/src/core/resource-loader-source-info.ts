@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { getProjectConfigDirs } from "../config.js";
+import { isPathWithin } from "../utils/paths.ts";
 import type { Extension } from "./extensions/types.ts";
 import type { PathMetadata } from "./package-manager.ts";
 import type { DefaultResourceLoader } from "./resource-loader-core.ts";
@@ -48,11 +49,7 @@ export function findSourceInfoForPath(
 	const normalizedResourcePath = resolve(resourcePath);
 	if (extraSourceInfos) {
 		for (const [sourcePath, sourceInfo] of extraSourceInfos.entries()) {
-			const normalizedSourcePath = resolve(sourcePath);
-			if (
-				normalizedResourcePath === normalizedSourcePath ||
-				normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-			) {
+			if (isPathWithin(sourcePath, normalizedResourcePath)) {
 				return { ...sourceInfo, path: resourcePath };
 			}
 		}
@@ -65,11 +62,7 @@ export function findSourceInfoForPath(
 		}
 
 		for (const [sourcePath, metadata] of metadataByPath.entries()) {
-			const normalizedSourcePath = resolve(sourcePath);
-			if (
-				normalizedResourcePath === normalizedSourcePath ||
-				normalizedResourcePath.startsWith(`${normalizedSourcePath}${sep}`)
-			) {
+			if (isPathWithin(sourcePath, normalizedResourcePath)) {
 				return createSourceInfo(resourcePath, metadata);
 			}
 		}
@@ -105,13 +98,13 @@ export function getDefaultSourceInfoForPath(loader: DefaultResourceLoader, fileP
 	]);
 
 	for (const root of agentRoots) {
-		if (isUnderPath(normalizedPath, root)) {
+		if (isPathWithin(root, normalizedPath)) {
 			return { path: filePath, source: "local", scope: "user", origin: "top-level", baseDir: root };
 		}
 	}
 
 	for (const root of projectRoots) {
-		if (isUnderPath(normalizedPath, root)) {
+		if (isPathWithin(root, normalizedPath)) {
 			return { path: filePath, source: "local", scope: "project", origin: "top-level", baseDir: root };
 		}
 	}
@@ -123,13 +116,4 @@ export function getDefaultSourceInfoForPath(loader: DefaultResourceLoader, fileP
 		origin: "top-level",
 		baseDir: statSync(normalizedPath).isDirectory() ? normalizedPath : resolve(normalizedPath, ".."),
 	};
-}
-
-export function isUnderPath(target: string, root: string): boolean {
-	const normalizedRoot = resolve(root);
-	if (target === normalizedRoot) {
-		return true;
-	}
-	const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-	return target.startsWith(prefix);
 }

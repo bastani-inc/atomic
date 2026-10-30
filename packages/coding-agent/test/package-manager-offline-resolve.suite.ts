@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_DIR_NAME } from "../src/config.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
+import { getNpmInstallPath } from "../src/core/package-manager-npm.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 function normalizeForMatch(value: string): string {
@@ -158,6 +159,111 @@ describe("DefaultPackageManager", () => {
 			const result = await packageManager.resolveExtensionSources([gitSource], { temporary: true });
 			expect(result.extensions.some((r) => pathEndsWith(r.path, "extensions/index.ts") && r.enabled)).toBe(true);
 			expect(refreshTemporaryGitSourceSpy).not.toHaveBeenCalled();
+		});
+
+		// Upstream #11375
+		it("should refresh unpinned temporary npm sources when a newer version exists", async () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const parsed = internals.parseSource("npm:example");
+			if (parsed.type !== "npm") throw new Error("Expected npm source");
+			const installedPath = getNpmInstallPath((packageManager as any).context, parsed as never, "temporary");
+			try {
+				mkdirSync(join(installedPath, "extensions"), { recursive: true });
+				writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
+				writeFileSync(join(installedPath, "extensions", "index.ts"), "export default function() {};");
+
+				vi.spyOn(packageManager as any, "runCommandCapture").mockResolvedValue('"1.1.0"');
+				const runCommandSpy = vi
+					.spyOn(packageManager as any, "runCommand")
+					.mockRejectedValue(new Error("network down"));
+
+				const result = await packageManager.resolveExtensionSources(["npm:example"], { temporary: true });
+				assert.equal(runCommandSpy.mock.calls.length, 1);
+				assert.ok((runCommandSpy.mock.calls[0][1] as string[]).includes("example@latest"));
+				// A failed refresh keeps loading the cached install.
+				assert.equal(
+					result.extensions.some((r) => pathEndsWith(r.path, "extensions/index.ts") && r.enabled),
+					true,
+				);
+			} finally {
+				rmSync(installedPath, { recursive: true, force: true });
+			}
+		});
+
+		it("should not refresh temporary npm sources when already up to date or pinned", async () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const installedPaths: string[] = [];
+			try {
+				for (const source of ["npm:example", "npm:example@1.0.0"]) {
+					const parsed = internals.parseSource(source);
+					if (parsed.type !== "npm") throw new Error("Expected npm source");
+					const installedPath = getNpmInstallPath((packageManager as any).context, parsed as never, "temporary");
+					installedPaths.push(installedPath);
+					mkdirSync(installedPath, { recursive: true });
+					writeFileSync(
+						join(installedPath, "package.json"),
+						JSON.stringify({ name: "example", version: "1.0.0" }),
+					);
+				}
+
+				const runCommandCaptureSpy = vi
+					.spyOn(packageManager as any, "runCommandCapture")
+					.mockResolvedValue('"1.0.0"');
+				const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+				await packageManager.resolveExtensionSources(["npm:example"], { temporary: true });
+				await packageManager.resolveExtensionSources(["npm:example@1.0.0"], { temporary: true });
+				assert.equal(runCommandCaptureSpy.mock.calls.length, 1);
+				assert.equal(runCommandSpy.mock.calls.length, 0);
+			} finally {
+				for (const installedPath of installedPaths) rmSync(installedPath, { recursive: true, force: true });
+			}
+		});
+
+		// Upstream #11375: a ref can name a moving branch, so temporary git sources pinned to one refresh too.
+		// Git itself is stubbed; the refresh announces itself through its progress event before it fetches.
+		const refreshesOf = async (source: string, head: string) => {
+			vi.spyOn(packageManager as any, "runCommandCapture").mockResolvedValue(head);
+			vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+			const started: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "start" && event.action === "pull") started.push(event.source);
+			});
+			const result = await packageManager.resolveExtensionSources([source], { temporary: true });
+			return { started, result };
+		};
+
+		it("should refresh temporary git sources with a branch ref", async () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const source = `git:github.com/example/branch-${Date.now()}-${Math.random().toString(36).slice(2)}@main`;
+			const installedPath = internals.getGitInstallPath(internals.parseSource(source), "temporary");
+			try {
+				mkdirSync(join(installedPath, "extensions"), { recursive: true });
+				writeFileSync(join(installedPath, "extensions", "index.ts"), "export default function() {};");
+
+				const { started, result } = await refreshesOf(source, "0123456789abcdef0123456789abcdef01234567\n");
+				assert.deepEqual(started, [source]);
+				assert.equal(
+					result.extensions.some((r) => pathEndsWith(r.path, "extensions/index.ts") && r.enabled),
+					true,
+				);
+			} finally {
+				rmSync(join(installedPath, "..", ".."), { recursive: true, force: true });
+			}
+		});
+
+		it("should not refresh temporary git sources pinned to the checked-out commit", async () => {
+			const internals = packageManager as object as PackageManagerInternals;
+			const source = `git:github.com/example/commit-${Date.now()}-${Math.random().toString(36).slice(2)}@abc1234`;
+			const installedPath = internals.getGitInstallPath(internals.parseSource(source), "temporary");
+			try {
+				mkdirSync(installedPath, { recursive: true });
+
+				const { started } = await refreshesOf(source, "ABC1234def5678901234567890123456789012345\n");
+				assert.deepEqual(started, []);
+			} finally {
+				rmSync(join(installedPath, "..", ".."), { recursive: true, force: true });
+			}
 		});
 
 		it("should load a new checkout when a pinned temporary git source changes ref (#9982)", async () => {
@@ -316,7 +422,7 @@ describe("DefaultPackageManager", () => {
 					"install",
 					"example@latest",
 					"--prefix",
-					join(tempDir, CONFIG_DIR_NAME, "npm"),
+					realpathSync(join(tempDir, CONFIG_DIR_NAME, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",

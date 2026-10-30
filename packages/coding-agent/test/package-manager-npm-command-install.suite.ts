@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -147,7 +147,7 @@ describe("DefaultPackageManager", () => {
 					"install",
 					"@scope/pkg",
 					"--prefix",
-					join(agentDir, "npm"),
+					realpathSync(join(agentDir, "npm")),
 					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
@@ -166,7 +166,38 @@ describe("DefaultPackageManager", () => {
 			assertCalledWith(
 				runCommandSpy,
 				"npm",
-				["uninstall", "@scope/pkg", "--prefix", join(agentDir, "npm"), "--no-audit", "--no-fund"],
+				["uninstall", "@scope/pkg", "--prefix", realpathSync(join(agentDir, "npm")), "--no-audit", "--no-fund"],
+				undefined,
+			);
+		});
+
+		// Regression test for upstream #11358: npm writes nested package-lock.json entries for a symlinked --prefix.
+		it("should pass the real path as --prefix when the agent dir is a symlink", async () => {
+			const realAgentDir = join(tempDir, "dotfiles", "agent");
+			mkdirSync(realAgentDir, { recursive: true });
+			const linkedAgentDir = join(tempDir, "linked-agent");
+			symlinkSync(realAgentDir, linkedAgentDir, "dir");
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir: linkedAgentDir,
+				settingsManager,
+			});
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+			const realNpmRoot = join(realpathSync(realAgentDir), "npm");
+
+			await packageManager.install("npm:@scope/pkg");
+			await packageManager.remove("npm:@scope/pkg");
+
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "@scope/pkg", "--prefix", realNpmRoot, "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				undefined,
+			);
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["uninstall", "@scope/pkg", "--prefix", realNpmRoot, "--no-audit", "--no-fund"],
 				undefined,
 			);
 		});
@@ -188,7 +219,17 @@ describe("DefaultPackageManager", () => {
 			assertCalledWith(
 				runCommandSpy,
 				"mise",
-				["exec", "bun@1", "--", "bun", "install", "@scope/pkg", "--cwd", join(agentDir, "npm"), "--omit=peer"],
+				[
+					"exec",
+					"bun@1",
+					"--",
+					"bun",
+					"install",
+					"@scope/pkg",
+					"--cwd",
+					realpathSync(join(agentDir, "npm")),
+					"--omit=peer",
+				],
 				undefined,
 			);
 		});

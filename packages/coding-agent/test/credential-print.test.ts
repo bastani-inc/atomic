@@ -1918,6 +1918,7 @@ describe("credential egress chokepoint", () => {
 		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
 		`modes/rpc/rpc-output-buffer.ts: writeRawStdout(serializeRpcOutputRecord(record))`,
 		`package-manager-cli.ts: process.stdout.write(chalk.dim(\`\${event.message}\\n\`))`,
+		`package-manager-cli.ts: process.stdout.write(chalk.yellow(\`\${event.message}\\n\`))`,
 		`utils/clipboard.ts: process.stdout.write(\`\\x1b]52;c;\${encoded}\\x07\`)`,
 	];
 

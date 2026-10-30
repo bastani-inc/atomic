@@ -76,6 +76,8 @@ atomic -e npm:@foo/bar
 atomic -e git:github.com/user/repo
 ```
 
+Atomic caches `-e` packages in an `atomic-extensions` directory under the system temporary directory and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, Atomic loads the cached copy.
+
 For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions and workflows can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
 
 Workflow stages launched through `-e` inherit the same trusted resources, including package tools, extensions, agent definitions, skills, prompts, themes, and workflows. An explicit stage `resourceLoader` overrides that inheritance.
