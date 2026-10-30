@@ -212,6 +212,7 @@ const failedExtensionStarts = new WeakSet<ExtensionRunner>();
 // Binding intent is session-local and survives runner reloads, even when a host object is reused.
 const humanInputBindingRevisions = new WeakMap<AgentSession, number>();
 const presentationOnlyBindings = new WeakMap<AgentSession, boolean>();
+const statusSinks = new WeakMap<AgentSession, NonNullable<ExtensionBindings["onStatus"]>>();
 const sessionSummaryBackfills = new WeakSet<AgentSession>();
 
 function startExtensions(
@@ -283,6 +284,7 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 		this._extensionMode = bindings.mode;
 	}
 	if (bindings.isPresentationOnly !== undefined) presentationOnlyBindings.set(this, bindings.isPresentationOnly);
+	if (bindings.onStatus !== undefined) statusSinks.set(this, bindings.onStatus);
 	if (bindings.commandContextActions !== undefined) {
 		this._extensionCommandContextActions = bindings.commandContextActions;
 	}
@@ -366,6 +368,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	);
 	runner.setUIPromptObserver(uiPromptBindings.get(this));
 	runner.setUIContext(this._extensionUIContext, this._extensionMode, presentationOnlyBindings.get(this) ?? false);
+	runner.setStatusSink(statusSinks.get(this));
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(liveChildSessionOptions(this));
 	runner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
@@ -968,6 +971,7 @@ async function reloadOwnedGeneration(
 			this._extensionMode,
 			presentationOnlyBindings.get(this) ?? false,
 		);
+		candidateRunner.setStatusSink(statusSinks.get(this));
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(liveChildSessionOptions(this));
 		candidateRunner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);

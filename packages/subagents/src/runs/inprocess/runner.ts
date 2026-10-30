@@ -933,7 +933,12 @@ export class SubagentControlRuntime {
 		onModelChange: ((model: string | undefined, thinking?: string) => void) | undefined,
 		taskHooks?: Pick<
 			TaskExecutionHooks,
-			"reportActivity" | "bindTranscript" | "bindChildSession" | "bindChildLaunch"
+			| "reportActivity"
+			| "bindTranscript"
+			| "bindChildSession"
+			| "bindChildLaunch"
+			| "setExtensionStatus"
+			| "clearExtensionStatuses"
 		>,
 		onCleanup?: (cleanup: Promise<Cleanup>) => void,
 	): Promise<AttemptOutcome> {
@@ -942,6 +947,8 @@ export class SubagentControlRuntime {
 		let effectiveModelId = candidateModelId;
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
+		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
+		let statusesOpen = true;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
 		// Background receipts can precede capacity acquisition and session loading. Publish
 		// only the concrete selection handed to createAgentSession, not a requested ID
@@ -1113,6 +1120,16 @@ export class SubagentControlRuntime {
 					excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 				};
 				const inherited = admitted.spec.parent?.getChildSessionOptions?.(childOptions) ?? childOptions;
+				// The child has no UI of its own; its extensions' status writes belong to its task's pages,
+				// never to the parent's footer.
+				const extensionBindings: CreateAgentSessionOptions["extensionBindings"] = taskHooks?.setExtensionStatus
+					? {
+							...inherited.extensionBindings,
+							onStatus: (statusKey, text) => {
+								if (statusesOpen) taskHooks.setExtensionStatus?.(statusKey, text);
+							},
+						}
+					: inherited.extensionBindings;
 				const agentDir = inherited.agentDir ?? getAgentDir();
 				const settingsManager = inherited.settingsManager ?? SettingsManager.create(admitted.policy.cwd, agentDir);
 				const resourceLoader = new DefaultResourceLoader(
@@ -1150,6 +1167,7 @@ export class SubagentControlRuntime {
 					session: (
 						await createAgentSession({
 							...inherited,
+							extensionBindings,
 							customTools: admitted.policy.customTools ?? inherited.customTools,
 							resourceLoader,
 							resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt]),
@@ -1423,6 +1441,8 @@ export class SubagentControlRuntime {
 				// Listener teardown must not replace the attempt result.
 			}
 			const settleTranscript = (): void => {
+				statusesOpen = false;
+				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager !== undefined) taskHooks?.bindTranscript?.(settledTranscript(transcriptManager));
 			};
 			if (onCleanup) {

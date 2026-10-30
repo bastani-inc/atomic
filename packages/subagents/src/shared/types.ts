@@ -22,6 +22,10 @@ export interface TaskExecutionHooks {
 	signal: AbortSignal;
 	reportActivity(report: ActivityReport): void;
 	bindTranscript?(source: TaskTranscriptSource): void;
+	/** Record (or, with `undefined`, remove) one extension status written by the child session's extensions. */
+	setExtensionStatus?(statusKey: string, text: string | undefined): void;
+	/** The child session ended: drop the statuses it set. */
+	clearExtensionStatuses?(): void;
 	bindChildSession?(session: { sessionId: string; sessionFile: string | undefined }): void;
 	/** The model and thinking level the child's session started on, and the session's leaf entry at that moment. */
 	bindChildLaunch?(launch: { model: string | undefined; thinking: string | undefined; leafId: string | null }): void;

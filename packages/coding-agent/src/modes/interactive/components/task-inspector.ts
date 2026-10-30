@@ -14,11 +14,17 @@ import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { taskOutputText } from "../../../core/tasks/command-output.js";
 import type { OperationId, PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
 import type { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import { taskOwnTranscriptEntries, taskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import {
+	taskExtensionStatuses,
+	taskOwnTranscriptEntries,
+	taskTranscriptSource,
+	watchTaskExtensionStatuses,
+} from "../../../core/tasks/supervisor.js";
 import { readTaskTranscriptSnapshot } from "../../../core/tasks/transcript.js";
 import { theme } from "../theme/theme.js";
 import { chatEntriesFromAgentMessages, renderChatMessageEntry } from "./chat-message-renderer.ts";
 import { mouseWheelDeltaRows } from "./chat-transcript.js";
+import { renderExtensionStatusRow } from "./footer.ts";
 import { keyHintIfBound } from "./keybinding-hints.js";
 import {
 	TaskDetail,
@@ -51,6 +57,7 @@ export class TaskInspector implements Component {
 	private detailTaskId?: TaskId;
 	private detailGeneration = 0;
 	private disposed = false;
+	private statusWatch?: { taskId: TaskId; release: () => void };
 	private readonly input = new Input();
 	private readonly unsubscribe: () => void;
 	constructor(
@@ -133,6 +140,7 @@ export class TaskInspector implements Component {
 	}
 	dispose(): void {
 		this.disposed = true;
+		this.releaseStatusWatch();
 		this.releaseLiveTranscript();
 		this.confirmation?.(false);
 		this.unsubscribe();
@@ -166,6 +174,31 @@ export class TaskInspector implements Component {
 		this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : result.error.message;
 		this.input.setValue("");
 		this.requestRender();
+	}
+	private releaseStatusWatch(): void {
+		this.statusWatch?.release();
+		this.statusWatch = undefined;
+	}
+	/**
+	 * The selected task's own extension statuses, as the row under its fullscreen page's footer. The
+	 * compact picker and confirmation page show none. A write repaints the page while it is shown.
+	 */
+	private taskStatusRows(width: number): string[] {
+		const task = this.navigation.focus.kind === "detail" && !this.confirmation ? this.selected() : undefined;
+		const lease = task?.kind === "agent" ? this.store.resolveTask(task.ref.taskId) : undefined;
+		if (!task || !lease?.ok) {
+			this.releaseStatusWatch();
+			return [];
+		}
+		if (this.statusWatch?.taskId !== task.ref.taskId) {
+			this.releaseStatusWatch();
+			this.statusWatch = {
+				taskId: task.ref.taskId,
+				release: watchTaskExtensionStatuses(lease.value, () => this.requestRender()),
+			};
+		}
+		const row = renderExtensionStatusRow(taskExtensionStatuses(lease.value), width);
+		return row === undefined ? [] : [row];
 	}
 	private releaseLiveTranscript(): void {
 		this.liveTranscript?.dispose();
@@ -457,7 +490,8 @@ export class TaskInspector implements Component {
 	}
 	private renderTranscriptViewport(width: number, budget: number): string[] {
 		const task = this.selected();
-		const room = Math.max(1, budget - 5);
+		const statusRows = this.taskStatusRows(width);
+		const room = Math.max(1, budget - 5 - statusRows.length);
 		this.transcriptPageRows = room;
 		const rows = this.transcript?.flatMap((component) => component.render(width)) ?? [
 			this.transcriptLoading ? "Loading transcript…" : this.status,
@@ -485,6 +519,7 @@ export class TaskInspector implements Component {
 				`Lines ${rows.length ? this.scroll + 1 : 0}–${Math.min(rows.length, this.scroll + room)} of ${rows.length}${this.cursor ? " · PgUp at top: earlier history" : ""}${this.status ? ` · ${this.status}` : ""}`,
 			),
 			theme.fg("dim", "↑↓ scroll · PgUp/PgDn page · Home/End · ←/Esc back"),
+			...statusRows,
 		]
 			.map(fit)
 			.slice(0, Math.max(1, budget));
@@ -505,7 +540,11 @@ export class TaskInspector implements Component {
 		const actionRow = action ? [theme.fg("accent", `› ${taskDetailLabels[action]}`)] : [];
 		const rows = this.renderAll(inner);
 		const compactSummary = !framed && detail && current && budget >= 4 ? [taskDetailSummary(current)] : [];
-		const height = Math.max(0, budget - (framed ? 4 : 1) - actionRow.length - compactSummary.length);
+		const statusRows = this.taskStatusRows(width);
+		const height = Math.max(
+			0,
+			budget - (framed ? 4 : 1) - actionRow.length - compactSummary.length - statusRows.length,
+		);
 		const selected = detail ? -1 : rows.findIndex((row) => stripVTControlCharacters(row).startsWith("›"));
 		this.scroll = Math.min(this.scroll, Math.max(0, rows.length - height));
 		const selectionRows = Math.min(height, current?.kind === "agent" ? 3 : 2);
@@ -530,7 +569,7 @@ export class TaskInspector implements Component {
 							.join(" · ");
 		const footer = theme.fg("dim", truncateToWidth(`/tasks · ${hints}`, width));
 		if (!framed)
-			return [...compactSummary, ...view, ...actionRow, footer]
+			return [...compactSummary, ...view, ...actionRow, footer, ...statusRows]
 				.map((line) => truncateToWidth(line, width))
 				.slice(-Math.max(1, budget));
 		const live = this.store.backgroundTasks.filter((task) => task.execution.kind !== "settled").length;
@@ -555,6 +594,7 @@ export class TaskInspector implements Component {
 			...actionRow.map(frameRow),
 			border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
 			footer,
+			...statusRows,
 		].map((line) => truncateToWidth(line, width));
 	}
 	private renderAll(width: number): string[] {

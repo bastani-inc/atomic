@@ -156,6 +156,8 @@ Agent rows and completion cards show the resolved model and reasoning setting, f
 
 Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection uses a dedicated scrolling view with a pinned title, line position, and controls, rather than nesting full chat components inside a detail box. It renders retained messages and tool results without hidden reasoning or inline images. Earlier pages do not jump back to the latest page when background activity arrives.
 
+An agent's detail and transcript pages end with a status row for that task's own extension status lines, such as a tokens-per-second counter set by an extension the subagent loaded. It updates live, is separate from the chat's own status row, and disappears when the task ends. The compact picker and shell pages show none.
+
 An open live transcript updates directly from the child's session events, including streaming assistant text and partial/final tool results. Shell output refreshes on task state updates, including updates received during an earlier output read. You do not need to leave and reopen the transcript. Reading earlier retained pages keeps your position while the live tail continues updating.
 
 Shell details show the command, available exit information, and a bounded output tail. The preview shows up to ten wrapped lines from the retained 8 KiB tail. Output gaps and omitted earlier content are labelled. An empty output stream says **No output available**. Shell transcript inspection exposes the retained tail, not an invented agent conversation or an unlimited log viewer.
