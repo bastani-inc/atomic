@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a session write failing, or the next write waiting up to ten seconds, on Windows when the session lock directory could not be removed at once because another program, such as a virus scanner or file indexer, held it. The release is now retried, and a lock Atomic still cannot remove is cleared by the next write instead of waiting to go stale
+
 ## [0.9.54] - 2026-10-29
 
 Fixes from upstream pi after 1.4.0: packages, Windows paths and start-up.
