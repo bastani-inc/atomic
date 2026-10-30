@@ -321,39 +321,80 @@ describe("a broker announces its own pid", () => {
 		assert.match(importer, /^announceBrokerStart\(\);$/mu);
 	});
 
+	/** A real broker, spawned as the parent spawns it, asked to announce itself in `announced`, in the agent directory `dir`. */
+	function spawnRealBroker(dir: string, announced: { path: string; token: string }) {
+		const options = spawnModule.getBrokerSpawnOptions(join(process.cwd(), "packages/intercom"), "ignore", announced);
+		return spawn(
+			process.execPath,
+			[
+				spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")),
+				join(process.cwd(), "packages/intercom/broker/broker.ts"),
+			],
+			{ env: { ...options.env, ATOMIC_CODING_AGENT_DIR: dir }, stdio: "ignore" },
+		);
+	}
+
+	/** The broker's exit code, whether it exits after this is called or already has. */
+	function exitCodeOf(broker: ReturnType<typeof spawnRealBroker>): Promise<number | null> {
+		if (broker.exitCode !== null || broker.signalCode !== null) return Promise.resolve(broker.exitCode);
+		return new Promise((resolve) => broker.once("exit", (code) => resolve(code)));
+	}
+
+	async function stopRealBroker(broker: ReturnType<typeof spawnRealBroker>): Promise<void> {
+		broker.kill("SIGKILL");
+		await exitCodeOf(broker);
+	}
+
 	test(
-		"a real broker writes its pid before it answers and takes it back once it does",
+		"a real broker writes its pid at start-up, and the file stays when it never answers",
 		async () => {
 			const dir = mkdtempSync(join(tmpdir(), "icann-"));
 			const announced = { path: join(dir, "announced.starting"), token };
-			const options = spawnModule.getBrokerSpawnOptions(
-				join(process.cwd(), "packages/intercom"),
-				"ignore",
-				announced,
+			mkdirSync(pathsModule.getIntercomDirPath(dir), { recursive: true });
+			// A live broker already owns the socket, so this one announces itself, finds it and yields without ever
+			// answering. Its announcement is taken back only once it answers, so it is there to read however late the
+			// parent looks: nothing here depends on how long the parent pauses.
+			const incumbent = net.createServer((socket) => socket.on("error", () => {}));
+			await new Promise<void>((resolve) =>
+				incumbent.listen(pathsModule.getBrokerSocketPath(process.platform, dir), resolve),
 			);
-			const broker = spawn(
-				process.execPath,
-				[
-					spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")),
-					join(process.cwd(), "packages/intercom/broker/broker.ts"),
-				],
-				{ env: { ...options.env, ATOMIC_CODING_AGENT_DIR: dir }, stdio: "ignore" },
-			);
-			const socketPath = pathsModule.getBrokerSocketPath(process.platform, dir);
+			const broker = spawnRealBroker(dir, announced);
 			try {
+				const code = await exitCodeOf(broker);
+
+				assert.equal(code, 0, "the broker did not yield to the live one");
+				assert.equal(readBrokerStartAnnouncement(announced), broker.pid);
+				assert.equal(
+					existsSync(pathsModule.getBrokerPidPath(dir)),
+					false,
+					"the broker that yielded wrote a pid file",
+				);
+			} finally {
+				await stopRealBroker(broker);
+				await new Promise<void>((resolve) => incumbent.close(() => resolve()));
+				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			}
+		},
+		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,
+	);
+
+	test(
+		"a real broker takes its announcement back once it answers, and its pid file takes over",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "icann-"));
+			const announced = { path: join(dir, "announced.starting"), token };
+			const broker = spawnRealBroker(dir, announced);
+			try {
+				// Answering implies the announcement was written (it is the broker's second import), and once taken back
+				// it stays gone, so this holds however late the parent looks.
 				await eventually(
-					() => readBrokerStartAnnouncement(announced) === broker.pid,
+					() => connectable(pathsModule.getBrokerSocketPath(process.platform, dir)),
 					REAL_BROKER_STARTUP_TIMEOUT_MS,
 				);
-				await eventually(() => connectable(socketPath), REAL_BROKER_STARTUP_TIMEOUT_MS);
-				// The pid file is the broker's record from here on; the announcement does not outlive its start-up.
-				await eventually(() => !existsSync(announced.path), 5_000);
+				await eventually(() => !existsSync(announced.path), REAL_BROKER_STARTUP_TIMEOUT_MS);
 				assert.equal(Number.parseInt(readFileSync(pathsModule.getBrokerPidPath(dir), "utf8"), 10), broker.pid);
 			} finally {
-				broker.kill("SIGKILL");
-				await new Promise<void>((resolve) =>
-					broker.exitCode === null ? broker.once("exit", () => resolve()) : resolve(),
-				);
+				await stopRealBroker(broker);
 				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 			}
 		},
