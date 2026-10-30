@@ -24,7 +24,13 @@ import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
 import { normalizeGroups } from "../group.js";
-import { IntercomBrokerTimeoutError, IntercomClientDisconnectedError } from "../recoverable-disconnect.js";
+import {
+	BROKER_RETIRING_CODE,
+	IntercomBrokerRetiringError,
+	IntercomBrokerTimeoutError,
+	IntercomClientDisconnectedError,
+} from "../recoverable-disconnect.js";
+import { isSocketAnswering } from "./socket-liveness.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 
@@ -63,6 +69,38 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 function isBacklogRefusal(error: Error): boolean {
 	const code = (error as NodeJS.ErrnoException).code;
 	return code === "ECONNREFUSED" || code === "EAGAIN";
+}
+
+/** The broker closed the connection before it answered the registration. */
+class ConnectionClosedBeforeRegistrationError extends Error {
+	constructor() {
+		super("Connection closed before registration");
+		this.name = "ConnectionClosedBeforeRegistrationError";
+	}
+}
+
+/**
+ * Whether a failure before the broker answered `register` is what a broker that retired leaves behind: the socket path
+ * is gone (`ENOENT`), or the connection was reset or ended without an answer. A refusal the kernel gives a full listen
+ * backlog (`ECONNREFUSED`, `EAGAIN`) is not: those are retried above and still reject as before.
+ */
+function isLostBrokerSignature(error: Error): boolean {
+	if (error instanceof ConnectionClosedBeforeRegistrationError) return true;
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "ENOENT" || code === "ECONNRESET" || code === "EPIPE";
+}
+
+/**
+ * A failure before registration, classified: when it has the signature of a lost broker and nothing answers on the
+ * broker socket any more, the broker retired first and the failure is recoverable by spawning its replacement. A broker
+ * that still answers closed the connection for its own reasons (a refused or malformed registration), so the failure
+ * stays what it was.
+ */
+async function classifyRegistrationFailure(error: Error): Promise<Error> {
+	if (!isLostBrokerSignature(error) || (await isSocketAnswering(BROKER_SOCKET))) return error;
+	return new IntercomBrokerRetiringError(`Intercom broker went away before it registered this session: ${error.message}`, {
+    cause: error,
+  });
 }
 /** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
 const HELD_SEND_GRACE_MS = 5000;
@@ -409,7 +447,12 @@ export class IntercomClient extends EventEmitter {
           return;
         } catch (error) {
           if (attempt.signal.aborted) throw connectAborted();
-          if (!(error instanceof Error) || !isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) throw error;
+          if (!(error instanceof Error)) throw error;
+          if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
+            const classified = await classifyRegistrationFailure(error);
+            if (attempt.signal.aborted) throw connectAborted();
+            throw classified;
+          }
           const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** retry;
           await abortableDelay(backoff * (0.5 + Math.random() / 2), attempt.signal);
         }
@@ -496,7 +539,7 @@ export class IntercomClient extends EventEmitter {
           this.emit("disconnected", disconnectError);
         }
         if (wasConnecting) {
-          reject(new Error("Connection closed before registration"));
+          reject(new ConnectionClosedBeforeRegistrationError());
         }
       };
 
@@ -645,6 +688,8 @@ export class IntercomClient extends EventEmitter {
         // reason as an ordinary, non-recoverable error.
         const refusal = isLiveWorkflowStageRouteRefusalCode(brokerMessage.code)
           ? new IntercomLiveRouteRefusedError(brokerMessage.code, brokerMessage.reason)
+          : brokerMessage.code === BROKER_RETIRING_CODE
+          ? new IntercomBrokerRetiringError(brokerMessage.reason)
           : new Error(brokerMessage.reason);
         if (this._sessionId === null) {
           // Still registering: `connect()` owns the failure and its own cleanup.

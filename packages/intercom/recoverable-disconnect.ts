@@ -22,6 +22,12 @@
  * A broker that accepts the socket but does not answer a registration in time is
  * saturated, not gone. Its timeout is recoverable for the same reason, and a
  * background relay that sees it keeps quiet unless the outage persists.
+ *
+ * A broker that retires (idle for its window, asked to shut down, or replaced)
+ * can end a connection that is still registering. That is a lost race, not a
+ * failure of this client: the broker either says so with `broker_retiring`
+ * before it closes, or is gone by the time the client looks. The client spawns
+ * and connects to the replacement.
  */
 
 import { IntercomLiveRouteRefusedError } from "./live-route-refusal.js";
@@ -61,9 +67,27 @@ export class IntercomBrokerTimeoutError extends Error implements RecoverableDisc
 	}
 }
 
+/** The `registration_failed` code a retiring broker answers a registration with before it closes. */
+export const BROKER_RETIRING_CODE = "broker_retiring";
+export const BROKER_RETIRING_REASON = "Intercom broker is retiring; connect to its replacement";
+
 /**
- * True for an `IntercomClientDisconnectedError`, an `IntercomBrokerTimeoutError`, or a transient
- * `IntercomLiveRouteRefusedError`, directly or as a bounded `cause` ancestor.
+ * Raised when the broker a client was registering with retired first: it answered `broker_retiring`, or it ended
+ * the connection before answering and no longer answers on its socket. A replacement broker can be spawned and the
+ * registration tried again.
+ */
+export class IntercomBrokerRetiringError extends Error implements RecoverableDisconnectMarker {
+	readonly intercomRecoverableDisconnect = true;
+
+	constructor(message: string = BROKER_RETIRING_REASON, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "IntercomBrokerRetiringError";
+	}
+}
+
+/**
+ * True for an `IntercomClientDisconnectedError`, an `IntercomBrokerTimeoutError`, an `IntercomBrokerRetiringError`,
+ * or a transient `IntercomLiveRouteRefusedError`, directly or as a bounded `cause` ancestor.
  */
 export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 	let current: unknown = error;
@@ -71,6 +95,7 @@ export function isRecoverableIntercomDisconnect(error: unknown): boolean {
 		if (!(current instanceof Error)) return false;
 		if (current instanceof IntercomClientDisconnectedError) return true;
 		if (current instanceof IntercomBrokerTimeoutError) return true;
+		if (current instanceof IntercomBrokerRetiringError) return true;
 		if (current instanceof IntercomLiveRouteRefusedError) return current.transient;
 		current = current.cause;
 	}
@@ -83,6 +108,17 @@ export function isIntercomBrokerTimeout(error: unknown): boolean {
 	for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth += 1) {
 		if (!(current instanceof Error)) return false;
 		if (current instanceof IntercomBrokerTimeoutError) return true;
+		current = current.cause;
+	}
+	return false;
+}
+
+/** True for an `IntercomBrokerRetiringError`, directly or as a bounded `cause` ancestor. */
+export function isIntercomBrokerRetiring(error: unknown): boolean {
+	let current: unknown = error;
+	for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth += 1) {
+		if (!(current instanceof Error)) return false;
+		if (current instanceof IntercomBrokerRetiringError) return true;
 		current = current.cause;
 	}
 	return false;

@@ -81,8 +81,13 @@ import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
-import { jitteredReconnectDelayMs, reconnectDelayMs } from "./reconnect-backoff.js";
-import { IntercomClientDisconnectedError } from "./recoverable-disconnect.js";
+import {
+  BROKER_RETIRING_RETRY_WINDOW_MS,
+  brokerRetiringRetryDelayMs,
+  jitteredReconnectDelayMs,
+  reconnectDelayMs,
+} from "./reconnect-backoff.js";
+import { IntercomClientDisconnectedError, isIntercomBrokerRetiring } from "./recoverable-disconnect.js";
 import { isOwnerMissingRefusal, LIVE_ROUTE_OWNER_WAIT_MS, liveRouteOwnerRetryDelayMs } from "./live-route-refusal.js";
 import { RouteRetryWaiters, scheduledRetryFailure } from "./route-retry-waiters.js";
 import { createConcurrencyGate, ROUTE_CLIENT_CONNECT_CONCURRENCY } from "./route-connect-gate.js";
@@ -1311,6 +1316,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       let connectFailed = false;
       await ownershipRecorded.promise;
       const ownerWaitDeadline = Date.now() + LIVE_ROUTE_OWNER_WAIT_MS;
+      let retiringRetries = 0;
+      let retiringDeadline: number | undefined;
       try {
         for (let ownerWait = 0; ; ownerWait += 1) {
 		const nextClient = new IntercomClient(sessionIdAtStart, {
@@ -1403,6 +1410,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
             ) {
               await delay(liveRouteOwnerRetryDelayMs(ownerWait));
               continue;
+            }
+            // The broker retired while this session was registering with it (idle retirement, a restart, a
+            // replacement): spawn its successor and register again, rather than failing the start-up or leaving
+            // the retry to the one-second background timer.
+            if (isIntercomBrokerRetiring(error)) {
+              retiringDeadline ??= Date.now() + BROKER_RETIRING_RETRY_WINDOW_MS;
+              if (
+                Date.now() < retiringDeadline &&
+                !disposed &&
+                !shuttingDown &&
+                getLiveContext(contextAtStart, generationAtStart)
+              ) {
+                await delay(brokerRetiringRetryDelayMs(retiringRetries++));
+                continue;
+              }
             }
             connectFailed = true;
             throw toError(error);

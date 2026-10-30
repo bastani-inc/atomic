@@ -40,6 +40,7 @@ const TRANSIENT_EXTENSION_STARTUP_PATTERNS: readonly RegExp[] = [
 	/\bconnect ENOENT\b/,
 	/\bconnection closed\b|\bsocket hang up\b|\bclosed before registration\b/i,
 	/\bexited before startup\b/i,
+	/\bbroker is retiring\b/i,
 ];
 
 function isExtensionStartupError(error: unknown): error is ExtensionStartupError {

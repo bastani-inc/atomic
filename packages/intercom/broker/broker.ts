@@ -85,6 +85,7 @@ import { type ReceiptSender, RecipientReceipts, UNCERTAIN_RECEIPT_REASON } from 
 import { matchStagePathSegments } from "../workflow-stage-path-matching.js";
 import { DELIVERED_MESSAGE_TTL_MS } from "../retry-policy.js";
 import { isAgentRecipient } from "../recipient-purpose.js";
+import { BROKER_RETIRING_CODE, BROKER_RETIRING_REASON } from "../recoverable-disconnect.js";
 import {
 	LIVE_WORKFLOW_STAGE_ROUTE_REFUSAL_REASONS,
 	type LiveWorkflowStageRouteRefusalCode,
@@ -1627,6 +1628,13 @@ class IntercomBroker {
 
     switch (clientMessage.type) {
       case "register": {
+        if (this.shuttingDown) {
+          // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
+          // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
+          writeMessageIfOpen(socket, { type: "registration_failed", reason: BROKER_RETIRING_REASON, code: BROKER_RETIRING_CODE });
+          socket.end();
+          return;
+        }
         if (!isSessionRegistration(clientMessage.session)) {
           throw new Error("Invalid register message");
         }
