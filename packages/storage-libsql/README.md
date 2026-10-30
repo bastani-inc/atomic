@@ -35,6 +35,8 @@ chmod 600 ~/.atomic/turso-token
 | `authToken` | for remote databases | The database token. Pass it through `secrets` (`{ "file": ... }` or `{ "env": ... }`) so it stays out of settings. |
 | `namespace` | no | A self-hosted sqld namespace (`sqld --enable-namespaces`), sent as the `x-namespace` header. Needs a `libsql:`, `https:`, or `http:` URL. |
 
+A `file:` database is opened in write-ahead-log mode with a 5000 ms busy timeout, the way Atomic's own SQLite stores are, so several processes can read and write one file at once: a statement waits up to 5 seconds for a lock another process holds instead of failing with `SQLITE_BUSY`, and the wait blocks the calling thread. The first open changes the file to WAL mode, which is kept in the file and adds `-wal` and `-shm` files beside it. Open a file only through this adapter at a time: another SQLite library with the same file open in WAL mode was seen to read stale data.
+
 The token is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence, per-process overrides, and the other storage options.
 
 ## Use from the SDK

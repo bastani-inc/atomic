@@ -78,7 +78,8 @@ test("libSQL does not take an auth token from the environment or replace an open
 	vi.stubEnv("LIBSQL_AUTH_TOKEN", "environment-token-must-not-be-used");
 	const failure = new StorageError("fixture opening failure");
 	const createClient = vi.fn((config: Config) => {
-		assert.deepEqual(config, { url: "file:fixture.sqlite", authToken: undefined, intMode: "bigint" });
+		// A local file also gets the busy timeout that lets several processes share it.
+		assert.deepEqual(config, { url: "file:fixture.sqlite", authToken: undefined, intMode: "bigint", timeout: 5000 });
 		throw failure;
 	});
 	vi.doMock("@libsql/client", () => ({ createClient }));
