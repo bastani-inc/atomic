@@ -310,6 +310,22 @@ describe("a broker announces its own pid", () => {
 		assert.doesNotThrow(() => retractBrokerStartAnnouncement(env(file), 4242));
 	});
 
+	test("is not taken back by an old broker that answers late, from the spawn that replaced it", () => {
+		const oldToken = "old-spawn-aa11";
+		const oldBroker = { [BROKER_ANNOUNCE_PATH_ENV]: file, [BROKER_ANNOUNCE_TOKEN_ENV]: oldToken };
+		announceBrokerStart(oldBroker, 4242);
+
+		// The parent gave up on that broker and spawned the next one: it clears the file, and the new broker announces.
+		removePathSync(file, { force: true });
+		announceBrokerStart(env(file), 5151);
+
+		// The old broker finally answers and takes back its own announcement, which is no longer the file's content.
+		retractBrokerStartAnnouncement(oldBroker, 4242);
+
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), 5151);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token: oldToken }), undefined);
+	});
+
 	test("is the broker's second import, straight after the stderr cap, so a crash while loading is announced", () => {
 		const source = readFileSync(join(process.cwd(), "packages/intercom/broker/broker.ts"), "utf8");
 		const sideEffectImports = [...source.matchAll(/^import "([^"]+)";$/gmu)].map((match) => match[1]);
