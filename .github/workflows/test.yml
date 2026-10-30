@@ -37,6 +37,8 @@ on:
 #
 # Nothing is passed between jobs as an artifact: waiting for a producer job
 # adds a serial dependency, regardless of how cheaply its output transfers.
+# The model data the jobs build pi-ai from reaches them through a cache that `main` refreshes,
+# not from a producer job, for the same reason (docs/ci.md, "Model data cached, fetched live in one place").
 #
 # Every job runs on a `namespace-profile-atomic-ci-*` repository runner profile,
 # never an inline `nscloud-*` label: this workflow runs fork pull requests, and
@@ -135,8 +137,31 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
         run: node scripts/alias-pi-ai.mjs
+      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
+      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
+      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
+      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
+      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
       - name: Build @bastani/pi-ai
-        run: npm run build --workspace=@bastani/pi-ai
+        run: npm run build:offline --workspace=@bastani/pi-ai
       # Measured at 42s Linux / 86s Windows, both inside the existing caps.
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
@@ -235,8 +260,31 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
         run: node scripts/alias-pi-ai.mjs
+      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
+      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
+      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
+      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
+      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
       - name: Build @bastani/pi-ai
-        run: npm run build --workspace=@bastani/pi-ai
+        run: npm run build:offline --workspace=@bastani/pi-ai
       - name: Build native bindings for the root suites
         if: steps.natives.outputs.cache-hit != 'true'
         run: npm run build --workspace=@bastani/atomic-natives
@@ -335,8 +383,31 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
         run: node scripts/alias-pi-ai.mjs
+      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
+      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
+      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
+      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
+      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
       - name: Build @bastani/pi-ai
-        run: npm run build --workspace=@bastani/pi-ai
+        run: npm run build:offline --workspace=@bastani/pi-ai
       - name: pi-ai vitest suite
         run: npm run test --workspace=@bastani/pi-ai -- --shard=${{ matrix.shard }}/3
       # packages/coding-agent/test/native-binding-exports.test.ts is hard-required
@@ -434,12 +505,30 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Alias @earendil-works/pi-ai onto the workspace package
         run: node scripts/alias-pi-ai.mjs
-      # Model data (packages/ai/src/providers/data/) is gitignored, so a fresh checkout has none and the
-      # only source is the upstream catalogs. Hydrate it exactly once, as publish.yml does, and build from
-      # it offline: `npm run build` regenerates it, and build-binaries.sh used to regenerate it a second
-      # time because this job did not pass --offline-model-data. See docs/ci.md ("Binary smoke tests").
-      - name: Hydrate @bastani/pi-ai model data
-        run: npm run hydrate:model-data
+      # Model data (packages/ai/src/providers/data/) is gitignored, and its only source is the upstream
+      # catalogs. static-checks is the one job that fetches them live and strictly on every run, and on `main`
+      # it saves what it built. Every other job restores the newest snapshot (any day) built from the same
+      # generator inputs and builds offline, so a catalog outage can't fail a test shard. Only without a
+      # valid snapshot does the job hydrate itself: a cold cache, or a change to the generator or provider list.
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
+      # build-binaries.sh gets --offline-model-data below, so it doesn't regenerate the data a second time.
       - name: Build @bastani/pi-ai
         run: npm run build:offline --workspace=@bastani/pi-ai
       - name: Build @bastani/atomic package
@@ -587,6 +676,21 @@ jobs:
         run: node scripts/alias-pi-ai.mjs
       - name: Build @bastani/pi-ai
         run: npm run build --workspace=@bastani/pi-ai
+      - name: Check the generation left the committed provider shards unchanged
+        id: model-data-saveable
+        shell: bash
+        run: |
+          if git diff --quiet -- packages/ai/src; then echo "saveable=true" >> "$GITHUB_OUTPUT"; else echo "saveable=false" >> "$GITHUB_OUTPUT"; fi
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      # Saved only from `main`, and only when the data matches the committed shards the key hashes. Pull
+      # requests restore main's snapshot and can never replace it.
+      - name: Save model data snapshot
+        if: github.event_name == 'push' && steps.model-data-saveable.outputs.saveable == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-${{ steps.model-data-saveable.outputs.day }}
+          enableCrossOsArchive: true
       - name: Check
         run: npm run check
       - name: Docs link validation
