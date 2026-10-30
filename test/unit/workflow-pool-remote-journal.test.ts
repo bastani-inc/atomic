@@ -416,3 +416,42 @@ test("the checkpoint index reads a remote journal from its watermark, and starts
 	assert.deepEqual(ids(await index.begin("root").readEntries(journal(other.slice(0, 2), shorter))), ["x", "y"]);
 	assert.deepEqual(shorter, [4, 1]);
 });
+
+test("a read of a slow journal sees each checkpoint once when another commit's read advances the index meanwhile", async () => {
+	const index = new PoolCheckpointIndex();
+	const history = ["a", "b", "c", "d", "e"].map((id, position) =>
+		checkpointEntry(position + 1, 10 * (position + 1), id),
+	);
+	const stream = (entries: readonly JournalEntry[]) =>
+		async function* (from: number) {
+			for (const entry of entries) if (entry.seq >= from) yield entry;
+		};
+	const ids = (view: {
+		entries(partition: "byRun", key: string): readonly { checkpoint: { checkpointId: string } }[];
+	}) => view.entries("byRun", run.runId).map((entry) => entry.checkpoint.checkpointId);
+
+	const seeded = index.begin("root");
+	await seeded.readEntries(stream(history.slice(0, 2)));
+	seeded.commit();
+
+	// A read that has reached the index's watermark waits on the journal for the rest.
+	const gate = Promise.withResolvers<void>();
+	const slow = index.begin("root");
+	const slowView = slow.readEntries(async function* (from) {
+		for (const entry of history.filter((candidate) => candidate.seq >= from)) {
+			if (entry.seq > 2) await gate.promise;
+			yield entry;
+		}
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+
+	// Meanwhile another commit reads two more events and folds them into the index.
+	const quick = index.begin("root");
+	await quick.readEntries(stream(history.slice(0, 4)));
+	quick.commit();
+
+	gate.resolve();
+	assert.deepEqual(ids(await slowView), ["a", "b", "c", "d", "e"]);
+	slow.commit();
+	assert.deepEqual(ids(await index.begin("root").readEntries(stream(history))), ["a", "b", "c", "d", "e"]);
+});

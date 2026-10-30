@@ -190,14 +190,17 @@ export class PoolCheckpointIndex {
 		const current = this.roots.get(root);
 		let base = current;
 		for (;;) {
-			const marked = base !== undefined && base.seq > 0;
-			let verified = !marked;
+			// The watermark as it is now, taken once: another commit's read folds into this same index while this one
+			// waits on the journal, and moves the live watermark under it. Verifying against the moved one would
+			// mistake an event it has not checked for the one it has, and its rows would be counted twice.
+			const mark = base !== undefined && base.seq > 0 ? { seq: base.seq, key: base.key, at: base.at } : undefined;
+			let verified = mark === undefined;
 			let mismatch = false;
 			let head: { seq: number; key: string | null; at: number } | undefined;
 			const added: IndexedEntry[] = [];
-			for await (const entry of stream(marked ? base!.seq : 1)) {
-				if (marked && entry.seq === base!.seq) {
-					if ((entry.key ?? null) !== base!.key || entry.at !== base!.at) {
+			for await (const entry of stream(mark === undefined ? 1 : mark.seq)) {
+				if (mark !== undefined && entry.seq === mark.seq) {
+					if ((entry.key ?? null) !== mark.key || entry.at !== mark.at) {
 						mismatch = true;
 						break;
 					}
@@ -216,11 +219,11 @@ export class PoolCheckpointIndex {
 				});
 			}
 			// A watermark the journal no longer has, or has replaced, means the root was deleted and recorded again.
-			if (marked && (mismatch || !verified)) {
+			if (mark !== undefined && (mismatch || !verified)) {
 				base = undefined;
 				continue;
 			}
-			return this.view(root, current, base, base?.seq ?? 0, head?.seq ?? 0, head, added, onCommit);
+			return this.view(root, current, base, mark?.seq ?? 0, head?.seq ?? 0, head, added, onCommit);
 		}
 	}
 
