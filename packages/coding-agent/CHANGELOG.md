@@ -5,6 +5,7 @@
 ### Fixed
 
 - A subagent task's fullscreen detail and transcript pages now show the extension status lines (such as a tokens-per-second counter) that the task's own session sets, in a row beneath the page footer that updates live and clears when the task ends. Status writes from a subagent child's extensions used to be dropped, so those pages showed no extension statuses at all; they are still kept out of the chat's own footer ([#4103](https://github.com/bastani-inc/atomic/issues/4103))
+- Updated the bundled `@hono/node-server` dependency to 2.1.5, which fixes `serveStatic` decoding a request path a second time, a way to bypass middleware on static paths ([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f))
 
 ## [0.9.51] - 2026-10-29
 
