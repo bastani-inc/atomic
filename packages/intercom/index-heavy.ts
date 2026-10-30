@@ -1409,7 +1409,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               getLiveContext(contextAtStart, generationAtStart)
             ) {
               await delay(liveRouteOwnerRetryDelayMs(ownerWait));
-              continue;
+              // The session can be replaced during the wait: the next attempt would then assign its client over the
+              // replacement's and register a session that is gone, so the wait is followed by an attempt only while
+              // the session is still this one. (`nextClient` was disconnected above, so there is nothing to close.)
+              if (getLiveContext(contextAtStart, generationAtStart)) continue;
             }
             // The broker retired while this session was registering with it (idle retirement, a restart, a
             // replacement): spawn its successor and register again, rather than failing the start-up or leaving

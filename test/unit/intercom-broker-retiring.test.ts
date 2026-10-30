@@ -83,8 +83,11 @@ afterAll(() => {
 type Frame = { type?: string; requestId?: string };
 type OnRegister = (socket: net.Socket, server: net.Server, registrations: number) => void;
 
-/** A broker on the real socket path that hands each `register` to `onRegister` and answers `list` with no sessions. */
-async function fakeBroker(onRegister: OnRegister): Promise<net.Server> {
+/**
+ * A broker on the real socket path that hands each `register` to `onRegister`, answers `list` with no sessions and, when
+ * `onLiveRoute` is given, hands it each live workflow-stage route registration to answer.
+ */
+async function fakeBroker(onRegister: OnRegister, onLiveRoute?: (socket: net.Socket) => void): Promise<net.Server> {
 	mkdirSync(getIntercomDirPath(), { recursive: true, mode: 0o700 });
 	let registrations = 0;
 	const server = net.createServer((socket) => {
@@ -95,6 +98,7 @@ async function fakeBroker(onRegister: OnRegister): Promise<net.Server> {
 				(frame) => {
 					const message = frame as Frame;
 					if (message.type === "register") onRegister(socket, server, ++registrations);
+					if (message.type === "register_live_workflow_stage_route") onLiveRoute?.(socket);
 					if (message.type === "list")
 						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });
 				},
@@ -108,6 +112,14 @@ async function fakeBroker(onRegister: OnRegister): Promise<net.Server> {
 }
 
 const registered = (socket: net.Socket) => writeMessage(socket, { type: "registered", sessionId: "fake-session" });
+const ownerMissing = (socket: net.Socket) => {
+	writeMessage(socket, {
+		type: "registration_failed",
+		reason: "Live workflow-stage route has no registered workflow owner",
+		code: "owner_missing",
+	});
+	socket.end();
+};
 const retiring = (socket: net.Socket) => {
 	writeMessage(socket, { type: "registration_failed", reason: BROKER_RETIRING_REASON, code: BROKER_RETIRING_CODE });
 	socket.end();
@@ -229,9 +241,10 @@ describe("a session that starts while its broker retires", () => {
 		};
 		intercomHeavy(pi as never);
 		return {
-			contextFor: (sessionId: string) =>
+			contextFor: (sessionId: string, orchestrationContext?: unknown) =>
 				({
 					hasUI: false,
+					orchestrationContext,
 					cwd: process.cwd(),
 					isIdle: () => true,
 					ui: { notify() {} },
@@ -339,6 +352,59 @@ describe("a session that starts while its broker retires", () => {
 			assert.ok((await replacedAttempt) instanceof Error);
 			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 2);
 			assert.equal(registrations, 2, "the retry of a replaced session registered a session of its own");
+			assert.deepEqual(await connectThroughExtension(), []);
+			assert.equal(registrations, 2, "the replacement's connection was lost, so asking for peers registered again");
+		} finally {
+			await extension.fire("session_shutdown", replacement);
+		}
+	});
+
+	test("keeps an owner wait that ends after its session was replaced from touching the replacement's connection", async () => {
+		let registrations = 0;
+		await fakeBroker(
+			(socket, _server, count) => {
+				registrations = count;
+				registered(socket);
+			},
+			// The stage's workflow owner never registers its route, so every route registration is refused.
+			ownerMissing,
+		);
+		const extension = createExtension();
+		const stage = extension.contextFor("owner-missing-stage", {
+			kind: "workflow-stage",
+			workflowRunId: "41290000-0000-4000-8000-000000000001",
+			workflowStageId: "reviewer-id",
+			workflowStageName: "reviewer",
+			constraints: { disableWorkflowTool: true },
+			pendingStageDelivery: {
+				routeCapability: "owner-missing-capability",
+				deliverPending: async () => {},
+				ready: () => undefined,
+				fail() {},
+			},
+		});
+		const replacement = extension.contextFor("owner-missing-replacement");
+		try {
+			// The stage's registration is refused because its owner is missing, and it is waiting out its delay.
+			const ownerWait = holdNextDelay();
+			const staleStart = extension.fire("session_start", stage).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await ownerWait.entered;
+			assert.equal(registrations, 1);
+
+			// The session is replaced during that wait, and the replacement registers.
+			await extension.fire("session_start", replacement);
+			assert.deepEqual(await connectThroughExtension(), []);
+			assert.equal(registrations, 2);
+
+			// The wait ends. The stage's session is gone, so its start-up gives up without spawning a broker or
+			// registering a session of its own, and the replacement's connection is still the one the extension uses.
+			ownerWait.end();
+			assert.ok((await staleStart) instanceof Error);
+			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 2);
+			assert.equal(registrations, 2, "the owner wait of a replaced session registered a session of its own");
 			assert.deepEqual(await connectThroughExtension(), []);
 			assert.equal(registrations, 2, "the replacement's connection was lost, so asking for peers registered again");
 		} finally {
