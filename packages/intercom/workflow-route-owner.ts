@@ -149,7 +149,7 @@ export function createWorkflowRouteOwner(cwd: string) {
 				"web-access": false,
 			});
 			if (extensionDir === undefined) throw new Error("Intercom builtin package is unavailable");
-			await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, undefined, extensionDir);
+			await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, extensionDir);
 			if (connections.get(connection.key) !== connection) throw closedError();
 			const client = new IntercomClient(`${id}:pending-stage-route:${connection.key}`, {
 				multiplexesPendingStageRoutes: true,

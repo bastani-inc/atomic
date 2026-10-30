@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,6 +11,7 @@ import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
 import type { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { Message, SessionInfo, SupervisorRegistration } from "../../packages/intercom/types.js";
@@ -38,6 +39,7 @@ const CLIENT_DISCONNECT_TIMEOUT_MS = 5_000;
 const CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const DROP_WAKEUPS_TRIGGER = "two_broker_harness_drop_wakeups";
 const STORAGE_OPEN_GATE = "storage-open-gate";
+const REGISTRATION_GATE = "registration-gate";
 
 export interface ReceivedFrame {
 	readonly from: SessionInfo;
@@ -96,12 +98,19 @@ export interface TwoBrokerHarnessOptions {
 	 * broker and the harness's own connections are not held.
 	 */
 	readonly gatedStorageOpening?: BrokerNode;
+	/** Both brokers can park the shared-store write that records a registration (`holdRegistration`). */
+	readonly parkableRegistrations?: true;
 }
 
 /** Whether a gated broker's shared storage opening waits, fails, or proceeds. */
 export type StorageOpeningState = "held" | "fail" | "open";
 
-function nodeSettings(sharedDatabasePath: string, options: TwoBrokerHarnessOptions, openGate?: string): string {
+function nodeSettings(
+	sharedDatabasePath: string,
+	options: TwoBrokerHarnessOptions,
+	openGate?: string,
+	registrationGate?: string,
+): string {
 	return JSON.stringify({
 		storage: {
 			adapter: storageAdapterModule,
@@ -109,6 +118,7 @@ function nodeSettings(sharedDatabasePath: string, options: TwoBrokerHarnessOptio
 				path: sharedDatabasePath,
 				...(options.databaseCallDelayMs === undefined ? {} : { callDelayMs: options.databaseCallDelayMs }),
 				...(openGate === undefined ? {} : { openGate }),
+				...(registrationGate === undefined ? {} : { registrationGate }),
 			},
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
@@ -173,7 +183,11 @@ export class TwoBrokerHarness {
 			const agentDir = join(root, node);
 			mkdirSync(agentDir, { recursive: true });
 			const openGate = options.gatedStorageOpening === node ? join(root, STORAGE_OPEN_GATE) : undefined;
-			writeFileSync(join(agentDir, "settings.json"), nodeSettings(sharedDatabasePath, options, openGate));
+			const registrationGate = options.parkableRegistrations === true ? join(root, REGISTRATION_GATE) : undefined;
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				nodeSettings(sharedDatabasePath, options, openGate, registrationGate),
+			);
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
 				clientModule: await loadClientModule(agentDir),
@@ -206,6 +220,30 @@ export class TwoBrokerHarness {
 		const gate = join(this.root, STORAGE_OPEN_GATE);
 		if (state === "held") rmSync(gate, { force: true });
 		else writeFileSync(gate, state);
+	}
+
+	/**
+	 * Park the shared-store write that records the registration of the session named `name` (`parkableRegistrations`):
+	 * the broker that takes it has the registration and cannot answer it until `releaseRegistration`.
+	 */
+	holdRegistration(name: string): void {
+		writeFileSync(join(this.root, REGISTRATION_GATE), name);
+	}
+
+	/** Resolve once a broker has parked the registration of `name`, so it is known to be waiting there unanswered. */
+	async registrationParked(name: string): Promise<void> {
+		await vi.waitFor(
+			() => {
+				const parked = readFileSync(join(this.root, `${REGISTRATION_GATE}.parked`), "utf8").split("\n");
+				if (!parked.includes(name)) throw new Error(`the registration of ${name} is not parked yet`);
+			},
+			{ timeout: BROKER_READY_TIMEOUT_MS, interval: 20 },
+		);
+	}
+
+	/** Let every parked registration's write go. */
+	releaseRegistration(): void {
+		rmSync(join(this.root, REGISTRATION_GATE), { force: true });
 	}
 
 	agentDir(node: BrokerNode): string {
@@ -256,7 +294,41 @@ export class TwoBrokerHarness {
 		}
 	}
 
-	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown. */
+	/**
+	 * Ask a node's broker to shut down over its socket, as `atomic intercom restart` does, and resolve once it has
+	 * acknowledged. The broker then runs its orderly shutdown (ends its sessions, gives its leases up, exits) on every
+	 * platform. `stopBroker`'s SIGTERM is orderly only on POSIX: on Windows `process.kill` ends the process
+	 * unconditionally, so its shutdown never runs and its named pipe is gone at once.
+	 */
+	async requestShutdown(node: BrokerNode): Promise<void> {
+		await new Promise<void>((resolveAck, rejectAck) => {
+			const requestId = randomUUID();
+			const socket = net.connect(this.socketPath(node));
+			const timer = setTimeout(
+				() => fail(new Error(`broker ${node} did not acknowledge its shutdown request`)),
+				5_000,
+			);
+			const fail = (error: Error) => {
+				clearTimeout(timer);
+				socket.destroy();
+				rejectAck(error);
+			};
+			socket.once("error", fail);
+			socket.once("connect", () => writeMessage(socket, { type: "shutdown", requestId }));
+			socket.on(
+				"data",
+				createMessageReader((message) => {
+					if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+					if (message.type !== "shutdown_ack" || message.requestId !== requestId) return;
+					clearTimeout(timer);
+					socket.destroy();
+					resolveAck();
+				}, fail),
+			);
+		});
+	}
+
+	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown on POSIX (see `requestShutdown`). */
 	async stopBroker(node: BrokerNode, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
 		const broker = this.nodes[node].broker;
 		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;

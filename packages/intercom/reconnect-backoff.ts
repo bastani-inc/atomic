@@ -14,3 +14,15 @@ export function jitteredReconnectDelayMs(attempt: number, random: () => number =
   const ceiling = reconnectDelayMs(attempt);
   return Math.round(ceiling / 2 + (ceiling / 2) * random());
 }
+
+/**
+ * How long a connection that lost the race with a retiring broker keeps spawning and connecting again before it
+ * reports the failure. A broker that retires gives up its multi-node leases for at most two seconds and then exits,
+ * and its replacement starts in well under the broker start-up budget, so the race resolves long before this.
+ */
+export const BROKER_RETIRING_RETRY_WINDOW_MS = 10_000;
+
+/** Delay before the next spawn-and-connect attempt after losing the race with a retiring broker: 100 ms, doubling to 1 s. */
+export function brokerRetiringRetryDelayMs(attempt: number): number {
+  return Math.min(100 * 2 ** attempt, 1_000);
+}

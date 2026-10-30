@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 // `node:fs` calls below: `mkdtempSync`, `statSync` and `openSync` have no
 // helper equivalents, and the async ones that do exist would not make the
 // descriptor plumbing any safer.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	appendFileSync,
 	closeSync,
@@ -30,13 +30,20 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, test } from "vitest";
 import {
 	type BoundedStderrOptions,
 	BROKER_LOG_MAX_BYTES,
 	installBoundedStderr,
 } from "../../packages/intercom/broker/bounded-stderr.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import {
+	announceBrokerStart,
+	BROKER_ANNOUNCE_PATH_ENV,
+	BROKER_ANNOUNCE_TOKEN_ENV,
+	readBrokerStartAnnouncement,
+	retractBrokerStartAnnouncement,
+} from "../../packages/intercom/broker/start-announcement.js";
 import { bunExecutable, removePathSync } from "../helpers/runtime.js";
 
 /** Resolves true once the broker socket accepts a connection. */
@@ -73,6 +80,21 @@ const REAL_BROKER_STARTUP_TIMEOUT_MS = 30_000;
 
 /** Generous ceiling for one real broker startup. Measured at ~100 ms on an idle dev machine. */
 const BROKER_STARTUP_BUDGET_MS = 8_000;
+
+/**
+ * How long a broker that crashes at start-up may take to be reported, on every platform: half the default start-up
+ * budget. Reporting a crash is not waiting out the budget, which is for a broker that is alive and not yet listening
+ * (behind the Windows launcher, a crash used to be found only when the whole budget ran out). The bound is also the
+ * budget these tests give the spawn, so only noticing the exit can produce the exit wording they require.
+ */
+const PROMPT_EXIT_BOUND_MS = 15_000;
+
+/**
+ * What a real broker does first, for the stand-in brokers below that crash: announce its pid where the parent asked, as
+ * the protocol in `start-announcement.ts` says. It does nothing where the parent asked for nothing (every platform but
+ * Windows, whose launcher hides the child). No `<`, `>`, `&`, `|` or `%` in it, so cmd.exe passes it on as it is.
+ */
+const BROKER_FIRST_ACT = `if (process.env.${BROKER_ANNOUNCE_PATH_ENV}) require('node:fs').writeFileSync(process.env.${BROKER_ANNOUNCE_PATH_ENV}, process.env.${BROKER_ANNOUNCE_TOKEN_ENV} + ' ' + process.pid + String.fromCharCode(10));`;
 
 const agentDir = mkdtempSync(join(tmpdir(), "intercom-broker-log-"));
 // Both agent-dir variables are restored in afterAll. Vitest's default `forks`
@@ -187,6 +209,386 @@ describe("broker stderr capture shape", () => {
 	});
 });
 
+describe("the Windows launcher chain does nothing after the broker ends", () => {
+	const spec = () =>
+		spawnModule.getBrokerLaunchSpec(
+			String.raw`C:\ext\broker\broker.ts`,
+			"npx",
+			["--no-install", "tsx"],
+			String.raw`C:\ext`,
+			"win32",
+			String.raw`C:\agent\intercom`,
+			String.raw`C:\node.exe`,
+			"node",
+			String.raw`C:\agent\intercom\broker.log`,
+		);
+
+	test("its only file I/O is the broker's own stderr log", () => {
+		const launch = spec();
+		assert.ok(launch.kind === "windows-launcher");
+		const line = launch.launcherCommandLine;
+
+		// A resident cmd.exe that writes a file when the broker's command returns (an earlier version appended
+		// `&& echo ... >file || echo ... >file`) creates that file in the intercom directory just as tests, `atomic
+		// intercom restart` and users remove it, which made every Windows test that killed a broker and removed its
+		// directory fail with ENOTEMPTY. The redirect is `2>>`, two `>`, and nothing may follow the broker.
+		assert.equal((line.match(/>/gu) ?? []).length, 2, line);
+		assert.match(line, /2>>"C:\\agent\\intercom\\broker\.log"/u);
+		assert.doesNotMatch(line, /&|\||\becho\b/u, line);
+		assert.ok(line.startsWith("cmd.exe /s /c "), line);
+
+		const script = spawnModule.getWindowsHiddenLauncherScript(line);
+		assert.equal((script.match(/WshShell\.Run/gu) ?? []).length, 1, script);
+	});
+
+	test("carries nothing of the broker's announcement, which is the broker's own business", () => {
+		const launch = spec();
+		assert.ok(launch.kind === "windows-launcher");
+		assert.doesNotMatch(launch.launcherCommandLine, /ANNOUNCE|broker\.starting/u);
+	});
+});
+
+describe("a broker announces its own pid", () => {
+	const token = "aa11-bb22-cc33";
+	const env = (file: string): NodeJS.ProcessEnv => ({
+		[BROKER_ANNOUNCE_PATH_ENV]: file,
+		[BROKER_ANNOUNCE_TOKEN_ENV]: token,
+	});
+	let file: string;
+
+	beforeAll(() => {
+		file = join(pathsModule.getIntercomDirPath(), "announce-unit.starting");
+	});
+	afterEach(() => removePathSync(file, { force: true }));
+
+	test("lives beside the other broker runtime files", () => {
+		assert.equal(pathsModule.getBrokerStartAnnouncementPath(), join(agentDir, "intercom", "broker.starting"));
+	});
+
+	test("is written as `<token> <pid>` where the parent asked, and read back as the pid", () => {
+		announceBrokerStart(env(file), 4242);
+
+		assert.equal(readFileSync(file, "utf8"), `${token} 4242\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), 4242);
+	});
+
+	test("is not written where the parent asked for nothing, or asked in a form that is not plain", () => {
+		announceBrokerStart({}, 4242);
+		announceBrokerStart({ [BROKER_ANNOUNCE_PATH_ENV]: file }, 4242);
+		announceBrokerStart({ ...env(file), [BROKER_ANNOUNCE_TOKEN_ENV]: "a b & del *" }, 4242);
+		assert.equal(existsSync(file), false);
+	});
+
+	test("never keeps a broker from starting when the file cannot be written", () => {
+		assert.doesNotThrow(() => announceBrokerStart(env(join(agentDir, "no-such-directory", "x.starting")), 4242));
+	});
+
+	test("reads nothing from a write in progress, from another spawn's file, or from one that is not a pid", () => {
+		writeFileSync(file, `${token} 42`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		writeFileSync(file, `other-token 4242\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		writeFileSync(file, `${token} not-a-pid\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		writeFileSync(file, `${token} 4242 extra\n`);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+
+		removePathSync(file, { force: true });
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), undefined);
+	});
+
+	test("is taken back by its own broker, and only by it", () => {
+		announceBrokerStart(env(file), 4242);
+		retractBrokerStartAnnouncement(env(file), 9999);
+		assert.equal(existsSync(file), true, "another process's retraction must not remove a broker's announcement");
+
+		retractBrokerStartAnnouncement(env(file), 4242);
+		assert.equal(existsSync(file), false);
+		assert.doesNotThrow(() => retractBrokerStartAnnouncement(env(file), 4242));
+	});
+
+	test("is not taken back by an old broker that answers late, from the spawn that replaced it", () => {
+		const oldToken = "old-spawn-aa11";
+		const oldBroker = { [BROKER_ANNOUNCE_PATH_ENV]: file, [BROKER_ANNOUNCE_TOKEN_ENV]: oldToken };
+		announceBrokerStart(oldBroker, 4242);
+
+		// The parent gave up on that broker and spawned the next one: it clears the file, and the new broker announces.
+		removePathSync(file, { force: true });
+		announceBrokerStart(env(file), 5151);
+
+		// The old broker finally answers and takes back its own announcement, which is no longer the file's content.
+		retractBrokerStartAnnouncement(oldBroker, 4242);
+
+		assert.equal(readBrokerStartAnnouncement({ path: file, token }), 5151);
+		assert.equal(readBrokerStartAnnouncement({ path: file, token: oldToken }), undefined);
+	});
+
+	test("is the broker's second import, straight after the stderr cap, so a crash while loading is announced", () => {
+		const source = readFileSync(join(process.cwd(), "packages/intercom/broker/broker.ts"), "utf8");
+		const sideEffectImports = [...source.matchAll(/^import "([^"]+)";$/gmu)].map((match) => match[1]);
+		assert.deepEqual(sideEffectImports.slice(0, 2), ["./bounded-stderr-install.js", "./announce-on-import.js"]);
+		const firstNamedImport = source.search(/^import [^"\n]+ from /mu);
+		assert.ok(source.indexOf('import "./announce-on-import.js"') < firstNamedImport);
+
+		const importer = readFileSync(join(process.cwd(), "packages/intercom/broker/announce-on-import.ts"), "utf8");
+		assert.match(importer, /^announceBrokerStart\(\);$/mu);
+	});
+
+	/** A real broker, spawned as the parent spawns it, asked to announce itself in `announced`, in the agent directory `dir`. */
+	function spawnRealBroker(dir: string, announced: { path: string; token: string }) {
+		const options = spawnModule.getBrokerSpawnOptions(join(process.cwd(), "packages/intercom"), "ignore", announced);
+		return spawn(
+			process.execPath,
+			[
+				spawnModule.getJitiCliPath(join(process.cwd(), "packages/intercom")),
+				join(process.cwd(), "packages/intercom/broker/broker.ts"),
+			],
+			{ env: { ...options.env, ATOMIC_CODING_AGENT_DIR: dir }, stdio: "ignore" },
+		);
+	}
+
+	/** The broker's exit code, whether it exits after this is called or already has. */
+	function exitCodeOf(broker: ReturnType<typeof spawnRealBroker>): Promise<number | null> {
+		if (broker.exitCode !== null || broker.signalCode !== null) return Promise.resolve(broker.exitCode);
+		return new Promise((resolve) => broker.once("exit", (code) => resolve(code)));
+	}
+
+	async function stopRealBroker(broker: ReturnType<typeof spawnRealBroker>): Promise<void> {
+		broker.kill("SIGKILL");
+		await exitCodeOf(broker);
+	}
+
+	test(
+		"a real broker writes its pid at start-up, and the file stays when it never answers",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "icann-"));
+			const announced = { path: join(dir, "announced.starting"), token };
+			mkdirSync(pathsModule.getIntercomDirPath(dir), { recursive: true });
+			// A live broker already owns the socket, so this one announces itself, finds it and yields without ever
+			// answering. Its announcement is taken back only once it answers, so it is there to read however late the
+			// parent looks: nothing here depends on how long the parent pauses.
+			const incumbent = net.createServer((socket) => socket.on("error", () => {}));
+			await new Promise<void>((resolve) =>
+				incumbent.listen(pathsModule.getBrokerSocketPath(process.platform, dir), resolve),
+			);
+			const broker = spawnRealBroker(dir, announced);
+			try {
+				const code = await exitCodeOf(broker);
+
+				assert.equal(code, 0, "the broker did not yield to the live one");
+				assert.equal(readBrokerStartAnnouncement(announced), broker.pid);
+				assert.equal(
+					existsSync(pathsModule.getBrokerPidPath(dir)),
+					false,
+					"the broker that yielded wrote a pid file",
+				);
+			} finally {
+				await stopRealBroker(broker);
+				await new Promise<void>((resolve) => incumbent.close(() => resolve()));
+				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			}
+		},
+		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,
+	);
+
+	test(
+		"a real broker takes its announcement back once it answers, and its pid file takes over",
+		async () => {
+			const dir = mkdtempSync(join(tmpdir(), "icann-"));
+			const announced = { path: join(dir, "announced.starting"), token };
+			const broker = spawnRealBroker(dir, announced);
+			try {
+				// Answering implies the announcement was written (it is the broker's second import), and once taken back
+				// it stays gone, so this holds however late the parent looks.
+				await eventually(
+					() => connectable(pathsModule.getBrokerSocketPath(process.platform, dir)),
+					REAL_BROKER_STARTUP_TIMEOUT_MS,
+				);
+				await eventually(() => !existsSync(announced.path), REAL_BROKER_STARTUP_TIMEOUT_MS);
+				assert.equal(Number.parseInt(readFileSync(pathsModule.getBrokerPidPath(dir), "utf8"), 10), broker.pid);
+			} finally {
+				await stopRealBroker(broker);
+				removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			}
+		},
+		REAL_BROKER_STARTUP_TIMEOUT_MS * 2,
+	);
+});
+
+/** Polls `condition` every 20 ms until it holds, failing at `timeoutMs`. */
+async function eventually(condition: () => boolean | Promise<boolean>, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!(await condition())) {
+		assert.ok(Date.now() < deadline, `condition did not hold within ${timeoutMs} ms`);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
+describe("a broker behind a launcher that hides it", () => {
+	const startedAt = () => Date.now();
+
+	const ANNOUNCE = BROKER_FIRST_ACT;
+
+	/**
+	 * Stands in for `wscript -> cmd -> node` on every platform: a launcher that returns at once and leaves the broker
+	 * running detached with its stderr in `log`, so the parent holds a child that exited 0 and cannot see the broker.
+	 */
+	function launchThroughStandIn(brokerScript: string, log: string, announced: { path: string; token: string }): void {
+		const options = spawnModule.getBrokerSpawnOptions(join(process.cwd(), "packages/intercom"), "ignore", announced);
+		const chain = [
+			'const { spawn } = require("node:child_process"); const fs = require("node:fs");',
+			'const fd = fs.openSync(process.argv[1], "a");',
+			'spawn(process.execPath, ["-e", process.argv[2]], { detached: true, stdio: ["ignore", "ignore", fd], env: process.env }).unref();',
+			"fs.closeSync(fd);",
+		].join("\n");
+		spawn(process.execPath, ["-e", chain, log, brokerScript], {
+			detached: true,
+			stdio: "ignore",
+			env: options.env,
+		}).unref();
+	}
+
+	function kill(pid: number | undefined): void {
+		if (pid === undefined) return;
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// Already gone.
+		}
+	}
+
+	const probe = (announced: { path: string; token: string }) => () => readBrokerStartAnnouncement(announced);
+
+	test("a crash after announcing is reported with the broker's log long before the start-up budget", async () => {
+		writeFileSync(logPath, "");
+		const announced = {
+			path: pathsModule.getBrokerStartAnnouncementPath(),
+			token: `crash-${process.pid}-${Date.now()}`,
+		};
+		removePathSync(announced.path, { force: true });
+		const marker = `STAND-IN-CRASH-${Date.now()}`;
+		const started = startedAt();
+		launchThroughStandIn(
+			`${ANNOUNCE} console.error(${JSON.stringify(marker)}); process.exit(3);`,
+			logPath,
+			announced,
+		);
+
+		await assert.rejects(
+			// The budget is the bound, so only noticing the exit can have ended the wait with the exit wording.
+			() => spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, probe(announced)),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.match(error.message, /Intercom broker exited before startup \(pid \d+\)/u, error.message);
+				assert.ok(error.message.includes(marker), error.message);
+				return true;
+			},
+		);
+		assert.ok(startedAt() - started < PROMPT_EXIT_BOUND_MS);
+		removePathSync(announced.path, { force: true });
+	});
+
+	test("a broker that is alive and still loading is waited for, not mistaken for a crash", async () => {
+		const announced = {
+			path: pathsModule.getBrokerStartAnnouncementPath(),
+			token: `slow-${process.pid}-${Date.now()}`,
+		};
+		removePathSync(announced.path, { force: true });
+		const socketPath = pathsModule.getBrokerSocketPath();
+		const listenAfterMs = 1_500;
+		const started = startedAt();
+		launchThroughStandIn(
+			[
+				ANNOUNCE,
+				"setTimeout(function () {",
+				"  require('node:net').createServer(function (socket) { socket.on('error', function () {}); })",
+				`    .listen(${JSON.stringify(socketPath)});`,
+				`}, ${listenAfterMs});`,
+				"setTimeout(function () { process.exit(0); }, 8000);",
+			].join(" "),
+			logPath,
+			announced,
+		);
+		try {
+			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, probe(announced));
+
+			assert.ok(startedAt() - started >= listenAfterMs - 100, "answered before the broker could have listened");
+		} finally {
+			kill(readBrokerStartAnnouncement(announced));
+			await eventually(async () => !(await connectable(socketPath)), 10_000);
+			// A killed listener leaves its Unix socket file behind, which would refuse the next listener.
+			removePathSync(socketPath, { force: true });
+			removePathSync(announced.path, { force: true });
+		}
+	});
+
+	test("an announcement that is another spawn's is ignored, so the wait is the ordinary start-up budget", async () => {
+		const announced = {
+			path: pathsModule.getBrokerStartAnnouncementPath(),
+			token: `mine-${process.pid}-${Date.now()}`,
+		};
+		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
+			encoding: "utf8",
+		});
+		writeFileSync(announced.path, `someone-elses ${dead.stdout}\n`);
+
+		await assert.rejects(
+			() => spawnModule.waitForBroker(400, probe(announced)),
+			/Broker failed to start within timeout \(400 ms\)/u,
+		);
+		removePathSync(announced.path, { force: true });
+	});
+
+	test("a broker that yielded to a live one, which answers, is a success", async () => {
+		const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
+			encoding: "utf8",
+		});
+		let live: net.Server | undefined;
+		try {
+			await spawnModule.waitForBroker(PROMPT_EXIT_BOUND_MS, () => {
+				// The incumbent starts answering between the wait's socket check and the exit it then finds: the
+				// listen is synchronous, so the check after the exit sees it.
+				live ??= net
+					.createServer((socket) => socket.on("error", () => {}))
+					.listen(pathsModule.getBrokerSocketPath());
+				return Number.parseInt(dead.stdout, 10);
+			});
+			assert.ok(live);
+		} finally {
+			await new Promise<void>((resolve) => (live ? live.close(() => resolve()) : resolve()));
+		}
+	});
+
+	test("once the broker is killed nothing writes into its directory, so the directory can be removed at once", async () => {
+		for (let round = 0; round < 5; round++) {
+			const dir = mkdtempSync(join(tmpdir(), "icgone-"));
+			const announced = { path: join(dir, "broker.starting"), token: `gone-${round}-${process.pid}-${Date.now()}` };
+			launchThroughStandIn(`${ANNOUNCE} setInterval(function () {}, 1000);`, join(dir, "broker.log"), announced);
+			await eventually(() => readBrokerStartAnnouncement(announced) !== undefined, 15_000);
+			const pid = readBrokerStartAnnouncement(announced);
+			assert.ok(pid !== undefined);
+
+			kill(pid);
+			await eventually(() => {
+				try {
+					process.kill(pid, 0);
+					return false;
+				} catch {
+					return true;
+				}
+			}, 15_000);
+			// The moment the broker is gone: this is the removal the Windows tests do.
+			removePathSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+			// Nothing of the launcher chain brings the directory back.
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.equal(existsSync(dir), false, `round ${round}: something wrote into the removed directory`);
+		}
+	});
+});
+
 describe("bounded broker log tail", () => {
 	test("reads only the trailing bytes of an oversized log", () => {
 		const noisy = join(agentDir, "intercom", "noisy.log");
@@ -218,37 +620,39 @@ describe("bounded broker log tail", () => {
 });
 
 describe("broker startup failures name the log", () => {
-	test("a broker that exits during startup reports its captured stderr", async () => {
-		const marker = `EXIT-MARKER-${Date.now()}`;
+	/** Spawns a broker that writes `marker` to stderr and exits with `code`, and checks how the failure is reported. */
+	async function assertCrashReportedPromptly(marker: string, code: number): Promise<Error> {
+		const started = Date.now();
+		let reported: Error | undefined;
 		await assert.rejects(
 			() =>
-				spawnModule.spawnBrokerIfNeeded(process.execPath, [
-					"-e",
-					`console.error(${JSON.stringify(marker)}); process.exit(3);`,
-				]),
+				spawnModule.spawnBrokerIfNeeded(
+					process.execPath,
+					["-e", `${BROKER_FIRST_ACT} console.error(${JSON.stringify(marker)}); process.exit(${code});`],
+					PROMPT_EXIT_BOUND_MS,
+				),
 			(error: unknown) => {
 				assert.ok(error instanceof Error);
-				// Which failure path reports this is platform-dependent, and the
-				// contract being tested is the diagnostic, not the wording.
-				//
-				// On Windows the broker is launched through the hidden VBS
-				// launcher, so the direct child is the launcher: it exits 0
-				// immediately and getBrokerSpawnOptions' onExit deliberately
-				// ignores that (`windows-launcher && code === 0 && signal === null`).
-				// The real broker's failure therefore surfaces through the
-				// waitForBroker() timeout instead of an exit code. Asserting the
-				// exit-code wording there tested the launcher, not the fix.
-				const reportsFailure =
-					/Intercom broker exited before startup with code 3/u.test(error.message) ||
-					/Broker failed to start within timeout/u.test(error.message);
-				assert.ok(reportsFailure, error.message);
-				assert.ok(error.message.includes(logPath), error.message);
-				// Proof the descriptor really captured the child's stderr, not just that a path was named.
-				// This must hold on BOTH paths -- it is the whole point of the change.
-				assert.ok(error.message.includes(marker), error.message);
+				reported = error;
 				return true;
 			},
 		);
+		assert.ok(reported);
+		// The same wording on every platform: the broker exited, and it is not "still starting". Behind the Windows
+		// launcher the exit reaches the parent through the pid the broker announced rather than a child exit event.
+		assert.match(reported.message, /Intercom broker exited before startup/u, reported.message);
+		assert.doesNotMatch(reported.message, /failed to start within timeout/u, reported.message);
+		assert.ok(Date.now() - started < PROMPT_EXIT_BOUND_MS, `reported after ${Date.now() - started} ms`);
+		assert.ok(reported.message.includes(logPath), reported.message);
+		// Proof the descriptor really captured the child's stderr, not just that a path was named.
+		assert.ok(reported.message.includes(marker), reported.message);
+		return reported;
+	}
+
+	test("a broker that exits during startup is reported at once with its captured stderr", async () => {
+		const marker = `EXIT-MARKER-${Date.now()}`;
+
+		await assertCrashReportedPromptly(marker, 3);
 
 		assert.ok(readFileSync(logPath, "utf8").includes(marker));
 	});
@@ -256,33 +660,19 @@ describe("broker startup failures name the log", () => {
 	test("the exit-code path names the code where the platform reports one", {
 		skip: process.platform === "win32",
 	}, async () => {
-		// Kept as a distinct assertion so the non-Windows exit path cannot
-		// regress behind the platform-tolerant check above.
+		// Behind the Windows launcher the marker file says whether the broker's status was 0, not what it was.
 		const marker = `EXIT-CODE-MARKER-${Date.now()}`;
-		await assert.rejects(
-			() =>
-				spawnModule.spawnBrokerIfNeeded(process.execPath, [
-					"-e",
-					`console.error(${JSON.stringify(marker)}); process.exit(3);`,
-				]),
-			(error: unknown) => {
-				assert.ok(error instanceof Error);
-				assert.match(error.message, /Intercom broker exited before startup with code 3/u);
-				return true;
-			},
-		);
+
+		const reported = await assertCrashReportedPromptly(marker, 3);
+
+		assert.match(reported.message, /Intercom broker exited before startup with code 3/u);
 	});
 
 	test("each spawn keeps one bounded previous log instead of erasing it (#3862)", async () => {
 		appendFileSync(logPath, `${"z".repeat(4096)}\n`, "utf8");
 		const marker = `SECOND-MARKER-${Date.now()}`;
 
-		await assert.rejects(() =>
-			spawnModule.spawnBrokerIfNeeded(process.execPath, [
-				"-e",
-				`console.error(${JSON.stringify(marker)}); process.exit(4);`,
-			]),
-		);
+		await assertCrashReportedPromptly(marker, 4);
 
 		const contents = readFileSync(logPath, "utf8");
 		assert.ok(contents.includes(marker));
@@ -299,14 +689,7 @@ describe("broker startup failures name the log", () => {
 		writeFileSync(logPath, "previous broker diagnosis\n");
 		const marker = "BROKER-STARTED-WITHOUT-BACKUP";
 		try {
-			await assert.rejects(
-				() =>
-					spawnModule.spawnBrokerIfNeeded(process.execPath, [
-						"-e",
-						`console.error(${JSON.stringify(marker)}); process.exit(4);`,
-					]),
-				(error: Error) => error.message.includes(marker),
-			);
+			await assertCrashReportedPromptly(marker, 4);
 		} finally {
 			removePathSync(previous, { recursive: true, force: true });
 		}
@@ -320,7 +703,9 @@ describe("broker startup failures name the log", () => {
 			() => spawnModule.waitForBroker(50),
 			(error: unknown) => {
 				assert.ok(error instanceof Error);
-				assert.match(error.message, /Broker failed to start within timeout/u);
+				assert.match(error.message, /Broker failed to start within timeout \(50 ms\)/u);
+				// It says what to do about it.
+				assert.match(error.message, /brokerStartupTimeoutMs/u);
 				assert.ok(error.message.includes(logPath), error.message);
 				assert.ok(error.message.includes(marker), error.message);
 				return true;
@@ -665,6 +1050,53 @@ describe("readiness polling", () => {
 		assert.equal(spawnModule.BROKER_POLL_MAX_INTERVAL_MS, 100);
 		assert.ok(spawnModule.BROKER_POLL_INITIAL_INTERVAL_MS < spawnModule.BROKER_POLL_MAX_INTERVAL_MS);
 	});
+});
+
+describe("a broker that is slow to start", () => {
+	/** The wait a spawn attempt gave a new broker before the budget was sized from measurements. */
+	const FORMER_BROKER_READY_TIMEOUT_MS = 5_000;
+	/** Past the former budget by more than any scheduling jitter, as a cold jiti cache on a busy host is. */
+	const SLOW_LISTEN_DELAY_MS = FORMER_BROKER_READY_TIMEOUT_MS + 600;
+
+	test(
+		"is waited for past the former five-second budget by default",
+		async () => {
+			const socketPath = pathsModule.getBrokerSocketPath();
+			const pidPath = join(pathsModule.getIntercomDirPath(), "slow-broker.pid");
+			// A stand-in that listens late, as the real broker does after transpiling its modules, and keeps no state
+			// the spawn logic could mistake for a crash. Written without `<`, `>`, `&` or `|` so every launcher passes it on.
+			const script = [
+				'const net = require("node:net"); const fs = require("node:fs");',
+				`fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+				"setTimeout(function () {",
+				"  const server = net.createServer(function (socket) { socket.on('error', function () {}); });",
+				`  server.listen(${JSON.stringify(socketPath)});`,
+				"  process.on('SIGTERM', function () { server.close(); process.exit(0); });",
+				`}, ${SLOW_LISTEN_DELAY_MS});`,
+				"setInterval(function () {}, 1000);",
+			].join(" ");
+			const started = Date.now();
+			try {
+				await spawnModule.spawnBrokerIfNeeded(process.execPath, ["-e", script]);
+
+				assert.ok(
+					Date.now() - started >= FORMER_BROKER_READY_TIMEOUT_MS,
+					"the broker answered before the former budget ran out, so this proved nothing",
+				);
+				assert.equal(await connectable(socketPath), true);
+			} finally {
+				try {
+					process.kill(Number.parseInt(readFileSync(pidPath, "utf8"), 10), "SIGTERM");
+				} catch {
+					// The stand-in never started or already exited.
+				}
+				for (let attempt = 0; attempt < 100 && (await connectable(socketPath)); attempt++) {
+					await new Promise((resolve) => setTimeout(resolve, 50));
+				}
+			}
+		},
+		SLOW_LISTEN_DELAY_MS + REAL_BROKER_STARTUP_TIMEOUT_MS,
+	);
 });
 
 describe("real broker startup", () => {

@@ -1,12 +1,21 @@
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { isSocketAnswering } from "./socket-liveness.js";
+import { BROKER_READY_TIMEOUT_MS } from "./startup-timeout.js";
+import {
+  BROKER_ANNOUNCE_PATH_ENV,
+  BROKER_ANNOUNCE_TOKEN_ENV,
+  type BrokerStartAnnouncement,
+  readBrokerStartAnnouncement,
+} from "./start-announcement.js";
 import { createChildProcessEnvironment, isBunBinary, processSharedStorageSelection } from "@bastani/atomic";
 import {
   BROKER_STORAGE_ENV,
+  getBrokerStartAnnouncementPath,
   getBrokerLogPath,
   getBrokerPidPath,
   getBrokerSocketPath,
@@ -37,6 +46,7 @@ const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
 const BROKER_LOG = getBrokerLogPath();
+const BROKER_START_ANNOUNCEMENT = getBrokerStartAnnouncementPath();
 
 function ensurePrivateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -58,8 +68,7 @@ export const BROKER_POLL_INITIAL_INTERVAL_MS = 10;
 /** Upper bound for the readiness poll interval, matching the historic flat poll. */
 export const BROKER_POLL_MAX_INTERVAL_MS = 100;
 
-/** How long one spawn attempt waits for the broker socket to answer. */
-export const BROKER_READY_TIMEOUT_MS = 5000;
+export { BROKER_READY_TIMEOUT_MS };
 
 /** Backstop only: a spawn lock normally ends when its broker is ready or the processes it names are gone. */
 export const BROKER_SPAWN_LOCK_MAX_AGE_MS = 60_000;
@@ -175,6 +184,12 @@ export function getWindowsBrokerCommandLine(
  * dropped instead: launching correctly without a captured log beats launching wrongly with one.
  * A `%` reaches here only from a custom `brokerCommand`/`brokerArgs` or an install path that
  * contains one, and the direct (non-launcher) Windows path still captures stderr normally.
+ *
+ * Nothing may follow the broker in this chain: after the broker's process ends, the resident `cmd.exe` must do no
+ * file I/O, because tests, `atomic intercom restart` and users remove the intercom directory the moment the broker
+ * is gone, and a file the chain creates there then fails that removal (the marker an earlier version appended made
+ * every Windows test that kills a broker and removes its directory fail with ENOTEMPTY). The broker's own start-up
+ * announcement (`start-announcement.ts`) is how the parent learns that a broker it cannot watch has exited.
  */
 export function getWindowsStderrRedirectCommandLine(commandLine: string, logPath: string): string {
   if (commandLine.includes("%")) return commandLine;
@@ -247,10 +262,12 @@ export function getBrokerLaunchSpec(
  *
  * The broker routes through the shared storage this process was launched with (`--storage`,
  * `--storage-file` or `ATOMIC_STORAGE`), passed as `ATOMIC_STORAGE`; without one it reads settings.
+ * With `announcement` it also gets the file and token it announces its pid with (`start-announcement.ts`).
  */
 export function getBrokerSpawnOptions(
   extensionDir: string = EXTENSION_DIR,
   stderr: number | "ignore" = "ignore",
+  announcement?: BrokerStartAnnouncement,
 ): {
   detached: true;
   stdio: ["ignore", "ignore", number | "ignore"];
@@ -266,6 +283,9 @@ export function getBrokerSpawnOptions(
     env: createChildProcessEnvironment({
       NODE_NO_WARNINGS: "1",
       ...(storage === undefined ? {} : { [BROKER_STORAGE_ENV]: storage }),
+      ...(announcement === undefined
+        ? {}
+        : { [BROKER_ANNOUNCE_PATH_ENV]: announcement.path, [BROKER_ANNOUNCE_TOKEN_ENV]: announcement.token }),
     }),
     windowsHide: true,
   };
@@ -357,6 +377,17 @@ export async function spawnBrokerIfNeeded(
 
     const brokerPath = resolveBrokerEntrypoint(extensionDir);
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
+    // The Windows launcher hides the broker's pid and exit, so there the broker announces its pid, which this watches.
+    // Elsewhere the child is the broker and its exit event says how it ended.
+    const announcement: BrokerStartAnnouncement | undefined =
+      launch.kind === "windows-launcher" ? { path: BROKER_START_ANNOUNCEMENT, token: randomUUID() } : undefined;
+    if (announcement !== undefined) {
+      try {
+        unlinkSync(announcement.path);
+      } catch {
+        // None left by an earlier broker, or not removable: its token is not this spawn's, so it is ignored.
+      }
+    }
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
@@ -371,7 +402,7 @@ export async function spawnBrokerIfNeeded(
     const logFd = launch.kind === "direct" ? openSync(BROKER_LOG, "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore"));
+      child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore", announcement));
     } finally {
       if (logFd !== undefined) closeSync(logFd);
     }
@@ -411,7 +442,10 @@ export async function spawnBrokerIfNeeded(
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker(readyTimeoutMs).then(() => {
+      waitForBroker(
+        readyTimeoutMs,
+        announcement === undefined ? undefined : () => readBrokerStartAnnouncement(announcement),
+      ).then(() => {
         cleanup();
         resolve();
       }, (error) => {
@@ -549,16 +583,34 @@ export function releaseSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_
  * Poll the broker socket with a short initial interval and bounded exponential backoff.
  * Startup is tens of milliseconds, so the previous flat 100 ms sleep dominated it; the
  * overall timeout semantics are unchanged.
+ *
+ * `announcedPid` reports the pid of a broker this spawner cannot watch directly (behind the Windows launcher), once the
+ * broker has announced it. A broker whose pid is gone and that does not answer has crashed, and the wait ends at once:
+ * only a broker that is alive and not yet listening is waited for the whole budget.
  */
-export async function waitForBroker(timeoutMs = BROKER_READY_TIMEOUT_MS): Promise<void> {
+export async function waitForBroker(
+  timeoutMs = BROKER_READY_TIMEOUT_MS,
+  announcedPid?: () => number | undefined,
+): Promise<void> {
   const start = Date.now();
   let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
   while (Date.now() - start < timeoutMs) {
     if (await checkSocketConnectable()) {
       return;
     }
+    const pid = announcedPid?.();
+    if (pid !== undefined && !isProcessAlive(pid)) {
+      // A broker that finds a live broker on the socket yields and exits; that one answering is a success.
+      if (await checkSocketConnectable()) return;
+      throw new Error(`Intercom broker exited before startup (pid ${pid})\n${describeBrokerLog()}`);
+    }
     await sleep(interval);
     interval = Math.min(interval * 2, BROKER_POLL_MAX_INTERVAL_MS);
   }
-  throw new Error(`Broker failed to start within timeout\n${describeBrokerLog()}`);
+  throw new Error(
+    `Broker failed to start within timeout (${timeoutMs} ms)\n`
+      + "The broker did not answer on its socket in time; it may still be starting, which a busy machine or an empty jiti "
+      + "cache slows. Try again, or raise `brokerStartupTimeoutMs` in the Intercom config.json (default "
+      + `${BROKER_READY_TIMEOUT_MS} ms).\n${describeBrokerLog()}`,
+  );
 }

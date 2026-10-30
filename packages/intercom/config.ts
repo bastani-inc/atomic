@@ -2,6 +2,7 @@ import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
 import { existsSync, readFileSync } from "fs";
 import { getAgentConfigPaths } from "@bastani/atomic";
 import { DEFAULT_MAX_PENDING_REPLY_WAITS } from "./reply-waiter.ts";
+import { BROKER_READY_TIMEOUT_MS, MIN_BROKER_STARTUP_TIMEOUT_MS } from "./broker/startup-timeout.js";
 
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (e.g. "npx", "bun", or "node") */
@@ -9,6 +10,9 @@ export interface IntercomConfig {
 
   /** Arguments passed to the broker command before the broker script path */
   brokerArgs: string[];
+
+  /** How long a spawn attempt waits for a new broker to answer on its socket, in milliseconds */
+  brokerStartupTimeoutMs: number;
 
   /** Require confirmation before non-reply sends from interactive sessions */
   confirmSend: boolean;
@@ -36,6 +40,7 @@ export const DEFAULT_BROKER_ARGS = ["--no-install", "tsx"] as const;
 const defaults: IntercomConfig = {
   brokerCommand: DEFAULT_BROKER_COMMAND,
   brokerArgs: [...DEFAULT_BROKER_ARGS],
+  brokerStartupTimeoutMs: BROKER_READY_TIMEOUT_MS,
   confirmSend: false,
   maxPendingAsks: DEFAULT_MAX_PENDING_REPLY_WAITS,
   replyHint: true,
@@ -79,6 +84,16 @@ export function loadConfig(): IntercomConfig {
         brokerArgs.push(arg);
       }
       config.brokerArgs = brokerArgs;
+    }
+
+    if (Object.hasOwn(parsedConfig, "brokerStartupTimeoutMs")) {
+      if (
+        !Number.isInteger(parsedConfig.brokerStartupTimeoutMs)
+        || Number(parsedConfig.brokerStartupTimeoutMs) < MIN_BROKER_STARTUP_TIMEOUT_MS
+      ) {
+        throw new Error(`"brokerStartupTimeoutMs" must be an integer of at least ${MIN_BROKER_STARTUP_TIMEOUT_MS}`);
+      }
+      config.brokerStartupTimeoutMs = Number(parsedConfig.brokerStartupTimeoutMs);
     }
 
     if (Object.hasOwn(parsedConfig, "confirmSend")) {

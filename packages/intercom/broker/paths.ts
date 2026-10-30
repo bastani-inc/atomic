@@ -75,6 +75,15 @@ export function getBrokerLogPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "broker.log");
 }
 
+/**
+ * Where a broker announces its real pid as its first act, for a parent that cannot watch the process it spawned (the
+ * Windows launcher hides it); see `start-announcement.ts`. Written once at start-up and removed once the broker listens,
+ * never after the broker ends.
+ */
+export function getBrokerStartAnnouncementPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker.starting");
+}
+
 export function getBrokerWatchdogLogPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "broker-watchdog.log");
 }
