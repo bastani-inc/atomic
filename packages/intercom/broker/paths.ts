@@ -76,11 +76,12 @@ export function getBrokerLogPath(agentDir: string = getAgentDir()): string {
 }
 
 /**
- * Where the Windows launcher chain writes how the broker process ended. The parent cannot see that process's exit
- * there (the launcher hides its pid), so it watches this file instead; see `getWindowsStderrRedirectCommandLine`.
+ * Where a broker announces its real pid as its first act, for a parent that cannot watch the process it spawned (the
+ * Windows launcher hides it); see `start-announcement.ts`. Written once at start-up and removed once the broker listens,
+ * never after the broker ends.
  */
-export function getBrokerLauncherExitPath(agentDir: string = getAgentDir()): string {
-  return join(getIntercomDirPath(agentDir), "broker-launch.exit");
+export function getBrokerStartAnnouncementPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "broker.starting");
 }
 
 export function getBrokerWatchdogLogPath(agentDir: string = getAgentDir()): string {

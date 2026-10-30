@@ -1,6 +1,8 @@
 // MUST stay first: ESM evaluates static dependencies before the importer's body, so this is the
 // only position from which the stderr cap covers the other modules' own initialization.
 import "./bounded-stderr-install.js";
+// MUST stay second: it announces the broker's pid before the rest of the module graph loads (see start-announcement.ts).
+import "./announce-on-import.js";
 import net from "net";
 import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
 import { dirname } from "path";
@@ -19,6 +21,7 @@ import { boundWorkflowPossibleStageRow } from "../workflow-delivery-states.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
 import { startBrokerWatchdog } from "./watchdog.js";
+import { retractBrokerStartAnnouncement } from "./start-announcement.js";
 import {
 	getBrokerDeliveredMessagesPath,
 	getBrokerPidPath,
@@ -394,6 +397,8 @@ class IntercomBroker {
       if (process.platform !== "win32") this.boundSocketInode = statSync(SOCKET_PATH).ino;
       releaseReplacementLock();
       writeFileSync(PID_PATH, String(process.pid));
+      // The pid file takes over from the start-up announcement the moment the broker answers.
+      retractBrokerStartAnnouncement();
       console.log(`Intercom broker started (pid: ${process.pid})`);
       startBrokerWatchdog(SOCKET_PATH, this.instanceId, getBrokerWatchdogLogPath());
       this.lastConnectionAt = performance.now();
