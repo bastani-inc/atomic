@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { OAuthCredential } from "@bastani/pi-ai";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, test, vi } from "vitest";
+import { ENV_OFFLINE } from "../src/config.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage, InMemoryAuthStorageBackend } from "../src/core/auth-storage.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
@@ -44,6 +45,14 @@ async function isolatedRuntimes(options: { apiKeyEnv: string; storedOAuth: boole
 	vi.stubEnv("CORP_KEY_API_KEY", options.apiKeyEnv);
 	vi.stubEnv("ANTHROPIC_API_KEY", "");
 	vi.stubEnv("ANTHROPIC_OAUTH_TOKEN", "");
+	// `allowModelNetwork: false` only keeps create()'s own refresh off the network. Every later refresh, including
+	// the /model selector's, follows the offline switch; left online, the selector fetches pi.dev's catalog for
+	// each configured provider, and one failed request ends as "Could not refresh anthropic" and never as
+	// "Model catalogs refreshed.". The fetch stub keeps that from silently reappearing.
+	vi.stubEnv(ENV_OFFLINE, "1");
+	vi.stubGlobal("fetch", async (input: Parameters<typeof fetch>[0]) => {
+		throw new Error(`this test is offline but requested ${String(input)}`);
+	});
 	const store = new InMemoryAuthStorageBackend();
 	const credentials = () => AuthStorage.fromStorage(store);
 	if (options.storedOAuth) {
@@ -144,6 +153,7 @@ beforeAll(() => {
 
 afterEach(() => {
 	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
 });
 
 /** The engine runs `/login` and `/model` itself outside interactive mode; the isolated host renders them in it. */
