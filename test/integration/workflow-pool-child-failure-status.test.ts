@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import type { ForkOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, test, vi } from "vitest";
+import { beforeAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -20,24 +19,6 @@ import { fileExists, makeTempDirectory, removeTempDirectory } from "../helpers/r
 const LOCAL_WORKER_PROCESS_TIMEOUT_MS = 120_000;
 const ORDINARY = "ENOENT: no such file or directory, open '/tmp/missing-input.json'";
 const RATE_LIMITED = "429 Too Many Requests";
-
-// Keep the real coordinator, fork and IPC, but run the shipped worker rather than
-// cold-transpiling its entire source graph through jiti.
-vi.mock("node:child_process", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:child_process")>();
-	const { fileURLToPath } = await import("node:url");
-	const sourceEntry = fileURLToPath(
-		new URL("../../packages/workflows/src/workers/local-worker-entry.mjs", import.meta.url),
-	);
-	const packagedEntry = fileURLToPath(
-		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
-	);
-	return {
-		...actual,
-		fork: (modulePath: string | URL, args: readonly string[], options: ForkOptions) =>
-			actual.fork(modulePath === sourceEntry ? packagedEntry : modulePath, args, options),
-	};
-});
 
 beforeAll(async () => {
 	const workerEntry = fileURLToPath(

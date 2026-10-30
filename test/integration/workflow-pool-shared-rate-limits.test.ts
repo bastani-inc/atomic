@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import type { ForkOptions } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, test, vi } from "vitest";
+import { afterAll, beforeAll, test } from "vitest";
 import {
 	providerCooldownMs,
 	providerUnavailableMs,
@@ -38,24 +37,6 @@ const RETRY_AFTER_SECONDS = 6;
 const EARLY_COOLDOWN_MS = 3_600_000;
 /** The worker and the root each read the clock once to turn the remaining cooldown into its end time. */
 const CLOCK_READ_SLACK_MS = 1_000;
-
-// Keep the real coordinator, fork and IPC, but run the shipped worker rather than
-// cold-transpiling its entire source graph through jiti.
-vi.mock("node:child_process", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:child_process")>();
-	const { fileURLToPath } = await import("node:url");
-	const sourceEntry = fileURLToPath(
-		new URL("../../packages/workflows/src/workers/local-worker-entry.mjs", import.meta.url),
-	);
-	const packagedEntry = fileURLToPath(
-		new URL("../../packages/coding-agent/dist/builtin/workflows/src/local-worker-entry.mjs", import.meta.url),
-	);
-	return {
-		...actual,
-		fork: (modulePath: string | URL, args: readonly string[], options: ForkOptions) =>
-			actual.fork(modulePath === sourceEntry ? packagedEntry : modulePath, args, options),
-	};
-});
 
 interface ProviderRequest {
 	/** Order the fake provider received the request in. */
