@@ -19,23 +19,45 @@ const { createStore } = await load("../../packages/workflows/src/shared/store.ts
 const { createRegistry } = await load("../../packages/workflows/src/workflows/registry.ts");
 const { definitionDigest, loadWorkerDefinition } = await load("../../packages/workflows/src/workers/definitions.ts");
 const { LocalWorkerPool } = await load("../../packages/workflows/src/workers/local-pool.ts");
+const { coordinationPath, poolDurableJournal } = await load("../../packages/workflows/src/workers/pool-journal.ts");
 
 const path = join(directory, "journal.sqlite");
+// `adapter`: the journal is opened through a storage adapter that is not a SQL journal to the pool, so the pool keeps its
+// tables in a coordination database of its own and `path` is only the adapter's file.
+const remote = process.env.POOL_RESUME_JOURNAL === "adapter";
+const open = () =>
+	resolveRunJournal(
+		remote
+			? {
+					agentDir: join(directory, "home", "agent"),
+					journal: {
+						adapter: fileURLToPath(new URL("./delegating-run-journal-adapter.mjs", import.meta.url)),
+						options: { path },
+					},
+				}
+			: { journal: { path } },
+	);
+let journal = remote ? await open() : undefined;
+const poolPath = remote ? coordinationPath(poolDurableJournal(journal)) : path;
 const childPath = fileURLToPath(new URL("./pool-resume-child.ts", import.meta.url));
 const exportName = "resumedChild";
 
 if (mode === "resume") {
 	const database = new DatabaseSync(path);
 	database.exec("UPDATE wf_leases SET renewed_at = 0");
-	database.exec("UPDATE wf_runs_work SET expires_at = expires_at + 3600000 WHERE state = 'leased'");
 	database.close();
+	const work = new DatabaseSync(poolPath);
+	work.exec("UPDATE wf_runs_work SET expires_at = expires_at + 3600000 WHERE state = 'leased'");
+	work.close();
 	writeFileSync(join(directory, "release"), "");
 }
 
-const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+journal ??= await open();
+const backend = await JournalDurableBackend.open(journal);
 const child = await loadWorkerDefinition({ path: childPath, exportName, digest: await definitionDigest(childPath) });
 const pool = new LocalWorkerPool(backend, {
-	journalPath: path,
+	journalPath: poolPath,
+	...(remote ? { durable: poolDurableJournal(journal) } : {}),
 	workers: Number(workerCount),
 	definitions: [{ definition: child, path: childPath, exportName }],
 });

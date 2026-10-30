@@ -36,7 +36,7 @@ test("public worker opt-in refuses unsupported storage before registering a root
 		const options = { durableBackend: backend, store: createStore(), localWorkers: { count: 2, definitions: [] } };
 		await assert.rejects(
 			run(definition, {}, options),
-			process.platform === "win32" ? /containment.*Windows/i : /local.*SQLite journal/i,
+			process.platform === "win32" ? /containment.*Windows/i : /Local workers need a journal.*not memory/i,
 		);
 		assert.equal((await journal.listRuns()).length, 0);
 	} finally {

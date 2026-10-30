@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { afterEach, test } from "vitest";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { openSelectedRunJournal, resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -23,6 +24,7 @@ import {
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const adapter = fileURLToPath(new URL("../fixtures/delegating-run-journal-adapter.mjs", import.meta.url));
+const libsqlAdapter = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
 
 afterEach(async () => {
 	await closeCoordinationJournals();
@@ -92,14 +94,30 @@ test("the pool shares a default-prefix SQLite file as it is, and every other jou
 			agentDir,
 			journal: { adapter, options: { path: join(directory, "r.sqlite") } },
 		});
+		// The shipped libSQL adapter: a SQL journal with the default tables whose driver is not node:sqlite, so its file
+		// path means nothing to another process the way a local SQLite path does.
+		const libsql = await resolveRunJournal({
+			agentDir,
+			journal: { adapter: libsqlAdapter, options: { url: pathToFileURL(join(directory, "libsql.sqlite")).href } },
+		});
 		try {
+			assert.equal(sqlPoolStorage(libsql)?.tables.runs, "wf_runs");
+			assert.equal(isLocalPoolJournal(libsql), false);
+			assert.deepEqual(
+				{ ...decodeSelection(poolDurableJournal(libsql).selection), module: undefined },
+				{
+					kind: "adapter",
+					module: undefined,
+					options: { url: pathToFileURL(join(directory, "libsql.sqlite")).href },
+				},
+			);
 			assert.equal(isLocalPoolJournal(local), true);
 			assert.equal(isLocalPoolJournal(prefixed), false);
 			assert.equal(isLocalPoolJournal(remote), false);
 			assert.equal(isLocalPoolJournal(new MemoryRunJournal()), false);
 			assert.equal(isLocalPoolJournal(await resolveRunJournal({ agentDir, journal: { memory: true } })), false);
 		} finally {
-			await Promise.all([local.close(), prefixed.close(), remote.close()]);
+			await Promise.all([local.close(), prefixed.close(), remote.close(), libsql.close()]);
 		}
 	} finally {
 		removeTempDirectory(directory);
