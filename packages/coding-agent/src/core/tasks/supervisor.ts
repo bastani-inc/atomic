@@ -57,6 +57,10 @@ export type FakeRunnerContext = {
 	reportActivity(report: C.ActivityReport): C.Result<C.ReportReceipt, C.ReportError>;
 	/** Bind existing child history while holding the admitted runner authority. */
 	bindTranscript(session: TaskTranscriptSource): void;
+	/** Record (or, with `undefined`, remove) one extension status written by the task's own session. */
+	setExtensionStatus(statusKey: string, text: string | undefined): void;
+	/** Drop every status the task's session set: its session ended or was replaced. */
+	clearExtensionStatuses(): void;
 };
 /** Independent cleanup evidence: an outcome alone never proves resource release. */
 export type FakeExecution = { result: Promise<C.TaskResult>; cleanup: Promise<C.Cleanup> };
@@ -94,6 +98,9 @@ type TaskState = {
 	execution?: Promise<C.Result<C.Cleanup, C.ReportError>>;
 	transcript?: TaskTranscriptSource;
 	inheritedEntryCount?: number;
+	/** Extension `setStatus` writes of the task's own session; they never reach the host's footer. */
+	statuses: Map<string, string>;
+	statusListeners: Set<() => void>;
 };
 type WaitState = { native: native.WaitLease; outcome: Promise<C.Result<C.WaitOutcome, C.WaitError>> };
 
@@ -117,6 +124,48 @@ export function taskTranscriptSource(
 	if (!state.transcript)
 		return { ok: false, error: { code: "TranscriptUnavailable", message: "Transcript unavailable" } };
 	return { ok: true, value: { session: state.transcript, taskId: state.ref.taskId } };
+}
+
+const NO_STATUSES: ReadonlyMap<string, string> = new Map();
+
+/** Extension statuses written by this task's own session, by status key; empty once it ends. */
+export function taskExtensionStatuses(task: TaskLease): ReadonlyMap<string, string> {
+	return environment.tasks.get(task)?.statuses ?? NO_STATUSES;
+}
+
+/** Viewer-only: runs `listener` whenever the task's extension statuses change. */
+export function watchTaskExtensionStatuses(task: TaskLease, listener: () => void): () => void {
+	const listeners = environment.tasks.get(task)?.statusListeners;
+	listeners?.add(listener);
+	return () => {
+		listeners?.delete(listener);
+	};
+}
+
+function notifyStatusListeners(state: TaskState): void {
+	for (const listener of [...state.statusListeners]) {
+		try {
+			listener();
+		} catch {
+			// A viewer's repaint failure must not break the extension's status write.
+		}
+	}
+}
+
+function setTaskStatus(state: TaskState, statusKey: string, text: string | undefined): void {
+	if (text === undefined) {
+		if (!state.statuses.delete(statusKey)) return;
+	} else {
+		if (state.statuses.get(statusKey) === text) return;
+		state.statuses.set(statusKey, text);
+	}
+	notifyStatusListeners(state);
+}
+
+function clearTaskStatuses(state: TaskState): void {
+	if (state.statuses.size === 0) return;
+	state.statuses.clear();
+	notifyStatusListeners(state);
 }
 
 /** History the runner produced; a forked child's inherited parent entries are excluded. */
@@ -763,6 +812,8 @@ export class TaskSupervisor {
 				ref: reference(ref.value),
 				controller: new AbortController(),
 				kind: "command",
+				statuses: new Map(),
+				statusListeners: new Set(),
 			});
 			state.tasks.set(id, task);
 			if (bindFailure) {
@@ -861,6 +912,8 @@ export class TaskSupervisor {
 			owner: state,
 			ref: reference(ref.value),
 			controller: new AbortController(),
+			statuses: new Map(),
+			statusListeners: new Set(),
 		};
 		this.#tasks.set(task, taskState);
 		state.tasks.set(id, task);
@@ -880,6 +933,8 @@ export class TaskSupervisor {
 						},
 						reportActivity: (report) =>
 							mapped(this.#native.reportTaskActivity(runner.value, report), reportReceipt, reportErrors),
+						setExtensionStatus: (statusKey, text) => setTaskStatus(taskState, statusKey, text),
+						clearExtensionStatuses: () => clearTaskStatuses(taskState),
 					},
 					intent,
 				);
@@ -921,6 +976,8 @@ export class TaskSupervisor {
 				const reported = await Promise.race([outcome, cancelled]).finally(() => {
 					signal.removeEventListener("abort", stopped);
 				});
+				// The task ended: nothing of its session's presentation outlives it.
+				clearTaskStatuses(taskState);
 				const acknowledged = mapped(
 					this.#native.acknowledgeTaskCleanup(runner.value, evidence),
 					(cleanup) => cleanup,

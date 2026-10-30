@@ -467,6 +467,8 @@ export async function runAgentTask(input: {
 											}
 										: {}),
 								}),
+							setExtensionStatus: context.setExtensionStatus,
+							clearExtensionStatuses: context.clearExtensionStatuses,
 							bindChildSession: (session) => {
 								childSession = {
 									childSessionId: session.sessionId,

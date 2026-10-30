@@ -36,6 +36,24 @@ function sanitizeStatusText(text: string): string {
 }
 
 /**
+ * The extension status row under the footer: statuses sorted by key, joined by a dim bullet and
+ * truncated to the width. Shared by the chat footer and a task page's footer.
+ */
+export function renderExtensionStatusRow(
+	statuses: ReadonlyMap<string, string>,
+	width: number,
+	style: Pick<FooterRenderStyle, "dim"> = defaultFooterRenderStyle,
+): string | undefined {
+	if (statuses.size === 0) return undefined;
+	const sorted = [...statuses].sort(([a], [b]) => a.localeCompare(b));
+	return truncateToWidth(
+		sorted.map(([, text]) => sanitizeStatusText(text)).join(` ${style.dim("•")} `),
+		width,
+		style.dim("..."),
+	);
+}
+
+/**
  * Format token counts (similar to web-ui)
  */
 function formatTokens(count: number): string {
@@ -315,16 +333,8 @@ export class FooterComponent implements Component {
 			liveState ?? `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 		if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
 		const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
-		const statuses = [...this.footerData.getExtensionStatuses()].sort(([a], [b]) => a.localeCompare(b));
-		if (statuses.length > 0) {
-			lines.push(
-				truncateToWidth(
-					statuses.map(([, text]) => sanitizeStatusText(text)).join(` ${this.renderStyle.dim("•")} `),
-					width,
-					this.renderStyle.dim("..."),
-				),
-			);
-		}
+		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
+		if (statusRow !== undefined) lines.push(statusRow);
 		lines.push(...renderTaskFooter(getOwnerTaskStore(this.session)?.backgroundTasks ?? [], width));
 		return lines;
 	}

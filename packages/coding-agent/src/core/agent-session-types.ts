@@ -190,6 +190,12 @@ export interface ExtensionBindings {
 	onDiagnostic?: (diagnostic: import("./extensions/host-input.js").HostDiagnostic) => void;
 	onUIPrompt?: (event: UIPromptStartEvent | UIPromptEndEvent) => void;
 	uiContext?: ExtensionUIContext;
+	/**
+	 * Receives the extension `setStatus` writes of a session that is bound no `uiContext`, so a host
+	 * that presents the session elsewhere (a task's detail page) can show them. It does not make the
+	 * session report a UI.
+	 */
+	onStatus?: (statusKey: string, text: string | undefined) => void;
 	isPresentationOnly?: boolean;
 	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;

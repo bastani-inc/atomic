@@ -203,6 +203,7 @@ export class ExtensionRunner {
 		() => this.getSignalFn(),
 	);
 	private onDiagnostic?: (diagnostic: HostDiagnostic) => void;
+	private statusSink?: (statusKey: string, text: string | undefined) => void;
 	private mode: ExtensionMode = "print";
 	private presentationOnly = false;
 	private cwd: string;
@@ -447,6 +448,14 @@ export class ExtensionRunner {
 		this.refreshHostInput();
 	}
 
+	/**
+	 * Receive the status writes of a session that has no UI of its own (a subagent child), without
+	 * giving it one: `hasUI` stays false. A presentation UI, when bound, owns status writes instead.
+	 */
+	setStatusSink(sink: ((statusKey: string, text: string | undefined) => void) | undefined): void {
+		this.statusSink = sink;
+	}
+
 	cancelHostInput(): void {
 		this.inputBridge.cancel();
 	}
@@ -482,6 +491,7 @@ export class ExtensionRunner {
 		const bridged = this.inputBridge.wrap(
 			ui ?? {
 				...noOpUIContext,
+				setStatus: (statusKey, text) => this.statusSink?.(statusKey, text),
 				custom: async () => {
 					throw hostInputError("HumanInputUnavailable");
 				},
