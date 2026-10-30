@@ -16,24 +16,12 @@ import type { StageSessionRuntime } from "../../packages/workflows/src/runs/fore
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { StageChatView } from "../../packages/workflows/src/tui/stage-chat-view.js";
-import { createStageSkillFixture, submitStageSkillText } from "../fixtures/stage-chat-skill-session.js";
+import {
+	captureStageDelivery,
+	createStageSkillFixture,
+	submitStageSkillText,
+} from "../fixtures/stage-chat-skill-session.js";
 import { FakePromptEditor, makeFakeKeybindings, makeTestTui } from "../unit/stage-chat-view-helpers.js";
-
-/**
- * Resolves, once the next skill submission is admitted, when that delivery settles, which is after
- * the whole turn has ended. The turn persists through real I/O, so its end is a completion to await,
- * not something a polling deadline can bound.
- */
-function captureStageDelivery(fixture: Awaited<ReturnType<typeof createStageSkillFixture>>): Promise<unknown> {
-	const delivery = Promise.withResolvers<unknown>(); // adopts the admitted delivery promise
-	const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
-	fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
-		const admitted = admit(text, options, beforeDelivery);
-		delivery.resolve(admitted);
-		return admitted;
-	};
-	return delivery.promise;
-}
 
 // RFC #2884: discovery must never substitute the main session's catalog.
 test("editable stage chat expands its skill once into one admitted stage message", async () => {
@@ -41,8 +29,10 @@ test("editable stage chat expands its skill once into one admitted stage message
 	try {
 		const view = fixture.mount();
 		fixture.stage.appendResponses([fauxAssistantMessage("Stage skill acknowledged.")]);
+		const turnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/skill:fixture   args  ");
-		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 2));
+		await turnEnded;
+		assert.equal(fixture.userTexts().length, 2);
 		const text = fixture.userTexts()[1]!;
 		assert.match(text, /STAGE SKILL BODY/);
 		assert.ok(text.includes(`location="${fixture.stageSkill.filePath}"`));
@@ -267,8 +257,10 @@ test("disabled command registration does not authorize or forbid typed invocatio
 		fixture.setCatalog(buildSkillCatalog([replacement]));
 		await fixture.stage.session.reload();
 		fixture.stage.appendResponses([fauxAssistantMessage("Reloaded invocation acknowledged.")]);
+		const reloadedTurnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/skill:fixture after-reload");
-		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 3));
+		await reloadedTurnEnded;
+		assert.equal(fixture.userTexts().length, 3);
 		assert.match(fixture.userTexts()[2]!, /RELOADED STAGE BODY/);
 		assert.doesNotMatch(fixture.userTexts()[2]!, /STAGE SKILL BODY|MAIN SKILL BODY/);
 		assert.ok(fixture.userTexts()[2]!.includes(replacement.baseDir));
@@ -290,12 +282,14 @@ test("detaching an attached pane during admission cannot redirect its skill to a
 		};
 		const view = fixture.mount();
 		fixture.stage.appendResponses([fauxAssistantMessage("Original stage acknowledged.")]);
+		const turnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/skill:fixture original-stage");
 		await entered.promise;
 		view.dispose();
 		const other = fixture.mount({ handle: undefined, stageId: "different-stage" });
 		release.resolve();
-		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 2));
+		await turnEnded;
+		assert.equal(fixture.userTexts().length, 2);
 		assert.match(fixture.userTexts()[1]!, /STAGE SKILL BODY/);
 		assert.ok(fixture.userTexts()[1]!.endsWith("original-stage"));
 		assert.doesNotMatch(other.render(100).map(stripVTControlCharacters).join("\n"), /Original stage acknowledged/);
@@ -428,6 +422,15 @@ async function inspectTasksDuringPause(failureBeforeSettlement?: Error): Promise
 				return editor;
 			},
 		});
+		// Escape starts the pause without awaiting it. The pause resolves only after the aborted turn
+		// has drained through real persistence, so that promise is the settlement to await, not a poll.
+		const pausing = Promise.withResolvers<unknown>(); // adopts the pause promise Escape started
+		const pause = handle.pause.bind(handle);
+		handle.pause = () => {
+			const started = pause();
+			pausing.resolve(started);
+			return started;
+		};
 		view.handleInput("\x1b");
 		await aborted.promise;
 		assert.equal(harness.session.queuedMessagesPaused, true);
@@ -445,7 +448,8 @@ async function inspectTasksDuringPause(failureBeforeSettlement?: Error): Promise
 		}
 		if (failureBeforeSettlement) throw failureBeforeSettlement;
 		releaseAbort.resolve();
-		await vi.waitFor(() => assert.equal(handle.status, "paused"));
+		await pausing.promise;
+		assert.equal(handle.status, "paused");
 		assert.equal(harness.session.queuedMessagesPaused, true);
 		assert.deepEqual(getUserTexts(harness), before);
 		assert.equal(store.runs()[0]!.status, "paused");
@@ -573,8 +577,10 @@ test("editable postmortem skill invocation appends to its own retained session w
 		const before = JSON.stringify(fixture.store.runs()[0]!.stages[0]);
 		const view = fixture.mount({ handle: resolved.handle });
 		restored.appendResponses([fauxAssistantMessage("Postmortem skill acknowledged.")]);
+		const turnEnded = captureStageDelivery(resolved);
 		submitStageSkillText(view, "/skill:fixture postmortem-args");
-		await vi.waitFor(() => assert.equal(getUserTexts(restored!).length, beforeUsers + 1));
+		await turnEnded;
+		assert.equal(getUserTexts(restored).length, beforeUsers + 1);
 		assert.match(getUserTexts(restored).at(-1)!, /STAGE SKILL BODY/);
 		assert.equal(
 			getUserTexts(restored)
@@ -582,11 +588,9 @@ test("editable postmortem skill invocation appends to its own retained session w
 				.match(/<skill name=/g)?.length,
 			1,
 		);
-		await vi.waitFor(() =>
-			assert.equal(
-				restored!.sessionManager.buildSessionContext().messages.filter((message) => message.role === "user").length,
-				beforeStoredUsers + 1,
-			),
+		assert.equal(
+			restored.sessionManager.buildSessionContext().messages.filter((message) => message.role === "user").length,
+			beforeStoredUsers + 1,
 		);
 		assert.equal(
 			(await SessionManager.open(file)).buildSessionContext().messages.filter((message) => message.role === "user")
@@ -616,8 +620,10 @@ test("equivalent stage and main catalogs resolve the same qualified skill conten
 		await fixture.main.session.prompt("/skill:fixture@user same-args");
 		fixture.stage.appendResponses([fauxAssistantMessage("Stage equivalent catalog acknowledged.")]);
 		const view = fixture.mount();
+		const turnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/skill:fixture@user same-args");
-		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 2));
+		await turnEnded;
+		assert.equal(fixture.userTexts().length, 2);
 		assert.equal(fixture.userTexts()[1], getUserTexts(fixture.main)[0]);
 	} finally {
 		await fixture.cleanup();
@@ -812,8 +818,10 @@ test.each(["steer", "followUp"] as const)("paused stage skill retains %s intent 
 		};
 		const view = fixture.mount();
 		fixture.stage.appendResponses([fauxAssistantMessage("Resumed stage skill acknowledged.")]);
+		const turnEnded = captureStageDelivery(fixture);
 		submitStageSkillText(view, "/skill:fixture paused-args", mode === "followUp" ? "\x06" : "\r");
-		await vi.waitFor(() => assert.equal(fixture.userTexts().length, 2));
+		await turnEnded;
+		assert.equal(fixture.userTexts().length, 2);
 		const text = fixture.userTexts()[1]!;
 		assert.match(text, /STAGE SKILL BODY/);
 		assert.ok(text.endsWith("\n\npaused-args"));

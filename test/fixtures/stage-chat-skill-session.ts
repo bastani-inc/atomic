@@ -18,7 +18,7 @@ import { createTestExtensionsResult, createTestResourceLoader } from "../../pack
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { createStageControlRegistry, type StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
@@ -129,4 +129,20 @@ export async function createStageSkillFixture(options: StageSkillFixtureOptions 
 export function submitStageSkillText(view: StageChatView, text: string, key = "\r"): void {
 	for (const character of text) view.handleInput(character);
 	view.handleInput(key);
+}
+
+/**
+ * Resolves, once the next skill submission is admitted, when that delivery settles, which is after
+ * the whole turn has ended. The turn persists through real I/O, so its end is a completion to await,
+ * not something a polling deadline can bound.
+ */
+export function captureStageDelivery(fixture: { readonly handle: StageControlHandle }): Promise<unknown> {
+	const delivery = Promise.withResolvers<unknown>(); // adopts the admitted delivery promise
+	const admit = fixture.handle.sendUserMessage!.bind(fixture.handle);
+	fixture.handle.sendUserMessage = (text, options, beforeDelivery) => {
+		const admitted = admit(text, options, beforeDelivery);
+		delivery.resolve(admitted);
+		return admitted;
+	};
+	return delivery.promise;
 }
