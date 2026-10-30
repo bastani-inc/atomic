@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## [0.9.54] - 2026-10-29
+
+Fixes from upstream pi after 1.4.0: packages, Windows paths and start-up.
+
+- **Packages that update:** `-e` npm and git packages refresh when a newer version exists, `update` warns when npm leaves the old version in place, and installs through a symlinked agent directory write correct lockfile paths
+- **Windows paths and trust:** paths are compared case-insensitively on Windows, so project trust and settings match however a drive or folder is cased, and a saved "Do not trust" is honored for projects with nothing to trust
+- **Start-up and output:** a deleted working directory gets a clear message instead of a crash, the model scope shows in the fullscreen header instead of staying in the shell, and `pi.exec` caps a command's output instead of buffering it without limit
+- **Models:** OpenRouter's `~anthropic/claude-*-latest` aliases use Anthropic Messages, Zhipu usage-limit errors aren't retried, and SDK branch and session summaries use the stored OAuth login
+
+### Fixed
+
+- Fixed npm package installs through a symlinked agent directory writing broken nested `package-lock.json` paths: `--prefix` now gets the real path ([#11358](https://github.com/earendil-works/pi/issues/11358)).
+- Fixed model references whose provider id contains a `/`, such as `llama=http://host:10800/unsloth/qwen-gguf:BF16`, failing to resolve ([#11394](https://github.com/earendil-works/pi/issues/11394)).
+- Fixed starting Atomic in a deleted working directory crashing with a stack trace. It now says the directory no longer exists and exits 1 ([#11509](https://github.com/earendil-works/pi/issues/11509)).
+- Fixed the `Model scope:` startup line being printed to the shell's main screen, where it stayed after exit. The fullscreen header shows it instead ([#11508](https://github.com/earendil-works/pi/issues/11508)).
+- Fixed codemode tool descriptions inlining a large union or multi-line output type in every request. They list each variant's fields, or point to `describeTool()` for anything longer ([#11501](https://github.com/earendil-works/pi/issues/11501)).
+- Fixed setting the same active tools in a different order patching the system prompt ([#11495](https://github.com/earendil-works/pi/issues/11495)).
+- Fixed `stripAnsi` leaving terminal mouse reports and similar private-parameter CSI sequences, such as `ESC[<35;59;1M`, in captured output, while keeping the digits after a bare `ESC =` or `ESC >` ([#11377](https://github.com/earendil-works/pi/issues/11377)).
+- Fixed `pi.exec` buffering unbounded output. It now stops a command whose combined stdout and stderr exceed `maxBuffer` (default 256 MiB) and returns the output so far with `truncated: true`, `killed: true` and a nonzero `code` ([#11360](https://github.com/earendil-works/pi/issues/11360)).
+- Fixed branch and session summaries in SDK sessions bypassing the stored OAuth login for providers that also accept an API key ([#11520](https://github.com/earendil-works/pi/issues/11520)).
+- Fixed skill diagnostics being headed `[Skill conflicts]` when they are warnings ([#11566](https://github.com/earendil-works/pi/pull/11566)).
+- Fixed `update` reporting success when npm installed the old version from stale registry metadata. It now warns that the package is still on the old version ([#11571](https://github.com/earendil-works/pi/pull/11571)).
+- Fixed resized images being returned as PNG whenever the PNG fit, even when a JPEG was much smaller. The smaller of the two is now used ([#11551](https://github.com/earendil-works/pi/issues/11551)).
+- Fixed a saved "Do not trust" decision being ignored for a project with no trust inputs ([#10947](https://github.com/earendil-works/pi/issues/10947)).
+- Fixed `-e` packages never updating after the first run. An unpinned npm package is reinstalled when the registry has a newer matching version, and a git package pinned to a branch ref is fetched again, while a ref that is the commit already checked out is not ([#11375](https://github.com/earendil-works/pi/issues/11375)).
+- Fixed path comparisons treating `C:\Users` and `c:\users` as different directories on Windows. Project trust decisions, the user `.agents/skills` directory, session and resource de-duplication, and `~` shortening now ignore case ([#10488](https://github.com/earendil-works/pi/issues/10488)).
+
+## [0.9.54-alpha.1] - 2026-10-29
+
+Fixes from upstream pi after 1.4.0: packages, Windows paths and start-up.
+
+- **Packages that update:** `-e` npm and git packages refresh when a newer version exists, `update` warns when npm leaves the old version in place, and installs through a symlinked agent directory write correct lockfile paths
+- **Windows paths and trust:** paths are compared case-insensitively on Windows, so project trust and settings match however a drive or folder is cased, and a saved "Do not trust" is honored for projects with nothing to trust
+- **Start-up and output:** a deleted working directory gets a clear message instead of a crash, the model scope shows in the fullscreen header instead of staying in the shell, and `pi.exec` caps a command's output instead of buffering it without limit
+- **Models:** OpenRouter's `~anthropic/claude-*-latest` aliases use Anthropic Messages, Zhipu usage-limit errors aren't retried, and SDK branch and session summaries use the stored OAuth login
+
 ### Fixed
 
 - Fixed npm package installs through a symlinked agent directory writing broken nested `package-lock.json` paths: `--prefix` now gets the real path ([#11358](https://github.com/earendil-works/pi/issues/11358)).
