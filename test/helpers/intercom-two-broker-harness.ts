@@ -11,6 +11,7 @@ import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
 import type { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
+import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { Message, SessionInfo, SupervisorRegistration } from "../../packages/intercom/types.js";
@@ -256,7 +257,41 @@ export class TwoBrokerHarness {
 		}
 	}
 
-	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown. */
+	/**
+	 * Ask a node's broker to shut down over its socket, as `atomic intercom restart` does, and resolve once it has
+	 * acknowledged. The broker then runs its orderly shutdown (ends its sessions, gives its leases up, exits) on every
+	 * platform. `stopBroker`'s SIGTERM is orderly only on POSIX: on Windows `process.kill` ends the process
+	 * unconditionally, so its shutdown never runs and its named pipe is gone at once.
+	 */
+	async requestShutdown(node: BrokerNode): Promise<void> {
+		await new Promise<void>((resolveAck, rejectAck) => {
+			const requestId = randomUUID();
+			const socket = net.connect(this.socketPath(node));
+			const timer = setTimeout(
+				() => fail(new Error(`broker ${node} did not acknowledge its shutdown request`)),
+				5_000,
+			);
+			const fail = (error: Error) => {
+				clearTimeout(timer);
+				socket.destroy();
+				rejectAck(error);
+			};
+			socket.once("error", fail);
+			socket.once("connect", () => writeMessage(socket, { type: "shutdown", requestId }));
+			socket.on(
+				"data",
+				createMessageReader((message) => {
+					if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+					if (message.type !== "shutdown_ack" || message.requestId !== requestId) return;
+					clearTimeout(timer);
+					socket.destroy();
+					resolveAck();
+				}, fail),
+			);
+		});
+	}
+
+	/** SIGKILL is a crash (leases and claims stay behind); SIGTERM is an orderly shutdown on POSIX (see `requestShutdown`). */
 	async stopBroker(node: BrokerNode, signal: "SIGTERM" | "SIGKILL"): Promise<void> {
 		const broker = this.nodes[node].broker;
 		if (!broker || broker.exitCode !== null || broker.signalCode !== null) return;

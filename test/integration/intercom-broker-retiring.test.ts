@@ -33,10 +33,11 @@ test(
 				harness.connect("a", unique(`held-${index}`), { group }),
 			),
 		);
-		const brokerPid = harness.brokerPid("a");
-		assert.ok(brokerPid !== undefined);
 
-		process.kill(brokerPid, "SIGTERM");
+		// An orderly shutdown request, not a signal: on Windows a SIGTERM ends the process unconditionally, so the
+		// broker would never close in an observable window and its pipe would be gone at once. The broker's pipe stays
+		// open until its shutdown has finished, on every platform, which is what lets it answer a late registration.
+		await harness.requestShutdown("a");
 		// The broker ends every session's socket as its shutdown begins, so from here on it is closing.
 		await vi.waitFor(
 			() =>
