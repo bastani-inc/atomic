@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type BigIntStats, createReadStream } from "node:fs";
+import { type BigIntStats, createReadStream, rmdir as rmdirCallback, stat as statCallback } from "node:fs";
 import {
 	appendFile,
 	copyFile,
@@ -88,6 +88,23 @@ export class JsonlStoragePoisonedError extends Error {
 	}
 }
 
+/**
+ * The file-system calls the session lock makes, replaceable so a test can fail the ones that only
+ * fail on Windows. `rmdir` and `stat` are also what this store uses to clear a lock it could not release.
+ */
+export interface SessionLockFs {
+	mkdir: typeof import("node:fs").mkdir;
+	rmdir: typeof import("node:fs").rmdir;
+	stat: typeof import("node:fs").stat;
+	utimes: typeof import("node:fs").utimes;
+	realpath: typeof import("node:fs").realpath;
+}
+
+/** Removing a lock directory fails with these on Windows while another handle, such as a scanner or indexer, holds it. */
+const TRANSIENT_RELEASE_CODES = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"]);
+/** Waits between attempts to remove the lock directory, about 1.5 s in all, far inside the lock's 10 s stale window. */
+const RELEASE_BACKOFF_MS = [10, 20, 50, 100, 200, 400, 700];
+
 export class JsonlSessionStore implements SessionStore {
 	private queue: Promise<void> = Promise.resolve();
 	private closed = false;
@@ -96,17 +113,25 @@ export class JsonlSessionStore implements SessionStore {
 	private readonly fileStates = new Map<string, SessionFileState>();
 
 	private readonly exactDirectory: boolean;
+	private readonly lockFs: SessionLockFs | undefined;
+	/**
+	 * Lock directories this store acquired and could not remove, by path, with the modification time they had
+	 * then. Nothing refreshes them any more, so another process may take them only once they are stale; until
+	 * then the store removes its own, recognised by that time, rather than waiting out the stale window.
+	 */
+	private readonly unreleased = new Map<string, number>();
 
-	private constructor(directory: string, exactDirectory: boolean) {
+	private constructor(directory: string, exactDirectory: boolean, lockFs?: SessionLockFs) {
 		this.exactDirectory = exactDirectory;
 		this.directory = resolve(directory);
+		this.lockFs = lockFs;
 	}
 
 	static async open(
 		directory: string,
-		options?: { exactDirectory?: boolean; scanExisting?: boolean },
+		options?: { exactDirectory?: boolean; scanExisting?: boolean; lockFs?: SessionLockFs },
 	): Promise<JsonlSessionStore> {
-		const store = new JsonlSessionStore(directory, options?.exactDirectory === true);
+		const store = new JsonlSessionStore(directory, options?.exactDirectory === true, options?.lockFs);
 		await store.run(() => mkdir(store.directory, { recursive: true }).then(() => {}), false);
 		if (options?.scanExisting !== false) {
 			await store.run(async () => {
@@ -382,12 +407,14 @@ export class JsonlSessionStore implements SessionStore {
 		signal?: AbortSignal,
 		directory = this.directory,
 	): Promise<T> {
+		const lockfilePath = join(directory, ".session.lock");
 		let release: () => Promise<void>;
 		for (;;) {
 			this.checkAbort(signal);
 			try {
 				release = await lockfile.lock(directory, {
-					lockfilePath: join(directory, ".session.lock"),
+					lockfilePath,
+					...(this.lockFs ? { fs: this.lockFs } : {}),
 					onCompromised: (cause) => {
 						this.poisoned = new StorageUnavailableError(this.descriptor, cause);
 					},
@@ -395,18 +422,74 @@ export class JsonlSessionStore implements SessionStore {
 				break;
 			} catch (cause) {
 				if ((cause as NodeJS.ErrnoException).code !== "ELOCKED") throw cause;
+				if (await this.clearUnreleased(lockfilePath)) continue;
 				await delay(5);
 			}
 		}
+		let result: T;
 		try {
 			this.checkAbort(signal);
 			if (this.poisoned) throw this.poisoned;
-			const result = await operation();
+			result = await operation();
 			if (this.poisoned) throw this.poisoned;
-			return result;
-		} finally {
-			await release();
+		} catch (cause) {
+			await this.release(release, lockfilePath);
+			throw cause;
 		}
+		await this.release(release, lockfilePath);
+		return result;
+	}
+
+	/**
+	 * Releases the lock. The directory removal is retried when Windows refuses it for a moment. If it never
+	 * succeeds the work is still done, so the failure is not reported over it: the lock is remembered so this
+	 * store's next acquire removes it at once, instead of waiting for it to go stale.
+	 */
+	private async release(release: () => Promise<void>, lockfilePath: string): Promise<void> {
+		const fs: Pick<SessionLockFs, "rmdir" | "stat"> = this.lockFs ?? { rmdir: rmdirCallback, stat: statCallback };
+		try {
+			await release();
+			return;
+		} catch (cause) {
+			if (!TRANSIENT_RELEASE_CODES.has((cause as NodeJS.ErrnoException).code ?? "")) throw cause;
+		}
+		// proper-lockfile has already forgotten the lock, so removing the directory is all that is left.
+		for (const wait of RELEASE_BACKOFF_MS) {
+			await delay(wait);
+			try {
+				await removeDirectory(fs, lockfilePath);
+				return;
+			} catch (cause) {
+				if (!TRANSIENT_RELEASE_CODES.has((cause as NodeJS.ErrnoException).code ?? "")) throw cause;
+			}
+		}
+		const modified = await statMtimeMs(fs, lockfilePath);
+		if (modified !== undefined) this.unreleased.set(lockfilePath, modified);
+	}
+
+	/** Removes a lock directory this store failed to release, if it still has the time it had then. */
+	private async clearUnreleased(lockfilePath: string): Promise<boolean> {
+		const expected = this.unreleased.get(lockfilePath);
+		if (expected === undefined) return false;
+		const fs: Pick<SessionLockFs, "rmdir" | "stat"> = this.lockFs ?? { rmdir: rmdirCallback, stat: statCallback };
+		const modified = await statMtimeMs(fs, lockfilePath);
+		if (modified === undefined) {
+			this.unreleased.delete(lockfilePath);
+			return true;
+		}
+		// Another process took the lock over once it went stale: it is theirs now.
+		if (modified !== expected) {
+			this.unreleased.delete(lockfilePath);
+			return false;
+		}
+		try {
+			await removeDirectory(fs, lockfilePath);
+		} catch (cause) {
+			if (!TRANSIENT_RELEASE_CODES.has((cause as NodeJS.ErrnoException).code ?? "")) throw cause;
+			return false;
+		}
+		this.unreleased.delete(lockfilePath);
+		return true;
 	}
 
 	private checkAbort(signal?: AbortSignal): void {
@@ -696,4 +779,19 @@ export class JsonlSessionStore implements SessionStore {
 	private encode(header: SessionRecordHeader, entries: readonly SessionEntry[]): string {
 		return `${[JSON.stringify({ type: "session", ...header }), ...entries.map((entry) => JSON.stringify(entry))].join("\n")}\n`;
 	}
+}
+
+function removeDirectory(fs: Pick<SessionLockFs, "rmdir">, path: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		fs.rmdir(path, (error) => {
+			if (error && (error as NodeJS.ErrnoException).code !== "ENOENT") reject(error);
+			else resolve();
+		});
+	});
+}
+
+function statMtimeMs(fs: Pick<SessionLockFs, "stat">, path: string): Promise<number | undefined> {
+	return new Promise((resolve) => {
+		fs.stat(path, (error, stats) => resolve(error ? undefined : stats.mtimeMs));
+	});
 }
