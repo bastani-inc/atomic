@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The bundled computer-use skill is now `agent-desktop` (vercel-labs/agent-desktop v1.0.2) instead of `cua-driver`. It drives native desktop apps on macOS, Windows and Linux through their accessibility trees. Install the CLI with `npm install -g agent-desktop`; check readiness with `agent-desktop status`, and on macOS grant Accessibility with `agent-desktop permissions --guide`. The skill tells the agent to load `agent-desktop skills get desktop` and `agent-desktop skills get platform`, which always match the installed CLI. agent-desktop does not match pixels, so apps that expose no accessibility tree, native iOS apps in the Simulator and Android emulators no longer have a bundled route; use `xcrun simctl`, Appium or `adb` for native mobile apps. `ATOMIC_CUA_AUTO_APPROVE` no longer has any effect.
+
 ## [0.9.46] - 2026-10-27
 
 ### Fixed
