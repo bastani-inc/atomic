@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.57] - 2026-10-31
+
+### Changed
+
+- Builtin workflow stages verify native desktop changes with `agent-desktop` instead of Cua Driver, and report a missing install, macOS permission or Linux accessibility bus as `blocked`.
+
+## [0.9.57-alpha.1] - 2026-10-31
+
 ### Changed
 
 - Builtin workflow stages verify native desktop changes with `agent-desktop` instead of Cua Driver, and report a missing install, macOS permission or Linux accessibility bus as `blocked`.
