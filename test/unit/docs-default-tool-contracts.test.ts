@@ -67,7 +67,7 @@ test("computer use and initialization troubleshooting have live learning-path de
 	const computer = await readDoc("computer-use.md");
 	for (const heading of [
 		"Application scripting and APIs",
-		"Desktop automation with Cua Driver",
+		"Desktop automation with agent-desktop",
 		"Browser automation with agent-browser",
 		"Terminal automation with Herdr",
 		"macOS",
@@ -80,8 +80,8 @@ test("computer use and initialization troubleshooting have live learning-path de
 	assert.match(await readDoc("intercom/operations.md"), /### Troubleshooting initialization/);
 });
 
-// #3181: desktop CUA guidance routes to Cua Driver with telemetry off on every documented path.
-test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI (#3181)", async () => {
+// #3181: desktop computer use routes to agent-desktop, never to PyAutoGUI, and every documented path checks readiness.
+test("computer-use guides route desktop apps to agent-desktop and never to PyAutoGUI (#3181)", async () => {
 	const computer = await readDoc("computer-use.md");
 	const verification = await readDoc("workflows/verification.md");
 	const authoring = await readDoc("workflows/authoring.md");
@@ -94,7 +94,9 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	] as const) {
 		assert.doesNotMatch(text, /PyAutoGUI|pyautogui/i, `${name} still names PyAutoGUI`);
 		assert.doesNotMatch(text, /uv run --with pyautogui/, `${name} still runs pyautogui through uv`);
-		assert.match(text, /cua-driver/, `${name} does not route desktop CUA to cua-driver`);
+		assert.match(text, /agent-desktop/, `${name} does not route desktop apps to agent-desktop`);
+		assert.doesNotMatch(text, /cua-driver|trycua|CUA_DRIVER|CuaDriver/, `${name} still routes to Cua Driver`);
+		assert.match(text, /agent-desktop permissions --guide/, `${name} does not say how to grant macOS permission`);
 	}
 	for (const [name, text] of [
 		["computer-use.md", computer],
@@ -104,9 +106,9 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 		assert.match(
 			text,
 			/agent-browser hits a limitation/,
-			`${name} does not route agent-browser limitations to Cua Driver`,
+			`${name} does not route agent-browser limitations to agent-desktop`,
 		);
-		assert.match(text, /native iOS app in the iOS Simulator/, `${name} does not route native iOS apps to Cua Driver`);
+		assert.match(text, /native iOS app/i, `${name} does not say where native iOS apps go`);
 	}
 	assert.match(
 		verification,
@@ -114,37 +116,34 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	);
 	assert.match(
 		verification,
-		/before\/after `screenshot_out_file` PNGs from `get_window_state`[\s\S]*`screenshot` PNGs and `record` recordings/,
+		/before\/after `agent-desktop screenshot` PNGs[\s\S]*`screenshot` PNGs and `record` recordings/,
 	);
-	assert.match(computer, /attach the before\/after PNGs to the PR body/);
+	assert.match(computer, /attach the before and after PNGs to the PR body/);
 	assert.match(computer, /Keep `screenshot` PNGs and `record` recordings from the verified flow/);
-	for (const heading of ["### Install if missing", "### Turn telemetry off", "### Check readiness"]) {
+	for (const heading of ["### Install if missing", "### Check readiness", "### Coverage and limits"]) {
 		assert.ok(computer.includes(heading), `computer-use.md lacks ${heading}`);
 	}
 	assert.match(
 		computer,
-		/when a model chooses the next action, use the CLI; when TypeScript code owns the sequence and the postcondition, use the SDK/,
+		/when a model chooses the next action, use the skill and one-shot commands; when TypeScript code owns the sequence and the postcondition, call the CLI from `ctx\.tool`/,
 	);
-	assert.match(computer, /\/bin\/bash -c "\$\(curl -fsSL https:\/\/cua\.ai\/driver\/install\.sh\)"/);
-	assert.match(computer, /irm https:\/\/cua\.ai\/driver\/install\.ps1 \| iex/);
-	assert.match(computer, /Do not run `cua-driver skills install`/);
-	assert.match(computer, /`cua-driver skills update`/);
-	assert.match(computer, /`clawhub install @cua\/driver`/);
-	assert.match(computer, /`~\/\.agents\/skills\/cua-driver`/);
+	assert.match(computer, /npm install -g agent-desktop/);
+	assert.match(computer, /npm install-scripts approve agent-desktop/);
+	assert.match(computer, /agent-desktop status/);
+	assert.match(computer, /agent-desktop skills get desktop/);
+	assert.match(computer, /agent-desktop skills get platform/);
+	assert.match(computer, /You do not need `npx skills add` for it/);
 	assert.match(computer, /leave any existing user-level skill alone/);
-	assert.match(computer, /telemetry[^.]*\*\*by default, from every face\*\*/);
-	assert.match(computer, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
-	assert.match(computer, /`cua-driver telemetry disable`/);
-	assert.match(computer, /`cua-driver telemetry status --json`/);
-	assert.match(computer, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
-	assert.match(computer, /`cua-driver config set update_check_enabled false`/);
-	assert.match(computer, /open -n -g -a CuaDriver --args serve/);
-	assert.match(computer, /`cua-driver update --apply` once/);
-	assert.match(computer, /`CuaDriver\.connect\(undefined\)`[\s\S]*`CuaDriver\.create\(undefined\)`/);
-	assert.match(computer, /\/workflows\/authoring#desktop-verification-with-cua-driver-in-ctx-tool/);
+	assert.match(computer, /\*\*No pixel matching\.\*\*/);
+	assert.match(computer, /\*\*No native iOS or Android support\.\*\*/);
+	assert.match(computer, /\/workflows\/authoring#desktop-verification-with-agent-desktop-in-ctx-tool/);
 	assert.match(
 		verification,
-		/\| Native desktop app, native iOS app in the iOS Simulator, Android emulator, desktop Safari or another non-Chromium browser, or OS dialogs \| \*\*Cua Driver\*\*/,
+		/\| Native desktop app, menus and menu bars, desktop Safari or another non-Chromium browser, or OS dialogs and permission prompts \| \*\*agent-desktop\*\*/,
+	);
+	assert.match(
+		verification,
+		/\| Native iOS app in the Simulator or Android app in an emulator \| \*\*Native mobile tooling\*\*/,
 	);
 	assert.match(verification, /Mobile Safari in the iOS Simulator[^|]*\| \*\*agent-browser\*\*/);
 	assert.match(computer, /### What agent-browser covers/);
@@ -152,14 +151,14 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 	assert.match(computer, /agent-browser's iOS mode drives Mobile Safari only/);
 	assert.match(verification, /`blocked`\/`needs_human`/);
 	assert.match(verification, /ctx\.exit\(\{ status: "blocked", reason \}\)/);
-	assert.match(verification, /structured window state plus screenshots, not a screenshot alone/);
-	assert.ok(authoring.includes('<a id="desktop-verification-with-cua-driver-in-ctx-tool" />'));
-	assert.match(authoring, /CUA_DRIVER_RS_TELEMETRY_ENABLED: "false"/);
-	assert.match(authoring, /daemon \? CuaDriver\.connect\(undefined\) : CuaDriver\.create\(undefined\)/);
+	assert.match(verification, /structured accessibility state plus screenshots, not a screenshot alone/);
+	assert.ok(authoring.includes('<a id="desktop-verification-with-agent-desktop-in-ctx-tool" />'));
+	assert.match(authoring, /spawn\(agentDesktopCommand\(\), args, \{ signal, stdio/);
+	assert.doesNotMatch(authoring, /shell: process\.platform === "win32"/);
+	assert.match(authoring, /agent-desktop-win32-\$\{process\.arch\}\.exe/);
+	assert.match(authoring, /Could not capture the \$\{step\} screenshot/);
 	assert.match(authoring, /ctx\.exit\(\{ status: "blocked", reason: preflight\.reason \}\)/);
-	assert.match(authoring, /InputDeliveryMode\.Background/);
 	assert.match(authoring, /timeoutMs: 5 \* 60_000/);
-	assert.match(authoring, /uniffiDestroy/);
 	for (const [name, text] of [
 		["workflows/verification.md", verification],
 		["workflows/authoring.md", authoring],
@@ -171,8 +170,8 @@ test("computer-use guides route desktop CUA to Cua Driver and never to PyAutoGUI
 			`${name} promises a resume the engine never does`,
 		);
 	}
-	assert.match(skills, /cua-driver-rs-v0\.38\.0/);
-	assert.match(skills, /MIT licensed, © 2025 Cua AI, Inc\./);
+	assert.match(skills, /vercel-labs\/agent-desktop\/tree\/v1\.0\.2\/skills\/agent-desktop/);
+	assert.match(skills, /Apache-2\.0 licensed/);
 });
 
 // #2847: upstream wording changes must not break previously published fragments.

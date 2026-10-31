@@ -255,35 +255,36 @@ describe("buildSystemPrompt", () => {
 		assert.match(prompt, /If live evidence is unavailable, label the dated docs snapshot/);
 		assert.match(
 			prompt,
-			/CUA\) on desktop apps, simulators and emulators, use Cua Driver through the bundled cua-driver skill/,
-		);
-		assert.match(prompt, /one-shot `cua-driver call <tool>` commands/);
-		assert.match(
-			prompt,
-			/when a model chooses the next action[\s\S]*use the CLI; when workflow TypeScript code owns the sequence and postcondition, use the @trycua\/cua-driver TypeScript SDK inside ctx\.tool/,
+			/For computer use on native desktop apps and OS dialogs on macOS, Windows and Linux, use the bundled agent-desktop skill and one-shot `agent-desktop` commands/,
 		);
 		assert.match(
 			prompt,
-			/If `cua-driver --version` fails, make one bounded attempt with upstream's one-line executable installer/,
+			/Before the first action run `agent-desktop status`, `agent-desktop skills get desktop` and `agent-desktop skills get platform` and follow them/,
 		);
-		assert.match(prompt, /The executable installer does not install an agent skill/);
-		assert.match(prompt, /never run `cua-driver skills install` or `clawhub install @cua\/driver`/);
-		assert.match(prompt, /do not link or copy a skill into `~\/\.agents\/skills\/cua-driver`/);
-		assert.match(prompt, /leave any existing user-level skill alone/);
-		assert.match(prompt, /skip `cua-driver skills update`/);
-		assert.match(prompt, /other agent directories such as `~\/\.claude\/skills`/);
-		assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
+		assert.match(
+			prompt,
+			/When workflow TypeScript code owns the sequence and postcondition, call the CLI from inside ctx\.tool, one process per command, parsing its JSON envelope, forwarding the signal, with a finite timeoutMs/,
+		);
+		assert.match(prompt, /make one bounded `npm install -g agent-desktop` attempt and report its side effects/);
+		assert.match(prompt, /never run `npx skills add` for it or copy a skill into other agent directories/);
+		assert.match(prompt, /leave existing user-level skills alone/);
+		assert.match(
+			prompt,
+			/`agent-desktop permissions --guide` on macOS; on Linux a graphical session with an AT-SPI bus/,
+		);
+		assert.match(prompt, /never script around a consent dialog/);
 		assert.match(prompt, /computer-use\.md/);
 		assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 		assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-		assert.doesNotMatch(prompt, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
+		assert.doesNotMatch(prompt, /cua/i);
 		assert.match(
 			prompt,
-			/Prefer the agent-browser skill for what it covers, because its text snapshots cost far fewer tokens than screenshot-driven CUA: websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator[\s\S]*Electron desktop apps/,
+			/Prefer the agent-browser skill for what it covers, because its text snapshots cost far fewer tokens: websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator[\s\S]*Electron and other CDP-exposing apps/,
 		);
+		assert.match(prompt, /Use agent-desktop for everything native and whenever agent-browser hits a limitation/);
 		assert.match(
 			prompt,
-			/Use cua-driver for everything else \(native desktop apps, native iOS apps in the iOS Simulator, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
+			/agent-desktop reads accessibility trees, not pixels, and has no native iOS or Android support: say what stayed unverified, and use `xcrun simctl`, Appium or `adb` for native mobile apps/,
 		);
 		assert.match(prompt, /terminal automation\/testing, prefer herdr on macOS, Linux and Windows/);
 		assert.match(prompt, /install it if missing/);

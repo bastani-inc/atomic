@@ -47,48 +47,66 @@ function verificationContract(prompt: string): void {
 	assert.match(prompt, /For web or frontend flows[\s\S]*agent-browser/);
 	assert.match(
 		prompt,
-		/Prefer agent-browser for what its skill covers[\s\S]*\(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\); use Cua Driver for anything else, including native iOS apps in the iOS Simulator, Android emulators[\s\S]*whenever agent-browser hits a limitation/,
+		/Prefer agent-browser for what its skill covers[\s\S]*\(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\); use agent-desktop for native desktop apps, OS dialogs and browser chrome outside the page, and whenever agent-browser hits a limitation\. Native iOS apps in the iOS Simulator and Android emulators are outside agent-desktop: use `xcrun simctl`, Appium\/XCUITest or `adb`\/UI Automator, and report the gap when none is available/,
 	);
 	assert.match(prompt, /For TUI\/terminal automation\/testing, prefer the herdr skill on macOS, Linux and Windows/);
 	assert.match(prompt, /Install Herdr if missing[\s\S]*fall back to the tmux skill or native Windows psmux/);
 	assert.match(prompt, /explicit-request and HERDR_ENV=1 requirements/);
-	assert.match(prompt, /For desktop and accessible simulator\/emulator windows, use Cua Driver/);
-	assert.match(prompt, /when a model chooses the next action, as in this stage, use the `cua-driver` CLI/);
 	assert.match(
 		prompt,
-		/when workflow TypeScript code owns the sequence and the postcondition, the @trycua\/cua-driver TypeScript SDK inside `ctx\.tool` is the face instead/,
+		/For native desktop apps and OS dialogs, use agent-desktop: when a model chooses the next action, as in this stage, load Atomic's bundled agent-desktop skill and run one-shot `agent-desktop` commands/,
 	);
-	assert.match(prompt, /load Atomic's bundled cua-driver skill and drive the exact window/);
-	assert.match(prompt, /one-shot `cua-driver call <tool>` commands/);
-	assert.match(prompt, /snapshot -> act -> fresh snapshot -> verify loop/);
-	assert.match(prompt, /one bounded attempt with upstream's one-line executable installer/);
-	assert.match(prompt, /that installer does not install an agent skill/);
-	assert.match(prompt, /never `cua-driver skills install` or `clawhub install @cua\/driver`/);
-	assert.match(prompt, /do not link or copy a skill into `~\/\.agents\/skills\/cua-driver`/);
+	assert.match(
+		prompt,
+		/when workflow TypeScript code owns the sequence and the postcondition, call the `agent-desktop` CLI from inside `ctx\.tool\(name, args, fn, \{ timeoutMs \}\)` instead, spawning one process per command, parsing its JSON envelope and forwarding `signal`/,
+	);
+	assert.match(prompt, /snapshot -> act -> wait or fresh read -> verify loop/);
+	assert.match(
+		prompt,
+		/run `agent-desktop status`, `agent-desktop skills get desktop` and `agent-desktop skills get platform` and follow them; they are compiled into the binary, so they match the installed version/,
+	);
+	assert.match(
+		prompt,
+		/Ensure the executable \(`agent-desktop version`; if missing, one bounded attempt with `npm install -g agent-desktop`, approving its install script if npm blocks it, and report its side effects\)/,
+	);
+	assert.match(
+		prompt,
+		/never `npx skills add` it, and do not link or copy a skill into `~\/\.agents\/skills` or other agent directories/,
+	);
 	assert.match(prompt, /leave any existing user-level skill alone/);
-	assert.match(prompt, /skip `cua-driver skills update`/);
-	assert.match(prompt, /other agent directories such as `~\/\.claude\/skills`/);
-	assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
-	assert.match(prompt, /`cua-driver telemetry disable` once after an executable install/);
-	assert.match(prompt, /`cua-driver status`, `cua-driver doctor`, `cua-driver call list_apps`/);
-	assert.match(prompt, /`cua-driver permissions status`/);
-	assert.match(prompt, /open -n -g -a CuaDriver --args serve/);
 	assert.match(
 		prompt,
-		/Save each `get_window_state` JSON result and `screenshot_out_file` image to the artifacts directory/,
+		/never run `npx skills add` for agent-desktop or install a skill into other agent directories such as `~\/\.claude\/skills`/,
+	);
+	assert.match(prompt, /agent-desktop documents no telemetry, so no opt-out setting is needed/);
+	assert.match(
+		prompt,
+		/on macOS `permissions\.accessibility` granted \(and `screen_recording` for screenshots\), on Linux a non-empty `supported_surfaces`/,
 	);
 	assert.match(
 		prompt,
-		/missing macOS Accessibility or Screen Recording grant, a non-interactive Windows session, no graphical Linux session, or a refused\/failed install as the stage's blocked\/needs_human finding/,
+		/Save the snapshot JSON, `screenshot` PNGs and, when a session traces, the `trace export` HTML to the artifacts directory/,
 	);
-	assert.match(prompt, /`cua-driver permissions grant`, then toggle CuaDriver on/);
-	assert.match(prompt, /re-run the readiness check on resume/);
+	assert.match(
+		prompt,
+		/Verify each postcondition with `wait --element <ref> --predicate value --value <text>` or a fresh read, never a sleep; a successful action proves delivery, not the effect, and an action is retried only when `disposition\.retry` is `safe`/,
+	);
+	assert.match(
+		prompt,
+		/missing macOS permission, a Windows session that is not the interactive desktop, no graphical Linux session or AT-SPI bus, or a refused or failed install as the stage's blocked\/needs_human finding/,
+	);
+	assert.match(prompt, /`agent-desktop permissions --guide`, then the user approves it/);
+	assert.match(prompt, /re-run `agent-desktop status` on resume/);
+	assert.match(
+		prompt,
+		/agent-desktop reads accessibility trees and does not match pixels: for a UI that publishes none, a screenshot with `--headed` coordinate input is the only route and needs the user's permission, so say what stayed unverified/,
+	);
+	assert.match(prompt, /It does not drive native iOS or Android apps inside a simulator or emulator/);
 	assert.match(prompt, /not.*label a Chrome recording as terminal or native iOS proof/);
 	assert.match(prompt, /`-p ios` session proves Mobile Safari behavior, not a native iOS app/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /openai-cua-sample-app/);
-	assert.doesNotMatch(prompt, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
+	assert.doesNotMatch(prompt, /cua/i);
 	assert.doesNotMatch(prompt, /`workflow resume` re-runs the preflight/);
 	assert.match(
 		prompt,
@@ -141,7 +159,7 @@ for (const name of ["goal", "ralph"] as const) {
 						assert.match(prompt, /Local evidence collection does not authorize uploads/);
 						assert.match(
 							prompt,
-							/attach it to the PR body when the provider supports uploads: cua-driver `screenshot_out_file` before\/after PNGs[\s\S]*agent-browser `screenshot` PNGs and `record` recordings/,
+							/attach it to the PR body when the provider supports uploads: agent-desktop `screenshot` before\/after PNGs[\s\S]*agent-browser `screenshot` PNGs and `record` recordings/,
 						);
 						assert.match(
 							prompt,
@@ -230,54 +248,43 @@ for (const order of [["workflow", "subagent"], ["subagent", "workflow"], ["subag
 	});
 }
 
-test("authoring guidance states the Cua Driver face rule for custom workflows (#3181)", () => {
+test("authoring guidance states the agent-desktop face rule for custom workflows", () => {
 	const prompt = DEFAULT_PROMPT_GUIDANCE.join("\n");
 	assert.match(
 		prompt,
-		/when a model chooses the next action \(any workflow stage acting outside `ctx\.tool`\), use the cua-driver skill and one-shot `cua-driver call <tool>` commands/,
+		/when a model chooses the next action \(any workflow stage acting outside `ctx\.tool`\), use the agent-desktop skill and one-shot `agent-desktop` commands/,
 	);
 	assert.match(
 		prompt,
-		/when workflow TypeScript code owns the sequence and the postcondition, use the @trycua\/cua-driver TypeScript SDK inside `ctx\.tool\(name, args, fn, \{ timeoutMs \}\)`, forward `signal`/,
+		/when workflow TypeScript code owns the sequence and the postcondition, call the `agent-desktop` CLI from inside `ctx\.tool\(name, args, fn, \{ timeoutMs \}\)`, spawning one process per command, parsing its JSON envelope, forwarding `signal` and setting a positive finite `timeoutMs`/,
 	);
 	assert.match(
 		prompt,
-		/readiness preflight as its own `ctx\.tool` that calls `ctx\.exit\(\{ status: "blocked", reason \}\)` on a missing permission/,
+		/readiness preflight as its own `ctx\.tool` that checks `agent-desktop status` and calls `ctx\.exit\(\{ status: "blocked", reason \}\)` on a missing macOS permission or an absent Linux AT-SPI bus/,
 	);
 	assert.match(
 		prompt,
 		/a blocked author exit is terminal and not resumable, so after the user grants the permission start a new run/,
 	);
 	assert.doesNotMatch(prompt, /`workflow resume` re-runs the preflight/);
+	assert.match(prompt, /There is no TypeScript SDK; the CLI's JSON envelope is the contract/);
 	assert.match(
 		prompt,
-		/`CuaDriver\.connect\(\)` when `cua-driver status` reports a running daemon and fall back to `CuaDriver\.create\(\)` only when no daemon is reachable/,
+		/Do not run `npx skills add` for it, and do not link or copy another skill into user-level agent directories/,
+	);
+	assert.match(prompt, /agent-desktop documents no telemetry, so no opt-out environment is needed/);
+	assert.match(
+		prompt,
+		/attach the image and video evidence the run produced \(agent-desktop `screenshot` before\/after PNGs, agent-browser screenshots and `record` recordings\) to the PR body/,
 	);
 	assert.match(
 		prompt,
-		/in-process fallback attributes Accessibility\/Screen Recording grants to the node host rather than CuaDriver\.app/,
-	);
-	assert.match(
-		prompt,
-		/do not run `cua-driver skills install`, `cua-driver skills update`, or `clawhub install @cua\/driver`/,
-	);
-	assert.match(prompt, /CUA_DRIVER_RS_TELEMETRY_ENABLED=false/);
-	assert.match(
-		prompt,
-		/attach the image and video evidence the run produced \(cua-driver `screenshot_out_file` before\/after PNGs, agent-browser screenshots and `record` recordings\) to the PR body/,
-	);
-	assert.match(
-		prompt,
-		/requires node \(preferred\) or bun on the host, so install one in a single bounded attempt when both are missing/,
-	);
-	assert.match(
-		prompt,
-		/agent-browser for what its skill covers \(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\) and Cua Driver for anything else \(native desktop apps, native iOS apps in the Simulator, Android emulators[\s\S]*\) or whenever agent-browser hits a limitation/,
+		/agent-browser for what its skill covers \(websites and web apps in Chrome\/Chromium, Mobile Safari in the iOS Simulator via `agent-browser -p ios`, Electron desktop apps and other CDP-exposing apps, Slack, cloud browsers\) and agent-desktop for native desktop apps, OS dialogs and browser chrome outside the page, or whenever agent-browser hits a limitation \(native iOS apps in the Simulator and Android emulators are outside agent-desktop/,
 	);
 	assert.match(prompt, /prefer herdr for terminal automation\/testing[\s\S]*fall back to tmux\/native Windows psmux/);
 	assert.doesNotMatch(prompt, /PyAutoGUI|pyautogui/i);
 	assert.doesNotMatch(prompt, /uv run --with pyautogui/);
-	assert.doesNotMatch(prompt, /CUA_DRIVER_RS_UPDATE_CHECK=false/);
+	assert.doesNotMatch(prompt, /cua/i);
 });
 
 test("default constructed guidance lets the agent interpret scoped intent itself", () => {

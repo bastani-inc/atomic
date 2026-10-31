@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Atomic's computer-use guidance now routes native desktop apps, menus, OS dialogs and non-Chromium desktop browsers to `agent-desktop` instead of Cua Driver; websites, Mobile Safari and CDP-exposing apps stay with `agent-browser`. Workflow code that owns a desktop scenario calls the `agent-desktop` CLI from `ctx.tool` (it has no TypeScript SDK), with a readiness preflight that ends the run as `blocked` when a permission or the Linux accessibility bus is missing. The [Computer use](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/computer-use.md) guide covers installing it, permissions on each OS, and what it cannot cover: apps with no accessibility tree, and native iOS and Android apps, which need native mobile tooling.
+
 ## [0.9.56] - 2026-10-30
 
 The newest fixes from upstream pi: tool search, WSL, updates and MCP.
