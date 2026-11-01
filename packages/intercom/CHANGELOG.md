@@ -4,9 +4,17 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.59] - 2026-11-01
+
 ### Fixed
 
-- On Windows, sessions reconnect to a new intercom broker right after the running one dies, instead of waiting out the whole broker start-up timeout and failing with `Broker failed to start within timeout`. The dead broker's hidden `cmd.exe` launcher holds `broker.log` for a moment after the broker exits, and the respawn mistook that for another broker still starting; it now waits up to a second for the log to be released first.
+- On Windows, sessions reconnect to a new intercom broker right after the running one dies, instead of waiting out the whole broker start-up timeout and failing with `Broker failed to start within timeout`. The dead broker's hidden `cmd.exe` launcher holds `broker.log` for a moment after the broker exits, and the respawn mistook that for another broker still starting; it now waits up to a second for the log to be released first. ([#4152](https://github.com/bastani-inc/atomic/pull/4152))
+
+## [0.9.59-alpha.1] - 2026-11-01
+
+### Fixed
+
+- On Windows, sessions reconnect to a new intercom broker right after the running one dies, instead of waiting out the whole broker start-up timeout and failing with `Broker failed to start within timeout`. The dead broker's hidden `cmd.exe` launcher holds `broker.log` for a moment after the broker exits, and the respawn mistook that for another broker still starting; it now waits up to a second for the log to be released first. ([#4152](https://github.com/bastani-inc/atomic/pull/4152))
 
 ## [0.9.56] - 2026-10-30
 
