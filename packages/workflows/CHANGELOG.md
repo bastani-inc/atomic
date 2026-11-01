@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A message sent to a stage on a local worker (`workflows.localWorkers`) while its session was still starting no longer fails the stage with "generation closed before the stage finished; its tool calls were refused" when the stage has `fallbackModels`.
+
 ## [0.9.57] - 2026-10-31
 
 ### Changed

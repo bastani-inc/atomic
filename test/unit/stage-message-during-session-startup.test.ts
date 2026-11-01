@@ -77,4 +77,67 @@ describe("stage user message during session startup", () => {
 		assert.equal(result.status, "completed");
 		assert.deepEqual(closedWhilePrompting, [false], "the stage prompt ran with its generation open");
 	});
+
+	test("a message sent while a stage with a fallback chain is still creating its session leaves its generation open (#3996)", async () => {
+		const registry = createStageControlRegistry();
+		const store = createStore();
+		const creation = deferred<void>();
+		const createStarted = deferred<{ runId: string; stageId: string }>();
+		let generationClosed = false;
+		const closedDuringTurn: boolean[] = [];
+		const session: StageSessionRuntime = {
+			...mockSession(),
+			sessionId: "pooled-fallback-stage-session",
+			async prompt(text: string) {
+				if (text !== "go") return;
+				// The stage's turn outlives the message's delivery; its tool calls need the generation open throughout.
+				await sleep(20);
+				closedDuringTurn.push(generationClosed);
+			},
+			async closeWorkflowStageGeneration() {
+				generationClosed = true;
+			},
+		};
+		const def = workflow({
+			name: "message-during-fallback-startup-wf",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				// An explicit fallback chain creates the session through the candidate walk, not the shared creation.
+				await ctx.stage("work", { model: "anthropic/primary", fallbackModels: ["openai/fallback"] }).prompt("go");
+				return {};
+			},
+		});
+		const runPromise = run(
+			def,
+			{},
+			{
+				adapters: {
+					agentSession: {
+						async create(_options, meta) {
+							assert.ok(meta, "stage identity");
+							store.recordStageSession(meta.runId, meta.stageId, { sessionId: session.sessionId });
+							createStarted.resolve({ runId: meta.runId, stageId: meta.stageId });
+							await creation.promise;
+							return session;
+						},
+					},
+				},
+				store,
+				stageControlRegistry: registry,
+			},
+		);
+		const { runId, stageId } = await createStarted.promise;
+		const handle = registry.get(runId, stageId);
+		assert.ok(handle, "stage handle should be registered");
+		const sent = handle.sendUserMessage?.("please also check the logs", { deliverAs: "steer" });
+		await sleep(5);
+		creation.resolve();
+		await sent;
+		const result = await runPromise;
+
+		assert.equal(result.status, "completed");
+		assert.deepEqual(closedDuringTurn, [false], "the stage's turn ran with its generation open");
+	});
 });
