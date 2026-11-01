@@ -134,7 +134,8 @@ test.skipIf(process.platform === "win32")(
 				taskId: shell.ref.taskId,
 				action: { kind: "cancel" },
 			});
-			assert.deepEqual(cancelled, { ok: true, task: { kind: "cancel" } });
+			// JSON drops the undefined value of a successful stop.
+			assert.deepEqual(cancelled, { ok: true, task: { kind: "cancel", result: { ok: true } } });
 			await until(() =>
 				latestTasks()?.tasks.find(
 					(task) => task.ref.taskId === shell.ref.taskId && task.execution.kind !== "running",

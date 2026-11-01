@@ -1099,9 +1099,155 @@ test("a watched stage's background tasks reach the watcher, and task actions fro
 		while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 5))
 			await sleep(5);
 		const cancelled = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 5);
-		assert.deepEqual(cancelled?.kind === "stage-command-result" ? cancelled.task : undefined, { kind: "cancel" });
+		const reply = cancelled?.kind === "stage-command-result" ? cancelled.task : undefined;
+		assert.equal(reply?.kind === "cancel" ? reply.result?.ok : undefined, true);
 		tasks.store.drain();
 		assert.notEqual(tasks.store.tasks[0]!.execution.kind, "running", "the task was cancelled on the worker");
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
+});
+
+/** A worker stage whose session holds `tasks`' task store; its watch is open. */
+async function watchedStageWithTasks(control: () => string = () => "running") {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 1 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		control,
+	);
+	const stage = streamingStage("agent");
+	const tasks = taskFixture();
+	const session = { sessionManager: { getEntries: () => [] } };
+	bindOwnerTaskStore(session, tasks.store);
+	Object.defineProperty(stage.handle, "agentSession", { get: () => session });
+	registry.register(stage.handle);
+	const taskEvents = () =>
+		sent
+			.flatMap((message) => (message.kind === "stage-events" ? message.events : []))
+			.filter(({ event }) => (event.type as string) === "atomic_pooled_stage_tasks");
+	const command = async (commandId: number, request: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op: "session",
+			watch: "watch-1" as WatchId,
+			command: request,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(2);
+		}
+	};
+	return { watches, tasks, taskEvents, command, stage, sent };
+}
+
+test("while the pool is paused a stage chat still reads its tasks' output, detail and transcript, but sends no input (#3996)", async () => {
+	const { watches, tasks, command } = await watchedStageWithTasks(() => "paused");
+	try {
+		await tasks.start("Survey the logs");
+		openWatch(watches);
+		const taskId = tasks.store.tasks[0]!.ref.taskId;
+		for (const [commandId, action] of [
+			[2, { kind: "output", start: "0", maximumBytes: 64 }],
+			[3, { kind: "detail" }],
+			[4, { kind: "transcript" }],
+		] as const)
+			assert.equal((await command(commandId, { kind: "task", taskId, action })).refusal, undefined);
+		assert.equal(
+			(await command(5, { kind: "task", taskId, action: { kind: "input", text: "y" } })).refusal,
+			"PoolPausedOrQuitting",
+		);
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
+});
+
+test("an agent task's reply still streaming reaches a stage chat in another process (#3996)", async () => {
+	const { watches, tasks, taskEvents, command } = await watchedStageWithTasks();
+	try {
+		await tasks.start("Draft the notes");
+		const listeners = new Set<(event: AgentSessionEvent) => void>();
+		let streaming: object | undefined;
+		tasks.runners[0]!.context.bindTranscript({
+			getSessionId: () => "task-session",
+			getEntries: () => [],
+			subscribe(listener) {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			getStreamingMessage: () => streaming as never,
+		});
+		openWatch(watches);
+		while (taskEvents().length === 0) await sleep(10);
+		const before = taskEvents().length;
+
+		streaming = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "private" },
+				{ type: "text", text: "half a reply" },
+			],
+		};
+		for (const listener of listeners) listener(delta("half a reply"));
+		while (taskEvents().length === before) await sleep(10);
+		const taskId = tasks.store.tasks[0]!.ref.taskId;
+		const read = await command(2, { kind: "task", taskId, action: { kind: "transcript" } });
+		assert.ok(read.task?.kind === "transcript" && read.task.result.ok);
+		assert.deepEqual(read.task.result.value.messages.at(-1), {
+			role: "assistant",
+			content: [{ type: "text", text: "half a reply" }],
+		});
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
+});
+
+test("a task that settles as its stage ends is shown settled, not left running (#3996)", async () => {
+	const { watches, tasks, taskEvents, stage, sent } = await watchedStageWithTasks();
+	try {
+		await tasks.start("Run the suite");
+		openWatch(watches);
+		while (taskEvents().length === 0) await sleep(10);
+		// The task settles and the stage ends before the next timed update of its tasks.
+		await tasks.settle(0);
+		stage.finish();
+		watches.sweep();
+		const last = taskEvents().at(-1)?.event as never as { tasks: PooledStageTasks };
+		assert.notEqual(last.tasks.tasks[0]?.execution.kind, "running");
+		const ended = sent.findIndex((message) => message.kind === "stage-watch-ended");
+		const lastTasks = sent.findLastIndex(
+			(message) =>
+				message.kind === "stage-events" &&
+				message.events.some(({ event }) => (event.type as string) === "atomic_pooled_stage_tasks"),
+		);
+		assert.ok(ended > lastTasks, "the last task state goes out before the watch ends");
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
+});
+
+test("a task that settles as its attempt ends is shown settled, not left running (#3996)", async () => {
+	const { watches, tasks, taskEvents } = await watchedStageWithTasks();
+	try {
+		await tasks.start("Run the suite");
+		openWatch(watches);
+		while (taskEvents().length === 0) await sleep(10);
+		// The task settles and the attempt ends (its child returned) before the next timed update.
+		await tasks.settle(0);
+		watches.clear();
+		const last = taskEvents().at(-1)?.event as never as { tasks: PooledStageTasks };
+		assert.notEqual(last.tasks.tasks[0]?.execution.kind, "running");
 	} finally {
 		watches.clear();
 		await tasks.dispose();

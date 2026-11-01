@@ -163,7 +163,7 @@ export type PooledTaskAction =
 /** The answer to a {@link PooledTaskAction}. */
 export type PooledTaskReply =
 	| { readonly kind: "foreground"; readonly result: TaskViewResult<{ readonly kind: string }> }
-	| { readonly kind: "cancel" }
+	| { readonly kind: "cancel"; readonly result?: TaskViewResult<undefined> }
 	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
 	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }
 	| { readonly kind: "detail"; readonly detail: TaskDetailText }

@@ -79,8 +79,10 @@ export class PooledStageTaskSource implements TaskViewSource {
 		const reply = await this.request(id, { kind: "foreground" });
 		return reply.ok ? (reply.value.kind === "foreground" ? reply.value.result : unexpected()) : reply;
 	}
-	async cancelTask(id: TaskId): Promise<void> {
-		await this.request(id, { kind: "cancel" });
+	async cancelTask(id: TaskId): Promise<TaskViewResult<undefined>> {
+		const reply = await this.request(id, { kind: "cancel" });
+		if (!reply.ok) return reply;
+		return reply.value.kind === "cancel" ? (reply.value.result ?? { ok: true, value: undefined }) : unexpected();
 	}
 	stdinAvailable(id: TaskId): boolean {
 		return this.stdin.has(id);

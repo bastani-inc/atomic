@@ -57,7 +57,8 @@ export interface TaskViewSource {
 	activityOmitted(id: TaskId): boolean;
 	subscribe(listener: () => void): () => void;
 	foregroundTask(id: TaskId): Promise<TaskViewResult<{ readonly kind: string }>>;
-	cancelTask(id: TaskId): Promise<void>;
+	/** Asks the task to stop; a failed request says why. */
+	cancelTask(id: TaskId): Promise<TaskViewResult<undefined>>;
 	stdinAvailable(id: TaskId): boolean;
 	writeTaskInput(id: TaskId, text: string): Promise<TaskViewResult<{ readonly acceptedBytes: number }>>;
 	readTaskOutput(
@@ -116,7 +117,9 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		},
 		async cancelTask(id) {
 			const task = lease(id);
-			if (task.ok) await store.supervisor.cancelTask(task.value, "user");
+			if (!task.ok) return { ok: false, error: { message: task.error.message } };
+			const result = await store.supervisor.cancelTask(task.value, "user");
+			return result.ok ? { ok: true, value: undefined } : { ok: false, error: { message: result.error.message } };
 		},
 		stdinAvailable(id) {
 			const task = lease(id);

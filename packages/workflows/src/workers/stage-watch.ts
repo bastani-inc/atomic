@@ -11,7 +11,7 @@ import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
-import { isCancellation } from "./stage-session-commands.js";
+import { runsWhilePaused } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import { runStageTaskAction, stageTaskSource, WatchedStageTasks } from "./stage-watch-tasks.js";
 import type {
@@ -345,14 +345,12 @@ export class WorkerStageWatches {
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
 			if (current !== undefined && current !== watch.handle && !isTerminal(current)) {
 				tracePooledWatch("worker.watch.handle-replaced", { watch: id });
-				this.flush(id);
-				this.close(id);
+				this.finish(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "resync" });
 				continue;
 			}
 			if (isTerminal(watch.handle)) {
-				this.flush(id);
-				this.close(id);
+				this.finish(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "stage_finished" });
 			}
 		}
@@ -363,10 +361,17 @@ export class WorkerStageWatches {
 		this.ledger.clear();
 		for (const receipts of this.receipts.values()) receipts.dispose();
 		this.receipts.clear();
-		for (const id of [...this.watches.keys()]) {
-			this.flush(id);
-			this.close(id);
-		}
+		for (const id of [...this.watches.keys()]) this.finish(id);
+	}
+
+	/**
+	 * Sends a watch's last events and closes it. The tasks' last state goes out with them, so a task that
+	 * settled as its stage or attempt ended does not keep reading as running.
+	 */
+	private finish(id: WatchId): void {
+		this.watches.get(id)?.tasks?.flushPending();
+		this.flush(id);
+		this.close(id);
 	}
 
 	/**
@@ -461,8 +466,8 @@ export class WorkerStageWatches {
 		const watch = this.airlock(command);
 		if (typeof watch === "string") return { refusal: watch };
 		const request = command.command;
-		// A paused or quitting pool starts no new session work, but still lets a running command be stopped.
-		if (this.control() !== "running" && !isCancellation(request)) return { refusal: "PoolPausedOrQuitting" };
+		// A paused or quitting pool starts no new session work, but still stops running work and shows tasks.
+		if (this.control() !== "running" && !runsWhilePaused(request)) return { refusal: "PoolPausedOrQuitting" };
 		const session = watch.handle.agentSession;
 		if (session === undefined)
 			return {
