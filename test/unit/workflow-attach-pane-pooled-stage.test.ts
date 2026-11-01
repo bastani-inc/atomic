@@ -523,7 +523,7 @@ test("/compact in a pooled stage's chat redraws the open transcript from the com
 		streamingMessage: undefined,
 		messages: [
 			{ role: "user", content: "the long history before compaction", timestamp: 1 },
-			assistant("an old answer that compaction drops"),
+			assistant("an old answer that compaction drops") as never,
 		],
 	});
 	const unregister = registerPooledStageSource(store, {
