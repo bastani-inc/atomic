@@ -33,6 +33,8 @@ import { runAgentTask } from "./task-execution.js";
 
 interface ForegroundParallelRunInput {
 	tasks: TaskParam[];
+	/** Call-level task heartbeat cadence; a task's own `heartbeatMs` wins. */
+	heartbeatMs?: number;
 	taskTexts: string[];
 	agents: AgentConfig[];
 	agentConfigs?: AgentConfig[];
@@ -301,6 +303,9 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				options: runOptions,
 				runtime: input.runtime,
 				wait: input.wait,
+				...((task.heartbeatMs ?? input.heartbeatMs) === undefined
+					? {}
+					: { heartbeatMs: task.heartbeatMs ?? input.heartbeatMs }),
 				// Dispatch also settles when native cancellation skips a queued runner.
 				schedule,
 				onTerminal: (child) => {

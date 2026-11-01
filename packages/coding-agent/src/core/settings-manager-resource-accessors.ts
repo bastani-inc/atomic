@@ -19,6 +19,8 @@ interface SettingsManagerResourceAccessors {
 	setBashInterceptorEnabled(enabled: boolean): void;
 	getSearchContextBefore(): number;
 	getSearchContextAfter(): number;
+	/** Default task heartbeat cadence in milliseconds; `0` disables. Invalid values use the default. */
+	getTaskHeartbeatMs(): number;
 	getNpmCommand(): string[] | undefined;
 	setNpmCommand(command: string[] | undefined): void;
 	getCollapseChangelog(): boolean;
@@ -139,6 +141,13 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 
 	getSearchContextAfter() {
 		return settingsInternals(this).settings.search?.contextAfter ?? SETTINGS_DEFAULTS.search.contextAfter;
+	},
+
+	getTaskHeartbeatMs() {
+		const value = settingsInternals(this).settings.tasks?.heartbeatMs;
+		return typeof value === "number" && Number.isFinite(value) && (value === 0 || value >= 60_000)
+			? value
+			: SETTINGS_DEFAULTS.tasks.heartbeatMs;
 	},
 
 	getNpmCommand() {

@@ -19,6 +19,7 @@ import {
 import type { BashResult } from "../bash-executor.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import type { WaitPolicy } from "../tasks/contracts.js";
+import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
 import {
 	type BashInterceptorRule,
 	checkBashInterceptionCandidates,
@@ -91,6 +92,12 @@ const bashBaseSchema = Type.Object(
 		),
 		cwd: Type.Optional(Type.String({ description: "Working directory for the command." })),
 		pty: Type.Optional(Type.Boolean({ description: "Run with PTY handling." })),
+		heartbeatMs: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				description: "Heartbeat cadence in ms while this runs as a task (default 15 min; 0 disables; min 60000).",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -173,6 +180,8 @@ export interface BashOperations {
 			wait?: WaitPolicy;
 			env?: NodeJS.ProcessEnv;
 			pty?: boolean;
+			/** Task heartbeat cadence for a supervised command; `0` disables. Omitted uses the owner default. */
+			heartbeatMs?: number;
 		},
 	) => Promise<SupervisedCommandResult>;
 }
@@ -181,7 +190,7 @@ export function createLocalBashOperations(options?: {
 	taskOwner?: SupervisedCommandOwner;
 }): BashOperations {
 	return {
-		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty }) => {
+		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
 			validateBashWait(wait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
 			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") {
@@ -192,6 +201,7 @@ export function createLocalBashOperations(options?: {
 						timeout,
 						wait,
 						env,
+						heartbeatMs,
 						shellPath: options?.shellPath,
 						taskOwner: options?.taskOwner,
 					});
@@ -215,7 +225,16 @@ export function createLocalBashOperations(options?: {
 				return executeSupervisedCommand(
 					command,
 					cwd,
-					{ onData, signal, timeout, wait, env, shellPath: options.shellPath, taskOwner: options.taskOwner },
+					{
+						onData,
+						signal,
+						timeout,
+						wait,
+						env,
+						heartbeatMs,
+						shellPath: options.shellPath,
+						taskOwner: options.taskOwner,
+					},
 					false,
 				);
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
@@ -464,6 +483,7 @@ export function createBashToolDefinition(
 			const { command } = bashCommand;
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
 			validateBashWait(bashCommand.wait, !!options?.operations || !!options?.taskOwner);
+			if (bashCommand.heartbeatMs !== undefined) validateTaskHeartbeatMs(bashCommand.heartbeatMs);
 			const sessionEnvironment = snapshotBashSessionEnvironment(ctx, exposeSessionEnvironment);
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
@@ -640,6 +660,7 @@ export function createBashToolDefinition(
 						wait: bashCommand.wait,
 						env: executionContext.env,
 						pty: bashCommand.pty,
+						...(bashCommand.heartbeatMs === undefined ? {} : { heartbeatMs: bashCommand.heartbeatMs }),
 					});
 					exitCode = result.exitCode;
 					observation = result.observation;

@@ -78,4 +78,8 @@ export const SETTINGS_DEFAULTS = {
 	},
 	httpIdleTimeoutMs: 600_000,
 	cacheWarming: "streaming",
+	tasks: {
+		/** Same 15-minute default as workflow heartbeats. */
+		heartbeatMs: 15 * 60_000,
+	},
 } as const;

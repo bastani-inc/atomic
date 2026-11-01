@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Running subagents now send the parent periodic task heartbeats (every 15 minutes by default) with their current tool call, time since their last activity, and turn, tool-call and token counts. Set `heartbeatMs` on a `subagent` call, or on a `tasks` entry, to change a child's cadence; `0` turns it off.
+
 ## [0.9.57] - 2026-10-31
 
 Desktop computer use moves from Cua Driver to agent-desktop.

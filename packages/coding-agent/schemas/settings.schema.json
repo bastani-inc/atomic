@@ -958,6 +958,25 @@
         }
       }
     },
+    "tasks": {
+      "type": "object",
+      "properties": {
+        "heartbeatMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "const": 0
+            },
+            {
+              "type": "number",
+              "minimum": 60000
+            }
+          ],
+          "description": "Default cadence, in milliseconds, of the periodic heartbeat sent to a chat for each of its running background shells and subagents. 0 disables; otherwise at least 60000. A tool call's heartbeatMs overrides it.",
+          "default": 900000
+        }
+      }
+    },
     "httpProxy": {
       "type": "string",
       "description": "Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Atomic-managed HTTP clients. Global only."

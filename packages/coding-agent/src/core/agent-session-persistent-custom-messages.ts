@@ -279,6 +279,21 @@ export function markProtectedStreamingCustomMessagePersistenceFailed(
 	if (entry?.phase === "consumed-unpersisted") entry.phase = "persistence-failed";
 }
 
+/**
+ * Whether a durable card of this custom type is admitted but its hidden turn is still queued, so the model has not
+ * read it yet. Clearing the queue restores protected turns, so a queued entry ends only when it is consumed.
+ */
+export function hasUnreadProtectedCustomMessage(session: AgentSession, customType: string): boolean {
+	const owner = resolveWorkflowStageDeliveryTarget(session);
+	return protectedMessages(owner).some((entry) => {
+		if (entry.phase !== "queued") return false;
+		const intent = completedReconciliationIntent(entry.message.details);
+		if (intent === undefined) return false;
+		const card = owner.sessionManager.getEntry(intent);
+		return card?.type === "custom_message" && card.customType === customType;
+	});
+}
+
 export function isProtectedStreamingCustomMessage(session: AgentSession, message: CustomMessage): boolean {
 	return protectedMessages(session).some((entry) => entry.message === message);
 }

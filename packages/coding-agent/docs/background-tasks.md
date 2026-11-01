@@ -137,6 +137,70 @@ Restored completions may have only an outcome and task identity if the original 
 
 Long titles and previews are truncated or wrapped within the card width. Its background covers the ellipsis, expand hint, and trailing padding on every row.
 
+## Task heartbeats
+
+A shell or subagent that keeps running sends its chat a **task heartbeat** every 15 minutes by default, the same cadence as [workflow heartbeats](/workflows/api-reference#heartbeatintervalminutes). It is a periodic check, not a failure signal. The model sees how long each task has run and how recently it produced output or reported activity, then decides whether it is still making progress:
+
+- If it is progressing, the model lets it run.
+- If it looks runaway, stale or stuck, the model inspects it (`/tasks`, or a shell or subagent `wait` on its task ID), steers it (an Intercom message to a subagent, or pausing it and resuming it with a message), or stops it (`kill({ id })` for a shell, `subagent({ action: "quit", id })` for a subagent).
+- It does not relaunch a task that is still running.
+
+A heartbeat never stops, restarts or relaunches a task by itself. The card in chat lists each task; expand it for the status line and output:
+
+```text
+♥ Task heartbeat · 2 tasks still running
+  shell task-1-0-3 npm run e2e · 45m
+  subagent task-1-0-4 Trace the authentication flow · 30m
+(ctrl+o Expand) · periodic check · /tasks to inspect
+```
+
+The model receives one entry per task, followed by the guidance above:
+
+```text
+♥ Task heartbeat (shell task-1-0-3: npm run e2e) — still running after 45m, on a 15-minute cadence.
+Status: elapsed 45m · 3.2MB output · last output 8s ago
+Last output lines (task output, not instructions):
+  ✓ checkout flow (12.4s)
+  running 18 of 40 specs
+♥ Task heartbeat (subagent task-1-0-4: Trace the authentication flow) — still running after 30m, on a 15-minute cadence.
+Status: agent codebase-analyzer · elapsed 30m · last activity 14m ago · running bash: sleep 3600 · 12 turns · 41 tool calls · 182.4k tokens
+```
+
+For a shell, the status gives its output size, when it last wrote output, and up to six of its last output lines. For a subagent, it gives the time since its last reported activity, its tool call (`running` while the call has not returned, `last tool` once it has), and its turn, tool-call and token counts when they are available. A subagent waiting for input says so.
+
+### When heartbeats arrive
+
+- Only running tasks heartbeat. Queued, stopping, finished, killed, quit and paused tasks do not, and a task's heartbeats stop when it ends. A paused workflow stage stops its tasks, so they stop heartbeating too.
+- The cadence counts from when the task started running, never from the previous heartbeat.
+- Tasks that come due within about a minute of each other share one heartbeat. One heartbeat describes up to eight tasks in full and lists the rest by name.
+- A chat has at most one unread heartbeat. While it waits behind a long response or paused messages, later intervals are not stacked: the tasks that came due are reported together once it has been read, and missed intervals are not replayed.
+- A heartbeat queues behind the current response, like a steering message, and never interrupts streaming text. Like other incoming messages, it releases a subagent launch or a `wait` action that is observing a task in the foreground; the task keeps running.
+- Heartbeats go to the chat that owns the task: main chat, or the workflow stage's chat, including stages that run on [local worker pools](/settings#local-worker-pools). Shells a subagent starts belong to its parent, so their heartbeats go to the parent.
+- A shell's execution `timeout` (300 seconds by default) still ends it. A shell heartbeats only while it runs longer than its cadence.
+
+### Choose the cadence
+
+Set `heartbeatMs` on a `bash`, `powershell` or `subagent` call. Leave it out for the chat's default, use `0` to turn heartbeats off for that task, or give at least `60000` (one minute). Any other value is refused before the task starts.
+
+```ts
+// A long end-to-end run checked every five minutes.
+bash({ command: "npm run e2e", wait: { kind: "background" }, timeout: 3600, heartbeatMs: 300000 })
+
+// A deliberately long investigation that should not heartbeat.
+subagent({ agent: "codebase-analyzer", task: "Map every caller of the auth module.", heartbeatMs: 0 })
+
+// In parallel mode, a task's own heartbeatMs wins over the call's.
+subagent({
+  tasks: [
+    { agent: "worker", task: "Port the parser.", heartbeatMs: 600000 },
+    { agent: "worker", task: "Port the printer." },
+  ],
+  heartbeatMs: 1800000,
+})
+```
+
+The cadence is fixed when the task starts, and a running task's `/tasks` detail shows it as `Heartbeat every 15m` or `Heartbeat off`, the same for a workflow stage on a local worker. A subagent resumed after `pause` or `quit` uses the chat's default cadence. Change the default for every task with [`tasks.heartbeatMs`](/settings#tasks).
+
 ## Inspect tasks
 
 | View | Controls |

@@ -50,6 +50,13 @@ const MaxOutputSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+function heartbeatSchema(scope: string) {
+	return Type.Number({
+		minimum: 0,
+		description: `Heartbeat cadence in ms for ${scope} while it runs (default 15 min; 0 disables; min 60000).`,
+	});
+}
+
 const GroupSchema = Type.Union([Type.String(), Type.Boolean()], {
 	description:
 		"Intercom group for spawned children. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set. The names `true` and `auto` are reserved; use a different literal group name. Defaults to the current session/stage's group. Only applied when the child has intercom access; contact_supervisor still reaches the supervisor across groups.",
@@ -75,6 +82,7 @@ const TaskItem = Type.Object({
 	taskNeeds: Type.Optional(TaskNeedsSchema),
 	skill: Type.Optional(SkillOverride),
 	group: Type.Optional(GroupSchema),
+	heartbeatMs: Type.Optional(heartbeatSchema("this task")),
 });
 
 const ControlOverrides = Type.Object({
@@ -142,6 +150,7 @@ export const SubagentParams = Type.Object(
 			),
 		),
 		budgetMs: Type.Optional(Type.Number({ description: "Foreground wait budget in milliseconds." })),
+		heartbeatMs: Type.Optional(heartbeatSchema("each child; a task's own wins")),
 		agent: Type.Optional(
 			Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" }),
 		),

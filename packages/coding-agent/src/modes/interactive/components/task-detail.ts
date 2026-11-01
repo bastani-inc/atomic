@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { type Component, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Attention, Execution, TaskRecord } from "../../../core/tasks/contracts.js";
+import { formatTaskHeartbeatDuration } from "../../../core/tasks/heartbeat-notice.js";
 import type { TaskActivity } from "../../../core/tasks/owner-store.js";
 import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
@@ -95,6 +96,15 @@ export class TaskDetail implements Component {
 		const lines: string[] = [];
 		if (task.kind === "agent")
 			lines.push(...wrapTextWithAnsi(theme.fg("dim", taskModelText(task)), Math.max(1, width)));
+		if (task.execution.kind !== "settled" && task.heartbeatMs !== undefined)
+			lines.push(
+				theme.fg(
+					"dim",
+					task.heartbeatMs === 0
+						? "Heartbeat off"
+						: `Heartbeat every ${formatTaskHeartbeatDuration(task.heartbeatMs)}`,
+				),
+			);
 		const section = (label: string, text: string, limit: number, tail = false) => {
 			const wrapped = wrapTextWithAnsi(displayMultiline(text), Math.max(1, width));
 			lines.push(

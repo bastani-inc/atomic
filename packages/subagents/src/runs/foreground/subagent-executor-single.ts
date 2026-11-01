@@ -280,6 +280,7 @@ export async function runSinglePath(
 				intentTask: handoffTaskContext,
 				options: runOptions,
 				wait: params.wait,
+				...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 				schedule: params[BURST_EXECUTION_SCHEDULE],
 				runtime: deps.runtime,
 				recordChild: createSubagentChildRecordSink(deps.pi, ctx),

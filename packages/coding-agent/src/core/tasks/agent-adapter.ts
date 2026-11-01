@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type * as C from "./contracts.js";
 import { trackAdmittedAgentTask } from "./execution-scope.js";
+import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonitor } from "./heartbeat.js";
 import { cancelPausedOwnerTasks } from "./pause.js";
 import {
 	type FakeExecution,
@@ -13,7 +14,10 @@ import {
 } from "./supervisor.js";
 
 export type AgentTaskRunnerFactory = (context: FakeRunnerContext, intent: C.AgentIntent) => FakeExecution;
-export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner">;
+export type AgentTaskHostBinding = Omit<TrustedTaskHost, "createRunner"> & {
+	/** The owner's chat for periodic task heartbeats; omitted, the owner's tasks never heartbeat. */
+	heartbeat?: TaskHeartbeatDelivery;
+};
 
 // S1 converges repeated live-scope bindings on one owner, so dispatch context is shared too.
 const runners = new AsyncLocalStorage<AgentTaskRunnerFactory>();
@@ -24,9 +28,13 @@ export class AgentTaskHost {
 	private readonly owner;
 	private binding: AgentTaskHostBinding;
 	private readonly messageWaits = new Set<WaitLease>();
+	private readonly heartbeats: TaskHeartbeatMonitor;
+	/** Whether this owner has launched anything; owners that never do pay nothing for heartbeats. */
+	private launched = false;
 	/** Stage replacement updates callbacks, never native identity or ownership. */
 	updateBinding(binding: Omit<AgentTaskHostBinding, "scope">): void {
 		this.binding = { ...this.binding, ...binding };
+		this.watchHeartbeats();
 	}
 	/** Internal projection binding; never serialize these native-backed capabilities. */
 	get ownerBinding(): { supervisor: TaskSupervisor; owner: OwnerLease; waitForTask: AgentTaskHost["waitForTask"] } {
@@ -46,6 +54,8 @@ export class AgentTaskHost {
 				this.binding.authorizeCommandLaunch?.(intent);
 			},
 			onTaskSettled: (ref, receipt) => this.binding.onTaskSettled?.(ref, receipt),
+			defaultHeartbeatMs: () =>
+				this.binding.heartbeat ? defaultTaskHeartbeatMs(this.binding.heartbeat) : undefined,
 			createRunner: (context, intent) => {
 				const runner = runners.getStore();
 				if (!runner) throw new Error("Agent runner factory missing from launch context");
@@ -55,6 +65,17 @@ export class AgentTaskHost {
 		const opened = this.supervisor.openTaskOwner(host, binding.scope);
 		if (!opened.ok) throw new Error(`${opened.error.code}: ${opened.error.message}`);
 		this.owner = opened.value;
+		// One monitor per owner, whichever session currently binds it.
+		this.heartbeats = new TaskHeartbeatMonitor({
+			supervisor: this.supervisor,
+			owner: this.owner,
+			delivery: () => this.binding.heartbeat,
+		});
+	}
+
+	/** One monitor per owner, started with its first launch, whichever session binds it then. */
+	private watchHeartbeats(): void {
+		if (this.launched && this.binding.heartbeat) this.heartbeats.start();
 	}
 
 	async startAgentTask(
@@ -126,6 +147,7 @@ export class AgentTaskHost {
 	}
 
 	close(cause: C.OwnerCloseCause) {
+		this.heartbeats.dispose();
 		return this.supervisor.closeTaskOwner(this.owner, cause);
 	}
 
@@ -140,5 +162,7 @@ export class AgentTaskHost {
 	}
 	private authorizeTaskLaunch(): void {
 		if (this.tasksPaused) throw new Error("Workflow stage tasks are paused");
+		this.launched = true;
+		this.watchHeartbeats();
 	}
 }

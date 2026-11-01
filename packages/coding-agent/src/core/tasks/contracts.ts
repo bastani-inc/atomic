@@ -69,6 +69,8 @@ export type AgentIntent = {
 	cwd?: string;
 	parentTaskId?: TaskId;
 	readonly routerSelection?: RouterSelection;
+	/** Heartbeat cadence for this task in milliseconds; `0` disables. Omitted uses the owner default. */
+	readonly heartbeatMs?: number;
 };
 export type CommandIntent = {
 	kind: "command";
@@ -83,6 +85,8 @@ export type CommandIntent = {
 	terminal: { kind: "pipe" } | { kind: "pty"; columns: number; rows: number };
 	executionTimeoutMs?: number;
 	parentTaskId?: TaskId;
+	/** Heartbeat cadence for this task in milliseconds; `0` disables. Omitted uses the owner default. */
+	readonly heartbeatMs?: number;
 };
 export type TaskIntent = AgentIntent | CommandIntent;
 export type TaskWaitConfiguration =
@@ -149,6 +153,8 @@ export type TaskRecord = {
 	model?: string;
 	thinking?: string;
 	readonly routerSelection?: RouterSelection;
+	/** Heartbeat cadence the task was launched with; `0` disables. Omitted uses the owner default. */
+	readonly heartbeatMs?: number;
 	execution: Execution;
 	observation: HostObservation;
 	/** Retained native background membership, independent of the current wait. */

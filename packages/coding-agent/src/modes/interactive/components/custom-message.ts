@@ -4,9 +4,11 @@ import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@ear
 import type { MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
+import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { completionNoticeFromDetails, TaskCompletionMessage } from "./task-completion-message.js";
+import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 
 /**
  * Type guard ensuring a value returned by an extension's custom renderer is a
@@ -90,6 +92,16 @@ export class CustomMessageComponent extends Container {
 			if (notice) {
 				this.spacer = new Spacer(1);
 				this.customComponent = new TaskCompletionMessage(notice, this._expanded);
+				this.addChild(this.spacer);
+				this.addChild(this.customComponent);
+				return;
+			}
+		}
+		if (this.message.customType === TASK_HEARTBEAT_MESSAGE_TYPE) {
+			const details = heartbeatDetailsFrom(this.message.details);
+			if (details) {
+				this.spacer = new Spacer(1);
+				this.customComponent = new TaskHeartbeatMessage(details, this._expanded);
 				this.addChild(this.spacer);
 				this.addChild(this.customComponent);
 				return;

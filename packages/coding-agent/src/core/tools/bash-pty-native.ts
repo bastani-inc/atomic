@@ -247,6 +247,7 @@ export async function executeSupervisedCommand(
 				: {}),
 			terminal: pty ? { kind: "pty", columns: options.cols ?? 120, rows: options.rows ?? 40 } : { kind: "pipe" },
 			...(options.timeout === undefined ? {} : { executionTimeoutMs: options.timeout * 1000 }),
+			...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
 		},
 		crypto.randomUUID() as OperationId,
 		options.signal,
@@ -316,6 +317,8 @@ export interface NativePtyExecOptions {
 	cols?: number;
 	rows?: number;
 	taskOwner?: SupervisedCommandOwner;
+	/** Task heartbeat cadence; `0` disables. Omitted uses the owner default. */
+	heartbeatMs?: number;
 }
 
 export async function executeNativePty(

@@ -289,6 +289,8 @@ export async function runAgentTask(input: {
 	forked?: boolean;
 	/** Launch operation id; a resumed child needs a fresh one, since the host replays a repeated operation. */
 	operation?: string;
+	/** Task heartbeat cadence the caller chose; omitted uses the owner default. */
+	heartbeatMs?: number;
 }): Promise<ModelSingleResponse> {
 	let yieldWait: ((reason: YieldReason) => Result<WaitOutcome, YieldError>) | undefined;
 	let pendingYield = false;
@@ -408,6 +410,7 @@ export async function runAgentTask(input: {
 				},
 				wait: { kind: "background" },
 				runtime: input.runtime,
+				...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 				onTerminal: launch.onTerminal,
 				// It waits for a slot in its run, as its original launch did.
 				...(input.schedule ? { schedule: input.schedule } : {}),
@@ -425,6 +428,7 @@ export async function runAgentTask(input: {
 			task: input.intentTask ?? input.task,
 			cwd: input.options.cwd ?? input.cwd,
 			...(input.options.modelRoute ? { routerSelection: input.options.modelRoute.routerSelection } : {}),
+			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 		},
 		(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,
 		(context) => {

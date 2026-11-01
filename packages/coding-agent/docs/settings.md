@@ -499,6 +499,16 @@ Plain names establish a replacement list before its modifiers apply. A project l
 
 `codemode` and `tool_search` are built-in extension tools registered inactive. Add `"+codemode"` or `"+tool_search"` to `defaultTools` to activate them alongside ordinary defaults. See [codemode](/tools#codemode) and [tool search](/tools#tool_search) for usage and safety boundaries.
 
+### Tasks
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `tasks.heartbeatMs` | number | `900000` | How often, in milliseconds, a running background shell or subagent sends its chat a [task heartbeat](/background-tasks#task-heartbeats). `0` turns heartbeats off; other values must be at least `60000`. An invalid value uses the default. A tool call's `heartbeatMs` overrides it for that task. |
+
+```json
+{ "tasks": { "heartbeatMs": 1800000 } }
+```
+
 ### Sessions
 
 | Setting | Type | Default | Description |

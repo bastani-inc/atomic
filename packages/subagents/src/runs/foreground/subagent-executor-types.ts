@@ -31,6 +31,7 @@ export interface TaskParam {
 	taskNeeds?: import("../../shared/model-constraints.js").TaskNeeds;
 	skill?: string | string[] | boolean;
 	group?: string | true;
+	heartbeatMs?: number;
 }
 
 export type BurstTaskParam = TaskParam & {
@@ -43,6 +44,7 @@ export interface SubagentParamsLike {
 	id?: string;
 	wait?: import("@bastani/atomic").WaitPolicy;
 	budgetMs?: number;
+	heartbeatMs?: number;
 	runId?: string;
 	message?: string;
 	all?: boolean;

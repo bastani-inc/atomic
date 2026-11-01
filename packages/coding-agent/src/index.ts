@@ -47,6 +47,13 @@ export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory }
 export type { AgentIntent, OperationId, TaskId, TaskRecord, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export {
+	DEFAULT_TASK_HEARTBEAT_MS,
+	MIN_TASK_HEARTBEAT_MS,
+	TASK_HEARTBEAT_MESSAGE_TYPE,
+	type TaskHeartbeatDetails,
+	validateTaskHeartbeatMs,
+} from "./core/tasks/heartbeat-notice.js";
+export {
 	bindOwnerTaskStore,
 	getOwnerTaskStore,
 	OwnerTaskStore,
