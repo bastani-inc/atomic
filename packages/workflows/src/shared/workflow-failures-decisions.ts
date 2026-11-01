@@ -18,6 +18,11 @@ import {
 	type WorkflowFailureDecision,
 	type WorkflowFailureEvidence,
 } from "./workflow-failures-signals.js";
+import {
+	WORKFLOW_INFRASTRUCTURE_FAULTS,
+	type WorkflowInfrastructureFault,
+	workflowInfrastructureFault,
+} from "./workflow-infrastructure-error.js";
 
 const INVALID_API_KEY_CODES = new Set([
 	"401",
@@ -275,6 +280,21 @@ export function cancelledDecision(): WorkflowFailureDecision {
 	};
 }
 
+/**
+ * A local worker pool's own fault, such as a worker lost or a work lease taken from a starved worker: not the stage's
+ * work. Retrying it can succeed, so it is recoverable and resumable, and resume runs the failed stage again.
+ */
+export function infrastructureFaultDecision(code: WorkflowInfrastructureFault): WorkflowFailureDecision {
+	return {
+		kind: "unknown",
+		code,
+		retryable: true,
+		resumable: true,
+		recoverability: "recoverable",
+		disposition: "terminal_failed",
+	};
+}
+
 export function unknownDecision(): WorkflowFailureDecision {
 	return {
 		kind: "unknown",
@@ -307,6 +327,8 @@ export function strongDecisionFromNormalizedCode(
 			disposition: "active_blocked",
 		};
 	}
+	if (WORKFLOW_INFRASTRUCTURE_FAULTS.has(normalized))
+		return infrastructureFaultDecision(normalized as WorkflowInfrastructureFault);
 	if (CANCELLED_CODES.has(normalized)) return cancelledDecision();
 	if (INVALID_API_KEY_CODES.has(normalized)) return authDecision("invalid_api_key");
 	if (MISSING_API_KEY_CODES.has(normalized)) return authDecision("missing_api_key");
@@ -476,6 +498,8 @@ export function fallbackDecisionFromMessage(
 	message: string,
 	name: string | undefined,
 ): WorkflowFailureDecision | undefined {
+	const fault = workflowInfrastructureFault(message);
+	if (fault !== undefined) return infrastructureFaultDecision(fault);
 	const tokens = tokenize(message);
 	const decision = decisionFromMessageTokens(tokens, name);
 	const providerAuthDecision = classifyFallbackProviderAuthMessage(message, tokens);

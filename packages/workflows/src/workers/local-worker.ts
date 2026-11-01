@@ -22,6 +22,7 @@ import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../extensio
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
+import { untilDrainedOrStalled } from "../runs/foreground/pending-stage-delivery.js";
 import {
 	createStageControlRegistry,
 	type StageControlHandle,
@@ -32,6 +33,7 @@ import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
+import { workflowInfrastructureFault } from "../shared/workflow-infrastructure-error.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
@@ -206,7 +208,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			rootLeaseLost = true;
 			attemptFenced = true;
 			receiver?.reject(new WorkAttemptFencedError(reply.error));
-		} else if (reply.error && reply.fenced) {
+		} else if (reply.error && (reply.fenced || workflowInfrastructureFault(reply.error) !== undefined)) {
+			// A fenced attempt, or a fault of the pool rather than of the child (a lost worker, a refused journal write):
+			// the attempt ends and the child replays from its last checkpoint, as many times as a refused attempt may.
 			attemptFenced = true;
 			receiver?.reject(new WorkAttemptFencedError(reply.error));
 		} else if (reply.error) receiver?.reject(new Error(reply.error));
@@ -439,7 +443,18 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						routeCapability: capability,
 						async deliverPending(deliver, recipient) {
 							await publication;
-							await request({ kind: "delivery", ...identity, recipient }, deliver);
+							// The root answers this request when its drain ends, so later messages of a slow drain still reach
+							// the session; the stage's startup waits for it only while it makes progress, as in process.
+							await untilDrainedOrStalled((progress) =>
+								request({ kind: "delivery", ...identity, recipient }, async (from, message) => {
+									progress();
+									try {
+										await deliver(from, message);
+									} finally {
+										progress();
+									}
+								}).then(() => {}),
+							);
 						},
 						async ready(sessionId) {
 							await publication;
@@ -545,6 +560,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					await request({ kind: "controlled", revision: finalControl.revision });
 					return;
 				}
+				// A fenced attempt aborted its run, so `result` is that abort, not the child's outcome: it is never
+				// completed with it, even when its lease was renewed meanwhile; the fenced path below replays the child.
+				if (attemptFenced) throw new WorkAttemptFencedError("Work attempt fenced before completion");
 				await request({ kind: "complete", result });
 			} catch (error) {
 				if (!attemptFenced) throw error;

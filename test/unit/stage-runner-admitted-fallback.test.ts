@@ -308,7 +308,9 @@ test("a stale worker attempt cannot inherit a predecessor's capacity (#3869)", a
 		const predecessor = (await adapter.create({}, undefined)) as StageSessionRuntime & {
 			release: () => Promise<void>;
 		};
+		// Recovery took the work from this attempt: a lapsed lease alone is waited out, a replaced attempt is refused.
 		await f.database.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", work.id);
+		assert.equal(await pool.expire(acquired.lease, work), true);
 
 		await assert.rejects(adapter.create({}, { ...makeMeta(), replacesSession: predecessor }), /Stale/);
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);

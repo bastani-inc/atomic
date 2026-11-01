@@ -11,7 +11,7 @@ import {
 } from "../shared/pending-stage-route-capability.js";
 import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-readiness.js";
 import type { Store } from "../shared/store.js";
-import { isTerminalRunStatus } from "../shared/store-internal.js";
+import { isTerminalRunStatus, isTerminalStageStatus } from "../shared/store-internal.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
 
@@ -246,7 +246,7 @@ export class PoolStageHandoff {
 			stages: withReconnectingStages(
 				known.get(run.id),
 				run,
-				run.stages.map((stage) => ({ ...stage, workerExecution: execution })),
+				run.stages.map((stage) => ({ ...stage, workerExecution: endedUnder(known.get(run.id), stage, execution) })),
 				work.generation,
 			),
 		}));
@@ -370,17 +370,25 @@ export class PoolStageHandoff {
 		let delivery = attempt.deliveries.get(key);
 		if (delivery === undefined) {
 			const sessionId = attempt.sessions.get(key);
-			delivery = createWorkflowPendingStageDelivery(this.store, runId, stageId, stageName, (action) =>
-				this.queue.withCurrentAppend(
-					this.lease,
-					work,
-					() => {
-						if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
-						if (attempt.sessions.get(key) !== sessionId)
-							throw new Error(`Stage session ${sessionId} was replaced before it acknowledged delivery`);
-					},
-					action,
-				),
+			delivery = createWorkflowPendingStageDelivery(
+				this.store,
+				runId,
+				stageId,
+				stageName,
+				(action) =>
+					this.queue.withCurrentAppend(
+						this.lease,
+						work,
+						() => {
+							if (this.attempts.get(work.id) !== attempt || attempt.fenced) throw new Error(STALE);
+							if (attempt.sessions.get(key) !== sessionId)
+								throw new Error(`Stage session ${sessionId} was replaced before it acknowledged delivery`);
+						},
+						action,
+					),
+				// A drain's transport is the worker's delivery request, which `deliver` answers: it must stay open for as
+				// long as the drain runs, however slowly a starved worker acknowledges. The worker bounds its own wait.
+				{ holdUntilDrained: true },
 			);
 			attempt.deliveries.set(key, delivery);
 		}
@@ -399,6 +407,26 @@ function isLive(stage: StageSnapshot): boolean {
 		stage.status !== "failed" &&
 		stage.status !== "skipped"
 	);
+}
+
+/**
+ * The worker lease a published stage shows: the attempt's current one, except for a stage that had already ended
+ * under this attempt, which keeps the lease it ended under. The attempt goes on renewing for its other stages, and a
+ * renewal after a stage ended must not read as that stage still holding its worker.
+ */
+function endedUnder(
+	known: RunSnapshot | undefined,
+	stage: StageSnapshot,
+	execution: NonNullable<StageSnapshot["workerExecution"]>,
+): NonNullable<StageSnapshot["workerExecution"]> {
+	if (!isTerminalStageStatus(stage.status)) return execution;
+	const previous = known?.stages.find((candidate) => candidate.id === stage.id);
+	return previous !== undefined &&
+		isTerminalStageStatus(previous.status) &&
+		previous.workerExecution?.generation === execution.generation &&
+		previous.workerExecution.worker === execution.worker
+		? previous.workerExecution
+		: execution;
 }
 
 /**

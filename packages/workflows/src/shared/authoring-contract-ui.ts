@@ -441,6 +441,13 @@ export interface RunFailureClassification extends WorkflowSerializableObject {
 		| "quota_limited"
 		| "provider_unavailable"
 		| "pending_stage_delivery_failed"
+		| "worker_lost"
+		| "worker_cleanup_unconfirmed"
+		| "worker_retry_limit"
+		| "worker_startup_failed"
+		| "stale_work_lease"
+		| "intercom_unavailable"
+		| "storage_unavailable"
 		| "cancelled"
 		| "unknown";
 	/** Whether retrying the same work can succeed, as for a rate limit or an outage. */

@@ -508,11 +508,22 @@ export async function resumeRun(
 
 function isRunFullyPaused(activeStore: Store, runId: string, controlRunIds: readonly string[]): boolean {
 	const runs = activeStore.runs();
+	const settledChild = (stage: StageSnapshot) => {
+		// A child workflow's boundary stays open while its child is paused: the child's own stages say whether it is.
+		const child = runs.find((candidate) => candidate.id === authoritativeWorkflowChildRunId(stage));
+		return (
+			child !== undefined &&
+			controlRunIds.includes(child.id) &&
+			(child.status === "paused" || child.endedAt !== undefined)
+		);
+	};
 	const hasLiveStage = controlRunIds.some(
 		(controlRunId) =>
 			runs
 				.find((candidate) => candidate.id === controlRunId)
-				?.stages.some((stage) => stage.status === "running" || stage.status === "pending") === true,
+				?.stages.some(
+					(stage) => (stage.status === "running" || stage.status === "pending") && !settledChild(stage),
+				) === true,
 	);
 	return !hasLiveStage && runs.find((candidate) => candidate.id === runId)?.status === "paused";
 }
@@ -573,6 +584,43 @@ async function pauseRunWithAction(
 			.filter((handle) => handle.status === "running" || handle.status === "pending")
 			.map((handle) => ({ controlRunId, handle })),
 	);
+	const pauseHandles = async () => {
+		const paused: StageSnapshot[] = [];
+		const pausedRunIds = new Set<string>();
+		for (const { controlRunId, handle } of handles) {
+			await handle.pause();
+			activeStore.recordStagePaused(controlRunId, handle.stageId);
+			pausedRunIds.add(controlRunId);
+			const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
+			const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
+			if (stage !== undefined) paused.push(structuredClone(stage));
+		}
+		for (const pausedRunId of pausedRunIds) {
+			if (pausedRunId === runId) continue;
+			activeStore.recordRunPaused(pausedRunId);
+		}
+		activeStore.recordRunPaused(runId);
+		return paused;
+	};
+	// Stages on local workers have no handle in this process: the root's run control pauses them, through its pool,
+	// whatever else runs in the root's own process.
+	const poolControl = (opts?.toolControlRegistry ?? defaultToolControlRegistry).runControl(runId);
+	if (poolControl !== undefined && liveWorkerStages(activeStore, controlRunIds).length > 0) {
+		await poolControl.pause();
+		const paused = await pauseHandles();
+		// The pause is durable in the pool: workers that have not confirmed it yet pause their stages on their next check.
+		const pausing = liveWorkerStages(activeStore, controlRunIds).filter((stage) => stage.status === "running").length;
+		return {
+			ok: true,
+			runId,
+			paused,
+			...(pausing === 0
+				? {}
+				: {
+						message: `Run ${runId} paused and can be resumed. ${pausing} stage(s) on local workers have not confirmed the pause yet; their workers pause them on their next check.`,
+					}),
+		};
+	}
 	if (handles.length === 0) {
 		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
 		const runtimeControls = ownedRuntimeControls(activeStore, toolControls, runId);
@@ -618,22 +666,21 @@ async function pauseRunWithAction(
 		};
 	}
 
-	const paused: StageSnapshot[] = [];
-	const pausedRunIds = new Set<string>();
-	for (const { controlRunId, handle } of handles) {
-		await handle.pause();
-		activeStore.recordStagePaused(controlRunId, handle.stageId);
-		pausedRunIds.add(controlRunId);
-		const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
-		const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
-		if (stage !== undefined) paused.push(structuredClone(stage));
-	}
-	for (const pausedRunId of pausedRunIds) {
-		if (pausedRunId === runId) continue;
-		activeStore.recordRunPaused(pausedRunId);
-	}
-	activeStore.recordRunPaused(runId);
-	return { ok: true, runId, paused };
+	return { ok: true, runId, paused: await pauseHandles() };
+}
+
+/** Unfinished stages that run on local workers, in the given runs. */
+function liveWorkerStages(activeStore: Store, runIds: readonly string[]): StageSnapshot[] {
+	const ids = new Set(runIds);
+	return activeStore
+		.runs()
+		.filter((run) => ids.has(run.id) && run.endedAt === undefined)
+		.flatMap((run) =>
+			run.stages.filter(
+				(stage) =>
+					stage.workerExecution !== undefined && (stage.status === "running" || stage.status === "pending"),
+			),
+		);
 }
 
 // pauseRun

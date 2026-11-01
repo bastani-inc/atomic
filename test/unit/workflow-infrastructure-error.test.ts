@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { isRetryableWorkflowError, WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
+import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
 import {
 	asWorkflowInfrastructureError,
 	workflowInfrastructureFault,
@@ -41,4 +42,23 @@ test("retryable faults are recognized through causes but ordinary failures are n
 	assert.equal(isRetryableWorkflowError(copied), true);
 	for (const failure of [new Error("Stale work lease"), "Stale work lease", undefined, null, { retryable: true }])
 		assert.equal(isRetryableWorkflowError(failure), false);
+});
+
+test("a stage that fails on a pool infrastructure fault is a recoverable, retryable failure, not an unknown terminal one", () => {
+	const faults = {
+		"Worker exited before delivery acknowledgement": "worker_lost",
+		"Stale work lease": "stale_work_lease",
+		"Stale resource admission attempt": "stale_work_lease",
+		"Local worker pool coordinator exited (SIGKILL)": "worker_lost",
+	} as const;
+	for (const [message, code] of Object.entries(faults)) {
+		for (const error of [new Error(message), new WorkflowInfrastructureError(code, message)]) {
+			const failure = classifyWorkflowFailure(error);
+			assert.equal(failure.code, code, message);
+			assert.equal(failure.recoverability, "recoverable", message);
+			assert.equal(failure.retryable, true, message);
+			assert.equal(failure.resumable, true, message);
+		}
+	}
+	assert.equal(classifyWorkflowFailure(new Error("child logic rejected the input")).recoverability, "unknown");
 });
