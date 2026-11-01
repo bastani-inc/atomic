@@ -77,7 +77,8 @@ test.skipIf(process.platform === "win32")(
 			sendMessage: async (message) => {
 				sent.push((message as { details: WorkflowHeartbeatEventDetails }).details);
 			},
-			resolveIntervalMinutes: (name) => (name === rootName ? ROOT_HEARTBEAT_MINUTES : undefined),
+			// Every definition, the pooled children's included, has a cadence: only the root may use it.
+			resolveIntervalMinutes: () => ROOT_HEARTBEAT_MINUTES,
 		});
 		try {
 			const execution = run(
@@ -134,6 +135,7 @@ test.skipIf(process.platform === "win32")(
 	"a root keeps one heartbeat per boundary across a worker crash and its child's replay on another worker",
 	async () => {
 		const directory = makeTempDirectory("pool-root-replay-heartbeat-");
+		const crashPath = join(directory, "crash");
 		const crashedPath = join(directory, "crashed");
 		const releasePath = join(directory, "release");
 		const { backend, child, pool } = await pooledChild("pool-replayed-heartbeat-child.ts", directory);
@@ -145,7 +147,8 @@ test.skipIf(process.platform === "win32")(
 			sendMessage: async (message) => {
 				sent.push((message as { details: WorkflowHeartbeatEventDetails }).details);
 			},
-			resolveIntervalMinutes: (name) => (name === rootName ? ROOT_HEARTBEAT_MINUTES : undefined),
+			// Every definition, the pooled children's included, has a cadence: only the root may use it.
+			resolveIntervalMinutes: () => ROOT_HEARTBEAT_MINUTES,
 		});
 		try {
 			const execution = run(
@@ -156,15 +159,19 @@ test.skipIf(process.platform === "win32")(
 					outputs: {},
 					heartbeatIntervalMinutes: ROOT_HEARTBEAT_MINUTES,
 					async run(ctx) {
-						await ctx.workflow(child, { inputs: { crashedPath, releasePath } });
+						await ctx.workflow(child, { inputs: { crashPath, crashedPath, releasePath } });
 						return {};
 					},
 				}),
 				{},
 				{ runId: testRunId("pool-root-replay-heartbeat"), cwd: directory, store, durableBackend: backend },
 			);
+			// The root is heartbeating while its child runs on the first worker; then that worker dies.
+			await until(() => (sent.length >= 1 ? true : undefined), HEARTBEATS_TIMEOUT_MS);
+			writeTextSync(crashPath, "");
 			await untilOrRunEnds(async () => fileExists(crashedPath), execution, CONDITION_TIMEOUT_MS);
 			const beforeReplay = sent.length;
+			assert.ok(beforeReplay >= 1, "the root heartbeat before the crash");
 			// The replacement worker replays the child while the root keeps its cadence.
 			await until(() => (sent.length >= beforeReplay + 3 ? true : undefined), HEARTBEATS_TIMEOUT_MS);
 			const root = store.runs().find((candidate) => candidate.parentRunId === undefined);
