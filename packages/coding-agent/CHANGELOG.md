@@ -2,9 +2,27 @@
 
 ## [Unreleased]
 
+## [0.9.59] - 2026-11-01
+
+GitHub Copilot tokens that work from `/login`, and intercom that recovers on Windows.
+
+- **Copilot tokens saved through `/login`:** a GitHub Copilot personal access token saved with `/login` → **Use an API key** now works for business and enterprise accounts, so you no longer need `COPILOT_GITHUB_TOKEN` to avoid `421 Misdirected Request` ([#4151](https://github.com/bastani-inc/atomic/pull/4151))
+- **Intercom recovers on Windows:** when the intercom broker dies, sessions start a new one right away instead of waiting out the start-up timeout and failing with `Broker failed to start within timeout` ([#4152](https://github.com/bastani-inc/atomic/pull/4152))
+
 ### Fixed
 
-- Fixed GitHub Copilot personal access tokens saved through `/login` → **Use an API key** being sent to the individual Copilot host, where business and enterprise accounts fail with `421 Misdirected Request`. Saved tokens now get the same endpoint routing as `COPILOT_GITHUB_TOKEN`, so the environment variable is no longer required. A `models.json` `baseUrl` still takes precedence, and OAuth logins are unchanged.
+- Fixed GitHub Copilot personal access tokens saved through `/login` → **Use an API key** being sent to the individual Copilot host, where business and enterprise accounts fail with `421 Misdirected Request`. Saved tokens now get the same endpoint routing as `COPILOT_GITHUB_TOKEN`, so the environment variable is no longer required. A `models.json` `baseUrl` still takes precedence, and OAuth logins are unchanged. ([#4151](https://github.com/bastani-inc/atomic/pull/4151))
+
+## [0.9.59-alpha.1] - 2026-11-01
+
+GitHub Copilot tokens that work from `/login`, and intercom that recovers on Windows.
+
+- **Copilot tokens saved through `/login`:** a GitHub Copilot personal access token saved with `/login` → **Use an API key** now works for business and enterprise accounts, so you no longer need `COPILOT_GITHUB_TOKEN` to avoid `421 Misdirected Request` ([#4151](https://github.com/bastani-inc/atomic/pull/4151))
+- **Intercom recovers on Windows:** when the intercom broker dies, sessions start a new one right away instead of waiting out the start-up timeout and failing with `Broker failed to start within timeout` ([#4152](https://github.com/bastani-inc/atomic/pull/4152))
+
+### Fixed
+
+- Fixed GitHub Copilot personal access tokens saved through `/login` → **Use an API key** being sent to the individual Copilot host, where business and enterprise accounts fail with `421 Misdirected Request`. Saved tokens now get the same endpoint routing as `COPILOT_GITHUB_TOKEN`, so the environment variable is no longer required. A `models.json` `baseUrl` still takes precedence, and OAuth logins are unchanged. ([#4151](https://github.com/bastani-inc/atomic/pull/4151))
 
 ## [0.9.58] - 2026-11-01
 
