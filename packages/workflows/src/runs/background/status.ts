@@ -286,6 +286,18 @@ export async function resumeRun(
 			await handle.resume();
 			opts?.onResumeAcknowledged?.();
 		}
+		// A root that runs stages on local workers is paused through its run control together with the stages of its
+		// own process: those resume with it.
+		const stages = await settleResumeAcknowledgements(
+			activeStore,
+			expandedControlRunIds(activeStore, runId).flatMap((controlRunId) =>
+				registry
+					.run(controlRunId)
+					.pausedStages()
+					.map((handle) => ({ controlRunId, handle })),
+			),
+			opts?.message,
+		);
 		activeStore.recordRunResumed(runId, undefined, {
 			source: "run_control",
 			...(opts?.actor === undefined ? {} : { actor: opts.actor }),
@@ -294,9 +306,12 @@ export async function resumeRun(
 			ok: true,
 			runId,
 			snapshot: structuredClone(activeStore.runs().find((candidate) => candidate.id === runId) ?? run),
-			resumed: [],
+			resumed: structuredClone([...stages.resumed]),
 			mode: "paused",
-			message: `Resumed workflow runtime on ${runId}.`,
+			message:
+				stages.failures.length === 0
+					? `Resumed workflow runtime on ${runId}.`
+					: `Resumed workflow runtime on ${runId}; failed to resume workflow stages: ${stages.failures.join("; ")}. Failed paused stages remain resumable.`,
 		};
 	}
 	const resumed: StageSnapshot[] = [];
@@ -635,11 +650,17 @@ async function pauseRunWithAction(
 			// Install every barrier synchronously, before awaiting durable pause acknowledgement.
 			await Promise.all(runtimeControls.map(({ handle }) => handle.pause()));
 			activeStore.recordRunPaused(runId);
+			// Durable progress, such as the checkpoints of its children on local workers, lets another process resume it.
+			const durable = toolControls.runControl(runId)?.durableBackend?.getWorkflow(runId);
+			const resumableElsewhere =
+				durable !== undefined && (durable.completedCheckpoints > 0 || durable.pendingPrompts > 0);
 			return {
 				ok: true,
 				runId,
 				paused: [],
-				message: `Run ${runId} paused. Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
+				message: resumableElsewhere
+					? `Run ${runId} paused. Resume it with /workflow resume ${runId}, here or, once this process has exited, from a new Atomic process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume.`
+					: `Run ${runId} paused. Resume with /workflow resume on this live process; untracked initialization or workflow code may still finish, but further workflow steps and completion wait for resume. Cross-process resume requires durable checkpoint or pending prompt progress.`,
 			};
 		}
 		const controlRuns = activeStore.runs().filter((candidate) => controlRunIds.includes(candidate.id));

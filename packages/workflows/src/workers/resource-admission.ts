@@ -34,6 +34,12 @@ const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
 const LATE_ATTEMPT_REASON = "waiting for its attempt lease";
+/**
+ * While the host is past `stageStartMaxLoadPerCpu`, a root starts at most one pooled stage session this often, in the
+ * order the stages asked: the load can then recover, and no stage waits forever on stages that hold their sessions.
+ */
+export const STAGE_START_SPACING_MS = 5_000;
+const STAGE_START_PRESSURE_REASON = "host load";
 
 type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
@@ -47,6 +53,12 @@ export interface AdmissionConfiguration {
 export interface AdmissionOptions extends AdmissionConfiguration {
 	readonly root: string;
 	readonly holder: string;
+	/**
+	 * Load per CPU above which a pooled stage's own session starts are paced ({@link STAGE_START_SPACING_MS}), so an
+	 * overloaded host is not given a burst of stage starts. Delegated sessions and processes are not stage starts.
+	 * It is not part of the saved admission configuration, so a resumed root may run with another value.
+	 */
+	readonly stageStartMaxLoadPerCpu?: number;
 	readonly attempt?: { readonly id: string; readonly generation: number; readonly epoch: number };
 	readonly sampleHost?: () => { freeMemoryBytes?: number; load?: number };
 }
@@ -114,7 +126,7 @@ export class SqlResourceAdmission {
 		for (const limits of [options.limits, options.userLimits])
 			for (const value of Object.values(limits ?? {}))
 				if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid resource limit");
-		for (const value of Object.values(options.host ?? {}))
+		for (const value of [...Object.values(options.host ?? {}), options.stageStartMaxLoadPerCpu ?? 0])
 			if (!Number.isFinite(value) || value < 0) throw new Error("Invalid host admission threshold");
 		const admission = new SqlResourceAdmission(storage, {
 			...structuredClone({ ...options, sampleHost: undefined }),
@@ -131,6 +143,8 @@ export class SqlResourceAdmission {
 			for (const column of ["owner", "attempt", "process_identity"])
 				if (!columns.some((entry) => entry.name === column))
 					await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN ${column} TEXT`);
+			if (!columns.some((entry) => entry.name === "granted_at"))
+				await tx.exec(`ALTER TABLE ${admission.permits} ADD COLUMN granted_at INTEGER`);
 			// Reconciliation fences permits owner by owner and finds live permits by state. Without these indexes each
 			// statement reads every permit ever issued, which held the shared journal's write lock for seconds (#3978).
 			await tx.exec(`CREATE INDEX IF NOT EXISTS ${admission.permits}_owner ON ${admission.permits}(owner, state);
@@ -172,13 +186,25 @@ export class SqlResourceAdmission {
 		await admission.reconcile();
 		return admission;
 	}
+	private sampleHost(): { freeMemoryBytes?: number; load?: number } {
+		return (
+			this.options.sampleHost?.() ?? {
+				freeMemoryBytes: freemem(),
+				load: process.platform === "win32" ? undefined : loadavg()[0]! / cpus().length,
+			}
+		);
+	}
+	/** Whether the host is loaded past `stageStartMaxLoadPerCpu`, so this pooled stage start is paced. */
+	private stageStartPressure(kind: Resource, delegated: boolean | undefined): boolean {
+		const threshold = this.options.stageStartMaxLoadPerCpu;
+		if (kind !== "session" || delegated === true || threshold === undefined || threshold === 0) return false;
+		const load = this.sampleHost().load;
+		return load !== undefined && load > threshold;
+	}
 	private hostReason(): string | undefined {
 		const host = this.options.host;
 		if (!host) return;
-		const sample = this.options.sampleHost?.() ?? {
-			freeMemoryBytes: freemem(),
-			load: process.platform === "win32" ? undefined : loadavg()[0]! / cpus().length,
-		};
+		const sample = this.sampleHost();
 		if (host.minFreeMemoryBytes !== undefined) {
 			if (sample.freeMemoryBytes === undefined) return "host memory unsupported";
 			if (sample.freeMemoryBytes < host.minFreeMemoryBytes) return "host memory";
@@ -288,6 +314,7 @@ export class SqlResourceAdmission {
 					this.nextReconciliation = performance.now() + 1000;
 				}
 				const hostReason = this.hostReason();
+				const pressure = this.stageStartPressure(kind, request?.delegated);
 				const granted = await this.storage.transaction(async (tx) => {
 					await tx.run(
 						`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
@@ -306,6 +333,22 @@ export class SqlResourceAdmission {
 						return false;
 					}
 					let reason = hostReason;
+					// Paced, in order: one stage start per spacing, the earliest waiting one first.
+					if (
+						pressure &&
+						((await tx.get(
+							`SELECT 1 AS recent FROM ${this.permits} WHERE root = ? AND kind = 'session' AND granted_at >= ${NOW_MS} - ? LIMIT 1`,
+							root,
+							STAGE_START_SPACING_MS,
+						)) ||
+							(await tx.get(
+								`SELECT 1 AS older FROM ${this.permits} WHERE root = ? AND kind = 'session' AND state = 'waiting' AND reason = ? AND ticket < (SELECT ticket FROM ${this.permits} WHERE operation = ?) LIMIT 1`,
+								root,
+								STAGE_START_PRESSURE_REASON,
+								operation,
+							)))
+					)
+						reason ??= STAGE_START_PRESSURE_REASON;
 					const controls = `${this.storage.tables.runs}_pool_control`;
 					if (await tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", controls)) {
 						const control = await tx.get(`SELECT state FROM ${controls} WHERE root = ?`, root);
@@ -331,8 +374,9 @@ export class SqlResourceAdmission {
 					if (reason && request?.delegated)
 						throw new Error(`Delegated session cannot be admitted without capacity headroom: ${reason}`);
 					const updated = await tx.run(
-						`UPDATE ${this.permits} SET state = ?, reason = ? WHERE operation = ? AND state = 'waiting'`,
+						`UPDATE ${this.permits} SET state = ?, reason = ?, granted_at = CASE WHEN ? IS NULL THEN ${NOW_MS} ELSE NULL END WHERE operation = ? AND state = 'waiting'`,
 						reason ? "waiting" : "granted",
+						reason ?? null,
 						reason ?? null,
 						operation,
 					);

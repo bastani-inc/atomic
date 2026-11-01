@@ -921,6 +921,32 @@ export class SqlPoolQueue {
 			return row ? (JSON.parse(String(row.result)) as WorkflowSerializableObject) : undefined;
 		});
 	}
+	/**
+	 * Makes a child that an earlier incarnation of the root completed claimable again in this one, when `rerun` accepts
+	 * its stored result: its result is dropped and its next attempt replays it from its checkpoints, as for work that
+	 * incarnation left unfinished (#3979). Returns the reopened work, or undefined when it stays as it is.
+	 */
+	async reopenCompleted(
+		lease: Lease,
+		id: string,
+		rerun: (result: WorkflowSerializableObject) => boolean,
+	): Promise<PoolWork | undefined> {
+		lease = snapshotLease(lease);
+		return this.transaction(async (tx) => {
+			await this.authority(tx, lease);
+			const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, id, lease.runId);
+			if (row?.state !== "completed" || row.epoch >= lease.epoch) return undefined;
+			const stored = await tx.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, id);
+			if (!stored || !rerun(JSON.parse(String(stored.result)) as WorkflowSerializableObject)) return undefined;
+			await tx.run(`DELETE FROM ${this.work}_results WHERE work = ?`, id);
+			await tx.run(
+				`UPDATE ${this.work} SET state = 'ready', worker = NULL, expires_at = 0, epoch = ? WHERE id = ?`,
+				lease.epoch,
+				id,
+			);
+			return fromRow({ ...row, state: "ready", worker: null, expires_at: 0, epoch: lease.epoch });
+		});
+	}
 	async expire(lease: Lease, token: WorkLease): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };

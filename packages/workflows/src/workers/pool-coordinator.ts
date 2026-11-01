@@ -29,6 +29,7 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
+import { failedOnInfrastructureFault } from "../shared/workflow-infrastructure-error.js";
 import type {
 	CoordinatorCommand,
 	CoordinatorCommandBody,
@@ -818,9 +819,17 @@ export class PoolCoordinator {
 		const queue = this.queue;
 		const lease = this.lease;
 		const work = await this.retainedTransition(async () => {
-			const enqueued = await this.whileRootLate(queue, () =>
+			let enqueued = await this.whileRootLate(queue, () =>
 				queue.enqueue(lease, command.descriptor, command.boundary),
 			);
+			// A child an earlier incarnation completed with a failure of the pool's own, such as a stage that lost its
+			// worker's delivery or lease on a busy host, runs again when the resumed root asks for it: the failure was not
+			// the child's, and replaying it would fail the child for good.
+			if (enqueued.state === "completed" && enqueued.epoch < lease.epoch)
+				enqueued =
+					(await this.whileRootLate(queue, () =>
+						queue.reopenCompleted(lease, enqueued.id, failedOnInfrastructureFault),
+					)) ?? enqueued;
 			const retained = this.retained.get(enqueued.id);
 			if (retained) retained.enqueued = true;
 			return enqueued;
@@ -1241,6 +1250,9 @@ export class PoolCoordinator {
 					definitions: this.sources,
 					admission: options.admission,
 					...(this.promptNodes ? { promptNodes: true } : {}),
+					...(options.stageStartMaxLoadPerCpu === undefined
+						? {}
+						: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
 				}),
 			],
 			{

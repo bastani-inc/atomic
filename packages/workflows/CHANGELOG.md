@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `workflows.localWorkers.maxLoadPerCpu` (SDK `localWorkers.maxLoadPerCpu`): while the machine's load per CPU is above it, the stages of pooled children start one at a time, at most one every 5 seconds in the order they asked, instead of all at once while earlier ones are still starting. Running stages and their subagents and tool processes are not held. Default `3`; `0` turns it off. It is not saved with the root.
+
 ### Fixed
 
 - A message sent to a stage on a local worker (`workflows.localWorkers`) while its session was still starting no longer fails the stage with "generation closed before the stage finished; its tool calls were refused" when the stage has `fallbackModels`.
@@ -19,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A fault of the pool itself that reaches a running pooled child, such as a journal write the database refused, replays the child from its last checkpoint (up to the usual three attempts) instead of failing its stage. A stage that does fail on a pool fault is classified with that fault as its failure code (`worker_lost`, `stale_work_lease`, …), recoverable and retryable, instead of `unknown`, and resume runs it again. A child whose attempt was fenced is no longer completed with the aborted run's result. ([#4145](https://github.com/bastani-inc/atomic/pull/4145))
 - A stage on a local worker that ended keeps the worker lease it ended under: its worker's later lease renewals for the child's other stages no longer show it as renewed after it ended. ([#4145](https://github.com/bastani-inc/atomic/pull/4145))
 - `/workflow pause <run>` and the `workflow` tool's `pause` pause a root's stages on local workers even while the root's own `ctx.tool` steps or in-process stages run, instead of reporting `No active stages to pause`. Pause, `pause --all` and resume no longer fail with `Worker control acknowledgement unresolved` when workers confirm slowly on a busy machine: the pause is recorded at once, workers pause their stages as they next check in, and the result says how many stages have not confirmed yet. ([#4145](https://github.com/bastani-inc/atomic/pull/4145))
+- Resuming a root that runs children on local workers runs again the children an earlier process failed on a fault of the pool itself (a stage that lost its worker's delivery or lease on a busy machine, recorded as `Worker exited before delivery acknowledgement`, `Stale work lease` or `Stale resource admission attempt`), instead of replaying their failure. This includes runs paused or failed by 0.9.57. Pausing a root whose children have durable progress now says it can be resumed from a new process once this one exits, instead of `Resume with /workflow resume on this live process … Cross-process resume requires durable checkpoint or pending prompt progress`.
 
 ## [0.9.57] - 2026-10-31
 

@@ -418,6 +418,13 @@ const WorkflowsSettingsSchema = Type.Union(
 									"Milliseconds a live worker that has stopped responding keeps its child before the child is replayed elsewhere. Default: 30000.",
 							}),
 						),
+						maxLoadPerCpu: Type.Optional(
+							Type.Number({
+								minimum: 0,
+								description:
+									"Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off.",
+							}),
+						),
 					},
 					{ additionalProperties: false },
 				),

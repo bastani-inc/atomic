@@ -423,6 +423,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						root: start.root,
 						holder: work.worker!,
 						attempt: work,
+						...(start.stageStartMaxLoadPerCpu === undefined
+							? {}
+							: { stageStartMaxLoadPerCpu: start.stageStartMaxLoadPerCpu }),
 					})
 				: undefined;
 			// A stage's questions (ask_user_question) wait in this attempt's broker, where the root reads them (#3996).

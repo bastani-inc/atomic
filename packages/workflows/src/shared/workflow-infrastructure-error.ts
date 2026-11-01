@@ -71,3 +71,29 @@ export function asWorkflowInfrastructureError(error: unknown): WorkflowInfrastru
 	const code = workflowInfrastructureFault(error.message);
 	return code === undefined ? undefined : new WorkflowInfrastructureError(code, error.message, { cause: error });
 }
+
+/**
+ * Whether a failed run result failed on infrastructure: its classified failure, its error, or the error or failure
+ * code of a failed stage names an infrastructure fault. Results recorded before stage failures were classified by
+ * fault carry only the fault's message, which this recognizes too.
+ */
+export function failedOnInfrastructureFault(result: {
+	readonly status?: unknown;
+	readonly error?: unknown;
+	readonly failure?: unknown;
+	readonly stages?: unknown;
+}): boolean {
+	if (result.status !== "failed") return false;
+	const names = (value: unknown) =>
+		typeof value === "string" &&
+		(WORKFLOW_INFRASTRUCTURE_FAULTS.has(value) || workflowInfrastructureFault(value) !== undefined);
+	const failure = result.failure as { readonly code?: unknown } | null | undefined;
+	if (names(failure?.code) || names(result.error)) return true;
+	return (
+		Array.isArray(result.stages) &&
+		result.stages.some(
+			(stage: { readonly status?: unknown; readonly error?: unknown; readonly failureCode?: unknown }) =>
+				stage?.status === "failed" && (names(stage.failureCode) || names(stage.error)),
+		)
+	);
+}

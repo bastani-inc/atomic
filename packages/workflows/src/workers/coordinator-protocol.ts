@@ -60,6 +60,8 @@ export interface PoolCoordinatorOptions {
 	readonly leaseMs: number;
 	readonly startupTimeoutMs: number;
 	readonly admission?: AdmissionConfiguration;
+	/** Load per CPU above which the root's pooled stage starts are paced (`localWorkers.maxLoadPerCpu`). */
+	readonly stageStartMaxLoadPerCpu?: number;
 	/** Module forked for each worker; undefined forks the coordinator's own entry module. */
 	readonly workerEntry?: string;
 }

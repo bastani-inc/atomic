@@ -43,6 +43,8 @@ export interface WorkerStart {
 	readonly admission?: AdmissionConfiguration;
 	/** Children raise `ctx.ui` prompts as prompt nodes for the root to answer (#3996). */
 	readonly promptNodes?: boolean;
+	/** Load per CPU above which the root's pooled stage starts are paced (`localWorkers.maxLoadPerCpu`). */
+	readonly stageStartMaxLoadPerCpu?: number;
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }

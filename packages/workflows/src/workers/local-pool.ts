@@ -356,6 +356,8 @@ export class LocalWorkerPool {
 			readonly admission?: AdmissionConfiguration;
 			readonly startupTimeoutMs?: number;
 			readonly leaseMs?: number;
+			/** Load per CPU above which the root's pooled stage starts are paced; undefined or 0: never. */
+			readonly maxLoadPerCpu?: number;
 			/**
 			 * Internal: module path forked for each worker instead of the shipped worker entry.
 			 * Load tests use it to run protocol-level stub workers; public options never set it.
@@ -391,6 +393,8 @@ export class LocalWorkerPool {
 			throw new Error(
 				`Invalid local worker lease: must be an integer from ${MINIMUM_WORK_LEASE_MS} to ${MAX_TIMER_DELAY_MS} ms`,
 			);
+		if (options.maxLoadPerCpu !== undefined && (!Number.isFinite(options.maxLoadPerCpu) || options.maxLoadPerCpu < 0))
+			throw new Error("Invalid local worker load threshold: maxLoadPerCpu must be a number of at least 0");
 		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
@@ -448,6 +452,9 @@ export class LocalWorkerPool {
 					leaseMs: this.leaseMs,
 					startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
 					...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
+					...(this.options.maxLoadPerCpu === undefined
+						? {}
+						: { stageStartMaxLoadPerCpu: this.options.maxLoadPerCpu }),
 					...(workerEntry === undefined ? {} : { workerEntry }),
 				},
 				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
