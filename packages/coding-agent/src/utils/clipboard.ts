@@ -36,15 +36,16 @@ function copyToX11Clipboard(options: NativeClipboardExecOptions): void {
 const MAX_OSC52_ENCODED_LENGTH = 100_000;
 
 /**
- * Remote sessions also emit OSC 52 so the client terminal receives the copy. ATOMIC_CLIPBOARD_OSC52=1
- * (or its PI_CLIPBOARD_OSC52 alias) covers remote clients that leave no SSH markers, such as
- * multiplexer attaches or remote IDE daemons.
+ * Remote sessions also emit OSC 52 so the client terminal receives the copy. Rex terminals count as
+ * remote: a Rex server spawns shells without SSH markers, and its client may be another machine.
+ * ATOMIC_CLIPBOARD_OSC52=1 (or its PI_CLIPBOARD_OSC52 alias) covers remote clients that leave no
+ * markers, such as multiplexer attaches or remote IDE daemons.
  */
 function isRemoteSession(env: NodeJS.ProcessEnv): boolean {
 	const forceOsc52 = getEnvNames(ENV_CLIPBOARD_OSC52)
 		.map((name) => env[name])
 		.find((value) => value !== undefined);
-	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION || forceOsc52 === "1");
+	return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.MOSH_CONNECTION || env.REX_SESSION || forceOsc52 === "1");
 }
 
 function emitOsc52(text: string): boolean {
