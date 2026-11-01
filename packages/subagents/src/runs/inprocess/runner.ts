@@ -46,6 +46,7 @@ import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import {
 	resolveEffectiveThinking,
 	splitKnownThinkingSuffix,
+	splitUnknownThinkingSuffix,
 	THINKING_LEVELS,
 	type ThinkingLevel,
 	taskRecordModel,
@@ -168,9 +169,10 @@ export interface ChildSpec {
 	readonly sessionStartTimeoutMs?: number;
 	/**
 	 * The thinking level the launch asked for explicitly (a `provider/model:effort` override). The child and every model
-	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not.
+	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not,
+	 * as each does for a word that names no level (`provider/model:extreme`).
 	 */
-	readonly requestedThinking?: ThinkingLevel;
+	readonly requestedThinking?: string;
 	/** Resolves a fallback entry (`provider/model[:thinking]`) to its model, to pick the level it runs at. */
 	readonly resolveCandidateModel?: CandidateModelResolver;
 }
@@ -190,10 +192,12 @@ const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 /**
  * The level a model runs an explicitly requested effort at: that effort where the model supports it, otherwise the
- * model's default level (its configured thinking level, else the default one), as a launch with no effort would.
+ * model's default level (its configured thinking level, else the default one), as a launch with no effort would. A
+ * word that names no level is an effort no model supports.
  */
-function explicitEffortFor(model: Model<Api>, requested: ThinkingLevel, settings: SettingsManager): ThinkingLevel {
-	if (getSupportedThinkingLevels(model).includes(requested)) return requested;
+function explicitEffortFor(model: Model<Api>, requested: string, settings: SettingsManager): ThinkingLevel {
+	const supported = getSupportedThinkingLevels(model).find((level) => level === requested);
+	if (supported) return supported;
 	return clampThinkingLevel(
 		model,
 		settings.getModelThinkingLevel(model.provider, model.id) ??
@@ -208,14 +212,19 @@ function explicitEffortFor(model: Model<Api>, requested: ThinkingLevel, settings
  */
 function pinFallbackEffort(
 	entry: string,
-	requested: ThinkingLevel,
+	requested: string,
 	settings: SettingsManager,
 	resolve: CandidateModelResolver | undefined,
 ): string {
 	const resolved = resolve?.(entry);
 	if (!resolved) return entry;
-	const { baseModel } = splitKnownThinkingSuffix(entry.trim());
-	return `${baseModel}:${explicitEffortFor(resolved.model, resolved.thinkingLevel ?? requested, settings)}`;
+	const text = entry.trim();
+	const { baseModel } =
+		resolved.unknownEffort === undefined
+			? splitKnownThinkingSuffix(text)
+			: (splitUnknownThinkingSuffix(text) ?? { baseModel: text });
+	const effort = resolved.thinkingLevel ?? resolved.unknownEffort ?? requested;
+	return `${baseModel}:${explicitEffortFor(resolved.model, effort, settings)}`;
 }
 
 export interface ChildPolicy extends ChildModePolicy {
