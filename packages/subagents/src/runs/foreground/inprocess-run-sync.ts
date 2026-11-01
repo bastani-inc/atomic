@@ -327,12 +327,8 @@ export async function runSingleInProcess(
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
 		...(options.sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs: options.sessionStartTimeoutMs }),
-		...(requestedThinking === undefined
-			? {}
-			: {
-					requestedThinking,
-					...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
-				}),
+		...(requestedThinking === undefined ? {} : { requestedThinking }),
+		...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,

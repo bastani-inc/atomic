@@ -149,6 +149,9 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 		id: "parent-model",
 		thinkingLevelMap: options.parentModelLevels ?? UP_TO_XHIGH,
 	};
+	// A third model, for a fallback chain entry that is neither the requested model nor the parent's.
+	const fallbackModel: Model<"anthropic-messages"> = { ...model, id: "fallback-model", thinkingLevelMap: UP_TO_XHIGH };
+	const catalog = [model, parentModel, fallbackModel];
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
 		modelsPath: null,
@@ -159,7 +162,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 		api: model.api,
 		baseUrl: model.baseUrl,
 		apiKey: "fixture-key",
-		models: [model, parentModel],
+		models: catalog,
 		streamSimple: (requestModel, _context, streamOptions) => {
 			requests.push({ model: requestModel.id, effort: streamOptions?.reasoning });
 			const stream = createAssistantMessageEventStream();
@@ -210,8 +213,8 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 			: `${model.provider}/${model.id}:xhigh`);
 	// The resolver a launch uses, over this fixture's catalog.
 	const resolve = createCandidateModelResolver({
-		getAvailable: () => [model, parentModel],
-		find: (provider, id) => [model, parentModel].find((entry) => entry.provider === provider && entry.id === id),
+		getAvailable: () => catalog,
+		find: (provider, id) => catalog.find((entry) => entry.provider === provider && entry.id === id),
 		hasConfiguredAuth: () => true,
 	});
 	const launch = (runId: string, signal?: AbortSignal, sessionStartTimeoutMs?: number) =>
@@ -231,7 +234,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 				knownModelProviders: ["effort-locked", model.provider],
 				currentModel: `${parentModel.provider}/${parentModel.id}`,
 				currentThinkingLevel: "medium",
-				availableModels: [model, parentModel].map((entry) => ({
+				availableModels: catalog.map((entry) => ({
 					provider: entry.provider,
 					id: entry.id,
 					fullId: `${entry.provider}/${entry.id}`,
@@ -240,7 +243,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 				getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
 			},
 		);
-	return { launch, requests, model, parentModel };
+	return { launch, requests, model, parentModel, fallbackModel };
 }
 
 test(
@@ -419,6 +422,28 @@ test(
 			/^Unknown model "effort-fixture\/no-such-model:extreme": "extreme" is not an effort level \(off, minimal, low, medium, high, xhigh, max\), and no available model is "effort-fixture\/no-such-model"\.$/,
 		);
 		assert.deepEqual(fixture.requests, [], "no model is asked, the parent's included");
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a fallback with an effort word that names no level runs at its default level when the launch asked for no effort",
+	async () => {
+		const fixture = await effortFixture({
+			requestedModel: "effort-fixture/claude-sonnet-4-5",
+			primaryQuotaExhausted: true,
+			agentFallbackModels: ["effort-fixture/fallback-model:extreme"],
+			modelThinkingLevels: { "effort-fixture/fallback-model": "low" },
+		});
+		const result = await fixture.launch("effort-unknown-fallback");
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.deepEqual(
+			fixture.requests.map((request) => request.model),
+			[fixture.model.id, fixture.fallbackModel.id],
+			"the configured fallback, not the parent's model",
+		);
+		assert.deepEqual(fixture.requests.at(-1), { model: fixture.fallbackModel.id, effort: "low" });
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
