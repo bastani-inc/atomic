@@ -46,6 +46,7 @@ import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import {
 	resolveEffectiveThinking,
 	splitKnownThinkingSuffix,
+	THINKING_LEVELS,
 	type ThinkingLevel,
 	taskRecordModel,
 } from "../../shared/model-info.js";
@@ -1254,14 +1255,17 @@ export class SubagentControlRuntime {
 				const agentDir = inherited.agentDir ?? getAgentDir();
 				const settingsManager = inherited.settingsManager ?? SettingsManager.create(admitted.policy.cwd, agentDir);
 				// An explicit effort runs exactly on each model that supports it, the child's and every one its fallback
-				// chain can switch to, and at that model's default level on one that does not; never another level.
+				// chain can switch to, and at that model's default level on one that does not; never another level. The
+				// model the child starts on keeps its own `:effort`, as when it is a fallback launch moved up to.
 				const requested = admitted.spec.requestedThinking;
+				const startSuffix = splitKnownThinkingSuffix(candidate.modelId ?? "").thinkingSuffix.slice(1);
+				const startEffort = THINKING_LEVELS.find((level) => level === startSuffix) ?? requested;
 				const explicitEffort: Pick<CreateAgentSessionOptions, "thinkingLevel" | "fallbackModels"> =
-					requested === undefined
+					requested === undefined || startEffort === undefined
 						? {}
 						: {
 								...(inherited.model
-									? { thinkingLevel: explicitEffortFor(inherited.model, requested, settingsManager) }
+									? { thinkingLevel: explicitEffortFor(inherited.model, startEffort, settingsManager) }
 									: {}),
 								fallbackModels: (inherited.fallbackModels ?? settingsManager.getFallbackModels() ?? []).map(
 									(entry) =>

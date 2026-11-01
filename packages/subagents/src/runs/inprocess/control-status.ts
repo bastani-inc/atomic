@@ -54,9 +54,11 @@ function statusGroup(control: Control, id?: string): SubagentStatusGroup {
 				const delivered = control.getDeliveredResult(child.path);
 				const metadata = control.getChildMetadata(child.path) ?? delivered;
 				const childId = control.childIdOf(child.path);
+				const failure = settledCause(control, child.path, child.status);
 				return {
 					...child,
 					...(childId === undefined ? {} : { childId }),
+					...(failure === undefined ? {} : { failure }),
 					sessionFile: delivered?.sessionFile,
 					...(metadata?.model === undefined ? {} : { model: metadata.model }),
 					...(metadata?.thinking === undefined ? {} : { thinking: metadata.thinking }),

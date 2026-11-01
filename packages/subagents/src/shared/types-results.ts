@@ -228,6 +228,8 @@ export interface SubagentStatusGroup {
 			status: ChildIdentity["status"] | "killed";
 			/** The child id (`<runId>:<index>`) `pause`, `resume` and `quit` take. */
 			childId?: string;
+			/** Why a failed or interrupted child ended, as its result says. */
+			failure?: string;
 			sessionFile?: string;
 			model?: string;
 			thinking?: string;

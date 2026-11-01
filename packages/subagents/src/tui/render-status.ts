@@ -42,6 +42,7 @@ function childStatusLines(
 		theme.fg("dim", `  Task: ${displayText(child.taskName)}`),
 		theme.fg("dim", `  Residency: ${child.loaded ? "loaded" : "cold"}`),
 		...(child.cause ? [theme.fg("muted", `  Cause: ${displayText(child.cause)}`)] : []),
+		...(child.failure ? [theme.fg("error", `  Error: ${displayText(child.failure)}`)] : []),
 		...(child.sessionFile ? [theme.fg("dim", `  Session: ${displayText(child.sessionFile)}`)] : []),
 	];
 }
