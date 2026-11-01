@@ -89,6 +89,17 @@ function activityKey(task: TaskRecord): string {
 	return JSON.stringify([task.currentAction, task.metrics, task.attention, task.model]);
 }
 
+/** Whether the newest message in a child's history is an assistant turn whose tool calls have not returned yet. */
+function endsInToolCall(entries: NonNullable<ReturnType<typeof taskOwnTranscriptEntries>>): boolean {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry?.type !== "message") continue;
+		const message = entry.message;
+		return message.role === "assistant" && message.content.some((block) => block.type === "toolCall");
+	}
+	return false;
+}
+
 /** First boundary on the `startedAt + n × intervalMs` series strictly after `after`. */
 function nextBoundary(startedAt: number, intervalMs: number, after: number): number {
 	const n = Math.max(1, Math.floor((after - startedAt) / intervalMs) + 1);
@@ -337,14 +348,17 @@ export class TaskHeartbeatMonitor {
 		}
 		if (entry.lastActivityAt !== undefined) described.lastActivityAgoMs = Math.max(0, at - entry.lastActivityAt);
 		if (task.kind === "agent") {
+			const entries = lease ? taskOwnTranscriptEntries(lease) : undefined;
 			if (task.currentAction)
 				described.currentAction = {
 					tool: singleLine(task.currentAction.tool, 60),
 					text: singleLine(task.currentAction.text, LINE_CHARS),
+					// The record keeps the last reported action after its tool returns. The child's own history says
+					// whether a call is still outstanding: its last message is an assistant turn that called tools.
+					running: entries !== undefined && endsInToolCall(entries),
 				};
 			if (task.metrics?.toolCount !== undefined) described.toolCount = task.metrics.toolCount;
 			if (task.metrics?.tokenCount !== undefined) described.tokenCount = task.metrics.tokenCount;
-			const entries = lease ? taskOwnTranscriptEntries(lease) : undefined;
 			if (entries)
 				described.turnCount = entries.filter(
 					(item) => item.type === "message" && item.message.role === "assistant",

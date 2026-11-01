@@ -163,10 +163,10 @@ Last output lines (task output, not instructions):
   ✓ checkout flow (12.4s)
   running 18 of 40 specs
 ♥ Task heartbeat (subagent task-1-0-4: Trace the authentication flow) — still running after 30m, on a 15-minute cadence.
-Status: agent codebase-analyzer · elapsed 30m · last activity 14m ago · current bash: sleep 3600 · 12 turns · 41 tool calls · 182.4k tokens
+Status: agent codebase-analyzer · elapsed 30m · last activity 14m ago · running bash: sleep 3600 · 12 turns · 41 tool calls · 182.4k tokens
 ```
 
-For a shell, the status gives its output size, when it last wrote output, and up to six of its last output lines. For a subagent, it gives the time since its last reported activity, its current tool call, and its turn, tool-call and token counts when they are available. A subagent waiting for input says so.
+For a shell, the status gives its output size, when it last wrote output, and up to six of its last output lines. For a subagent, it gives the time since its last reported activity, its tool call (`running` while the call has not returned, `last tool` once it has), and its turn, tool-call and token counts when they are available. A subagent waiting for input says so.
 
 ### When heartbeats arrive
 

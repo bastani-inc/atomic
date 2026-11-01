@@ -30,7 +30,8 @@ export type TaskHeartbeatTask = {
 	intervalMs: number;
 	/** Agents: last reported activity. Shells: last observed output. Omitted when none was observed. */
 	lastActivityAgoMs?: number;
-	currentAction?: { tool: string; text: string };
+	/** The subagent's last reported tool call; `running` when its history shows the call has not returned. */
+	currentAction?: { tool: string; text: string; running: boolean };
 	turnCount?: number;
 	toolCount?: number;
 	tokenCount?: number;
@@ -106,7 +107,7 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 		);
 		if (task.currentAction)
 			parts.push(
-				`current ${task.currentAction.tool}${task.currentAction.text ? `: ${task.currentAction.text}` : ""}`,
+				`${task.currentAction.running ? "running" : "last tool"} ${task.currentAction.tool}${task.currentAction.text ? `: ${task.currentAction.text}` : ""}`,
 			);
 		if (task.turnCount !== undefined) parts.push(formatCount(task.turnCount, "turn"));
 		if (task.toolCount !== undefined) parts.push(formatCount(task.toolCount, "tool call"));

@@ -27,7 +27,7 @@ const details: TaskHeartbeatDetails = {
 			elapsedMs: 30 * MINUTE,
 			intervalMs: 15 * MINUTE,
 			lastActivityAgoMs: 9 * MINUTE,
-			currentAction: { tool: "bash", text: "sleep 3600" },
+			currentAction: { tool: "bash", text: "sleep 3600", running: true },
 			turnCount: 4,
 		},
 	],
@@ -56,14 +56,14 @@ test("a task heartbeat card lists each task compactly and shows status and outpu
 	assert.match(collapsed, /subagent task-agent Trace the auth flow · 30m/);
 	assert.match(collapsed, /and 1 more/);
 	assert.match(collapsed, /\/tasks to inspect/);
-	assert.doesNotMatch(collapsed, /compiling|current bash/, "details stay folded until expanded");
+	assert.doesNotMatch(collapsed, /compiling|running bash/, "details stay folded until expanded");
 	assert.doesNotMatch(collapsed, /\[task-heartbeat\]/, "not the generic custom-message box");
 
 	const expanded = card(true, 100).map(stripVTControlCharacters).join("\n");
 	assert.match(expanded, /elapsed 45m · 4\.0KB output · last output 12s ago/);
 	assert.match(expanded, /│ compiling 812\/900/);
 	assert.match(expanded, /│ warning: unused import/);
-	assert.match(expanded, /agent codebase-analyzer · elapsed 30m · last activity 9m ago · current bash: sleep 3600/);
+	assert.match(expanded, /agent codebase-analyzer · elapsed 30m · last activity 9m ago · running bash: sleep 3600/);
 	assert.match(expanded, /· 4\s+turns/, "a long status line wraps rather than losing its end");
 });
 

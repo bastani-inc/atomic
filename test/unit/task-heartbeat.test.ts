@@ -125,7 +125,13 @@ type RunningAgent = {
 /** Start an agent task; one without its own cadence is returned once the monitor has seen it running. */
 async function startAgent(
 	target: Harness,
-	options: { task?: string; heartbeatMs?: number; agent?: string } = {},
+	options: {
+		task?: string;
+		heartbeatMs?: number;
+		agent?: string;
+		/** The child's session history; entries already present when its runner binds it count as inherited. */
+		transcript?: object[];
+	} = {},
 ): Promise<RunningAgent> {
 	const observedBefore = target.delivery.observed;
 	const result = deferred<TaskResult>();
@@ -141,6 +147,9 @@ async function startAgent(
 		},
 		randomUUID() as OperationId,
 		(context) => {
+			const transcript = options.transcript;
+			if (transcript)
+				context.bindTranscript({ getSessionId: () => "child-session", getEntries: () => [...transcript] as never });
 			reportActivity = (tool, text) => {
 				context.reportActivity({ reportId: `action-${++sequence}`, change: { kind: "action", tool, text } });
 			};
@@ -348,19 +357,51 @@ test("an unread heartbeat holds later ones, and owed tasks arrive together witho
 	await second.finish();
 });
 
-test("a subagent heartbeat reports its current action and how long ago it was last active", async () => {
+function assistantToolCall(name: string): object {
+	return {
+		type: "message",
+		id: `assistant-${name}`,
+		message: { role: "assistant", content: [{ type: "toolCall", id: `call-${name}`, name, arguments: {} }] },
+	};
+}
+
+function toolResult(name: string): object {
+	return {
+		type: "message",
+		id: `result-${name}`,
+		message: { role: "toolResult", toolCallId: `call-${name}`, toolName: name, content: [] },
+	};
+}
+
+test("a subagent heartbeat reports the tool it is running and how long ago it was last active", async () => {
 	const target = harness();
-	const agent = await startAgent(target, { task: "Long investigation", agent: "codebase-analyzer" });
+	const transcript: object[] = [];
+	const agent = await startAgent(target, { task: "Long investigation", agent: "codebase-analyzer", transcript });
 	await untilArmed(target);
 	await target.clock.advance(3 * MINUTE);
+	transcript.push(assistantToolCall("bash"));
 	await agent.report("bash", "npm test -- --watch=false");
 	await target.clock.advance(12 * MINUTE);
 	const [message] = target.delivered;
 	assert.ok(message);
 	assert.match(
 		message.content,
-		/Status: agent codebase-analyzer · elapsed 15m · last activity 12m ago · current bash: npm test -- --watch=false/,
+		/Status: agent codebase-analyzer · elapsed 15m · last activity 12m ago · running bash: npm test -- --watch=false · 1 turn/,
 	);
+	await agent.finish();
+});
+
+test("a subagent whose last tool call has finished reports it as its last tool, not a running one", async () => {
+	const target = harness();
+	const transcript: object[] = [];
+	const agent = await startAgent(target, { task: "Waiting on the model", transcript });
+	await untilArmed(target);
+	transcript.push(assistantToolCall("bash"), toolResult("bash"));
+	await agent.report("bash", "npm test");
+	await target.clock.advance(15 * MINUTE);
+	const content = target.delivered[0]?.content ?? "";
+	assert.match(content, /last tool bash: npm test/);
+	assert.doesNotMatch(content, /running bash/);
 	await agent.finish();
 });
 
