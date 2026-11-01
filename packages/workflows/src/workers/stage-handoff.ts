@@ -173,12 +173,21 @@ export class PoolStageHandoff {
 		for (const run of this.store.runs()) {
 			if (run.endedAt !== undefined || this.owners.get(run.id) !== work.id) continue;
 			if (run.id === work.childRunId) {
-				const execution = run.stages.find((stage) => stage.workerExecution !== undefined)?.workerExecution;
+				// Each stage keeps the worker lease it showed; a stage only the result has takes the attempt's.
+				const executions = new Map(run.stages.map((stage) => [stage.id, stage.workerExecution]));
+				const attempt = run.stages
+					.flatMap((stage) => (stage.workerExecution === undefined ? [] : [stage.workerExecution]))
+					.reduce<StageSnapshot["workerExecution"]>(
+						(latest, execution) =>
+							latest === undefined || execution.renewedAt > latest.renewedAt ? execution : latest,
+						undefined,
+					);
 				this.store.recordRunStart({
 					...run,
-					stages: result.stages.map((stage) =>
-						execution === undefined ? stage : { ...stage, workerExecution: execution },
-					),
+					stages: result.stages.map((stage) => {
+						const execution = executions.get(stage.id) ?? attempt;
+						return execution === undefined ? stage : { ...stage, workerExecution: execution };
+					}),
 					toolNodes: result.toolNodes,
 				});
 				this.store.recordRunEnd(run.id, result.status, result.result, result.error);

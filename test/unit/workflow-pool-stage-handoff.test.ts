@@ -283,6 +283,20 @@ test("a stage that ended keeps the worker lease it ended under while its attempt
 		assert.equal(ended?.workerExecution?.renewedAt, f.first.renewedAt, "the ended stage shows no later renewal");
 		assert.ok((ended?.workerExecution?.renewedAt ?? 0) <= (ended?.endedAt ?? 0));
 		assert.equal(stages.find((candidate) => candidate.id === "other")?.workerExecution?.renewedAt, renewed.renewedAt);
+		// The child's result keeps each stage's own lease too.
+		await f.queue.complete(f.lease, renewed, {
+			runId: descriptor.childRunId,
+			status: "failed",
+			stages: [lane("failed"), stage("other", { status: "completed" })],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(renewed);
+		const settled = f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages ?? [];
+		assert.equal(settled.find((candidate) => candidate.id === "lane")?.workerExecution?.renewedAt, f.first.renewedAt);
+		assert.equal(
+			settled.find((candidate) => candidate.id === "other")?.workerExecution?.renewedAt,
+			renewed.renewedAt,
+		);
 	} finally {
 		await f.close();
 	}

@@ -6,8 +6,12 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
-import { pauseRun } from "../../packages/workflows/src/runs/background/status.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { pauseRun, resumeRun } from "../../packages/workflows/src/runs/background/status.js";
+import {
+	createStageControlRegistry,
+	type StageControlHandle,
+	type StageControlStatus,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { testRunId } from "../helpers/run-id.js";
@@ -59,12 +63,18 @@ function pooledRoot(options: { readonly rootStages?: readonly StageSnapshot[] } 
 	const toolControlRegistry = createToolControlRegistry();
 	const stageControlRegistry = createStageControlRegistry();
 	let poolPauses = 0;
+	let poolPaused = false;
 	toolControlRegistry.registerRun(root, {
-		paused: false,
+		get paused() {
+			return poolPaused;
+		},
 		async pause() {
 			poolPauses++;
+			poolPaused = true;
 		},
-		async resume() {},
+		async resume() {
+			poolPaused = false;
+		},
 		async quit() {},
 	});
 	return { root, store, toolControlRegistry, stageControlRegistry, poolPauses: () => poolPauses };
@@ -109,6 +119,83 @@ test("pausing a root again once its workers paused every stage reports it alread
 		const again = await pauseRun(f.root, f);
 		assert.deepEqual(again.ok ? "ok" : again.reason, "already_paused");
 		assert.equal(f.poolPauses(), 1, "a paused pool is not paused again");
+	} finally {
+		unregister();
+	}
+});
+
+test("a paused root with durable progress says it can be resumed from a new process, not only from this one", async () => {
+	const root = testRunId("durable-pause-root");
+	const store = createStore();
+	store.recordRunStart({
+		id: root,
+		name: "root",
+		inputs: {},
+		status: "running",
+		startedAt: 1,
+		toolNodes: [],
+		stages: [],
+	});
+	const toolControlRegistry = createToolControlRegistry();
+	const progress = { completedCheckpoints: 0, pendingPrompts: 0 };
+	toolControlRegistry.registerRun(root, {
+		paused: false,
+		durableBackend: {
+			getWorkflow: (id: string) => (id === root ? { workflowId: root, ...progress } : undefined),
+		} as never,
+		async pause() {},
+		async resume() {},
+		async quit() {},
+	});
+	const options = { store, toolControlRegistry, stageControlRegistry: createStageControlRegistry() };
+	const withoutProgress = await pauseRun(root, options);
+	assert.match(withoutProgress.ok ? (withoutProgress.message ?? "") : "", /on this live process/);
+	store.recordRunResumed(root);
+	progress.completedCheckpoints = 3;
+	const withProgress = await pauseRun(root, options);
+	const message = withProgress.ok ? (withProgress.message ?? "") : JSON.stringify(withProgress);
+	assert.match(message, /\/workflow resume /);
+	assert.match(message, /new Atomic process/);
+	assert.doesNotMatch(message, /on this live process/);
+});
+
+test("resuming a root paused beside its local workers also resumes the stages its own process paused", async () => {
+	const f = pooledRoot({
+		rootStages: [{ id: "planner", name: "planner", status: "running", parentIds: [], toolEvents: [] }],
+	});
+	let status: StageControlStatus = "running";
+	const handle = {
+		runId: f.root,
+		stageId: "planner",
+		stageName: "planner",
+		get status() {
+			return status;
+		},
+		sessionId: undefined,
+		sessionFile: undefined,
+		isStreaming: false,
+		messages: [],
+		async ensureAttached() {},
+		async prompt() {},
+		async steer() {},
+		async followUp() {},
+		async pause() {
+			status = "paused";
+		},
+		async resume() {
+			status = "running";
+			return undefined;
+		},
+		subscribe: () => () => {},
+	} as unknown as StageControlHandle;
+	const unregister = f.stageControlRegistry.register(handle);
+	try {
+		assert.equal((await pauseRun(f.root, f)).ok, true);
+		assert.equal(status, "paused");
+		assert.equal(f.poolPauses(), 1);
+		const resumed = await resumeRun(f.root, f);
+		assert.equal(resumed.ok, true, JSON.stringify(resumed));
+		assert.equal(status, "running", "the in-process stage paused with the pool resumes with it");
 	} finally {
 		unregister();
 	}

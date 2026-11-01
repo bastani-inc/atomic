@@ -19,7 +19,7 @@ import {
 	poolHostId,
 	registerPoolJournal,
 } from "./pool-journal.js";
-import type { WorkflowExecutionResources } from "./public-options.js";
+import { DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU, type WorkflowExecutionResources } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 
 export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettings): RunOpts {
@@ -91,6 +91,7 @@ export async function activatePublicPool(
 		...options.localWorkers,
 		startupTimeoutMs: undefined,
 		leaseMs: undefined,
+		maxLoadPerCpu: undefined,
 		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
 	};
 	const admission = options.admission && {
@@ -159,6 +160,7 @@ export async function activatePublicPool(
 		admission: resources.admission ?? {},
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
+		maxLoadPerCpu: options.localWorkers?.maxLoadPerCpu ?? DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
 		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
 		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]
 			? {}
