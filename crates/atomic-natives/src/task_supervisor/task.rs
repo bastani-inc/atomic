@@ -36,6 +36,20 @@ pub enum CancelCause {
 	Quit,
 	Shutdown,
 }
+impl CancelCause {
+	fn text(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::OwnerClose => "owner-close",
+			Self::ExecutionTimeout => "execution-timeout",
+			Self::OutputLimit => "output-limit",
+			Self::ParentHandoff => "parent-handoff",
+			Self::Pause => "pause",
+			Self::Quit => "quit",
+			Self::Shutdown => "shutdown",
+		}
+	}
+}
 #[napi(string_enum = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum YieldReason {
@@ -697,6 +711,36 @@ impl Actor {
 				} else {
 					TaskResult::Cancelled { cause, output }
 				};
+			s.settle(oi, ti, result);
+		}
+		// A stop whose cleanup could not be confirmed still ends; it never stays "stopping".
+		// The cleanup record keeps the failure. A command reports it as its result, while an
+		// agent keeps its stop cause, so a paused agent stays resumable.
+		if let Cleanup::Failed { resources } = &cleanup
+			&& let Execution::Cancelling { cause } = s.owners[oi].tasks[ti].record.execution
+		{
+			let output = s.owners[oi].tasks[ti].cancellation_output.take();
+			let result = if s.owners[oi].tasks[ti].command.is_some() {
+				let details = resources
+					.iter()
+					.map(|failure| {
+						format!("{}: {}", failure.resource.process_text(), failure.message.process_text())
+					})
+					.collect::<Vec<_>>()
+					.join("; ");
+				TaskResult::Failed {
+					code: "CleanupUnconfirmed".into(),
+					message: format!(
+						"Stop requested ({}); cleanup unconfirmed: {details}",
+						cause.text()
+					)
+					.into(),
+					output,
+					exit_code: None,
+				}
+			} else {
+				TaskResult::Cancelled { cause, output }
+			};
 			s.settle(oi, ti, result);
 		}
 		s.set_cleanup(oi, ti, cleanup.clone());

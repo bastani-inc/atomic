@@ -10,6 +10,7 @@
 ### Fixed
 
 - Workflow roots that run children on local workers (`workflows.localWorkers`) keep their children running when the session is busy. Reloading workflows and starting other runs in the same session could delay the root's lease renewal past the pool's 90-second window, after which every running child, and every child started later, failed with `Stale lease for run <id>` while the root kept running. The pool now waits for the late renewal, each run renews its lease independently, and a renewal that briefly fails is retried. Roots that never run a pooled `ctx.workflow` child no longer start an idle pool coordinator process. ([#4138](https://github.com/bastani-inc/atomic/pull/4138))
+- A stopped shell no longer stays **stopping** in the Tasks indicator below the prompt forever (for example `Tasks  3 local agents running · 3 stopping · /tasks`). When a shell stopped with `kill`, from `/tasks`, by Esc on a foreground command, or by its timeout left a process outside its process group holding its output open (a daemon or a `setsid` or detached child), Atomic killed the command's process group but could not confirm cleanup, and the task never reached a final state. It now ends within a few seconds as failed with `CleanupUnconfirmed: Stop requested (<cause>); cleanup unconfirmed: <resource>`, and the indicator counts only tasks that are still stopping. A stopped subagent whose cleanup fails also ends instead of staying stopping. ([#4142](https://github.com/bastani-inc/atomic/pull/4142))
 
 ## [0.9.57] - 2026-10-31
 

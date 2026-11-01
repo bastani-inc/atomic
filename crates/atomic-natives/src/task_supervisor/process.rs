@@ -1613,6 +1613,52 @@ mod tests {
 		assert_eq!(actor.snapshot(&owner).unwrap().state, "closing");
 		assert_eq!(actor.cancel(&task, CancelCause::User).unwrap_err().code, "CleanupFailed");
 	}
+	// A stopped command whose process cleanup cannot be confirmed ends within the cleanup bound
+	// as "cleanup unconfirmed", instead of staying "stopping" forever.
+	#[cfg(unix)]
+	#[test]
+	fn stopped_command_with_unconfirmed_cleanup_settles_within_its_bound() {
+		let (actor, owner) = command_owner();
+		let path = std::env::temp_dir().join(format!(
+			"atomic-unconfirmed-stop-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let task = actor
+			.start_command(
+				&owner,
+				pipe_intent(&format!("trap '' TERM; echo $$ > '{}'; exec sleep 30", path.display())),
+				"unconfirmed-stop".into(),
+			)
+			.unwrap();
+		let pid: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+		std::fs::remove_file(path).unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		// Inject the OS refusal, not fake process state or cleanup acknowledgements.
+		command.kill_error.store(libc::EPERM, Ordering::Release);
+		let started = Instant::now();
+		let requested = actor.cancel(&task, CancelCause::User).unwrap();
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let task = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		unsafe {
+			libc::kill(pid, libc::SIGKILL);
+		}
+		actor.shutdown();
+		assert_eq!(requested.execution, Execution::Cancelling { cause: CancelCause::User });
+		assert!(finished, "cleanup must give up within its bound");
+		assert!(started.elapsed() < PROCESS_SHUTDOWN_GRACE);
+		match &task.execution {
+			Execution::Settled { result: TaskResult::Failed { code, message, .. } } => {
+				assert_eq!(code, &JsString::from("CleanupUnconfirmed"));
+				let message = message.process_text();
+				assert!(message.contains("Stop requested (user)"), "{message}");
+				assert!(message.contains("cleanup unconfirmed"), "{message}");
+			},
+			other => panic!("a stop whose cleanup failed stayed {other:?}"),
+		}
+		assert!(matches!(task.cleanup, Cleanup::Failed { .. }), "{:?}", task.cleanup);
+		assert_eq!(task.observation, HostObservation::None { reason: "task-settled".into() });
+	}
 	// RFC #2884: observation timeout does not terminate the owned process group.
 	#[cfg(unix)]
 	#[test]

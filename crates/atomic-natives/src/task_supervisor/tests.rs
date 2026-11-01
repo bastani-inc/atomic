@@ -389,6 +389,34 @@ fn failed_cleanup_survives_cancellation_and_reaped_cannot_regress() {
 	assert_eq!(a.cancel(&t, CancelCause::User).unwrap(), receipt.tasks[0]);
 }
 
+// A runner that cannot confirm cleanup after a stop must still end the task: it never stays "stopping".
+#[test]
+fn cancellation_with_failed_cleanup_settles_and_keeps_the_failure() {
+	let (a, _, o, t, r) = setup();
+	let w = a.wait(&t, None, false).unwrap();
+	a.cancel(&t, CancelCause::Pause).unwrap();
+	let failure = Cleanup::Failed {
+		resources: vec![ResourceFailure {
+			resource: "fake-runner".into(),
+			code: "CleanupFailed".into(),
+			message: "not stopped".into(),
+		}],
+	};
+	a.acknowledge_cleanup(&r, failure.clone()).unwrap();
+	// An agent's stop keeps its cause, so a paused agent stays resumable.
+	let expected = TaskResult::Cancelled { cause: CancelCause::Pause, output: None };
+	assert_eq!(
+		a.wait_outcome(&w).unwrap().unwrap().unwrap(),
+		WaitOutcome::Settled { task_id: a.task_ref(&t).unwrap().task_id, result: expected.clone() }
+	);
+	let task = a.snapshot(&o).unwrap().tasks[0].clone();
+	assert_eq!(task.execution, Execution::Settled { result: expected });
+	assert_eq!(task.cleanup, failure);
+	// A later confirmation still records the reap.
+	a.acknowledge_cleanup(&r, Cleanup::Reaped {}).unwrap();
+	assert_eq!(a.snapshot(&o).unwrap().tasks[0].cleanup, Cleanup::Reaped {});
+}
+
 // RFC #2884: shutdown fences an unresolved close rather than waiting forever for dead JS.
 #[test]
 fn environment_shutdown_releases_pending_close_without_false_reaping() {
