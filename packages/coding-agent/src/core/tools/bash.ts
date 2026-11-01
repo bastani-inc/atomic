@@ -19,6 +19,7 @@ import {
 import type { BashResult } from "../bash-executor.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import type { WaitPolicy } from "../tasks/contracts.js";
+import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
 import {
 	type BashInterceptorRule,
 	checkBashInterceptionCandidates,
@@ -91,6 +92,13 @@ const bashBaseSchema = Type.Object(
 		),
 		cwd: Type.Optional(Type.String({ description: "Working directory for the command." })),
 		pty: Type.Optional(Type.Boolean({ description: "Run with PTY handling." })),
+		heartbeatMs: Type.Optional(
+			Type.Number({
+				minimum: 0,
+				description:
+					"Task heartbeat cadence in milliseconds while the command keeps running as a task: a periodic status notice for judging whether it still progresses. Omit for the owner default (normally 15 minutes); 0 disables; otherwise at least 60000.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -136,6 +144,7 @@ export const bashToolSystemPromptContribution = Object.freeze({
 		'Use { action: "wait", id: taskId } to observe an existing shell task with the owner policy. Avoid repeated short polls; await completion notifications when no dependent work is blocked. Never relaunch a yielded command. Waiting does not extend execution timeout or owner lifetime.',
 		"For ordinary commands, omit wait to use the owner's observation policy (normally 10s). Do not routinely request one-second waits: premature yields add tool calls without making the command faster. Use a short budget only for a concrete responsiveness need, or explicit background observation when you have independent work to do. Explicit budgets, including zero for polling, remain available.",
 		"Choose foreground or background shell observation as needed without asking the user each time. Background yields after admission; foreground waits for its optional budget then the same command continues in background. Omitted wait uses owner-configured automatic background yield (default 10s). Observation never changes the execution timeout, which stops the command. Background requires a supported task owner; unbound foreground waits until completion regardless of budget.",
+		"A command that keeps running sends you a task heartbeat on a cadence (default 15 minutes). On each one, judge whether it is still progressing: let it run if so; otherwise inspect it, or stop it with kill. Never relaunch a command that is still running. Set heartbeatMs for a different cadence, or 0 to disable it.",
 	] as const),
 } as const);
 export type BashToolInput = Static<typeof bashSchema>;
@@ -173,6 +182,8 @@ export interface BashOperations {
 			wait?: WaitPolicy;
 			env?: NodeJS.ProcessEnv;
 			pty?: boolean;
+			/** Task heartbeat cadence for a supervised command; `0` disables. Omitted uses the owner default. */
+			heartbeatMs?: number;
 		},
 	) => Promise<SupervisedCommandResult>;
 }
@@ -181,7 +192,7 @@ export function createLocalBashOperations(options?: {
 	taskOwner?: SupervisedCommandOwner;
 }): BashOperations {
 	return {
-		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty }) => {
+		exec: async (command, cwd, { onData, signal, timeout, wait, env, pty, heartbeatMs }) => {
 			validateBashWait(wait, !!options?.taskOwner);
 			if (timeout !== undefined) validateExplicitTimeoutSeconds(timeout);
 			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") {
@@ -192,6 +203,7 @@ export function createLocalBashOperations(options?: {
 						timeout,
 						wait,
 						env,
+						heartbeatMs,
 						shellPath: options?.shellPath,
 						taskOwner: options?.taskOwner,
 					});
@@ -215,7 +227,16 @@ export function createLocalBashOperations(options?: {
 				return executeSupervisedCommand(
 					command,
 					cwd,
-					{ onData, signal, timeout, wait, env, shellPath: options.shellPath, taskOwner: options.taskOwner },
+					{
+						onData,
+						signal,
+						timeout,
+						wait,
+						env,
+						heartbeatMs,
+						shellPath: options.shellPath,
+						taskOwner: options.taskOwner,
+					},
 					false,
 				);
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
@@ -428,7 +449,7 @@ export function createBashToolDefinition(
 		concurrency: (args) => (args.pty === true ? "exclusive" : "shared"),
 		label: "bash",
 		description:
-			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). Observation never changes execution timeout. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion.',
+			'Execute a shell command with optional PTY handling and foreground/background observation, or observe an existing task with action: "wait", id, and optional budgetMs. Omitted command wait uses owner policy (default 10s). Observation never changes execution timeout. Background and existing-task waits require a supported task owner; unbound foreground execution waits until completion. A command still running as a task sends periodic heartbeats (default every 15 minutes; heartbeatMs changes the cadence, 0 disables).',
 		promptSnippet: bashToolSystemPromptContribution.snippet,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		promptGuidelines: exposeSessionEnvironment ? [...bashToolSystemPromptContribution.guidelines] : undefined,
@@ -464,6 +485,7 @@ export function createBashToolDefinition(
 			const { command } = bashCommand;
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
 			validateBashWait(bashCommand.wait, !!options?.operations || !!options?.taskOwner);
+			if (bashCommand.heartbeatMs !== undefined) validateTaskHeartbeatMs(bashCommand.heartbeatMs);
 			const sessionEnvironment = snapshotBashSessionEnvironment(ctx, exposeSessionEnvironment);
 			const resourceCtx = ctx as InternalResourceContext | undefined;
 			const executionCwd = ctx?.cwd || cwd;
@@ -640,6 +662,7 @@ export function createBashToolDefinition(
 						wait: bashCommand.wait,
 						env: executionContext.env,
 						pty: bashCommand.pty,
+						...(bashCommand.heartbeatMs === undefined ? {} : { heartbeatMs: bashCommand.heartbeatMs }),
 					});
 					exitCode = result.exitCode;
 					observation = result.observation;

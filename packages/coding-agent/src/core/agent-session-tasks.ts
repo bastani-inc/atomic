@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
@@ -12,6 +13,7 @@ import {
 	taskCompletionNotice,
 } from "./tasks/completion.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
+import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
 import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
@@ -142,8 +144,25 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		},
 	);
 	this._taskCompletionOutbox = outbox;
+	const heartbeat: TaskHeartbeatDelivery = {
+		defaultIntervalMs: () => this.settingsManager.getTaskHeartbeatMs(),
+		hasUnreadHeartbeat: () => hasUnreadProtectedCustomMessage(this, TASK_HEARTBEAT_MESSAGE_TYPE),
+		deliver: async (message) => {
+			if (this._disposed || !admission.isOpen()) throw new Error("Task owner is closed");
+			// The workflow heartbeat delivery: a visible card plus a steer that waits for the next safe boundary,
+			// never interrupting a response in progress.
+			const deliver = () =>
+				this.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
+			if (stageAdmission) await deliver();
+			else
+				await admission.admit(undefined, deliver, () => {
+					throw new Error("Task owner is closed");
+				}).completion;
+		},
+	};
 	const binding = {
 		resourceAdmission: this._resourceAdmission,
+		heartbeat,
 		authorizeLaunch: () => {
 			if (this._disposed || sessionGenerationClosing.has(this) || !admission.isOpen())
 				throw new Error("Task owner is closed");

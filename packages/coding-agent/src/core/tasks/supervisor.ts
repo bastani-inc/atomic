@@ -77,6 +77,7 @@ export type TrustedTaskHost = {
 };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
 type OwnerState = {
+	id: C.OwnerId;
 	native: native.OwnerLease;
 	host: HostState;
 	tasks: Map<C.TaskId, TaskLease>;
@@ -276,9 +277,24 @@ function observation(value: native.HostObservation): C.HostObservation {
 // Native records own lifecycle and mutable execution metadata. Routing provenance is
 // immutable host metadata, retained for the same environment lifetime as task records.
 const routerSelections = new Map<string, C.RouterSelection>();
+// Launch heartbeat cadences, keyed by owner and launch operation rather than task id: a command's
+// record can be observed before its native start resolves, and it must already carry its cadence.
+const launchHeartbeats = new Map<string, number>();
+function launchKey(ownerId: string, operation: string): string {
+	return `${ownerId}\0${operation}`;
+}
+/** Record a launch's cadence before native admission; returns the key to forget if admission fails. */
+function rememberLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, heartbeatMs?: number) {
+	const key = launchKey(ownerId, operation);
+	// A replayed operation keeps the cadence of the launch that admitted it.
+	if (heartbeatMs === undefined || launchHeartbeats.has(key)) return undefined;
+	launchHeartbeats.set(key, heartbeatMs);
+	return key;
+}
 function record(value: native.TaskRecord): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
 	const routerSelection = routerSelections.get(value.ref.taskId);
+	const heartbeatMs = launchHeartbeats.get(launchKey(value.ref.ownerId, value.launchOperationId));
 	return {
 		ref: reference(value.ref),
 		launchOperationId: value.launchOperationId as C.OperationId,
@@ -291,6 +307,7 @@ function record(value: native.TaskRecord): C.TaskRecord {
 		...(value.model === undefined ? {} : { model: value.model }),
 		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
 		...(routerSelection ? { routerSelection } : {}),
+		...(heartbeatMs === undefined ? {} : { heartbeatMs }),
 		execution: execution(value.execution),
 		observation: observation(value.observation),
 		...(value.wasBackground === undefined ? {} : { wasBackground: value.wasBackground }),
@@ -643,6 +660,7 @@ export class TaskSupervisor {
 				const owner = new OwnerCapability();
 				Object.freeze(owner);
 				const ownerState: OwnerState = {
+					id,
 					native: lease,
 					host: state,
 					tasks: new Map(),
@@ -769,9 +787,11 @@ export class TaskSupervisor {
 				"process",
 				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
 			);
+			const { heartbeatMs, ...nativeIntent } = intent;
+			const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, heartbeatMs);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
-				started = await this.#native.startCommandTask(state.native, intent, operation);
+				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
 			} catch (error) {
 				release = undefined;
 				throw new Error(`Command cleanup unconfirmed; process permit retained: ${rejectionMessage(error)}`, {
@@ -785,7 +805,10 @@ export class TaskSupervisor {
 				);
 			}
 			const admitted = mapped(started, (lease) => lease, startErrors);
-			if (!admitted.ok) return admitted;
+			if (!admitted.ok) {
+				if (heartbeatKey !== undefined) launchHeartbeats.delete(heartbeatKey);
+				return admitted;
+			}
 			const ref = this.#native.taskReference(admitted.value);
 			if (!ref.ok) throw new Error(ref.error.message);
 			const id = ref.value.taskId as C.TaskId;
@@ -893,12 +916,17 @@ export class TaskSupervisor {
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeLaunch(intent);
+		const { heartbeatMs, ...nativeIntent } = intent;
+		const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, heartbeatMs);
 		const admitted = mapped(
-			this.#native.startAgentTask(state.native, intent, operation),
+			this.#native.startAgentTask(state.native, nativeIntent, operation),
 			(lease) => lease,
 			startErrors,
 		);
-		if (!admitted.ok) return admitted;
+		if (!admitted.ok) {
+			if (heartbeatKey !== undefined) launchHeartbeats.delete(heartbeatKey);
+			return admitted;
+		}
 		const ref = this.#native.taskReference(admitted.value);
 		if (!ref.ok) throw new Error(ref.error.message);
 		const id = ref.value.taskId as C.TaskId;

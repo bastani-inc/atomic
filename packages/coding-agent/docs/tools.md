@@ -441,11 +441,12 @@ Custom `WriteOperations` implementations must read from the same filesystem they
 
 ## `bash` and `bashInterceptor`
 
-The `bash` tool executes shell commands in the session workspace. It accepts `cwd`, `env`, `timeout`, and `pty`.
+The `bash` tool executes shell commands in the session workspace. It accepts `cwd`, `env`, `timeout`, `pty`, and `heartbeatMs`.
 
 - `cwd` and `env` set the working directory and environment for local execution.
 - `timeout` is in seconds and defaults to 300. Explicit values must be finite, greater than zero, and no more than 3600. Invalid values fail before execution. Fractions round down, with a one-second floor.
 - `pty: true` uses the bundled native PTY session, falling back to pipes if unavailable. Set `PI_NO_PTY=1` or `ATOMIC_NO_PTY=1` to force pipes.
+- `heartbeatMs` sets how often a command that keeps running as a background task sends a [task heartbeat](/background-tasks#task-heartbeats). Omit it for the chat's default (15 minutes unless `tasks.heartbeatMs` changes it), use `0` to turn heartbeats off, or give at least `60000`.
 
 Foreground results include `timeoutSeconds`, `requestedTimeoutSeconds`, `wallTimeMs`, and non-zero `exitCode` metadata. Truncated output is saved at `fullOutputPath`.
 

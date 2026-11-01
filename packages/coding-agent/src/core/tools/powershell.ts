@@ -130,7 +130,7 @@ export function createPowerShellToolDefinition(cwd: string, options: PowerShellT
 			return definition.execute(...args);
 		},
 		description:
-			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner.',
+			'Execute a PowerShell command or observe an existing task with action: "wait", id, and optional budgetMs. Owner-bound commands automatically yield after 10s by default without stopping execution. Unbound commands wait for completion; background and existing-task waits require a task owner. A command still running as a task sends periodic heartbeats (default every 15 minutes; heartbeatMs changes the cadence, 0 disables).',
 		promptSnippet: powershellToolSystemPromptContribution.snippet,
 		promptGuidelines:
 			options.exposeSessionEnvironment === false

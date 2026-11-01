@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@bastani/atomic";
+import { type ExtensionContext, validateTaskHeartbeatMs } from "@bastani/atomic";
 import { handleManagementAction } from "../../agents/agent-management.js";
 import { clearPendingForegroundControlNotices } from "../../extension/control-notices.js";
 import {
@@ -198,6 +198,22 @@ function inferExecutionMode(params: SubagentParamsLike): "single" | "parallel" {
 	return "single";
 }
 
+/** Refuse an out-of-range heartbeat cadence before anything launches. */
+function invalidHeartbeatResult(params: SubagentParamsLike): SubagentToolResult | undefined {
+	try {
+		if (params.heartbeatMs !== undefined) validateTaskHeartbeatMs(params.heartbeatMs);
+		for (const [index, task] of (params.tasks ?? []).entries())
+			if (task.heartbeatMs !== undefined) validateTaskHeartbeatMs(task.heartbeatMs, `tasks[${index}].heartbeatMs`);
+		return undefined;
+	} catch (error) {
+		return {
+			content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+			isError: true,
+			details: { mode: inferExecutionMode(params), results: [] },
+		};
+	}
+}
+
 function duplicateSubagentCallResult(params: SubagentParamsLike): SubagentToolResult {
 	return {
 		content: [
@@ -295,9 +311,9 @@ export function createSubagentExecutor(rawDeps: ExecutorDeps): {
 	});
 
 	return {
-		execute: (id, params, signal, onUpdate, ctx) =>
+		execute: async (id, params, signal, onUpdate, ctx) =>
 			params.action
 				? execute(id, params, signal, onUpdate, ctx)
-				: executeWithBurstCollection(id, params, signal, onUpdate, ctx),
+				: (invalidHeartbeatResult(params) ?? executeWithBurstCollection(id, params, signal, onUpdate, ctx)),
 	};
 }

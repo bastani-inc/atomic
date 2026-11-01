@@ -410,3 +410,57 @@ test("singleton mixed-wait SINGLE progress stays run-isolated without overwritin
 	assert.equal(peak, 2);
 	assert.equal(readFileSync(projectProgress, "utf8"), sentinel);
 });
+
+test("subagent heartbeatMs reaches each child's task, per call and per parallel task, including coalesced calls", async () => {
+	const { call } = harness(async (_cwd, _agents, _agent, task) => childResult(task));
+	const wait = { kind: "foreground" } as const;
+	const [first, second, parallelCall] = await Promise.all([
+		call("call-a", { agent: "echo", task: "A", wait, heartbeatMs: 120_000 }),
+		call("call-b", { agent: "echo", task: "B", wait, heartbeatMs: 0 }),
+		call("call-p", {
+			tasks: [
+				{ agent: "echo", task: "P1", heartbeatMs: 600_000 },
+				{ agent: "echo", task: "P2" },
+			],
+			heartbeatMs: 300_000,
+			wait,
+		}),
+	]);
+	assert.deepEqual(
+		first.details?.taskRecords?.map((record) => record.heartbeatMs),
+		[120_000],
+	);
+	assert.deepEqual(
+		second.details?.taskRecords?.map((record) => record.heartbeatMs),
+		[0],
+	);
+	assert.deepEqual(
+		parallelCall.details?.taskRecords?.map((record) => [record.title, record.heartbeatMs]),
+		[
+			["P1", 600_000],
+			["P2", 300_000],
+		],
+	);
+	const plain = await call("call-plain", { agent: "echo", task: "plain", wait });
+	assert.equal(plain.details?.taskRecords?.[0]?.heartbeatMs, undefined, "omitted uses the owner default");
+});
+
+test("an out-of-range subagent heartbeatMs is refused before any child launches", async () => {
+	let launches = 0;
+	const { call } = harness(async (_cwd, _agents, _agent, task) => {
+		launches++;
+		return childResult(task);
+	});
+	const single = await call("call-single", { agent: "echo", task: "A", heartbeatMs: 5000 });
+	assert.equal(single.isError, true);
+	assert.match(text(single), /^Invalid heartbeatMs 5000: use 0 to disable task heartbeats/);
+	const parallelCall = await call("call-parallel", {
+		tasks: [
+			{ agent: "echo", task: "P1" },
+			{ agent: "echo", task: "P2", heartbeatMs: Number.NaN },
+		],
+	});
+	assert.equal(parallelCall.isError, true);
+	assert.match(text(parallelCall), /^Invalid tasks\[1\]\.heartbeatMs NaN/);
+	assert.equal(launches, 0);
+});

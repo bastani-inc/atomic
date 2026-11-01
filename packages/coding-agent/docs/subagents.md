@@ -74,6 +74,8 @@ Runtime-created session contexts bind single launches to their actual session or
 - `wait: {kind: "background"}` uses reason `explicit`.
 - `wait: {kind: "foreground", budgetMs: 30000}` opts into foreground-first observation. The omitted foreground budget is 30000 ms.
 
+A running child sends the parent a [task heartbeat](/background-tasks#task-heartbeats) every 15 minutes by default, with its current tool call, time since its last activity, and turn, tool-call and token counts. Set `heartbeatMs` on the call, or on a `tasks` entry, to change that child's cadence; `0` turns it off.
+
 When you issue several single-agent calls in one turn, each keeps its own `wait` policy and returns only its own task result. Background completions appear as visible notices and notify the parent agent, including in workflow-stage chats receiving other messages.
 
 These calls share the `concurrency` limit, or the configured subagent parallel limit when omitted, even when their wait policies differ. A background receipt or an expired foreground observation does not free a running child's slot; queued children start when execution capacity becomes available.

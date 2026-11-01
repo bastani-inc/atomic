@@ -138,6 +138,7 @@ function topLevelSingleTask(item: BurstItem): BurstTaskParam | undefined {
 		...(item.params.taskNeeds !== undefined ? { taskNeeds: item.params.taskNeeds } : {}),
 		...(item.params.skill !== undefined ? { skill: item.params.skill } : {}),
 		...(item.params.group !== undefined ? { group: item.params.group } : {}),
+		...(item.params.heartbeatMs !== undefined ? { heartbeatMs: item.params.heartbeatMs } : {}),
 	};
 }
 
@@ -148,6 +149,9 @@ function existingParallelTask(item: BurstItem, task: TaskParam): BurstTaskParam 
 		cwd: originatingTaskCwd(callCwd, task.cwd),
 		[BURST_TASK_DISCOVERY_CWD]: callCwd,
 		...(task.group === undefined && item.params.group !== undefined ? { group: item.params.group } : {}),
+		...(task.heartbeatMs === undefined && item.params.heartbeatMs !== undefined
+			? { heartbeatMs: item.params.heartbeatMs }
+			: {}),
 	};
 }
 

@@ -238,6 +238,7 @@ export async function runParallelPath(
 		const detachedNotificationScope = { orchestrationContext: ctx.orchestrationContext };
 		const results = await runForegroundParallelTasks({
 			wait: params.wait,
+			...(params.heartbeatMs === undefined ? {} : { heartbeatMs: params.heartbeatMs }),
 			schedule: params[BURST_EXECUTION_SCHEDULE],
 			onDetachedExit: (index, result) => {
 				if (workflowStageAcceptsDetachedNotification(detachedNotificationScope)) {

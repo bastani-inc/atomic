@@ -271,6 +271,16 @@ const WarningSettingsSchema = Type.Object({
 	anthropicExtraUsage: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.warnings.anthropicExtraUsage })),
 });
 
+const TaskSettingsSchema = Type.Object({
+	heartbeatMs: Type.Optional(
+		Type.Union([Type.Literal(0), Type.Number({ minimum: 60_000 })], {
+			description:
+				"Default cadence, in milliseconds, of the periodic heartbeat sent to a chat for each of its running background shells and subagents. 0 disables; otherwise at least 60000. A tool call's heartbeatMs overrides it.",
+			default: SETTINGS_DEFAULTS.tasks.heartbeatMs,
+		}),
+	),
+});
+
 function codemodeMode(options?: TSchemaOptions) {
 	return Type.Union([Type.Literal("on"), Type.Literal("only")], options);
 }
@@ -679,6 +689,7 @@ export const SettingsSchema = Type.Object(
 		codemode: Type.Optional(CodemodeSettingsSchema),
 		markdown: Type.Optional(MarkdownSettingsSchema),
 		warnings: Type.Optional(WarningSettingsSchema),
+		tasks: Type.Optional(TaskSettingsSchema),
 		httpProxy: Type.Optional(
 			Type.String({
 				description:
@@ -741,6 +752,7 @@ export interface ThinkingBudgetsSettings extends Static<typeof ThinkingBudgetsSe
 export type MermaidRenderingMode = NonNullable<Static<typeof MarkdownSettingsSchema>["mermaid"]>;
 export interface MarkdownSettings extends Static<typeof MarkdownSettingsSchema> {}
 export interface WarningSettings extends Static<typeof WarningSettingsSchema> {}
+export interface TaskSettings extends Static<typeof TaskSettingsSchema> {}
 export type CodemodeMode = Static<typeof CodemodeModeSchema>;
 export interface CodemodeSettings extends Static<typeof CodemodeSettingsSchema> {}
 export type DefaultProjectTrust = NonNullable<SettingsInput["defaultProjectTrust"]>;
