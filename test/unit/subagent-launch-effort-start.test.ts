@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -21,10 +22,13 @@ import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
+import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { inspectInProcessChildStatus } from "../../packages/subagents/src/runs/inprocess/control-status.js";
+import { splitKnownThinkingSuffix, THINKING_LEVELS } from "../../packages/subagents/src/shared/model-info.js";
 
 /**
  * The start budget a wedged child gets: long enough for a loaded machine to open its session and load its resources,
@@ -122,6 +126,10 @@ interface EffortFixtureOptions {
 	readonly parentModelLevels?: Model<"anthropic-messages">["thinkingLevelMap"];
 	/** Per-model default thinking levels, as `modelThinkingLevels` in settings configures them. */
 	readonly modelThinkingLevels?: Record<string, ThinkingLevel>;
+	/** The requested model's provider has no auth in this session, so launch skips it to its first fallback. */
+	readonly requestedProviderUnauthenticated?: boolean;
+	/** The worker agent's own `fallbackModels`. */
+	readonly agentFallbackModels?: string[];
 }
 
 async function effortFixture(options: EffortFixtureOptions = {}) {
@@ -193,29 +201,41 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 		parent.dispose();
 		clearSubagentControls();
 	});
+	const requested = options.requestedProviderUnauthenticated
+		? "effort-locked/locked-model:xhigh"
+		: `${model.provider}/${model.id}:xhigh`;
+	const resolve = (candidate: string) => {
+		const { baseModel, thinkingSuffix } = splitKnownThinkingSuffix(candidate);
+		const thinkingLevel = THINKING_LEVELS.find((level) => level === thinkingSuffix.slice(1));
+		const found = [model, parentModel].find((entry) => `${entry.provider}/${entry.id}` === baseModel);
+		return found ? { model: found, ...(thinkingLevel ? { thinkingLevel } : {}) } : undefined;
+	};
 	const launch = (runId: string, signal?: AbortSignal, sessionStartTimeoutMs?: number) =>
-		runSingleInProcess(cwd, worker(cwd), "reply done", {
+		runSingleInProcess(
 			cwd,
-			...(signal ? { signal } : {}),
-			...(sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs }),
-			runId,
-			index: 0,
-			sessionDir: join(cwd, "children"),
-			testSession: false,
-			modelOverride: `${model.provider}/${model.id}:xhigh`,
-			currentModel: `${parentModel.provider}/${parentModel.id}`,
-			currentThinkingLevel: "medium",
-			availableModels: [model, parentModel].map((entry) => ({
-				provider: entry.provider,
-				id: entry.id,
-				fullId: `${entry.provider}/${entry.id}`,
-			})),
-			resolveCandidateModel: (candidate) =>
-				candidate.startsWith(`${model.provider}/${model.id}`)
-					? { model, thinkingLevel: "xhigh" }
-					: { model: parentModel },
-			getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
-		});
+			{ ...worker(cwd), ...(options.agentFallbackModels ? { fallbackModels: options.agentFallbackModels } : {}) },
+			"reply done",
+			{
+				cwd,
+				...(signal ? { signal } : {}),
+				...(sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs }),
+				runId,
+				index: 0,
+				sessionDir: join(cwd, "children"),
+				testSession: false,
+				modelOverride: requested,
+				knownModelProviders: ["effort-locked", model.provider],
+				currentModel: `${parentModel.provider}/${parentModel.id}`,
+				currentThinkingLevel: "medium",
+				availableModels: [model, parentModel].map((entry) => ({
+					provider: entry.provider,
+					id: entry.id,
+					fullId: `${entry.provider}/${entry.id}`,
+				})),
+				resolveCandidateModel: resolve,
+				getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
+			},
+		);
 	return { launch, requests, model, parentModel };
 }
 
@@ -260,7 +280,8 @@ test(
 				setTimeout(() => resolve({ kind: "stuck" }), STUCK_CHILD_GIVE_UP_MS),
 			),
 		]);
-		const statusWhileWaiting = JSON.stringify(inspectInProcessChildStatus("effort-wedged")?.content);
+		const status = inspectInProcessChildStatus("effort-wedged");
+		const statusWhileWaiting = JSON.stringify(status?.content);
 		giveUp.abort();
 		await launched;
 
@@ -279,6 +300,19 @@ test(
 			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Subagent session did not start within 10s/,
 		);
 		assert.doesNotMatch(statusWhileWaiting, /running/);
+		// The status card, which renders the structured groups rather than the text, explains the failure too.
+		initTheme("dark");
+		assert.ok(status);
+		const card = renderSubagentToolResult(status, { expanded: true, isPartial: false }, theme, {
+			toolCallId: "status",
+			state: {},
+			invalidate() {},
+		})
+			.render(400)
+			.map((line) => stripVTControlCharacters(line))
+			.join("\n");
+		assert.match(card, /Failed/);
+		assert.match(card, /Subagent session did not start within 10s/);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -327,6 +361,22 @@ test(
 			{ model: fixture.model.id, effort: "xhigh" },
 			{ model: fixture.parentModel.id, effort: "low" },
 		]);
+		assert.equal(result.thinking, "low");
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a fallback that starts in place of a skipped requested model runs at its own explicit effort",
+	async () => {
+		const fixture = await effortFixture({
+			requestedProviderUnauthenticated: true,
+			agentFallbackModels: ["effort-fixture/parent-model:low"],
+		});
+		const result = await fixture.launch("effort-promoted-fallback");
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.deepEqual(fixture.requests, [{ model: fixture.parentModel.id, effort: "low" }]);
 		assert.equal(result.thinking, "low");
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
