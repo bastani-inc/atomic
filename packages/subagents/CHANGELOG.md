@@ -2,17 +2,17 @@
 
 ## [Unreleased]
 
-### Fixed
-
-- A subagent launched from a chat turn that a running workflow started no longer stays `running` for good with no session: its session no longer waits on that workflow's resource admission. A subagent whose session still does not start within 5 minutes fails with `Subagent session did not start within 5 min (still <step>)`, and `status` shows the cause in its text and its expanded card. ([#4148](https://github.com/bastani-inc/atomic/pull/4148), [#4150](https://github.com/bastani-inc/atomic/pull/4150))
-- A subagent launched with an effort, such as `model: "openai/gpt-5.5:xhigh"`, runs at exactly that effort on a model that supports it, and at that model's default level on one that does not; each model in its fallback chain follows the same rule instead of falling back to the default level, including a fallback the child starts on in place of a requested model whose provider has no auth. ([#4148](https://github.com/bastani-inc/atomic/pull/4148), [#4150](https://github.com/bastani-inc/atomic/pull/4150))
-- `status` lists only the children this session launched, with the child id `pause`, `resume` and `quit` take, and those actions also take the listed path; `status` with a child id finds the child. ([#4148](https://github.com/bastani-inc/atomic/pull/4148))
-
 ## [0.9.58] - 2026-11-01
 
 ### Added
 
 - Running subagents now send the parent periodic task heartbeats (every 15 minutes by default) with their current tool call, time since their last activity, and turn, tool-call and token counts. Set `heartbeatMs` on a `subagent` call, or on a `tasks` entry, to change a child's cadence; `0` turns it off.
+
+### Fixed
+
+- A subagent launched from a chat turn that a running workflow started no longer stays `running` for good with no session: its session no longer waits on that workflow's resource admission. A subagent whose session still does not start within 5 minutes fails with `Subagent session did not start within 5 min (still <step>)`, and `status` shows the cause in its text and its expanded card. ([#4148](https://github.com/bastani-inc/atomic/pull/4148), [#4150](https://github.com/bastani-inc/atomic/pull/4150))
+- A subagent launched with an effort, such as `model: "openai/gpt-5.5:xhigh"`, runs at exactly that effort on a model that supports it, and at that model's default level on one that does not; each model in its fallback chain follows the same rule instead of falling back to the default level, including a fallback the child starts on in place of a requested model whose provider has no auth. ([#4148](https://github.com/bastani-inc/atomic/pull/4148), [#4150](https://github.com/bastani-inc/atomic/pull/4150))
+- `status` lists only the children this session launched, with the child id `pause`, `resume` and `quit` take, and those actions also take the listed path; `status` with a child id finds the child. ([#4148](https://github.com/bastani-inc/atomic/pull/4148))
 
 ## [0.9.58-alpha.1] - 2026-11-01
 
