@@ -103,6 +103,7 @@ beforeEach(() => {
 	vi.stubEnv("SSH_CONNECTION", "");
 	vi.stubEnv("SSH_CLIENT", "");
 	vi.stubEnv("MOSH_CONNECTION", "");
+	vi.stubEnv("REX_SESSION", "");
 	vi.stubEnv("TERMUX_VERSION", "");
 	vi.stubEnv("WAYLAND_DISPLAY", "");
 	vi.stubEnv("DISPLAY", "");
@@ -266,6 +267,27 @@ describe("copyToClipboard", () => {
 		await copyToClipboard("hello");
 
 		assert.equal(osc52Writes().length, 1);
+	});
+
+	test("a Rex terminal emits OSC 52 after a successful display write on the Rex server", async () => {
+		mockedPlatform.mockReturnValue("linux");
+		vi.stubEnv("DISPLAY", ":0");
+		vi.stubEnv("REX_SESSION", "session:01a10cf3-2655-7e48-9b9c-43dd6612bef5");
+		mockedExecSync.mockReturnValue(Buffer.alloc(0));
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(execSyncCommands(), ["xclip -selection clipboard"]);
+		assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
+	});
+
+	test("a headless FreeBSD Rex server forwards copies through OSC 52", async () => {
+		mockedPlatform.mockReturnValue("freebsd");
+		vi.stubEnv("REX_SESSION", "session:01a10cf3-2655-7e48-9b9c-43dd6612bef5");
+
+		await copyToClipboard("hello");
+
+		assert.deepEqual(osc52Writes(), [`\x1b]52;c;${Buffer.from("hello").toString("base64")}\x07`]);
 	});
 
 	test("does not emit oversized OSC 52 payloads", async () => {
