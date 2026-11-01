@@ -7,6 +7,10 @@
 - `createSessionSkillAutocompleteProvider` also completes from a `SessionCommandCatalog`, the plain-data skill command list of a session that runs in another process (captured there with `getSessionCommandCatalog`), and shows a pending catalog's loading notice instead of an unavailable warning.
 - `TaskInspector` and `ChatSessionHost` read tasks through a `TaskViewSource` (`ownerTaskViewSource(store)` for a session's own task store), so a host can show `/tasks` for a session that runs in another process through the new `getTaskSource` option.
 
+### Fixed
+
+- Workflow roots that run children on local workers (`workflows.localWorkers`) keep their children running when the session is busy. Reloading workflows and starting other runs in the same session could delay the root's lease renewal past the pool's 90-second window, after which every running child, and every child started later, failed with `Stale lease for run <id>` while the root kept running. The pool now waits for the late renewal, each run renews its lease independently, and a renewal that briefly fails is retried. Roots that never run a pooled `ctx.workflow` child no longer start an idle pool coordinator process.
+
 ## [0.9.57] - 2026-10-31
 
 ### Changed

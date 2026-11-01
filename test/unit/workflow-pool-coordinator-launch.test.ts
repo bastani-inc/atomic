@@ -5,6 +5,8 @@ import { afterEach, test, vi } from "vitest";
 import { INTERNAL_WORKFLOW_WORKER_ARG } from "../../packages/coding-agent/src/bun/internal-workflow-worker.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { POOL_COORDINATOR_ROLE } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -71,7 +73,8 @@ afterEach(() => {
 test("in the compiled binary a pool launches its coordinator, and has it launch workers, through the internal worker argument (#3903)", async () => {
 	const directory = makeTempDirectory("pool-coordinator-launch-");
 	const path = join(directory, "journal.sqlite");
-	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+	const journal = await resolveRunJournal({ journal: { path } });
+	const backend = await JournalDurableBackend.open(journal);
 	const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 2, definitions: [] });
 	try {
 		await backend.commitWorkflowRegistration({
@@ -81,6 +84,14 @@ test("in the compiled binary a pool launches its coordinator, and has it launch 
 			createdAt: 0,
 			status: "running",
 		});
+		// A root whose pool already ran, as a resumed root's did, starts its coordinator as it is prepared, to recover
+		// that pool; any other root starts it with its first pooled child.
+		const lease = await journal.leaseState("root");
+		assert.ok(lease);
+		await (await openSqlPoolQueue(journal)).initialize(
+			{ runId: "root", holderId: lease.holderId, epoch: lease.epoch },
+			3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS,
+		);
 		await pool.prepare("root");
 		assert.equal(launches.length, 1, "one coordinator process per pool");
 		const [launch] = launches;

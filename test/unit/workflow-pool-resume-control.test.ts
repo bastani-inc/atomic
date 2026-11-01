@@ -78,13 +78,15 @@ test("concurrent root preparation cannot replace another root's pool control (#3
 				createdAt: 0,
 				status: "running",
 			});
+		const owned = (await journal.leaseState("root"))!;
+		const queue = await openSqlPoolQueue(journal);
+		// The root's pool already ran, so preparing the root starts its coordinator, which holds the pool's control.
+		await queue.initialize({ runId: "root", holderId: owned.holderId!, epoch: owned.epoch }, 90_000);
 		const [first, second] = await Promise.allSettled([pool.prepare("root"), pool.prepare("other")]);
 		assert.equal(first.status, "fulfilled");
 		assert.equal(second.status, "rejected");
 		if (second.status === "rejected") assert.match(String(second.reason), /belongs to another root/);
 		await pool.control("paused");
-		const owned = (await journal.leaseState("root"))!;
-		const queue = await openSqlPoolQueue(journal);
 		assert.equal(
 			(await queue.control({ runId: "root", holderId: owned.holderId!, epoch: owned.epoch })).state,
 			"paused",

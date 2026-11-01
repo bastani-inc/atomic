@@ -87,6 +87,8 @@ const RECOVERY_INTERVAL_MS = 500;
 const TICK_INTERVAL_MS = 100;
 const STALL_THRESHOLD_MS = 500;
 const COORDINATOR_LEASE_MS = 3 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
+/** How often a pool whose root renews late asks again whether the renewal landed. */
+const LATE_ROOT_POLL_MS = RECOVERY_INTERVAL_MS;
 /** How often a pool on a journal in another database reads the root's lease there, well inside {@link COORDINATOR_LEASE_MS}. */
 const MIRROR_INTERVAL_MS = 10_000;
 const STDERR_TAIL_CHARACTERS = 8192;
@@ -109,7 +111,10 @@ const PENDING_STAGE_MESSAGE_EVENT = "atomic:workflow-pending-stage-message";
 const STICKY_LIVE_DELIVERED_EVENT = "atomic:workflow-sticky-live-delivered";
 const PENDING_STAGE_UNDELIVERABLE_EVENT = "atomic:workflow-pending-stage-undeliverable";
 
-/** The root's own lease is gone (released at teardown, or taken by another incarnation): not a worker fault (#3979). */
+/**
+ * A refusal under the root's own lease: it is gone (released at teardown, or taken by another incarnation), which is not
+ * a worker fault (#3979), or its renewal is late, which the pool waits out (see `PoolCoordinator.whileRootLate`).
+ */
 function isRootLeaseLost(error: Error): boolean {
 	return error instanceof StaleLeaseError || error.message.startsWith("Stale lease for run ");
 }
@@ -459,6 +464,8 @@ export class PoolCoordinator {
 	private replacements = 0;
 	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
 	private rootLeaseLost = false;
+	/** Settles once a late root renewal lands (true) or the root's lease is lost or the pool closes (false). */
+	private lateRoot?: Promise<boolean>;
 	/** Generation of each work item when this root incarnation enqueued it: attempts count from here (#3979). */
 	private readonly attemptBase = new Map<string, number>();
 
@@ -473,6 +480,54 @@ export class PoolCoordinator {
 		while (this.inflight.size > 0) await Promise.allSettled([...this.inflight]);
 		await this.journal?.close().catch(() => {});
 		await this.durable?.close().catch(() => {});
+	}
+
+	/**
+	 * Runs one pool operation under the root's lease. A root that renews late still holds its lease, with the same holder
+	 * and epoch, so a refusal for that reason waits for the renewal and runs the operation again instead of failing the
+	 * child or the pool: a busy root process, a reload or other runs starting in it must not end a live root's children.
+	 * A refused operation changed nothing, so running it again is safe. A lease that is gone is refused as before.
+	 */
+	private async whileRootLate<T>(queue: SqlPoolQueue, action: () => Promise<T>): Promise<T> {
+		for (;;) {
+			try {
+				return await action();
+			} catch (error) {
+				if (!(error instanceof Error) || !isRootLeaseLost(error) || !(await this.rootRenewal(queue))) throw error;
+			}
+		}
+	}
+
+	/** Whether the root's lease is current again after a late renewal; false once it is lost or the pool closes. */
+	private rootRenewal(queue: SqlPoolQueue): Promise<boolean> {
+		this.lateRoot ??= this.awaitRootRenewal(queue).finally(() => {
+			this.lateRoot = undefined;
+		});
+		return this.lateRoot;
+	}
+
+	private async awaitRootRenewal(queue: SqlPoolQueue): Promise<boolean> {
+		const lease = this.lease!;
+		const since = performance.now();
+		let late = false;
+		try {
+			for (;;) {
+				if (this.closed) return false;
+				// A journal in another database is read again for its lease; one that gave the lease away is a lost lease.
+				const lost = await this.remote?.fresh(lease).then(
+					() => false,
+					() => true,
+				);
+				if (lost) return false;
+				const standing = await queue.rootLease(lease, COORDINATOR_LEASE_MS);
+				if (standing !== "late") return standing === "current";
+				late = true;
+				await delay(LATE_ROOT_POLL_MS);
+			}
+		} finally {
+			// Workers wait for their answers while the root is late, so their silence then is the pool's, not theirs.
+			if (late) this.stalledMs += performance.now() - since;
+		}
 	}
 
 	private receive(message: CoordinatorInbound): void {
@@ -582,9 +637,9 @@ export class PoolCoordinator {
 		this.usageTotal = await this.usageLedger.total(root);
 		this.lease = lease;
 		const queue = await openSqlPoolQueue(this.journal, this.remote);
-		await queue.initialize(lease, COORDINATOR_LEASE_MS);
+		await this.whileRootLate(queue, () => queue.initialize(lease, COORDINATOR_LEASE_MS));
 		// Events an earlier incarnation of this root accepted and never delivered reach the journal before any attempt runs.
-		await queue.drainOutbox(lease);
+		await this.whileRootLate(queue, () => queue.drainOutbox(lease));
 		if (this.remote !== undefined) {
 			const remote = this.remote;
 			// Keeps the lease the queue sees as fresh as the journal's own while no worker asks; a lease lost for good fails
@@ -601,13 +656,15 @@ export class PoolCoordinator {
 				(await unconfirmedProcessGroups(this.journal, root, { attempt: work })).length > 0
 			)
 				retained.push(work);
-		await queue.releasePreviousIncarnations(
-			lease,
-			retained.map((work) => work.id),
+		await this.whileRootLate(queue, () =>
+			queue.releasePreviousIncarnations(
+				lease,
+				retained.map((work) => work.id),
+			),
 		);
 		for (;;) {
 			const intended = this.desiredControl ?? "running";
-			await queue.setControl(lease, intended);
+			await this.whileRootLate(queue, () => queue.setControl(lease, intended));
 			if (intended === (this.desiredControl ?? "running")) break;
 		}
 		this.queue = queue;
@@ -650,7 +707,9 @@ export class PoolCoordinator {
 			const record = this.retained.get(work.id);
 			this.retained.delete(work.id);
 			// A stale token means the attempt already changed hands: nothing is left to release.
-			await this.queue!.releaseRetained(this.lease!, work, record?.enqueued === true).catch((error: Error) => {
+			await this.whileRootLate(this.queue!, () =>
+				this.queue!.releaseRetained(this.lease!, work, record?.enqueued === true),
+			).catch((error: Error) => {
 				if (error.message !== STALE_WORK_LEASE) throw error;
 			});
 		});
@@ -668,7 +727,9 @@ export class PoolCoordinator {
 	private async control(state: PoolControl["state"]): Promise<void> {
 		this.desiredControl = state;
 		if (!this.queue || !this.lease) return;
-		const control = await this.queue.setControl(this.lease, state);
+		const queue = this.queue;
+		const lease = this.lease;
+		const control = await this.whileRootLate(queue, () => queue.setControl(lease, state));
 		const deadline = Date.now() + CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS;
 		while ([...this.readyWorkers].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)) {
 			if (this.desiredControl !== state) return;
@@ -710,7 +771,11 @@ export class PoolCoordinator {
 		this.logDirectory = workerLogDirectory(this.options.journalPath, root);
 		await mkdir(this.logDirectory, { recursive: true }).catch(() => undefined);
 		this.recoveryTimer = setInterval(() => {
-			void this.recoverExpired().catch((error: Error) => this.fail(error));
+			void this.recoverExpired().catch(async (error: Error) => {
+				// A late root renewal stops nothing: the next recovery runs once it lands.
+				if (this.queue && isRootLeaseLost(error) && (await this.rootRenewal(this.queue).catch(() => false))) return;
+				this.fail(error);
+			});
 		}, RECOVERY_INTERVAL_MS).unref();
 		const workers = Array.from({ length: this.options.workers }, () => this.spawn());
 		try {
@@ -727,7 +792,9 @@ export class PoolCoordinator {
 		const queue = this.queue;
 		const lease = this.lease;
 		const work = await this.retainedTransition(async () => {
-			const enqueued = await queue.enqueue(lease, command.descriptor, command.boundary);
+			const enqueued = await this.whileRootLate(queue, () =>
+				queue.enqueue(lease, command.descriptor, command.boundary),
+			);
 			const retained = this.retained.get(enqueued.id);
 			if (retained) retained.enqueued = true;
 			return enqueued;
@@ -1279,11 +1346,14 @@ export class PoolCoordinator {
 						// The third lost attempt of one child fails only that child: the pool and its other children keep
 						// running. Its work item ends failed in the same transaction, so no worker claims it again.
 						const exhausted = work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
+						const queue = this.queue!;
+						const lease = this.lease!;
+						const attempt = work;
 						const settled =
-							work !== undefined &&
-							(exhausted
-								? await this.queue!.failExited(this.lease!, work)
-								: await this.queue!.releaseExited(this.lease!, work));
+							attempt !== undefined &&
+							(await this.whileRootLate(queue, () =>
+								exhausted ? queue.failExited(lease, attempt) : queue.releaseExited(lease, attempt),
+							));
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
@@ -1347,15 +1417,18 @@ export class PoolCoordinator {
 					await this.starting;
 					const queue = this.queue!;
 					const lease = this.lease!;
-					if (message.kind === "control") return queue.control(lease);
+					// While the root renews late, the worker's request waits for the renewal rather than ending its attempt.
+					const leased = <T>(action: () => Promise<T>) => this.whileRootLate(queue, action);
+					if (message.kind === "control") return leased(() => queue.control(lease));
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
 						slot.work = undefined;
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// not replaced: it is released for replay and counts as a failed attempt, so refusals stay bounded.
 						if (fenced && !(await this.superseded(fenced))) {
-							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS) await queue.releaseExited(lease, fenced);
-							else if (await queue.failExited(lease, fenced))
+							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
+								await leased(() => queue.releaseExited(lease, fenced));
+							else if (await leased(() => queue.failExited(lease, fenced)))
 								this.failWork(
 									fenced,
 									new Error(childRetryLimit(fenced, "was refused by the root as stale on every attempt")),
@@ -1364,7 +1437,7 @@ export class PoolCoordinator {
 						return;
 					}
 					if (message.kind === "controlled") {
-						const control = await queue.control(lease);
+						const control = await leased(() => queue.control(lease));
 						if (message.revision > control.revision) throw new Error("Unknown control revision");
 						this.controlAcks.set(worker, Math.max(this.controlAcks.get(worker) ?? -1, message.revision));
 						return;
@@ -1372,25 +1445,28 @@ export class PoolCoordinator {
 					if (message.kind === "claim") {
 						if (slot.work) throw new Error("Worker already holds an attempt");
 						if (this.budgetBlocked) return;
-						await this.recoverExpired();
-						slot.runs.clear();
-						slot.work = await queue.claim(
-							lease,
-							worker,
-							this.sources.map((source) => ({
-								definition: `${source.path}#${source.exportName}`,
-								digest: source.digest,
-							})),
-							options.leaseMs,
-						);
+						slot.work = await leased(async () => {
+							await this.recoverExpired();
+							slot.runs.clear();
+							return queue.claim(
+								lease,
+								worker,
+								this.sources.map((source) => ({
+									definition: `${source.path}#${source.exportName}`,
+									digest: source.digest,
+								})),
+								options.leaseMs,
+							);
+						});
 						return slot.work;
 					}
-					let work = slot.work;
-					if (!work) throw new Error("Worker has no active attempt");
-					if (message.kind === "renew" || work.expiresAt - Date.now() < options.leaseMs / 2) {
-						work = await queue.extend(lease, work, options.leaseMs);
-						slot.work = work;
-					}
+					const held = slot.work;
+					if (!held) throw new Error("Worker has no active attempt");
+					const work =
+						message.kind === "renew" || held.expiresAt - Date.now() < options.leaseMs / 2
+							? await leased(() => queue.extend(lease, held, options.leaseMs))
+							: held;
+					slot.work = work;
 					if (message.kind === "activity") {
 						for (const run of message.runs) slot.runs.add(run.id);
 						return this.publish(work, message.runs);
@@ -1444,22 +1520,22 @@ export class PoolCoordinator {
 					}
 					if (message.kind === "renew") return;
 					if (message.kind === "commit") {
-						const receipt = await queue.commit(lease, work, message.operation, message.mutation);
+						const receipt = await leased(() => queue.commit(lease, work, message.operation, message.mutation));
 						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
 						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}
 					if (message.kind === "usage") {
-						this.noteUsage(await this.usageLedger!.report(lease, work, message.reports));
+						this.noteUsage(await leased(() => this.usageLedger!.report(lease, work, message.reports)));
 						return;
 					}
 					if (message.kind === "budget") {
-						await queue.assertCurrent(lease, work);
+						await leased(() => queue.assertCurrent(lease, work));
 						if (this.budgetBlocked) throw new Error("Root workflow budget exhausted");
-						return queue.control(lease);
+						return leased(() => queue.control(lease));
 					}
 					if (message.kind !== "complete") throw new Error("Invalid worker operation");
-					await queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject);
+					await leased(() => queue.complete(lease, work, message.result as unknown as WorkflowSerializableObject));
 					this.endStageWatches((watch) => watch.slot === slot, "stage_finished");
 					this.replacements = 0;
 					slot.work = undefined;
@@ -1510,7 +1586,13 @@ export class PoolCoordinator {
 	private recoverExpired(): Promise<void> {
 		if (this.recovering) return this.recovering;
 		const root = this.root;
-		if (this.closed || root === undefined || !this.queue || performance.now() < this.nextRecoveryAt)
+		if (
+			this.closed ||
+			root === undefined ||
+			!this.queue ||
+			this.lateRoot !== undefined ||
+			performance.now() < this.nextRecoveryAt
+		)
 			return Promise.resolve();
 		const queue = this.queue;
 		const lease = this.lease!;
@@ -1519,8 +1601,16 @@ export class PoolCoordinator {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			await this.admission?.reconcile();
 			const expiredBefore = Date.now();
-			for (const work of await queue.inspect(root)) {
-				if (work.state !== "leased" || work.expiresAt >= expiredBefore) continue;
+			const expired = (await queue.inspect(root)).filter(
+				(work) => work.state === "leased" && work.expiresAt < expiredBefore,
+			);
+			// A root that renews late holds back its workers' answers, and so their renewals: nothing is stopped or
+			// expired for that silence. Recovery resumes once the renewal lands.
+			if (expired.length > 0 && (await queue.rootLease(lease, COORDINATOR_LEASE_MS)) === "late") {
+				void this.rootRenewal(queue).catch(() => {});
+				return;
+			}
+			for (const work of expired) {
 				if (this.quarantined.has(work.id)) continue;
 				if (this.held.has(work.id)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {

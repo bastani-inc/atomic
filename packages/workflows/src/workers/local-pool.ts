@@ -301,6 +301,8 @@ export class LocalWorkerPool {
 	/** Children whose results arrived and whose completion is still running. */
 	private completing = 0;
 	private rootFlush?: Promise<void>;
+	/** The coordinator's preparation for this pool's root, started with its first pooled child or a recovery. */
+	private connecting?: Promise<void>;
 	private starting?: Promise<void>;
 	private failure?: Error;
 	private closed = false;
@@ -413,24 +415,6 @@ export class LocalWorkerPool {
 		if (!state || state.holderId !== this.backend.holderId)
 			throw new Error("Local worker pool requires the root owner");
 		this.lease = { runId: root, holderId: state.holderId, epoch: state.epoch };
-		const workerEntry =
-			this.options.workerEntry ??
-			(isBunBinary || this.options.coordinator === "in-process" ? defaultWorkerEntry() : undefined);
-		this.usageTotal = (await this.command({
-			kind: "prepare",
-			root,
-			lease: this.lease,
-			options: {
-				journalPath: this.options.journalPath,
-				...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
-				workers: this.options.workers,
-				leaseMs: this.leaseMs,
-				startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
-				...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
-				...(workerEntry === undefined ? {} : { workerEntry }),
-			},
-			...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
-		})) as PoolUsage;
 		// Read only: a delivery receipt checks its work lease inside the root's own journal append, or, for a journal in
 		// another database, in the pool's database just before it.
 		this.queue ??= await openSqlPoolQueue(
@@ -439,6 +423,37 @@ export class LocalWorkerPool {
 				? undefined
 				: new PoolRemoteJournal(this.backend.journal, sqlPoolStorage(poolJournal)!),
 		);
+		// A pool that already ran for this root, as for a resumed root, is recovered now: its earlier attempts, their
+		// process groups and their undelivered events. Any other root starts its coordinator with its first pooled child,
+		// so a root that never runs one starts no process.
+		if (await this.queue.initialized(root)) await this.connectPool();
+	}
+	/** Starts the pool's coordinator for the prepared root, once. */
+	private connectPool(): Promise<void> {
+		this.connecting ??= (async () => {
+			const root = this.root;
+			const lease = this.lease;
+			if (root === undefined || lease === undefined) throw new Error("Local worker pool requires root preparation");
+			const workerEntry =
+				this.options.workerEntry ??
+				(isBunBinary || this.options.coordinator === "in-process" ? defaultWorkerEntry() : undefined);
+			this.usageTotal = (await this.command({
+				kind: "prepare",
+				root,
+				lease,
+				options: {
+					journalPath: this.options.journalPath,
+					...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
+					workers: this.options.workers,
+					leaseMs: this.leaseMs,
+					startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
+					...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
+					...(workerEntry === undefined ? {} : { workerEntry }),
+				},
+				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
+			})) as PoolUsage;
+		})();
+		return this.connecting;
 	}
 	/** The journal whose database holds the pool's tables: the root's own, or the coordination database. */
 	private async poolJournal(): Promise<RunJournal> {
@@ -489,6 +504,7 @@ export class LocalWorkerPool {
 	}
 	private async start(root: string, promptNodes: boolean): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
+		await this.connectPool();
 		if (!this.queue || !this.lease || this.lease.runId !== root)
 			throw new Error("Local worker pool requires root preparation");
 		this.sources = await Promise.all(
