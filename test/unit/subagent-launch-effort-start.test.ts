@@ -26,8 +26,13 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { inspectInProcessChildStatus } from "../../packages/subagents/src/runs/inprocess/control-status.js";
 
-/** How long a red run waits for a child that never starts before it gives up on it. */
-const STUCK_CHILD_GIVE_UP_MS = 15_000;
+/**
+ * The start budget a wedged child gets: long enough for a loaded machine to open its session and load its resources,
+ * so the budget runs out where the child waits for its permit.
+ */
+const WEDGED_START_BUDGET_MS = 10_000;
+/** How long a red run waits for a child that never starts before it gives up on it; past any start budget here. */
+const STUCK_CHILD_GIVE_UP_MS = 3 * WEDGED_START_BUDGET_MS;
 
 /**
  * Structural cost, not a slow test: each case builds a real parent AgentSession and a real child AgentSession with
@@ -248,7 +253,7 @@ test(
 		const admission = new WedgedAdmission();
 		const fixture = await effortFixture({ parentAdmission: admission });
 		const giveUp = new AbortController();
-		const launched = fixture.launch("effort-wedged", giveUp.signal, 500);
+		const launched = fixture.launch("effort-wedged", giveUp.signal, WEDGED_START_BUDGET_MS);
 		const outcome = await Promise.race([
 			launched.then((result) => ({ kind: "settled" as const, result })),
 			new Promise<{ kind: "stuck" }>((resolve) =>
@@ -267,11 +272,11 @@ test(
 		);
 		if (outcome.kind !== "settled") return;
 		assert.equal(outcome.result.status, "error", JSON.stringify(outcome.result));
-		assert.match(outcome.result.error ?? "", /did not start within 1s \(still creating its agent session/);
+		assert.match(outcome.result.error ?? "", /did not start within 10s \(still creating its agent session/);
 		assert.deepEqual(fixture.requests, [], "its task never reached the provider");
 		assert.match(
 			statusWhileWaiting,
-			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Subagent session did not start within 1s/,
+			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Subagent session did not start within 10s/,
 		);
 		assert.doesNotMatch(statusWhileWaiting, /running/);
 	},
