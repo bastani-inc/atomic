@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launched from a chat turn that a running workflow started no longer stays `running` for good with no session: its session no longer waits on that workflow's resource admission. A subagent whose session still does not start within 5 minutes fails with `Subagent session did not start within 5 min (still <step>)`, and `status` shows the cause. ([#4148](https://github.com/bastani-inc/atomic/pull/4148))
+- A subagent launched with an effort, such as `model: "openai/gpt-5.5:xhigh"`, runs at exactly that effort on a model that supports it, and at that model's default level on one that does not; each model in its fallback chain follows the same rule instead of falling back to the default level. ([#4148](https://github.com/bastani-inc/atomic/pull/4148))
+- `status` lists only the children this session launched, with the child id `pause`, `resume` and `quit` take, and those actions also take the listed path; `status` with a child id finds the child. ([#4148](https://github.com/bastani-inc/atomic/pull/4148))
+
 ## [0.9.58] - 2026-11-01
 
 ### Added

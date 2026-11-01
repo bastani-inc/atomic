@@ -83,6 +83,13 @@ export function subagentChildCardRecord(childId: string | undefined, taskId: str
 	return id === undefined ? undefined : latest.get(id);
 }
 
+/** Run ids of the children this process has seen records of whose owner is `ownerSessionId`. */
+export function observedSubagentRunIds(ownerSessionId: string): Set<string> {
+	const runIds = new Set<string>();
+	for (const record of latest.values()) if (record.owner?.sessionId === ownerSessionId) runIds.add(record.runId);
+	return runIds;
+}
+
 /**
  * Redraw a card when its child's records change. A card shown outside its owner's session (a workflow stage's
  * transcript) reads that session's records from the store once.

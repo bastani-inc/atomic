@@ -57,7 +57,9 @@ export function inheritChildSessionOptions(
 	return {
 		...parent,
 		...definedOptions(child),
-		resourceAdmission: parent.resourceAdmission ?? child.resourceAdmission,
+		// The parent's admission, or the child's own, is the child's only one: a parent that holds none makes the child
+		// hold none, so a `withResourceAdmission` scope the parent's turn happened to start in never gates its child.
+		resourceAdmission: parent.resourceAdmission ?? child.resourceAdmission ?? null,
 		resourceAdmissionSignal: child.resourceAdmissionSignal,
 		resourceAdmissionDelegated: parent.resourceAdmission ? true : child.resourceAdmissionDelegated,
 		cwd: resolve(parent.cwd!, child.cwd ?? child.sessionManager?.getCwd() ?? "."),

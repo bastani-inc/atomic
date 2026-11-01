@@ -166,7 +166,10 @@ function createScopedSession(
 					store: options.sessionManager ? ownedSessionManagerStores.get(options.sessionManager) : undefined,
 				};
 				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
-				const admission = options.resourceAdmission ?? currentResourceAdmission();
+				const admission =
+					options.resourceAdmission === null
+						? undefined
+						: (options.resourceAdmission ?? currentResourceAdmission());
 				try {
 					acquisition.release = await admission?.acquire(
 						"session",
@@ -730,7 +733,7 @@ async function constructAgentSession(
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
-			resourceAdmission: options.resourceAdmission,
+			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,
 		});

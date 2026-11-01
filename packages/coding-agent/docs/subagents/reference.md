@@ -122,6 +122,8 @@ A fallback may send the same prompt and context to a different provider. Choose 
 
 Set the reasoning effort for each candidate with a `model_name:thinking_effort` suffix on `model` and every `fallbackModels` entry. Valid efforts are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, as in `atomic --model sonnet:high`. `xhigh` and `max` require support from the selected model.
 
+A child launched with an effort, on `model` or a `subagent` call's `model` such as `openai/gpt-5.5:xhigh`, runs at exactly that effort on a model that supports it. A model that does not support it runs at its own default level instead: its `modelThinkingLevels` entry in settings, else `defaultThinkingLevel`. Every model the child can fall back to follows the same rule, with its own suffix when its entry has one and the launch's effort when it has none, so a fallback never silently runs at another level.
+
 ```markdown
 ---
 name: deep-reviewer

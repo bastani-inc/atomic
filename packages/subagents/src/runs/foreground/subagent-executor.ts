@@ -24,7 +24,11 @@ import {
 	type ResolvedExecutorDeps,
 	type SubagentParamsLike,
 } from "./subagent-executor-types.js";
-import { controlSubagentChildren, subagentChildrenAwaitingResume } from "./subagent-run-control.js";
+import {
+	controlSubagentChildren,
+	subagentChildrenAwaitingResume,
+	subagentRunsLaunchedBy,
+} from "./subagent-run-control.js";
 import {
 	settledOutputsFromRecords,
 	settledTaskOutputText,
@@ -171,8 +175,11 @@ async function handleManagementRequest(input: {
 	if (action === "status") {
 		const targetRunId = paramsWithResolvedCwd.id ?? paramsWithResolvedCwd.runId;
 		const foreground = getForegroundControl(deps.state, targetRunId);
+		// Only runs this session launched: another session's children are not its to pause or quit.
+		const launched = await subagentRunsLaunchedBy(ctx);
 		const live =
-			inspectInProcessChildStatus(targetRunId) ?? (foreground ? foregroundStatusResult(foreground) : undefined);
+			inspectInProcessChildStatus(targetRunId, (runId) => launched.has(runId)) ??
+			(foreground ? foregroundStatusResult(foreground) : undefined);
 		if (awaitingResume.length > 0) {
 			const liveText = live?.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 			const text = [liveText, `Awaiting resume:\n${awaitingResume.join("\n")}`].filter(Boolean).join("\n\n");
