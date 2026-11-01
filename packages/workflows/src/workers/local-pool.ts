@@ -102,8 +102,10 @@ import type {
 	PooledStageDelivery,
 	PooledStageQuestion,
 	PooledStageRef,
+	PooledStageSessionCommand,
 	PooledStageWatchMessage,
 	PromptResult,
+	SessionCommandResult,
 	WatchEndReason,
 	WatchId,
 	WatchResult,
@@ -891,6 +893,14 @@ export class LocalWorkerPool {
 			...(message === undefined ? {} : { message }),
 		})) as ControlResult;
 	}
+	/** Runs a session command (`/compact`, a `!` shell command) on one watched stage's session (#3996). */
+	async sessionCommandOnPooledStage(
+		watch: WatchId,
+		command: PooledStageSessionCommand,
+	): Promise<SessionCommandResult> {
+		if (this.closed || this.coordinatorLost !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return (await this.command({ kind: "stage-session", watch, command })) as SessionCommandResult;
+	}
 	/** The watch doors of this pool for one live view; ends of a view's watches go to `ended`. */
 	private stageTransport(onEnded: (reason: WatchEndReason) => void): PooledStageTransport {
 		return {
@@ -903,6 +913,7 @@ export class LocalWorkerPool {
 			deliver: (delivery) => this.deliverToPooledStage(delivery),
 			pause: (watch) => this.pausePooledStage(watch),
 			resume: (watch, message) => this.resumePooledStage(watch, message),
+			session: (watch, command) => this.sessionCommandOnPooledStage(watch, command),
 		};
 	}
 	/**

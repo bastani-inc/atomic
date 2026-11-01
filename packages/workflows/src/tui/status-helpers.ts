@@ -5,11 +5,12 @@
  * so the rest of the renderer never sees raw hex. Icons are a fixed Unicode
  * set per DESIGN.md §1 (Iconography).
  */
-import type { RunStatus, StageStatus } from "../shared/store-types.js";
+import type { StageDisplayStatus } from "../shared/stage-display-status.js";
+import type { RunStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 
 /** Role-mapped colour for each status. */
-export function statusColor(status: StageStatus | RunStatus, theme: GraphTheme): string {
+export function statusColor(status: StageDisplayStatus | RunStatus, theme: GraphTheme): string {
 	switch (status) {
 		case "running":
 			return theme.warning;
@@ -35,9 +36,11 @@ export function statusColor(status: StageStatus | RunStatus, theme: GraphTheme):
 }
 
 /** Unicode glyph for each status (no emoji — terminal-stable). */
-export function statusIcon(status: StageStatus | RunStatus): string {
+export function statusIcon(status: StageDisplayStatus | RunStatus): string {
 	switch (status) {
 		case "pending":
+			return "○";
+		case "queued":
 			return "○";
 		case "awaiting_input":
 			return "？";

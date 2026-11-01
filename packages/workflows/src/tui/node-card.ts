@@ -26,7 +26,12 @@
  */
 
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import type { StageSnapshot, StageStatus } from "../shared/store-types.js";
+import {
+	pooledStageStartingText,
+	type StageDisplayStatus,
+	stageDisplayStatus,
+} from "../shared/stage-display-status.js";
+import type { StageSnapshot } from "../shared/store-types.js";
 import { elapsedStageMs } from "../shared/timing.js";
 import { BOLD, DEFAULT_BG, hexToAnsi, lerpColor, paint, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -65,7 +70,7 @@ function queuedBadgeText(count: number): string {
 	return `✉ ${count} queued`;
 }
 
-function pickBorder(status: StageStatus, focused: boolean, phase: number, theme: GraphTheme): string {
+function pickBorder(status: StageDisplayStatus, focused: boolean, phase: number, theme: GraphTheme): string {
 	switch (status) {
 		case "running":
 			// Focus locks the pulse at peak. Status colour wins either way.
@@ -91,7 +96,7 @@ function pickBorder(status: StageStatus, focused: boolean, phase: number, theme:
 	}
 }
 
-function durationColor(status: StageStatus, theme: GraphTheme): string {
+function durationColor(status: StageDisplayStatus, theme: GraphTheme): string {
 	switch (status) {
 		case "running":
 			return theme.warning;
@@ -224,7 +229,7 @@ export function nodeCardHeight(
 	return Math.max(NODE_H, bodyRows + 2);
 }
 
-function statusLabel(status: StageStatus): string {
+function statusLabel(status: StageDisplayStatus): string {
 	switch (status) {
 		case "awaiting_input":
 			return "awaiting input";
@@ -313,7 +318,9 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 	const phase = opts.pulsePhase ?? 0;
 	const theme = opts.theme;
 
-	const borderHex = pickBorder(stage.status, focused, phase, theme);
+	// A stage on a local worker whose session has not started reads as queued, with what it is doing.
+	const status = stageDisplayStatus(stage);
+	const borderHex = pickBorder(status, focused, phase, theme);
 	const bc = hexToAnsi(borderHex);
 	// Node interiors share the unpainted canvas. Reset after the focused
 	// title tab so its accent background does not spill into the card.
@@ -347,14 +354,14 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
 			? "durable tool"
 			: stage.status === "blocked"
 				? blockedBadgeText(stage, opts.stages, innerWidth)
-				: durationText(stage);
-	const bodyHex = durationColor(stage.status, theme);
-	const statusText = `${statusIcon(stage.status)} ${stage.toolStatus ?? statusLabel(stage.status)}`;
+				: (pooledStageStartingText(stage) ?? durationText(stage));
+	const bodyHex = durationColor(status, theme);
+	const statusText = `${statusIcon(status)} ${stage.toolStatus ?? statusLabel(status)}`;
 	const queuedCount = queuedBadgeCount(opts.queuedMessageCount);
 	const statusLine =
 		`${bg}${bc}│${RESET}` +
 		centreColored(statusText, innerWidth, bodyHex, bg, {
-			bold: stage.status === "running" || stage.status === "awaiting_input",
+			bold: status === "running" || status === "awaiting_input",
 		}) +
 		`${bg}${bc}│${RESET}`;
 	const durLine =

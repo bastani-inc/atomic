@@ -19,6 +19,7 @@
  *
  * Returns exactly 3 styled lines, each `width` cells wide.
  */
+import { stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -188,7 +189,8 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 		failed: 0,
 		skipped: 0,
 	};
-	for (const s of run.stages) counts[s.status]++;
+	// A stage on a local worker whose session has not started counts as not started yet.
+	for (const s of run.stages) counts[stageDisplayStatus(s) === "queued" ? "pending" : s.status]++;
 
 	const badges: BandBadge[] = [];
 	if (counts.completed > 0) badges.push({ text: `✓ ${counts.completed}`, fg: theme.success });

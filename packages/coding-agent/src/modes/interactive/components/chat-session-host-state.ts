@@ -30,6 +30,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly commands: ChatSessionHostCommands;
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
+	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
@@ -103,6 +104,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.bodyViewport = new ScrollableComponentViewport(opts.keybindings);
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
+		this.getSessionMessages = opts.getSessionMessages;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;

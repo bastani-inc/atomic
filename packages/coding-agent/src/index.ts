@@ -656,7 +656,10 @@ export {
 export {
 	classifyChatCommand,
 	createSessionSkillAutocompleteProvider,
+	getSessionCommandCatalog,
 	getSessionSkillCommands,
+	type PendingSessionCommandCatalog,
+	type SessionCommandCatalog,
 } from "./modes/interactive/skill-command-autocomplete.ts";
 // Theme utilities for custom tools and extensions
 export {

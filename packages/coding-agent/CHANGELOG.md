@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `createSessionSkillAutocompleteProvider` also completes from a `SessionCommandCatalog`, the plain-data skill command list of a session that runs in another process (captured there with `getSessionCommandCatalog`), and shows a pending catalog's loading notice instead of an unavailable warning.
+
 ## [0.9.57] - 2026-10-31
 
 ### Changed

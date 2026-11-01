@@ -401,3 +401,191 @@ test("after the pane is hidden and shown, a reconnect still remounts the chat on
 		unregister();
 	}
 });
+
+function pooledChildStore(startup?: { phase: "sdk-creation" | "first-dispatch"; state: "active" | "dispatched" }) {
+	const store = createStore();
+	store.recordRunStart({
+		id: "child",
+		name: "pooled-child",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	const stage = (next?: typeof startup) => ({
+		id: "agent",
+		name: "agent",
+		status: "running" as const,
+		parentIds: [],
+		toolEvents: [],
+		workerExecution: { worker: "worker-1", generation: 1, renewedAt: 1, expiresAt: 2 },
+		...(next === undefined
+			? {}
+			: {
+					startup: {
+						phase: next.phase,
+						startedAt: Date.now() - 32_000,
+						phaseStartedAt: Date.now() - 1_000,
+						state: next.state,
+						ownershipPending: next.state === "active",
+					},
+				}),
+	});
+	store.recordStageStart("child", stage(startup));
+	return { store, publish: (next: typeof startup) => store.recordStageStart("child", stage(next)) };
+}
+
+test("a pooled stage still starting its session opens with a plain starting notice, then streams once its session starts (#3996)", async () => {
+	const { store, publish } = pooledChildStore({ phase: "sdk-creation", state: "active" });
+	const pool = fakeTransport({ isStreaming: false, messages: [], streamingMessage: undefined, sessionStarted: false });
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			return { handle: opened.handle, release: () => opened.handle.dispose() };
+		},
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		resolvePostMortemHandle: () => ({ ok: false, reason: "not_terminal" }),
+		onClose: () => {},
+		initialAttachStageId: "agent",
+	});
+	try {
+		await until(() => visible(pane.render(100)).includes("STARTING ON LOCAL WORKER"));
+		const starting = visible(pane.render(100));
+		assert.match(starting, /creating session \d+s/);
+		assert.match(starting, /Its transcript streams here once it starts/);
+		assert.doesNotMatch(starting, /SESSION UNAVAILABLE|READ-ONLY SESSION|Post-mortem/);
+
+		pool.send(8, { type: "atomic_pooled_stage_session_started" } as never as AgentSessionEvent);
+		publish({ phase: "first-dispatch", state: "dispatched" });
+		pool.send(9, { type: "message_start", message: assistant(FIRST) } as never as AgentSessionEvent);
+		await until(() => visible(pane.render(100)).includes(FIRST));
+		assert.doesNotMatch(visible(pane.render(100)), /STARTING ON LOCAL WORKER/);
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});
+
+test("a pooled stage whose worker cannot serve a live view yet opens with a notice, then opens the view by itself (#3996)", async () => {
+	const { store, publish } = pooledChildStore({ phase: "sdk-creation", state: "active" });
+	const pool = fakeTransport();
+	let served = false;
+	let acquired = 0;
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			acquired += 1;
+			if (!served) return undefined;
+			const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			return { handle: opened.handle, release: () => opened.handle.dispose() };
+		},
+	});
+	let now = 1_000_000;
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		resolvePostMortemHandle: () => ({ ok: false, reason: "not_terminal" }),
+		onClose: () => {},
+		initialAttachStageId: "agent",
+		now: () => now,
+	});
+	try {
+		await until(() => acquired === 1 && visible(pane.render(100)).includes("STARTING ON LOCAL WORKER"));
+		const waiting = visible(pane.render(100));
+		assert.match(waiting, /Its chat opens here by itself as soon as its session is ready/);
+		assert.doesNotMatch(waiting, /SESSION UNAVAILABLE|READ-ONLY SESSION|Post-mortem chat is available only/);
+
+		served = true;
+		now += 1_000;
+		publish({ phase: "first-dispatch", state: "dispatched" });
+		await until(() => visible(pane.render(100)).includes(FIRST));
+		assert.equal(acquired, 2);
+		assert.doesNotMatch(visible(pane.render(100)), /STARTING ON LOCAL WORKER|CONNECTING/);
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});
+
+test("/compact in a pooled stage's chat redraws the open transcript from the compacted session, as an in-process chat does (#3996)", async () => {
+	const { store } = pooledChildStore({ phase: "first-dispatch", state: "dispatched" });
+	const pool = fakeTransport({
+		isStreaming: false,
+		streamingMessage: undefined,
+		messages: [
+			{ role: "user", content: "the long history before compaction", timestamp: 1 },
+			assistant("an old answer that compaction drops") as never,
+		],
+	});
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			return { handle: opened.handle, release: () => opened.handle.dispose() };
+		},
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		resolvePostMortemHandle: () => ({ ok: false, reason: "not_terminal" }),
+		onClose: () => {},
+		initialAttachStageId: "agent",
+	});
+	try {
+		await until(() => visible(pane.render(120)).includes("an old answer that compaction drops"));
+		const result = {
+			compactedText: "[User]: retained line",
+			firstKeptEntryId: null,
+			tokensBefore: 5_000,
+			stats: {
+				linesBefore: 20,
+				linesDeleted: 12,
+				linesKept: 8,
+				rangeCount: 1,
+				tokensBefore: 5_000,
+				tokensAfter: 200,
+				percentReduction: 96,
+			},
+			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
+			promptVersion: 4,
+			rung: "planned",
+		};
+		// The worker sends the compacted session's messages, then the compaction's end.
+		pool.send(8, {
+			type: "atomic_pooled_stage_messages",
+			messages: [
+				{
+					role: "custom",
+					customType: "compaction",
+					content: [{ type: "text", text: "The earlier conversation was compacted.\n\n[User]: retained line" }],
+					display: true,
+					details: { tokensBefore: 5_000 },
+					timestamp: 2,
+				},
+			],
+		} as never as AgentSessionEvent);
+		pool.send(9, {
+			type: "compaction_end",
+			reason: "manual",
+			result,
+			aborted: false,
+			willRetry: false,
+		} as never as AgentSessionEvent);
+		await until(() => !visible(pane.render(120)).includes("an old answer that compaction drops"));
+		assert.doesNotMatch(visible(pane.render(120)), /the long history before compaction/);
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});

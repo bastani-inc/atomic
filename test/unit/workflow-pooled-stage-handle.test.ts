@@ -537,3 +537,133 @@ test("text left unconfirmed when its chat closes is retried by the stage's next 
 	while (outbox[0]?.admittedBy === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
 	assert.equal(outbox[0]?.admittedBy, 1, "and admitted");
 });
+
+/** A transport whose one attempt's watch opens on `opened`; the test feeds its stream. */
+function singleWatch(opened: PooledStageChatSnapshot, deliver?: PooledStageTransport["deliver"]) {
+	let listener: ((message: PooledStageWatchMessage) => void) | undefined;
+	const transport: PooledStageTransport = {
+		async watch(_ref, watcher) {
+			listener = watcher;
+			return {
+				ok: true,
+				watch: { id: "watch-1" as WatchId, attempt: { workId: "work", generation: 1 }, snapshot: opened },
+			};
+		},
+		async unwatch() {},
+		deliver: deliver ?? (async () => ({ ok: true, action: "steer" })),
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
+		},
+	};
+	return {
+		transport,
+		event(seq: number, event: AgentSessionEvent) {
+			listener?.({ kind: "events", events: [{ seq, event }] });
+		},
+	};
+}
+
+test("the root handle reads as starting until the worker reports the stage's session started, with its slash commands, which stay out of the transcript (#3996)", async () => {
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false });
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const seen: string[] = [];
+	handle.subscribe((event) => seen.push(event.type));
+	assert.equal(handle.isSessionStarting, true);
+	assert.equal(handle.commandCatalog(), undefined, "nothing to list while the session starts");
+
+	const commands = { cwd: "/stage-cwd", skillCommands: [{ name: "skill:release-notes", description: "Draft notes" }] };
+	fake.event(1, { type: "atomic_pooled_stage_session_started", commands } as never as AgentSessionEvent);
+	fake.event(2, { type: "agent_start" } as AgentSessionEvent);
+	assert.equal(handle.isSessionStarting, false);
+	assert.deepEqual(handle.commandCatalog(), commands);
+	assert.ok(!seen.includes("atomic_pooled_stage_session_started"));
+	assert.equal(seen.at(-1), "agent_start");
+	handle.dispose();
+});
+
+test("a message sent while the stage's session is still starting waits for it instead of being reported lost (#3996)", async () => {
+	const admitted = Promise.withResolvers<void>();
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false }, async () => {
+		await admitted.promise;
+		return { ok: true, action: "prompt" };
+	});
+	const admissionWaitMs = 20;
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		[],
+		admissionWaitMs,
+	);
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	let outcome: string | undefined;
+	const sent = handle.sendUserMessage("check the logs first", { deliverAs: "steer" }).then(
+		(action) => (outcome = `admitted:${action}`),
+		(error: Error) => (outcome = `failed:${error.message}`),
+	);
+	await new Promise((resolve) => setTimeout(resolve, admissionWaitMs * 4));
+	assert.equal(outcome, undefined, "not reported lost while the session starts");
+	assert.equal(handle.placement.undelivered, undefined);
+
+	fake.event(1, { type: "atomic_pooled_stage_session_started" } as never as AgentSessionEvent);
+	admitted.resolve();
+	await sent;
+	assert.equal(outcome, "admitted:prompt");
+	handle.dispose();
+});
+
+test("the root handle runs ! commands and /compact on the worker stage's session, streaming output and following its compacted transcript (#3996)", async () => {
+	const fake = pool(() => []);
+	const sessionCommands: unknown[] = [];
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		async session(_watch, command) {
+			sessionCommands.push(command);
+			if (command.kind !== "bash") return { ok: true };
+			fake.events(1, { type: "bash_execution_update", id: command.id, channel: "stdout", delta: "streamed " });
+			return { ok: true, bash: { output: "streamed done", exitCode: 0, cancelled: false, truncated: false } };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const chunks: string[] = [];
+	const result = await handle.executeBash("make test", (chunk) => chunks.push(chunk), { excludeFromContext: true });
+	assert.deepEqual(chunks, ["streamed "]);
+	assert.equal(result.output, "streamed done");
+	assert.equal(handle.isBashRunning, false);
+	assert.deepEqual(sessionCommands[0], {
+		kind: "bash",
+		id: (sessionCommands[0] as { id: string }).id,
+		command: "make test",
+		excludeFromContext: true,
+	});
+
+	await handle.compact();
+	assert.deepEqual(sessionCommands[1], { kind: "compact" });
+	const compacted = [{ role: "compactionSummary", summary: "short", tokensBefore: 10, timestamp: 2 }];
+	fake.events(2, { type: "atomic_pooled_stage_messages", messages: compacted } as never as AgentSessionEvent);
+	assert.deepEqual(handle.messages, compacted);
+	handle.dispose();
+});
+
+test("a session command on a stage that finished is refused with the post-mortem notice (#3996)", async () => {
+	const fake = pool(() => []);
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		async session() {
+			return { ok: false, refusal: "StageNotLive" };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.compact(), /finished first; open it again to continue in post-mortem chat/);
+	opened.handle.dispose();
+});

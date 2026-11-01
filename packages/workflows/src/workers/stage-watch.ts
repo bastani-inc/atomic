@@ -1,4 +1,9 @@
-import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
+import {
+	type AgentSessionEvent,
+	getSessionCommandCatalog,
+	type SessionCommandCatalog,
+	type SessionEntry,
+} from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -6,6 +11,7 @@ import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
+import { isCancellation } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
@@ -121,6 +127,18 @@ export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
 /** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
 export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
+/**
+ * Event a watch carries when the stage's session has started, with its slash commands, for a watch
+ * whose snapshot was taken while the session was still starting (#3996).
+ */
+export const STAGE_SESSION_STARTED_EVENT = "atomic_pooled_stage_session_started";
+
+/**
+ * Event a watch carries after the stage's session compacted its context: the session's messages
+ * from then on, so the watcher's transcript matches the session's (#3996).
+ */
+export const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
+
 /** Where the current attempt's stages wait for human input. */
 export interface WorkerStagePrompts {
 	readonly store: Store;
@@ -154,6 +172,8 @@ interface Watch {
 	readonly batch: SeqEvent[];
 	seq: number;
 	timer?: NodeJS.Timeout;
+	/** The watcher knows the stage's session started, from the snapshot or a later started event. */
+	startedSent: boolean;
 }
 
 function isTerminal(handle: StageControlHandle): boolean {
@@ -213,13 +233,15 @@ export class WorkerStageWatches {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.answer(command) });
 			return;
 		}
-		if (command.op === "deliver" || command.op === "pause" || command.op === "resume") {
+		if (command.op === "deliver" || command.op === "pause" || command.op === "resume" || command.op === "session") {
 			const result =
 				command.op === "deliver"
 					? this.deliver(command)
 					: command.op === "pause"
 						? this.pause(command)
-						: this.resume(command);
+						: command.op === "session"
+							? this.session(command)
+							: this.resume(command);
 			void result.then((outcome) =>
 				this.send({ kind: "stage-command-result", commandId: command.commandId, ...outcome }),
 			);
@@ -255,10 +277,13 @@ export class WorkerStageWatches {
 		}
 		this.close(command.watch);
 		const batch: SeqEvent[] = [];
+		const started = handle.agentSession !== undefined;
+		const commands = commandCatalog(handle);
 		const watch: Watch = {
 			handle,
 			batch,
 			seq: 0,
+			startedSent: started,
 			// Subscribed before the snapshot is taken: nothing between them can be missed.
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
@@ -278,6 +303,8 @@ export class WorkerStageWatches {
 			commandId: command.commandId,
 			snapshot: {
 				...snapshot(handle, watch.seq),
+				sessionStarted: started,
+				...(commands === undefined ? {} : { commands }),
 				deliveredOps: [...delivered],
 				turnStarted: handle.isStreaming || this.options.turnStarted?.(handle) === true,
 			},
@@ -301,6 +328,8 @@ export class WorkerStageWatches {
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
 	sweep(): void {
 		for (const [id, watch] of this.watches) {
+			// A session that started without sending an event yet still tells the watcher.
+			this.sendStartedOnce(id, watch);
 			// The stage registered another handle (it moved from replaying to running live, say): this
 			// watch would see nothing more, so the root opens a new one on the current handle.
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
@@ -408,6 +437,48 @@ export class WorkerStageWatches {
 		try {
 			await watch.handle.pause();
 			return {};
+		} catch (error) {
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
+		}
+	}
+
+	/**
+	 * Runs a session command from the stage chat (`/compact`, a `!` shell command) on the watched
+	 * stage's session, as an in-process stage chat runs it on its own. Their progress reaches the
+	 * watcher as the session's events.
+	 */
+	private async session(command: Extract<WorkerStageCommand, { op: "session" }>): Promise<StageCommandResult> {
+		const watch = this.airlock(command);
+		if (typeof watch === "string") return { refusal: watch };
+		const request = command.command;
+		// A paused or quitting pool starts no new session work, but still lets a running command be stopped.
+		if (this.control() !== "running" && !isCancellation(request)) return { refusal: "PoolPausedOrQuitting" };
+		const session = watch.handle.agentSession;
+		if (session === undefined)
+			return {
+				error: `Stage "${watch.handle.stageName}" is still starting on its local worker; try again shortly.`,
+			};
+		try {
+			switch (request.kind) {
+				case "compact":
+					await session.compact();
+					return {};
+				case "abort-compaction":
+					session.abortCompaction();
+					return {};
+				case "bash":
+					return {
+						bash: await session.executeBash(request.command, undefined, {
+							id: request.id,
+							...(request.excludeFromContext === undefined
+								? {}
+								: { excludeFromContext: request.excludeFromContext }),
+						}),
+					};
+				case "abort-bash":
+					session.abortBash(request.id);
+					return {};
+			}
 		} catch (error) {
 			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
 		}
@@ -525,8 +596,32 @@ export class WorkerStageWatches {
 	private record(id: WatchId, event: AgentSessionEvent): void {
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
+		// The session's first event shows it started: that goes first, with its commands.
+		this.sendStartedOnce(id, watch);
+		// Compaction replaced the session's messages: the watcher's copy follows first, so a chat that
+		// handles the compaction's end redraws from the compacted transcript, as an in-process chat does.
+		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
+			this.append(id, watch, {
+				type: STAGE_MESSAGES_EVENT,
+				messages: [...watch.handle.messages],
+			} as never as AgentSessionEvent);
+		this.append(id, watch, event);
+	}
+
+	private append(id: WatchId, watch: Watch, event: AgentSessionEvent): void {
 		appendCoalesced(watch.batch, { seq: ++watch.seq, event });
 		watch.timer ??= setTimeout(() => this.flush(id), STAGE_EVENT_BATCH_INTERVAL_MS);
+	}
+
+	/** Tells a watcher whose snapshot predates the stage's session that it started, with its slash commands. */
+	private sendStartedOnce(id: WatchId, watch: Watch): void {
+		if (watch.startedSent || watch.handle.agentSession === undefined) return;
+		watch.startedSent = true;
+		const commands = commandCatalog(watch.handle);
+		this.append(id, watch, {
+			type: STAGE_SESSION_STARTED_EVENT,
+			...(commands === undefined ? {} : { commands }),
+		} as never as AgentSessionEvent);
 	}
 
 	private flush(id: WatchId): void {
@@ -554,6 +649,18 @@ function deliveredOps(entries: readonly SessionEntry[]): DeliveryOpId[] {
 		const op = (entry.data as { readonly op?: string } | undefined)?.op;
 		return typeof op === "string" ? [op as DeliveryOpId] : [];
 	});
+}
+
+/** The stage session's slash commands, or undefined while its session has not started. */
+function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | undefined {
+	const session = handle.agentSession;
+	if (session?.resourceLoader === undefined || session.settingsManager === undefined) return undefined;
+	try {
+		return getSessionCommandCatalog(session);
+	} catch {
+		// A session torn down meanwhile lists nothing; the watch ends with it.
+		return undefined;
+	}
 }
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {

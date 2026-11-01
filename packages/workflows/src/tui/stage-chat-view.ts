@@ -27,6 +27,7 @@ import {
 	renderPausedBody,
 	renderPromptBody,
 	renderReadOnlyArchiveBody,
+	renderStartingBody,
 } from "./stage-chat-view-archive-history.js";
 import { renderCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
@@ -46,6 +47,7 @@ import {
 	isBlocked,
 	isPaused,
 	isReadOnlyArchive,
+	pooledStageWaitingNotice,
 	syncPromptState,
 	viewLineCount,
 } from "./stage-chat-view-state.js";
@@ -178,6 +180,7 @@ export class StageChatView implements Component, Focusable {
 				keybindings?.getKeys?.(TUI_ACTION.altScreenBottom)?.join("/") ?? keyText("tui.altScreen.bottom"),
 		});
 		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
+		const waitingNotice = pooledStageWaitingNotice(ctx, stage);
 		if (bodyBudget <= 0) {
 			bodyLines = [];
 		} else if (promptActive) {
@@ -194,6 +197,8 @@ export class StageChatView implements Component, Focusable {
 				() => indicator.render(w),
 				renderTranscript,
 			);
+		} else if (waitingNotice !== undefined) {
+			bodyLines = renderStartingBody(ctx, w, bodyBudget, waitingNotice, renderTranscript);
 		} else if (readOnlyArchive) {
 			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
 			bodyLines = renderReadOnlyArchiveBody(

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import type { AgentSessionEvent } from "@bastani/atomic";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	buildSkillCatalog,
+	createSyntheticSourceInfo,
+} from "@bastani/atomic";
 import { test } from "vitest";
 import {
 	type AgentSessionEventListener,
@@ -182,6 +187,79 @@ test("a watch opens with a snapshot and ends when its stage finishes (#3996)", a
 	);
 	assert.deepEqual(sent.at(-1), { kind: "stage-watch-ended", watch: "watch-1", reason: "stage_finished", id: 0 });
 	assert.equal(stage.subscribers(), 0);
+});
+
+/** The parts of a started stage session that list its slash commands: one project skill. */
+function startedSession(): AgentSession {
+	const skill = {
+		name: "release-notes",
+		description: "Draft release notes",
+		filePath: "/stage-cwd/.atomic/skills/release-notes/SKILL.md",
+		baseDir: "/stage-cwd/.atomic/skills/release-notes",
+		disableModelInvocation: false,
+		sourceInfo: createSyntheticSourceInfo("/stage-cwd/.atomic/skills/release-notes/SKILL.md", {
+			source: "local",
+			scope: "project",
+		}),
+	};
+	return {
+		resourceLoader: {
+			getSkills: () => ({ skills: [skill], diagnostics: [] }),
+			getSkillCatalog: () => buildSkillCatalog([skill]),
+		},
+		settingsManager: { getEnableSkillCommands: () => true },
+		sessionManager: { getCwd: () => "/stage-cwd", getEntries: () => [] },
+	} as never as AgentSession;
+}
+
+test("a watch opened while the stage's session is still starting says so, then reports the start with its slash commands (#3996)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = streamingStage("agent");
+	let session: AgentSession | undefined;
+	registry.register(Object.defineProperty(stage.handle, "agentSession", { get: () => session, configurable: true }));
+	openWatch(watches);
+	const opened = sent[0];
+	assert.equal(opened?.kind, "stage-command-result");
+	assert.equal(opened.snapshot?.sessionStarted, false);
+	assert.equal(opened.snapshot?.commands, undefined, "no commands while the session is starting");
+
+	session = startedSession();
+	stage.emit(delta("first"));
+	await untilSent(sent, "stage-events");
+	const stream = events();
+	assert.equal(
+		stream[0]?.event.type,
+		"atomic_pooled_stage_session_started",
+		"the commands arrive before the first event",
+	);
+	assert.deepEqual((stream[0]!.event as never as { commands: unknown }).commands, {
+		cwd: "/stage-cwd",
+		skillCommands: [{ name: "skill:release-notes", description: "[p] Draft release notes" }],
+	});
+	assert.equal(stream[1]?.event.type, "message_update");
+	stage.emit(delta("second"));
+	await sleep(80);
+	assert.equal(
+		events().filter(({ event }) => (event.type as string) === "atomic_pooled_stage_session_started").length,
+		1,
+		"sent once per watch",
+	);
+
+	watches.serve({
+		kind: "stage-command",
+		commandId: 9,
+		attempt: { workId: "work", generation: 1 },
+		op: "watch",
+		watch: "watch-2" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
+	assert.equal(reopened?.kind === "stage-command-result" ? reopened.snapshot?.sessionStarted : undefined, true);
+	assert.deepEqual(
+		reopened?.kind === "stage-command-result" ? reopened.snapshot?.commands?.skillCommands : undefined,
+		[{ name: "skill:release-notes", description: "[p] Draft release notes" }],
+	);
 });
 
 test("coalescing merges deltas of one block without losing text, and keeps every other event (#3996)", () => {
@@ -815,4 +893,157 @@ test("a resume message whose turn starts after resume() returns is still receipt
 		entries.map((entry: { data?: { op: string } }) => entry.data?.op),
 		["op-resume"],
 	);
+});
+
+test("session commands from the stage chat run on the watched stage's session, and their output and compacted transcript reach the watcher (#3996)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	let compacted = false;
+	const before = [{ role: "user", content: "long history", timestamp: 1 }];
+	const after = [{ role: "compactionSummary", summary: "short", tokensBefore: 10, timestamp: 2 }];
+	const session = {
+		sessionManager: { getEntries: () => [] },
+		async compact() {
+			calls.push("compact");
+			compacted = true;
+			stage.emit({
+				type: "compaction_end",
+				reason: "manual",
+				result: { summary: "short" },
+				aborted: false,
+				willRetry: false,
+			} as never as AgentSessionEvent);
+			return {};
+		},
+		async executeBash(command: string, _onChunk: unknown, options: { id: string }) {
+			calls.push(`bash:${command}`);
+			stage.emit({ type: "bash_execution_update", id: options.id, channel: "stdout", delta: "out\n" });
+			return { output: "out\n", exitCode: 0, cancelled: false, truncated: false };
+		},
+		abortBash(id: string) {
+			calls.push(`abort-bash:${id}`);
+		},
+	};
+	Object.defineProperty(stage.handle, "agentSession", { get: () => session });
+	Object.defineProperty(stage.handle, "messages", { get: () => (compacted ? after : before) });
+	registry.register(stage.handle);
+	openWatch(watches);
+	const command = (commandId: number, request: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op: "session",
+			watch: "watch-1" as WatchId,
+			command: request,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+	};
+	const result = async (commandId: number) => {
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(1);
+		}
+	};
+
+	command(2, { kind: "bash", id: "bash-1", command: "echo out" });
+	assert.deepEqual((await result(2)).bash, { output: "out\n", exitCode: 0, cancelled: false, truncated: false });
+	command(3, { kind: "abort-bash", id: "bash-1" });
+	await result(3);
+	command(4, { kind: "compact" });
+	assert.equal((await result(4)).error, undefined);
+	await untilSent(sent, "stage-events");
+	await sleep(80);
+	const stream = events().map(({ event }) => event as never as Record<string, unknown>);
+	assert.deepEqual(calls, ["bash:echo out", "abort-bash:bash-1", "compact"]);
+	assert.deepEqual(
+		stream.find((event) => event.type === "bash_execution_update"),
+		{ type: "bash_execution_update", id: "bash-1", channel: "stdout", delta: "out\n" },
+		"the command's output reaches the watcher under its id",
+	);
+	const types = stream.map((event) => event.type);
+	// The compacted messages come first, so a chat handling the compaction's end redraws from them.
+	assert.deepEqual(types.slice(types.indexOf("atomic_pooled_stage_messages")), [
+		"atomic_pooled_stage_messages",
+		"compaction_end",
+	]);
+	assert.deepEqual(
+		stream.find((event) => event.type === "atomic_pooled_stage_messages")?.messages,
+		after,
+		"the watcher's transcript follows the compacted session",
+	);
+});
+
+test("a session command for a stage whose session is still starting says so instead of failing silently (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	registry.register(stage.handle);
+	openWatch(watches);
+	watches.serve({
+		kind: "stage-command",
+		commandId: 2,
+		attempt: { workId: "work", generation: 1 },
+		op: "session",
+		watch: "watch-1" as WatchId,
+		command: { kind: "compact" },
+	});
+	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
+	const answered = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 2);
+	assert.equal(
+		answered?.kind === "stage-command-result" ? answered.error : undefined,
+		'Stage "agent" is still starting on its local worker; try again shortly.',
+	);
+});
+
+test("while the pool is paused a stage chat can still stop its running ! command, but starts no new session work (#3996)", async () => {
+	const registry = createStageControlRegistry();
+	const sent: Sent[] = [];
+	const watches = new WorkerStageWatches(
+		registry,
+		() => ({ workId: "work", generation: 1 }),
+		(message) => sent.push({ ...message, id: 0 } as Sent),
+		() => "paused",
+	);
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	Object.defineProperty(stage.handle, "agentSession", {
+		get: () => ({
+			sessionManager: { getEntries: () => [] },
+			abortBash: (id: string) => calls.push(`abort-bash:${id}`),
+			abortCompaction: () => calls.push("abort-compaction"),
+			executeBash: async () => {
+				calls.push("bash");
+				return { output: "", exitCode: 0, cancelled: false, truncated: false };
+			},
+		}),
+	});
+	registry.register(stage.handle);
+	openWatch(watches);
+	const answer = async (commandId: number, command: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op: "session",
+			watch: "watch-1" as WatchId,
+			command,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(1);
+		}
+	};
+	assert.equal((await answer(2, { kind: "abort-bash", id: "bash-1" })).refusal, undefined);
+	assert.equal((await answer(3, { kind: "abort-compaction" })).refusal, undefined);
+	assert.equal(
+		(await answer(4, { kind: "bash", id: "bash-2", command: "echo late" })).refusal,
+		"PoolPausedOrQuitting",
+	);
+	assert.deepEqual(calls, ["abort-bash:bash-1", "abort-compaction"]);
 });

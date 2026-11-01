@@ -650,9 +650,15 @@ export class StageSessionController {
 	): Promise<StageSessionRuntime> {
 		// Only a session this call reopens is an archived transcript whose generation ends here. A
 		// live session, or one still being created (a pool worker records its id first, #3996), is the
-		// stage's running generation: closing it would refuse every later tool call of the stage.
+		// stage's running generation: closing it would refuse every later tool call of the stage. A stage
+		// with an explicit fallback chain creates its session through the candidate walk, which holds
+		// `activeCreation` rather than the shared `sessionPromise`.
 		const joinsLiveGeneration =
-			!this.sessionShutdownPromise && (this.sessionPromise !== undefined || this.session !== undefined);
+			!this.sessionShutdownPromise &&
+			(this.sessionPromise !== undefined ||
+				this.session !== undefined ||
+				this.activeCreation !== undefined ||
+				this.ownedCreationPromise !== undefined);
 		if (!this.sessionShutdownPromise && !joinsLiveGeneration) this.reattachSessionId = sessionId;
 		const session = await this.ensureSession(consumer);
 		if (!joinsLiveGeneration || this.generationSealed) await session.closeWorkflowStageGeneration?.();

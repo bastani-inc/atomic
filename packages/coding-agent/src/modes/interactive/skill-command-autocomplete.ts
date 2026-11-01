@@ -34,9 +34,42 @@ export function getSessionSkillCommands(
 	}));
 }
 
-/** Resolve again for every completion so lazy attachment and resource reload cannot leave a stale catalog. */
+/**
+ * The slash commands a session offers to a chat that shows it from another process, such as a
+ * workflow stage running on a local worker: plain data, so it can cross a process boundary.
+ */
+export interface SessionCommandCatalog {
+	/** Working directory that path completion resolves against. */
+	readonly cwd: string;
+	/** The session's `skill:<name>` commands, as {@link getSessionSkillCommands} lists them. */
+	readonly skillCommands: readonly SlashCommand[];
+}
+
+/** The catalog of a session whose commands are not known yet, with a notice that says why. */
+export interface PendingSessionCommandCatalog {
+	readonly loading: string;
+}
+
+/** Captures a live session's command catalog where the session runs. */
+export function getSessionCommandCatalog(
+	session: Pick<AgentSession, "settingsManager" | "resourceLoader" | "sessionManager">,
+): SessionCommandCatalog {
+	return { cwd: session.sessionManager.getCwd(), skillCommands: getSessionSkillCommands(session) };
+}
+
+function isCommandCatalog(
+	value: AgentSession | SessionCommandCatalog | PendingSessionCommandCatalog,
+): value is SessionCommandCatalog {
+	return "skillCommands" in value && Array.isArray(value.skillCommands);
+}
+
+/**
+ * Resolve again for every completion so lazy attachment and resource reload cannot leave a stale catalog.
+ * `resolveSession` returns the live session, or the command catalog of a session that runs elsewhere, or a
+ * pending catalog while that session is still starting.
+ */
 export function createSessionSkillAutocompleteProvider(
-	resolveSession: () => Promise<AgentSession | undefined>,
+	resolveSession: () => Promise<AgentSession | SessionCommandCatalog | PendingSessionCommandCatalog | undefined>,
 	onUnavailable?: (message: string) => void,
 ): AutocompleteProvider {
 	// Applying a selected slash completion needs no filesystem or session lookup.
@@ -44,9 +77,9 @@ export function createSessionSkillAutocompleteProvider(
 	return {
 		async getSuggestions(lines, cursorLine, cursorCol, options) {
 			if (options.signal.aborted) return null;
-			let session: AgentSession | undefined;
+			let resolved: AgentSession | SessionCommandCatalog | PendingSessionCommandCatalog | undefined;
 			try {
-				session = await resolveSession();
+				resolved = await resolveSession();
 			} catch (error) {
 				if (!options.signal.aborted) {
 					onUnavailable?.(
@@ -56,18 +89,25 @@ export function createSessionSkillAutocompleteProvider(
 				return null;
 			}
 			if (options.signal.aborted) return null;
-			if (!session?.resourceLoader || !session.settingsManager) {
-				onUnavailable?.(
-					"Skill discovery unavailable: this stage host does not expose its session command metadata.",
-				);
+			if (resolved !== undefined && "loading" in resolved && typeof resolved.loading === "string") {
+				onUnavailable?.(resolved.loading);
 				return null;
 			}
+			let catalog: SessionCommandCatalog;
+			if (resolved !== undefined && isCommandCatalog(resolved)) catalog = resolved;
+			else {
+				const session = resolved as AgentSession | undefined;
+				if (!session?.resourceLoader || !session.settingsManager) {
+					onUnavailable?.(
+						"Skill discovery unavailable: this stage host does not expose its session command metadata.",
+					);
+					return null;
+				}
+				catalog = getSessionCommandCatalog(session);
+			}
 			return new CombinedAutocompleteProvider(
-				[
-					...BUILTIN_SLASH_COMMANDS.filter((command) => command.name === "tasks"),
-					...getSessionSkillCommands(session),
-				],
-				session.sessionManager.getCwd(),
+				[...BUILTIN_SLASH_COMMANDS.filter((command) => command.name === "tasks"), ...catalog.skillCommands],
+				catalog.cwd,
 				null,
 			).getSuggestions(lines, cursorLine, cursorCol, options);
 		},

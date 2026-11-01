@@ -5,7 +5,9 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
+import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import { readGraphStoreRun, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -301,22 +303,39 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				if (!handle) throw new Error("no live handle on this stage");
 				await handle.ensureAttached();
 				const agentSession = handle.agentSession;
+				// A stage on a local worker runs the command on its session there.
+				if (!agentSession && handle.executeBash !== undefined)
+					return handle.executeBash(request.command, request.onChunk, {
+						excludeFromContext: request.excludeFromContext,
+					});
 				if (!agentSession) throw new Error("no live agent session on this stage");
 				return agentSession.executeBash(request.command, request.onChunk, {
 					excludeFromContext: request.excludeFromContext,
 				});
 			},
 			abortBash: async () => {
-				liveHandle(ctx)?.agentSession?.abortBash();
+				const handle = liveHandle(ctx);
+				if (handle?.agentSession) handle.agentSession.abortBash();
+				else handle?.abortBash?.();
 			},
 			abortCompaction: async () => {
-				liveHandle(ctx)?.agentSession?.abortCompaction();
+				const handle = liveHandle(ctx);
+				if (handle?.agentSession) handle.agentSession.abortCompaction();
+				else handle?.abortCompaction?.();
 			},
 			handleSlashCommand: async (text) => handleSlashCommand(ctx, text),
 		},
-		isBashRunning: () => liveHandle(ctx)?.agentSession?.isBashRunning === true,
+		isBashRunning: () => {
+			const handle = liveHandle(ctx);
+			return handle?.agentSession?.isBashRunning === true || handle?.isBashRunning === true;
+		},
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
+		// A stage on a local worker: the handle's copy of its session's messages, kept current by the worker.
+		getSessionMessages: () => {
+			const handle = liveHandle(ctx);
+			return handle !== undefined && handle.agentSession === undefined ? handle.messages : undefined;
+		},
 		isStreaming: () => isLiveHandleStreaming(ctx),
 		isPaused: () => isPaused(ctx),
 		isDisabled: () => isBlocked(ctx) || !liveHandle(ctx),
@@ -549,6 +568,44 @@ export function liveHandle(ctx: StageChatViewContext) {
 	return ctx.handle?.isDisposed === true ? undefined : ctx.handle;
 }
 
+/** What the chat of a stage on a local worker says while it cannot show that stage's session yet. */
+export interface PooledStageWaitingNotice {
+	readonly label: string;
+	/** What the stage is doing, such as `creating session 32s`. */
+	readonly detail: string;
+	readonly message: string;
+}
+
+/**
+ * The notice for a stage on a local worker that this chat cannot show yet: its session is still
+ * starting, or this chat has no live view of it yet (it opens one by itself once it can). Undefined
+ * for any other stage. The worker's own word wins over the published startup step, which can lag it.
+ */
+export function pooledStageWaitingNotice(
+	ctx: StageChatViewContext,
+	stage: StageSnapshot | undefined = currentStage(ctx),
+): PooledStageWaitingNotice | undefined {
+	const handle = liveHandle(ctx);
+	if (handle?.agentSession !== undefined) return undefined;
+	const starting = pooledStageStartingText(stage);
+	if (handle === undefined) {
+		// No live view yet: the attach pane opens one as soon as the worker serves it.
+		if (stage?.workerExecution === undefined || isTerminalStageStatus(stage.status)) return undefined;
+		return {
+			label: starting === undefined ? "CONNECTING TO LOCAL WORKER" : "STARTING ON LOCAL WORKER",
+			detail: starting ?? "opening a live view",
+			message: "This stage runs on a local worker. Its chat opens here by itself as soon as its session is ready.",
+		};
+	}
+	if (!(handle.isSessionStarting ?? isPooledStageStarting(stage))) return undefined;
+	return {
+		label: "STARTING ON LOCAL WORKER",
+		detail: starting ?? "starting its session",
+		message:
+			"This stage's session is still starting on its local worker. Its transcript streams here once it starts, and messages you send now are delivered then.",
+	};
+}
+
 export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
 	const handle = liveHandle(ctx);
 	if (!handle) return false;
@@ -586,18 +643,35 @@ export function isReadOnlyArchive(
 async function handleSlashCommand(ctx: StageChatViewContext, text: string): Promise<boolean> {
 	const [command, ...rest] = text.trim().split(/\s+/);
 	switch (command) {
-		case "/tasks":
+		case "/tasks": {
+			const handle = liveHandle(ctx);
+			// The agents and shells of a stage on a local worker live in that worker's process.
+			if (handle !== undefined && handle.agentSession === undefined && handle.placement?.kind === "local-worker") {
+				ctx.chatHost.showWarning(
+					`Stage "${handle.stageName}" runs on a local worker; its agents and shells are not listed in this chat.`,
+				);
+				return true;
+			}
 			return ctx.chatHost.openTasks(rest.join(" ") || undefined);
+		}
 		case "/compact": {
 			if (rest.length > 0) return true;
 			const handle = liveHandle(ctx);
 			if (!handle) return false;
 			await handle.ensureAttached();
-			if (!handle.agentSession) return false;
+			// A stage on a local worker compacts its session there; its compaction events reach this chat.
+			const compact =
+				handle.agentSession !== undefined
+					? () => handle.agentSession!.compact()
+					: handle.compact === undefined
+						? undefined
+						: () => handle.compact!();
+			if (compact === undefined) return false;
 			try {
-				await handle.agentSession.compact();
-			} catch {
-				/* compaction_end owns cancellation/failure UI. */
+				await compact();
+			} catch (error) {
+				// compaction_end owns cancellation/failure UI; a stage that could not start compacting says why.
+				if (handle.agentSession === undefined) ctx.chatHost.showWarning((error as Error).message);
 			}
 			return true;
 		}

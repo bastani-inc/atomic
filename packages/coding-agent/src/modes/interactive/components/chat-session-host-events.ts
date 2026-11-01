@@ -134,6 +134,13 @@ function refreshCompactedTranscript<TExtraEntry extends ChatTranscriptEntryLike>
 		state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
 		return;
 	}
+	// A session in another process sent its compacted messages as plain data, so its boundary is
+	// recognised by its custom type rather than by identity.
+	const remoteMessages = state.getAgentSession?.() === undefined ? state.getSessionMessages?.() : undefined;
+	if (remoteMessages?.some((message) => message.role === "custom" && message.customType === "compaction") === true) {
+		state.liveChat.replaceMessages(remoteMessages, state.extraEntries);
+		return;
+	}
 	if (transcriptHasBoundaryForResult(state.transcript, result)) return;
 	const boundary = boundaryMessageFromResult(result);
 	if (boundary) state.liveChat.appendMessages([boundary]);

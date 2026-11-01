@@ -1,5 +1,6 @@
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
+import { pooledStageStartingText, stageDisplayStatus } from "../shared/stage-display-status.js";
 import { formatStageStartup } from "../shared/stage-startup.js";
 import { boundStickyDeliveryStates, omittedDeliveryStatesLine } from "../shared/sticky-delivery-state-bound.js";
 import { stickyStageDeliveryStatuses } from "../shared/sticky-stage-delivery-status.js";
@@ -212,7 +213,11 @@ function renderStagesToolContent(result: Extract<WorkflowToolResult, { action: "
 	}
 	lines.push("stages:");
 	result.stages.forEach((stage, index) => {
-		lines.push(`[${index + 1}] ${stage.name} (${stage.id}) ${stage.status}`);
+		// A stage on a local worker whose session has not started reads as queued, not running.
+		const starting = pooledStageStartingText(stage);
+		lines.push(
+			`[${index + 1}] ${stage.name} (${stage.id}) ${stageDisplayStatus(stage)}${starting === undefined ? "" : ` (starting on its local worker: ${starting})`}`,
+		);
 		if (stage.startup) lines.push(formatStageStartup(stage.startup));
 		if (stage.workerExecution) lines.push(`workerExecution: ${JSON.stringify(stage.workerExecution)}`);
 		if (stage.sessionId) lines.push(`sessionId: ${stage.sessionId}`);
