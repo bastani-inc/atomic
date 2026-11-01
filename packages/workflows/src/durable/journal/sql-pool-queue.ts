@@ -240,12 +240,8 @@ export class SqlPoolQueue {
 		}
 		await tx.run(`UPDATE ${this.meta} SET version = ?`, POOL_SCHEMA_VERSION);
 	}
-	private async authority(
-		tx: SqliteExecutor,
-		lease: Lease,
-		timeout?: number,
-	): Promise<{ now: number; status: string }> {
-		const row = await tx.get<
+	private leaseRow(tx: SqliteExecutor, lease: Lease) {
+		return tx.get<
 			SqliteRow & {
 				epoch: number;
 				holder_id: string;
@@ -258,6 +254,13 @@ export class SqlPoolQueue {
 			`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
 			lease.runId,
 		);
+	}
+	private async authority(
+		tx: SqliteExecutor,
+		lease: Lease,
+		timeout?: number,
+	): Promise<{ now: number; status: string }> {
+		const row = await this.leaseRow(tx, lease);
 		if (row?.timeout === null && timeout === undefined) throw new Error("Pool not initialized");
 		if (
 			!row ||
@@ -267,6 +270,19 @@ export class SqlPoolQueue {
 		)
 			throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
 		return row;
+	}
+	/**
+	 * Where the root's lease stands for the pool. `current`: `lease` holds it and its last renewal is inside the pool's
+	 * window. `late`: `lease` still holds it, but its last renewal is older than that window, as when the root's process
+	 * is too busy to renew on time. `lost`: it was released, or granted to another holder or epoch. Every operation
+	 * refuses a late lease as it refuses a lost one ({@link StaleLeaseError}), but only a lost lease ends the root's hold:
+	 * a late one is renewed again by the same holder. `timeout` is the window for a root whose pool row does not exist yet.
+	 */
+	async rootLease(lease: Lease, timeout: number): Promise<"current" | "late" | "lost"> {
+		// Read outside a transaction: a pool waiting for a late root takes no write lock to ask again.
+		const row = await this.storage.read((executor) => this.leaseRow(executor, lease));
+		if (!row || row.epoch !== lease.epoch || row.holder_id !== lease.holderId) return "lost";
+		return isWorkflowLeaseExpired(row.renewed_at, row.timeout ?? timeout, row.now) ? "late" : "current";
 	}
 	async initialize(lease: Lease, coordinatorTimeoutMs: number): Promise<void> {
 		positive(coordinatorTimeoutMs);
@@ -281,6 +297,14 @@ export class SqlPoolQueue {
 			const row = await tx.get(`SELECT timeout FROM ${this.roots} WHERE root = ?`, lease.runId);
 			if (row?.timeout !== coordinatorTimeoutMs) throw new Error("Pool configuration is immutable");
 		});
+	}
+	/** Whether a coordinator ever initialized this root's pool, as for a root resumed after its pool ran. */
+	async initialized(root: string): Promise<boolean> {
+		return (
+			(await this.storage.read((executor) =>
+				executor.get(`SELECT 1 AS held FROM ${this.roots} WHERE root = ?`, root),
+			)) !== undefined
+		);
 	}
 	async control(lease: Lease): Promise<PoolControl> {
 		return this.transaction(async (tx) => {

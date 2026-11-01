@@ -349,7 +349,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
-	private renewing: Promise<void> | undefined;
+	/** Each run's renewal in flight; a run renews independently of every other run. */
+	private readonly renewing = new Map<string, Promise<void>>();
 	private readonly mutationContext = new AsyncLocalStorage<ReadonlySet<WorkflowLeaseExecution>>();
 	private processExitCleanup: (() => void) | undefined;
 	private readonly unregisterExecutionStorages = registerExecutionStorages(
@@ -1254,32 +1255,37 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		for (const run of runs) runIds.add(run.runId);
 		for (const runId of runIds) yield this.enqueue(runId, () => this.deleteOwned(runId));
 	}
+	/**
+	 * Starts a renewal for every owned lease whose previous renewal has finished. Each run renews on its own: one run's
+	 * renewal held up by its queue, its journal or its process never delays another run's, whose pool would otherwise see
+	 * that run's lease go stale while it is still running.
+	 */
 	private renewLeases(): Promise<void> {
-		if (this.renewing !== undefined) return this.renewing;
 		if (this.state !== "open") return Promise.resolve();
-		this.renewing = this.renewOwnedLeases().finally(() => {
-			this.renewing = undefined;
-		});
-		return this.renewing;
-	}
-	private async renewOwnedLeases(): Promise<void> {
 		for (const [runId, lease] of this.leases) {
-			if (this.state !== "open") return;
-			try {
-				await this.serialize(runId, () => this.renewLease(runId, lease), false);
-			} catch (error) {
-				if (error instanceof Error) this.lost.set(runId, error);
-				this.dropLease(runId);
-			}
+			if (this.renewing.has(runId)) continue;
+			const renewal = this.serialize(runId, () => this.renewLease(runId, lease), false)
+				.catch((error: Error) => {
+					this.lost.set(runId, error);
+					this.dropLease(runId);
+				})
+				.finally(() => {
+					if (this.renewing.get(runId) === renewal) this.renewing.delete(runId);
+				});
+			this.renewing.set(runId, renewal);
 		}
+		return Promise.all(this.renewing.values()).then(() => {});
 	}
 	private *renewLease(runId: string, lease: Lease): Operation<void> {
 		if (this.leases.get(runId) !== lease || this.lost.has(runId)) return;
 		try {
 			yield* invoke(() => this.journal.renew(lease));
 		} catch (error) {
+			// Only a refused lease is lost. Any other failure, such as a journal briefly locked or out of reach, left the
+			// lease with this holder; the next heartbeat renews it again instead of giving up the run for good.
+			if (!(error instanceof StaleLeaseError)) return;
 			if (this.leases.get(runId) === lease) {
-				if (error instanceof Error) this.lost.set(runId, yield* this.mapOwnership(error, runId));
+				this.lost.set(runId, yield* this.mapOwnership(error, runId));
 				this.dropLease(runId);
 			}
 		}
@@ -1361,7 +1367,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private async drainAndClose(): Promise<void> {
 		try {
-			await this.renewing;
+			await Promise.all(this.renewing.values());
 			while (this.pending.size > 0) await Promise.all(this.pending.values());
 			for (const runId of this.leases.keys()) await execute(this.release(runId));
 		} finally {

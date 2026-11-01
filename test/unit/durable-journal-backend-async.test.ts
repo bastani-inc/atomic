@@ -199,6 +199,63 @@ test("renewal ticks share one in-flight renewal and release waits for it", async
 	assert.equal(await journal.leaseState("run"), undefined);
 });
 
+test("a run's lease renewal never waits for another run's renewal", async () => {
+	vi.useFakeTimers();
+	const { backend, journal } = await open();
+	await backend.commitWorkflowRegistration({
+		workflowId: "other",
+		name: "test",
+		inputs: {},
+		createdAt: 1,
+		status: "running",
+	});
+	const otherEntered = gate();
+	const otherProceeds = gate();
+	const renew = journal.renew.bind(journal);
+	const renewals: string[] = [];
+	journal.renew = async (lease) => {
+		renewals.push(lease.runId);
+		if (lease.runId === "other") {
+			// Another run's renewal stuck behind a busy run, a slow journal or a starved event loop.
+			otherEntered.resolve();
+			await otherProceeds.promise;
+		}
+		await renew(lease);
+	};
+	try {
+		await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS);
+		await otherEntered.promise;
+		await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS * 3);
+		assert.equal(
+			renewals.filter((runId) => runId === "run").length,
+			4,
+			`"run" is renewed on every heartbeat: ${renewals.join(", ")}`,
+		);
+		assert.equal(renewals.filter((runId) => runId === "other").length, 1, "a held renewal is not started again");
+	} finally {
+		otherProceeds.resolve();
+	}
+});
+
+test("a renewal that fails without losing the lease is retried on the next heartbeat", async () => {
+	vi.useFakeTimers();
+	const { backend, journal } = await open();
+	const renew = journal.renew.bind(journal);
+	let renewals = 0;
+	journal.renew = async (lease) => {
+		renewals++;
+		// The journal is briefly unavailable, as a database locked by a busy machine is: the lease is still this holder's.
+		if (renewals === 1)
+			throw new StorageUnavailableError({ adapter: "test", location: "journal" }, new Error("database is locked"));
+		await renew(lease);
+	};
+	await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS * 2);
+	assert.equal(renewals, 2, "the next heartbeat renews the lease again");
+	// The run still owns its lease and keeps writing.
+	await backend.commitCheckpoint(checkpoint());
+	assert.equal(backend.listCheckpoints("run").length, 1);
+});
+
 test("close drains an accepted reset while its catalog read is pending", async () => {
 	const { backend, journal } = await open();
 	const entered = gate();
@@ -561,7 +618,8 @@ test("close during renewal still releases every run's lease", async () => {
 	const closing = backend.close();
 	proceed.resolve();
 	await closing;
-	assert.deepEqual(operations, ["renew:run", "release:run", "release:other"]);
+	// Both runs renew on their own; close lets the renewals in flight finish before releasing each lease.
+	assert.deepEqual(operations, ["renew:run", "renew:other", "release:run", "release:other"]);
 });
 
 test("retirement drains an admitted terminal mutation but rejects new writes from the retired execution", async () => {
