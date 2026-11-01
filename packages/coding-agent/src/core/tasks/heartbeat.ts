@@ -46,6 +46,16 @@ export interface TaskHeartbeatDelivery {
 	deliver(message: TaskHeartbeatMessage): Promise<void>;
 }
 
+/** The owner's default cadence, or the built-in one when its setting cannot be read or is out of range. */
+export function defaultTaskHeartbeatMs(delivery: Pick<TaskHeartbeatDelivery, "defaultIntervalMs">): number {
+	try {
+		const configured = delivery.defaultIntervalMs();
+		return isValidTaskHeartbeatMs(configured) ? configured : DEFAULT_TASK_HEARTBEAT_MS;
+	} catch {
+		return DEFAULT_TASK_HEARTBEAT_MS;
+	}
+}
+
 export interface TaskHeartbeatClock {
 	now(): number;
 	setTimeout(run: () => void, delayMs: number): object;
@@ -207,13 +217,10 @@ export class TaskHeartbeatMonitor {
 	}
 
 	private resolveInterval(task: TaskRecord): number {
+		// Owners with a heartbeat binding fix each task's cadence on its record at admission.
 		if (task.heartbeatMs !== undefined) return isValidTaskHeartbeatMs(task.heartbeatMs) ? task.heartbeatMs : 0;
-		try {
-			const fallback = this.options.delivery()?.defaultIntervalMs();
-			return isValidTaskHeartbeatMs(fallback) ? fallback : DEFAULT_TASK_HEARTBEAT_MS;
-		} catch {
-			return DEFAULT_TASK_HEARTBEAT_MS;
-		}
+		const delivery = this.options.delivery();
+		return delivery ? defaultTaskHeartbeatMs(delivery) : DEFAULT_TASK_HEARTBEAT_MS;
 	}
 
 	private hasSampledShells(): boolean {

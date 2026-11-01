@@ -199,7 +199,7 @@ subagent({
 })
 ```
 
-The cadence is fixed when the task starts. A subagent resumed after `pause` or `quit` uses the chat's default cadence. Change the default for every task with [`tasks.heartbeatMs`](/settings#tasks).
+The cadence is fixed when the task starts, and a running task's `/tasks` detail shows it as `Heartbeat every 15m` or `Heartbeat off`, the same for a workflow stage on a local worker. A subagent resumed after `pause` or `quit` uses the chat's default cadence. Change the default for every task with [`tasks.heartbeatMs`](/settings#tasks).
 
 ## Inspect tasks
 

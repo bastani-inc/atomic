@@ -73,6 +73,8 @@ export type TrustedTaskHost = {
 	authorizeLaunch(intent: C.AgentIntent): void;
 	resourceAdmission?: import("../sdk-types.ts").ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
+	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
+	defaultHeartbeatMs?(): number | undefined;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
 };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
@@ -788,7 +790,11 @@ export class TaskSupervisor {
 				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
 			);
 			const { heartbeatMs, ...nativeIntent } = intent;
-			const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, heartbeatMs);
+			const heartbeatKey = rememberLaunchHeartbeat(
+				state.id,
+				operation,
+				heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.(),
+			);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
 				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
@@ -917,7 +923,11 @@ export class TaskSupervisor {
 		const state = this.#owner(owner);
 		state.host.binding.authorizeLaunch(intent);
 		const { heartbeatMs, ...nativeIntent } = intent;
-		const heartbeatKey = rememberLaunchHeartbeat(state.id, operation, heartbeatMs);
+		const heartbeatKey = rememberLaunchHeartbeat(
+			state.id,
+			operation,
+			heartbeatMs ?? state.host.binding.defaultHeartbeatMs?.(),
+		);
 		const admitted = mapped(
 			this.#native.startAgentTask(state.native, nativeIntent, operation),
 			(lease) => lease,

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type * as C from "./contracts.js";
 import { trackAdmittedAgentTask } from "./execution-scope.js";
-import { type TaskHeartbeatDelivery, TaskHeartbeatMonitor } from "./heartbeat.js";
+import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonitor } from "./heartbeat.js";
 import { cancelPausedOwnerTasks } from "./pause.js";
 import {
 	type FakeExecution,
@@ -54,6 +54,8 @@ export class AgentTaskHost {
 				this.binding.authorizeCommandLaunch?.(intent);
 			},
 			onTaskSettled: (ref, receipt) => this.binding.onTaskSettled?.(ref, receipt),
+			defaultHeartbeatMs: () =>
+				this.binding.heartbeat ? defaultTaskHeartbeatMs(this.binding.heartbeat) : undefined,
 			createRunner: (context, intent) => {
 				const runner = runners.getStore();
 				if (!runner) throw new Error("Agent runner factory missing from launch context");

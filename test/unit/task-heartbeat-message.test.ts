@@ -4,7 +4,9 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
 import type { TaskHeartbeatDetails } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
 import { CustomMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/custom-message.js";
+import { TaskDetail } from "../../packages/coding-agent/src/modes/interactive/components/task-detail.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { taskRecord } from "../helpers/task-record.js";
 
 const MINUTE = 60_000;
 const details: TaskHeartbeatDetails = {
@@ -71,4 +73,28 @@ test("a task heartbeat card stays within the terminal width", () => {
 	initTheme("dark");
 	for (const expanded of [false, true])
 		for (const width of [20, 48, 100]) assert.ok(card(expanded, width).every((line) => visibleWidth(line) <= width));
+});
+
+test("/tasks detail shows a running task's heartbeat cadence, or that it is off", () => {
+	initTheme("dark");
+	const detail = (heartbeatMs: number | undefined, settled = false) => {
+		const task = {
+			...taskRecord("heartbeat-detail", "command"),
+			...(heartbeatMs === undefined ? {} : { heartbeatMs }),
+			...(settled
+				? {
+						execution: {
+							kind: "settled" as const,
+							result: { kind: "completed" as const, output: taskRecord("heartbeat-detail").output },
+						},
+					}
+				: { execution: { kind: "running" as const } }),
+		};
+		return new TaskDetail(task, { stdinAvailable: false }).render(80).map(stripVTControlCharacters).join("\n");
+	};
+	assert.match(detail(15 * MINUTE), /Heartbeat every 15m/);
+	assert.match(detail(90 * MINUTE), /Heartbeat every 1h 30m/);
+	assert.match(detail(0), /Heartbeat off/);
+	assert.doesNotMatch(detail(15 * MINUTE, true), /Heartbeat/, "finished tasks no longer heartbeat");
+	assert.doesNotMatch(detail(undefined), /Heartbeat/);
 });

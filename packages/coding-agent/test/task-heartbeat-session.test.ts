@@ -75,12 +75,14 @@ function heartbeatCards(session: AgentSession): TaskHeartbeatDetails[] {
 }
 
 test.runIf(process.platform !== "win32")(
-	"bash heartbeatMs is recorded on its task, and an out-of-range value is refused before launch",
+	"bash heartbeatMs, or the chat default, is recorded on its task, and an out-of-range value is refused before launch",
 	async () => {
-		const { session } = await sessionHarness();
+		const { session } = await sessionHarness({ settings: { tasks: { heartbeatMs: 30 * MINUTE } } });
 		session.pauseQueuedMessages();
 		const taskId = await launch(session, { command: "read value", heartbeatMs: 2 * MINUTE });
 		assert.equal(taskRecord(session, taskId)?.heartbeatMs, 2 * MINUTE);
+		const defaulted = await launch(session, { command: "read value" });
+		assert.equal(taskRecord(session, defaulted)?.heartbeatMs, 30 * MINUTE, "the chat default is fixed at launch");
 		const disabled = await launch(session, { command: "read value", heartbeatMs: 0 });
 		assert.equal(taskRecord(session, disabled)?.heartbeatMs, 0);
 		for (const heartbeatMs of [1000, -1, Number.POSITIVE_INFINITY])
@@ -94,9 +96,10 @@ test.runIf(process.platform !== "win32")(
 			);
 		const watched = session.getAgentTaskHost().watchOwnerTasks();
 		assert.ok(watched.ok);
-		assert.equal(watched.value.snapshot.tasks.length, 2, "a refused call admits no task");
+		assert.equal(watched.value.snapshot.tasks.length, 3, "a refused call admits no task");
 		watched.value.dispose();
 		await release(session, taskId);
+		await release(session, defaulted);
 		await release(session, disabled);
 	},
 );
