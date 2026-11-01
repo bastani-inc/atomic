@@ -88,6 +88,13 @@ function decisionOfRecordedCode(
 		case "cancelled":
 			return cancelledDecision();
 		case "pending_stage_delivery_failed":
+		case "worker_lost":
+		case "worker_cleanup_unconfirmed":
+		case "worker_retry_limit":
+		case "worker_startup_failed":
+		case "stale_work_lease":
+		case "intercom_unavailable":
+		case "storage_unavailable":
 			return strongDecisionFromNormalizedCode(code, retryAfterMs);
 		case "unknown":
 			return undefined;

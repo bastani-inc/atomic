@@ -12,6 +12,7 @@ import type {
 	WorkflowOutputValues,
 	WorkflowSerializableValue,
 } from "./types.js";
+import type { WorkflowInfrastructureFault } from "./workflow-infrastructure-error.js";
 
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "killed";
 export type StageStatus =
@@ -109,6 +110,7 @@ export type WorkflowFailureCode =
 	| "quota_limited"
 	| "provider_unavailable"
 	| "pending_stage_delivery_failed"
+	| WorkflowInfrastructureFault
 	| "cancelled"
 	| "unknown";
 

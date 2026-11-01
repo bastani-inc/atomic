@@ -82,6 +82,38 @@ export const PENDING_STAGE_READY_STALL_MS = 60_000;
 export interface WorkflowPendingStageDeliveryOptions {
 	/** Receives the one stall warning per stage; defaults to `console.warn`. */
 	readonly reportStall?: (message: string) => void;
+	/**
+	 * `deliverPending` settles only when its drain does, never at the stall bound. A local worker pool's root sets
+	 * it: the `deliver` a pooled stage passes reaches the stage's worker only while that call is pending, so releasing
+	 * the call early would leave the still-running drain with a closed transport and fail the stage. The worker
+	 * applies the stall bound to its stage's startup itself ({@link untilDrainedOrStalled}).
+	 */
+	readonly holdUntilDrained?: boolean;
+}
+
+/**
+ * Settles with `drain`, or resolves once it made no progress for {@link PENDING_STAGE_READY_STALL_MS}; the drain
+ * keeps running. `drain` receives the function that records progress.
+ */
+export function untilDrainedOrStalled(drain: (progress: () => void) => Promise<void>): Promise<void> {
+	let lastProgressAt = Date.now();
+	const running = drain(() => {
+		lastProgressAt = Date.now();
+	});
+	return new Promise<void>((resolve, reject) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const check = (): void => {
+			const remaining = lastProgressAt + PENDING_STAGE_READY_STALL_MS - Date.now();
+			if (remaining <= 0) {
+				resolve();
+				return;
+			}
+			timer = setTimeout(check, remaining);
+			timer.unref?.();
+		};
+		running.then(resolve, reject).finally(() => clearTimeout(timer));
+		check();
+	});
 }
 
 export function createWorkflowPendingStageDelivery(
@@ -168,11 +200,14 @@ export function createWorkflowPendingStageDelivery(
 		pending.then(stop, stop);
 		check();
 	};
-	/** Settles with a drain, or resolves once it has made no progress for the stall bound; the drain keeps running. */
+	/**
+	 * Settles with a drain, or resolves once it has made no progress for the stall bound; the drain keeps running.
+	 * With `holdUntilDrained` it settles with the drain alone.
+	 */
 	const boundedDrain = (drain: Promise<void>, sessionId: string | undefined): Promise<void> => {
 		const waiting = new Promise<void>((resolve, reject) => {
 			drain.then(resolve, reject);
-			watchStall(drain, sessionId, resolve);
+			if (options.holdUntilDrained !== true) watchStall(drain, sessionId, resolve);
 		});
 		// A caller that has not reached its `await` yet must not raise an unhandled rejection.
 		waiting.catch(() => {});

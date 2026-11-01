@@ -9,6 +9,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { bindRunDurableBackend, durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { PENDING_STAGE_READY_STALL_MS } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { workflowPendingStageRouteCapability } from "../../packages/workflows/src/shared/pending-stage-route-capability.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -263,6 +264,25 @@ test("publication labels stages with their worker attempt and marks root progres
 		assert.equal(rootProgress(), first);
 		await f.handoff.publish(f.first, [childRun([stage("stage"), stage("more")])]);
 		assert.ok((rootProgress() ?? 0) > first);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage that ended keeps the worker lease it ended under while its attempt renews for its other stages", async () => {
+	const f = await fixture();
+	try {
+		const lane = (status: StageSnapshot["status"]) =>
+			stage("lane", status === "running" ? {} : { status, endedAt: f.first.renewedAt + 1, error: "lane failed" });
+		await f.handoff.publish(f.first, [childRun([lane("running"), stage("other")])]);
+		await f.handoff.publish(f.first, [childRun([lane("failed"), stage("other")])]);
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 60_000, expiresAt: f.first.expiresAt + 60_000 };
+		await f.handoff.publish(renewed, [childRun([lane("failed"), stage("other")])]);
+		const stages = f.store.runs().find((run) => run.id === descriptor.childRunId)?.stages ?? [];
+		const ended = stages.find((candidate) => candidate.id === "lane");
+		assert.equal(ended?.workerExecution?.renewedAt, f.first.renewedAt, "the ended stage shows no later renewal");
+		assert.ok((ended?.workerExecution?.renewedAt ?? 0) <= (ended?.endedAt ?? 0));
+		assert.equal(stages.find((candidate) => candidate.id === "other")?.workerExecution?.renewedAt, renewed.renewedAt);
 	} finally {
 		await f.close();
 	}
@@ -1167,6 +1187,52 @@ test("a receipt refused for a replaced attempt reaches the worker as a stale wor
 		release.resolve();
 		await delivery?.catch(() => {});
 		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("a pooled stage's drain keeps its worker transport past the startup stall bound and its readiness succeeds", async () => {
+	const f = await fixture();
+	let delivery: Promise<void> | undefined;
+	const firstAcknowledged = Promise.withResolvers<void>();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueDirect("stage", "direct-2");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		// The coordinator's contract: a delivery's transport reaches the worker only while the root still answers the
+		// worker's delivery request, which ends when `deliver` settles.
+		let requestOpen = true;
+		const received: string[] = [];
+		delivery = f.handoff
+			.deliver(
+				f.first,
+				descriptor.childRunId,
+				"stage",
+				"stage",
+				{ sessionId: "session-a", receivedMessageIds: [] },
+				async (_from, delivered) => {
+					if (!requestOpen) throw new Error("Worker exited before delivery acknowledgement");
+					// A worker starved of CPU acknowledges the first message only after the stall bound.
+					if (delivered.id === "direct-1") await firstAcknowledged.promise;
+					received.push(delivered.id);
+				},
+			)
+			.finally(() => {
+				requestOpen = false;
+			});
+		delivery.catch(() => {});
+		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS + 1);
+		firstAcknowledged.resolve();
+		vi.useRealTimers();
+		await delivery;
+		await f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a");
+		assert.deepEqual(received, ["direct-1", "direct-2"]);
+		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 0);
+	} finally {
+		vi.useRealTimers();
+		firstAcknowledged.resolve();
+		await delivery?.catch(() => {});
 		await f.close();
 	}
 });

@@ -8,6 +8,17 @@ export type WorkflowInfrastructureFault =
 	| "storage_unavailable";
 
 const WORKFLOW_INFRASTRUCTURE_ERROR_NAME = "WorkflowInfrastructureError";
+
+/** Every infrastructure fault, as a stage or run failure records it in `failureCode`. */
+export const WORKFLOW_INFRASTRUCTURE_FAULTS: ReadonlySet<string> = new Set<WorkflowInfrastructureFault>([
+	"worker_lost",
+	"worker_cleanup_unconfirmed",
+	"worker_retry_limit",
+	"worker_startup_failed",
+	"stale_work_lease",
+	"intercom_unavailable",
+	"storage_unavailable",
+]);
 const MAX_CAUSE_DEPTH = 8;
 
 const FAULT_PATTERNS: readonly (readonly [RegExp, WorkflowInfrastructureFault])[] = [
@@ -15,7 +26,7 @@ const FAULT_PATTERNS: readonly (readonly [RegExp, WorkflowInfrastructureFault])[
 	[/Local worker retry limit/, "worker_retry_limit"],
 	[/Local worker (?:startup timed out|exited before readiness)/, "worker_startup_failed"],
 	[/Worker exited before delivery acknowledgement|Local worker pool coordinator exited/, "worker_lost"],
-	[/Stale work lease/, "stale_work_lease"],
+	[/Stale work lease|Stale resource admission attempt/, "stale_work_lease"],
 	[/Intercom runtime no longer active/, "intercom_unavailable"],
 	[/Storage unavailable/, "storage_unavailable"],
 ];

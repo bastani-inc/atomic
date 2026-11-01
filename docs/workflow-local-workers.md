@@ -95,7 +95,7 @@ A public pool without `admission` still passes `{}` to the coordinator and worke
 
 ## Control and routing
 
-Root control is registered before asynchronous pool preparation. Pause, resume and quit intent has a durable revision. Claims and resource grants check that intent; workers acknowledge revisions after applying the existing scheduler and stage controls. Pause waits for worker acknowledgements before publishing the root as paused. Quit gives workers a bounded chance to suspend and dispose their sessions, then confirms local process cleanup or reports unresolved cleanup. Explicit resume reopens admission without changing queued work identities or completed child results.
+Root control is registered before asynchronous pool preparation. Pause, resume and quit intent has a durable revision. Claims and resource grants check that intent; workers acknowledge revisions after applying the existing scheduler and stage controls. A worker reads the intent on every heartbeat until it converges, so the coordinator's wait for acknowledgements is a confirmation, not a delivery: it lasts while acknowledgements keep arriving and stops without failing once none has arrived for five seconds outside the coordinator's own stalls. Pause and resume never fail because a busy host acknowledges slowly. A root whose stages run on workers is paused through its run control, and so its pool, whatever its own process still runs (its `ctx.tool` nodes, its in-process stages); the pause result names the worker stages that have not confirmed the pause yet. Quit gives workers a bounded chance to suspend and dispose their sessions, then confirms local process cleanup or reports unresolved cleanup. Explicit resume reopens admission without changing queued work identities or completed child results.
 
 Resume checks for a newer pause after durable persistence, before reopening pool admission. Pool shutdown releases Intercom routes even when worker or session cleanup fails, while still reporting the cleanup error.
 
@@ -105,7 +105,18 @@ Worker activity publication keeps one request in flight and coalesces later inva
 
 The root records a receipt only after transport acknowledgement or confirmed context admission. Each receipt append validates the work lease in the same SQL transaction as the write and checks the published session before the transaction returns. A concurrent replacement either precedes that validation and rejects the receipt, or follows the receipt's transaction ordering. Successor delivery waits for the old drain to release its message claim. Session replacement rejects old readiness requests and discards the failed delivery object. A temporary coordinator heartbeat lag refuses receipt commits without retiring the root's journal backend.
 
+A worker's delivery request stays open until the root's drain for it ends, because the transport a drain writes through is that request: the root's `PoolStageHandoff` creates its pending-stage deliveries with `holdUntilDrained`, and the worker applies the startup stall bound to its own stage (`untilDrainedOrStalled`). Before, the root released the request at the 60-second stall bound while its drain kept running, so a starved worker's later acknowledgement led the drain to a closed transport (`Worker exited before delivery acknowledgement`), and the stage failed at `delivery-readiness`.
+
 The root reconstructs committed child checkpoints and pending messages from the journal. Uncheckpointed worker activity is observational and may disappear on recovery. Recovery still provides at-least-once execution, not exactly-once external effects.
+
+## Busy hosts
+
+Load can starve the coordinator, the workers and the journal's write lock for longer than a work lease. A deadline on the clock alone then fails healthy work, so the pool keys refusal on identity, not on the clock, wherever a live worker is involved:
+
+- A worker's request (commit, usage, budget, completion) whose attempt lease lapsed only while the request waited is retried once after the coordinator extends the lease. `extend` checks the attempt's identity, so an attempt that recovery replaced stays refused (#3888).
+- A worker's resource admission waits out a late attempt lease or root lease (reason `waiting for its attempt lease`) and refuses only an attempt whose work, epoch or root state changed.
+- A reply that carries a pool infrastructure fault (`workflowInfrastructureFault`) ends the worker's attempt like a fenced one, so the child replays from its last checkpoint within its attempt limit instead of failing the stage. A fenced attempt never completes its work with the aborted run's result.
+- A stage failure that is an infrastructure fault is classified with its fault as `failureCode`, recoverable and retryable; resume runs the failed stage again. An ended stage keeps the worker lease it ended under, so the attempt's later renewals for its other stages do not read as that stage still holding the worker.
 
 ## Verification
 
@@ -113,6 +124,7 @@ The root reconstructs committed child checkpoints and pending messages from the 
 - `test/integration/workflow-local-pool.test.ts` runs a root and two real workers, uses a SQL checkpoint barrier to prove fan-out, executes normal Atomic stages with an offline fixture provider, and checks scoped topology. Crash cases prove completed tool/stage/nested outputs are replayed, unfinished stages resume the same SQL session, and four successive child recoveries do not exhaust a pool-wide counter.
 - `test/integration/workflow-local-pool-lifecycle*.test.ts` check delayed root-heartbeat headroom, pause/resume/quit, recovery, and a final-attempt worker exit while its durable completion is pending.
 - `test/unit/workflow-local-pool-compatibility.test.ts` checks entry-module changes and process-bound run overrides before launch.
+- `test/integration/workflow-local-pool-busy-host.test.ts` lapses a live worker's work lease on its commits' way to the journal (the child keeps its first attempt), refuses a commit with a storage fault (the child replays once and completes), and slows control acknowledgements past the wait (the root pauses, resumes and completes).
 - `test/unit/workflow-pool-commits.test.ts` checks durable child completion receipts, including a lost acknowledgement and rejected late writes.
 - `test/integration/workflow-pool-intercom.test.ts` sends direct and sticky messages through a real local broker to two workers, replaces one worker before delivery, and verifies both messages enter the intended stage context.
 - `test/unit/workflow-pool-stage-handoff.test.ts` checks scoped publication, capability rotation, stale-session acknowledgement rejection and reuse of durable pending messages. Deterministic barriers replace workers or sessions after transport validation but before receipt persistence, and fence an attempt after its receipt insert to verify transaction rollback. Direct and sticky delivery both cover receipts for messages already admitted to context.

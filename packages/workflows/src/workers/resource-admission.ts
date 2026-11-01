@@ -31,6 +31,9 @@ const EXPIRED_REASON = "owner expired; cleanup unconfirmed";
 const UNCONFIRMED_REASON = "cleanup unconfirmed";
 const ANONYMOUS_REASON = "owner identity unavailable; cleanup unconfirmed";
 const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+/** How often an admission whose attempt lease is late asks again whether it was renewed. */
+const LATE_ATTEMPT_POLL_MS = 100;
+const LATE_ATTEMPT_REASON = "waiting for its attempt lease";
 
 type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
@@ -185,25 +188,41 @@ export class SqlResourceAdmission {
 			if (sample.load > host.maxLoadPerCpu) return "host load";
 		}
 	}
-	private async assertCurrentAttempt(tx: SqliteExecutor): Promise<void> {
+	/**
+	 * Whether this admission's attempt still owns its work: `current`, `late` when it does but its work lease or the
+	 * root's lease is past due, or `stale` when another attempt, epoch or root state replaced it. A late lease is
+	 * renewed by the coordinator while its worker responds, however slowly a busy host lets it do so, and a worker that
+	 * stops responding is stopped and its work replaced: so only `stale` refuses the attempt.
+	 */
+	private async attemptStanding(tx: SqliteExecutor): Promise<"current" | "late" | "stale"> {
 		const { root, attempt } = this.options;
-		if (!attempt) return;
-		const work = await tx.get(
-			`SELECT 1 AS valid FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
+		if (!attempt) return "current";
+		const work = await tx.get<SqliteRow & { late: number }>(
+			`SELECT (w.expires_at < ${NOW_MS} OR l.renewed_at + p.timeout < ${NOW_MS}) AS late
+			FROM ${this.storage.tables.runs}_work w JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
 			JOIN ${this.storage.tables.runs}_pool p ON p.root = w.root JOIN ${this.storage.tables.runs} r ON r.run_id = w.root
 			WHERE w.id = ? AND w.root = ? AND w.generation = ? AND w.epoch = ? AND w.state = 'leased' AND r.status IN ('running', 'paused')
-			AND w.expires_at >= CAST(unixepoch('subsec') * 1000 AS INTEGER)
-			AND l.epoch = w.epoch AND l.renewed_at + p.timeout >= CAST(unixepoch('subsec') * 1000 AS INTEGER)`,
+			AND l.epoch = w.epoch`,
 			attempt.id,
 			root,
 			attempt.generation,
 			attempt.epoch,
 		);
-		if (!work) throw new Error("Stale resource admission attempt");
+		if (!work) return "stale";
+		return Number(work.late) === 1 ? "late" : "current";
 	}
+	private async assertCurrentAttempt(tx: SqliteExecutor): Promise<boolean> {
+		const standing = await this.attemptStanding(tx);
+		if (standing === "stale") throw new Error("Stale resource admission attempt");
+		return standing === "current";
+	}
+	/** Resolves once the attempt is current, waiting out a late lease; rejects once it is stale. */
 	async validate(signal?: AbortSignal): Promise<void> {
-		signal?.throwIfAborted();
-		await this.storage.transaction((tx) => this.assertCurrentAttempt(tx));
+		for (;;) {
+			signal?.throwIfAborted();
+			if (await this.storage.transaction((tx) => this.assertCurrentAttempt(tx))) return;
+			await delay(LATE_ATTEMPT_POLL_MS, undefined, { signal });
+		}
 	}
 	async acquire(
 		kind: Resource,
@@ -276,7 +295,16 @@ export class SqlResourceAdmission {
 						this.owner,
 					);
 					const { root } = this.options;
-					await this.assertCurrentAttempt(tx);
+					// A late attempt lease is waited out, delegated or not; only a replaced attempt is refused.
+					if (!(await this.assertCurrentAttempt(tx))) {
+						const waiting = await tx.run(
+							`UPDATE ${this.permits} SET reason = ? WHERE operation = ? AND state = 'waiting'`,
+							LATE_ATTEMPT_REASON,
+							operation,
+						);
+						if (waiting.changes !== 1) throw new Error("Resource admission holder was stopped");
+						return false;
+					}
 					let reason = hostReason;
 					const controls = `${this.storage.tables.runs}_pool_control`;
 					if (await tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", controls)) {

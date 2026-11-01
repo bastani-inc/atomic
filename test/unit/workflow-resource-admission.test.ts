@@ -165,11 +165,45 @@ test("expired work retains live resources and fenced waiters cannot relaunch (#3
 		});
 		const release = await admission.acquire("process");
 		await f.databases[0]!.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", work.id);
-		await assert.rejects(admission.acquire("session"), /Stale/);
+		// A lapsed lease alone is a renewal a busy coordinator has not made yet: the launch waits for it.
+		const lapsed = admission.acquire("session");
+		const outcome = lapsed.then(
+			() => "granted",
+			(error: Error) => error.message,
+		);
+		await waitForReason(admission, "waiting for its attempt lease");
 		await pool.expire(acquired.lease, work);
+		assert.match(await outcome, /Stale/, "only work recovery took from the attempt refuses its launch");
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
 		await admission.releaseStoppedSessions("worker");
 		assert.equal((await admission.inspect()).filter((row) => row.state === "granted").length, 1);
+		await release();
+	} finally {
+		await f.close();
+	}
+});
+
+test("a launch whose attempt lease lapsed under load waits for the renewal instead of failing its stage", async () => {
+	const f = await fixture();
+	try {
+		const journal = f.journals[0]!;
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const acquired = await journal.acquire("root", "coordinator");
+		if (acquired.status !== "acquired") assert.fail("no lease");
+		const pool = await openSqlPoolQueue(journal);
+		await pool.initialize(acquired.lease, 60_000);
+		const fixture = poolWorkFixture();
+		await pool.enqueue(acquired.lease, fixture.work, fixture.boundary);
+		const work = await pool.claim(acquired.lease, "worker", [fixture.work], 60_000);
+		assert.ok(work);
+		const admission = await SqlResourceAdmission.open(journal, { root: "root", holder: "worker", attempt: work });
+		await f.databases[0]!.run("UPDATE wf_runs_work SET expires_at = 0 WHERE id = ?", work.id);
+		const launch = admission.acquire("session");
+		const validated = admission.validate();
+		await waitForReason(admission, "waiting for its attempt lease");
+		await pool.extend(acquired.lease, work, 60_000);
+		const release = await launch;
+		await validated;
 		await release();
 	} finally {
 		await f.close();

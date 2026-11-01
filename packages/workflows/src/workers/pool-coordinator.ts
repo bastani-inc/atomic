@@ -82,7 +82,8 @@ import type {
 } from "./stage-watch-types.js";
 import { startupTimeoutMessage } from "./startup-timeout.js";
 
-const CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
+/** How long a control change waits for its next worker acknowledgement before it stops waiting (see `control`). */
+const CONTROL_ACKNOWLEDGEMENT_STALL_MS = 5_000;
 const RECOVERY_INTERVAL_MS = 500;
 const TICK_INTERVAL_MS = 100;
 const STALL_THRESHOLD_MS = 500;
@@ -732,23 +733,40 @@ export class PoolCoordinator {
 		return result;
 	}
 
-	private async control(state: PoolControl["state"]): Promise<void> {
+	/**
+	 * Records the pool's control state, then waits for the ready workers to acknowledge it. The state is durable: a live
+	 * worker reads it again on every heartbeat until it converges, and a worker that starts later reads it before it
+	 * claims work. So the wait is a confirmation, not a delivery: it lasts while acknowledgements keep arriving, and it
+	 * ends without failing once none has arrived for {@link CONTROL_ACKNOWLEDGEMENT_STALL_MS}, outside this process's
+	 * own stalls. A busy host slows the acknowledgements of hundreds of workers; it never fails a pause or resume.
+	 * Returns how many ready workers had not acknowledged it yet.
+	 */
+	private async control(state: PoolControl["state"]): Promise<number> {
 		this.desiredControl = state;
-		if (!this.queue || !this.lease) return;
+		if (!this.queue || !this.lease) return 0;
 		const queue = this.queue;
 		const lease = this.lease;
 		const control = await this.whileRootLate(queue, () => queue.setControl(lease, state));
-		const deadline = Date.now() + CONTROL_ACKNOWLEDGEMENT_TIMEOUT_MS;
-		while ([...this.readyWorkers].some((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision)) {
-			if (this.desiredControl !== state) return;
-			if (Date.now() >= deadline) {
-				if (state === "quit") break;
-				throw new Error("Worker control acknowledgement unresolved");
-			}
+		const unacknowledged = () =>
+			[...this.readyWorkers].filter((worker) => (this.controlAcks.get(worker) ?? -1) < control.revision).length;
+		let pending = unacknowledged();
+		let progressAt = performance.now();
+		let stalledAt = this.stalledMs;
+		while (pending > 0) {
+			if (this.desiredControl !== state) return pending;
 			await delay(25);
+			this.observeResponsiveness();
+			const now = unacknowledged();
+			if (now < pending) {
+				pending = now;
+				progressAt = performance.now();
+				stalledAt = this.stalledMs;
+			} else if (performance.now() - progressAt - (this.stalledMs - stalledAt) >= CONTROL_ACKNOWLEDGEMENT_STALL_MS)
+				break;
 		}
 		// Whatever workers published before acknowledging reaches the root before the acknowledgement.
 		this.flush();
+		return pending;
 	}
 
 	private async start(
@@ -819,8 +837,10 @@ export class PoolCoordinator {
 
 	private async transport(request: number, payload: DeliveryPayload): Promise<void> {
 		const target = this.deliveryRequests.get(request);
-		if (target === undefined || !this.incarnations.has(target.slot.worker))
-			throw new Error("Worker exited before delivery acknowledgement");
+		// The root answers a delivery request when its drain ends, so a transport after that is a root defect, not a worker
+		// that exited: say so, rather than blame a worker that is still running the stage.
+		if (target === undefined) throw new Error("Pooled stage delivery request already answered");
+		if (!this.incarnations.has(target.slot.worker)) throw new Error("Worker exited before delivery acknowledgement");
 		const { slot, workerRequest } = target;
 		await new Promise<void>((resolve, reject) => {
 			const id = randomUUID();
@@ -1434,7 +1454,22 @@ export class PoolCoordinator {
 						const renewed = await queue.extend(lease, attempt, options.leaseMs);
 						if (slot.work === attempt) slot.work = renewed;
 					};
-					const leased = <T>(action: () => Promise<T>) => this.whileRootLate(queue, action, renewAttempt);
+					// A request from this worker shows it is alive, so a work lease that only lapsed while the request waited
+					// (this process starved of CPU, the journal's write lock held by other writers) does not fence it: the
+					// lease is extended and the request runs again. `extend` checks the attempt's identity, so an attempt that
+					// recovery replaced stays refused (#3888).
+					const current = async <T>(action: () => Promise<T>): Promise<T> => {
+						try {
+							return await action();
+						} catch (error) {
+							if (!(error instanceof Error) || error.message !== STALE_WORK_LEASE || slot.work === undefined)
+								throw error;
+							await renewAttempt();
+							return action();
+						}
+					};
+					const leased = <T>(action: () => Promise<T>) =>
+						this.whileRootLate(queue, () => current(action), renewAttempt);
 					if (message.kind === "control") return leased(() => queue.control(lease));
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
