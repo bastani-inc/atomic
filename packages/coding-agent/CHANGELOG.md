@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launched from a chat turn that a running workflow started, for example with its completion notice, no longer stays `running` for good with no session, transcript or Intercom name. Its session waited for a permit from that workflow's resource admission (such as `admission.host.minFreeMemoryBytes` on a busy host) that it never received. A child session built from `getChildSessionOptions()` now takes its parent's admission or none, never one a `withResourceAdmission` scope the parent's turn happened to run in; SDK callers can pass `resourceAdmission: null` for a session that takes no permit inside such a scope.
+- A subagent whose session does not start within 5 minutes now fails with `Subagent session did not start within 5 min (still <step>)` instead of staying `running`, and `subagent({ action: "status" })` shows it failed with that cause.
+- A subagent launched with an effort, such as `model: "openai/gpt-5.5:xhigh"`, runs at exactly that effort on a model that supports it, and at that model's default level (its `modelThinkingLevels` entry, else `defaultThinkingLevel`) on one that does not, instead of the nearest level. A model its fallback chain switches to follows the same rule, so a fallback no longer drops the child to the default level silently.
+- `subagent({ action: "status" })` lists only the children this session launched, each with the child id `pause`, `resume` and `quit` take (`· id <run-id>:<n>`), and those actions also take the listed path. It no longer lists children of other sessions in the same process, such as a workflow stage's, that `quit` then refused with `this session launched no such child`, and `status` with a child id finds the child.
+
 ## [0.9.58] - 2026-11-01
 
 Task heartbeats, stage chats that work on local workers, and a local worker pool that holds up under load.

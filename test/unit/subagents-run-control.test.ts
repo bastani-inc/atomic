@@ -1285,6 +1285,30 @@ test("resume reports an unknown child id as an error", async () => {
 	assert.equal(h.runs.length, 0);
 });
 
+test("status lists only the children this session launched, by ids quit takes, and quit stops each one it lists", async () => {
+	const own = harness();
+	// Another session in the same process, such as a workflow stage, with a child of its own.
+	const other = harness();
+	await other.launch("foreignstatus1");
+	const { record } = await own.launch("ownstatus1");
+
+	const listed = text(await own.call({ action: "status" }));
+	assert.doesNotMatch(listed, /foreignstatus1/, "a child another session launched is not this session's to control");
+	const line = listed.split("\n").find((candidate) => candidate.includes("worker_1"));
+	assert.match(line ?? "", /^ownstatus1\/worker_1 — running \(loaded\) · id ownstatus1:0$/, listed);
+
+	const byChildId = await own.call({ action: "status", id: record.childId });
+	assert.notEqual(byChildId.isError, true, text(byChildId));
+	assert.match(text(byChildId), /Status: running/);
+
+	const quitByPath = await own.call({ action: "quit", id: "ownstatus1/worker_1" });
+	assert.notEqual(quitByPath.isError, true, text(quitByPath));
+	assert.match(text(quitByPath), /Quit worker \(ownstatus1:0/);
+	const quitForeign = await own.call({ action: "quit", id: "foreignstatus1/worker_1" });
+	assert.equal(quitForeign.isError, true);
+	assert.match(text(quitForeign), /this session launched no such child/);
+});
+
 test("resume refuses a child cancelled for good by its owner", async () => {
 	const h = harness();
 	const { record, taskId } = await h.launch("cancel1");

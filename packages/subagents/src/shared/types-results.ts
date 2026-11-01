@@ -226,6 +226,8 @@ export interface SubagentStatusGroup {
 	children: Array<
 		Omit<ChildIdentity, "status"> & {
 			status: ChildIdentity["status"] | "killed";
+			/** The child id (`<runId>:<index>`) `pause`, `resume` and `quit` take. */
+			childId?: string;
 			sessionFile?: string;
 			model?: string;
 			thinking?: string;

@@ -1,41 +1,62 @@
 import type { SubagentStatusGroup, SubagentToolResult } from "../../shared/types.js";
-import { findSubagentControl, listSubagentControls } from "./control-registry.js";
+import { findSubagentControl, listSubagentControls, subagentChildPath } from "./control-registry.js";
 
-function canonicalChildren(control: NonNullable<ReturnType<typeof findSubagentControl>>) {
+type Control = NonNullable<ReturnType<typeof findSubagentControl>>;
+/** Whether the session asking launched this run, so it may see and control its children. */
+export type OwnsSubagentRun = (runId: string) => boolean;
+
+function canonicalChildren(control: Control) {
 	return [...control.listChildren()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-function childLines(control: ReturnType<typeof findSubagentControl>, id?: string): string[] {
-	if (!control) return [];
+/** Why a settled child failed or stopped, as its delivered result says, on one line. */
+function settledCause(control: Control, path: string, status: string): string | undefined {
+	if (status !== "error" && status !== "interrupted") return undefined;
+	const cause = control.getDeliveredResult(path)?.cause?.replace(/\s+/g, " ").trim();
+	return cause || undefined;
+}
+
+function childLines(control: Control, id?: string): string[] {
 	if (id) {
-		const child = control.findChild(id);
+		const path = subagentChildPath(control, id);
+		const child = control.findChild(path);
 		if (!child) return [];
-		const delivered = control.getDeliveredResult(id);
+		const delivered = control.getDeliveredResult(path);
+		const childId = control.childIdOf(path);
+		const cause = settledCause(control, path, child.status);
 		return [
+			...(childId ? [`Id: ${childId}`] : []),
 			`Child: ${child.path}`,
 			`Parent: ${child.parentPath}`,
 			`Task: ${child.taskName}`,
 			`Depth: ${child.depth}`,
 			`Status: ${child.status}`,
+			...(cause ? [`Cause: ${cause}`] : []),
 			`Residency: ${child.loaded ? "loaded" : "cold"}`,
 			...(delivered?.sessionFile ? [`Session: ${delivered.sessionFile}`] : []),
 		];
 	}
-	return control
-		.listChildren()
-		.map((child) => `${child.path} — ${child.status} (${child.loaded ? "loaded" : "cold"})`);
+	return control.listChildren().map((child) => {
+		const childId = control.childIdOf(child.path);
+		const cause = settledCause(control, child.path, child.status);
+		// `pause`, `resume` and `quit` take the child id, and the path too.
+		return `${child.path} — ${child.status} (${child.loaded ? "loaded" : "cold"})${childId ? ` · id ${childId}` : ""}${cause ? ` · ${cause}` : ""}`;
+	});
 }
 
-function statusGroup(control: NonNullable<ReturnType<typeof findSubagentControl>>, id?: string): SubagentStatusGroup {
+function statusGroup(control: Control, id?: string): SubagentStatusGroup {
+	const path = id === undefined ? undefined : subagentChildPath(control, id);
 	return {
 		parentPath: control.parent.path,
 		children: canonicalChildren(control)
-			.filter((child) => !id || id === control.parent.path || child.path === id)
+			.filter((child) => !path || path === control.parent.path || child.path === path)
 			.map((child) => {
 				const delivered = control.getDeliveredResult(child.path);
 				const metadata = control.getChildMetadata(child.path) ?? delivered;
+				const childId = control.childIdOf(child.path);
 				return {
 					...child,
+					...(childId === undefined ? {} : { childId }),
 					sessionFile: delivered?.sessionFile,
 					...(metadata?.model === undefined ? {} : { model: metadata.model }),
 					...(metadata?.thinking === undefined ? {} : { thinking: metadata.thinking }),
@@ -44,10 +65,15 @@ function statusGroup(control: NonNullable<ReturnType<typeof findSubagentControl>
 	};
 }
 
-export function inspectInProcessChildStatus(id?: string): SubagentToolResult | undefined {
+/**
+ * The in-process children `id` names (a run id, a child path, or a child id), or every child, of the runs `ownsRun`
+ * accepts: a session sees only the runs it launched, which are the only ones its run control can reach.
+ */
+export function inspectInProcessChildStatus(id?: string, ownsRun?: OwnsSubagentRun): SubagentToolResult | undefined {
+	const owned = (control: Control) => ownsRun?.(control.parent.path) ?? true;
 	if (id) {
 		const control = findSubagentControl(id);
-		if (!control) return undefined;
+		if (!control || !owned(control)) return undefined;
 		const text =
 			id === control.parent.path
 				? [`Parent: ${control.parent.path}`, ...childLines(control)].join("\n")
@@ -58,7 +84,7 @@ export function inspectInProcessChildStatus(id?: string): SubagentToolResult | u
 			details: { mode: "management", results: [], statusGroups: [statusGroup(control, id)] },
 		};
 	}
-	const controls = listSubagentControls();
+	const controls = listSubagentControls().filter(owned);
 	const lines = controls.flatMap((control) => [`Parent: ${control.parent.path}`, ...childLines(control)]);
 	if (lines.length === 0) return undefined;
 	return {

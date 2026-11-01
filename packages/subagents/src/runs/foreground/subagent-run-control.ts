@@ -8,9 +8,11 @@ import {
 	type SubagentRunControlDetails,
 	type SubagentToolResult,
 } from "../../shared/types.js";
+import { subagentChildIdOfPath } from "../inprocess/control-registry.js";
 import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { isLiveOwnerlessChild, isQueuedOwnerlessChild, stopOwnerlessChild } from "./ownerless-children.js";
 import { parkRunWorktree, unparkRunWorktree } from "./run-worktrees.js";
+import { observedSubagentRunIds } from "./subagent-child-card-state.js";
 import { childHoldKey, holdChildTargets, parkPausedChildHold, releasePausedChildHold } from "./subagent-child-hold.js";
 import {
 	findSubagentChildRecord,
@@ -114,13 +116,28 @@ function ownedRecords(ctx: ExtensionContext): Map<string, SubagentChildRecord> {
 	return readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
 }
 
-/** A child by its child id, launch task id, Intercom name, or the run id of a run that launched only that child. */
+/** Run ids of the children this session launched: the only runs its `status` shows and its run control reaches. */
+export async function subagentRunsLaunchedBy(ctx: ExtensionContext): Promise<Set<string>> {
+	const owner = subagentChildOwner(ctx).sessionId;
+	await subagentChildRecordsAppended(owner);
+	const runIds = observedSubagentRunIds(owner);
+	for (const record of ownedRecords(ctx).values()) runIds.add(record.runId);
+	return runIds;
+}
+
+/**
+ * A child by its child id, launch task id, Intercom name, the run id of a run that launched only that child, or the
+ * path `status` lists it under.
+ */
 function resolveRecord(
 	records: ReadonlyMap<string, SubagentChildRecord>,
 	id: string,
 ): SubagentChildRecord | string | undefined {
 	const direct = findSubagentChildRecord(records, id);
 	if (direct) return direct;
+	const listedAs = subagentChildIdOfPath(id.trim());
+	const byPath = listedAs === undefined ? undefined : records.get(listedAs);
+	if (byPath) return byPath;
 	const inRun = [...records.values()].filter((record) => record.runId === id.trim());
 	if (inRun.length === 1) return inRun[0];
 	if (inRun.length > 1)

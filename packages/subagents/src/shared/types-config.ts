@@ -186,6 +186,8 @@ export interface RunSyncOptions {
 	progressPath?: string;
 	/** Surviving progress.md path to cite after parent cancellation. */
 	progressArtifactPath?: string;
+	/** How long the child's session may take to start before it fails; `SUBAGENT_SESSION_START_TIMEOUT_MS` when omitted. */
+	sessionStartTimeoutMs?: number;
 	/** Test-only in-process session stub configuration; production runs create a real AgentSession. */
 	testSession?:
 		| false

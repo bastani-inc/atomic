@@ -111,7 +111,12 @@ export interface CreateAgentSessionOptions {
 	 * parent's child-session options, so child background shells appear in the parent's `/tasks`.
 	 */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
-	resourceAdmission?: ResourceAdmission;
+	/**
+	 * Capacity policy for this session and its managed commands. Omitted, the session draws its own permit from the
+	 * enclosing `withResourceAdmission` scope, if any. `null` means it holds none, even inside such a scope. Child
+	 * options from `getChildSessionOptions()` carry the parent's admission, or `null` when the parent holds none.
+	 */
+	resourceAdmission?: ResourceAdmission | null;
 	resourceAdmissionSignal?: AbortSignal;
 	resourceAdmissionDelegated?: boolean;
 	/** Transform the fully constructed base system prompt at session construction. */

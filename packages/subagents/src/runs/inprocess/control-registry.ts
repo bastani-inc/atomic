@@ -32,11 +32,27 @@ export function unregisterSubagentControl(control: SubagentControlRuntime): void
 	if (controls.get(control.parent.path) === control) controls.delete(control.parent.path);
 }
 
+/** A run's control by its run id, or the control of a child named by its path or child id (`<runId>:<index>`). */
 export function findSubagentControl(id: string): SubagentControlRuntime | undefined {
 	const direct = controls.get(id);
 	if (direct) return direct;
 	for (const control of controls.values()) {
+		if (control.pathOfChildId(id) !== undefined) return control;
 		if (control.native.listChildren().some((child) => child.path === id)) return control;
+	}
+	return undefined;
+}
+
+/** The admitted path of a child named by its path or its child id (`<runId>:<index>`). */
+export function subagentChildPath(control: SubagentControlRuntime, id: string): string {
+	return control.pathOfChildId(id) ?? id;
+}
+
+/** The child id (`<runId>:<index>`) of a child named by its admitted path, while this process has it. */
+export function subagentChildIdOfPath(id: string): string | undefined {
+	for (const control of controls.values()) {
+		const childId = control.childIdOf(id);
+		if (childId !== undefined) return childId;
 	}
 	return undefined;
 }
@@ -50,7 +66,8 @@ export function findChildIdentity(
 ): { control: SubagentControlRuntime; identity: ChildIdentity } | undefined {
 	const control = findSubagentControl(id);
 	if (!control) return undefined;
-	const identity = control.native.listChildren().find((child) => child.path === id);
+	const path = subagentChildPath(control, id);
+	const identity = control.native.listChildren().find((child) => child.path === path);
 	return identity ? { control, identity } : undefined;
 }
 

@@ -26,7 +26,13 @@ import {
 	type TerminationCause as NativeTerminationCause,
 	SubagentControl,
 } from "@bastani/atomic-natives";
-import { type Api, type AssistantMessage, clampThinkingLevel, type Model } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	type AssistantMessage,
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+} from "@bastani/pi-ai/compat";
 import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import {
@@ -37,7 +43,13 @@ import {
 import { childAllowsIntercom } from "../../intercom/supervisor-authorization.js";
 import { ensureArtifactsDir, writeArtifact, writeMetadata } from "../../shared/artifacts.js";
 import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
-import { resolveEffectiveThinking, splitKnownThinkingSuffix, taskRecordModel } from "../../shared/model-info.js";
+import {
+	resolveEffectiveThinking,
+	splitKnownThinkingSuffix,
+	type ThinkingLevel,
+	taskRecordModel,
+} from "../../shared/model-info.js";
+import type { CandidateModelResolver } from "../../shared/model-resolution.js";
 import {
 	type AgentProgress,
 	type ArtifactPaths,
@@ -104,6 +116,8 @@ export interface TestSessionOptions {
 
 export interface ChildSpec {
 	readonly taskName: string;
+	/** The child id (`<runId>:<index>`) run control knows the child by; `status` names the child by it. */
+	readonly childId?: string;
 	readonly task: string;
 	readonly agent: AgentConfig;
 	readonly cwd: string;
@@ -149,6 +163,58 @@ export interface ChildSpec {
 	readonly progressArtifactPath?: string;
 	/** Persisted output artifact path to cite after parent cancellation. */
 	readonly outputArtifactPath?: string;
+	/** How long the child's session may take to start before the attempt fails; {@link SUBAGENT_SESSION_START_TIMEOUT_MS}. */
+	readonly sessionStartTimeoutMs?: number;
+	/**
+	 * The thinking level the launch asked for explicitly (a `provider/model:effort` override). The child and every model
+	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not.
+	 */
+	readonly requestedThinking?: ThinkingLevel;
+	/** Resolves a fallback entry (`provider/model[:thinking]`) to its model, to pick the level it runs at. */
+	readonly resolveCandidateModel?: CandidateModelResolver;
+}
+
+/**
+ * How long a child's session may take to start: open its session, load its resources, and create its agent session,
+ * including any wait for a resource-admission permit. A child still starting then fails instead of staying running.
+ */
+export const SUBAGENT_SESSION_START_TIMEOUT_MS = 5 * 60_000;
+
+function formatStartTimeout(ms: number): string {
+	return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.max(1, Math.round(ms / 1000))}s`;
+}
+
+/** Atomic's thinking level when neither the model nor the settings configure one (the SDK's default). */
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+
+/**
+ * The level a model runs an explicitly requested effort at: that effort where the model supports it, otherwise the
+ * model's default level (its configured thinking level, else the default one), as a launch with no effort would.
+ */
+function explicitEffortFor(model: Model<Api>, requested: ThinkingLevel, settings: SettingsManager): ThinkingLevel {
+	if (getSupportedThinkingLevels(model).includes(requested)) return requested;
+	return clampThinkingLevel(
+		model,
+		settings.getModelThinkingLevel(model.provider, model.id) ??
+			settings.getDefaultThinkingLevel() ??
+			DEFAULT_THINKING_LEVEL,
+	);
+}
+
+/**
+ * A fallback entry pinned to the level its model runs at: the entry's own `:effort`, else the launch's explicit one,
+ * where that model supports it, and that model's default level otherwise. An entry it cannot resolve is kept as is.
+ */
+function pinFallbackEffort(
+	entry: string,
+	requested: ThinkingLevel,
+	settings: SettingsManager,
+	resolve: CandidateModelResolver | undefined,
+): string {
+	const resolved = resolve?.(entry);
+	if (!resolved) return entry;
+	const { baseModel } = splitKnownThinkingSuffix(entry.trim());
+	return `${baseModel}:${explicitEffortFor(resolved.model, resolved.thinkingLevel ?? requested, settings)}`;
 }
 
 export interface ChildPolicy extends ChildModePolicy {
@@ -871,12 +937,25 @@ export class SubagentControlRuntime {
 	private readonly delivered = new Set<string>();
 	private readonly deliveredEnvelopes = new Map<string, ResultEnvelope>();
 	private readonly killedChildren = new Set<string>();
+	/** The child id (`<runId>:<index>`) run control knows each admitted child path by. */
+	private readonly childIds = new Map<string, string>();
 	private nextAttemptId = 1;
 
 	constructor(parent: ParentContext, sessionRoot?: string, runningCapacity?: number) {
 		this.parent = { ...parent };
 		this.sessionRoot = trustedSessionRoot(this.parent, sessionRoot);
 		this.native = new SubagentControl(this.parent.path, runningCapacity);
+	}
+
+	childIdOf(pathValue: string): string | undefined {
+		return this.childIds.get(pathValue);
+	}
+
+	/** The latest admitted path of a child id; a resumed child is admitted again under a new path. */
+	pathOfChildId(childId: string): string | undefined {
+		let latest: string | undefined;
+		for (const [pathValue, id] of this.childIds) if (id === childId) latest = pathValue;
+		return latest;
 	}
 
 	registerAgents(agents: readonly AgentConfig[]): void {
@@ -898,6 +977,7 @@ export class SubagentControlRuntime {
 		);
 		if (!native.child) return refusal(native);
 		const identity = native.child;
+		if (spec.childId !== undefined) this.childIds.set(identity.path, spec.childId);
 		const childModePolicy = resolveChildModePolicy(spec);
 		const sessionDir = spec.sessionManager?.getSessionDir() || sessionDirectory(this.sessionRoot, identity.path);
 		mkdirSync(sessionDir, { recursive: true });
@@ -1076,19 +1156,60 @@ export class SubagentControlRuntime {
 		signals.interrupt.addEventListener("abort", interruptListener, {
 			once: true,
 		});
+		// A child whose session is not up within its start budget fails, instead of staying running with no session.
+		const startTimeoutMs = admitted.spec.sessionStartTimeoutMs ?? SUBAGENT_SESSION_START_TIMEOUT_MS;
+		const startDeadline = new AbortController();
+		let startPhase = "opening its session";
+		const startTimer = setTimeout(
+			() =>
+				startDeadline.abort(
+					new Error(
+						`Subagent session did not start within ${formatStartTimeout(startTimeoutMs)} (still ${startPhase}); it was stopped before its task ran.`,
+					),
+				),
+			startTimeoutMs,
+		);
+		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
+		const beforeStartDeadline = <T>(phase: string, work: Promise<T>, abandon?: (late: T) => void): Promise<T> => {
+			startPhase = phase;
+			return new Promise<T>((resolve, reject) => {
+				const expire = () => {
+					void work.then(
+						(late) => abandon?.(late),
+						() => undefined,
+					);
+					reject(startDeadline.signal.reason);
+				};
+				if (startDeadline.signal.aborted) return expire();
+				startDeadline.signal.addEventListener("abort", expire, { once: true });
+				work.then(
+					(value) => {
+						startDeadline.signal.removeEventListener("abort", expire);
+						resolve(value);
+					},
+					(error: unknown) => {
+						startDeadline.signal.removeEventListener("abort", expire);
+						reject(error);
+					},
+				);
+			});
+		};
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
-			const sessionManager = admitted.sessionManager
-				? await SessionManager.open(
-						admitted.sessionManager.getSessionStore(),
-						admitted.sessionManager.getSessionId(),
-						admitted.policy.cwd,
-					)
-				: await SessionManager.create(
-						admitted.policy.cwd,
-						admitted.sessionDir,
-						workflow ? { internal: true, workflow } : { internal: true },
-					);
+			const sessionManager = await beforeStartDeadline(
+				"opening its session",
+				admitted.sessionManager
+					? SessionManager.open(
+							admitted.sessionManager.getSessionStore(),
+							admitted.sessionManager.getSessionId(),
+							admitted.policy.cwd,
+						)
+					: SessionManager.create(
+							admitted.policy.cwd,
+							admitted.sessionDir,
+							workflow ? { internal: true, workflow } : { internal: true },
+						),
+			);
 			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
@@ -1097,7 +1218,7 @@ export class SubagentControlRuntime {
 			};
 			taskHooks?.bindChildSession?.(childSession);
 			admitted.spec.onChildSession?.(childSession);
-			if (workflow) await sessionManager.markSessionInternal(workflow);
+			if (workflow) await beforeStartDeadline("opening its session", sessionManager.markSessionInternal(workflow));
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
 			let created: { session: AgentSession };
@@ -1132,6 +1253,21 @@ export class SubagentControlRuntime {
 					: inherited.extensionBindings;
 				const agentDir = inherited.agentDir ?? getAgentDir();
 				const settingsManager = inherited.settingsManager ?? SettingsManager.create(admitted.policy.cwd, agentDir);
+				// An explicit effort runs exactly on each model that supports it, the child's and every one its fallback
+				// chain can switch to, and at that model's default level on one that does not; never another level.
+				const requested = admitted.spec.requestedThinking;
+				const explicitEffort: Pick<CreateAgentSessionOptions, "thinkingLevel" | "fallbackModels"> =
+					requested === undefined
+						? {}
+						: {
+								...(inherited.model
+									? { thinkingLevel: explicitEffortFor(inherited.model, requested, settingsManager) }
+									: {}),
+								fallbackModels: (inherited.fallbackModels ?? settingsManager.getFallbackModels() ?? []).map(
+									(entry) =>
+										pinFallbackEffort(entry, requested, settingsManager, admitted.spec.resolveCandidateModel),
+								),
+							};
 				const resourceLoader = new DefaultResourceLoader(
 					inProcessChildResourceLoaderOptions({
 						cwd: admitted.policy.cwd,
@@ -1143,7 +1279,7 @@ export class SubagentControlRuntime {
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 					}),
 				);
-				await resourceLoader.reload();
+				await beforeStartDeadline("loading its resources", resourceLoader.reload());
 				const selectedSkills = resolveSkillsFromCatalog(
 					[...admitted.policy.skills],
 					resourceLoader.getSkillCatalog(),
@@ -1163,28 +1299,31 @@ export class SubagentControlRuntime {
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
 				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
 				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
-				created = {
-					session: (
-						await createAgentSession({
-							...inherited,
-							extensionBindings,
-							customTools: admitted.policy.customTools ?? inherited.customTools,
-							resourceLoader,
-							resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt]),
-							subagentPolicy: {
-								...admitted.policy,
-								executionEnded: executionEnded.signal,
-								...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
-							},
-							settingsManager,
-							orchestrationContext: admitted.spec.parent?.orchestrationContext,
-							sessionManager,
-							systemPromptTransform,
-							initialContextTransform: promptBehavior.initialContextTransform,
-						})
-					).session,
-				};
+				created = await beforeStartDeadline(
+					"creating its agent session, which includes any wait for a resource-admission permit",
+					createAgentSession({
+						...inherited,
+						...explicitEffort,
+						extensionBindings,
+						customTools: admitted.policy.customTools ?? inherited.customTools,
+						resourceLoader,
+						resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startDeadline.signal]),
+						subagentPolicy: {
+							...admitted.policy,
+							executionEnded: executionEnded.signal,
+							...(!childAllowsIntercom(inherited) ? { intercom: undefined, intercomGroup: undefined } : {}),
+						},
+						settingsManager,
+						orchestrationContext: admitted.spec.parent?.orchestrationContext,
+						sessionManager,
+						systemPromptTransform,
+						initialContextTransform: promptBehavior.initialContextTransform,
+					}),
+					// The attempt already failed; a session that comes up after its deadline is never used.
+					(late) => void late.session.dispose().catch(() => undefined),
+				);
 			}
+			clearTimeout(startTimer);
 			session = created.session;
 			const transcriptSession = session;
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
@@ -1431,6 +1570,7 @@ export class SubagentControlRuntime {
 				...skillReport,
 			};
 		} finally {
+			clearTimeout(startTimer);
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();
 			signals.abort.removeEventListener("abort", abortListener);

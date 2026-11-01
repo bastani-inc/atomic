@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
-import { splitKnownThinkingSuffix } from "../../shared/model-info.js";
+import { splitKnownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -248,6 +248,11 @@ export async function runSingleInProcess(
 		throw new Error(
 			"Subagent auto-selected model could not be resolved before execution. Retry explicitly with the current catalog.",
 		);
+	// The effort a `provider/model:effort` launch asked for explicitly; an auto-routed launch chose none itself.
+	const requestedSuffix = splitKnownThinkingSuffix(options.modelOverride ?? agent.model ?? "").thinkingSuffix.slice(1);
+	const requestedThinking = options.modelRoute
+		? undefined
+		: THINKING_LEVELS.find((level) => level === requestedSuffix);
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 
@@ -284,6 +289,7 @@ export async function runSingleInProcess(
 	const testSession = options.testSession ?? defaultTestSession();
 	const spec: ChildSpec = {
 		taskName: agent.name,
+		childId: `${options.runId}:${options.index ?? 0}`,
 		task,
 		agent,
 		cwd,
@@ -301,6 +307,13 @@ export async function runSingleInProcess(
 				? { progressArtifactPath: options.progressPath }
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
+		...(options.sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs: options.sessionStartTimeoutMs }),
+		...(requestedThinking === undefined
+			? {}
+			: {
+					requestedThinking,
+					...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
+				}),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,

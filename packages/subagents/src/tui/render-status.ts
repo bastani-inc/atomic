@@ -36,6 +36,7 @@ function childStatusLines(
 	return [
 		heading,
 		...metadata,
+		...(child.childId ? [theme.fg("dim", `  Id: ${displayText(child.childId)}`)] : []),
 		theme.fg("dim", `  Path: ${displayText(child.path)}`),
 		theme.fg("dim", `  Parent: ${displayText(child.parentPath)} · Depth: ${child.depth}`),
 		theme.fg("dim", `  Task: ${displayText(child.taskName)}`),

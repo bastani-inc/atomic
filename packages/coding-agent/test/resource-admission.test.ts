@@ -194,6 +194,37 @@ test("delegated child sessions and their commands draw on the parent's admission
 	assert.equal(admission.held.session, 1);
 });
 
+test("a child of a session that holds no admission takes no permit from a scope its launch runs in", async () => {
+	const root = tempRoot();
+	// A top-level session, created outside any admission scope.
+	const parent = await open(root);
+	// Another workflow's admission with no headroom, whose scope the parent's turn happened to start in.
+	const scoped = new FakeAdmission({ session: 0 });
+	const inherited = parent.extensionRunner.createContext().getChildSessionOptions!({ cwd: root });
+
+	const child = await withResourceAdmission(scoped, () =>
+		open(root, {
+			...inherited,
+			sessionManager: SessionManager.inMemory(root),
+			// Without the fix the child waits on the scope forever; bound the red run.
+			resourceAdmissionSignal: AbortSignal.timeout(500),
+		}),
+	);
+
+	assert.ok(child.sessionId);
+	assert.deepEqual(scoped.requests, [], "the child never asks the enclosing scope for a permit");
+	const direct = await withResourceAdmission(scoped, () =>
+		createAgentSession(sessionOptions(root, { resourceAdmissionSignal: AbortSignal.timeout(100) })).then(
+			async ({ session }) => {
+				await session.dispose();
+				return "created";
+			},
+			() => "waited",
+		),
+	);
+	assert.equal(direct, "waited", "a session launched directly in the scope still draws on it");
+});
+
 const NO_HEADROOM = /no session headroom for a delegated launch/;
 
 function delegatedOptions(parent: AgentSession, root: string): CreateAgentSessionOptions {

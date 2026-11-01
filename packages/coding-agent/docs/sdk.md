@@ -193,7 +193,9 @@ On Unix, Atomic calls `permit.bindProcess({ kind: "unix-process-group", id })` o
 
 A parent session keeps its permit while it waits for a child, so a child that queued for a permit could wait on its own parent. Atomic marks child sessions (subagents and other sessions built from `getChildSessionOptions()`) with `request.delegated`. For those requests, grant a permit immediately or throw. Never queue them or exceed the cap. A cap of one, or a cap filled by parents, therefore rejects delegation with your error instead of stalling. Set the cap above the number of parents that can be live at once if you need children to run.
 
-Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a service to SDK sessions and managed commands launched within an asynchronous operation, including commands using an existing task owner. An explicit session service wins for that session; commands in the operation use its scoped service.
+Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a service to SDK sessions and managed commands launched within an asynchronous operation, including commands using an existing task owner. An explicit session service wins for that session; commands in the operation use its scoped service. Pass `resourceAdmission: null` for a session that takes no permit even inside such a scope.
+
+A child session built from `getChildSessionOptions()` uses only its parent's service, or none when its parent holds none: a scope the parent's turn happens to run in never applies to the parent's children.
 
 ### Session storage
 
