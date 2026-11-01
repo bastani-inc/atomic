@@ -81,12 +81,16 @@ const proxy = new IntercomWireProxy(frontSocketPath, brokerSocketPath);
 const openClients = new Set<Client>();
 let hostCounter = 0;
 
+/**
+ * Deadlines are kept on the monotonic clock: a Windows runner's wall clock has been seen to jump ahead mid-test,
+ * ending a 20 s `Date.now()` deadline in a test that had run for ten seconds.
+ */
 async function waitFor<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T> {
-	const deadline = Date.now() + WAIT_TIMEOUT_MS;
+	const deadline = performance.now() + WAIT_TIMEOUT_MS;
 	for (;;) {
 		const value = await probe();
 		if (value !== undefined) return value;
-		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}\n${brokerOutput}`);
+		if (performance.now() > deadline) throw new Error(`Timed out waiting for ${what}\n${brokerOutput}`);
 		await sleep(POLL_MS);
 	}
 }
