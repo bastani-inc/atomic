@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, SessionCommandCatalog } from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
 	StageControlHandle,
@@ -69,6 +69,9 @@ export class RegisteredPooledStageHandle implements StageControlHandle {
 	}
 	pendingToolExecutionEvents(): readonly AgentSessionEvent[] {
 		return this.current()?.pendingToolExecutionEvents?.() ?? [];
+	}
+	commandCatalog(): SessionCommandCatalog | undefined {
+		return this.current()?.commandCatalog?.();
 	}
 
 	/** Keeps the published stage current. */

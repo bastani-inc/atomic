@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSession, AgentSessionEvent } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, SessionCommandCatalog } from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
 	StageControlHandle,
@@ -34,6 +34,8 @@ type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
 
 /** Mirrors the worker's `DELIVERY_RECEIPT_EVENT`, without loading worker code in the root. */
 const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
+/** Mirrors the worker's `STAGE_COMMANDS_EVENT`. */
+const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
 
 /**
  * How long one send may wait for its attempt to confirm it before later sends go ahead. Admission
@@ -142,6 +144,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private undelivered?: number;
 	private disposed = false;
 	private session: string | undefined;
+	/** The stage session's slash commands; undefined while the session is still starting. */
+	private commands?: SessionCommandCatalog;
 	/** The outbox's sender while it runs; one at a time keeps send order. */
 	private pumping?: Promise<void>;
 	/** Something to send arrived while the sender ran. */
@@ -218,6 +222,9 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	streamingMessage(): StreamingMessage {
 		return this.streaming;
+	}
+	commandCatalog(): SessionCommandCatalog | undefined {
+		return this.commands;
 	}
 	pendingToolExecutionEvents(): readonly AgentSessionEvent[] {
 		return this.toolExecutions.replayEvents();
@@ -668,6 +675,8 @@ export class PooledStageHandle implements StageControlHandle {
 
 	private adopt(snapshot: PooledStageChatSnapshot): void {
 		this.session = snapshot.sessionId;
+		// A replacement attempt's session lists its own commands once it has started.
+		this.commands = snapshot.commands;
 		this.settled = [...snapshot.messages];
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
@@ -686,6 +695,10 @@ export class PooledStageHandle implements StageControlHandle {
 	private apply(event: AgentSessionEvent): boolean {
 		if ((event.type as string) === DELIVERY_RECEIPT_EVENT) {
 			this.forget((event as never as { readonly op: DeliveryOpId }).op);
+			return false;
+		}
+		if ((event.type as string) === STAGE_COMMANDS_EVENT) {
+			this.commands = (event as never as { readonly commands: SessionCommandCatalog }).commands;
 			return false;
 		}
 		this.applyEvent(event);

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - A message sent to a stage on a local worker (`workflows.localWorkers`) while its session was still starting no longer fails the stage with "generation closed before the stage finished; its tool calls were refused" when the stage has `fallbackModels`.
+- The chat of a stage on a local worker completes `/skill:` commands with that stage's skills, as an in-process stage chat does, instead of warning "Skill discovery unavailable: this stage host does not expose its session command metadata." While the stage's session is still starting, it says its skills are loading.
 
 ## [0.9.57] - 2026-10-31
 

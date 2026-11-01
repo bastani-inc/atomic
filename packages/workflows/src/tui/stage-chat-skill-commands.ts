@@ -18,6 +18,15 @@ export function stageSkillAutocomplete(ctx: StageChatViewContext) {
 		async () => {
 			const handle = liveHandle(ctx);
 			if (!handle || isBlocked(ctx)) throw new Error("This stage chat is not editable.");
+			// A stage on a local worker lists its session's commands from the worker, once that session started.
+			if (handle.agentSession === undefined && handle.commandCatalog !== undefined) {
+				assertComposerAdmission(ctx, handle);
+				return (
+					handle.commandCatalog() ?? {
+						loading: `Loading skills: stage "${handle.stageName}" is still starting on its local worker.`,
+					}
+				);
+			}
 			if (handle.agentSession === undefined) {
 				let attachment = pendingSkillAttachments.get(handle);
 				if (!attachment) {

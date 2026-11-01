@@ -537,3 +537,20 @@ test("text left unconfirmed when its chat closes is retried by the stage's next 
 	while (outbox[0]?.admittedBy === undefined) await new Promise((resolve) => setTimeout(resolve, 1));
 	assert.equal(outbox[0]?.admittedBy, 1, "and admitted");
 });
+
+test("the root handle lists the slash commands its worker reports once the stage's session starts, and keeps that notice out of the transcript (#3996)", async () => {
+	const fake = pool(() => []);
+	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const seen: string[] = [];
+	handle.subscribe((event) => seen.push(event.type));
+	assert.equal(handle.commandCatalog(), undefined, "nothing to list while the session starts");
+
+	const commands = { cwd: "/stage-cwd", skillCommands: [{ name: "skill:release-notes", description: "Draft notes" }] };
+	fake.events(1, { type: "atomic_pooled_stage_commands", commands } as never as AgentSessionEvent);
+	fake.events(2, { type: "agent_start" } as AgentSessionEvent);
+	assert.deepEqual(handle.commandCatalog(), commands);
+	assert.deepEqual(seen, ["agent_start"]);
+	handle.dispose();
+});

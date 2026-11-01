@@ -1,4 +1,9 @@
-import type { AgentSessionEvent, SessionEntry } from "@bastani/atomic";
+import {
+	type AgentSessionEvent,
+	getSessionCommandCatalog,
+	type SessionCommandCatalog,
+	type SessionEntry,
+} from "@bastani/atomic";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { EMPTY_STAGE_QUEUED_USER_MESSAGES } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -121,6 +126,12 @@ export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
 /** Event a watch carries when a delivery op's text entered the stage's session (#3996). */
 export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
+/**
+ * Event a watch carries when the stage's session has started and its slash commands are known, for a
+ * watch whose snapshot was taken before that (#3996).
+ */
+export const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
+
 /** Where the current attempt's stages wait for human input. */
 export interface WorkerStagePrompts {
 	readonly store: Store;
@@ -154,6 +165,8 @@ interface Watch {
 	readonly batch: SeqEvent[];
 	seq: number;
 	timer?: NodeJS.Timeout;
+	/** The watcher has the session's slash commands, from the snapshot or a later commands event. */
+	commandsSent: boolean;
 }
 
 function isTerminal(handle: StageControlHandle): boolean {
@@ -255,10 +268,12 @@ export class WorkerStageWatches {
 		}
 		this.close(command.watch);
 		const batch: SeqEvent[] = [];
+		const commands = commandCatalog(handle);
 		const watch: Watch = {
 			handle,
 			batch,
 			seq: 0,
+			commandsSent: commands !== undefined,
 			// Subscribed before the snapshot is taken: nothing between them can be missed.
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
@@ -278,6 +293,7 @@ export class WorkerStageWatches {
 			commandId: command.commandId,
 			snapshot: {
 				...snapshot(handle, watch.seq),
+				...(commands === undefined ? {} : { commands }),
 				deliveredOps: [...delivered],
 				turnStarted: handle.isStreaming || this.options.turnStarted?.(handle) === true,
 			},
@@ -301,6 +317,8 @@ export class WorkerStageWatches {
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
 	sweep(): void {
 		for (const [id, watch] of this.watches) {
+			// A session that started without sending an event yet still lists its commands to the watcher.
+			this.sendCommandsOnce(id, watch);
 			// The stage registered another handle (it moved from replaying to running live, say): this
 			// watch would see nothing more, so the root opens a new one on the current handle.
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
@@ -525,8 +543,23 @@ export class WorkerStageWatches {
 	private record(id: WatchId, event: AgentSessionEvent): void {
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
+		// The session's first event shows it started: its commands go first, so the watcher has them now.
+		this.sendCommandsOnce(id, watch);
+		this.append(id, watch, event);
+	}
+
+	private append(id: WatchId, watch: Watch, event: AgentSessionEvent): void {
 		appendCoalesced(watch.batch, { seq: ++watch.seq, event });
 		watch.timer ??= setTimeout(() => this.flush(id), STAGE_EVENT_BATCH_INTERVAL_MS);
+	}
+
+	/** Sends the stage session's slash commands to a watcher that does not have them, once they are known. */
+	private sendCommandsOnce(id: WatchId, watch: Watch): void {
+		if (watch.commandsSent) return;
+		const commands = commandCatalog(watch.handle);
+		if (commands === undefined) return;
+		watch.commandsSent = true;
+		this.append(id, watch, { type: STAGE_COMMANDS_EVENT, commands } as never as AgentSessionEvent);
 	}
 
 	private flush(id: WatchId): void {
@@ -554,6 +587,18 @@ function deliveredOps(entries: readonly SessionEntry[]): DeliveryOpId[] {
 		const op = (entry.data as { readonly op?: string } | undefined)?.op;
 		return typeof op === "string" ? [op as DeliveryOpId] : [];
 	});
+}
+
+/** The stage session's slash commands, or undefined while its session has not started. */
+function commandCatalog(handle: StageControlHandle): SessionCommandCatalog | undefined {
+	const session = handle.agentSession;
+	if (session?.resourceLoader === undefined || session.settingsManager === undefined) return undefined;
+	try {
+		return getSessionCommandCatalog(session);
+	} catch {
+		// A session torn down meanwhile lists nothing; the watch ends with it.
+		return undefined;
+	}
 }
 
 function snapshot(handle: StageControlHandle, seq: number): PooledStageChatSnapshot {

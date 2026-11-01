@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import type { AgentSessionEvent } from "@bastani/atomic";
+import {
+	type AgentSession,
+	type AgentSessionEvent,
+	buildSkillCatalog,
+	createSyntheticSourceInfo,
+} from "@bastani/atomic";
 import { test } from "vitest";
 import {
 	type AgentSessionEventListener,
@@ -182,6 +187,73 @@ test("a watch opens with a snapshot and ends when its stage finishes (#3996)", a
 	);
 	assert.deepEqual(sent.at(-1), { kind: "stage-watch-ended", watch: "watch-1", reason: "stage_finished", id: 0 });
 	assert.equal(stage.subscribers(), 0);
+});
+
+/** The parts of a started stage session that list its slash commands: one project skill. */
+function startedSession(): AgentSession {
+	const skill = {
+		name: "release-notes",
+		description: "Draft release notes",
+		filePath: "/stage-cwd/.atomic/skills/release-notes/SKILL.md",
+		baseDir: "/stage-cwd/.atomic/skills/release-notes",
+		disableModelInvocation: false,
+		sourceInfo: createSyntheticSourceInfo("/stage-cwd/.atomic/skills/release-notes/SKILL.md", {
+			source: "local",
+			scope: "project",
+		}),
+	};
+	return {
+		resourceLoader: {
+			getSkills: () => ({ skills: [skill], diagnostics: [] }),
+			getSkillCatalog: () => buildSkillCatalog([skill]),
+		},
+		settingsManager: { getEnableSkillCommands: () => true },
+		sessionManager: { getCwd: () => "/stage-cwd", getEntries: () => [] },
+	} as never as AgentSession;
+}
+
+test("a watch opened while the stage's session is still starting sends its slash commands once the session starts (#3996)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = streamingStage("agent");
+	let session: AgentSession | undefined;
+	registry.register(Object.defineProperty(stage.handle, "agentSession", { get: () => session, configurable: true }));
+	openWatch(watches);
+	const opened = sent[0];
+	assert.equal(opened?.kind, "stage-command-result");
+	assert.equal(opened.snapshot?.commands, undefined, "no commands while the session is starting");
+
+	session = startedSession();
+	stage.emit(delta("first"));
+	await untilSent(sent, "stage-events");
+	const stream = events();
+	assert.equal(stream[0]?.event.type, "atomic_pooled_stage_commands", "the commands arrive before the first event");
+	assert.deepEqual((stream[0]!.event as never as { commands: unknown }).commands, {
+		cwd: "/stage-cwd",
+		skillCommands: [{ name: "skill:release-notes", description: "[p] Draft release notes" }],
+	});
+	assert.equal(stream[1]?.event.type, "message_update");
+	stage.emit(delta("second"));
+	await sleep(80);
+	assert.equal(
+		events().filter(({ event }) => (event.type as string) === "atomic_pooled_stage_commands").length,
+		1,
+		"sent once per watch",
+	);
+
+	watches.serve({
+		kind: "stage-command",
+		commandId: 9,
+		attempt: { workId: "work", generation: 1 },
+		op: "watch",
+		watch: "watch-2" as WatchId,
+		runId: "child",
+		stageId: "agent",
+	});
+	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
+	assert.deepEqual(
+		reopened?.kind === "stage-command-result" ? reopened.snapshot?.commands?.skillCommands : undefined,
+		[{ name: "skill:release-notes", description: "[p] Draft release notes" }],
+	);
 });
 
 test("coalescing merges deltas of one block without losing text, and keeps every other event (#3996)", () => {

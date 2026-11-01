@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionEvent, QuestionParams } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, QuestionParams, SessionCommandCatalog } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
@@ -54,6 +54,11 @@ export interface PooledStageChatSnapshot {
 	 * nothing until it does, so the replay's own prompt comes first.
 	 */
 	readonly turnStarted?: boolean;
+	/**
+	 * The slash commands the stage's session offers (its skills), for the chat's completion. Absent
+	 * while the session is still starting; the watch then sends them once it has started.
+	 */
+	readonly commands?: SessionCommandCatalog;
 	/** Seq of the last event folded into this snapshot; the stream continues after it. */
 	readonly seq: number;
 }

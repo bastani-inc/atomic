@@ -25,7 +25,7 @@
  *   - pi docs/sdk.md (AgentSession.prompt/steer/followUp/abort)
  */
 
-import type { AgentSession, AgentSessionEvent, SessionStore } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, SessionCommandCatalog, SessionStore } from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -91,6 +91,11 @@ export interface StageControlHandle {
 	streamingMessage?(): NonNullable<NonNullable<AgentSession["agent"]>["state"]["streamingMessage"]> | undefined;
 	/** Set when the stage's session runs in another process. */
 	readonly placement?: StagePlacement;
+	/**
+	 * The slash commands (skills) of a session that runs in another process, for a handle without an
+	 * `agentSession`: undefined while that session is still starting.
+	 */
+	commandCatalog?(): SessionCommandCatalog | undefined;
 	/**
 	 * Pending steering/follow-up text on this stage's session, kept current from
 	 * `queue_update` for the handle's whole lifetime so a detached graph node and

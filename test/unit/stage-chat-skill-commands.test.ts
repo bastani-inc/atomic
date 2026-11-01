@@ -319,3 +319,60 @@ test("#2884 a skill admission refusal after resume does not leave a running chat
 		view.dispose();
 	}
 });
+
+test("a stage chat on a local worker completes skill commands from its worker, and says they are loading while its session starts (#3996)", async () => {
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	let provider: AutocompleteProvider | undefined;
+	class Editor extends FakePromptEditor {
+		setAutocompleteProvider(value: AutocompleteProvider) {
+			provider = value;
+		}
+	}
+	const { handle: base } = makeHandle();
+	let catalog: { cwd: string; skillCommands: { name: string; description?: string }[] } | undefined;
+	// The root's view of a worker stage: no live session in this process, only what the worker reports.
+	const handle = {
+		...base,
+		agentSession: undefined,
+		placement: { kind: "local-worker" as const, workId: "work", generation: 1 },
+		commandCatalog: () => catalog,
+	};
+	const view = new StageChatView({
+		store,
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		graphTheme: deriveGraphTheme({}),
+		handle,
+		onDetach() {},
+		onClose() {},
+		piTui: makeTestTui(24),
+		piKeybindings: makeFakeKeybindings(),
+		piEditorFactory: () => new Editor(),
+	});
+	try {
+		assert.ok(provider);
+		const query = () => provider!.getSuggestions(["/skill:re"], 0, 9, { signal: new AbortController().signal });
+		assert.equal(await query(), null);
+		assert.equal(view._statusMessage, 'Loading skills: stage "review-a" is still starting on its local worker.');
+		assert.doesNotMatch(view._statusMessage, /unavailable/);
+
+		catalog = {
+			cwd: "/stage-cwd",
+			skillCommands: [{ name: "skill:release-notes", description: "[p] Draft release notes" }],
+		};
+		const suggestions = await query();
+		assert.deepEqual(
+			suggestions?.items.map((item) => [item.value, item.description]),
+			[["skill:release-notes", "[p] Draft release notes"]],
+		);
+		const slash = await provider.getSuggestions(["/"], 0, 1, { signal: new AbortController().signal });
+		assert.deepEqual(
+			slash?.items.map((item) => item.value),
+			["tasks", "skill:release-notes"],
+		);
+	} finally {
+		view.dispose();
+	}
+});
