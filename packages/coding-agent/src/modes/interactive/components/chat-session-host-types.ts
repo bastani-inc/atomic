@@ -61,6 +61,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	commands?: ChatSessionHostCommands;
 	requestRender?: () => void;
 	getAgentSession?: () => AgentSession | undefined;
+	/**
+	 * The session's messages when `getAgentSession` has no session in this process, such as a workflow
+	 * stage on a local worker: a compaction redraws the transcript from them.
+	 */
+	getSessionMessages?: () => AgentSession["messages"] | undefined;
 	/** Custom hosts may retain live task rows; interactive stage chat uses footer-only status. */
 	taskRowsInChat?: boolean;
 	isStreaming?: () => boolean;

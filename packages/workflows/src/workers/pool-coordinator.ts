@@ -55,6 +55,7 @@ import {
 	SqlResourceAdmission,
 	unconfirmedProcessGroups,
 } from "./resource-admission.js";
+import { isCancellation } from "./stage-session-commands.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
@@ -1004,7 +1005,8 @@ export class PoolCoordinator {
 		const { slot, attempt } = watch;
 		if (slot.work?.id !== attempt.workId || slot.work.generation !== attempt.generation)
 			return { ok: false, refusal: "StaleAttempt" };
-		if (this.desiredControl !== undefined && this.desiredControl !== "running")
+		// A paused or quitting pool starts no new session work, but still lets a running command be stopped.
+		if (this.desiredControl !== undefined && this.desiredControl !== "running" && !isCancellation(command))
 			return { ok: false, refusal: "PoolPausedOrQuitting" };
 		const result = await this.stageCommand(slot, { attempt, op: "session", watch: id, command });
 		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };

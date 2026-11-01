@@ -515,3 +515,77 @@ test("a pooled stage whose worker cannot serve a live view yet opens with a noti
 		unregister();
 	}
 });
+
+test("/compact in a pooled stage's chat redraws the open transcript from the compacted session, as an in-process chat does (#3996)", async () => {
+	const { store } = pooledChildStore({ phase: "first-dispatch", state: "dispatched" });
+	const pool = fakeTransport({
+		isStreaming: false,
+		streamingMessage: undefined,
+		messages: [
+			{ role: "user", content: "the long history before compaction", timestamp: 1 },
+			assistant("an old answer that compaction drops"),
+		],
+	});
+	const unregister = registerPooledStageSource(store, {
+		async acquire(runId, stageId) {
+			const opened = await openPooledStageHandle(pool.transport, { runId, stageId }, "agent");
+			assert.ok(opened.ok);
+			return { handle: opened.handle, release: () => opened.handle.dispose() };
+		},
+	});
+	const pane = new WorkflowAttachPane({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "child",
+		stageControlRegistry: createStageControlRegistry(),
+		resolvePostMortemHandle: () => ({ ok: false, reason: "not_terminal" }),
+		onClose: () => {},
+		initialAttachStageId: "agent",
+	});
+	try {
+		await until(() => visible(pane.render(120)).includes("an old answer that compaction drops"));
+		const result = {
+			compactedText: "[User]: retained line",
+			firstKeptEntryId: null,
+			tokensBefore: 5_000,
+			stats: {
+				linesBefore: 20,
+				linesDeleted: 12,
+				linesKept: 8,
+				rangeCount: 1,
+				tokensBefore: 5_000,
+				tokensAfter: 200,
+				percentReduction: 96,
+			},
+			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
+			promptVersion: 4,
+			rung: "planned",
+		};
+		// The worker sends the compacted session's messages, then the compaction's end.
+		pool.send(8, {
+			type: "atomic_pooled_stage_messages",
+			messages: [
+				{
+					role: "custom",
+					customType: "compaction",
+					content: [{ type: "text", text: "The earlier conversation was compacted.\n\n[User]: retained line" }],
+					display: true,
+					details: { tokensBefore: 5_000 },
+					timestamp: 2,
+				},
+			],
+		} as never as AgentSessionEvent);
+		pool.send(9, {
+			type: "compaction_end",
+			reason: "manual",
+			result,
+			aborted: false,
+			willRetry: false,
+		} as never as AgentSessionEvent);
+		await until(() => !visible(pane.render(120)).includes("an old answer that compaction drops"));
+		assert.doesNotMatch(visible(pane.render(120)), /the long history before compaction/);
+	} finally {
+		pane.dispose();
+		unregister();
+	}
+});

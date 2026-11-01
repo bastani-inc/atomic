@@ -11,6 +11,7 @@ import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
+import { isCancellation } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import type {
 	AttemptRef,
@@ -449,9 +450,10 @@ export class WorkerStageWatches {
 	private async session(command: Extract<WorkerStageCommand, { op: "session" }>): Promise<StageCommandResult> {
 		const watch = this.airlock(command);
 		if (typeof watch === "string") return { refusal: watch };
-		if (this.control() !== "running") return { refusal: "PoolPausedOrQuitting" };
-		const session = watch.handle.agentSession;
 		const request = command.command;
+		// A paused or quitting pool starts no new session work, but still lets a running command be stopped.
+		if (this.control() !== "running" && !isCancellation(request)) return { refusal: "PoolPausedOrQuitting" };
+		const session = watch.handle.agentSession;
 		if (session === undefined)
 			return {
 				error: `Stage "${watch.handle.stageName}" is still starting on its local worker; try again shortly.`,
@@ -596,13 +598,14 @@ export class WorkerStageWatches {
 		if (watch === undefined) return;
 		// The session's first event shows it started: that goes first, with its commands.
 		this.sendStartedOnce(id, watch);
-		this.append(id, watch, event);
-		// Compaction replaced the session's messages; the watcher's copy follows.
+		// Compaction replaced the session's messages: the watcher's copy follows first, so a chat that
+		// handles the compaction's end redraws from the compacted transcript, as an in-process chat does.
 		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
 			this.append(id, watch, {
 				type: STAGE_MESSAGES_EVENT,
 				messages: [...watch.handle.messages],
 			} as never as AgentSessionEvent);
+		this.append(id, watch, event);
 	}
 
 	private append(id: WatchId, watch: Watch, event: AgentSessionEvent): void {

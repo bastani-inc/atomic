@@ -331,6 +331,11 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 		},
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
+		// A stage on a local worker: the handle's copy of its session's messages, kept current by the worker.
+		getSessionMessages: () => {
+			const handle = liveHandle(ctx);
+			return handle !== undefined && handle.agentSession === undefined ? handle.messages : undefined;
+		},
 		isStreaming: () => isLiveHandleStreaming(ctx),
 		isPaused: () => isPaused(ctx),
 		isDisabled: () => isBlocked(ctx) || !liveHandle(ctx),
