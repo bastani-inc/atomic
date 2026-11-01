@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launched with an effort word that is not a level, such as `model: "openai/gpt-5.5:extreme"`, now runs that model at its default level, as for an effort the model does not support, instead of silently running on the default model. If the model itself is not available either, the launch fails with `Unknown model "<model>": "<word>" is not an effort level (...)` instead of running another model ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+
 ## [0.9.58] - 2026-11-01
 
 ### Added
