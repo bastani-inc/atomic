@@ -487,13 +487,21 @@ export class PoolCoordinator {
 	 * and epoch, so a refusal for that reason waits for the renewal and runs the operation again instead of failing the
 	 * child or the pool: a busy root process, a reload or other runs starting in it must not end a live root's children.
 	 * A refused operation changed nothing, so running it again is safe. A lease that is gone is refused as before.
+	 * `resume` runs after each wait, before the operation runs again: an attempt's own work lease can lapse during the
+	 * wait, so an operation bound to an attempt renews it there (and is fenced there if another attempt replaced it).
 	 */
-	private async whileRootLate<T>(queue: SqlPoolQueue, action: () => Promise<T>): Promise<T> {
-		for (;;) {
+	private async whileRootLate<T>(
+		queue: SqlPoolQueue,
+		action: () => Promise<T>,
+		resume?: () => Promise<void>,
+	): Promise<T> {
+		for (let waited = false; ; ) {
 			try {
+				if (waited) await resume?.();
 				return await action();
 			} catch (error) {
 				if (!(error instanceof Error) || !isRootLeaseLost(error) || !(await this.rootRenewal(queue))) throw error;
+				waited = true;
 			}
 		}
 	}
@@ -1418,7 +1426,15 @@ export class PoolCoordinator {
 					const queue = this.queue!;
 					const lease = this.lease!;
 					// While the root renews late, the worker's request waits for the renewal rather than ending its attempt.
-					const leased = <T>(action: () => Promise<T>) => this.whileRootLate(queue, action);
+					// The worker's own renewals queue behind that request, so the wait can outlast the attempt's work lease:
+					// it is renewed before the request runs again, which fences the request only if another attempt replaced it.
+					const renewAttempt = async () => {
+						const attempt = slot.work;
+						if (attempt === undefined) return;
+						const renewed = await queue.extend(lease, attempt, options.leaseMs);
+						if (slot.work === attempt) slot.work = renewed;
+					};
+					const leased = <T>(action: () => Promise<T>) => this.whileRootLate(queue, action, renewAttempt);
 					if (message.kind === "control") return leased(() => queue.control(lease));
 					if (message.kind === "fenced") {
 						const fenced = slot.work;

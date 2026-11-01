@@ -24,9 +24,13 @@ const CHILDREN = 2;
 const WORK_LEASE_MS = 2_000;
 /** How late the root's last renewal looks: well past the coordinator's window of three root heartbeats. */
 const RENEWAL_LATE_BY_MS = 4 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
-/** How long the renewal stays late: several worker heartbeats and work leases, so every request and recovery meets it. */
+/**
+ * How long the renewal stays late: several worker heartbeats and work leases, so every request and recovery meets it,
+ * and a checkpoint commit that waits it out outlasts its attempt's work lease.
+ */
 const LATE_FOR_MS = 2 * WORK_LEASE_MS + 4 * WORKER_HEARTBEAT_INTERVAL_MS;
-const childPath = fileURLToPath(new URL("../fixtures/pool-resume-child.ts", import.meta.url));
+/** Children that commit a checkpoint every few milliseconds, so commits wait out the late renewal too. */
+const childPath = fileURLToPath(new URL("../fixtures/pool-committing-child.ts", import.meta.url));
 const BUDGET = poolTestBudgetMs(2);
 
 function startedChildren(directory: string): number {
@@ -45,7 +49,7 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = makeTempDirectory("pool-late-root-renewal-");
 		const path = join(directory, "journal.sqlite");
-		const exportName = "resumedChild";
+		const exportName = "committingChild";
 		const child = await loadWorkerDefinition({
 			path: childPath,
 			exportName,
@@ -120,7 +124,7 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(children.length, CHILDREN);
 			for (const outcome of children) {
 				assert.equal(outcome.status, "completed", JSON.stringify(children));
-				// The worker that started a child finished it: the late renewal neither failed nor replayed it.
+				// The worker that started a child finished it: the late renewal neither failed, fenced nor replayed it.
 				assert.equal(outcome.finalPid, outcome.firstPid, JSON.stringify(children));
 			}
 			const after = await clock.get<{ epoch: number }>("SELECT epoch FROM wf_leases WHERE run_id = ?", runId);
