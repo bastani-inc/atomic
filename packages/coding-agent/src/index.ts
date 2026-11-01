@@ -44,9 +44,24 @@ export {
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
-export type { AgentIntent, OperationId, TaskId, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
+export type { AgentIntent, OperationId, TaskId, TaskRecord, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
-export { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./core/tasks/owner-store.js";
+export {
+	bindOwnerTaskStore,
+	getOwnerTaskStore,
+	OwnerTaskStore,
+	type TaskActivity,
+	watchOwnerTaskStoreBinding,
+} from "./core/tasks/owner-store.js";
+export {
+	ownerTaskViewSource,
+	type TaskDetailText,
+	type TaskOutputView,
+	type TaskTranscriptFollow,
+	type TaskTranscriptView,
+	type TaskViewResult,
+	type TaskViewSource,
+} from "./core/tasks/task-view-source.js";
 export { formatReadLineRange, formatToolCallWithArgs } from "./core/tools/render-utils.ts";
 export {
 	createTranscript,

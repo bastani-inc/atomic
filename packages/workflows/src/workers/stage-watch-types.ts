@@ -4,6 +4,13 @@ import type {
 	BashResult,
 	QuestionParams,
 	SessionCommandCatalog,
+	TaskActivity,
+	TaskDetailText,
+	TaskId,
+	TaskOutputView,
+	TaskRecord,
+	TaskTranscriptView,
+	TaskViewResult,
 } from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
@@ -124,21 +131,61 @@ export type ControlResult =
 	| { readonly ok: false; readonly refusal: ControlRefusal };
 
 /**
+ * The background tasks (shells, agents) of a pooled stage's session as its worker sees them, for the
+ * stage chat's `/tasks` and task footer (#3996). Plain data: bigints travel as decimal strings.
+ */
+export interface PooledStageTasks {
+	readonly tasks: readonly TaskRecord[];
+	/** Ids of the tasks `/tasks` lists. */
+	readonly background: readonly TaskId[];
+	/** When each settled task settled, as journal sequence numbers. */
+	readonly settlement: readonly (readonly [TaskId, string])[];
+	readonly activity: readonly {
+		readonly id: TaskId;
+		readonly entries: readonly TaskActivity[];
+		readonly omitted: boolean;
+	}[];
+	/** Tasks that accept input now. */
+	readonly stdin: readonly TaskId[];
+	/** Extension statuses of agent tasks, by status key. */
+	readonly statuses: readonly { readonly id: TaskId; readonly entries: readonly (readonly [string, string])[] }[];
+}
+
+/** What the stage chat does with one background task of a pooled stage. */
+export type PooledTaskAction =
+	| { readonly kind: "foreground" }
+	| { readonly kind: "cancel" }
+	| { readonly kind: "input"; readonly text: string }
+	| { readonly kind: "output"; readonly start: string; readonly maximumBytes: number }
+	| { readonly kind: "detail" }
+	| { readonly kind: "transcript"; readonly cursor?: string };
+
+/** The answer to a {@link PooledTaskAction}. */
+export type PooledTaskReply =
+	| { readonly kind: "foreground"; readonly result: TaskViewResult<{ readonly kind: string }> }
+	| { readonly kind: "cancel" }
+	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
+	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }
+	| { readonly kind: "detail"; readonly detail: TaskDetailText }
+	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> };
+
+/**
  * A session command the stage chat runs on a pooled stage's session (#3996): `/compact`, a `!`
- * shell command, and their cancellations. A shell command's output streams back as the session's
- * `bash_execution_update` events carrying `id`.
+ * shell command, their cancellations, and actions on its background tasks. A shell command's
+ * output streams back as the session's `bash_execution_update` events carrying `id`.
  */
 export type PooledStageSessionCommand =
 	| { readonly kind: "compact" }
 	| { readonly kind: "abort-compaction" }
 	| { readonly kind: "bash"; readonly id: string; readonly command: string; readonly excludeFromContext?: boolean }
-	| { readonly kind: "abort-bash"; readonly id: string };
+	| { readonly kind: "abort-bash"; readonly id: string }
+	| { readonly kind: "task"; readonly taskId: TaskId; readonly action: PooledTaskAction };
 
 /** What a `!` shell command run on a pooled stage's session reports. */
 export type PooledBashResult = BashResult;
 
 export type SessionCommandResult =
-	| { readonly ok: true; readonly bash?: PooledBashResult }
+	| { readonly ok: true; readonly bash?: PooledBashResult; readonly task?: PooledTaskReply }
 	| { readonly ok: false; readonly refusal: ControlRefusal };
 
 /**

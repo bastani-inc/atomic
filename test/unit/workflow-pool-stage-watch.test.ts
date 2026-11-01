@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	bindOwnerTaskStore,
 	buildSkillCatalog,
 	createSyntheticSourceInfo,
 } from "@bastani/atomic";
@@ -17,8 +18,14 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkerRequest } from "../../packages/workflows/src/workers/protocol.js";
 import { WorkerStageWatches } from "../../packages/workflows/src/workers/stage-watch.js";
 import { appendCoalesced } from "../../packages/workflows/src/workers/stage-watch-coalesce.js";
-import type { DeliveryOpId, SeqEvent, WatchId } from "../../packages/workflows/src/workers/stage-watch-types.js";
+import type {
+	DeliveryOpId,
+	PooledStageTasks,
+	SeqEvent,
+	WatchId,
+} from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { sleep } from "../helpers/runtime.js";
+import { taskFixture } from "../helpers/task-projection.js";
 
 type Sent = Extract<WorkerRequest, { kind: "stage-command-result" | "stage-events" | "stage-watch-ended" }>;
 
@@ -1046,4 +1053,57 @@ test("while the pool is paused a stage chat can still stop its running ! command
 		"PoolPausedOrQuitting",
 	);
 	assert.deepEqual(calls, ["abort-bash:bash-1", "abort-compaction"]);
+});
+
+test("a watched stage's background tasks reach the watcher, and task actions from its chat run on the worker (#3996)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = streamingStage("agent");
+	const tasks = taskFixture();
+	const session = { sessionManager: { getEntries: () => [] } };
+	bindOwnerTaskStore(session, tasks.store);
+	Object.defineProperty(stage.handle, "agentSession", { get: () => session });
+	registry.register(stage.handle);
+	try {
+		await tasks.start("Survey the logs");
+		openWatch(watches);
+		const shown = async () => {
+			for (;;) {
+				const latest = events()
+					.filter(({ event }) => (event.type as string) === "atomic_pooled_stage_tasks")
+					.at(-1)?.event as never as { tasks: PooledStageTasks } | undefined;
+				if (latest !== undefined) return latest.tasks;
+				await sleep(10);
+			}
+		};
+		const first = await shown();
+		assert.deepEqual(
+			first.tasks.map((task) => task.title),
+			["Survey the logs"],
+		);
+		assert.deepEqual(first.background, [tasks.store.tasks[0]!.ref.taskId]);
+		assert.deepEqual(
+			JSON.parse(JSON.stringify(first)),
+			first,
+			"the state crosses the process boundary as plain data",
+		);
+
+		const taskId = tasks.store.tasks[0]!.ref.taskId;
+		watches.serve({
+			kind: "stage-command",
+			commandId: 5,
+			attempt: { workId: "work", generation: 1 },
+			op: "session",
+			watch: "watch-1" as WatchId,
+			command: { kind: "task", taskId, action: { kind: "cancel" } },
+		});
+		while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 5))
+			await sleep(5);
+		const cancelled = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 5);
+		assert.deepEqual(cancelled?.kind === "stage-command-result" ? cancelled.task : undefined, { kind: "cancel" });
+		tasks.store.drain();
+		assert.notEqual(tasks.store.tasks[0]!.execution.kind, "running", "the task was cancelled on the worker");
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
 });

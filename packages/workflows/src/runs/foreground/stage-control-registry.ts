@@ -25,7 +25,14 @@
  *   - pi docs/sdk.md (AgentSession.prompt/steer/followUp/abort)
  */
 
-import type { AgentSession, AgentSessionEvent, BashResult, SessionCommandCatalog, SessionStore } from "@bastani/atomic";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	BashResult,
+	SessionCommandCatalog,
+	SessionStore,
+	TaskViewSource,
+} from "@bastani/atomic";
 import { createSessionScopedSingleton } from "../../shared/session-scoped-singleton.js";
 import type { StageDeliveryActivityEvent } from "./stage-delivery-activity.js";
 import type { StageQueuedUserMessages } from "./stage-queued-user-messages.js";
@@ -98,6 +105,11 @@ export interface StageControlHandle {
 	commandCatalog?(): SessionCommandCatalog | undefined;
 	/** True while a stage on a local worker is still starting its session there: nothing streams yet. */
 	readonly isSessionStarting?: boolean;
+	/**
+	 * The background tasks of a session that runs in another process (a stage on a local worker), for
+	 * the chat's `/tasks` and task footer; a handle with an `agentSession` uses that session's own.
+	 */
+	taskSource?(): TaskViewSource | undefined;
 	/**
 	 * Session commands of the stage chat for a handle without an `agentSession` (a stage on a local
 	 * worker): they run on the session where it runs, and their progress arrives as its events.

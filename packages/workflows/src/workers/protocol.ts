@@ -18,6 +18,7 @@ import type {
 	PooledStageChatSnapshot,
 	PooledStageQuestion,
 	PooledStageSessionCommand,
+	PooledTaskReply,
 	PromptRefusal,
 	SeqEvent,
 	WatchEndReason,
@@ -72,6 +73,8 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly question?: PooledStageQuestion;
 			/** The result of a `!` shell command run on the stage's session. */
 			readonly bash?: PooledBashResult;
+			/** The answer to an action on one of the stage's background tasks. */
+			readonly task?: PooledTaskReply;
 			/** The stage refused the text for another reason; the message says why. */
 			readonly error?: string;
 	  }

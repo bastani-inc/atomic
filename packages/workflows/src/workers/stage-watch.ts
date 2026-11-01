@@ -13,12 +13,14 @@ import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./prot
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
 import { isCancellation } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
+import { runStageTaskAction, stageTaskSource, WatchedStageTasks } from "./stage-watch-tasks.js";
 import type {
 	AttemptRef,
 	DeliveryIntent,
 	DeliveryOpId,
 	DeliveryRefusal,
 	PooledStageChatSnapshot,
+	PooledStageTasks,
 	SeqEvent,
 	WatchId,
 } from "./stage-watch-types.js";
@@ -139,6 +141,9 @@ export const STAGE_SESSION_STARTED_EVENT = "atomic_pooled_stage_session_started"
  */
 export const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
 
+/** Event a watch carries with the state of the stage session's background tasks when it changes (#3996). */
+export const STAGE_TASKS_EVENT = "atomic_pooled_stage_tasks";
+
 /** Where the current attempt's stages wait for human input. */
 export interface WorkerStagePrompts {
 	readonly store: Store;
@@ -174,6 +179,8 @@ interface Watch {
 	timer?: NodeJS.Timeout;
 	/** The watcher knows the stage's session started, from the snapshot or a later started event. */
 	startedSent: boolean;
+	/** Follows the session's background tasks for the watcher. */
+	tasks?: WatchedStageTasks;
 }
 
 function isTerminal(handle: StageControlHandle): boolean {
@@ -288,6 +295,8 @@ export class WorkerStageWatches {
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
 		this.watches.set(command.watch, watch);
+		watch.tasks = new WatchedStageTasks(handle, (tasks) => this.sendTasks(command.watch, tasks));
+		watch.tasks.sync();
 		tracePooledWatch("worker.watch.opened", {
 			watch: command.watch,
 			status: handle.status,
@@ -330,6 +339,7 @@ export class WorkerStageWatches {
 		for (const [id, watch] of this.watches) {
 			// A session that started without sending an event yet still tells the watcher.
 			this.sendStartedOnce(id, watch);
+			watch.tasks?.sync();
 			// The stage registered another handle (it moved from replaying to running live, say): this
 			// watch would see nothing more, so the root opens a new one on the current handle.
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
@@ -478,6 +488,11 @@ export class WorkerStageWatches {
 				case "abort-bash":
 					session.abortBash(request.id);
 					return {};
+				case "task": {
+					const source = stageTaskSource(watch.handle);
+					if (source === undefined) return { error: `Stage "${watch.handle.stageName}" has no background tasks.` };
+					return { task: await runStageTaskAction(source, request.taskId, request.action) };
+				}
 			}
 		} catch (error) {
 			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
@@ -598,6 +613,7 @@ export class WorkerStageWatches {
 		if (watch === undefined) return;
 		// The session's first event shows it started: that goes first, with its commands.
 		this.sendStartedOnce(id, watch);
+		watch.tasks?.sync();
 		// Compaction replaced the session's messages: the watcher's copy follows first, so a chat that
 		// handles the compaction's end redraws from the compacted transcript, as an in-process chat does.
 		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
@@ -611,6 +627,15 @@ export class WorkerStageWatches {
 	private append(id: WatchId, watch: Watch, event: AgentSessionEvent): void {
 		appendCoalesced(watch.batch, { seq: ++watch.seq, event });
 		watch.timer ??= setTimeout(() => this.flush(id), STAGE_EVENT_BATCH_INTERVAL_MS);
+	}
+
+	/** Sends the state of the stage's background tasks; a newer state replaces one still waiting to be sent. */
+	private sendTasks(id: WatchId, tasks: PooledStageTasks): void {
+		const watch = this.watches.get(id);
+		if (watch === undefined) return;
+		const waiting = watch.batch.findIndex(({ event }) => (event.type as string) === STAGE_TASKS_EVENT);
+		if (waiting >= 0) watch.batch.splice(waiting, 1);
+		this.append(id, watch, { type: STAGE_TASKS_EVENT, tasks } as never as AgentSessionEvent);
 	}
 
 	/** Tells a watcher whose snapshot predates the stage's session that it started, with its slash commands. */
@@ -640,6 +665,7 @@ export class WorkerStageWatches {
 		this.watches.delete(id);
 		clearTimeout(watch.timer);
 		watch.unsubscribe();
+		watch.tasks?.dispose();
 	}
 }
 
