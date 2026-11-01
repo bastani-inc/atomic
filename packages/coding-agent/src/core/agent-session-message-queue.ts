@@ -22,6 +22,7 @@ import {
 } from "./agent-session-types.js";
 import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.js";
 import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
+import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import { assertSessionOpen, sessionLifetime, trackSessionWork } from "./session-lifecycle-work.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
@@ -122,7 +123,15 @@ export async function sendCustomMessage<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessage(message, options);
 	assertSessionOpen(this);
-	return trackSessionWork(this, () => admittedCustomMessage.call(this, message, options));
+	return deliveredMessageTurn(this, () => admittedCustomMessage.call(this, message, options));
+}
+
+/**
+ * A delivered message starts this session's turn, so the turn runs under this session's own resource admission, or
+ * none: never under the scope its sender runs in, such as the workflow run whose notice or stage message it is.
+ */
+function deliveredMessageTurn<T>(session: AgentSession, deliver: () => Promise<T>): Promise<T> {
+	return withOwnResourceAdmission(session._resourceAdmission, () => trackSessionWork(session, deliver));
 }
 
 async function admittedCustomMessage<T>(
@@ -170,7 +179,7 @@ export async function sendCustomMessages<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	assertSessionOpen(this);
-	return trackSessionWork(this, () => admittedCustomMessages.call(this, messages, options));
+	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, messages, options));
 }
 
 async function admittedCustomMessages<T>(

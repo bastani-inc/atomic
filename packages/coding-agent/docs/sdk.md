@@ -197,6 +197,8 @@ Use `withResourceAdmission(resourceAdmission, async () => { ... })` to apply a s
 
 A child session built from `getChildSessionOptions()` uses only its parent's service, or none when its parent holds none: a scope the parent's turn happens to run in never applies to the parent's children.
 
+A turn that a delivered message starts (an extension's `sendMessage`, `sendMessages` or `sendUserMessage`, or the session's `sendCustomMessage`, `sendCustomMessages` or `sendUserMessage`) runs under the receiving session's own service, or none when it holds none, wherever the message was sent from. A session's commands therefore never wait on the service of a scope that only sent it a message. `prompt()` still runs in its caller's scope.
+
 ### Session storage
 
 `createAgentSession()` persists sessions in `~/.atomic/workflows/journal.sqlite` by default, sharing the file with workflow runs under separate `session_` and `wf_` table prefixes. Pass `sessionStore` to choose storage explicitly:

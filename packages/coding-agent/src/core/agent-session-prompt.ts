@@ -20,6 +20,7 @@ import {
 	runInputHook,
 	UNORDERED_ADMISSION,
 } from "./queued-input-admission.ts";
+import { withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import {
 	assertSessionOpen,
 	sessionGenerationClosing,
@@ -1032,14 +1033,18 @@ export async function sendUserMessage(
 	// prompt() owns command dispatch and template expansion; the default (false)
 	// keeps every pre-existing caller sending literally. The private delivery hook
 	// lets workflow routing report and gate the branch selected after asynchronous
-	// input/compaction extension preflight.
-	await this.prompt(text, {
-		expandPromptTemplates: options?.expandPromptTemplates ?? false,
-		streamingBehavior: options?.deliverAs,
-		images,
-		source: "extension",
-		__workflowDelivery: options?.__workflowDelivery,
-	} as PromptOptionsWithWorkflowDelivery);
+	// input/compaction extension preflight. A delivered message starts this session's
+	// turn, so the turn runs under this session's own resource admission, never under
+	// the scope its sender runs in, such as a workflow run's.
+	await withOwnResourceAdmission(this._resourceAdmission, () =>
+		this.prompt(text, {
+			expandPromptTemplates: options?.expandPromptTemplates ?? false,
+			streamingBehavior: options?.deliverAs,
+			images,
+			source: "extension",
+			__workflowDelivery: options?.__workflowDelivery,
+		} as PromptOptionsWithWorkflowDelivery),
+	);
 }
 
 /**

@@ -3,8 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession, withResourceAdmission } from "../src/core/sdk.js";
 import type {
 	CreateAgentSessionOptions,
@@ -223,6 +226,149 @@ test("a child of a session that holds no admission takes no permit from a scope 
 		),
 	);
 	assert.equal(direct, "waited", "a session launched directly in the scope still draws on it");
+});
+
+/** How long a woken turn's one `echo` gets to run; a command waiting for a permit it never receives runs out of it. */
+const WOKEN_TURN_BUDGET_MS = 15_000;
+const WOKEN_TURN_OUTPUT = "woken-turn-ran";
+
+/** A model that runs one `echo` through bash in each turn it is woken for, then answers. */
+async function echoOnceModel(): Promise<Pick<CreateAgentSessionOptions, "model" | "modelRuntime">> {
+	const modelRuntime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory(),
+		modelsPath: null,
+		allowModelNetwork: false,
+	});
+	modelRuntime.registerProvider("admission-turn", {
+		api: "openai-completions",
+		baseUrl: "https://example.invalid",
+		apiKey: "fixture",
+		models: [
+			{
+				id: "echo-once",
+				name: "Echo once",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 100_000,
+				maxTokens: 1_000,
+			},
+		],
+		streamSimple(model, context) {
+			const answered = context.messages.at(-1)?.role === "toolResult";
+			const message: AssistantMessage = {
+				role: "assistant",
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				timestamp: Date.now(),
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				...(answered
+					? { content: [{ type: "text" as const, text: "done" }], stopReason: "stop" as const }
+					: {
+							content: [
+								{
+									type: "toolCall" as const,
+									id: `echo-${Date.now()}`,
+									name: "bash",
+									arguments: { command: `echo ${WOKEN_TURN_OUTPUT}` },
+								},
+							],
+							stopReason: "toolUse" as const,
+						}),
+			};
+			const stream = createAssistantMessageEventStream();
+			stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message });
+			stream.end();
+			return stream;
+		},
+	});
+	return { modelRuntime, model: modelRuntime.getModel("admission-turn", "echo-once")! };
+}
+
+/** A session whose turns run an `echo`, with its queued messages live so a delivered message starts a turn. */
+async function echoSession(root: string, options: CreateAgentSessionOptions = {}): Promise<AgentSession> {
+	const { session } = await createAgentSession(sessionOptions(root, { ...(await echoOnceModel()), ...options }));
+	cleanups.push(async () => {
+		await session.abort();
+		await session.dispose();
+	});
+	return session;
+}
+
+/** The output of the session's next command, or `undefined` when none finishes within the budget. */
+function nextCommandOutput(session: AgentSession): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			unsubscribe();
+			resolve(undefined);
+		}, WOKEN_TURN_BUDGET_MS);
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type !== "tool_execution_end") return;
+			clearTimeout(timer);
+			unsubscribe();
+			resolve(JSON.stringify(event.result));
+		});
+	});
+}
+
+const NOTICE = { customType: "workflow-notice", content: "The workflow finished.", display: true };
+const deliveries = {
+	sendCustomMessage: (session: AgentSession) => session.sendCustomMessage(NOTICE, { triggerTurn: true }),
+	sendCustomMessages: (session: AgentSession) => session.sendCustomMessages([NOTICE], { triggerTurn: true }),
+	sendUserMessage: (session: AgentSession) => session.sendUserMessage("The workflow finished."),
+} as const;
+
+test.each(Object.keys(deliveries) as (keyof typeof deliveries)[])(
+	"a turn that %s wakes from inside another admission's scope runs its commands without that admission",
+	async (delivery) => {
+		// A top-level chat, created outside any admission scope, so it holds none.
+		const session = await echoSession(tempRoot());
+		// A workflow run's admission with no process headroom, whose scope its notices and stage messages are sent from.
+		const workflowAdmission = new FakeAdmission({ process: 0 });
+		const output = nextCommandOutput(session);
+		let delivered: Promise<void> | undefined;
+		await withResourceAdmission(workflowAdmission, async () => {
+			delivered = deliveries[delivery](session);
+		});
+
+		assert.match((await output) ?? "the command never finished", new RegExp(WOKEN_TURN_OUTPUT));
+		assert.deepEqual(workflowAdmission.requests, [], "the woken turn never asks the sender's admission");
+		await delivered;
+	},
+);
+
+test("a woken turn of a session that holds its own admission, as a workflow stage does, runs its commands under it", async () => {
+	const own = new FakeAdmission();
+	const session = await echoSession(tempRoot(), { resourceAdmission: own });
+	const other = new FakeAdmission({ process: 0 });
+	const output = nextCommandOutput(session);
+	let delivered: Promise<void> | undefined;
+	await withResourceAdmission(other, async () => {
+		delivered = deliveries.sendCustomMessage(session);
+	});
+
+	assert.match((await output) ?? "the command never finished", new RegExp(WOKEN_TURN_OUTPUT));
+	assert.deepEqual(own.acquired, ["session", "process"]);
+	assert.deepEqual(other.requests, []);
+	await delivered;
+});
+
+test("a prompt run inside a scope runs its commands under that scope, as a workflow stage's prompts do", async () => {
+	const session = await echoSession(tempRoot());
+	const scoped = new FakeAdmission();
+	const output = nextCommandOutput(session);
+	await withResourceAdmission(scoped, () => session.prompt("Run it."));
+
+	assert.match((await output) ?? "the command never finished", new RegExp(WOKEN_TURN_OUTPUT));
+	assert.deepEqual(scoped.acquired, ["process"]);
 });
 
 const NO_HEADROOM = /no session headroom for a delegated launch/;
