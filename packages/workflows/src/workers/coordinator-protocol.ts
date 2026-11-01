@@ -13,6 +13,7 @@ import type {
 	DeliveryOpId,
 	PooledPromptAnswer,
 	PooledStageDelivery,
+	PooledStageSessionCommand,
 	SeqEvent,
 	WatchEndReason,
 	WatchId,
@@ -108,6 +109,8 @@ export type CoordinatorCommandBody =
 	  }
 	/** Holds one watched stage's turn loop without touching pool control; answered with a `ControlResult`. */
 	| { readonly kind: "stage-pause"; readonly watch: WatchId }
+	/** Runs a session command on one watched stage's session; answered with a `SessionCommandResult`. */
+	| { readonly kind: "stage-session"; readonly watch: WatchId; readonly command: PooledStageSessionCommand }
 	/** Releases a stage paused on its own; the message goes through the delivery op ledger. */
 	| {
 			readonly kind: "stage-resume";

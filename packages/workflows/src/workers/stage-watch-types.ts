@@ -1,4 +1,10 @@
-import type { AgentSession, AgentSessionEvent, QuestionParams, SessionCommandCatalog } from "@bastani/atomic";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	BashResult,
+	QuestionParams,
+	SessionCommandCatalog,
+} from "@bastani/atomic";
 import type { StageControlStatus } from "../runs/foreground/stage-control-registry.js";
 import type { StageQueuedUserMessages } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
@@ -113,6 +119,24 @@ export type ControlRefusal = "StaleAttempt" | "StageNotLive" | "PoolPausedOrQuit
 
 export type ControlResult =
 	| { readonly ok: true; readonly action?: StageUserMessageDeliveryAction }
+	| { readonly ok: false; readonly refusal: ControlRefusal };
+
+/**
+ * A session command the stage chat runs on a pooled stage's session (#3996): `/compact`, a `!`
+ * shell command, and their cancellations. A shell command's output streams back as the session's
+ * `bash_execution_update` events carrying `id`.
+ */
+export type PooledStageSessionCommand =
+	| { readonly kind: "compact" }
+	| { readonly kind: "abort-compaction" }
+	| { readonly kind: "bash"; readonly id: string; readonly command: string; readonly excludeFromContext?: boolean }
+	| { readonly kind: "abort-bash"; readonly id: string };
+
+/** What a `!` shell command run on a pooled stage's session reports. */
+export type PooledBashResult = BashResult;
+
+export type SessionCommandResult =
+	| { readonly ok: true; readonly bash?: PooledBashResult }
 	| { readonly ok: false; readonly refusal: ControlRefusal };
 
 /**

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSession, AgentSessionEvent, SessionCommandCatalog } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, BashResult, SessionCommandCatalog } from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
 	StageControlHandle,
@@ -21,8 +21,10 @@ import type {
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
 	PooledStageRef,
+	PooledStageSessionCommand,
 	PooledStageWatch,
 	PooledStageWatchMessage,
+	SessionCommandResult,
 	WatchEndReason,
 	WatchId,
 	WatchRefusal,
@@ -36,6 +38,8 @@ type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
 const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 /** Mirrors the worker's `STAGE_COMMANDS_EVENT`. */
 const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
+/** Mirrors the worker's `STAGE_MESSAGES_EVENT`. */
+const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
 
 /**
  * How long one send may wait for its attempt to confirm it before later sends go ahead. Admission
@@ -62,6 +66,8 @@ export interface PooledStageTransport {
 	/** Holds or releases this one stage's turn loop; pool control is untouched. */
 	pause(watch: WatchId): Promise<ControlResult>;
 	resume(watch: WatchId, message?: { readonly op: DeliveryOpId; readonly text: string }): Promise<ControlResult>;
+	/** Runs a session command (`/compact`, a `!` shell command) on the watched stage's session. */
+	session?(watch: WatchId, command: PooledStageSessionCommand): Promise<SessionCommandResult>;
 }
 
 /** User text or a control a pooled stage did not admit, with the reason. */
@@ -146,6 +152,8 @@ export class PooledStageHandle implements StageControlHandle {
 	private session: string | undefined;
 	/** The stage session's slash commands; undefined while the session is still starting. */
 	private commands?: SessionCommandCatalog;
+	/** `!` shell commands running on the stage's session, by request id, with their output listeners. */
+	private readonly bashRuns = new Map<string, (chunk: string) => void>();
 	/** The outbox's sender while it runs; one at a time keeps send order. */
 	private pumping?: Promise<void>;
 	/** Something to send arrived while the sender ran. */
@@ -167,7 +175,7 @@ export class PooledStageHandle implements StageControlHandle {
 		snapshot: PooledStageChatSnapshot,
 		attempt: { readonly workId: string; readonly generation: number },
 		private readonly close: (watch: WatchId) => void,
-		private readonly transport: Pick<PooledStageTransport, "deliver" | "pause" | "resume">,
+		private readonly transport: Pick<PooledStageTransport, "deliver" | "pause" | "resume" | "session">,
 		private readonly outbound: OutboundEntry[] = [],
 		private readonly admissionWaitMs = POOLED_ADMISSION_WAIT_MS,
 	) {
@@ -225,6 +233,40 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	commandCatalog(): SessionCommandCatalog | undefined {
 		return this.commands;
+	}
+	get isBashRunning(): boolean {
+		return this.bashRuns.size > 0;
+	}
+
+	/** Runs a `!` shell command on the stage's session in its worker; its output streams to `onChunk`. */
+	async executeBash(
+		command: string,
+		onChunk: (chunk: string) => void,
+		options?: { readonly excludeFromContext?: boolean },
+	): Promise<BashResult> {
+		const id = randomUUID();
+		this.bashRuns.set(id, onChunk);
+		try {
+			const result = await this.sessionCommand({
+				kind: "bash",
+				id,
+				command,
+				...(options?.excludeFromContext === undefined ? {} : { excludeFromContext: options.excludeFromContext }),
+			});
+			return result.bash ?? { output: "", exitCode: undefined, cancelled: true, truncated: false };
+		} finally {
+			this.bashRuns.delete(id);
+		}
+	}
+	abortBash(): void {
+		for (const id of this.bashRuns.keys()) void this.sessionCommand({ kind: "abort-bash", id }).catch(() => {});
+	}
+	/** Compacts the stage session's context in its worker; progress arrives as the session's compaction events. */
+	async compact(): Promise<void> {
+		await this.sessionCommand({ kind: "compact" });
+	}
+	abortCompaction(): void {
+		void this.sessionCommand({ kind: "abort-compaction" }).catch(() => {});
 	}
 	pendingToolExecutionEvents(): readonly AgentSessionEvent[] {
 		return this.toolExecutions.replayEvents();
@@ -397,6 +439,18 @@ export class PooledStageHandle implements StageControlHandle {
 
 	private throwIfClosed(): void {
 		if (this.disposed) throw new Error(`Stage chat "${this.stageName}" is closed.`);
+	}
+
+	private async sessionCommand(
+		command: PooledStageSessionCommand,
+	): Promise<Extract<SessionCommandResult, { ok: true }>> {
+		this.throwIfClosed();
+		if (this.ended !== undefined) throw new PooledStageDeliveryError("StageNotLive", this.stageName);
+		if (this.transport.session === undefined)
+			throw new Error(`Stage "${this.stageName}" runs on a local worker that cannot run this command.`);
+		const result = await this.transport.session(this.watchId, command);
+		if (!result.ok) throw new PooledStageDeliveryError(result.refusal, this.stageName);
+		return result;
 	}
 
 	/**
@@ -701,6 +755,11 @@ export class PooledStageHandle implements StageControlHandle {
 			this.commands = (event as never as { readonly commands: SessionCommandCatalog }).commands;
 			return false;
 		}
+		if ((event.type as string) === STAGE_MESSAGES_EVENT) {
+			this.settled = [...(event as never as { readonly messages: AgentSession["messages"] }).messages];
+			return false;
+		}
+		if (event.type === "bash_execution_update" && event.id !== undefined) this.bashRuns.get(event.id)?.(event.delta);
 		this.applyEvent(event);
 		const turnUnderway =
 			TURN_EVENTS.has(event.type) ||

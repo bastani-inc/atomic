@@ -554,3 +554,52 @@ test("the root handle lists the slash commands its worker reports once the stage
 	assert.deepEqual(seen, ["agent_start"]);
 	handle.dispose();
 });
+
+test("the root handle runs ! commands and /compact on the worker stage's session, streaming output and following its compacted transcript (#3996)", async () => {
+	const fake = pool(() => []);
+	const sessionCommands: unknown[] = [];
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		async session(_watch, command) {
+			sessionCommands.push(command);
+			if (command.kind !== "bash") return { ok: true };
+			fake.events(1, { type: "bash_execution_update", id: command.id, channel: "stdout", delta: "streamed " });
+			return { ok: true, bash: { output: "streamed done", exitCode: 0, cancelled: false, truncated: false } };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const chunks: string[] = [];
+	const result = await handle.executeBash("make test", (chunk) => chunks.push(chunk), { excludeFromContext: true });
+	assert.deepEqual(chunks, ["streamed "]);
+	assert.equal(result.output, "streamed done");
+	assert.equal(handle.isBashRunning, false);
+	assert.deepEqual(sessionCommands[0], {
+		kind: "bash",
+		id: (sessionCommands[0] as { id: string }).id,
+		command: "make test",
+		excludeFromContext: true,
+	});
+
+	await handle.compact();
+	assert.deepEqual(sessionCommands[1], { kind: "compact" });
+	const compacted = [{ role: "compactionSummary", summary: "short", tokensBefore: 10, timestamp: 2 }];
+	fake.events(2, { type: "atomic_pooled_stage_messages", messages: compacted } as never as AgentSessionEvent);
+	assert.deepEqual(handle.messages, compacted);
+	handle.dispose();
+});
+
+test("a session command on a stage that finished is refused with the post-mortem notice (#3996)", async () => {
+	const fake = pool(() => []);
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		async session() {
+			return { ok: false, refusal: "StageNotLive" };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	await assert.rejects(opened.handle.compact(), /finished first; open it again to continue in post-mortem chat/);
+	opened.handle.dispose();
+});

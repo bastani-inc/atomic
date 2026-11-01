@@ -63,13 +63,16 @@ import type {
 	DeliveryOpId,
 	DeliveryRefusal,
 	DeliveryResult,
+	PooledBashResult,
 	PooledPromptAnswer,
 	PooledStageChatSnapshot,
 	PooledStageDelivery,
 	PooledStageQuestion,
+	PooledStageSessionCommand,
 	PromptRefusal,
 	PromptResult,
 	SeqEvent,
+	SessionCommandResult,
 	WatchEndReason,
 	WatchId,
 	WatchRefusal,
@@ -353,6 +356,7 @@ interface StageCommandResult {
 	readonly refusal?: WatchRefusal | DeliveryRefusal | ControlRefusal | PromptRefusal;
 	readonly action?: StageUserMessageDeliveryAction;
 	readonly question?: PooledStageQuestion;
+	readonly bash?: PooledBashResult;
 	readonly error?: string;
 }
 
@@ -537,6 +541,8 @@ export class PoolCoordinator {
 				return this.stageAnswer(command.runId, command.stageId, command.answer);
 			case "stage-pause":
 				return this.stageControl(command.watch, { op: "pause" });
+			case "stage-session":
+				return this.stageSession(command.watch, command.command);
 			case "stage-resume":
 				return this.stageControl(command.watch, {
 					op: "resume",
@@ -985,6 +991,28 @@ export class PoolCoordinator {
 			return { ok: false, refusal };
 		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
 		return { ok: true, ...(result.action === undefined ? {} : { action: result.action }) };
+	}
+
+	/** Runs a session command on one watched stage through its worker's airlock. */
+	private async stageSession(id: WatchId, command: PooledStageSessionCommand): Promise<SessionCommandResult> {
+		const watch = this.watches.get(id);
+		if (watch === undefined || !watch.open)
+			return {
+				ok: false,
+				refusal: this.endedWatches.get(id) === "stage_finished" ? "StageNotLive" : "StaleAttempt",
+			};
+		const { slot, attempt } = watch;
+		if (slot.work?.id !== attempt.workId || slot.work.generation !== attempt.generation)
+			return { ok: false, refusal: "StaleAttempt" };
+		if (this.desiredControl !== undefined && this.desiredControl !== "running")
+			return { ok: false, refusal: "PoolPausedOrQuitting" };
+		const result = await this.stageCommand(slot, { attempt, op: "session", watch: id, command });
+		if (result === undefined) return { ok: false, refusal: "StaleAttempt" };
+		if (result.error !== undefined) throw new Error(result.error);
+		const refusal = result.refusal;
+		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting") return { ok: false, refusal };
+		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
+		return { ok: true, ...(result.bash === undefined ? {} : { bash: result.bash }) };
 	}
 
 	private stageCommand(

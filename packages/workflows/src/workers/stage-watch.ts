@@ -132,6 +132,12 @@ export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
  */
 export const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
 
+/**
+ * Event a watch carries after the stage's session compacted its context: the session's messages
+ * from then on, so the watcher's transcript matches the session's (#3996).
+ */
+export const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
+
 /** Where the current attempt's stages wait for human input. */
 export interface WorkerStagePrompts {
 	readonly store: Store;
@@ -226,13 +232,15 @@ export class WorkerStageWatches {
 			this.send({ kind: "stage-command-result", commandId: command.commandId, ...this.answer(command) });
 			return;
 		}
-		if (command.op === "deliver" || command.op === "pause" || command.op === "resume") {
+		if (command.op === "deliver" || command.op === "pause" || command.op === "resume" || command.op === "session") {
 			const result =
 				command.op === "deliver"
 					? this.deliver(command)
 					: command.op === "pause"
 						? this.pause(command)
-						: this.resume(command);
+						: command.op === "session"
+							? this.session(command)
+							: this.resume(command);
 			void result.then((outcome) =>
 				this.send({ kind: "stage-command-result", commandId: command.commandId, ...outcome }),
 			);
@@ -431,6 +439,47 @@ export class WorkerStageWatches {
 		}
 	}
 
+	/**
+	 * Runs a session command from the stage chat (`/compact`, a `!` shell command) on the watched
+	 * stage's session, as an in-process stage chat runs it on its own. Their progress reaches the
+	 * watcher as the session's events.
+	 */
+	private async session(command: Extract<WorkerStageCommand, { op: "session" }>): Promise<StageCommandResult> {
+		const watch = this.airlock(command);
+		if (typeof watch === "string") return { refusal: watch };
+		if (this.control() !== "running") return { refusal: "PoolPausedOrQuitting" };
+		const session = watch.handle.agentSession;
+		const request = command.command;
+		if (session === undefined)
+			return {
+				error: `Stage "${watch.handle.stageName}" is still starting on its local worker; try again shortly.`,
+			};
+		try {
+			switch (request.kind) {
+				case "compact":
+					await session.compact();
+					return {};
+				case "abort-compaction":
+					session.abortCompaction();
+					return {};
+				case "bash":
+					return {
+						bash: await session.executeBash(request.command, undefined, {
+							id: request.id,
+							...(request.excludeFromContext === undefined
+								? {}
+								: { excludeFromContext: request.excludeFromContext }),
+						}),
+					};
+				case "abort-bash":
+					session.abortBash(request.id);
+					return {};
+			}
+		} catch (error) {
+			return isTerminal(watch.handle) ? { refusal: "StageNotLive" } : { error: (error as Error).message };
+		}
+	}
+
 	private async resume(command: Extract<WorkerStageCommand, { op: "resume" }>): Promise<StageCommandResult> {
 		const watch = this.airlock(command);
 		if (typeof watch === "string") return { refusal: watch };
@@ -546,6 +595,12 @@ export class WorkerStageWatches {
 		// The session's first event shows it started: its commands go first, so the watcher has them now.
 		this.sendCommandsOnce(id, watch);
 		this.append(id, watch, event);
+		// Compaction replaced the session's messages; the watcher's copy follows.
+		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
+			this.append(id, watch, {
+				type: STAGE_MESSAGES_EVENT,
+				messages: [...watch.handle.messages],
+			} as never as AgentSessionEvent);
 	}
 
 	private append(id: WatchId, watch: Watch, event: AgentSessionEvent): void {

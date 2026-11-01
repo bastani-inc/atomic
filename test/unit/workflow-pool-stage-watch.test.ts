@@ -888,3 +888,98 @@ test("a resume message whose turn starts after resume() returns is still receipt
 		["op-resume"],
 	);
 });
+
+test("session commands from the stage chat run on the watched stage's session, and their output and compacted transcript reach the watcher (#3996)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = streamingStage("agent");
+	const calls: string[] = [];
+	let compacted = false;
+	const before = [{ role: "user", content: "long history", timestamp: 1 }];
+	const after = [{ role: "compactionSummary", summary: "short", tokensBefore: 10, timestamp: 2 }];
+	const session = {
+		sessionManager: { getEntries: () => [] },
+		async compact() {
+			calls.push("compact");
+			compacted = true;
+			stage.emit({
+				type: "compaction_end",
+				reason: "manual",
+				result: { summary: "short" },
+				aborted: false,
+				willRetry: false,
+			} as never as AgentSessionEvent);
+			return {};
+		},
+		async executeBash(command: string, _onChunk: unknown, options: { id: string }) {
+			calls.push(`bash:${command}`);
+			stage.emit({ type: "bash_execution_update", id: options.id, channel: "stdout", delta: "out\n" });
+			return { output: "out\n", exitCode: 0, cancelled: false, truncated: false };
+		},
+		abortBash(id: string) {
+			calls.push(`abort-bash:${id}`);
+		},
+	};
+	Object.defineProperty(stage.handle, "agentSession", { get: () => session });
+	Object.defineProperty(stage.handle, "messages", { get: () => (compacted ? after : before) });
+	registry.register(stage.handle);
+	openWatch(watches);
+	const command = (commandId: number, request: Record<string, unknown>) => {
+		watches.serve({
+			kind: "stage-command",
+			commandId,
+			attempt: { workId: "work", generation: 1 },
+			op: "session",
+			watch: "watch-1" as WatchId,
+			command: request,
+		} as Parameters<WorkerStageWatches["serve"]>[0]);
+	};
+	const result = async (commandId: number) => {
+		for (;;) {
+			const found = sent.find(
+				(message) => message.kind === "stage-command-result" && message.commandId === commandId,
+			);
+			if (found?.kind === "stage-command-result") return found;
+			await sleep(1);
+		}
+	};
+
+	command(2, { kind: "bash", id: "bash-1", command: "echo out" });
+	assert.deepEqual((await result(2)).bash, { output: "out\n", exitCode: 0, cancelled: false, truncated: false });
+	command(3, { kind: "abort-bash", id: "bash-1" });
+	await result(3);
+	command(4, { kind: "compact" });
+	assert.equal((await result(4)).error, undefined);
+	await untilSent(sent, "stage-events");
+	await sleep(80);
+	const stream = events().map(({ event }) => event as never as Record<string, unknown>);
+	assert.deepEqual(calls, ["bash:echo out", "abort-bash:bash-1", "compact"]);
+	assert.deepEqual(
+		stream.find((event) => event.type === "bash_execution_update"),
+		{ type: "bash_execution_update", id: "bash-1", channel: "stdout", delta: "out\n" },
+		"the command's output reaches the watcher under its id",
+	);
+	const types = stream.map((event) => event.type);
+	assert.deepEqual(types.slice(types.indexOf("compaction_end")), ["compaction_end", "atomic_pooled_stage_messages"]);
+	assert.deepEqual(stream.at(-1)?.messages, after, "the watcher's transcript follows the compacted session");
+});
+
+test("a session command for a stage whose session is still starting says so instead of failing silently (#3996)", async () => {
+	const { registry, sent, watches } = airlock();
+	const stage = streamingStage("agent");
+	registry.register(stage.handle);
+	openWatch(watches);
+	watches.serve({
+		kind: "stage-command",
+		commandId: 2,
+		attempt: { workId: "work", generation: 1 },
+		op: "session",
+		watch: "watch-1" as WatchId,
+		command: { kind: "compact" },
+	});
+	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
+	const answered = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 2);
+	assert.equal(
+		answered?.kind === "stage-command-result" ? answered.error : undefined,
+		'Stage "agent" is still starting on its local worker; try again shortly.',
+	);
+});

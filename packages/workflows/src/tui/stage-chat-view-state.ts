@@ -301,20 +301,32 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				if (!handle) throw new Error("no live handle on this stage");
 				await handle.ensureAttached();
 				const agentSession = handle.agentSession;
+				// A stage on a local worker runs the command on its session there.
+				if (!agentSession && handle.executeBash !== undefined)
+					return handle.executeBash(request.command, request.onChunk, {
+						excludeFromContext: request.excludeFromContext,
+					});
 				if (!agentSession) throw new Error("no live agent session on this stage");
 				return agentSession.executeBash(request.command, request.onChunk, {
 					excludeFromContext: request.excludeFromContext,
 				});
 			},
 			abortBash: async () => {
-				liveHandle(ctx)?.agentSession?.abortBash();
+				const handle = liveHandle(ctx);
+				if (handle?.agentSession) handle.agentSession.abortBash();
+				else handle?.abortBash?.();
 			},
 			abortCompaction: async () => {
-				liveHandle(ctx)?.agentSession?.abortCompaction();
+				const handle = liveHandle(ctx);
+				if (handle?.agentSession) handle.agentSession.abortCompaction();
+				else handle?.abortCompaction?.();
 			},
 			handleSlashCommand: async (text) => handleSlashCommand(ctx, text),
 		},
-		isBashRunning: () => liveHandle(ctx)?.agentSession?.isBashRunning === true,
+		isBashRunning: () => {
+			const handle = liveHandle(ctx);
+			return handle?.agentSession?.isBashRunning === true || handle?.isBashRunning === true;
+		},
 		requestRender: opts.requestRender,
 		getAgentSession: () => liveHandle(ctx)?.agentSession,
 		isStreaming: () => isLiveHandleStreaming(ctx),
@@ -586,18 +598,35 @@ export function isReadOnlyArchive(
 async function handleSlashCommand(ctx: StageChatViewContext, text: string): Promise<boolean> {
 	const [command, ...rest] = text.trim().split(/\s+/);
 	switch (command) {
-		case "/tasks":
+		case "/tasks": {
+			const handle = liveHandle(ctx);
+			// The agents and shells of a stage on a local worker live in that worker's process.
+			if (handle !== undefined && handle.agentSession === undefined && handle.placement?.kind === "local-worker") {
+				ctx.chatHost.showWarning(
+					`Stage "${handle.stageName}" runs on a local worker; its agents and shells are not listed in this chat.`,
+				);
+				return true;
+			}
 			return ctx.chatHost.openTasks(rest.join(" ") || undefined);
+		}
 		case "/compact": {
 			if (rest.length > 0) return true;
 			const handle = liveHandle(ctx);
 			if (!handle) return false;
 			await handle.ensureAttached();
-			if (!handle.agentSession) return false;
+			// A stage on a local worker compacts its session there; its compaction events reach this chat.
+			const compact =
+				handle.agentSession !== undefined
+					? () => handle.agentSession!.compact()
+					: handle.compact === undefined
+						? undefined
+						: () => handle.compact!();
+			if (compact === undefined) return false;
 			try {
-				await handle.agentSession.compact();
-			} catch {
-				/* compaction_end owns cancellation/failure UI. */
+				await compact();
+			} catch (error) {
+				// compaction_end owns cancellation/failure UI; a stage that could not start compacting says why.
+				if (handle.agentSession === undefined) ctx.chatHost.showWarning((error as Error).message);
 			}
 			return true;
 		}

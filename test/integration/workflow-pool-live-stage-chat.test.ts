@@ -169,3 +169,100 @@ test.skipIf(process.platform === "win32")(
 	},
 	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"a running pooled stage lists its session's commands and runs a ! command from its chat on its worker (#3996)",
+	async () => {
+		const directory = makeTempDirectory("pool-stage-session-commands-");
+		const path = join(directory, "journal.sqlite");
+		const journal = await resolveRunJournal({ journal: { path } });
+		const backend = await JournalDurableBackend.open(journal);
+		const gatePath = join(directory, "release-stage");
+		const childPath = fileURLToPath(new URL("../fixtures/pool-live-stage-child.ts", import.meta.url));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "child",
+			digest: await definitionDigest(childPath),
+		});
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName: "child" }],
+		});
+		const store = createStore();
+		try {
+			const execution = run(
+				workflow({
+					name: "pool-stage-session-commands-root",
+					description: "",
+					inputs: {},
+					outputs: {},
+					async run(ctx) {
+						await ctx.workflow(child, { inputs: { gatePath } });
+						return {};
+					},
+				}),
+				{},
+				{ runId: testRunId("pool-session-commands"), cwd: directory, store, durableBackend: backend },
+			);
+			const received: PooledStageWatchMessage[] = [];
+			let watch: PooledStageWatch | undefined;
+			await untilOrRunEnds(
+				async () => {
+					const target = store
+						.runs()
+						.flatMap((candidate) => candidate.stages.map((stage) => ({ runId: candidate.id, stage })))
+						.find(({ stage }) => stage.name === "agent" && stage.workerExecution !== undefined);
+					if (target?.stage.sessionId === undefined) return false;
+					const result = await pool.watchPooledStage(
+						{ runId: target.runId, stageId: target.stage.id },
+						(message) => received.push(message),
+					);
+					if (!result.ok) return false;
+					// Mid-turn, the stage's session has started.
+					if (result.watch.snapshot.isStreaming) {
+						watch = result.watch;
+						return true;
+					}
+					await pool.unwatchPooledStage(result.watch.id);
+					received.length = 0;
+					return false;
+				},
+				execution,
+				CONDITION_TIMEOUT_MS,
+			);
+			assert.ok(watch !== undefined);
+			assert.equal(watch.snapshot.commands?.cwd, directory, "the snapshot lists the session's commands");
+
+			const ran = await pool.sessionCommandOnPooledStage(watch.id, {
+				kind: "bash",
+				id: "bash-1",
+				command: "echo ran-on-the-worker",
+				excludeFromContext: true,
+			});
+			assert.ok(ran.ok);
+			assert.match(ran.bash?.output ?? "", /ran-on-the-worker/);
+			await until(() =>
+				received.some(
+					(message) =>
+						message.kind === "events" &&
+						message.events.some(
+							({ event }) =>
+								event.type === "bash_execution_update" &&
+								event.id === "bash-1" &&
+								event.delta.includes("ran-on-the-worker"),
+						),
+				),
+			);
+
+			writeTextSync(gatePath, "");
+			assert.equal((await execution).status, "completed");
+		} finally {
+			await pool.close();
+			await backend.close();
+			await sleep(0);
+			removeTempDirectory(directory);
+		}
+	},
+	LOCAL_WORKER_PROCESS_TIMEOUT_MS,
+);
