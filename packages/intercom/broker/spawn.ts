@@ -292,8 +292,14 @@ export function getBrokerSpawnOptions(
 }
 
 /**
+ * How long a spawn waits for the Windows launcher of a broker that just exited to let go of the log. Its `cmd.exe`
+ * outlives the broker by a moment, and a broker that is really still starting keeps the log for as long as it runs.
+ */
+export const BROKER_LOG_RELEASE_WAIT_MS = 1_000;
+
+/**
  * Preserve a bounded previous log across truncation. Returns false when a
- * Windows broker that is still starting holds the log through its launcher's stderr redirect.
+ * Windows launcher holds the log through its stderr redirect.
  */
 function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
   ensurePrivateDirectory(dirname(logPath));
@@ -313,6 +319,20 @@ function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
     if (process.platform === "win32" && (code === "EBUSY" || code === "EPERM")) return false;
     throw error;
   }
+}
+
+/**
+ * Reset the log, waiting up to {@link BROKER_LOG_RELEASE_WAIT_MS} for the launcher of a broker that just exited, as
+ * one does when a running broker dies and its clients reconnect at once. Returns false only when the log stays held,
+ * which means a broker is still starting.
+ */
+async function resetBrokerLogOnceReleased(): Promise<boolean> {
+  const deadline = Date.now() + BROKER_LOG_RELEASE_WAIT_MS;
+  while (!resetBrokerLog()) {
+    if (Date.now() >= deadline) return false;
+    await sleep(50);
+  }
+  return true;
 }
 
 /** Read at most {@link BROKER_LOG_TAIL_BYTES} trailing bytes of the broker log. */
@@ -392,7 +412,7 @@ export async function spawnBrokerIfNeeded(
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
     // Reset before spawning either way: the Windows launcher appends to this same path.
-    if (!resetBrokerLog()) {
+    if (!(await resetBrokerLogOnceReleased())) {
       await waitForBroker(readyTimeoutMs);
       return;
     }

@@ -620,6 +620,21 @@ describe("bounded broker log tail", () => {
 });
 
 describe("broker startup failures name the log", () => {
+	/**
+	 * Whether the log can be opened for writing now. On Windows the launcher of a broker that just exited
+	 * (`cmd.exe ... 2>>broker.log`) holds it for a moment after the exit is reported, and opening it then is EBUSY.
+	 */
+	function logWritable(): boolean {
+		try {
+			closeSync(openSync(logPath, "a"));
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "EBUSY" || code === "EPERM") return false;
+			throw error;
+		}
+	}
+
 	/** Spawns a broker that writes `marker` to stderr and exits with `code`, and checks how the failure is reported. */
 	async function assertCrashReportedPromptly(marker: string, code: number): Promise<Error> {
 		const started = Date.now();
@@ -646,6 +661,8 @@ describe("broker startup failures name the log", () => {
 		assert.ok(reported.message.includes(logPath), reported.message);
 		// Proof the descriptor really captured the child's stderr, not just that a path was named.
 		assert.ok(reported.message.includes(marker), reported.message);
+		// The next test writes the log itself; it must not race the exited broker's launcher for it.
+		await eventually(logWritable, 10_000);
 		return reported;
 	}
 
@@ -692,6 +709,35 @@ describe("broker startup failures name the log", () => {
 			await assertCrashReportedPromptly(marker, 4);
 		} finally {
 			removePathSync(previous, { recursive: true, force: true });
+		}
+	});
+
+	test("a respawn while an exited broker's launcher still holds the log starts the next broker", {
+		skip: process.platform !== "win32",
+	}, async () => {
+		// What a running broker's death leaves for its reconnecting clients on Windows: its `cmd.exe` keeps the
+		// `2>>broker.log` redirect open a moment after the broker itself is gone.
+		const holder = spawn(
+			"cmd.exe",
+			[
+				"/s",
+				"/c",
+				`""${process.execPath}" -e "process.stdout.write('held'); setTimeout(function () {}, 300)" 2>>"${logPath}""`,
+			],
+			{ windowsVerbatimArguments: true, stdio: ["ignore", "pipe", "ignore"] },
+		);
+		const holderExited = new Promise<void>((resolve) => holder.once("exit", () => resolve()));
+		try {
+			await new Promise<void>((resolve, reject) => {
+				holder.stdout?.once("data", () => resolve());
+				holder.once("error", reject);
+			});
+			assert.equal(logWritable(), false, "the redirect did not hold the log, so this proves nothing");
+
+			// Not mistaken for a broker that is still starting, which would wait out the whole start-up budget.
+			await assertCrashReportedPromptly(`RESPAWN-MARKER-${Date.now()}`, 5);
+		} finally {
+			await holderExited;
 		}
 	});
 
