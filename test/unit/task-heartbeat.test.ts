@@ -469,6 +469,46 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
+test.runIf(process.platform !== "win32")(
+	"a shell heartbeat keeps CRLF lines and shows only the last state of a carriage-return progress line",
+	async () => {
+		const target = harness();
+		const launched = await executeSupervisedCommand(
+			"printf 'first\\r\\nsecond\\r\\nprogress 10%%\\rprogress 90%%\\r\\n'; read value",
+			process.cwd(),
+			{ taskOwner: target.host.ownerBinding, onData() {}, wait: { kind: "background" }, timeout: 120 },
+			false,
+		);
+		assert.equal(launched.observation?.kind, "yielded");
+		const taskId = launched.observation.taskId;
+		const lease = target.host.resolveTask(taskId);
+		assert.ok(lease.ok);
+		const { supervisor } = target.host.ownerBinding;
+		await vi.waitFor(() => assert.ok(target.delivery.observed > 0, "monitor saw the shell running"), {
+			timeout: 5000,
+		});
+		await vi.waitFor(
+			async () => {
+				const page = await supervisor.readTaskOutput(lease.value, { start: "0", maximumBytes: 8192 });
+				assert.ok(page.ok);
+				assert.match(Buffer.concat(page.value.chunks.map((chunk) => Buffer.from(chunk.bytes))).toString(), /90%/);
+			},
+			{ timeout: 5000 },
+		);
+		await advanceShell(target, 15 * MINUTE, 30_000);
+		await vi.waitFor(() => assert.equal(target.delivered.length, 1), { timeout: 5000 });
+		assert.deepEqual(target.delivered[0]?.details.tasks[0]?.output?.tail, ["first", "second", "progress 90%"]);
+
+		const input = supervisor.taskStdin(lease.value);
+		assert.ok(input.ok);
+		await supervisor.writeTaskInput(input.value, randomUUID() as OperationId, {
+			kind: "bytes",
+			bytes: Buffer.from("done\n"),
+		});
+		await target.host.waitForTask(taskId);
+	},
+);
+
 test("a workflow stage's tasks heartbeat through its current session after replacement, and stop when the stage pauses", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
 	const boundary = new WorkflowStageAdmissionBoundary();

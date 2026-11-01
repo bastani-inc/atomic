@@ -413,7 +413,11 @@ export class TaskHeartbeatMonitor {
 		// The window can open mid-line; that fragment is not a line of output.
 		if (start > 0n) lines.shift();
 		return lines
-			.map((line) => singleLine(line.slice(line.lastIndexOf("\r") + 1), LINE_CHARS).trimEnd())
+			.map((line) => {
+				// A CRLF ending is not a redraw; a carriage return inside a line redraws it, so its last state counts.
+				const ended = line.replace(/\r+$/, "");
+				return singleLine(ended.slice(ended.lastIndexOf("\r") + 1), LINE_CHARS).trimEnd();
+			})
 			.filter((line) => line.trim().length > 0)
 			.slice(-OUTPUT_TAIL_LINES);
 	}
