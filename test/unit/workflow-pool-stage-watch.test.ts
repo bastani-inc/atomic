@@ -1236,3 +1236,20 @@ test("a task that settles as its stage ends is shown settled, not left running (
 		await tasks.dispose();
 	}
 });
+
+test("a task that settles as its attempt ends is shown settled, not left running (#3996)", async () => {
+	const { watches, tasks, taskEvents } = await watchedStageWithTasks();
+	try {
+		await tasks.start("Run the suite");
+		openWatch(watches);
+		while (taskEvents().length === 0) await sleep(10);
+		// The task settles and the attempt ends (its child returned) before the next timed update.
+		await tasks.settle(0);
+		watches.clear();
+		const last = taskEvents().at(-1)?.event as never as { tasks: PooledStageTasks };
+		assert.notEqual(last.tasks.tasks[0]?.execution.kind, "running");
+	} finally {
+		watches.clear();
+		await tasks.dispose();
+	}
+});

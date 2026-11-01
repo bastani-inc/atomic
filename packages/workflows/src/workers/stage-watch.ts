@@ -345,16 +345,12 @@ export class WorkerStageWatches {
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
 			if (current !== undefined && current !== watch.handle && !isTerminal(current)) {
 				tracePooledWatch("worker.watch.handle-replaced", { watch: id });
-				this.flush(id);
-				this.close(id);
+				this.finish(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "resync" });
 				continue;
 			}
 			if (isTerminal(watch.handle)) {
-				// The tasks' last state goes out with the stage's last events, so none still reads as running.
-				watch.tasks?.flushPending();
-				this.flush(id);
-				this.close(id);
+				this.finish(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "stage_finished" });
 			}
 		}
@@ -365,10 +361,17 @@ export class WorkerStageWatches {
 		this.ledger.clear();
 		for (const receipts of this.receipts.values()) receipts.dispose();
 		this.receipts.clear();
-		for (const id of [...this.watches.keys()]) {
-			this.flush(id);
-			this.close(id);
-		}
+		for (const id of [...this.watches.keys()]) this.finish(id);
+	}
+
+	/**
+	 * Sends a watch's last events and closes it. The tasks' last state goes out with them, so a task that
+	 * settled as its stage or attempt ended does not keep reading as running.
+	 */
+	private finish(id: WatchId): void {
+		this.watches.get(id)?.tasks?.flushPending();
+		this.flush(id);
+		this.close(id);
 	}
 
 	/**

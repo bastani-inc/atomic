@@ -429,7 +429,8 @@ export class TaskInspector implements Component {
 	private renderTranscriptViewport(width: number, budget: number): string[] {
 		const task = this.selected();
 		const statusRows = this.taskStatusRows(width);
-		const room = Math.max(1, budget - 5 - statusRows.length);
+		const failure = this.stopFailure ? [theme.fg("warning", this.stopFailure)] : [];
+		const room = Math.max(1, budget - 5 - statusRows.length - failure.length);
 		this.transcriptPageRows = room;
 		const rows = this.transcript?.flatMap((component) => component.render(width)) ?? [
 			this.transcriptLoading ? "Loading transcript…" : this.status,
@@ -457,6 +458,7 @@ export class TaskInspector implements Component {
 				`Lines ${rows.length ? this.scroll + 1 : 0}–${Math.min(rows.length, this.scroll + room)} of ${rows.length}${this.cursor ? " · PgUp at top: earlier history" : ""}${this.status ? ` · ${this.status}` : ""}`,
 			),
 			theme.fg("dim", "↑↓ scroll · PgUp/PgDn page · Home/End · ←/Esc back"),
+			...failure,
 			...statusRows,
 		]
 			.map(fit)
