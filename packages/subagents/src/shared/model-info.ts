@@ -67,6 +67,18 @@ export function splitKnownThinkingSuffix(model: string): { baseModel: string; th
 	};
 }
 
+/**
+ * The base model and word of a `model:word` whose word names no thinking level, such as `openai/gpt-5.5:extreme`;
+ * undefined when it has no such suffix. A model id may itself end in `:word`: only a resolver can tell the two apart.
+ */
+export function splitUnknownThinkingSuffix(model: string): { baseModel: string; effort: string } | undefined {
+	const colonIdx = model.lastIndexOf(":");
+	if (colonIdx <= 0) return undefined;
+	const effort = model.substring(colonIdx + 1);
+	if (!/^[a-z]+$/i.test(effort) || THINKING_LEVELS.some((level) => level === effort)) return undefined;
+	return { baseModel: model.substring(0, colonIdx), effort };
+}
+
 export function findModelInfo(
 	model: string | undefined,
 	availableModels: ModelInfo[] | undefined,

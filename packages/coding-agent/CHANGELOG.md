@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A chat that a running workflow woke, for example with its completion notice or a message from one of its stages' subagents, no longer has its own `bash` and other commands wait for good on that workflow's resource admission (such as `admission.host.minFreeMemoryBytes` on a busy host), even after the run finished. A turn a delivered message starts now runs under the receiving session's own admission, or none, so the chat's commands start at once; a workflow stage's commands still use its run's admission. SDK hosts: a turn started by `sendCustomMessage`, `sendCustomMessages` or `sendUserMessage` no longer inherits the sender's `withResourceAdmission` scope ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+- A subagent launched with an effort word that is not a level, such as `model: "openai/gpt-5.5:extreme"`, now runs that model at its default level, as for an effort the model does not support, instead of silently running on the default model; a `fallbackModels` entry with such a word runs its model at that model's default level too. If the model itself is not available either, the launch fails with `Unknown model "<model>": "<word>" is not an effort level (...)` instead of running another model ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+
 ## [0.9.59] - 2026-11-01
 
 GitHub Copilot tokens that work from `/login`, and intercom that recovers on Windows.

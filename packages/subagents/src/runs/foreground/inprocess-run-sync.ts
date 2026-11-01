@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
-import { splitKnownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
+import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
 import type {
 	AgentProgress,
 	ArtifactPaths,
@@ -186,6 +186,15 @@ function noSpawnableCandidatesResult(agent: AgentConfig, task: string, skippedAt
 	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
 }
 
+/** A launch of `provider/model:word` whose word names no thinking level, and whose model does not resolve either. */
+function unknownModelResult(agent: AgentConfig, task: string, candidate: string, effort: string, baseModel: string) {
+	return refusedResult(
+		agent,
+		task,
+		`Unknown model "${candidate}": "${effort}" is not an effort level (${THINKING_LEVELS.join(", ")}), and no available model is "${baseModel}".`,
+	);
+}
+
 export async function runSingleInProcess(
 	runtimeCwd: string,
 	agent: AgentConfig,
@@ -225,7 +234,7 @@ export async function runSingleInProcess(
 	});
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
-	const candidate = filteredCandidates.candidates[0];
+	const listedCandidate = filteredCandidates.candidates[0];
 	const fallbackCandidates = filteredCandidates.candidates.slice(1);
 	// Upstream pi #7897: a subagent that pins no model of its own inherits the
 	// dispatching session's model AND thinking level. Atomic resolves the
@@ -243,16 +252,26 @@ export async function runSingleInProcess(
 	// `Model<Api>` object and otherwise restores the model persisted in the
 	// session file — which, for a fork-context child, is the parent's model.
 	// Resolving the candidate here is what makes the agent's configured model win.
-	const resolvedCandidate = candidate ? options.resolveCandidateModel?.(candidate) : undefined;
+	const resolvedCandidate = listedCandidate ? options.resolveCandidateModel?.(listedCandidate) : undefined;
 	if (options.modelRoute && !resolvedCandidate)
 		throw new Error(
 			"Subagent auto-selected model could not be resolved before execution. Retry explicitly with the current catalog.",
 		);
-	// The effort a `provider/model:effort` launch asked for explicitly; an auto-routed launch chose none itself.
-	const requestedSuffix = splitKnownThinkingSuffix(options.modelOverride ?? agent.model ?? "").thinkingSuffix.slice(1);
+	// `provider/model:word` with a word that names no level runs that model at its default level, as at an effort it
+	// lacks, and is reported without the word; when its model does not resolve either, it never runs another model.
+	const unknownEffort = listedCandidate ? splitUnknownThinkingSuffix(listedCandidate) : undefined;
+	if (listedCandidate && unknownEffort && options.resolveCandidateModel && !resolvedCandidate)
+		return unknownModelResult(agent, task, listedCandidate, unknownEffort.effort, unknownEffort.baseModel);
+	const candidate =
+		resolvedCandidate?.unknownEffort !== undefined && unknownEffort ? unknownEffort.baseModel : listedCandidate;
+	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none; an
+	// auto-routed launch chose none itself.
+	const launchModel = options.modelOverride ?? agent.model ?? "";
+	const requestedSuffix = splitKnownThinkingSuffix(launchModel).thinkingSuffix.slice(1);
 	const requestedThinking = options.modelRoute
 		? undefined
-		: THINKING_LEVELS.find((level) => level === requestedSuffix);
+		: (THINKING_LEVELS.find((level) => level === requestedSuffix) ??
+			(launchModel ? options.resolveCandidateModel?.(launchModel)?.unknownEffort : undefined));
 	const orchestrationContext = workflowOrchestrationContext(options);
 	const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 
@@ -308,12 +327,8 @@ export async function runSingleInProcess(
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
 		...(options.sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs: options.sessionStartTimeoutMs }),
-		...(requestedThinking === undefined
-			? {}
-			: {
-					requestedThinking,
-					...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
-				}),
+		...(requestedThinking === undefined ? {} : { requestedThinking }),
+		...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
 		tools: agent.tools,
 		mcpDirectTools: agent.mcpDirectTools,
 		skills: options.skills ?? agent.skills,

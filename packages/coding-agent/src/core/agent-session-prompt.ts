@@ -20,6 +20,7 @@ import {
 	runInputHook,
 	UNORDERED_ADMISSION,
 } from "./queued-input-admission.ts";
+import { currentResourceAdmission, withOwnResourceAdmission } from "./resource-admission-scope.ts";
 import {
 	assertSessionOpen,
 	sessionGenerationClosing,
@@ -105,10 +106,19 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	if (owner !== this) return owner.prompt(text, options);
 	if (this._isEmittingAgentSettled && !queuesDuringAgentSettled(this, options)) {
 		// A run started by an agent_settled handler waits until every settled handler completes.
-		this._deferredSettledActions.push(async () => await this.prompt(text, options));
+		deferSettledAction(this, async () => await this.prompt(text, options));
 		return;
 	}
 	return trackSessionWork(this, () => admittedPrompt.call(this, text, options));
+}
+
+/**
+ * Defer `action` until the settling run has settled. It runs under the resource admission its requester ran under,
+ * not the settling run's: a turn a delivered message requests keeps the receiving session's own admission.
+ */
+function deferSettledAction(session: AgentSession, action: () => Promise<void>): void {
+	const admission = currentResourceAdmission();
+	session._deferredSettledActions.push(() => withOwnResourceAdmission(admission, action));
 }
 
 function queuesDuringAgentSettled(session: AgentSession, options: PromptOptions | undefined): boolean {
@@ -424,8 +434,8 @@ export async function _runAgentPrompt(
 		return owner._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter);
 	}
 	if (this._isEmittingAgentSettled) {
-		this._deferredSettledActions.push(
-			async () => await this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter),
+		deferSettledAction(this, () =>
+			this._runAgentPrompt(messages, promptStarted, reportDispatch, prepared, customStarter),
 		);
 		return;
 	}
@@ -932,7 +942,7 @@ export function deliverQueuedInputIfIdle(session: AgentSession, options?: { user
 		}
 		await runQueuedInput(session).catch(() => {});
 	};
-	if (session._isEmittingAgentSettled || openRuns.has(session)) session._deferredSettledActions.push(deliver);
+	if (session._isEmittingAgentSettled || openRuns.has(session)) deferSettledAction(session, deliver);
 	else if (session._activePromptCount === 0) void deliver();
 }
 
@@ -1032,14 +1042,18 @@ export async function sendUserMessage(
 	// prompt() owns command dispatch and template expansion; the default (false)
 	// keeps every pre-existing caller sending literally. The private delivery hook
 	// lets workflow routing report and gate the branch selected after asynchronous
-	// input/compaction extension preflight.
-	await this.prompt(text, {
-		expandPromptTemplates: options?.expandPromptTemplates ?? false,
-		streamingBehavior: options?.deliverAs,
-		images,
-		source: "extension",
-		__workflowDelivery: options?.__workflowDelivery,
-	} as PromptOptionsWithWorkflowDelivery);
+	// input/compaction extension preflight. A delivered message starts this session's
+	// turn, so the turn runs under this session's own resource admission, never under
+	// the scope its sender runs in, such as a workflow run's.
+	await withOwnResourceAdmission(this._resourceAdmission, () =>
+		this.prompt(text, {
+			expandPromptTemplates: options?.expandPromptTemplates ?? false,
+			streamingBehavior: options?.deliverAs,
+			images,
+			source: "extension",
+			__workflowDelivery: options?.__workflowDelivery,
+		} as PromptOptionsWithWorkflowDelivery),
+	);
 }
 
 /**

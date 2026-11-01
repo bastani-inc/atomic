@@ -46,6 +46,7 @@ import { DEFAULT_MAX_JSONL_BYTES } from "../../shared/jsonl-writer.js";
 import {
 	resolveEffectiveThinking,
 	splitKnownThinkingSuffix,
+	splitUnknownThinkingSuffix,
 	THINKING_LEVELS,
 	type ThinkingLevel,
 	taskRecordModel,
@@ -168,9 +169,10 @@ export interface ChildSpec {
 	readonly sessionStartTimeoutMs?: number;
 	/**
 	 * The thinking level the launch asked for explicitly (a `provider/model:effort` override). The child and every model
-	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not.
+	 * in its fallback chain run at it where that model supports it, and at that model's default level where it does not,
+	 * as each does for a word that names no level (`provider/model:extreme`).
 	 */
-	readonly requestedThinking?: ThinkingLevel;
+	readonly requestedThinking?: string;
 	/** Resolves a fallback entry (`provider/model[:thinking]`) to its model, to pick the level it runs at. */
 	readonly resolveCandidateModel?: CandidateModelResolver;
 }
@@ -190,10 +192,12 @@ const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 /**
  * The level a model runs an explicitly requested effort at: that effort where the model supports it, otherwise the
- * model's default level (its configured thinking level, else the default one), as a launch with no effort would.
+ * model's default level (its configured thinking level, else the default one), as a launch with no effort would. A
+ * word that names no level is an effort no model supports.
  */
-function explicitEffortFor(model: Model<Api>, requested: ThinkingLevel, settings: SettingsManager): ThinkingLevel {
-	if (getSupportedThinkingLevels(model).includes(requested)) return requested;
+function explicitEffortFor(model: Model<Api>, requested: string, settings: SettingsManager): ThinkingLevel {
+	const supported = getSupportedThinkingLevels(model).find((level) => level === requested);
+	if (supported) return supported;
 	return clampThinkingLevel(
 		model,
 		settings.getModelThinkingLevel(model.provider, model.id) ??
@@ -204,18 +208,29 @@ function explicitEffortFor(model: Model<Api>, requested: ThinkingLevel, settings
 
 /**
  * A fallback entry pinned to the level its model runs at: the entry's own `:effort`, else the launch's explicit one,
- * where that model supports it, and that model's default level otherwise. An entry it cannot resolve is kept as is.
+ * where that model supports it, and that model's default level otherwise. Without an explicit launch effort, only an
+ * entry whose own `:word` names no level is pinned, to its model's default level. An entry it cannot resolve, or one
+ * it need not pin, is kept as is.
  */
 function pinFallbackEffort(
 	entry: string,
-	requested: ThinkingLevel,
+	requested: string | undefined,
 	settings: SettingsManager,
 	resolve: CandidateModelResolver | undefined,
 ): string {
 	const resolved = resolve?.(entry);
 	if (!resolved) return entry;
-	const { baseModel } = splitKnownThinkingSuffix(entry.trim());
-	return `${baseModel}:${explicitEffortFor(resolved.model, resolved.thinkingLevel ?? requested, settings)}`;
+	const effort =
+		requested === undefined
+			? resolved.unknownEffort
+			: (resolved.thinkingLevel ?? resolved.unknownEffort ?? requested);
+	if (effort === undefined) return entry;
+	const text = entry.trim();
+	const { baseModel } =
+		resolved.unknownEffort === undefined
+			? splitKnownThinkingSuffix(text)
+			: (splitUnknownThinkingSuffix(text) ?? { baseModel: text });
+	return `${baseModel}:${explicitEffortFor(resolved.model, effort, settings)}`;
 }
 
 export interface ChildPolicy extends ChildModePolicy {
@@ -1256,22 +1271,24 @@ export class SubagentControlRuntime {
 				const settingsManager = inherited.settingsManager ?? SettingsManager.create(admitted.policy.cwd, agentDir);
 				// An explicit effort runs exactly on each model that supports it, the child's and every one its fallback
 				// chain can switch to, and at that model's default level on one that does not; never another level. The
-				// model the child starts on keeps its own `:effort`, as when it is a fallback launch moved up to.
+				// model the child starts on keeps its own `:effort`, as when it is a fallback launch moved up to. A
+				// fallback's own `:word` that names no level runs that model at its default level either way.
 				const requested = admitted.spec.requestedThinking;
 				const startSuffix = splitKnownThinkingSuffix(candidate.modelId ?? "").thinkingSuffix.slice(1);
 				const startEffort = THINKING_LEVELS.find((level) => level === startSuffix) ?? requested;
-				const explicitEffort: Pick<CreateAgentSessionOptions, "thinkingLevel" | "fallbackModels"> =
-					requested === undefined || startEffort === undefined
-						? {}
-						: {
-								...(inherited.model
-									? { thinkingLevel: explicitEffortFor(inherited.model, startEffort, settingsManager) }
-									: {}),
-								fallbackModels: (inherited.fallbackModels ?? settingsManager.getFallbackModels() ?? []).map(
-									(entry) =>
-										pinFallbackEffort(entry, requested, settingsManager, admitted.spec.resolveCandidateModel),
-								),
-							};
+				const explicit = requested !== undefined && startEffort !== undefined;
+				const fallbackEntries = inherited.fallbackModels ?? settingsManager.getFallbackModels() ?? [];
+				const pinnedFallbacks = fallbackEntries.map((entry) =>
+					pinFallbackEffort(entry, requested, settingsManager, admitted.spec.resolveCandidateModel),
+				);
+				const explicitEffort: Pick<CreateAgentSessionOptions, "thinkingLevel" | "fallbackModels"> = {
+					...(explicit && inherited.model
+						? { thinkingLevel: explicitEffortFor(inherited.model, startEffort, settingsManager) }
+						: {}),
+					...(explicit || pinnedFallbacks.some((entry, index) => entry !== fallbackEntries[index])
+						? { fallbackModels: pinnedFallbacks }
+						: {}),
+				};
 				const resourceLoader = new DefaultResourceLoader(
 					inProcessChildResourceLoaderOptions({
 						cwd: admitted.policy.cwd,
