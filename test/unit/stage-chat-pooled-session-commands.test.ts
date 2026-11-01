@@ -119,3 +119,35 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 		setKeybindings(previous);
 	}
 });
+
+test("a stop of a worker stage's task that does not reach the worker says so in /tasks (#3996)", async () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const tasks = new PooledStageTaskSource(async (_taskId, action) => {
+		if (action.kind === "cancel")
+			throw new Error('The connection to stage "review-a" was lost; the message is sent again when it reconnects.');
+		return { kind: "detail", detail: {} };
+	});
+	const shell = { ...taskRecord("build", "command"), title: "npm run build" };
+	tasks.apply({
+		tasks: [shell],
+		background: [shell.ref.taskId],
+		settlement: [],
+		activity: [],
+		stdin: [],
+		statuses: [],
+	});
+	const { view } = workerStageChat({ taskSource: () => tasks });
+	try {
+		submitStageChatText(view, "/tasks");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
+		view.handleInput("x");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /y: confirm/));
+		view.handleInput("y");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Could not stop the task: The connection/));
+	} finally {
+		view.dispose();
+		setKeybindings(previous);
+	}
+});

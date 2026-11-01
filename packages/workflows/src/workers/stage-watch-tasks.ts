@@ -46,8 +46,7 @@ export async function runStageTaskAction(
 		case "foreground":
 			return { kind: "foreground", result: await source.foregroundTask(taskId) };
 		case "cancel":
-			await source.cancelTask(taskId);
-			return { kind: "cancel" };
+			return { kind: "cancel", result: await source.cancelTask(taskId) };
 		case "input":
 			return { kind: "input", result: await source.writeTaskInput(taskId, action.text) };
 		case "output":
@@ -57,8 +56,22 @@ export async function runStageTaskAction(
 			};
 		case "detail":
 			return { kind: "detail", detail: await source.taskDetailText(taskId) };
-		case "transcript":
-			return { kind: "transcript", result: await source.readTaskTranscript(taskId, action.cursor) };
+		case "transcript": {
+			const result = await source.readTaskTranscript(taskId, action.cursor);
+			// A viewer in another process cannot follow the task's session live; the latest page carries the
+			// reply still streaming, without its thinking, as a live view shows it.
+			const streaming =
+				result.ok && action.cursor === undefined
+					? source.followTaskTranscript(taskId)?.session?.getStreamingMessage?.()
+					: undefined;
+			if (!result.ok || streaming === undefined || streaming.role !== "assistant")
+				return { kind: "transcript", result };
+			const partial = { ...streaming, content: streaming.content.filter((block) => block.type !== "thinking") };
+			return {
+				kind: "transcript",
+				result: { ok: true, value: { ...result.value, messages: [...result.value.messages, partial] } },
+			};
+		}
 	}
 }
 
@@ -81,6 +94,8 @@ export class WatchedStageTasks {
 	private unbind?: () => void;
 	private unsubscribe?: () => void;
 	private readonly statusWatches = new Map<TaskId, () => void>();
+	/** Agent tasks' sessions, followed so a viewer re-reads a transcript while its reply streams. */
+	private readonly transcriptWatches = new Map<TaskId, () => void>();
 	private timer?: NodeJS.Timeout;
 	private disposed = false;
 
@@ -99,6 +114,14 @@ export class WatchedStageTasks {
 		this.session = session;
 		this.unbind = watchOwnerTaskStoreBinding(session, () => this.bindStore());
 		this.bindStore();
+	}
+
+	/** Sends a change still waiting for its timer now, before the watch ends. */
+	flushPending(): void {
+		if (this.timer === undefined) return;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		this.flush();
 	}
 
 	dispose(): void {
@@ -130,17 +153,27 @@ export class WatchedStageTasks {
 		if (this.disposed || store === undefined) return;
 		const source = ownerTaskViewSource(store);
 		const agents = new Set(source.tasks.filter((task) => task.kind === "agent").map((task) => task.ref.taskId));
-		for (const [id, release] of this.statusWatches)
-			if (!agents.has(id)) {
-				release();
-				this.statusWatches.delete(id);
-			}
-		for (const id of agents)
+		for (const watches of [this.statusWatches, this.transcriptWatches])
+			for (const [id, release] of watches)
+				if (!agents.has(id)) {
+					release();
+					watches.delete(id);
+				}
+		for (const id of agents) {
 			if (!this.statusWatches.has(id))
 				this.statusWatches.set(
 					id,
 					source.watchExtensionStatuses(id, () => this.schedule()),
 				);
+			if (!this.transcriptWatches.has(id)) {
+				const session = source.followTaskTranscript(id)?.session;
+				if (session?.subscribe !== undefined)
+					this.transcriptWatches.set(
+						id,
+						session.subscribe(() => this.schedule()),
+					);
+			}
+		}
 		this.send(snapshotStageTasks(source));
 	}
 
@@ -151,8 +184,9 @@ export class WatchedStageTasks {
 		this.unbind = undefined;
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
-		for (const release of this.statusWatches.values()) release();
+		for (const release of [...this.statusWatches.values(), ...this.transcriptWatches.values()]) release();
 		this.statusWatches.clear();
+		this.transcriptWatches.clear();
 		this.store = undefined;
 		this.session = undefined;
 	}

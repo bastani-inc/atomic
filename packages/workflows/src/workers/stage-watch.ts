@@ -11,7 +11,7 @@ import type { Store } from "../shared/store.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type { DistributiveOmit, WorkerRequest, WorkerStageCommand } from "./protocol.js";
 import { StageDeliveryReceipts } from "./stage-delivery-receipts.js";
-import { isCancellation } from "./stage-session-commands.js";
+import { runsWhilePaused } from "./stage-session-commands.js";
 import { appendCoalesced } from "./stage-watch-coalesce.js";
 import { runStageTaskAction, stageTaskSource, WatchedStageTasks } from "./stage-watch-tasks.js";
 import type {
@@ -351,6 +351,8 @@ export class WorkerStageWatches {
 				continue;
 			}
 			if (isTerminal(watch.handle)) {
+				// The tasks' last state goes out with the stage's last events, so none still reads as running.
+				watch.tasks?.flushPending();
 				this.flush(id);
 				this.close(id);
 				this.send({ kind: "stage-watch-ended", watch: id, reason: "stage_finished" });
@@ -461,8 +463,8 @@ export class WorkerStageWatches {
 		const watch = this.airlock(command);
 		if (typeof watch === "string") return { refusal: watch };
 		const request = command.command;
-		// A paused or quitting pool starts no new session work, but still lets a running command be stopped.
-		if (this.control() !== "running" && !isCancellation(request)) return { refusal: "PoolPausedOrQuitting" };
+		// A paused or quitting pool starts no new session work, but still stops running work and shows tasks.
+		if (this.control() !== "running" && !runsWhilePaused(request)) return { refusal: "PoolPausedOrQuitting" };
 		const session = watch.handle.agentSession;
 		if (session === undefined)
 			return {

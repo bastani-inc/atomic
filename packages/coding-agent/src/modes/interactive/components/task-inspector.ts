@@ -43,6 +43,8 @@ export class TaskInspector implements Component {
 	private transcriptPageRows = 5;
 	private cursor?: string;
 	private status = "";
+	/** Why the last stop did not reach its task; shown under the list until the next key. */
+	private stopFailure = "";
 	private scroll = 0;
 	private detailContent: Omit<TaskDetailContent, "stdinAvailable"> = {};
 	private detailTaskId?: TaskId;
@@ -88,7 +90,11 @@ export class TaskInspector implements Component {
 					this.requestRender();
 				}),
 			cancel: (task) => {
-				void this.store.cancelTask(task.ref.taskId).then(() => this.requestRender());
+				void this.store.cancelTask(task.ref.taskId).then((result) => {
+					// A stop that did not reach the task says so, instead of leaving it looking untouched.
+					this.stopFailure = result.ok ? "" : `Could not stop the task: ${result.error.message}`;
+					this.requestRender();
+				});
 			},
 			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: () => {
@@ -312,6 +318,7 @@ export class TaskInspector implements Component {
 		if (current()) this.requestRender();
 	}
 	handleInput(data: string): boolean {
+		this.stopFailure = "";
 		if (this.confirmation) {
 			if (data === "y" || data === "n" || matchesKey(data, "escape")) {
 				const answer = this.confirmation;
@@ -499,8 +506,9 @@ export class TaskInspector implements Component {
 							.filter(Boolean)
 							.join(" · ");
 		const footer = theme.fg("dim", truncateToWidth(`/tasks · ${hints}`, width));
+		const failure = this.stopFailure ? [theme.fg("warning", truncateToWidth(this.stopFailure, width))] : [];
 		if (!framed)
-			return [...compactSummary, ...view, ...actionRow, footer, ...statusRows]
+			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
 				.map((line) => truncateToWidth(line, width))
 				.slice(-Math.max(1, budget));
 		const live = this.store.backgroundTasks.filter((task) => task.execution.kind !== "settled").length;
@@ -525,6 +533,7 @@ export class TaskInspector implements Component {
 			...actionRow.map(frameRow),
 			border(`╰${"─".repeat(Math.max(0, width - 2))}╯`),
 			footer,
+			...failure,
 			...statusRows,
 		].map((line) => truncateToWidth(line, width));
 	}
