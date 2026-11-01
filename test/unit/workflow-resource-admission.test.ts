@@ -159,7 +159,7 @@ test("pooled stage starts are paced while the host is overloaded, in order, and 
 		// No stage started lately: the first one starts however busy the host is.
 		const first = await admission.acquire("session");
 		const second = admission.acquire("session");
-		await waitForReason(admission, "host load");
+		await waitForReason(admission, "paced for host load");
 		const third = admission.acquire("session");
 		let thirdStarted = false;
 		void third.then(() => {
@@ -175,6 +175,39 @@ test("pooled stage starts are paced while the host is overloaded, in order, and 
 		load = 1;
 		const thirdRelease = await third;
 		for (const release of [first, secondStarted, thirdRelease, delegated, process]) await release();
+	} finally {
+		await f.close();
+	}
+});
+
+test("a running stage's subagents neither delay a paced stage start nor are refused because a start is paced", async () => {
+	const f = await fixture();
+	try {
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "worker",
+			limits: { session: 10 },
+			stageStartMaxLoadPerCpu: 3,
+			sampleHost: () => ({ freeMemoryBytes: 1 << 30, load: 5 }),
+		});
+		const running = await admission.acquire("session");
+		const paced = admission.acquire("session");
+		let started = false;
+		void paced.then(() => {
+			started = true;
+		});
+		await waitForReason(admission, "paced for host load");
+		// The running stage starts a subagent: capacity remains, and a stage start being paced does not refuse it.
+		const subagent = await admission.acquire("session", undefined, { delegated: true });
+		// One spacing after the running stage started, the paced stage starts: the subagent's launch is no stage start.
+		await f.databases[0]!.run(
+			"UPDATE wf_runs_resource_permits SET granted_at = granted_at - ? WHERE ticket = (SELECT MIN(ticket) FROM wf_runs_resource_permits)",
+			STAGE_START_SPACING_MS,
+		);
+		const deadline = Date.now() + ADMISSION_OBSERVATION_TIMEOUT_MS;
+		while (!started && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal(started, true, "the paced stage started one spacing after the last stage start");
+		for (const release of [running, subagent, await paced]) await release();
 	} finally {
 		await f.close();
 	}

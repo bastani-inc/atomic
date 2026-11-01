@@ -39,7 +39,7 @@ const LATE_ATTEMPT_REASON = "waiting for its attempt lease";
  * order the stages asked: the load can then recover, and no stage waits forever on stages that hold their sessions.
  */
 export const STAGE_START_SPACING_MS = 5_000;
-const STAGE_START_PRESSURE_REASON = "host load";
+const STAGE_START_PRESSURE_REASON = "paced for host load";
 
 type OwnerRow = SqliteRow & { id: string; host: string; boot: string | null; pid: number; expires_at: number };
 type Resource = "session" | "process";
@@ -364,20 +364,25 @@ export class SqlResourceAdmission {
 							`SELECT COUNT(*) AS count FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'granted'`,
 							...args,
 						);
+						// A stage start waiting only for its pacing slot holds no claim on capacity others may use meanwhile.
 						const older = await tx.get(
-							`SELECT 1 AS waiting FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'waiting' AND ticket < (SELECT ticket FROM ${this.permits} WHERE operation = ?) LIMIT 1`,
+							`SELECT 1 AS waiting FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'waiting' AND reason IS NOT ? AND ticket < (SELECT ticket FROM ${this.permits} WHERE operation = ?) LIMIT 1`,
 							...args,
+							STAGE_START_PRESSURE_REASON,
 							operation,
 						);
 						if (Number(count?.count) >= limit || older) reason ??= `${scope} ${kind}`;
 					}
 					if (reason && request?.delegated)
 						throw new Error(`Delegated session cannot be admitted without capacity headroom: ${reason}`);
+					// Only a stage's own session start is recorded for pacing: subagents and processes are not stage starts.
+					const stageStart = kind === "session" && request?.delegated !== true;
 					const updated = await tx.run(
-						`UPDATE ${this.permits} SET state = ?, reason = ?, granted_at = CASE WHEN ? IS NULL THEN ${NOW_MS} ELSE NULL END WHERE operation = ? AND state = 'waiting'`,
+						`UPDATE ${this.permits} SET state = ?, reason = ?, granted_at = CASE WHEN ? IS NULL AND ? THEN ${NOW_MS} ELSE NULL END WHERE operation = ? AND state = 'waiting'`,
 						reason ? "waiting" : "granted",
 						reason ?? null,
 						reason ?? null,
+						stageStart ? 1 : 0,
 						operation,
 					);
 					if (updated.changes !== 1) throw new Error("Resource admission holder was stopped");

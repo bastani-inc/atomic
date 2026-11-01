@@ -65,7 +65,7 @@ test.skipIf(process.platform === "win32")(
 						)
 						.catch(() => [{ count: 0 }])
 				)[0]!.count;
-			while ((await sessions("granted")) < 1 || (await sessions("waiting", "host load")) < 1) {
+			while ((await sessions("granted")) < 1 || (await sessions("waiting", "paced for host load")) < 1) {
 				budget.throwIfAborted();
 				await sleep(50);
 			}
