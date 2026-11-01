@@ -58,10 +58,11 @@ function captureOutput(streams: readonly (ReadableStream<Uint8Array> | null)[]):
 	return () => text;
 }
 
+/** On the monotonic clock: a Windows runner's wall clock has been seen to jump ahead mid-test. */
 async function waitUntil(condition: () => boolean, budgetMs: number): Promise<void> {
-	const deadline = Date.now() + budgetMs;
+	const deadline = performance.now() + budgetMs;
 	while (!condition()) {
-		assert.ok(Date.now() < deadline, "condition did not become true before its deadline");
+		assert.ok(performance.now() < deadline, "condition did not become true before its deadline");
 		await sleep(25);
 	}
 }

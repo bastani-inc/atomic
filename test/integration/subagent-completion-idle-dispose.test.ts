@@ -29,8 +29,10 @@ test("a file-backed session disposes cleanly after background completions settle
 		const harness = await createHarness({ sessionManager: manager });
 		// Hold the first parent turn open so later completions arrive while it streams.
 		const firstTurn = Promise.withResolvers<void>();
+		const firstTurnStreaming = Promise.withResolvers<void>();
 		harness.setResponses([
 			async () => {
+				firstTurnStreaming.resolve();
 				await firstTurn.promise;
 				return fauxAssistantMessage("parent saw notice");
 			},
@@ -42,14 +44,29 @@ test("a file-backed session disposes cleanly after background completions settle
 		const cardWrites = Promise.withResolvers<void>();
 		const heldCards = new Set<string>();
 		const heldTaskIds = new Set<string>();
+		// Each task's card, once its durable write returns. A write takes the session file's lock, and on
+		// Windows releasing that lock can take more than a second, so these are awaited rather than polled.
+		const cardEvents = new Map<string, { held: PromiseWithResolvers<void>; written: PromiseWithResolvers<void> }>();
+		const cardEventsOf = (taskId: string) => {
+			let events = cardEvents.get(taskId);
+			if (events === undefined) {
+				events = { held: Promise.withResolvers<void>(), written: Promise.withResolvers<void>() };
+				cardEvents.set(taskId, events);
+			}
+			return events;
+		};
 		const appendEntry = manager.appendCustomMessageEntry.bind(manager);
 		vi.spyOn(manager, "appendCustomMessageEntry").mockImplementation(async (...args) => {
 			const taskId = (args[3] as { taskId?: string } | undefined)?.taskId;
-			if (args[0] === "task-completion" && taskId !== undefined && heldTaskIds.has(taskId)) {
+			const card = args[0] === "task-completion" && taskId !== undefined;
+			if (card && heldTaskIds.has(taskId)) {
 				heldCards.add(taskId);
+				cardEventsOf(taskId).held.resolve();
 				await cardWrites.promise;
 			}
-			return appendEntry(...args);
+			const entryId = await appendEntry(...args);
+			if (card) cardEventsOf(taskId).written.resolve();
+			return entryId;
 		});
 		let disposed = false;
 		try {
@@ -74,24 +91,25 @@ test("a file-backed session disposes cleanly after background completions settle
 
 			// The first completion starts a parent turn, which stays streaming.
 			gates[0]!.resolve(failed);
-			await vi.waitFor(() => assert.equal(harness.session.isStreaming, true));
+			await firstTurnStreaming.promise;
+			assert.equal(harness.session.isStreaming, true);
 			// The second arrives while it streams and queues its reconciliation for that run.
 			gates[1]!.resolve(failed);
-			await vi.waitFor(() =>
-				assert.ok(
-					manager
-						.getBranch()
-						.some(
-							(entry) =>
-								entry.type === "custom_message" &&
-								(entry.details as { taskId?: string } | undefined)?.taskId === taskIds[1],
-						),
-				),
+			await cardEventsOf(taskIds[1]!).written.promise;
+			assert.ok(
+				manager
+					.getBranch()
+					.some(
+						(entry) =>
+							entry.type === "custom_message" &&
+							(entry.details as { taskId?: string } | undefined)?.taskId === taskIds[1],
+					),
 			);
 			assert.equal(harness.session.isStreaming, true);
 			// The last arrives while it still streams; its durable card write stalls.
 			gates[2]!.resolve(failed);
-			await vi.waitFor(() => assert.ok(heldCards.has(lastTaskId)));
+			await cardEventsOf(lastTaskId).held.promise;
+			assert.ok(heldCards.has(lastTaskId));
 			// The parent finishes its turn and its last drain, then goes idle.
 			const parentSettled = nextAgentSettled(harness.session);
 			firstTurn.resolve();

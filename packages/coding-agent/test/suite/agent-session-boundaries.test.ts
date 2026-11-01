@@ -457,10 +457,16 @@ describe("AgentSession actionable boundaries", () => {
 	});
 
 	it("does not compact from usage belonging to a boundary-omitted assistant", async () => {
+		// The session's own estimate is its built-in system prompt and tools, about 8,400 tokens on Linux, several
+		// hundred more on Windows, and more with every tool description added. The omitted assistant's usage is sized
+		// far past it, so only that usage can reach the compaction threshold or the bound below.
+		const contextWindow = 100_000;
+		const reserveTokens = 300;
+		const omittedInput = contextWindow - reserveTokens;
 		let handled = false;
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 10_000, maxTokens: 100 }],
-			settings: { compaction: { enabled: true, reserveTokens: 300 } },
+			models: [{ id: "faux-1", contextWindow, maxTokens: 100 }],
+			settings: { compaction: { enabled: true, reserveTokens } },
 			extensionFactories: [
 				(pi) => {
 					pi.on("message_end", (event) => {
@@ -468,7 +474,12 @@ describe("AgentSession actionable boundaries", () => {
 						return {
 							message: {
 								...event.message,
-								usage: { ...event.message.usage, input: 9_800, output: 1, totalTokens: 9_801 },
+								usage: {
+									...event.message.usage,
+									input: omittedInput,
+									output: 1,
+									totalTokens: omittedInput + 1,
+								},
 							},
 						};
 					});
@@ -488,8 +499,8 @@ describe("AgentSession actionable boundaries", () => {
 		await harness.session.prompt("small prompt");
 
 		expect(harness.eventsOfType("compaction_start")).toEqual([]);
-		// The omitted assistant's 9,801-token usage no longer drives the estimate.
-		expect(harness.session.getContextUsage()?.tokens).toBeLessThan(9_000);
+		// The omitted assistant's usage, past the compaction threshold, no longer drives the estimate.
+		expect(harness.session.getContextUsage()?.tokens).toBeLessThan(contextWindow / 2);
 	});
 
 	it("does not trigger successful-response overflow from usage captured before a boundary edit", async () => {
