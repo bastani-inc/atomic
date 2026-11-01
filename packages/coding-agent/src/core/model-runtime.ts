@@ -263,7 +263,9 @@ export class ModelRuntime implements Models {
 		return runtime;
 	}
 	private configureRadiusProviders(): void {
-		configureBuiltinProviders(this.builtins, this.defaultBuiltins, this.config);
+		configureBuiltinProviders(this.builtins, this.defaultBuiltins, this.config, process.env, (providerId) =>
+			this.credentials.peek(providerId),
+		);
 	}
 	private providerIds(): Set<string> {
 		return new Set([

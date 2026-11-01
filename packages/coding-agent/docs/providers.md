@@ -161,7 +161,7 @@ Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. 
 ### GitHub Copilot
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
-- `COPILOT_GITHUB_TOKEN` is read as an API key when you prefer an environment variable over `/login`
+- A personal access token works either way: save it with `/login github-copilot` → **Use an API key**, or set `COPILOT_GITHUB_TOKEN`. A saved key takes precedence over the environment variable
 - Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
 
@@ -169,18 +169,18 @@ Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, 
 
 `github-copilot/gpt-6-astra-fast` appears only when the OAuth account catalog advertises that exact fast ID. It sends `gpt-6-astra-fast` unchanged with no `service_tier`, unlike first-party OpenAI's priority route. A raw `COPILOT_GITHUB_TOKEN` cannot supply that fast entitlement.
 
-#### Endpoint routing for `COPILOT_GITHUB_TOKEN`
+#### Endpoint routing for personal access tokens
 
-OAuth logins get their Copilot host from the token GitHub issues during login. Environment-token auth has no such exchange, so Atomic resolves the host itself, highest precedence first:
+OAuth logins get their Copilot host from the token GitHub issues during login. A token saved through `/login` as an API key, or set in `COPILOT_GITHUB_TOKEN`, has no such exchange, so Atomic resolves the host itself, highest precedence first:
 
 1. `COPILOT_API_TARGET`, then `GITHUB_COPILOT_BASE_URL` — an explicit host or full URL
-2. the `proxy-ep=` segment embedded in `COPILOT_GITHUB_TOKEN`
+2. the `proxy-ep=` segment embedded in the token
 3. `GITHUB_SERVER_URL` — `<tenant>.ghe.com` routes to `copilot-api.<tenant>.ghe.com`; any other non-`github.com` host routes to `https://api.enterprise.githubcopilot.com`
 4. `https://api.githubcopilot.com`, the public routing hub, which resolves your plan's host server-side
 
-A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without `COPILOT_GITHUB_TOKEN` the provider is left exactly as upstream `pi-ai` defines it.
+A `models.json` provider `baseUrl` for `github-copilot` overrides all of the above. Without a saved API key or `COPILOT_GITHUB_TOKEN`, the provider is left exactly as upstream `pi-ai` defines it.
 
-Chat requests authenticated with a raw `COPILOT_GITHUB_TOKEN`, including `github_pat_`, `ghp_`, `gho_`, and `ghu_` tokens, send `Copilot-Integration-Id: copilot-developer-cli`. A header supplied through `models.json`, `modelOverrides`, or per request takes precedence, including `vscode-chat`. Exchanged OAuth tokens containing `tid=` keep their OAuth headers.
+Chat requests authenticated with a raw token, including `github_pat_`, `ghp_`, `gho_`, and `ghu_` tokens from `/login` or `COPILOT_GITHUB_TOKEN`, send `Copilot-Integration-Id: copilot-developer-cli`. A header supplied through `models.json`, `modelOverrides`, or per request takes precedence, including `vscode-chat`. Exchanged OAuth tokens containing `tid=` keep their OAuth headers.
 
 Business and enterprise tokens sent to the individual host return `421 Misdirected Request`; if you see that, set `COPILOT_API_TARGET` to the host your organization issues.
 
