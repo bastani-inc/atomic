@@ -24,6 +24,8 @@ export interface PDFExtractOptions {
 }
 
 const DEFAULT_MAX_PAGES = 100;
+/** pdf.js `VerbosityLevel.ERRORS`: suppresses warnings and info output. */
+const PDF_JS_VERBOSITY_ERRORS = 0;
 const DEFAULT_OUTPUT_DIR = join(homedir(), "Downloads");
 
 /**
@@ -44,7 +46,9 @@ export async function extractPDFToMarkdown(
     ? Math.max(1, Math.floor(maxPages))
     : DEFAULT_MAX_PAGES;
 
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  // pdf.js prints font warnings (e.g. "TT: undefined function: 32") straight to the console, which
+  // corrupts the interactive TUI. Keep only errors; failures still reject the promise.
+  const pdf = await getDocumentProxy(new Uint8Array(buffer), { verbosity: PDF_JS_VERBOSITY_ERRORS });
   const metadata = await pdf.getMetadata();
   const metadataInfo = metadata.info && typeof metadata.info === "object"
     ? metadata.info as Record<string, unknown>
