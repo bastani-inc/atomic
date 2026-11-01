@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed GitHub Copilot personal access tokens saved through `/login` → **Use an API key** being sent to the individual Copilot host, where business and enterprise accounts fail with `421 Misdirected Request`. Saved tokens now get the same endpoint routing as `COPILOT_GITHUB_TOKEN`, so the environment variable is no longer required. A `models.json` `baseUrl` still takes precedence, and OAuth logins are unchanged.
+
 ## [0.9.58] - 2026-11-01
 
 Task heartbeats, stage chats that work on local workers, and a local worker pool that holds up under load.

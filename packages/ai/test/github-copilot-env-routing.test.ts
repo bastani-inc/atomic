@@ -135,4 +135,38 @@ describe("withCopilotEnvBaseUrl", () => {
 		expect(provider.getModels()).toHaveLength(2);
 		for (const model of provider.getModels()) expect(model.baseUrl).toBe(PUBLIC_HUB);
 	});
+
+	test("routes a key saved through /login and follows later login and logout", () => {
+		let storedKey: string | undefined;
+		const provider = withCopilotEnvBaseUrl(copilotProvider([copilotModel("gpt-5.5")]), env({}), () => storedKey);
+		expect(provider.baseUrl).toBe(INDIVIDUAL);
+		expect(provider.getModels()[0]?.baseUrl).toBe(INDIVIDUAL);
+
+		storedKey = plainToken;
+		expect(provider.baseUrl).toBe(PUBLIC_HUB);
+		expect(provider.getModels()[0]?.baseUrl).toBe(PUBLIC_HUB);
+
+		storedKey = undefined;
+		expect(provider.getModels()[0]?.baseUrl).toBe(INDIVIDUAL);
+	});
+
+	test("a stored key wins over COPILOT_GITHUB_TOKEN, matching credential resolution", () => {
+		const provider = withCopilotEnvBaseUrl(
+			copilotProvider([copilotModel("gpt-5.5")]),
+			env({ COPILOT_GITHUB_TOKEN: plainToken }),
+			() => businessToken,
+		);
+		expect(provider.getModels()[0]?.baseUrl).toBe("https://api.business.githubcopilot.com");
+	});
+
+	test("routes getAllModels, which provider composition reads before getModels", () => {
+		const base = copilotProvider([copilotModel("gpt-5.5")]);
+		const provider = withCopilotEnvBaseUrl(
+			{ ...base, getAllModels: () => base.getModels() } as Provider,
+			env({}),
+			() => plainToken,
+		);
+		for (const model of provider.getAllModels?.() ?? []) expect(model.baseUrl).toBe(PUBLIC_HUB);
+		expect(provider.getAllModels?.()).toHaveLength(1);
+	});
 });

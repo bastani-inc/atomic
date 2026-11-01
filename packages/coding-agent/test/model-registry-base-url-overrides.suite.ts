@@ -123,6 +123,65 @@ describeModelRegistry((context) => {
 			}
 		});
 
+		test("a PAT saved through /login routes off the individual host like COPILOT_GITHUB_TOKEN", async () => {
+			const previousToken = process.env.COPILOT_GITHUB_TOKEN;
+			const previousServer = process.env.GITHUB_SERVER_URL;
+			delete process.env.COPILOT_GITHUB_TOKEN;
+			delete process.env.GITHUB_SERVER_URL;
+			try {
+				await context.authStorage.modify("github-copilot", async () => ({
+					type: "api_key",
+					key: "github_pat_enterprise",
+				}));
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
+
+				expect(model?.baseUrl).toBe("https://api.githubcopilot.com");
+			} finally {
+				if (previousToken !== undefined) process.env.COPILOT_GITHUB_TOKEN = previousToken;
+				if (previousServer !== undefined) process.env.GITHUB_SERVER_URL = previousServer;
+			}
+		});
+
+		test("models.json baseUrl override wins over a PAT saved through /login", async () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			delete process.env.COPILOT_GITHUB_TOKEN;
+			try {
+				await context.authStorage.modify("github-copilot", async () => ({
+					type: "api_key",
+					key: "github_pat_enterprise",
+				}));
+				writeRawModelsJson({
+					"github-copilot": overrideConfig("https://copilot-proxy.example.com"),
+				});
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
+
+				expect(model?.baseUrl).toBe("https://copilot-proxy.example.com");
+			} finally {
+				if (previous !== undefined) process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
+		test("a stored Copilot OAuth login keeps pi's default host", async () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			delete process.env.COPILOT_GITHUB_TOKEN;
+			try {
+				await context.authStorage.modify("github-copilot", async () => ({
+					type: "oauth",
+					refresh: "ghu_refresh",
+					access: "tid=abc;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+					expires: Date.now() + 3_600_000,
+				}));
+				const registry = await createModelRegistry(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-6.1-sol");
+
+				expect(model?.baseUrl).toBe("https://api.individual.githubcopilot.com");
+			} finally {
+				if (previous !== undefined) process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
 		test("without COPILOT_GITHUB_TOKEN the Copilot provider keeps pi's default host", async () => {
 			const previous = process.env.COPILOT_GITHUB_TOKEN;
 			delete process.env.COPILOT_GITHUB_TOKEN;

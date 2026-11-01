@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- `withCopilotEnvBaseUrl` accepts an optional `getStoredApiKey` callback so a Copilot token saved as an API key is routed like `COPILOT_GITHUB_TOKEN`, with the saved key taking precedence. It now also routes `getAllModels`, and reads the token on each access so login and logout reroute without rebuilding the provider.
+
 ## [0.9.54] - 2026-10-29
 
 ### Fixed
