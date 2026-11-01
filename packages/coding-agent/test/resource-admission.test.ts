@@ -23,7 +23,7 @@ import type { SessionStore } from "../src/core/storage/session/types.js";
 import type { OperationId } from "../src/core/tasks/contracts.js";
 import type { TaskSupervisor } from "../src/core/tasks/supervisor.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
-import { createTestResourceLoader } from "./utilities.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 type Kind = "session" | "process";
 
@@ -370,6 +370,41 @@ test("a prompt run inside a scope runs its commands under that scope, as a workf
 	assert.match((await output) ?? "the command never finished", new RegExp(WOKEN_TURN_OUTPUT));
 	assert.deepEqual(scoped.acquired, ["process"]);
 });
+
+test.each(["sendMessage", "sendUserMessage"] as const)(
+	"a turn that %s requests while the previous run settles runs without the scope that run started in",
+	async (delivery) => {
+		const root = tempRoot();
+		let woke = false;
+		const extensionsResult = await createTestExtensionsResult(
+			[
+				(pi) => {
+					// The message arrives while the scoped run settles; its turn starts once the run has settled.
+					pi.on("agent_settled", async () => {
+						if (woke) return;
+						woke = true;
+						if (delivery === "sendMessage") await pi.sendMessage(NOTICE, { triggerTurn: true });
+						else pi.sendUserMessage("The workflow finished.");
+					});
+				},
+			],
+			root,
+		);
+		const session = await echoSession(root, { resourceLoader: createTestResourceLoader({ extensionsResult }) });
+		const outputs: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "tool_execution_end") outputs.push(JSON.stringify(event.result));
+		});
+		const scoped = new FakeAdmission();
+		await withResourceAdmission(scoped, () => session.prompt("Run it."));
+		await vi.waitFor(() => assert.equal(outputs.length, 2, "the scoped command and the woken one"), {
+			timeout: WOKEN_TURN_BUDGET_MS,
+		});
+
+		assert.ok(outputs.every((output) => output.includes(WOKEN_TURN_OUTPUT)));
+		assert.deepEqual(scoped.acquired, ["process"], "only the scoped prompt's own command asked the scope");
+	},
+);
 
 const NO_HEADROOM = /no session headroom for a delegated launch/;
 
