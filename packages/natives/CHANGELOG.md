@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.58] - 2026-11-01
+
+### Fixed
+
+- A cancelled task whose cleanup is reported as failed now settles instead of staying `cancelling` forever. A command settles as failed with code `CleanupUnconfirmed`, naming the cancellation cause and the unconfirmed resources; an agent keeps its `cancelled` result and cause. The cleanup record keeps the failure, and a later confirmed reap still updates it ([#4142](https://github.com/bastani-inc/atomic/pull/4142)).
+
+## [0.9.58-alpha.1] - 2026-11-01
+
 ### Fixed
 
 - A cancelled task whose cleanup is reported as failed now settles instead of staying `cancelling` forever. A command settles as failed with code `CleanupUnconfirmed`, naming the cancellation cause and the unconfirmed resources; an agent keeps its `cancelled` result and cause. The cleanup record keeps the failure, and a later confirmed reap still updates it ([#4142](https://github.com/bastani-inc/atomic/pull/4142)).
