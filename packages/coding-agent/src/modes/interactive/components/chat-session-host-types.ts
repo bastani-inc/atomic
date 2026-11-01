@@ -2,6 +2,7 @@ import type { Component, EditorComponent, EditorTheme, MarkdownTheme, TUI } from
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 
@@ -66,6 +67,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	 * stage on a local worker: a compaction redraws the transcript from them.
 	 */
 	getSessionMessages?: () => AgentSession["messages"] | undefined;
+	/**
+	 * Tasks to show when `getAgentSession` has no task store in this process: the tasks of a session
+	 * that runs elsewhere, such as a workflow stage on a local worker.
+	 */
+	getTaskSource?: () => TaskViewSource | undefined;
 	/** Custom hosts may retain live task rows; interactive stage chat uses footer-only status. */
 	taskRowsInChat?: boolean;
 	isStreaming?: () => boolean;

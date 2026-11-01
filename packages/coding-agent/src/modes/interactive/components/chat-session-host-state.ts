@@ -1,6 +1,7 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
 	ChatSessionHostCommands,
@@ -31,6 +32,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
+	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
 	readonly isPaused: (() => boolean) | undefined;
 	readonly isDisabled: (() => boolean) | undefined;
@@ -105,6 +107,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
 		this.getSessionMessages = opts.getSessionMessages;
+		this.getTaskSource = opts.getTaskSource;
 		this.isStreamingOverride = opts.isStreaming;
 		this.workingLifecycleActive = opts.isStreaming?.() === true;
 		this.isPaused = opts.isPaused;

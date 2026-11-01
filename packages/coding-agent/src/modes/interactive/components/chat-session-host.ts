@@ -5,6 +5,7 @@ import { SessionManager } from "../../../core/session-manager.ts";
 import type { SessionStore } from "../../../core/storage/session/types.js";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../../core/tasks/owner-store.js";
+import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import {
 	abortChatSessionBash,
 	abortChatSessionCompaction,
@@ -63,6 +64,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
 	private readonly state: ChatSessionHostState<TExtraEntry>;
 	private taskStore?: OwnerTaskStore;
+	/** What `/tasks` and the task footer show: the session's task store, or the host's own task source. */
+	private taskSource?: TaskViewSource;
 	private readonly taskRowsInChat: boolean;
 	private unsubscribeTasks?: () => void;
 	private taskSession?: object;
@@ -96,13 +99,13 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		const session = this.state.getAgentSession?.();
 		if (session && !getOwnerTaskStore(session)) session.getAgentTaskHost?.();
 		this.refreshTaskStore();
-		if (!this.taskStore) {
+		if (!this.taskSource) {
 			this.showWarning("Launched agents and shells will appear here.");
 			return true;
 		}
 		this.taskInspector?.dispose();
 		this.taskInspector = new TaskInspector(
-			this.taskStore,
+			this.taskSource,
 			() => this.state.requestRender?.(),
 			() => this.closeTasks(),
 		);
@@ -190,21 +193,25 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 				: undefined;
 		}
 		const store = session ? getOwnerTaskStore(session) : undefined;
-		if (store === this.taskStore) return;
+		// A session in another process (a workflow stage on a local worker) has no store here; the host
+		// supplies a source that reads its tasks there.
+		const source = store ? ownerTaskViewSource(store) : this.state.getTaskSource?.();
+		if (store === this.taskStore && source === this.taskSource) return;
 		this.closeTasks();
 		this.unsubscribeTasks?.();
 		this.taskStore = store;
+		this.taskSource = source;
 		this.unsubscribeTasks = undefined;
 		this.state.liveChat.clearTasks();
 		this.state.transcriptComponent.invalidate();
 		this.state.requestRender?.();
-		if (!store) return;
+		if (!source) return;
 		const update = () => {
-			if (this.taskRowsInChat) this.state.liveChat.upsertTasks(store.tasks, store);
+			if (this.taskRowsInChat) this.state.liveChat.upsertTasks(source.tasks, store);
 			this.state.transcriptComponent.invalidate();
 			this.state.requestRender?.();
 		};
-		this.unsubscribeTasks = store.subscribe(update);
+		this.unsubscribeTasks = source.subscribe(update);
 		update();
 	}
 	applyAgentEvent(event: AgentSessionEvent): boolean {
@@ -309,11 +316,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	}
 
 	renderTaskFooter(width: number): string[] {
-		return renderTaskFooter(this.taskStore?.backgroundTasks ?? [], width);
+		return renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
 	}
 	renderFooter(width: number): string[] {
 		const footer = renderChatSessionFooter(this.state, width, this.hasTaskInspector && !this.taskInspectorFullscreen);
-		return footer.length ? footer : renderTaskFooter(this.taskStore?.backgroundTasks ?? [], width);
+		return footer.length ? footer : renderTaskFooter(this.taskSource?.backgroundTasks ?? [], width);
 	}
 
 	handleScrollInput(data: string): boolean {

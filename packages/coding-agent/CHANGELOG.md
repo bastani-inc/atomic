@@ -5,6 +5,7 @@
 ### Added
 
 - `createSessionSkillAutocompleteProvider` also completes from a `SessionCommandCatalog`, the plain-data skill command list of a session that runs in another process (captured there with `getSessionCommandCatalog`), and shows a pending catalog's loading notice instead of an unavailable warning.
+- `TaskInspector` and `ChatSessionHost` read tasks through a `TaskViewSource` (`ownerTaskViewSource(store)` for a session's own task store), so a host can show `/tasks` for a session that runs in another process through the new `getTaskSource` option.
 
 ## [0.9.57] - 2026-10-31
 

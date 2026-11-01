@@ -70,6 +70,7 @@ import type {
 	PooledStageDelivery,
 	PooledStageQuestion,
 	PooledStageSessionCommand,
+	PooledTaskReply,
 	PromptRefusal,
 	PromptResult,
 	SeqEvent,
@@ -358,6 +359,7 @@ interface StageCommandResult {
 	readonly action?: StageUserMessageDeliveryAction;
 	readonly question?: PooledStageQuestion;
 	readonly bash?: PooledBashResult;
+	readonly task?: PooledTaskReply;
 	readonly error?: string;
 }
 
@@ -1014,7 +1016,11 @@ export class PoolCoordinator {
 		const refusal = result.refusal;
 		if (refusal === "StageNotLive" || refusal === "PoolPausedOrQuitting") return { ok: false, refusal };
 		if (refusal !== undefined) return { ok: false, refusal: "StaleAttempt" };
-		return { ok: true, ...(result.bash === undefined ? {} : { bash: result.bash }) };
+		return {
+			ok: true,
+			...(result.bash === undefined ? {} : { bash: result.bash }),
+			...(result.task === undefined ? {} : { task: result.task }),
+		};
 	}
 
 	private stageCommand(

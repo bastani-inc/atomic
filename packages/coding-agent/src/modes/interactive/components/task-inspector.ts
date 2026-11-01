@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	type Component,
 	getKeybindings,
@@ -11,16 +9,9 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
-import { taskOutputText } from "../../../core/tasks/command-output.js";
-import type { OperationId, PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
-import type { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
-import {
-	taskExtensionStatuses,
-	taskOwnTranscriptEntries,
-	taskTranscriptSource,
-	watchTaskExtensionStatuses,
-} from "../../../core/tasks/supervisor.js";
-import { readTaskTranscriptSnapshot } from "../../../core/tasks/transcript.js";
+import type { PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
+import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { chatEntriesFromAgentMessages, renderChatMessageEntry } from "./chat-message-renderer.ts";
 import { mouseWheelDeltaRows } from "./chat-transcript.js";
@@ -38,7 +29,7 @@ import { TaskLiveTranscript } from "./task-live-transcript.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 
-/** Focused view only. The store and original session remain the authorities. */
+/** Focused view only. The task source and original session remain the authorities. */
 export class TaskInspector implements Component {
 	readonly navigation: TaskNavigation;
 	private actionIndex = 0;
@@ -61,12 +52,12 @@ export class TaskInspector implements Component {
 	private readonly input = new Input();
 	private readonly unsubscribe: () => void;
 	constructor(
-		privateStore: OwnerTaskStore,
+		privateStore: OwnerTaskStore | TaskViewSource,
 		privateRender: () => void,
 		privateClose: () => void,
 		openQuestion?: (route: PromptRoute) => void,
 	) {
-		this.store = privateStore;
+		this.store = privateStore instanceof OwnerTaskStore ? ownerTaskViewSource(privateStore) : privateStore;
 		this.requestRender = privateRender;
 		this.close = privateClose;
 		this.navigation = new TaskNavigation(getKeybindings() as KeybindingsManager, {
@@ -86,12 +77,10 @@ export class TaskInspector implements Component {
 				void this.loadTranscript();
 			},
 			foreground: (task) => {
-				const lease = this.store.resolveTask(task.ref.taskId);
-				if (lease.ok)
-					void this.store.supervisor.foregroundTask(lease.value).then((result) => {
-						this.status = result.ok ? result.value.kind : result.error.message;
-						this.requestRender();
-					});
+				void this.store.foregroundTask(task.ref.taskId).then((result) => {
+					this.status = result.ok ? result.value.kind : result.error.message;
+					this.requestRender();
+				});
 			},
 			confirmCancel: () =>
 				new Promise<boolean>((resolve) => {
@@ -99,13 +88,9 @@ export class TaskInspector implements Component {
 					this.requestRender();
 				}),
 			cancel: (task) => {
-				const lease = this.store.resolveTask(task.ref.taskId);
-				if (lease.ok) void this.store.supervisor.cancelTask(lease.value, "user").then(() => this.requestRender());
+				void this.store.cancelTask(task.ref.taskId).then(() => this.requestRender());
 			},
-			stdinAvailable: (task) => {
-				const lease = this.store.resolveTask(task.ref.taskId);
-				return lease.ok && this.store.supervisor.taskStdin(lease.value).ok;
-			},
+			stdinAvailable: (task) => this.store.stdinAvailable(task.ref.taskId),
 			input: () => {
 				this.input.setValue("");
 			},
@@ -129,7 +114,7 @@ export class TaskInspector implements Component {
 			void this.sendInput(text);
 		};
 	}
-	private readonly store: OwnerTaskStore;
+	private readonly store: TaskViewSource;
 	private readonly requestRender: () => void;
 	private readonly close: () => void;
 	open(id?: TaskId): void {
@@ -154,23 +139,12 @@ export class TaskInspector implements Component {
 	private stdinAvailable(): boolean {
 		const task = this.selected();
 		if (!task || task.execution.kind === "settled") return false;
-		const lease = this.store.resolveTask(task.ref.taskId);
-		return lease.ok && this.store.supervisor.taskStdin(lease.value).ok;
+		return this.store.stdinAvailable(task.ref.taskId);
 	}
 	private async sendInput(text: string): Promise<void> {
 		const task = this.selected();
 		if (!task) return;
-		const lease = this.store.resolveTask(task.ref.taskId);
-		if (!lease.ok) return;
-		const stdin = this.store.supervisor.taskStdin(lease.value);
-		if (!stdin.ok) {
-			this.status = stdin.error.message;
-			return;
-		}
-		const result = await this.store.supervisor.writeTaskInput(stdin.value, randomUUID() as OperationId, {
-			kind: "bytes",
-			bytes: Buffer.from(`${text}\n`),
-		});
+		const result = await this.store.writeTaskInput(task.ref.taskId, text);
 		this.status = result.ok ? `Sent ${result.value.acceptedBytes} bytes` : result.error.message;
 		this.input.setValue("");
 		this.requestRender();
@@ -185,8 +159,7 @@ export class TaskInspector implements Component {
 	 */
 	private taskStatusRows(width: number): string[] {
 		const task = this.navigation.focus.kind === "detail" && !this.confirmation ? this.selected() : undefined;
-		const lease = task?.kind === "agent" ? this.store.resolveTask(task.ref.taskId) : undefined;
-		if (!task || !lease?.ok) {
+		if (task?.kind !== "agent") {
 			this.releaseStatusWatch();
 			return [];
 		}
@@ -194,10 +167,10 @@ export class TaskInspector implements Component {
 			this.releaseStatusWatch();
 			this.statusWatch = {
 				taskId: task.ref.taskId,
-				release: watchTaskExtensionStatuses(lease.value, () => this.requestRender()),
+				release: this.store.watchExtensionStatuses(task.ref.taskId, () => this.requestRender()),
 			};
 		}
-		const row = renderExtensionStatusRow(taskExtensionStatuses(lease.value), width);
+		const row = renderExtensionStatusRow(this.store.extensionStatuses(task.ref.taskId), width);
 		return row === undefined ? [] : [row];
 	}
 	private releaseLiveTranscript(): void {
@@ -208,11 +181,10 @@ export class TaskInspector implements Component {
 	private refreshTranscript(): void {
 		if (this.disposed || !this.transcriptRequested) return;
 		const task = this.selected();
-		const lease = task && this.store.resolveTask(task.ref.taskId);
-		const bound = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
-		if (bound?.ok && this.liveTranscript?.source === bound.value.session) return;
-		// Legacy history-only sources have no live tail; keep their retained page anchored.
-		if (bound?.ok && !bound.value.session.subscribe && this.transcriptHistorical) return;
+		const follow = task && this.store.followTaskTranscript(task.ref.taskId);
+		if (follow?.session !== undefined && this.liveTranscript?.source === follow.session) return;
+		// History-only sources have no live tail; keep their retained page anchored.
+		if (follow?.historyOnly === true && this.transcriptHistorical) return;
 		if (this.transcriptLoading) this.transcriptRefreshPending = true;
 		else void this.loadTranscript();
 	}
@@ -226,14 +198,9 @@ export class TaskInspector implements Component {
 		if (earlier) this.transcriptHistorical = true;
 		this.requestRender();
 		try {
-			const lease = this.store.resolveTask(task.ref.taskId);
-			if (!lease.ok) {
-				this.status = lease.error.message;
-				return;
-			}
 			if (task.kind === "command") {
 				const count = BigInt(task.output.byteCount);
-				const page = await this.store.supervisor.readTaskOutput(lease.value, {
+				const page = await this.store.readTaskOutput(task.ref.taskId, {
 					start: String(count > 8192n ? count - 8192n : 0n),
 					maximumBytes: 8192,
 				});
@@ -244,7 +211,7 @@ export class TaskInspector implements Component {
 					task.ref.taskId !== this.navigation.selectedTaskId
 				)
 					return;
-				const text = page.ok ? taskOutputText(page.value) : page.error.message;
+				const text = page.ok ? page.value.text : page.error.message;
 				this.transcript = [
 					new Text(text.split("\n").map(taskDisplayText).join("\n") || "No output available", 0, 0),
 				];
@@ -254,7 +221,8 @@ export class TaskInspector implements Component {
 				this.requestRender();
 				return;
 			}
-			const page = readTaskTranscriptSnapshot(lease.value, earlier ? this.cursor : undefined);
+			const read = this.store.readTaskTranscript(task.ref.taskId, earlier ? this.cursor : undefined);
+			const page = read instanceof Promise ? await read : read;
 			if (
 				this.disposed ||
 				generation !== this.detailGeneration ||
@@ -262,32 +230,13 @@ export class TaskInspector implements Component {
 				task.ref.taskId !== this.navigation.selectedTaskId
 			)
 				return;
-			const bound = taskTranscriptSource(lease.value);
-			if (!bound.ok || (!page.ok && !bound.value.session.subscribe)) {
-				this.status = "Transcript unavailable";
+			if (!page.ok) {
+				this.status = page.error.message;
 				this.requestRender();
 				return;
 			}
-			const ids = new Set(page.ok ? page.value.items.map((item) => item.source.entryId) : []);
-			const messages = bound.value.session.getEntries().flatMap<AgentMessage>((entry) => {
-				if (entry.type !== "message" || !ids.has(entry.id)) return [];
-				const message = entry.message;
-				if (message.role === "assistant")
-					return [
-						{
-							...message,
-							content: message.content.filter(
-								(block, index) =>
-									block.type !== "thinking" &&
-									page.ok &&
-									page.value.items.some(
-										(item) => item.source.entryId === entry.id && item.source.contentIndex === index,
-									),
-							),
-						},
-					];
-				return message.role === "user" || message.role === "toolResult" ? [message] : [];
-			});
+			const messages = [...page.value.messages];
+			const follow = this.store.followTaskTranscript(task.ref.taskId);
 			const components = chatEntriesFromAgentMessages(messages).map((entry) =>
 				renderChatMessageEntry(entry, {
 					ui: { requestRender: this.requestRender },
@@ -297,12 +246,12 @@ export class TaskInspector implements Component {
 					showImages: false,
 				}),
 			);
-			if (!earlier && bound.value.session.subscribe) {
+			if (!earlier && follow?.session?.subscribe) {
 				this.releaseLiveTranscript();
-				this.liveTranscript = new TaskLiveTranscript(bound.value.session, messages, this.requestRender);
+				this.liveTranscript = new TaskLiveTranscript(follow.session, messages, this.requestRender);
 				this.transcript = [this.liveTranscript];
 			} else this.transcript = earlier ? [...components, ...(this.transcript ?? [])] : components;
-			this.cursor = page.ok ? page.value.nextCursor : undefined;
+			this.cursor = page.value.nextCursor;
 			this.status = this.cursor ? "PageUp: earlier retained messages" : "";
 			this.requestRender();
 		} catch {
@@ -338,40 +287,22 @@ export class TaskInspector implements Component {
 			this.navigation.focus === focus &&
 			focus.kind === "detail" &&
 			this.navigation.selectedTaskId === task.ref.taskId;
-		const lease = this.store.resolveTask(task.ref.taskId);
-		if (!lease.ok) return;
-		const ownEntries = taskOwnTranscriptEntries(lease.value);
-		if (ownEntries) {
-			const prompt = ownEntries.find((entry) => entry.type === "message" && entry.message.role === "user");
-			if (prompt?.type === "message" && prompt.message.role === "user")
-				this.detailContent.prompt =
-					typeof prompt.message.content === "string"
-						? prompt.message.content
-						: prompt.message.content
-								.filter((block) => block.type === "text")
-								.map((block) => block.text)
-								.join("");
-			const response = ownEntries
-				.slice()
-				.reverse()
-				.find((entry) => entry.type === "message" && entry.message.role === "assistant");
-			if (response?.type === "message" && response.message.role === "assistant")
-				this.detailContent.output = response.message.content
-					.filter((block) => block.type === "text")
-					.map((block) => block.text)
-					.join("");
-		}
+		const read = this.store.taskDetailText(task.ref.taskId);
+		const own = read instanceof Promise ? await read : read;
+		if (!current()) return;
+		if (own.prompt !== undefined) this.detailContent.prompt = own.prompt;
+		if (own.output !== undefined) this.detailContent.output = own.output;
 		if (task.kind === "command") {
 			try {
 				const count = BigInt(task.output.byteCount);
-				const output = await this.store.supervisor.readTaskOutput(lease.value, {
+				const output = await this.store.readTaskOutput(task.ref.taskId, {
 					start: String(count > 8192n ? count - 8192n : 0n),
 					maximumBytes: 8192,
 				});
 				if (!current()) return;
 				if (output.ok) {
-					this.detailContent.output = taskOutputText(output.value);
-					this.detailContent.outputOmitted = count > 8192n || output.value.omittedRanges.length > 0;
+					this.detailContent.output = output.value.text;
+					this.detailContent.outputOmitted = count > 8192n || output.value.omitted;
 				} else this.status = output.error.message;
 			} catch {
 				if (!current()) return;

@@ -18,6 +18,7 @@ import type {
 	PooledStageWatchMessage,
 	WatchId,
 } from "../../packages/workflows/src/workers/stage-watch-types.js";
+import { taskRecord } from "../helpers/task-record.js";
 
 function snapshot(deliveredOps: readonly string[] = []): PooledStageChatSnapshot {
 	return {
@@ -666,4 +667,58 @@ test("a session command on a stage that finished is refused with the post-mortem
 	assert.ok(opened.ok);
 	await assert.rejects(opened.handle.compact(), /finished first; open it again to continue in post-mortem chat/);
 	opened.handle.dispose();
+});
+
+test("the root handle lists the background tasks its worker reports and runs task actions there (#3996)", async () => {
+	const commands: unknown[] = [];
+	const fake = singleWatch({ ...snapshot(), isStreaming: false });
+	const transport: PooledStageTransport = {
+		...fake.transport,
+		async session(_watch, command) {
+			commands.push(command);
+			if (command.kind !== "task") return { ok: true };
+			if (command.action.kind === "output")
+				return {
+					ok: true,
+					task: { kind: "output", result: { ok: true, value: { text: "build log tail", omitted: false } } },
+				};
+			return { ok: true, task: { kind: "cancel" } };
+		},
+	};
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	const tasks = handle.taskSource();
+	let changes = 0;
+	tasks.subscribe(() => changes++);
+	assert.equal(tasks.backgroundTasks.length, 0);
+
+	const shell = taskRecord("shell-1", "command");
+	fake.event(1, {
+		type: "atomic_pooled_stage_tasks",
+		tasks: {
+			tasks: [shell],
+			background: [shell.ref.taskId],
+			settlement: [],
+			activity: [],
+			stdin: [shell.ref.taskId],
+			statuses: [],
+		},
+	} as never as AgentSessionEvent);
+	assert.equal(changes, 1);
+	assert.deepEqual(
+		tasks.backgroundTasks.map((task) => task.title),
+		["Task shell-1"],
+	);
+	assert.equal(tasks.stdinAvailable(shell.ref.taskId), true);
+	assert.deepEqual(await tasks.readTaskOutput(shell.ref.taskId, { start: "0", maximumBytes: 8192 }), {
+		ok: true,
+		value: { text: "build log tail", omitted: false },
+	});
+	await tasks.cancelTask(shell.ref.taskId);
+	assert.deepEqual(commands, [
+		{ kind: "task", taskId: shell.ref.taskId, action: { kind: "output", start: "0", maximumBytes: 8192 } },
+		{ kind: "task", taskId: shell.ref.taskId, action: { kind: "cancel" } },
+	]);
+	handle.dispose();
 });

@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { AgentSession, AgentSessionEvent, BashResult, SessionCommandCatalog } from "@bastani/atomic";
+import type {
+	AgentSession,
+	AgentSessionEvent,
+	BashResult,
+	SessionCommandCatalog,
+	TaskViewSource,
+} from "@bastani/atomic";
 import type {
 	AgentSessionEventListener,
 	StageControlHandle,
@@ -10,6 +16,7 @@ import { StageQueuedUserMessageBuffer } from "../runs/foreground/stage-queued-us
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
 import { StageToolExecutionBuffer } from "../runs/foreground/stage-tool-execution-buffer.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
+import { PooledStageTaskSource } from "./pooled-stage-task-source.js";
 import { tracePooledWatch } from "./pooled-watch-trace.js";
 import type {
 	ControlRefusal,
@@ -22,6 +29,7 @@ import type {
 	PooledStageDelivery,
 	PooledStageRef,
 	PooledStageSessionCommand,
+	PooledStageTasks,
 	PooledStageWatch,
 	PooledStageWatchMessage,
 	SessionCommandResult,
@@ -40,6 +48,9 @@ const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 const STAGE_SESSION_STARTED_EVENT = "atomic_pooled_stage_session_started";
 /** Mirrors the worker's `STAGE_MESSAGES_EVENT`. */
 const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
+/** Mirrors the worker's `STAGE_TASKS_EVENT`. */
+const STAGE_TASKS_EVENT = "atomic_pooled_stage_tasks";
+const NO_TASKS: PooledStageTasks = { tasks: [], background: [], settlement: [], activity: [], stdin: [], statuses: [] };
 
 /**
  * How long one send may wait for its attempt to confirm it before later sends go ahead. Admission
@@ -158,6 +169,10 @@ export class PooledStageHandle implements StageControlHandle {
 	private started = Promise.withResolvers<void>();
 	/** `!` shell commands running on the stage's session, by request id, with their output listeners. */
 	private readonly bashRuns = new Map<string, (chunk: string) => void>();
+	/** The stage session's background tasks, as the worker last sent them; actions run there. */
+	private readonly taskView = new PooledStageTaskSource(
+		async (taskId, action) => (await this.sessionCommand({ kind: "task", taskId, action })).task,
+	);
 	/** The outbox's sender while it runs; one at a time keeps send order. */
 	private pumping?: Promise<void>;
 	/** Something to send arrived while the sender ran. */
@@ -237,6 +252,10 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	commandCatalog(): SessionCommandCatalog | undefined {
 		return this.commands;
+	}
+	/** The stage session's background tasks, for the chat's `/tasks` and task footer. */
+	taskSource(): TaskViewSource {
+		return this.taskView;
 	}
 	/** True while the stage is still starting its session on the worker: nothing streams yet. */
 	get isSessionStarting(): boolean {
@@ -755,8 +774,9 @@ export class PooledStageHandle implements StageControlHandle {
 
 	private adopt(snapshot: PooledStageChatSnapshot): void {
 		this.session = snapshot.sessionId;
-		// A replacement attempt's session lists its own commands once it has started.
+		// A replacement attempt's session lists its own commands once it has started, and its own tasks.
 		this.commands = snapshot.commands;
+		if (!this.taskView.empty) this.taskView.apply(NO_TASKS);
 		this.markSessionStarted(snapshot.sessionStarted !== false);
 		this.settled = [...snapshot.messages];
 		this.streaming = snapshot.streamingMessage;
@@ -785,6 +805,10 @@ export class PooledStageHandle implements StageControlHandle {
 			const queued = this.queuedUserMessages();
 			const redraw = { type: "queue_update", steering: [...queued.steering], followUp: [...queued.followUp] };
 			for (const listener of [...this.listeners]) listener(redraw as AgentSessionEvent);
+			return false;
+		}
+		if ((event.type as string) === STAGE_TASKS_EVENT) {
+			this.taskView.apply((event as never as { readonly tasks: PooledStageTasks }).tasks);
 			return false;
 		}
 		if ((event.type as string) === STAGE_MESSAGES_EVENT) {

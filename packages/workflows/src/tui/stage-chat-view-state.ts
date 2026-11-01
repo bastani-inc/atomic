@@ -336,6 +336,11 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 			const handle = liveHandle(ctx);
 			return handle !== undefined && handle.agentSession === undefined ? handle.messages : undefined;
 		},
+		// A stage on a local worker lists the tasks of its session there.
+		getTaskSource: () => {
+			const handle = liveHandle(ctx);
+			return handle?.agentSession === undefined ? handle?.taskSource?.() : undefined;
+		},
 		isStreaming: () => isLiveHandleStreaming(ctx),
 		isPaused: () => isPaused(ctx),
 		isDisabled: () => isBlocked(ctx) || !liveHandle(ctx),
@@ -643,17 +648,8 @@ export function isReadOnlyArchive(
 async function handleSlashCommand(ctx: StageChatViewContext, text: string): Promise<boolean> {
 	const [command, ...rest] = text.trim().split(/\s+/);
 	switch (command) {
-		case "/tasks": {
-			const handle = liveHandle(ctx);
-			// The agents and shells of a stage on a local worker live in that worker's process.
-			if (handle !== undefined && handle.agentSession === undefined && handle.placement?.kind === "local-worker") {
-				ctx.chatHost.showWarning(
-					`Stage "${handle.stageName}" runs on a local worker; its agents and shells are not listed in this chat.`,
-				);
-				return true;
-			}
+		case "/tasks":
 			return ctx.chatHost.openTasks(rest.join(" ") || undefined);
-		}
 		case "/compact": {
 			if (rest.length > 0) return true;
 			const handle = liveHandle(ctx);
