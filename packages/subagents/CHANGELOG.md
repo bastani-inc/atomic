@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.58] - 2026-11-01
+
+### Added
+
+- Running subagents now send the parent periodic task heartbeats (every 15 minutes by default) with their current tool call, time since their last activity, and turn, tool-call and token counts. Set `heartbeatMs` on a `subagent` call, or on a `tasks` entry, to change a child's cadence; `0` turns it off.
+
+## [0.9.58-alpha.1] - 2026-11-01
+
 ### Added
 
 - Running subagents now send the parent periodic task heartbeats (every 15 minutes by default) with their current tool call, time since their last activity, and turn, tool-call and token counts. Set `heartbeatMs` on a `subagent` call, or on a `tasks` entry, to change a child's cadence; `0` turns it off.

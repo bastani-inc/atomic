@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.58] - 2026-11-01
+
+### Fixed
+
+- PDF text extraction no longer prints pdf.js font warnings such as `Warning: TT: undefined function: 32` over the interactive terminal UI when fetching PDFs with unusual embedded fonts. Extraction errors are still reported.
+
+## [0.9.58-alpha.1] - 2026-11-01
+
 ### Fixed
 
 - PDF text extraction no longer prints pdf.js font warnings such as `Warning: TT: undefined function: 32` over the interactive terminal UI when fetching PDFs with unusual embedded fonts. Extraction errors are still reported.
