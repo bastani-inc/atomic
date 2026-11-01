@@ -29,10 +29,12 @@ export class AgentTaskHost {
 	private binding: AgentTaskHostBinding;
 	private readonly messageWaits = new Set<WaitLease>();
 	private readonly heartbeats: TaskHeartbeatMonitor;
+	/** Whether this owner has launched anything; owners that never do pay nothing for heartbeats. */
+	private launched = false;
 	/** Stage replacement updates callbacks, never native identity or ownership. */
 	updateBinding(binding: Omit<AgentTaskHostBinding, "scope">): void {
 		this.binding = { ...this.binding, ...binding };
-		if (this.binding.heartbeat) this.heartbeats.start();
+		this.watchHeartbeats();
 	}
 	/** Internal projection binding; never serialize these native-backed capabilities. */
 	get ownerBinding(): { supervisor: TaskSupervisor; owner: OwnerLease; waitForTask: AgentTaskHost["waitForTask"] } {
@@ -67,7 +69,11 @@ export class AgentTaskHost {
 			owner: this.owner,
 			delivery: () => this.binding.heartbeat,
 		});
-		if (binding.heartbeat) this.heartbeats.start();
+	}
+
+	/** One monitor per owner, started with its first launch, whichever session binds it then. */
+	private watchHeartbeats(): void {
+		if (this.launched && this.binding.heartbeat) this.heartbeats.start();
 	}
 
 	async startAgentTask(
@@ -154,5 +160,7 @@ export class AgentTaskHost {
 	}
 	private authorizeTaskLaunch(): void {
 		if (this.tasksPaused) throw new Error("Workflow stage tasks are paused");
+		this.launched = true;
+		this.watchHeartbeats();
 	}
 }

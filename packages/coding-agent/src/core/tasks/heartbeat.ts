@@ -117,6 +117,8 @@ export class TaskHeartbeatMonitor {
 	private readonly tracked = new Map<TaskId, Tracked>();
 	private subscription?: TaskSubscription;
 	private timer?: object;
+	/** The time the current timer wakes for, so an unchanged schedule keeps its timer. */
+	private timerAt?: number;
 	private busy = false;
 	private disposed = false;
 	private recheckAt?: number;
@@ -213,21 +215,29 @@ export class TaskHeartbeatMonitor {
 		if (this.timer === undefined) return;
 		this.clock.clearTimeout(this.timer);
 		this.timer = undefined;
+		this.timerAt = undefined;
 	}
 
 	private arm(): void {
-		this.disarm();
-		if (this.disposed || this.busy) return;
+		if (this.disposed || this.busy) {
+			this.disarm();
+			return;
+		}
 		// A blocked owner cannot receive anything before its recheck, however many tasks come due meanwhile.
 		let wakeAt = this.recheckAt ?? Number.POSITIVE_INFINITY;
 		if (this.recheckAt === undefined)
 			for (const entry of this.tracked.values())
 				if (entry.nextAt !== undefined && entry.nextAt < wakeAt) wakeAt = entry.nextAt;
 		if (this.nextSampleAt !== undefined && this.nextSampleAt < wakeAt) wakeAt = this.nextSampleAt;
+		// Activity reconciles many times a second; it rarely moves the next wake-up.
+		if (this.timer !== undefined && this.timerAt === wakeAt) return;
+		this.disarm();
 		if (!Number.isFinite(wakeAt)) return;
 		const delay = Math.min(Math.max(1, Math.ceil(wakeAt - this.clock.now())), MAX_TIMER_DELAY_MS);
+		this.timerAt = wakeAt;
 		this.timer = this.clock.setTimeout(() => {
 			this.timer = undefined;
+			this.timerAt = undefined;
 			void this.wake();
 		}, delay);
 	}

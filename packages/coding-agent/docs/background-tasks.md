@@ -151,7 +151,7 @@ A heartbeat never stops, restarts or relaunches a task by itself. The card in ch
 ♥ Task heartbeat · 2 tasks still running
   shell task-1-0-3 npm run e2e · 45m
   subagent task-1-0-4 Trace the authentication flow · 30m
-(Ctrl+O to expand) · periodic check · /tasks to inspect
+(ctrl+o Expand) · periodic check · /tasks to inspect
 ```
 
 The model receives one entry per task, followed by the guidance above:
