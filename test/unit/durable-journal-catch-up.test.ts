@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import type { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -7,7 +8,23 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 import type { JournalEntry } from "../../packages/workflows/src/durable/journal/types.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
-const STORE_CLOCK_TICK_MS = 2;
+/**
+ * Resolves once the store clock that stamps journal events, SQLite's `unixepoch('subsec')`, reads later than it does
+ * now. A replaced history is told from the one it replaced by its events' store times, so the replacement has to be
+ * written after the clock has moved on. It moves every millisecond on most platforms, but on Windows SQLite reads it
+ * from `GetSystemTimeAsFileTime`, which moves only at the system clock tick, about every 15.6 ms.
+ */
+async function untilStoreClockTicks(): Promise<void> {
+	const store = new DatabaseSync(":memory:");
+	try {
+		const clock = store.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now");
+		const now = () => Number(clock.get()?.now);
+		const before = now();
+		while (now() <= before) await sleep(1);
+	} finally {
+		store.close();
+	}
+}
 
 interface ObservedRead {
 	readonly runId: string;
@@ -114,7 +131,7 @@ test("catching up a run whose history was replaced rebuilds it from its first ev
 	await reader.catchUpWorkflow("root");
 	const folded = reads[0]!.events;
 	await writer.deleteWorkflow("root");
-	await sleep(STORE_CLOCK_TICK_MS);
+	await untilStoreClockTicks();
 	await register(writer, "root");
 	for (const id of ["replaced-first", "replaced-second", "replaced-third"]) await checkpoint(writer, "root", id);
 	reads.length = 0;
