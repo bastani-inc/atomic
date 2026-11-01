@@ -53,7 +53,7 @@ const MaxOutputSchema = Type.Object(
 function heartbeatSchema(scope: string) {
 	return Type.Number({
 		minimum: 0,
-		description: `Task heartbeat cadence in milliseconds for ${scope} while it runs: a periodic status notice for judging whether it still progresses. Omit for the owner default (normally 15 minutes); 0 disables; otherwise at least 60000.`,
+		description: `Heartbeat cadence in ms for ${scope} while it runs (default 15 min; 0 disables; min 60000).`,
 	});
 }
 
@@ -150,7 +150,7 @@ export const SubagentParams = Type.Object(
 			),
 		),
 		budgetMs: Type.Optional(Type.Number({ description: "Foreground wait budget in milliseconds." })),
-		heartbeatMs: Type.Optional(heartbeatSchema("each launched child (a task's own heartbeatMs wins)")),
+		heartbeatMs: Type.Optional(heartbeatSchema("each child; a task's own wins")),
 		agent: Type.Optional(
 			Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" }),
 		),
