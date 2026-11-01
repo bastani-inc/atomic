@@ -217,6 +217,31 @@ export function renderPausedBody(
 	return lines;
 }
 
+/**
+ * A stage on a local worker whose session this chat cannot show yet: say so plainly over its
+ * transcript. The chat streams the stage once its session starts.
+ */
+export function renderStartingBody(
+	ctx: StageChatViewContext,
+	width: number,
+	budget: number,
+	notice: { readonly label: string; readonly detail: string; readonly message: string },
+	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
+): string[] {
+	const t = ctx.theme;
+	const callout: string[] = [];
+	callout.push(blankLine(width));
+	callout.push(...bannerLines(ctx, width, "info", "○", notice.label, notice.detail));
+	callout.push(...new Text(paint(notice.message, t.textMuted), 2, 0).render(width));
+	const calloutRows = Math.min(callout.length, Math.max(0, budget));
+	const transcriptRows = Math.max(0, budget - calloutRows);
+	const lines = transcriptRows > 0 ? renderTranscript(transcriptRows) : [];
+	lines.push(...callout.slice(0, calloutRows));
+	while (lines.length < budget) lines.push(blankLine(width));
+	if (lines.length > budget) lines.length = budget;
+	return lines;
+}
+
 export function renderBlockedBody(
 	ctx: StageChatViewContext,
 	width: number,

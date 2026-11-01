@@ -23,6 +23,7 @@ import type {
 	WorkflowBoundarySegmentsResolver,
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
+import { pooledStageStartingStep, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
@@ -256,31 +257,34 @@ function artifactRowsFor(detail: RunDetail): Array<[string, string]> {
 }
 
 function stageLinePlain(stage: StageSnapshot, now: number, width: number): string {
-	const icon = statusIcon(stage.status);
+	const status = stageDisplayStatus(stage);
+	const icon = statusIcon(status);
 	const dur = stageDurationString(stage, now);
-	const activity = stageActivityString(stage, now);
+	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
 	const name = truncateToWidth(`${icon} ${stage.name}`, STAGE_NAME_COL + 2, "…");
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
-	const parts = [pad(name, STAGE_NAME_COL + 2), pad(stage.status, 10)];
+	const parts = [pad(name, STAGE_NAME_COL + 2), pad(status, 10)];
 	if (activityText) parts.push(pad(activityText, 16));
 	if (dur) parts.push(dur);
 	return truncateToWidth(parts.join(""), width, "…");
 }
 
 function stageLineThemed(stage: StageSnapshot, now: number, theme: GraphTheme, width: number): string {
-	const icon = statusIcon(stage.status);
-	const iconFg = hexToAnsi(statusColor(stage.status, theme));
+	// A stage on a local worker whose session has not started reads as queued, with what it is doing.
+	const status = stageDisplayStatus(stage);
+	const icon = statusIcon(status);
+	const iconFg = hexToAnsi(statusColor(status, theme));
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
 	const dim = hexToAnsi(theme.dim);
-	const stateFg = hexToAnsi(statusColor(stage.status, theme));
+	const stateFg = hexToAnsi(statusColor(status, theme));
 
-	const activity = stageActivityString(stage, now);
+	const activity = pooledStageStartingStep(stage) ?? stageActivityString(stage, now);
 	const dur = stageDurationString(stage, now);
 
 	const nameText = truncateToWidth(stage.name, STAGE_NAME_COL, "…");
 	const namePad = pad(nameText, STAGE_NAME_COL);
-	const statePad = pad(stage.status, 10);
+	const statePad = pad(status, 10);
 	const activityText = activity ? truncateToWidth(activity, 16, "…") : undefined;
 	const activitySeg = activityText ? `${muted}${pad(activityText, 16)}${RESET}` : " ".repeat(16);
 	const durSeg = dur ? `${dim}${dur}${RESET}` : "";

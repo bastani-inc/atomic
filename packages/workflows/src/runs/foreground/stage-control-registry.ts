@@ -96,6 +96,8 @@ export interface StageControlHandle {
 	 * `agentSession`: undefined while that session is still starting.
 	 */
 	commandCatalog?(): SessionCommandCatalog | undefined;
+	/** True while a stage on a local worker is still starting its session there: nothing streams yet. */
+	readonly isSessionStarting?: boolean;
 	/**
 	 * Session commands of the stage chat for a handle without an `agentSession` (a stage on a local
 	 * worker): they run on the session where it runs, and their progress arrives as its events.

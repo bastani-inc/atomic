@@ -21,11 +21,11 @@ export function stageSkillAutocomplete(ctx: StageChatViewContext) {
 			// A stage on a local worker lists its session's commands from the worker, once that session started.
 			if (handle.agentSession === undefined && handle.commandCatalog !== undefined) {
 				assertComposerAdmission(ctx, handle);
-				return (
-					handle.commandCatalog() ?? {
-						loading: `Loading skills: stage "${handle.stageName}" is still starting on its local worker.`,
-					}
-				);
+				const catalog = handle.commandCatalog();
+				if (catalog !== undefined) return catalog;
+				if (handle.isSessionStarting === true)
+					return { loading: `Loading skills: stage "${handle.stageName}" is still starting on its local worker.` };
+				return undefined;
 			}
 			if (handle.agentSession === undefined) {
 				let attachment = pendingSkillAttachments.get(handle);

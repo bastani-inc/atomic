@@ -337,6 +337,9 @@ test("a stage chat on a local worker completes skill commands from its worker, a
 		agentSession: undefined,
 		placement: { kind: "local-worker" as const, workId: "work", generation: 1 },
 		commandCatalog: () => catalog,
+		get isSessionStarting() {
+			return catalog === undefined;
+		},
 	};
 	const view = new StageChatView({
 		store,

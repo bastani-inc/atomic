@@ -5,7 +5,9 @@ import {
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
+import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
+import { isTerminalStageStatus } from "../shared/store-internal.js";
 import { readGraphStoreRun, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
@@ -559,6 +561,44 @@ export { isTerminalOrNonStreamingStageChatStatus } from "./stage-chat-view-statu
 
 export function liveHandle(ctx: StageChatViewContext) {
 	return ctx.handle?.isDisposed === true ? undefined : ctx.handle;
+}
+
+/** What the chat of a stage on a local worker says while it cannot show that stage's session yet. */
+export interface PooledStageWaitingNotice {
+	readonly label: string;
+	/** What the stage is doing, such as `creating session 32s`. */
+	readonly detail: string;
+	readonly message: string;
+}
+
+/**
+ * The notice for a stage on a local worker that this chat cannot show yet: its session is still
+ * starting, or this chat has no live view of it yet (it opens one by itself once it can). Undefined
+ * for any other stage. The worker's own word wins over the published startup step, which can lag it.
+ */
+export function pooledStageWaitingNotice(
+	ctx: StageChatViewContext,
+	stage: StageSnapshot | undefined = currentStage(ctx),
+): PooledStageWaitingNotice | undefined {
+	const handle = liveHandle(ctx);
+	if (handle?.agentSession !== undefined) return undefined;
+	const starting = pooledStageStartingText(stage);
+	if (handle === undefined) {
+		// No live view yet: the attach pane opens one as soon as the worker serves it.
+		if (stage?.workerExecution === undefined || isTerminalStageStatus(stage.status)) return undefined;
+		return {
+			label: starting === undefined ? "CONNECTING TO LOCAL WORKER" : "STARTING ON LOCAL WORKER",
+			detail: starting ?? "opening a live view",
+			message: "This stage runs on a local worker. Its chat opens here by itself as soon as its session is ready.",
+		};
+	}
+	if (!(handle.isSessionStarting ?? isPooledStageStarting(stage))) return undefined;
+	return {
+		label: "STARTING ON LOCAL WORKER",
+		detail: starting ?? "starting its session",
+		message:
+			"This stage's session is still starting on its local worker. Its transcript streams here once it starts, and messages you send now are delivered then.",
+	};
 }
 
 export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {

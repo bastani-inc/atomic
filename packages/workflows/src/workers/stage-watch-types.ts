@@ -61,9 +61,11 @@ export interface PooledStageChatSnapshot {
 	 */
 	readonly turnStarted?: boolean;
 	/**
-	 * The slash commands the stage's session offers (its skills), for the chat's completion. Absent
-	 * while the session is still starting; the watch then sends them once it has started.
+	 * Whether the stage's session has started. While it has not, the watch sends one event when it
+	 * does. Absent from older workers, whose sessions read as started.
 	 */
+	readonly sessionStarted?: boolean;
+	/** The slash commands the stage's session offers (its skills), for the chat's completion. */
 	readonly commands?: SessionCommandCatalog;
 	/** Seq of the last event folded into this snapshot; the stream continues after it. */
 	readonly seq: number;

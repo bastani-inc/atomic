@@ -127,10 +127,10 @@ export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
 export const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
 
 /**
- * Event a watch carries when the stage's session has started and its slash commands are known, for a
- * watch whose snapshot was taken before that (#3996).
+ * Event a watch carries when the stage's session has started, with its slash commands, for a watch
+ * whose snapshot was taken while the session was still starting (#3996).
  */
-export const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
+export const STAGE_SESSION_STARTED_EVENT = "atomic_pooled_stage_session_started";
 
 /**
  * Event a watch carries after the stage's session compacted its context: the session's messages
@@ -171,8 +171,8 @@ interface Watch {
 	readonly batch: SeqEvent[];
 	seq: number;
 	timer?: NodeJS.Timeout;
-	/** The watcher has the session's slash commands, from the snapshot or a later commands event. */
-	commandsSent: boolean;
+	/** The watcher knows the stage's session started, from the snapshot or a later started event. */
+	startedSent: boolean;
 }
 
 function isTerminal(handle: StageControlHandle): boolean {
@@ -276,12 +276,13 @@ export class WorkerStageWatches {
 		}
 		this.close(command.watch);
 		const batch: SeqEvent[] = [];
+		const started = handle.agentSession !== undefined;
 		const commands = commandCatalog(handle);
 		const watch: Watch = {
 			handle,
 			batch,
 			seq: 0,
-			commandsSent: commands !== undefined,
+			startedSent: started,
 			// Subscribed before the snapshot is taken: nothing between them can be missed.
 			unsubscribe: handle.subscribe((event) => this.record(command.watch, event)),
 		};
@@ -301,6 +302,7 @@ export class WorkerStageWatches {
 			commandId: command.commandId,
 			snapshot: {
 				...snapshot(handle, watch.seq),
+				sessionStarted: started,
 				...(commands === undefined ? {} : { commands }),
 				deliveredOps: [...delivered],
 				turnStarted: handle.isStreaming || this.options.turnStarted?.(handle) === true,
@@ -325,8 +327,8 @@ export class WorkerStageWatches {
 	/** Ends watches whose stage finished; called on the worker heartbeat. */
 	sweep(): void {
 		for (const [id, watch] of this.watches) {
-			// A session that started without sending an event yet still lists its commands to the watcher.
-			this.sendCommandsOnce(id, watch);
+			// A session that started without sending an event yet still tells the watcher.
+			this.sendStartedOnce(id, watch);
 			// The stage registered another handle (it moved from replaying to running live, say): this
 			// watch would see nothing more, so the root opens a new one on the current handle.
 			const current = this.registry.get(watch.handle.runId, watch.handle.stageId);
@@ -592,8 +594,8 @@ export class WorkerStageWatches {
 	private record(id: WatchId, event: AgentSessionEvent): void {
 		const watch = this.watches.get(id);
 		if (watch === undefined) return;
-		// The session's first event shows it started: its commands go first, so the watcher has them now.
-		this.sendCommandsOnce(id, watch);
+		// The session's first event shows it started: that goes first, with its commands.
+		this.sendStartedOnce(id, watch);
 		this.append(id, watch, event);
 		// Compaction replaced the session's messages; the watcher's copy follows.
 		if (event.type === "compaction_end" && event.aborted !== true && event.result !== undefined)
@@ -608,13 +610,15 @@ export class WorkerStageWatches {
 		watch.timer ??= setTimeout(() => this.flush(id), STAGE_EVENT_BATCH_INTERVAL_MS);
 	}
 
-	/** Sends the stage session's slash commands to a watcher that does not have them, once they are known. */
-	private sendCommandsOnce(id: WatchId, watch: Watch): void {
-		if (watch.commandsSent) return;
+	/** Tells a watcher whose snapshot predates the stage's session that it started, with its slash commands. */
+	private sendStartedOnce(id: WatchId, watch: Watch): void {
+		if (watch.startedSent || watch.handle.agentSession === undefined) return;
+		watch.startedSent = true;
 		const commands = commandCatalog(watch.handle);
-		if (commands === undefined) return;
-		watch.commandsSent = true;
-		this.append(id, watch, { type: STAGE_COMMANDS_EVENT, commands } as never as AgentSessionEvent);
+		this.append(id, watch, {
+			type: STAGE_SESSION_STARTED_EVENT,
+			...(commands === undefined ? {} : { commands }),
+		} as never as AgentSessionEvent);
 	}
 
 	private flush(id: WatchId): void {

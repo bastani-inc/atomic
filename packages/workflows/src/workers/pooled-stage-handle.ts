@@ -36,8 +36,8 @@ type StreamingMessage = PooledStageChatSnapshot["streamingMessage"];
 
 /** Mirrors the worker's `DELIVERY_RECEIPT_EVENT`, without loading worker code in the root. */
 const DELIVERY_RECEIPT_EVENT = "atomic_pooled_delivery_receipt";
-/** Mirrors the worker's `STAGE_COMMANDS_EVENT`. */
-const STAGE_COMMANDS_EVENT = "atomic_pooled_stage_commands";
+/** Mirrors the worker's `STAGE_SESSION_STARTED_EVENT`. */
+const STAGE_SESSION_STARTED_EVENT = "atomic_pooled_stage_session_started";
 /** Mirrors the worker's `STAGE_MESSAGES_EVENT`. */
 const STAGE_MESSAGES_EVENT = "atomic_pooled_stage_messages";
 
@@ -152,6 +152,10 @@ export class PooledStageHandle implements StageControlHandle {
 	private session: string | undefined;
 	/** The stage session's slash commands; undefined while the session is still starting. */
 	private commands?: SessionCommandCatalog;
+	/** Whether the stage's session has started; until it has, sends wait for it without a bound. */
+	private sessionStarted = true;
+	/** Settles when the session starts, for sends that waited for it. */
+	private started = Promise.withResolvers<void>();
 	/** `!` shell commands running on the stage's session, by request id, with their output listeners. */
 	private readonly bashRuns = new Map<string, (chunk: string) => void>();
 	/** The outbox's sender while it runs; one at a time keeps send order. */
@@ -233,6 +237,10 @@ export class PooledStageHandle implements StageControlHandle {
 	}
 	commandCatalog(): SessionCommandCatalog | undefined {
 		return this.commands;
+	}
+	/** True while the stage is still starting its session on the worker: nothing streams yet. */
+	get isSessionStarting(): boolean {
+		return !this.sessionStarted && this.ended === undefined;
 	}
 	get isBashRunning(): boolean {
 		return this.bashRuns.size > 0;
@@ -539,6 +547,16 @@ export class PooledStageHandle implements StageControlHandle {
 		}
 	}
 
+	private markSessionStarted(started: boolean): void {
+		if (started) {
+			this.sessionStarted = true;
+			this.started.resolve();
+			return;
+		}
+		if (this.sessionStarted) this.started = Promise.withResolvers<void>();
+		this.sessionStarted = false;
+	}
+
 	private forget(op: DeliveryOpId): void {
 		const index = this.outbound.findIndex((entry) => entry.op === op);
 		if (index >= 0) this.outbound.splice(index, 1);
@@ -620,11 +638,19 @@ export class PooledStageHandle implements StageControlHandle {
 					const sending = this.sendEntry(entry, watch);
 					// One send its attempt never confirms must not hold every later one: past the bound it
 					// stays unconfirmed (kept for the next attempt, deduplicated by op) and the next goes.
+					// A stage still starting its session admits nothing until it has started, so the bound
+					// counts from then: text sent meanwhile waits for the session, not reported as lost.
 					let bound: NodeJS.Timeout | undefined;
+					let stopped = false;
 					const unconfirmed = new Promise<"unconfirmed">((resolve) => {
-						bound = setTimeout(() => resolve("unconfirmed"), this.admissionWaitMs);
+						void this.started.promise.then(() => {
+							if (!stopped) bound = setTimeout(() => resolve("unconfirmed"), this.admissionWaitMs);
+						});
 					});
-					const outcome = await Promise.race([sending, gone, unconfirmed]).finally(() => clearTimeout(bound));
+					const outcome = await Promise.race([sending, gone, unconfirmed]).finally(() => {
+						stopped = true;
+						clearTimeout(bound);
+					});
 					if (outcome === "unconfirmed") {
 						tracePooledWatch("root.outbox.unconfirmed", { op: entry.op, watch, generation });
 						entry.unconfirmedOn = generation;
@@ -731,6 +757,7 @@ export class PooledStageHandle implements StageControlHandle {
 		this.session = snapshot.sessionId;
 		// A replacement attempt's session lists its own commands once it has started.
 		this.commands = snapshot.commands;
+		this.markSessionStarted(snapshot.sessionStarted !== false);
 		this.settled = [...snapshot.messages];
 		this.streaming = snapshot.streamingMessage;
 		this.currentStatus = snapshot.status;
@@ -751,8 +778,13 @@ export class PooledStageHandle implements StageControlHandle {
 			this.forget((event as never as { readonly op: DeliveryOpId }).op);
 			return false;
 		}
-		if ((event.type as string) === STAGE_COMMANDS_EVENT) {
-			this.commands = (event as never as { readonly commands: SessionCommandCatalog }).commands;
+		if ((event.type as string) === STAGE_SESSION_STARTED_EVENT) {
+			this.commands = (event as never as { readonly commands?: SessionCommandCatalog }).commands;
+			this.markSessionStarted(true);
+			// Views redraw, so the chat stops saying the stage is starting; the queue itself is unchanged.
+			const queued = this.queuedUserMessages();
+			const redraw = { type: "queue_update", steering: [...queued.steering], followUp: [...queued.followUp] };
+			for (const listener of [...this.listeners]) listener(redraw as AgentSessionEvent);
 			return false;
 		}
 		if ((event.type as string) === STAGE_MESSAGES_EVENT) {

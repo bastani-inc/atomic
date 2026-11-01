@@ -11,6 +11,7 @@
  *    expressed by the filled row, not a leading caret glyph.
  *  - Empty state: `(no matches)` in dim.
  */
+import { type StageDisplayStatus, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -67,7 +68,7 @@ function truncateToWidthWithoutReset(text: string, width: number, suffix = ""): 
 	return `${sliceColumns(text, 0, targetWidth - suffixWidth, true)}${suffix}`;
 }
 
-function statusText(status: StageSnapshot["status"]): string {
+function statusText(status: StageDisplayStatus): string {
 	return status === "awaiting_input" ? "awaiting" : status === "completed" ? "complete" : status.replace(/_/g, " ");
 }
 
@@ -136,8 +137,10 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 		const stage = visible[i]!;
 		const idx = start + i;
 		const isSelected = idx === state.selectedIndex;
-		const icon = statusIcon(stage.status);
-		const label = statusText(stage.status);
+		// A stage on a local worker whose session has not started is listed as queued.
+		const displayStatus = stageDisplayStatus(stage);
+		const icon = statusIcon(displayStatus);
+		const label = statusText(displayStatus);
 		const rowTextBudget = Math.max(8, innerWidth - 14);
 		const name = truncateToWidth(stage.name, rowTextBudget, "…");
 
@@ -151,7 +154,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 			const styled = `${accent}${accentFg}${BOLD}${padded}${RESET}`;
 			lines.push(`${border}│${RESET}${styled}${border}│${RESET}`);
 		} else {
-			const iconColor = hexToAnsi(statusColor(stage.status, theme));
+			const iconColor = hexToAnsi(statusColor(displayStatus, theme));
 			const status = `${dim}${label}${RESET}${panelBg}`;
 			const visibleRow = `  ${icon} ${name}`;
 			const gap = Math.max(1, innerWidth - visibleWidth(visibleRow) - visibleWidth(label) - 1);

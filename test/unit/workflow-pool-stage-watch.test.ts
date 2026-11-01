@@ -212,7 +212,7 @@ function startedSession(): AgentSession {
 	} as never as AgentSession;
 }
 
-test("a watch opened while the stage's session is still starting sends its slash commands once the session starts (#3996)", async () => {
+test("a watch opened while the stage's session is still starting says so, then reports the start with its slash commands (#3996)", async () => {
 	const { registry, sent, watches, events } = airlock();
 	const stage = streamingStage("agent");
 	let session: AgentSession | undefined;
@@ -220,13 +220,18 @@ test("a watch opened while the stage's session is still starting sends its slash
 	openWatch(watches);
 	const opened = sent[0];
 	assert.equal(opened?.kind, "stage-command-result");
+	assert.equal(opened.snapshot?.sessionStarted, false);
 	assert.equal(opened.snapshot?.commands, undefined, "no commands while the session is starting");
 
 	session = startedSession();
 	stage.emit(delta("first"));
 	await untilSent(sent, "stage-events");
 	const stream = events();
-	assert.equal(stream[0]?.event.type, "atomic_pooled_stage_commands", "the commands arrive before the first event");
+	assert.equal(
+		stream[0]?.event.type,
+		"atomic_pooled_stage_session_started",
+		"the commands arrive before the first event",
+	);
 	assert.deepEqual((stream[0]!.event as never as { commands: unknown }).commands, {
 		cwd: "/stage-cwd",
 		skillCommands: [{ name: "skill:release-notes", description: "[p] Draft release notes" }],
@@ -235,7 +240,7 @@ test("a watch opened while the stage's session is still starting sends its slash
 	stage.emit(delta("second"));
 	await sleep(80);
 	assert.equal(
-		events().filter(({ event }) => (event.type as string) === "atomic_pooled_stage_commands").length,
+		events().filter(({ event }) => (event.type as string) === "atomic_pooled_stage_session_started").length,
 		1,
 		"sent once per watch",
 	);
@@ -250,6 +255,7 @@ test("a watch opened while the stage's session is still starting sends its slash
 		stageId: "agent",
 	});
 	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
+	assert.equal(reopened?.kind === "stage-command-result" ? reopened.snapshot?.sessionStarted : undefined, true);
 	assert.deepEqual(
 		reopened?.kind === "stage-command-result" ? reopened.snapshot?.commands?.skillCommands : undefined,
 		[{ name: "skill:release-notes", description: "[p] Draft release notes" }],

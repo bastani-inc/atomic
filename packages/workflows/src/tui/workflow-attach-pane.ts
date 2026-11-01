@@ -23,7 +23,7 @@ import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot, subscribeStoreInvalidation } from "../shared/store-observation.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { findSnapshotRun, findSnapshotStage } from "../shared/workflow-run-ownership.js";
-import { acquirePooledStage } from "../workers/pooled-stage-sources.js";
+import { acquirePooledStage, type PooledStageLease } from "../workers/pooled-stage-sources.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
 import { StageChatComposerDrafts } from "./stage-chat-composer-drafts.js";
@@ -34,6 +34,8 @@ import type { WorkflowAttachPaneMode, WorkflowAttachPaneOpts } from "./workflow-
 
 const ENTER_TRANSITION_QUARANTINE_MS = 200;
 const TERMINAL_STAGE_STATUSES = new Set<StageSnapshot["status"]>(["completed", "failed", "skipped"]);
+/** How often an open chat of a stage on a local worker with no live view yet tries to open one. */
+export const POOLED_VIEW_RETRY_MS = 1_000;
 export class WorkflowAttachPane implements Component {
 	private store: Store;
 	private sessionStore?: WorkflowAttachPaneOpts["sessionStore"];
@@ -64,6 +66,10 @@ export class WorkflowAttachPane implements Component {
 	private attachedPromptPosition: { readonly index: number; readonly generation: number } | null = null;
 	/** The attachment whose pooled view may remount the chat when it reconnects. */
 	private pooledAttachment?: symbol;
+	/** The open chat shows a stage on a local worker it has no live view of yet; it keeps trying to open one. */
+	private awaitingPooledView = false;
+	private pooledViewRetryAt = 0;
+	private pooledViewRetrying = false;
 	/** Closes the live view behind the attached chat of a stage on a local worker. */
 	private releaseChatHandle: (() => void) | null = null;
 	private unsubscribeStore: (() => void) | null = null;
@@ -178,6 +184,7 @@ export class WorkflowAttachPane implements Component {
 		runId: string,
 		stageId: string,
 		options: { suppressInitialPromptSubmit?: boolean } = { suppressInitialPromptSubmit: true },
+		pooledLease?: PooledStageLease,
 	): Promise<void> {
 		this._flushStoreUpdate();
 		const generation = ++this.attachmentGeneration;
@@ -193,13 +200,17 @@ export class WorkflowAttachPane implements Component {
 		this.attachedRunId = runId;
 		this.lastAttachedStageId = stageId;
 		const stage = this._stageSnapshot(runId, stageId);
+		const pooledLive = stage?.workerExecution !== undefined && !TERMINAL_STAGE_STATUSES.has(stage.status);
 		const resolution = resolveAttachedStageHandle(
 			this.registry,
 			this.resolvePostMortemHandle,
 			runId,
 			stageId,
-			stage?.workerExecution !== undefined && !TERMINAL_STAGE_STATUSES.has(stage.status)
-				? () => acquirePooledStage(this.store, runId, stageId)
+			pooledLive || pooledLease !== undefined
+				? () =>
+						pooledLease === undefined
+							? acquirePooledStage(this.store, runId, stageId)
+							: Promise.resolve(pooledLease)
 				: undefined,
 		);
 		const { handle, postMortemUnavailableReason, release, onReconnected } =
@@ -227,7 +238,47 @@ export class WorkflowAttachPane implements Component {
 						stopWatchingReconnects?.();
 						release();
 					};
+		// A stage on a local worker the worker did not serve a live view of yet (its session may still be
+		// starting): the chat says so, and opens the view by itself once the worker serves it.
+		this.awaitingPooledView = pooledLive && release === undefined;
+		this.pooledViewRetryAt = this.now();
 		this._mountChatView(runId, stageId, handle, postMortemUnavailableReason);
+	}
+	/** Opens the live view an open chat of a stage on a local worker is waiting for, once the worker serves it. */
+	private _retryPooledStageView(stage: StageSnapshot | undefined): void {
+		const runId = this.attachedRunId;
+		const stageId = this.lastAttachedStageId;
+		if (!this.awaitingPooledView || this.pooledViewRetrying || this.chatView === null || !runId || !stageId) return;
+		if (stage?.workerExecution === undefined || TERMINAL_STAGE_STATUSES.has(stage.status)) {
+			this.awaitingPooledView = false;
+			return;
+		}
+		const now = this.now();
+		if (now - this.pooledViewRetryAt < POOLED_VIEW_RETRY_MS) return;
+		this.pooledViewRetryAt = now;
+		this.pooledViewRetrying = true;
+		const generation = this.attachmentGeneration;
+		void acquirePooledStage(this.store, runId, stageId)
+			.then((lease) => {
+				if (lease === undefined) return;
+				const chat = this.chatView;
+				if (
+					generation !== this.attachmentGeneration ||
+					chat === null ||
+					!this.visible ||
+					this.attachedRunId !== runId ||
+					this.lastAttachedStageId !== stageId
+				) {
+					lease.release();
+					return;
+				}
+				this.composerDrafts.capture(runId, stageId, chat._inputBuffer);
+				void this._attachToStage(runId, stageId, { suppressInitialPromptSubmit: true }, lease);
+			})
+			.catch(() => {})
+			.finally(() => {
+				this.pooledViewRetrying = false;
+			});
 	}
 	private _mountChatView(
 		runId: string,
@@ -274,6 +325,7 @@ export class WorkflowAttachPane implements Component {
 	}
 	private _disposeChatView(): void {
 		this.pooledAttachment = undefined;
+		this.awaitingPooledView = false;
 		this.chatView?.dispose();
 		const release = this.releaseChatHandle;
 		this.releaseChatHandle = null;
@@ -392,6 +444,7 @@ export class WorkflowAttachPane implements Component {
 			if (this.chatView !== null && stage !== undefined && stage.attached !== true)
 				this.store.recordStageAttached(this.attachedRunId, this.lastAttachedStageId, true);
 			this._followSupersedingPrompt(attachedRun, stage);
+			this._retryPooledStageView(stage);
 		}
 	}
 	/**

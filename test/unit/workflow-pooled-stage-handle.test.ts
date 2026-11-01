@@ -538,20 +538,84 @@ test("text left unconfirmed when its chat closes is retried by the stage's next 
 	assert.equal(outbox[0]?.admittedBy, 1, "and admitted");
 });
 
-test("the root handle lists the slash commands its worker reports once the stage's session starts, and keeps that notice out of the transcript (#3996)", async () => {
-	const fake = pool(() => []);
+/** A transport whose one attempt's watch opens on `opened`; the test feeds its stream. */
+function singleWatch(opened: PooledStageChatSnapshot, deliver?: PooledStageTransport["deliver"]) {
+	let listener: ((message: PooledStageWatchMessage) => void) | undefined;
+	const transport: PooledStageTransport = {
+		async watch(_ref, watcher) {
+			listener = watcher;
+			return {
+				ok: true,
+				watch: { id: "watch-1" as WatchId, attempt: { workId: "work", generation: 1 }, snapshot: opened },
+			};
+		},
+		async unwatch() {},
+		deliver: deliver ?? (async () => ({ ok: true, action: "steer" })),
+		async pause() {
+			return { ok: true };
+		},
+		async resume() {
+			return { ok: true };
+		},
+	};
+	return {
+		transport,
+		event(seq: number, event: AgentSessionEvent) {
+			listener?.({ kind: "events", events: [{ seq, event }] });
+		},
+	};
+}
+
+test("the root handle reads as starting until the worker reports the stage's session started, with its slash commands, which stay out of the transcript (#3996)", async () => {
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false });
 	const opened = await openPooledStageHandle(fake.transport, { runId: "child", stageId: "agent" }, "agent");
 	assert.ok(opened.ok);
 	const handle = opened.handle;
 	const seen: string[] = [];
 	handle.subscribe((event) => seen.push(event.type));
+	assert.equal(handle.isSessionStarting, true);
 	assert.equal(handle.commandCatalog(), undefined, "nothing to list while the session starts");
 
 	const commands = { cwd: "/stage-cwd", skillCommands: [{ name: "skill:release-notes", description: "Draft notes" }] };
-	fake.events(1, { type: "atomic_pooled_stage_commands", commands } as never as AgentSessionEvent);
-	fake.events(2, { type: "agent_start" } as AgentSessionEvent);
+	fake.event(1, { type: "atomic_pooled_stage_session_started", commands } as never as AgentSessionEvent);
+	fake.event(2, { type: "agent_start" } as AgentSessionEvent);
+	assert.equal(handle.isSessionStarting, false);
 	assert.deepEqual(handle.commandCatalog(), commands);
-	assert.deepEqual(seen, ["agent_start"]);
+	assert.ok(!seen.includes("atomic_pooled_stage_session_started"));
+	assert.equal(seen.at(-1), "agent_start");
+	handle.dispose();
+});
+
+test("a message sent while the stage's session is still starting waits for it instead of being reported lost (#3996)", async () => {
+	const admitted = Promise.withResolvers<void>();
+	const fake = singleWatch({ ...snapshot(), isStreaming: false, sessionStarted: false }, async () => {
+		await admitted.promise;
+		return { ok: true, action: "prompt" };
+	});
+	const admissionWaitMs = 20;
+	const opened = await openPooledStageHandle(
+		fake.transport,
+		{ runId: "child", stageId: "agent" },
+		"agent",
+		() => {},
+		[],
+		admissionWaitMs,
+	);
+	assert.ok(opened.ok);
+	const handle = opened.handle;
+	let outcome: string | undefined;
+	const sent = handle.sendUserMessage("check the logs first", { deliverAs: "steer" }).then(
+		(action) => (outcome = `admitted:${action}`),
+		(error: Error) => (outcome = `failed:${error.message}`),
+	);
+	await new Promise((resolve) => setTimeout(resolve, admissionWaitMs * 4));
+	assert.equal(outcome, undefined, "not reported lost while the session starts");
+	assert.equal(handle.placement.undelivered, undefined);
+
+	fake.event(1, { type: "atomic_pooled_stage_session_started" } as never as AgentSessionEvent);
+	admitted.resolve();
+	await sent;
+	assert.equal(outcome, "admitted:prompt");
 	handle.dispose();
 });
 
