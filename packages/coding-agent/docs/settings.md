@@ -143,7 +143,7 @@ To audit a routing decision, the stage's `routerSelection` in `workflow({ action
 
 #### fallbackModels
 
-`fallbackModels` gives main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model and advances to the next configured model after exhausting same-model retries for a retryable provider/model failure. It continues the same turn. This includes rate limits and quota/usage-limit exhaustion, such as `The usage limit has been reached`. A provider error that Atomic does not recognize and that carries no status or code is retried on the same model first, like a transient failure.
+`fallbackModels` gives main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model and advances to the next configured model after exhausting same-model retries for a retryable provider/model failure. It continues the same turn. This includes rate limits and quota/usage-limit exhaustion, such as `The usage limit has been reached`. A provider error that Atomic does not recognize and that carries no status or code gets the same-model retries before it moves to a fallback, so a first unrecognized error never switches models. Without a fallback chain it fails at once.
 
 A model named with `--model` on the command line runs as named. That session falls back only to the models `--fallback-models` names, never to this list, whether user or project. `--fallback-models` replaces this list for one run, and `--no-fallback` turns fallback off for one run. See [CLI model options](/reference/cli#model-options).
 

@@ -26,7 +26,10 @@ const CYBER_POLICY = {
 	code: "cyber_policy",
 };
 
-type Failure = "500" | "422";
+/** An error event inside the stream with no status or code, in words nothing recognizes. */
+const UNRECOGNIZED = "the provider said something nobody has seen before";
+
+type Failure = "500" | "422" | "unrecognized";
 
 interface Harness {
 	root: string;
@@ -77,6 +80,11 @@ beforeEach(async () => {
 			const body = JSON.parse(raw) as { model: string; messages: { role: string; content: unknown }[] };
 			const account = request.url?.split("/")[1] ?? "";
 			requests.push(`acct-${account}/${body.model}`);
+			if (account === "a" && failure === "unrecognized") {
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				response.end(`data: ${JSON.stringify({ error: { message: UNRECOGNIZED } })}\n\n`);
+				return;
+			}
 			if (account === "a") {
 				response.writeHead(failure === "500" ? 500 : 422, { "content-type": "application/json" });
 				response.end(
@@ -198,6 +206,20 @@ describe("atomic -p with an explicit --model (#4223)", () => {
 			assert.equal(result.code, 1);
 			assert.equal(result.stdout, "");
 			assert.match(result.stderr, new RegExp(`Model ${REQUESTED} failed: 500`));
+		},
+		REAL_CLI_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"an unrecognized error fails at once and names the model, without running the settings fallbackModels (#4223)",
+		async () => {
+			harness.fail("unrecognized");
+			const result = await atomic(["-p", "--model", `${REQUESTED}:high`, "Say which model you are."]);
+
+			assert.deepEqual(harness.requests, [REQUESTED]);
+			assert.equal(result.code, 1);
+			assert.equal(result.stdout, "");
+			assert.match(result.stderr, new RegExp(`Model ${REQUESTED} failed: ${UNRECOGNIZED}`));
 		},
 		REAL_CLI_PROCESS_TIMEOUT_MS,
 	);

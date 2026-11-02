@@ -11,6 +11,7 @@ import {
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isSafetyRefusalFailure,
+	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
 import { nextRetryDecision } from "./retry-policy.ts";
@@ -92,7 +93,10 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	// classifier so this decision cannot drift from workflow fallback handling.
 	if (isContentFilterRefusal(message) && fallsBackOnContentFilter.call(this)) return false;
 	if (isSafetyRefusalFailure(message)) return true;
-	return isRetryableSameModelFailure(message);
+	if (isRetryableSameModelFailure(message)) return true;
+	// A failure nothing recognizes is not retried on its own. With a fallback chain it would spend a candidate, so it
+	// gets the same-model retries first: a first unrecognized error never moves the session to another model (#4223).
+	return isUnrecognizedModelFailure(message) && this._fallbackModels.length > 0;
 }
 
 /**

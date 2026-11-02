@@ -10,6 +10,11 @@ import { type AssistantMessage, createAssistantMessageEventStream, getModel, typ
 import { afterEach, describe, test } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import {
+	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
+	normalizeModelFailureSignal,
+} from "../src/core/model-fallback-failures.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -28,8 +33,9 @@ const TRANSIENT_FAILURES = {
 	"a stream reset": "terminated",
 	"a stalled stream": "Request timed out.",
 	"a stream that ends early": "Stream ended without finish_reason",
-	"an unrecognized error with no status or code": "the provider said something nobody has seen before",
 } as const;
+/** An error with no status or code whose text nothing recognizes. */
+const UNRECOGNIZED_FAILURE = "the provider said something nobody has seen before";
 const CONTENT_FILTER_422 =
 	'github-copilot API error (422): {"message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.","code":"cyber_policy"}';
 /** The same refusal delivered as an error event inside the response stream. */
@@ -157,6 +163,31 @@ describe("an explicit --model session keeps to its own model (#4223)", () => {
 		});
 	}
 
+	test("an unrecognized error fails on the requested model at once without --fallback-models (#4223)", async () => {
+		const { requests, last } = await runSession(["--model", `${requestedId}:high`], UNRECOGNIZED_FAILURE);
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[requestedId],
+		);
+		assert.equal(last.stopReason, "error");
+		assert.equal(last.errorMessage, UNRECOGNIZED_FAILURE);
+	});
+
+	test("with --fallback-models, an unrecognized error is retried on the requested model before the fallback runs (#4223)", async () => {
+		const optIn = `${OPT_IN.provider}/${OPT_IN.id}`;
+		const { requests, last } = await runSession(
+			["--model", `${requestedId}:high`, "--fallback-models", optIn],
+			UNRECOGNIZED_FAILURE,
+		);
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[...Array(1 + MAX_RETRIES).fill(requestedId), optIn],
+		);
+		assert.equal(last.stopReason, "stop");
+	});
+
 	test("--fallback-models opts in: the refusal moves to that model, which is told its own name, and the session records why (#4223)", async () => {
 		const optIn = `${OPT_IN.provider}/${OPT_IN.id}`;
 		const { requests, last, sessionManager } = await runSession(
@@ -192,5 +223,31 @@ describe("an explicit --model session keeps to its own model (#4223)", () => {
 			requests.map((request) => request.model),
 			Array(1 + MAX_RETRIES).fill(requestedId),
 		);
+	});
+});
+
+describe("the provider failures behind #4223 are classified explicitly", () => {
+	const failure = (errorMessage: string) => ({ role: "assistant", stopReason: "error", errorMessage });
+
+	test("a stream cut off before its finish reason is a transport failure retried on the same model (#4223)", () => {
+		const truncated = failure(TRANSIENT_FAILURES["a stream that ends early"]);
+		assert.equal(normalizeModelFailureSignal(truncated).kind, "transport_error");
+		assert.equal(isRetryableSameModelFailure(truncated), true);
+		assert.equal(isUnrecognizedModelFailure(truncated), false);
+	});
+
+	test("a cyber_policy refusal is a content-filter refusal, as an HTTP 422 and inside the stream (#4223)", () => {
+		for (const refusal of [CONTENT_FILTER_422, CONTENT_FILTER_IN_STREAM]) {
+			assert.equal(normalizeModelFailureSignal(failure(refusal)).kind, "content_filter");
+			assert.equal(isUnrecognizedModelFailure(failure(refusal)), false);
+		}
+	});
+
+	test("only an error nothing recognizes is unrecognized (#4223)", () => {
+		assert.equal(isUnrecognizedModelFailure(failure(UNRECOGNIZED_FAILURE)), true);
+		assert.equal(isRetryableSameModelFailure(failure(UNRECOGNIZED_FAILURE)), false);
+		for (const transient of Object.values(TRANSIENT_FAILURES)) {
+			assert.equal(isUnrecognizedModelFailure(failure(transient)), false, transient);
+		}
 	});
 });
