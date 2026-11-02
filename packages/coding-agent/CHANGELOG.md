@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.63] - 2026-11-02
+
+Workflow journals that survive a stalled lock holder, and pooled roots that stay responsive with thousands of finished runs.
+
+- **A stalled journal lock holder no longer fails everyone:** journal writes wait through up to 10 minutes of a write lock held by a stalled process instead of giving up after 30 s, and group commits release the lock every 100 ms; with 300 pooled children and a holder stopped for 45 s, the root and all 300 children now complete instead of all failing ([#4186](https://github.com/bastani-inc/atomic/pull/4186))
+- **Activity batches stay fast with many finished runs:** applying a pooled root's activity looks runs up by id instead of scanning the store, so with 5,000 finished runs a batch takes 11 ms instead of 101 to 145 ms ([#4184](https://github.com/bastani-inc/atomic/pull/4184))
+
+### Fixed
+
+- Workflow runs no longer fail when another process stalls while it holds the workflow journal's write lock, for example starved of CPU on a heavily loaded host, paused by garbage collection, or stopped by a signal. Every other journal writer used to give up after 30 s with `database is locked … gave up after 30xxx ms waiting for the write lock`, which failed pooled roots together with all their children, although the holder commits as soon as it runs again. Journal writes now keep waiting through up to 10 minutes of such a stall, retrying less often after the first 30 s, and a writer that does give up names the process holding the lock and how long ago it took it. Registering a run no longer waits for the lock synchronously, which froze the process for up to 5 s, and a long batch of queued transactions commits what it has every 100 ms, so other processes' writers get in between. With 300 pooled children and another process stopped for 45 s holding the lock, the root and all 300 children used to fail; now all of them keep running ([#4183](https://github.com/bastani-inc/atomic/issues/4183))
+- A root with many children on local workers (`workflows.localWorkers`) no longer stalls its terminal for a tenth of a second or more each time it applies its children's latest activity, once the host has accumulated thousands of finished runs. Applying a batch of activity found each published run by scanning every run in the store, several times per child; runs are now looked up by id. With 300 busy children and 5,000 finished runs in the store, applying a batch now takes p90 11 ms instead of 101–145 ms, and the main thread's p99 lag drops from 88–111 ms to 11 ms ([#4182](https://github.com/bastani-inc/atomic/issues/4182))
+
+## [0.9.63-alpha.1] - 2026-11-02
+
+Workflow journals that survive a stalled lock holder, and pooled roots that stay responsive with thousands of finished runs.
+
+- **A stalled journal lock holder no longer fails everyone:** journal writes wait through up to 10 minutes of a write lock held by a stalled process instead of giving up after 30 s, and group commits release the lock every 100 ms; with 300 pooled children and a holder stopped for 45 s, the root and all 300 children now complete instead of all failing ([#4186](https://github.com/bastani-inc/atomic/pull/4186))
+- **Activity batches stay fast with many finished runs:** applying a pooled root's activity looks runs up by id instead of scanning the store, so with 5,000 finished runs a batch takes 11 ms instead of 101 to 145 ms ([#4184](https://github.com/bastani-inc/atomic/pull/4184))
+
 ### Fixed
 
 - Workflow runs no longer fail when another process stalls while it holds the workflow journal's write lock, for example starved of CPU on a heavily loaded host, paused by garbage collection, or stopped by a signal. Every other journal writer used to give up after 30 s with `database is locked … gave up after 30xxx ms waiting for the write lock`, which failed pooled roots together with all their children, although the holder commits as soon as it runs again. Journal writes now keep waiting through up to 10 minutes of such a stall, retrying less often after the first 30 s, and a writer that does give up names the process holding the lock and how long ago it took it. Registering a run no longer waits for the lock synchronously, which froze the process for up to 5 s, and a long batch of queued transactions commits what it has every 100 ms, so other processes' writers get in between. With 300 pooled children and another process stopped for 45 s holding the lock, the root and all 300 children used to fail; now all of them keep running ([#4183](https://github.com/bastani-inc/atomic/issues/4183))
