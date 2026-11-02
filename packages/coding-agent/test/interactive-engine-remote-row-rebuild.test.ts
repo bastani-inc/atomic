@@ -26,9 +26,14 @@ function slowEngine() {
 		runtime,
 		commands,
 		listeners,
-		/** Answers every render request sent so far with a frame naming its tool call. */
-		answer() {
-			for (const command of commands.splice(0)) {
+		/**
+		 * Answers the render requests sent so far (those `only` selects) with a frame naming its tool call, and its
+		 * expansion when expanded.
+		 */
+		answer(only: (command: InteractiveEngineCommand) => boolean = () => true) {
+			const answered = commands.filter(only);
+			commands.splice(0, commands.length, ...commands.filter((command) => !only(command)));
+			for (const command of answered) {
 				if (command.type !== "engine_tool_render" && command.type !== "engine_message_render") continue;
 				const message: InteractiveEngineMessage = {
 					type: "engine_custom_frame",
@@ -36,7 +41,7 @@ function slowEngine() {
 					requestId: command.requestId,
 					lines: [
 						command.type === "engine_tool_render"
-							? `card ${command.toolCallId}`
+							? `card ${command.toolCallId}${command.expanded ? " with full output" : ""}`
 							: `notice ${String(command.message.customType)}`,
 					],
 				};
@@ -147,5 +152,27 @@ test("engine messages reach chat rows through one subscription however many rows
 	assert.deepEqual(
 		chat.render(80),
 		ids.map((id) => `card ${id}`),
+	);
+});
+
+test("a row collapsed while its expanded frame is in flight is not repainted expanded after a rebuild", () => {
+	const engine = slowEngine();
+	const chat = new StartupChatContainer();
+	chat.releaseStartupOutput();
+	const row = toolRow(engine.runtime, "call_folded");
+	chat.addChild(row);
+	row.setExpanded(true);
+	chat.render(80);
+	row.setExpanded(false);
+	chat.render(80);
+	// Only the expanded request is answered before the chat is rebuilt.
+	engine.answer((command) => command.type === "engine_tool_render" && command.expanded);
+
+	rebuild(chat, engine.runtime, ["call_folded"]);
+
+	const repainted = chat.render(80);
+	assert.ok(
+		!repainted.some((line) => line.includes("with full output")),
+		`the collapsed row was repainted with its expanded frame: ${JSON.stringify(repainted)}`,
 	);
 });

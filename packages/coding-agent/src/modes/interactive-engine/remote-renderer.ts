@@ -63,6 +63,12 @@ abstract class RemoteRenderer implements Component {
 	private disposed = false;
 	private readonly frameClamp = new RemoteFrameWidthClamp();
 	private readonly routes: Map<string, RemoteRenderer>;
+	/**
+	 * What each unanswered request showed (its frame identity, expansion included), by request id. A frame is
+	 * remembered under the identity of the request it answers, not under the row's state when it arrives: a row
+	 * collapsed while its expanded frame was in flight must not have that frame remembered as its collapsed one.
+	 */
+	private readonly requestIdentities = new Map<number, string>();
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
 	private readonly requestRender: () => void;
@@ -80,7 +86,10 @@ abstract class RemoteRenderer implements Component {
 			if (message.requestId < this.appliedRequestId) return;
 			this.appliedRequestId = message.requestId;
 			this.lines = message.lines;
-			rememberFrame(this.frameIdentity(), message.lines);
+			const identity = this.requestIdentities.get(message.requestId);
+			for (const requestId of this.requestIdentities.keys())
+				if (requestId <= message.requestId) this.requestIdentities.delete(requestId);
+			if (identity !== undefined) rememberFrame(identity, message.lines);
 			this.requestRender();
 		} else if (message.type === "engine_custom_invalidate") {
 			this.changed();
@@ -92,8 +101,10 @@ abstract class RemoteRenderer implements Component {
 			this.width = width;
 			this.dirty = false;
 			// A row rebuilt for a row the engine already rendered paints its last frame until the fresh one arrives.
-			if (this.lines === LOADING_LINES) this.lines = recentFrames.get(this.frameIdentity()) ?? LOADING_LINES;
-			this.runtime.sendEngineCommand(this.command(++this.requestId, width));
+			const identity = this.frameIdentity();
+			if (this.lines === LOADING_LINES) this.lines = recentFrames.get(identity) ?? LOADING_LINES;
+			this.requestIdentities.set(++this.requestId, identity);
+			this.runtime.sendEngineCommand(this.command(this.requestId, width));
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
 		// arrives, the previous frame may be wrapped for an older terminal
@@ -110,6 +121,7 @@ abstract class RemoteRenderer implements Component {
 		if (this.disposed) return;
 		this.disposed = true;
 		if (this.routes.get(this.componentId) === this) this.routes.delete(this.componentId);
+		this.requestIdentities.clear();
 		this.runtime.sendEngineCommand({ type: "engine_render_dispose", componentId: this.componentId });
 	}
 
