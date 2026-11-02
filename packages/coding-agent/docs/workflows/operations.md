@@ -917,7 +917,9 @@ Each worker writes its standard error to `worker-logs/<root run ID>/<worker ID>.
 
 `admission.limits` caps concurrent agent sessions and managed tool processes for one root. A session permit covers creation through disposal, including fallback and delegated sessions. A process permit remains held until the Atomic-managed process is confirmed stopped; yielding an observation wait does not release it. Processes launched outside Atomic's managed tools are not counted. The worker count is a placement limit, separate from these resource caps.
 
-`admission.host` adds launch gates for load per CPU and free memory. These measurements are advisory; they are not operating-system resource ceilings.
+`admission.host` adds launch gates for load per CPU and free memory. These measurements are advisory; they are not operating-system resource ceilings. `minFreeMemoryBytes` holds new sessions and tool processes in every worker while the machine's free memory is below it; it does not shrink a worker that grew after its sessions started.
+
+A worker serves one child after another, and keeps in memory only what the child it runs needs: its own checkpoints, read from the journal when it claims the child, and its own stages. What it held for a finished child is let go of before it runs the next one. As a backstop, `localWorkers.maxWorkerRssBytes` replaces a worker whose resident memory has grown past that many bytes with a fresh worker once its current child ends; a running child is never interrupted, and these replacements never count as worker failures. A pool's memory is then about `localWorkers.count` times the larger of that limit and one child's working set.
 
 Without any `admission` setting, pooled stages still start one at a time, at most one every 5 seconds, while the machine's load per CPU is above `localWorkers.maxLoadPerCpu` (default `3`). See [Local worker pools](/settings#local-worker-pools).
 

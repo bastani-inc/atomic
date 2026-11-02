@@ -360,6 +360,8 @@ export class LocalWorkerPool {
 			readonly leaseMs?: number;
 			/** Load per CPU above which the root's pooled stage starts are paced; undefined or 0: never. */
 			readonly maxLoadPerCpu?: number;
+			/** Resident set size, in bytes, past which a worker is replaced between children; undefined: never (#4197). */
+			readonly maxWorkerRssBytes?: number;
 			/**
 			 * The root's resume accepted edited entry modules (`RunOpts.acceptEntryChanges`): unfinished work an earlier
 			 * incarnation queued with another digest of a definition's entry module runs the module this pool loaded (#4200).
@@ -402,6 +404,11 @@ export class LocalWorkerPool {
 			);
 		if (options.maxLoadPerCpu !== undefined && (!Number.isFinite(options.maxLoadPerCpu) || options.maxLoadPerCpu < 0))
 			throw new Error("Invalid local worker load threshold: maxLoadPerCpu must be a number of at least 0");
+		if (
+			options.maxWorkerRssBytes !== undefined &&
+			(!Number.isSafeInteger(options.maxWorkerRssBytes) || options.maxWorkerRssBytes < 1)
+		)
+			throw new Error("Invalid local worker memory limit: maxWorkerRssBytes must be a positive integer");
 		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
@@ -466,6 +473,9 @@ export class LocalWorkerPool {
 					...(this.options.maxLoadPerCpu === undefined
 						? {}
 						: { stageStartMaxLoadPerCpu: this.options.maxLoadPerCpu }),
+					...(this.options.maxWorkerRssBytes === undefined
+						? {}
+						: { maxWorkerRssBytes: this.options.maxWorkerRssBytes }),
 					...(workerEntry === undefined ? {} : { workerEntry }),
 				},
 				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),

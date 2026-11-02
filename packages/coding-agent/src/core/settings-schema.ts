@@ -439,6 +439,14 @@ const WorkflowsSettingsSchema = Type.Union(
 									"Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off.",
 							}),
 						),
+						maxWorkerRssBytes: Type.Optional(
+							Type.Integer({
+								minimum: 1,
+								maximum: Number.MAX_SAFE_INTEGER,
+								description:
+									"Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never).",
+							}),
+						),
 					},
 					{ additionalProperties: false },
 				),

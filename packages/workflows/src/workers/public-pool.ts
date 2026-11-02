@@ -25,7 +25,7 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 /**
  * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
  * and processes, and no recorded step or queued child depends on them, so a resume runs with the current ones and the
- * root records those (#4196). `startupTimeoutMs`, `leaseMs` and `maxLoadPerCpu` are never saved.
+ * root records those (#4196). `startupTimeoutMs`, `leaseMs`, `maxLoadPerCpu` and `maxWorkerRssBytes` are never saved.
  */
 const RESUMABLE_SETTINGS: ReadonlySet<string> = new Set([
 	"localWorkers.count",
@@ -182,6 +182,7 @@ export async function activatePublicPool(
 		startupTimeoutMs: undefined,
 		leaseMs: undefined,
 		maxLoadPerCpu: undefined,
+		maxWorkerRssBytes: undefined,
 		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
 	};
 	const admission = options.admission && {
@@ -269,6 +270,9 @@ export async function activatePublicPool(
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
 		maxLoadPerCpu: options.localWorkers?.maxLoadPerCpu ?? DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
+		...(options.localWorkers?.maxWorkerRssBytes === undefined
+			? {}
+			: { maxWorkerRssBytes: options.localWorkers.maxWorkerRssBytes }),
 		...(options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
 		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]

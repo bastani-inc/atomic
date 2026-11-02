@@ -62,6 +62,8 @@ export interface PoolCoordinatorOptions {
 	readonly admission?: AdmissionConfiguration;
 	/** Load per CPU above which the root's pooled stage starts are paced (`localWorkers.maxLoadPerCpu`). */
 	readonly stageStartMaxLoadPerCpu?: number;
+	/** Resident set size past which a worker is replaced between children (`localWorkers.maxWorkerRssBytes`). */
+	readonly maxWorkerRssBytes?: number;
 	/** Module forked for each worker; undefined forks the coordinator's own entry module. */
 	readonly workerEntry?: string;
 }
@@ -201,7 +203,8 @@ export type CoordinatorEvent =
 	| { readonly kind: "work-failure"; readonly workId: string; readonly error: string }
 	/**
 	 * A worker's cleanup could not be confirmed (it outlived SIGKILL, or its tool process groups did): a health event of
-	 * the pool, which retires and replaces the worker. It fails no child.
+	 * the pool, which retires and replaces the worker. It fails no child. Also sent once when `maxWorkerRssBytes` is
+	 * below what a worker uses for one child, so every worker is replaced after each child.
 	 */
 	| { readonly kind: "health"; readonly message: string }
 	/** Ordered events of an open watch; at most one batch per watch awaits `stage-events-applied`. */

@@ -714,6 +714,53 @@ export class SqlRunJournal implements RunJournal {
 		});
 	}
 
+	/**
+	 * A run's events whose key is at least `fromKey` and below `toKey`, in key order, read through the run's key index.
+	 * Keys compare as SQLite compares text, by their UTF-8 bytes. Internal to the workflow runtime, so it is not part of
+	 * the journal's public shape: a local worker reads its own child's checkpoints from the root this way (#4197).
+	 */
+	static async *readKeyRange(
+		journal: SqlRunJournal,
+		runId: string,
+		fromKey: string,
+		toKey: string,
+	): AsyncIterable<JournalEntry> {
+		journal.assertOpen();
+		validateText("runId", runId);
+		validateText("key", fromKey);
+		validateText("key", toKey);
+		if (journal.legacy !== undefined && (await journal.operation(() => journal.isUnconvertedLegacyRun(runId)))) {
+			const bytes = (key: string) => Buffer.from(key, "utf8");
+			for await (const entry of journal.read(runId)) {
+				const key = entry.key === undefined ? undefined : bytes(entry.key);
+				if (key !== undefined && Buffer.compare(key, bytes(fromKey)) >= 0 && Buffer.compare(key, bytes(toKey)) < 0)
+					yield entry;
+			}
+			return;
+		}
+		let after: string | undefined;
+		for (;;) {
+			const page = await journal.operation(async () => {
+				const rows = await journal.database.all<EventRow>(
+					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
+					runId,
+					after ?? fromKey,
+					toKey,
+					JOURNAL_READ_PAGE_SIZE,
+				);
+				return rows.map(entryFromRow);
+			});
+			for (const entry of page) {
+				journal.assertOpen();
+				yield entry;
+			}
+			journal.assertOpen();
+			const last = page.at(-1);
+			if (last === undefined || page.length < JOURNAL_READ_PAGE_SIZE) return;
+			after = last.key;
+		}
+	}
+
 	async deleteRun(runId: string): Promise<void> {
 		this.assertOpen();
 		validateText("runId", runId);
