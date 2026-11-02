@@ -268,6 +268,8 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
 	if (normalizedCode === undefined) return undefined;
+	// A refused tool call, such as `tool_call_refusal` or `tool_use_refused_by_policy`, before the policy words.
+	if (/(?:^|_)tool(?:_|$)/.test(normalizedCode) && normalizedCode.includes("refus")) return "task_failure";
 	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "content_filter";
 	// Includes OpenAI's `cyber_policy`.
 	if (normalizedCode.includes("safety") || normalizedCode.includes("policy")) return "content_filter";
@@ -279,10 +281,6 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
 		case "provider_refusal":
 		case "refusal":
 			return "content_filter";
-		case "tool_refusal":
-		case "tool_call_refusal":
-		case "tool_use_refusal":
-			return "task_failure";
 		default:
 			return undefined;
 	}
@@ -451,8 +449,10 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 	if (TRANSPORT_CANCELLATION_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "network_timeout";
 	if (CANCELLED_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "cancelled";
 	if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
-	if (CONTENT_FILTER_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "content_filter";
+	// A refused tool call is about that call, whatever policy the provider names: another model is asked the same
+	// tool call. So it is checked before the content-filter grammar, which "refused ... safety policy" also matches.
 	if (TOOL_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
+	if (CONTENT_FILTER_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "content_filter";
 	return undefined;
 }
 

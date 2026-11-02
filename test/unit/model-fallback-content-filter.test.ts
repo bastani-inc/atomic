@@ -12,6 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Api, type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
+import {
+	isRetryableModelFailure,
+	normalizeModelFailureSignal,
+} from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
@@ -175,6 +179,64 @@ async function stagePrompt(refusal: string, fallbackOnContentFilter?: boolean) {
 	);
 	return { outcome, calls, meta: ctx.__modelFallbackMeta() };
 }
+
+/** A refused tool call is about that call, not the request's content: another model gets the same tool call. */
+const TOOL_REFUSALS = [
+	"tool call refused by provider due to safety policy",
+	"safety policy: tool call refused by provider",
+	"Provider refused the tool call under its content policy",
+	"tool_use refused: blocked by safety filter",
+] as const;
+
+/** Content-filter refusals that mention no tool call. */
+const CONTENT_FILTER_ONLY = [
+	...REFUSALS.map(({ errorMessage }) => errorMessage),
+	"request blocked by safety policy",
+	"provider refused this request",
+] as const;
+
+describe("a refused tool call is not a content-filter refusal", () => {
+	test.each(TOOL_REFUSALS)("%s stays a tool refusal and spends no fallback candidate", (errorMessage) => {
+		const failure = { role: "assistant", stopReason: "error", errorMessage };
+		assert.equal(normalizeModelFailureSignal(failure).kind, "task_failure");
+		assert.equal(isRetryableModelFailure(failure), false);
+	});
+
+	test.each(CONTENT_FILTER_ONLY)("%s is a content-filter refusal", (errorMessage) => {
+		const failure = { role: "assistant", stopReason: "error", errorMessage };
+		assert.equal(normalizeModelFailureSignal(failure).kind, "content_filter");
+		assert.equal(isRetryableModelFailure(failure), true);
+	});
+
+	test("a refusal code names a tool refusal before any policy word, and a content filter otherwise", () => {
+		for (const code of [
+			"tool_call_refusal",
+			"tool_use_refusal",
+			"tool_use_refused_by_policy",
+			"TOOL_REFUSAL_SAFETY",
+		]) {
+			const failure = { stopReason: "error", code, message: "localized provider text" };
+			assert.equal(normalizeModelFailureSignal(failure).kind, "task_failure", code);
+			assert.equal(isRetryableModelFailure(failure), false, code);
+		}
+		for (const code of ["cyber_policy", "content_filter", "blocked_by_safety", "refusal"]) {
+			const failure = { stopReason: "error", code, message: "localized provider text" };
+			assert.equal(normalizeModelFailureSignal(failure).kind, "content_filter", code);
+			assert.equal(isRetryableModelFailure(failure), true, code);
+		}
+	});
+
+	test(
+		"a workflow stage whose tool call is refused under a safety policy does not move to its fallback model",
+		async () => {
+			const { outcome, calls } = await stagePrompt(TOOL_REFUSALS[0]);
+
+			assert.ok("error" in outcome, "the refused tool call is the stage's failure");
+			assert.equal(calls.spare, undefined, "no fallback candidate was asked");
+		},
+		REAL_SESSION_TIMEOUT_MS,
+	);
+});
 
 describe("workflow stage fallbackModels on a content-filter refusal", () => {
 	test.each(REFUSALS)(
