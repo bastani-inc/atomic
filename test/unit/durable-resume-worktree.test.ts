@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -131,7 +141,7 @@ describe("durable resume with reusable git worktrees", () => {
 		const other = createGitRepo("durable-worktree-partial-other-");
 		try {
 			const sourceCwd = join(primary.repo, "packages", "api");
-			mkdirSync(join(primary.root, "partial-wt"));
+			writeFileSync(join(primary.root, "partial-wt"), "not a directory\n");
 			const def = workflow({
 				name: "worktree-partial-fails",
 				description: "",
@@ -170,7 +180,7 @@ describe("durable resume with reusable git worktrees", () => {
 			assert.equal(result.ok, false);
 			if (!result.ok) {
 				assert.equal(result.reason, "startup_failed");
-				assert.match(result.message, /already exists but is not a Git worktree/);
+				assert.match(result.message, /already exists but is not a directory/);
 			}
 			assert.equal(
 				store.runs().some((snapshot) => snapshot.id === testRunId("wf-worktree-partial-fails")),
@@ -196,6 +206,104 @@ describe("durable resume with reusable git worktrees", () => {
 		} finally {
 			rmSync(primary.root, { recursive: true, force: true });
 			rmSync(other.root, { recursive: true, force: true });
+		}
+	});
+
+	test("runs stages in another repository's existing worktree when launched from a different repository", async () => {
+		const invoking = createGitRepo("durable-worktree-invoking-");
+		const other = createGitRepo("durable-worktree-foreign-");
+		try {
+			const otherWorktree = join(other.root, "other-wt");
+			runGitChecked(other.repo, ["worktree", "add", "--detach", otherWorktree]);
+			const def = workflow({
+				name: "worktree-foreign-repository",
+				description: "",
+				inputs: { git_worktree_dir: Type.String() },
+				outputs: { observed_cwd: Type.String() },
+				worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir" },
+				run: async (ctx) => {
+					await ctx.stage("observe-cwd").complete("ok");
+					return { observed_cwd: ctx.cwd ?? "" };
+				},
+			}) as unknown as WorkflowDefinition;
+			const accepted = runDetached(
+				def,
+				{ git_worktree_dir: otherWorktree },
+				{
+					store,
+					cancellation,
+					jobs,
+					cwd: join(invoking.repo, "packages", "api"),
+					durableBackend: backend,
+					adapters: { complete: { complete: async (text: string) => text } },
+				},
+			);
+			await jobs.get(accepted.runId)?.promise;
+			const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
+			assert.equal(run?.error, undefined);
+			assert.equal(run?.status, "completed");
+			assert.equal(run?.result?.observed_cwd, otherWorktree);
+			assert.equal(backend.getWorkflow(accepted.runId)?.gitWorktreeRoot, otherWorktree);
+		} finally {
+			rmSync(invoking.root, { recursive: true, force: true });
+			rmSync(other.root, { recursive: true, force: true });
+		}
+	});
+
+	test("resume reuses the checkout a run allocated under a non-empty directory while new runs get their own", async () => {
+		const primary = createGitRepo("durable-worktree-allocated-");
+		try {
+			const pool = join(primary.root, "pool");
+			mkdirSync(pool);
+			writeFileSync(join(pool, "notes.txt"), "existing content\n");
+			const proceed = join(primary.root, "proceed");
+			const def = workflow({
+				name: "worktree-allocated-resume",
+				description: "",
+				inputs: { git_worktree_dir: Type.String() },
+				outputs: { observed_cwd: Type.String() },
+				worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir" },
+				run: async (ctx) => {
+					if (!existsSync(proceed)) throw new Error("not yet");
+					await ctx.stage("observe-cwd").complete("ok");
+					return { observed_cwd: ctx.cwd ?? "" };
+				},
+			}) as unknown as WorkflowDefinition;
+			const runOpts = {
+				store,
+				cancellation,
+				jobs,
+				cwd: primary.repo,
+				durableBackend: backend,
+				adapters: { complete: { complete: async (text: string) => text } },
+			};
+			const buckets = (): string[] => readdirSync(pool).filter((entry) => /^[0-9a-f]{4}$/.test(entry));
+
+			const first = runDetached(def, { git_worktree_dir: "../pool" }, runOpts);
+			await jobs.get(first.runId)?.promise;
+			assert.equal(store.runs().find((snapshot) => snapshot.id === first.runId)?.status, "failed");
+			const allocated = backend.getWorkflow(first.runId)?.gitWorktreeRoot;
+			assert.equal(buckets().length, 1);
+			assert.equal(allocated, join(pool, buckets()[0]!, "repo"));
+
+			writeFileSync(proceed, "");
+			const resumed = await resumeDurableWorkflow(first.runId, { ...depsFor(def), baseRunOpts: runOpts });
+			assert.equal(resumed.ok, true);
+			await jobs.get(first.runId)?.promise;
+			const run = store.runs().find((snapshot) => snapshot.id === first.runId);
+			assert.equal(run?.status, "completed");
+			assert.equal(run?.result?.observed_cwd, allocated);
+			assert.equal(buckets().length, 1, "resume must not allocate a second checkout");
+
+			const second = runDetached(def, { git_worktree_dir: "../pool" }, runOpts);
+			await jobs.get(second.runId)?.promise;
+			const secondRun = store.runs().find((snapshot) => snapshot.id === second.runId);
+			assert.equal(secondRun?.status, "completed");
+			assert.equal(buckets().length, 2);
+			assert.notEqual(secondRun?.result?.observed_cwd, allocated);
+			assert.equal(readFileSync(join(pool, "notes.txt"), "utf8"), "existing content\n");
+		} finally {
+			rmSync(primary.root, { recursive: true, force: true });
 		}
 	});
 

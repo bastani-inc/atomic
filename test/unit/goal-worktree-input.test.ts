@@ -90,14 +90,14 @@ describe("goal git_worktree_dir input", () => {
 		}
 	});
 
-	test("rejects existing non-worktree roots instead of overwriting partial directories", () => {
+	test("rejects an existing file instead of overwriting it", () => {
 		const { root, repo } = createGitRepo();
 		try {
 			const partialRoot = join(root, "partial-wt");
-			mkdirSync(partialRoot);
+			writeFileSync(partialRoot, "not a directory\n");
 			assert.throws(
 				() => setupGitWorktree({ cwd: repo, gitWorktreeDir: partialRoot, baseBranch: "main" }),
-				/already exists but is not a Git worktree/,
+				/already exists but is not a directory/,
 			);
 			assert.equal(existsSync(partialRoot), true);
 		} finally {
