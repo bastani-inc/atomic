@@ -283,6 +283,104 @@ test("a launch whose attempt lease lapsed under load waits for the renewal inste
 	}
 });
 
+for (const [label, fence] of [
+	[
+		"fenced",
+		"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'abandoned waiter fenced' WHERE state = 'waiting'",
+	],
+	["fenced and then pruned from history", "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"],
+] as const) {
+	test(`a live waiter ${label} after its owner lease lapsed under load rejoins the queue instead of failing (#4179)`, async () => {
+		const f = await fixture();
+		try {
+			const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+				root: "root",
+				holder: "worker",
+				limits: { session: 1 },
+			});
+			const release = await admission.acquire("session");
+			const waiter = admission.acquire("session");
+			await waitForReason(admission, "root:root session");
+			// What another worker's reconcile does to a waiter whose owner lease lapsed while its process stalled.
+			await f.databases[1]!.run(fence);
+			await release();
+			const releaseWaiter = await waiter;
+			assert.deepEqual(
+				(await admission.inspect()).filter((row) => row.state === "granted").map((row) => row.kind),
+				["session"],
+			);
+			await releaseWaiter();
+		} finally {
+			await f.close();
+		}
+	});
+}
+
+test("forty waiters keep their admissions while their waiting permits are fenced and pruned over and over (#4179)", async () => {
+	const f = await fixture();
+	let fencing = true;
+	try {
+		const admissions = await Promise.all(
+			f.journals.map((journal, index) =>
+				SqlResourceAdmission.open(journal, { root: "root", holder: `worker-${index}`, limits: { session: 4 } }),
+			),
+		);
+		const fencer = (async () => {
+			for (let round = 0; fencing; round += 1) {
+				await f.databases[1]!.run(
+					round % 3 === 2
+						? "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"
+						: "UPDATE wf_runs_resource_permits SET state = 'released', reason = 'abandoned waiter fenced' WHERE state = 'waiting'",
+				);
+				await sleep(5);
+			}
+		})();
+		const outcomes = await Promise.allSettled(
+			Array.from({ length: 40 }, async (_, index) => {
+				const release = await admissions[index % admissions.length]!.acquire("session");
+				await sleep(10);
+				await release();
+			}),
+		);
+		fencing = false;
+		await fencer;
+		assert.deepEqual(
+			outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => String(outcome.reason)),
+			[],
+		);
+		assert.equal((await admissions[0]!.inspect()).filter((row) => row.state !== "released").length, 0);
+	} finally {
+		fencing = false;
+		await f.close();
+	}
+});
+
+test("a waiter refused for a reason other than a lapsed owner lease is a retryable fault of the pool (#4179)", async () => {
+	const f = await fixture();
+	try {
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "worker",
+			limits: { session: 1 },
+		});
+		const release = await admission.acquire("session");
+		const waiter = admission.acquire("session");
+		await waitForReason(admission, "root:root session");
+		await f.databases[1]!.run(
+			"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'host reboot confirmed' WHERE state = 'waiting'",
+		);
+		const error = await waiter.then(
+			() => assert.fail("a waiter released for good must not be granted"),
+			(caught: unknown) => caught,
+		);
+		assert.ok(isRetryableWorkflowError(error));
+		assert.match(String(error), /Stale resource admission attempt/u);
+		await release();
+	} finally {
+		await f.close();
+	}
+});
+
 test("FIFO grants follow tickets and stopped waiters never reacquire (#3869)", async () => {
 	const f = await fixture();
 	try {

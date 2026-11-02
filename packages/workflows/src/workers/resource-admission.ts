@@ -64,6 +64,23 @@ export class QuarantinedCapacityError extends WorkflowInfrastructureError {
 		);
 	}
 }
+
+/** A waiter whose owner `reconcile` saw dead or with a lapsed lease. A live owner's waiter rejoins the queue (#4179). */
+const FENCED_WAITER_REASON = "abandoned waiter fenced";
+
+/**
+ * A waiting admission whose permit the pool released for good while it waited: its holder was stopped (worker exit,
+ * host reboot), not refused by the work. A retryable fault of the pool: a pooled child's attempt ends on it and the
+ * child replays within its attempt limit (#4179).
+ */
+export class AdmissionHolderStoppedError extends WorkflowInfrastructureError {
+	constructor(reason: string | undefined) {
+		super(
+			"stale_work_lease",
+			`Stale resource admission attempt: the admission holder was stopped${reason === undefined ? "" : ` (${reason})`}`,
+		);
+	}
+}
 const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
@@ -318,13 +335,8 @@ export class SqlResourceAdmission {
 				if (updated.changes !== 1) throw new Error("Resource process permit is no longer held");
 			});
 		};
-		await this.storage.transaction(async (tx) => {
-			await tx.run(
-				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
-				OWNER_LEASE_MS,
-				this.owner,
-			);
-			await tx.run(
+		const insertWaiting = (tx: SqliteExecutor) =>
+			tx.run(
 				`INSERT INTO ${this.permits}(operation, root, holder, kind, state, owner, attempt) VALUES (?, ?, ?, ?, 'waiting', ?, ?)`,
 				operation,
 				this.options.root,
@@ -339,6 +351,28 @@ export class SqlResourceAdmission {
 						})
 					: null,
 			);
+		/**
+		 * Keeps this waiter queued. `reconcile` fences a waiter whose owner lease lapsed, which a live process that stalls
+		 * under load can let happen, and a fenced permit may then be pruned from history. A waiter holds no capacity, so
+		 * this live one (its owner lease was just renewed) rejoins the queue in the same transaction it is granted in
+		 * (#4179). A permit the pool released for any other reason stays released, and the admission is refused as a
+		 * fault of the pool.
+		 */
+		const keepWaiting = async (tx: SqliteExecutor): Promise<void> => {
+			const permit = await tx.get(`SELECT state, reason FROM ${this.permits} WHERE operation = ?`, operation);
+			if (permit === undefined) await insertWaiting(tx);
+			else if (permit.state === "released" && permit.reason === FENCED_WAITER_REASON)
+				await tx.run(`UPDATE ${this.permits} SET state = 'waiting', reason = NULL WHERE operation = ?`, operation);
+			else if (permit.state !== "waiting")
+				throw new AdmissionHolderStoppedError(permit.reason === null ? undefined : String(permit.reason));
+		};
+		await this.storage.transaction(async (tx) => {
+			await tx.run(
+				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+				OWNER_LEASE_MS,
+				this.owner,
+			);
+			await insertWaiting(tx);
 		});
 		// Since when this admission has been blocked only by capacity that quarantined permits hold.
 		let quarantinedSince: number | undefined;
@@ -359,6 +393,7 @@ export class SqlResourceAdmission {
 						OWNER_LEASE_MS,
 						this.owner,
 					);
+					await keepWaiting(tx);
 					const { root } = this.options;
 					// A late attempt lease is waited out, delegated or not; only a replaced attempt is refused.
 					if (!(await this.assertCurrentAttempt(tx))) {
@@ -367,7 +402,7 @@ export class SqlResourceAdmission {
 							LATE_ATTEMPT_REASON,
 							operation,
 						);
-						if (waiting.changes !== 1) throw new Error("Resource admission holder was stopped");
+						if (waiting.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
 						return false;
 					}
 					let reason = hostReason;
@@ -449,7 +484,7 @@ export class SqlResourceAdmission {
 						stageStart ? 1 : 0,
 						operation,
 					);
-					if (updated.changes !== 1) throw new Error("Resource admission holder was stopped");
+					if (updated.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
 					return !reason;
 				});
 				if (granted) {
@@ -513,7 +548,8 @@ export class SqlResourceAdmission {
 			for (const owner of owners) {
 				const { rebooted, stopped } = fence(owner);
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = 'abandoned waiter fenced' WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
+					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
+					FENCED_WAITER_REASON,
 					owner.id,
 					stopped ? 1 : 0,
 					owner.id,
