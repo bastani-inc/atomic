@@ -28,7 +28,6 @@ import {
 	createWorkflowPendingStageDelivery,
 	isWorkflowPendingStageDeliveryFailure,
 	PENDING_STAGE_READY_STALL_MS,
-	untilDrainedOrStalled,
 	WorkflowPendingStageDeliveryFailedError,
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import {
@@ -265,28 +264,6 @@ describe("workflow pending-stage delivery terminal failure", () => {
 });
 
 describe("workflow pending-stage delivery liveness", () => {
-	test("a pooled stage's startup waits for its worker's drain only while that drain makes progress", async () => {
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-		const drain = Promise.withResolvers<void>();
-		let progress = () => {};
-		let released = false;
-		void untilDrainedOrStalled((recordProgress) => {
-			progress = recordProgress;
-			return drain.promise;
-		}).then(() => {
-			released = true;
-		});
-		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS - 10);
-		progress();
-		await vi.advanceTimersByTimeAsync(PENDING_STAGE_READY_STALL_MS - 10);
-		assert.equal(released, false, "the bound counts from the drain's last progress");
-		await vi.advanceTimersByTimeAsync(10);
-		assert.equal(released, true, "the stage starts once the drain made no progress for the bound");
-		// The drain keeps running, and its late failure is nobody's unhandled rejection.
-		drain.reject(new Error("late transport failure"));
-		await vi.advanceTimersByTimeAsync(0);
-	});
-
 	test("a drain that never settles holds the stage's startup only until the stall bound, without consuming its message", async () => {
 		const { store } = await fixtureWithQueuedMessage("hung-1");
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });

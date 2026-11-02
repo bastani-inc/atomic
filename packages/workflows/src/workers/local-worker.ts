@@ -22,7 +22,6 @@ import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../extensio
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
-import { untilDrainedOrStalled } from "../runs/foreground/pending-stage-delivery.js";
 import {
 	createStageControlRegistry,
 	type StageControlHandle,
@@ -43,6 +42,7 @@ import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-
 import { loadWorkerDefinition } from "./definitions.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
+import { createPooledStageDelivery, pooledStageQueuedEntries } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
 	WORKER_HEARTBEAT_INTERVAL_MS,
@@ -50,7 +50,6 @@ import {
 	type WorkerInbound,
 	type WorkerReply,
 	type WorkerRequest,
-	type WorkerStageDelivery,
 	type WorkerStart,
 } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
@@ -447,29 +446,19 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					const identity = { runId: meta.runId, stageId: meta.stageId, stageName: meta.stageName };
 					const capability = await request({ kind: "route", runId: meta.runId });
 					if (typeof capability !== "string") throw new Error("Worker root route is unavailable");
-					const pendingStageDelivery: WorkerStageDelivery = {
+					const pendingStageDelivery = createPooledStageDelivery({
 						routeCapability: capability,
-						async deliverPending(deliver, recipient) {
-							await publication;
-							// The root answers this request when its drain ends, so later messages of a slow drain still reach
-							// the session; the stage's startup waits for it only while it makes progress, as in process.
-							await untilDrainedOrStalled((progress) =>
-								request({ kind: "delivery", ...identity, recipient }, async (from, message) => {
-									progress();
-									try {
-										await deliver(from, message);
-									} finally {
-										progress();
-									}
-								}).then(() => {}),
-							);
+						// The root's journal, read directly: a stage's startup never waits on the root itself.
+						queued: async () => {
+							await reader.catchUpWorkflow(start.root);
+							return pooledStageQueuedEntries(reader, store, start.root, identity);
 						},
-						async ready(sessionId) {
+						forward: async (recipient, deliver) => {
 							await publication;
-							await request({ kind: "delivery-ready", ...identity, sessionId });
+							await request({ kind: "delivery", ...identity, recipient }, deliver);
 						},
 						fail: options.orchestrationContext.pendingStageDelivery.fail,
-					};
+					});
 					return baseAdapter.create(
 						{ ...options, orchestrationContext: { ...options.orchestrationContext, pendingStageDelivery } },
 						meta,
