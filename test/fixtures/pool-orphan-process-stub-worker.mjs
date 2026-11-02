@@ -9,9 +9,13 @@
 // ATOMIC_TEST_ORPHAN_CHILDREN=N, the first attempt of every child with index below N does the same, recording its
 // group in `orphan-group-<index>` (index 0 keeps `orphan-group`).
 // Its replayed attempt records whether the orphaned group was still alive when the replay was claimed.
+// With ATOMIC_TEST_ORPHAN_REPLAY_PERMIT=1, each replayed attempt of child 0 first takes a process permit too, renewing
+// its lease while it waits as a real worker's heartbeat does. A refused permit ends the attempt as a real worker ends
+// one that fails on a fault of the pool (`fenced`, naming the fault). Each replay appends its outcome to
+// `replay-permits.jsonl`.
 // Every other attempt completes its child at once.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
@@ -23,6 +27,8 @@ const directory = dirname(start.journalPath);
 const orphanChildren = Number(process.env.ATOMIC_TEST_ORPHAN_CHILDREN ?? "1");
 const orphanMarker = (index) => join(directory, index === 0 ? "orphan-group" : `orphan-group-${index}`);
 const replayMarker = join(directory, "replay.json");
+const replayPermits = join(directory, "replay-permits.jsonl");
+const replayPermit = process.env.ATOMIC_TEST_ORPHAN_REPLAY_PERMIT === "1";
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 
 let sequence = 0;
@@ -104,6 +110,43 @@ async function orphanProcessGroup(work, { resolveRunJournal, SqlResourceAdmissio
 	await new Promise(() => {});
 }
 
+/**
+ * A replay's process permit: true once granted (and released again, as a finished tool's is); false when admission
+ * refused it, after the attempt was ended as a fault of the pool.
+ */
+async function admitReplay(work, { resolveRunJournal, SqlResourceAdmission }) {
+	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+	const started = performance.now();
+	const record = (outcome) =>
+		appendFileSync(
+			replayPermits,
+			`${JSON.stringify({ generation: work.generation, waitedMs: Math.round(performance.now() - started), ...outcome })}\n`,
+		);
+	try {
+		const journal = await resolveRunJournal({ journal: { path: start.journalPath } });
+		const admission = await SqlResourceAdmission.open(journal, {
+			...start.admission,
+			root: start.root,
+			holder: work.worker,
+			attempt: work,
+		});
+		let release;
+		try {
+			release = await admission.acquire("process");
+		} catch (error) {
+			record({ outcome: "refused", error: error.message, retryable: error.retryable === true });
+			clearInterval(renewal);
+			await request({ kind: "fenced", fault: error.message });
+			return false;
+		}
+		record({ outcome: "granted" });
+		await release();
+		return true;
+	} finally {
+		clearInterval(renewal);
+	}
+}
+
 async function complete(work) {
 	if (work.inputs.index === 0) {
 		const group = Number(readFileSync(orphanMarker(0), "utf8"));
@@ -139,6 +182,7 @@ try {
 		}
 		if (work.inputs.index < orphanChildren && !existsSync(orphanMarker(work.inputs.index)))
 			await orphanProcessGroup(work, admission);
+		if (replayPermit && work.inputs.index === 0 && !(await admitReplay(work, admission))) continue;
 		await complete(work);
 	}
 } catch (error) {

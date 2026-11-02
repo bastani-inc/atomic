@@ -7,6 +7,7 @@ import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "../durable/journal/internal.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import {
 	admissionBootIdentity,
 	admissionHost,
@@ -29,7 +30,40 @@ export const RELEASED_PERMIT_RETENTION = 256;
 export const RELEASED_PERMIT_PRUNE_BATCH = 1000;
 const EXPIRED_REASON = "owner expired; cleanup unconfirmed";
 const UNCONFIRMED_REASON = "cleanup unconfirmed";
+/**
+ * A process permit whose group survived the bounded reap: it stays granted, holding its capacity, until the group is
+ * confirmed gone. Nothing but that confirmation (or a confirmed reboot) changes it.
+ */
+const QUARANTINED_REASON = "cleanup unconfirmed; permit quarantined";
 const ANONYMOUS_REASON = "owner identity unavailable; cleanup unconfirmed";
+/**
+ * How long a process admission blocked only by quarantined permits waits for their groups to exit before it is refused:
+ * as long again as the reap those groups survived gave them. Capacity held by live work is waited for as before.
+ */
+export const QUARANTINED_CAPACITY_WAIT_MS = REAP_TERM_GRACE_MS + REAP_KILL_GRACE_MS;
+
+/** A limit that quarantined permits fill, and the process groups those permits are bound to. */
+interface QuarantinedCapacity {
+	/** The limit as configured, e.g. `admission.limits.process (1)`. */
+	readonly limit: string;
+	readonly groups: readonly number[];
+}
+
+/**
+ * A process admission refused because, for {@link QUARANTINED_CAPACITY_WAIT_MS}, only quarantined permits held the
+ * capacity it waited for. It is a retryable fault of the pool, not of the work that asked: a pooled child's attempt
+ * ends on it and the child replays within its attempt limit.
+ */
+export class QuarantinedCapacityError extends WorkflowInfrastructureError {
+	constructor(capacity: readonly QuarantinedCapacity[], waitedMs: number) {
+		const limits = capacity.map(({ limit }) => limit).join(" and ");
+		const groups = [...new Set(capacity.flatMap(({ groups }) => groups))].join(", ");
+		super(
+			"worker_cleanup_unconfirmed",
+			`Local worker process cleanup unconfirmed; process permit refused after ${Math.round(waitedMs)} ms: ${limits} ${capacity.length === 1 ? "is" : "are"} held by quarantined permits of process groups ${groups} that survived SIGKILL`,
+		);
+	}
+}
 const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
@@ -306,6 +340,8 @@ export class SqlResourceAdmission {
 					: null,
 			);
 		});
+		// Since when this admission has been blocked only by capacity that quarantined permits hold.
+		let quarantinedSince: number | undefined;
 		try {
 			for (;;) {
 				signal?.throwIfAborted();
@@ -315,7 +351,9 @@ export class SqlResourceAdmission {
 				}
 				const hostReason = this.hostReason();
 				const pressure = this.stageStartPressure(kind, request?.delegated);
+				let quarantined = undefined as QuarantinedCapacity[] | undefined;
 				const granted = await this.storage.transaction(async (tx) => {
+					quarantined = undefined;
 					await tx.run(
 						`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
 						OWNER_LEASE_MS,
@@ -354,6 +392,9 @@ export class SqlResourceAdmission {
 						const control = await tx.get(`SELECT state FROM ${controls} WHERE root = ?`, root);
 						if (control && control.state !== "running") reason ??= `root ${control.state}`;
 					}
+					// Limits whose capacity, held by quarantined permits, is all that keeps this admission waiting.
+					const held: QuarantinedCapacity[] = [];
+					let blockedOtherwise = reason !== undefined;
 					for (const scope of [`root:${root}`, "user"]) {
 						const row = await tx.get(`SELECT config FROM ${this.configuration} WHERE scope = ?`, scope);
 						const limit = row ? (JSON.parse(String(row.config)) as Limits)[kind] : undefined;
@@ -371,8 +412,31 @@ export class SqlResourceAdmission {
 							STAGE_START_PRESSURE_REASON,
 							operation,
 						);
-						if (Number(count?.count) >= limit || older) reason ??= `${scope} ${kind}`;
+						const used = Number(count?.count);
+						if (used < limit && !older) continue;
+						reason ??= `${scope} ${kind}`;
+						// The limit is full only because of permits whose process groups survived their reap: they keep
+						// their capacity, but this admission waits for it only so long (below).
+						const quarantinedPermits =
+							kind === "process" && used >= limit
+								? await tx.all<SqliteRow & { process_identity: string | null }>(
+										`SELECT process_identity FROM ${this.permits} WHERE kind = ? ${rootClause} AND state = 'granted' AND reason = ?`,
+										...args,
+										QUARANTINED_REASON,
+									)
+								: [];
+						if (quarantinedPermits.length > 0 && used - quarantinedPermits.length < limit)
+							held.push({
+								limit: `${scope === "user" ? "admission.userLimits" : "admission.limits"}.${kind} (${limit})`,
+								groups: quarantinedPermits.flatMap(({ process_identity }) =>
+									process_identity === null
+										? []
+										: [(JSON.parse(process_identity) as ResourceProcessIdentity).id],
+								),
+							});
+						else blockedOtherwise = true;
 					}
+					if (!blockedOtherwise && held.length > 0) quarantined = held;
 					if (reason && request?.delegated)
 						throw new Error(`Delegated session cannot be admitted without capacity headroom: ${reason}`);
 					// Only a stage's own session start is recorded for pacing: subagents and processes are not stage starts.
@@ -391,6 +455,16 @@ export class SqlResourceAdmission {
 				if (granted) {
 					signal?.throwIfAborted();
 					return release;
+				}
+				// Capacity held by live work is waited for however long it takes. Capacity held only by quarantined
+				// permits may never come back, and the attempt waiting for it keeps renewing its lease: so it is waited
+				// for only so long, then refused as a retryable fault of the pool, which ends a pooled child's attempt.
+				if (quarantined === undefined) quarantinedSince = undefined;
+				else {
+					const now = performance.now();
+					quarantinedSince ??= now;
+					if (now - quarantinedSince >= QUARANTINED_CAPACITY_WAIT_MS)
+						throw new QuarantinedCapacityError(quarantined, now - quarantinedSince);
 				}
 				await delay(50 + Math.floor(Math.random() * 25), undefined, { signal });
 			}
@@ -454,18 +528,21 @@ export class SqlResourceAdmission {
 						`UPDATE ${this.permits} SET state = 'released', reason = 'owner death confirmed' WHERE owner = ? AND kind = 'session' AND state = 'granted'`,
 						owner.id,
 					);
+					// A quarantined permit keeps its own reason: admissions waiting on its capacity tell it apart by it.
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ?`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ? AND reason IS NOT ?`,
 						UNCONFIRMED_REASON,
 						owner.id,
 						UNCONFIRMED_REASON,
+						QUARANTINED_REASON,
 					);
 				} else {
 					await tx.run(
-						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND reason IS NOT ? AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS})`,
+						`UPDATE ${this.permits} SET reason = ? WHERE owner = ? AND state = 'granted' AND reason IS NOT ? AND reason IS NOT ? AND EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS})`,
 						EXPIRED_REASON,
 						owner.id,
 						EXPIRED_REASON,
+						QUARANTINED_REASON,
 						owner.id,
 					);
 				}
@@ -517,8 +594,9 @@ export class SqlResourceAdmission {
 		const { rebooted, stopped } = fence({ id: permit.owner, host: permit.host, boot: permit.boot, pid: permit.pid });
 		if (rebooted) return true;
 		if (permit.state === "waiting") return stopped || !!permit.expired;
-		if (stopped && (permit.kind === "session" || permit.reason !== UNCONFIRMED_REASON)) return true;
-		if (!stopped && permit.expired && permit.reason !== EXPIRED_REASON) return true;
+		const quarantined = permit.reason === QUARANTINED_REASON;
+		if (stopped && (permit.kind === "session" || (permit.reason !== UNCONFIRMED_REASON && !quarantined))) return true;
+		if (!stopped && permit.expired && permit.reason !== EXPIRED_REASON && !quarantined) return true;
 		return (
 			permit.kind === "process" &&
 			permit.host === admissionHost &&
@@ -538,20 +616,27 @@ export class SqlResourceAdmission {
 				this.options.root,
 				holder,
 			);
-			return (
-				await tx.run(
-					`UPDATE ${this.permits} SET reason = 'cleanup unconfirmed' WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted'`,
-					this.options.root,
-					holder,
-				)
-			).changes;
+			// A quarantined permit keeps its reason; it is still counted, since its cleanup is still unconfirmed.
+			await tx.run(
+				`UPDATE ${this.permits} SET reason = ? WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted' AND reason IS NOT ?`,
+				UNCONFIRMED_REASON,
+				this.options.root,
+				holder,
+				QUARANTINED_REASON,
+			);
+			const held = await tx.get(
+				`SELECT COUNT(*) AS count FROM ${this.permits} WHERE root = ? AND holder = ? AND kind = 'process' AND state = 'granted'`,
+				this.options.root,
+				holder,
+			);
+			return Number(held?.count);
 		});
 	}
 	/**
 	 * Reaps the process groups that an exited holder's granted process permits are bound to on this host: SIGTERM,
 	 * then SIGKILL after {@link REAP_TERM_GRACE_MS}, then at most {@link REAP_KILL_GRACE_MS} more. A group that is gone,
 	 * or holds only zombies (which hold no resources), has its permit released. Returns the groups still alive when the
-	 * bound expires; their permits stay granted, so they remain quarantined. Permits without a process identity cannot
+	 * bound expires; their permits stay granted and are marked quarantined. Permits without a process identity cannot
 	 * be reaped and stay quarantined; they are not reported. Call it only for a holder whose process has exited.
 	 */
 	async reapStoppedProcesses(holder: string): Promise<readonly number[]> {
@@ -627,11 +712,20 @@ async function settleProcessGroups(
 		survivors = await settle(REAP_KILL_GRACE_MS);
 	}
 	const confirmed = [...groups].flatMap(([group, operations]) => (survivors.includes(group) ? [] : operations));
-	if (confirmed.length > 0)
+	// Groups that outlived the bounded reap keep their permits granted, marked quarantined: admissions blocked only by
+	// their capacity then wait for it only so long (QUARANTINED_CAPACITY_WAIT_MS).
+	const quarantined = reap ? survivors.flatMap((group) => groups.get(group) ?? []) : [];
+	if (confirmed.length > 0 || quarantined.length > 0)
 		await storage.transaction(async (tx) => {
 			for (const operation of confirmed)
 				await tx.run(
 					`UPDATE ${permits} SET state = 'released', reason = 'process group cleanup confirmed' WHERE operation = ? AND state = 'granted'`,
+					operation,
+				);
+			for (const operation of quarantined)
+				await tx.run(
+					`UPDATE ${permits} SET reason = ? WHERE operation = ? AND state = 'granted'`,
+					QUARANTINED_REASON,
 					operation,
 				);
 		});

@@ -6,15 +6,17 @@ import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import {
+	QUARANTINED_CAPACITY_WAIT_MS,
 	REAP_KILL_GRACE_MS,
 	REAP_TERM_GRACE_MS,
 	SqlResourceAdmission,
 	STAGE_START_SPACING_MS,
 } from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 async function fixture() {
 	const directory = makeTempDirectory("resource-admission-");
@@ -516,6 +518,95 @@ test.skipIf(process.platform === "win32")(
 				"the live group's permit stays quarantined",
 			);
 		} finally {
+			probe.mockRestore();
+			signal.mockRestore();
+			pause.mockRestore();
+			await live.kill();
+			await f.close();
+		}
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a process admission that only quarantined permits block is refused after a bound, while one blocked by live work keeps waiting",
+	async () => {
+		const f = await fixture();
+		const live = liveGroup();
+		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		const limits = { process: 1 };
+		try {
+			// Root "root": an exited worker's permit, whose group survives its reap, fills the root's limit.
+			const worker = await SqlResourceAdmission.open(f.journals[0]!, { root: "root", holder: "worker", limits });
+			const orphan = await worker.acquire("process");
+			await orphan.bindProcess!({ kind: "unix-process-group", id: live.group });
+			assert.equal(await worker.releaseStoppedSessions("worker"), 1);
+			assert.deepEqual(await worker.reapStoppedProcesses("worker"), [live.group]);
+			// Root "other": live work holds the root's only permit.
+			const busy = await SqlResourceAdmission.open(f.journals[1]!, { root: "other", holder: "busy", limits });
+			const held = await busy.acquire("process");
+			// Only the clock the bound reads is faked; the admissions poll the journal in real time.
+			vi.useFakeTimers({ toFake: ["performance"] });
+			const replay = await SqlResourceAdmission.open(f.journals[1]!, { root: "root", holder: "replay", limits });
+			const waiter = await SqlResourceAdmission.open(f.journals[0]!, { root: "other", holder: "waiter", limits });
+			const outcome: { refusal?: unknown } = {};
+			const refused = replay.acquire("process").then(
+				() => assert.fail("capacity that only a quarantined permit holds was granted"),
+				(error: unknown) => {
+					outcome.refusal = error;
+				},
+			);
+			let granted = false;
+			const waiting = waiter.acquire("process").then((release) => {
+				granted = true;
+				return release;
+			});
+			await waitForReason(replay, "root:root process");
+			await waitForReason(waiter, "root:other process");
+			await sleep(200);
+			await vi.advanceTimersByTimeAsync(QUARANTINED_CAPACITY_WAIT_MS - 1_000);
+			await sleep(300);
+			assert.equal(
+				outcome.refusal,
+				undefined,
+				"the admission waits out the bound for the quarantined group to exit",
+			);
+			await vi.advanceTimersByTimeAsync(1_000);
+			await refused;
+			// The assertion above narrowed it to undefined; the rejection handler has set it since.
+			const refusal = outcome.refusal as unknown;
+			assert.ok(refusal instanceof Error);
+			assert.ok(isRetryableWorkflowError(refusal), String(refusal));
+			assert.match(
+				refusal.message,
+				new RegExp(
+					`^Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${live.group} that survived SIGKILL$`,
+				),
+			);
+			await vi.advanceTimersByTimeAsync(10 * QUARANTINED_CAPACITY_WAIT_MS);
+			await sleep(300);
+			assert.equal(granted, false, "capacity held by live work is waited for past the bound");
+			const permits = await worker.inspect();
+			assert.deepEqual(
+				permits.filter((row) => row.state !== "released").map((row) => [row.holder, row.state, row.reason]),
+				[
+					["worker", "granted", "cleanup unconfirmed; permit quarantined"],
+					["busy", "granted", null],
+					["waiter", "waiting", "root:other process"],
+				],
+				"the quarantined permit keeps its capacity, and the refused admission holds none",
+			);
+			// The reconcile a later admission runs keeps the quarantined permit's reason.
+			await worker.reconcile();
+			assert.equal(
+				(await worker.inspect()).find((row) => row.holder === "worker")?.reason,
+				"cleanup unconfirmed; permit quarantined",
+			);
+			await held();
+			await (await waiting)();
+		} finally {
+			vi.useRealTimers();
 			probe.mockRestore();
 			signal.mockRestore();
 			pause.mockRestore();
