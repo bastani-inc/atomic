@@ -397,6 +397,10 @@ export class RpcClient extends RpcClientApi {
 			writer.offerLatest(`render:${command.componentId}`, frame);
 			return;
 		}
+		// Disposal goes through the ordered queue, ahead of coalesced renders: a render still waiting for a row
+		// being disposed would reach the engine after its disposal and bring its renderer back.
+		if (command.type === "engine_render_dispose" || command.type === "engine_custom_dispose")
+			writer.discardLatest(`render:${command.componentId}`);
 		this.bestEffort(writer.write(frame), `engine command ${command.type}`);
 	}
 	waitForInteractiveEngineBound(): Promise<void> {

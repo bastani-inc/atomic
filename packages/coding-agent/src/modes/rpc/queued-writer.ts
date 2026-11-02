@@ -53,6 +53,14 @@ export class QueuedWriter {
 		return true;
 	}
 
+	/** Drops the frame `offerLatest` holds under `key`, if it has not started writing. */
+	discardLatest(key: string): void {
+		const pending = this.coalesced.get(key);
+		if (!pending) return;
+		this.coalesced.delete(key);
+		this.queuedBytes -= pending.bytes.length;
+	}
+
 	/**
 	 * Reject the in-flight frame and everything queued behind it.
 	 *

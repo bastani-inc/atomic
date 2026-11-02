@@ -60,8 +60,17 @@ class RenderTerminal implements Terminal {
 	setProgramStatus(): void {}
 }
 
+/**
+ * How many disposed row ids the engine remembers. A render request can reach the engine after its row's disposal:
+ * renders are coalesced behind the host's ordered writes, and a render's callback runs a turn after its line is read.
+ * Without the tombstone that late render would rebuild the record the disposal released, for the rest of the session.
+ * Row ids are never reused, and a render this many disposals late does not happen in practice.
+ */
+export const DISPOSED_RENDER_TOMBSTONE_LIMIT = 10_000;
+
 export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
+	private readonly disposedIds = new Set<string>();
 	private session: AgentSession | undefined;
 	private readonly write: (line: string) => void;
 
@@ -79,24 +88,33 @@ export class EngineRenderService {
 		if (!command?.type.startsWith("engine_") || command.type.startsWith("engine_custom_")) return false;
 		if (command.type === "engine_render_dispose") {
 			this.disposeRecord(command.componentId);
+			this.disposedIds.add(command.componentId);
+			if (this.disposedIds.size > DISPOSED_RENDER_TOMBSTONE_LIMIT) {
+				const oldest = this.disposedIds.values().next().value;
+				if (oldest !== undefined) this.disposedIds.delete(oldest);
+			}
 			return true;
 		}
 		if (command.type !== "engine_tool_render" && command.type !== "engine_message_render") return false;
+		if (this.disposedIds.has(command.componentId)) return true;
 		const name =
 			command.type === "engine_tool_render"
 				? `tool:${command.toolName}`
 				: `message:${command.message.customType ?? "custom"}`;
 		void runCallback({ kind: "renderer", name }, async () => {
+			// The row may have been disposed while this render waited for its turn.
+			if (this.disposedIds.has(command.componentId)) return undefined;
 			return command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command);
 		})
-			.then((lines) =>
+			.then((lines) => {
+				if (lines === undefined || this.disposedIds.has(command.componentId)) return;
 				this.send({
 					type: "engine_custom_frame",
 					componentId: command.componentId,
 					requestId: command.requestId,
 					lines,
-				}),
-			)
+				});
+			})
 			.catch((error: Error) =>
 				this.send({
 					type: "engine_custom_frame",
