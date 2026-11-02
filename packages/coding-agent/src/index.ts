@@ -282,6 +282,7 @@ export {
 export { convertToLlm } from "./core/messages.ts";
 export type {
 	ModelFallbackFailureKind,
+	ModelFallbackFailureOptions,
 	ModelFallbackFailureSignal,
 	ModelFallbackFailureSource,
 } from "./core/model-fallback-failures.ts";

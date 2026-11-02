@@ -172,7 +172,8 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		kind: "request_incompatible",
 		retryable: true,
 	},
-	// Refusals/cancellations must win over request-incompatible wrappers.
+	// Refusals/cancellations must win over request-incompatible wrappers. A content-filter refusal spends a
+	// fallback candidate as a refusal, which `retry.fallbackOnContentFilter: false` switches off.
 	{
 		label: "aborted stopReason wrapper",
 		failure: { status: 400, stopReason: "aborted", errorMessage: "aborted" },
@@ -188,8 +189,8 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 	{
 		label: "content filter wrapper",
 		failure: { httpStatus: 400, message: "content_filter" },
-		kind: "task_failure",
-		retryable: false,
+		kind: "content_filter",
+		retryable: true,
 	},
 	{
 		label: "provider transport diagnostic wrapping cancellation",
@@ -206,8 +207,8 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		failure: {
 			diagnostics: [{ type: "provider_transport_failure", error: { message: "blocked by safety policy" } }],
 		},
-		kind: "task_failure",
-		retryable: false,
+		kind: "content_filter",
+		retryable: true,
 	},
 	{ label: "abort cause under invalid request", failure: abortWrappedError(), kind: "cancelled", retryable: false },
 	{
@@ -225,14 +226,14 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 	{
 		label: "content filter diagnostic under invalid_request_error",
 		failure: { message: "invalid_request_error", diagnostics: [{ error: { finish_reason: "content_filter" } }] },
-		kind: "task_failure",
-		retryable: false,
+		kind: "content_filter",
+		retryable: true,
 	},
 	{
 		label: "safety diagnostic under 400 wrapper",
 		failure: { errorMessage: "400 bad request", diagnostics: [{ error: { message: "blocked by safety policy" } }] },
-		kind: "task_failure",
-		retryable: false,
+		kind: "content_filter",
+		retryable: true,
 	},
 	{
 		label: "task failure diagnostic under 422",
