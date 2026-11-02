@@ -445,6 +445,12 @@ function getAliases(): Record<string, string> {
 		"ai/dist/api/cloudflare-gateway-binding.js",
 		"@bastani/pi-ai",
 	);
+	// The Anthropic thinking guard replays assistant turns with pi-ai's own conversion (#4185).
+	const piAiAnthropicAssistantContentEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/anthropic-assistant-content.js",
+		"@bastani/pi-ai",
+	);
+	const piAiTransformMessagesEntry = resolveWorkspaceOrImport("ai/dist/api/transform-messages.js", "@bastani/pi-ai");
 
 	_aliases = {
 		"@bastani/atomic/storage": path.resolve(__dirname, "../storage/index.js"),
@@ -471,6 +477,8 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/utils/retry": piAiRetryEntry,
 		"@bastani/pi-ai/compat": piAiEntry,
 		"@bastani/pi-ai/api/cloudflare-gateway-binding": piAiGatewayBindingEntry,
+		"@bastani/pi-ai/api/anthropic-assistant-content": piAiAnthropicAssistantContentEntry,
+		"@bastani/pi-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@bastani/pi-ai": piAiEntry,
 		"@earendil-works/pi-ai/api/openai-codex-responses": piAiCodexResponsesEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,

@@ -37,6 +37,36 @@ function delegatesThinkingModelBinding<TApi extends Api>(model: Model<TApi>): bo
 	return compat?.delegatesThinkingModelBinding === true;
 }
 
+type ReasoningSource = Pick<AssistantMessage, "provider" | "api" | "model">;
+
+/** Whether `model` is the model that produced `message`: same provider, API, and model ID. */
+export function isProducedByModel<TApi extends Api>(message: ReasoningSource, model: Model<TApi>): boolean {
+	return (
+		normalizeProviderId(message.provider) === normalizeProviderId(model.provider) &&
+		message.api === model.api &&
+		message.model === model.id
+	);
+}
+
+/**
+ * Whether `model` receives `message`'s reasoning blocks (thinking, redacted thinking, and their
+ * signatures or encrypted payloads) exactly as the provider returned them.
+ *
+ * Reasoning is bound to the model that produced it, so only that model gets it back, plus a
+ * different model on the same provider and API whose API adjudicates model binding itself. Every
+ * other target, including any model reached by a cross-provider fallback, gets the message
+ * without its reasoning: it is dropped, never sent as text, because readable reasoning sent as
+ * text becomes part of the visible reply.
+ */
+function canReplayReasoning<TApi extends Api>(message: ReasoningSource, model: Model<TApi>): boolean {
+	if (isProducedByModel(message, model)) return true;
+	return (
+		normalizeProviderId(message.provider) === normalizeProviderId(model.provider) &&
+		message.api === model.api &&
+		delegatesThinkingModelBinding(model)
+	);
+}
+
 /** An error tool result split into a text-only result and the images to send after the tool results. */
 export interface SplitErrorToolResult {
 	/** The result content with each run of images replaced by a note. */
@@ -188,19 +218,8 @@ export function transformMessages<TApi extends Api>(
 		// Assistant messages need transformation check
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
-			const isSameModel =
-				normalizeProviderId(assistantMsg.provider) === normalizeProviderId(model.provider) &&
-				assistantMsg.api === model.api &&
-				assistantMsg.model === model.id;
-			// A different model on the same provider and API whose API adjudicates model binding
-			// itself. Its signed blocks replay unchanged; the API keeps the ones the target model
-			// may read and silently drops the rest.
-			const canReplayForeignThinking =
-				!isSameModel &&
-				normalizeProviderId(assistantMsg.provider) === normalizeProviderId(model.provider) &&
-				assistantMsg.api === model.api &&
-				delegatesThinkingModelBinding(model);
-			const preservesThinking = isSameModel || canReplayForeignThinking;
+			const isSameModel = isProducedByModel(assistantMsg, model);
+			const preservesThinking = canReplayReasoning(assistantMsg, model);
 
 			// After a mid-output server-side fallback the turn holds output from two models either
 			// side of a `fallback` marker. Anthropic's replay rules: keep the marker "exactly where

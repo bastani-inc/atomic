@@ -575,3 +575,244 @@ describe("restoreAnthropicReplayThinkingBlocks tracks the new pi-ai emission beh
 		expect(restored).toBe(payload);
 	});
 });
+
+/**
+ * After a fallback from a GPT model to Claude, the transcript holds GPT turns whose reasoning
+ * pi-ai drops for Anthropic, including turns that carried nothing else. The request must still
+ * carry the latest Claude turn's thinking exactly as Anthropic returned it, which `sdk.ts` gets by
+ * running this guard before and after the `before_provider_request` hooks.
+ */
+describe("restoreAnthropicReplayThinkingBlocks after a cross-provider fallback (#4185)", () => {
+	const exactThinking = "Claude plan with an unpaired surrogate \ud83d kept exactly";
+	const gptReasoning = JSON.stringify({
+		type: "reasoning",
+		id: "rs_gpt",
+		summary: [{ type: "summary_text", text: "GPT plan" }],
+		encrypted_content: "gAAAAB-gpt-encrypted-reasoning",
+	});
+
+	function copilotGptTurn(
+		content: AssistantMessage["content"],
+		stopReason: AssistantMessage["stopReason"] = "toolUse",
+	): AssistantMessage {
+		return { ...assistantMessage(content), api: "openai-responses", model: "gpt-6.1-sol", stopReason };
+	}
+
+	function toolResult(toolCallId: string): Message {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName: "read",
+			content: [{ type: "text", text: "result" }],
+			isError: false,
+			timestamp: 3,
+		};
+	}
+
+	function latestClaudeTurn(): AssistantMessage {
+		return assistantMessage([
+			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-latest" },
+			{ type: "toolCall", id: "toolu_latest", name: "read", arguments: { path: "b.ts" } },
+		]);
+	}
+
+	/** A `before_provider_request` hook that rewrites reasoning text, as an extension may. */
+	function rewriteAssistantThinking(payload: unknown): unknown {
+		const { messages } = payload as { messages: Array<{ role: string; content: unknown }> };
+		return {
+			...(payload as object),
+			messages: messages.map((message) =>
+				message.role !== "assistant" || !Array.isArray(message.content)
+					? message
+					: {
+							...message,
+							content: message.content.map((block: { type: string }) =>
+								block.type === "thinking" ? { ...block, thinking: "rewritten by a payload hook" } : block,
+							),
+						},
+			),
+		};
+	}
+
+	async function sendThroughProductionReplayPath(durableMessages: Message[]): Promise<unknown[]> {
+		const sourceMessages = convertToLlm(durableMessages as never);
+		const model = anthropicModel();
+		let capturedPayload: { messages: unknown[] } | undefined;
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(await new Response(init?.body).text()) as { messages: unknown[] };
+			return anthropicDoneResponse();
+		});
+		try {
+			await streamAnthropicMessages(
+				model as Model<"anthropic-messages">,
+				{ systemPrompt: "", messages: sourceMessages },
+				{
+					apiKey: "credential-free-test-key",
+					onPayload: (payload) =>
+						restoreAnthropicReplayThinkingBlocks(
+							rewriteAssistantThinking(restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)),
+							sourceMessages,
+							model,
+						),
+				},
+			).result();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+		if (!capturedPayload) throw new Error("no request was sent");
+		return capturedPayload.messages;
+	}
+
+	function latestAssistantContent(messages: unknown[]): unknown {
+		const assistants = messages.filter((message) => (message as { role: string }).role === "assistant");
+		return (assistants.at(-1) as { content: unknown }).content;
+	}
+
+	it("sends the latest Claude turn's thinking unchanged when a GPT reasoning-only turn precedes it (#4185)", async () => {
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "plan it" }], timestamp: 0 },
+			copilotGptTurn(
+				[
+					{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoning },
+					{ type: "text", text: "" },
+				],
+				"stop",
+			),
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 1 },
+			copilotGptTurn([
+				{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoning },
+				{ type: "toolCall", id: "call_gpt|fc_gpt", name: "read", arguments: { path: "a.ts" } },
+			]),
+			toolResult("call_gpt|fc_gpt"),
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+		expect(JSON.stringify(messages)).not.toContain("gAAAAB-gpt-encrypted-reasoning");
+		expect(JSON.stringify(messages)).not.toContain("GPT plan");
+	});
+
+	it("sends a Claude-only session's latest thinking unchanged through the same hook (#4185)", async () => {
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 0 },
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+	});
+
+	/**
+	 * Records, through pi-ai's real SSE reader, a Claude Fable 5.1 turn that a server-side fallback
+	 * handed to Claude Opus 5 before it hit the output cap. Its reasoning belongs to other models, so a
+	 * request for the session's model carries only the `fallback` marker for it.
+	 */
+	async function recordServerSideFallbackTurn(): Promise<AssistantMessage> {
+		const declining = {
+			...anthropicModel(),
+			id: "claude-fable-5-1",
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			compat: { allowedFallbackModels: [{ provider: "github-copilot", model: "claude-opus-5" }] },
+		} as Model<"anthropic-messages">;
+		const events = [
+			{
+				type: "message_start",
+				message: {
+					id: "msg_fallback",
+					model: declining.id,
+					role: "assistant",
+					usage: { input_tokens: 10, output_tokens: 0 },
+				},
+			},
+			{
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "thinking", thinking: "declining model reasoning", signature: "sig-declined" },
+			},
+			{ type: "content_block_stop", index: 0 },
+			{
+				type: "content_block_start",
+				index: 1,
+				content_block: { type: "fallback", from: { model: declining.id }, to: { model: "claude-opus-5" } },
+			},
+			{ type: "content_block_stop", index: 1 },
+			{
+				type: "content_block_start",
+				index: 2,
+				content_block: { type: "thinking", thinking: "fallback model reasoning", signature: "sig-fallback" },
+			},
+			{ type: "content_block_stop", index: 2 },
+			{ type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 4096 } },
+			{ type: "message_stop" },
+		];
+		const turn = await streamAnthropicMessages(
+			declining,
+			{ systemPrompt: "", messages: [{ role: "user", content: [{ type: "text", text: "plan it" }], timestamp: 0 }] },
+			{
+				apiKey: "credential-free-test-key",
+				fetch: async () =>
+					new Response(
+						events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+						{
+							status: 200,
+							headers: { "content-type": "text/event-stream" },
+						},
+					),
+			},
+		).result();
+		expect(turn.stopReason, turn.errorMessage).toBe("length");
+		expect(turn.model).toBe("claude-opus-5");
+		expect(turn.content.map((block) => block.type)).toEqual(["thinking", "fallback", "thinking"]);
+		return turn;
+	}
+
+	it("sends the latest thinking unchanged after an earlier turn whose only replayed block is a fallback marker (#4185)", async () => {
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "plan it" }], timestamp: 0 },
+			await recordServerSideFallbackTurn(),
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 1 },
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		const assistants = messages.filter((message) => (message as { role: string }).role === "assistant");
+		expect(assistants).toHaveLength(2);
+		expect((assistants[0] as { content: unknown }).content).toEqual([
+			{ type: "fallback", from: { model: "claude-fable-5-1" }, to: { model: "claude-opus-5" } },
+		]);
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+	});
+
+	it("sends the latest thinking unchanged after an earlier same-model turn that holds only a fallback marker (#4185)", async () => {
+		const markerOnlyTurn: AssistantMessage = {
+			...assistantMessage([
+				{ type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-4.8" },
+			] as AssistantMessage["content"]),
+			stopReason: "length",
+		};
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "plan it" }], timestamp: 0 },
+			markerOnlyTurn,
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 1 },
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		const assistants = messages.filter((message) => (message as { role: string }).role === "assistant");
+		expect(assistants).toHaveLength(2);
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+	});
+});
