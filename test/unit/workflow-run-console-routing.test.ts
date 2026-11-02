@@ -13,6 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	CONSOLE_LOG_RETENTION_MS,
 	MAX_CONSOLE_LOG_DIRECTORY_BYTES,
@@ -26,6 +28,9 @@ import {
 	openRunRejectionScope,
 	type RunRejectionScope,
 } from "../../packages/workflows/src/engine/run-rejection-boundary.js";
+import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 type Method = "log" | "warn" | "error";
 const terminal: Array<{ readonly method: Method; readonly text: string }> = [];
@@ -240,6 +245,82 @@ test("a run started again by an owner that does not route its output makes its o
 
 	assert.deepEqual(logLines(), ["resumed-run error routed by its terminal-UI owner"]);
 	assert.equal(terminal.at(-1)?.text, "resumed by a headless owner");
+});
+
+test("abort listeners of a run's steps log to the run's log when the host cancels a step or the whole run", async () => {
+	routeToFreshDirectory();
+	const waiting = workflow({
+		name: "waiting",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			await Promise.allSettled(
+				[1, 2, 3].map((index) =>
+					ctx.tool(
+						`wait-${index}`,
+						{ index },
+						({ signal }) =>
+							new Promise((_, reject) => {
+								signal.addEventListener(
+									"abort",
+									() => {
+										console.error(`listener ${index}: step aborted`);
+										reject(signal.reason);
+									},
+									{ once: true },
+								);
+							}),
+					),
+				),
+			);
+			return {};
+		},
+	});
+	const tools = createToolControlRegistry();
+	const caller = new AbortController();
+	const runId = testRunId("abort-listeners");
+	const settled = run(
+		waiting,
+		{},
+		{
+			runId,
+			cwd: root,
+			store: createStore(),
+			routeConsoleToLog: true,
+			toolControlRegistry: tools,
+			signal: caller.signal,
+		},
+	).catch(() => undefined);
+	for (let attempt = 0; tools.active(runId).length < 3 && attempt < 500; attempt += 1)
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(tools.active(runId).length, 3);
+
+	// From outside the run, as a host's quit does: one step first, then the whole run.
+	tools.active(runId)[0]?.abort("quit");
+	caller.abort(new Error("quit by the host"));
+	await settled;
+
+	assert.deepEqual(
+		terminal.filter(({ text }) => text.includes("step aborted")),
+		[],
+	);
+	const listenerLines = logLines().filter((line) => line.includes("step aborted"));
+	assert.equal(listenerLines.length, 3);
+	assert.ok(listenerLines.every((line) => line.startsWith(`${runId} error listener `)));
+});
+
+test("an error whose metadata throws when read is logged without turning the console call into a failure", () => {
+	routeToFreshDirectory();
+	const hostile = new Error("a failure with an unreadable cause");
+	Object.defineProperty(hostile, "cause", {
+		get() {
+			throw new Error("cause accessor throws");
+		},
+	});
+
+	assert.doesNotThrow(() => open("run-hostile-error").run(() => console.error(hostile)));
+	assert.match(logLines()[0] ?? "", /^run-hostile-error error .*a failure with an unreadable cause/);
 });
 
 test("starting to route deletes exited processes' logs past retention, then the oldest until the directory fits", () => {

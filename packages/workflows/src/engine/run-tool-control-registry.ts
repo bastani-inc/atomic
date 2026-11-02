@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * Live tool-node control registry — runtime-only handle table keyed by
  * `runId + nodeId`.
@@ -85,27 +86,32 @@ export function createToolControlRegistry(): ToolControlRegistry {
 	const admissionByRun = new Map<string, ToolAdmissionBoundary>();
 	const runControls = new Map<string, WorkflowRunControlHandle>();
 
-	const makeHandle = (registration: ToolControlRegistration): ToolControlHandle => ({
-		runId: registration.runId,
-		nodeId: registration.nodeId,
-		name: registration.name,
-		settled: registration.settled,
-		get aborted(): boolean {
-			return registration.controller.signal.aborted;
-		},
-		abort(scope: WorkflowToolAbortScope): WorkflowToolAbortError {
-			const existing = registration.controller.signal.reason;
-			if (registration.controller.signal.aborted && existing instanceof WorkflowToolAbortError) return existing;
-			const reason = new WorkflowToolAbortError({
-				runId: registration.runId,
-				nodeId: registration.nodeId,
-				toolName: registration.name,
-				scope,
-			});
-			registration.controller.abort(reason);
-			return reason;
-		},
-	});
+	const makeHandle = (registration: ToolControlRegistration): ToolControlHandle => {
+		// A tool is registered inside its run's code; aborting it from the host runs its abort listeners in that context,
+		// so their console output is attributed to the run (#4175).
+		const inRegisteringContext = AsyncLocalStorage.snapshot();
+		return {
+			runId: registration.runId,
+			nodeId: registration.nodeId,
+			name: registration.name,
+			settled: registration.settled,
+			get aborted(): boolean {
+				return registration.controller.signal.aborted;
+			},
+			abort(scope: WorkflowToolAbortScope): WorkflowToolAbortError {
+				const existing = registration.controller.signal.reason;
+				if (registration.controller.signal.aborted && existing instanceof WorkflowToolAbortError) return existing;
+				const reason = new WorkflowToolAbortError({
+					runId: registration.runId,
+					nodeId: registration.nodeId,
+					toolName: registration.name,
+					scope,
+				});
+				inRegisteringContext(() => registration.controller.abort(reason));
+				return reason;
+			},
+		};
+	};
 
 	return {
 		register(registration: ToolControlRegistration): () => void {
