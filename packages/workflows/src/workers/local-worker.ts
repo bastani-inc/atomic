@@ -731,6 +731,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
 			attemptAdmission.release();
+			// The attempt's prompt reservations end with it: a replay asks its pending prompts again (#3996), and the
+			// tombstones of every child's answered prompts would otherwise pile up for as long as the worker lives.
+			reservations.clear();
 			attempts++;
 			// The attempt's checkpoints stay in the journal; the worker's next attempt reads its own.
 			await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
