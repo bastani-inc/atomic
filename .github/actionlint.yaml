@@ -1,8 +1,12 @@
 self-hosted-runner:
-  # Namespace machine labels and runner profiles; see docs/ci.md, "Runners".
   labels:
-    - nscloud-*
-    - namespace-profile-*
+    - namespace-profile-atomic-*
+    - nscloud-ubuntu-24.04-*
+    - nscloud-windows-2022-*
+    - nscloud-cache-*
+    - nscloud-runner-tool-cache-*
+    - nscloud-no-remote-builders
+    - nscloud-container-image-cache
 paths:
   .github/workflows/publish.yml:
     ignore:

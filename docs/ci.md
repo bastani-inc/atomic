@@ -410,7 +410,7 @@ Published-version registration does not follow that branch-ref path. The Worker 
 
 Registration recovery is rerunning the failed `register-published-version` job on a run whose ref is already the tag (the original tag push, or a dispatch whose `--ref` is the tag), or dispatching at the tag itself. A branch-ref dispatch cannot register. If the registration job YAML on the tag is wrong, fix it in a later tagged release rather than moving the tag.
 
-One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)), so `.github/actionlint.yaml` ignores that one finding in `publish.yml`. The same file lists the Namespace runner labels as known self-hosted labels.
+One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)), so `.github/actionlint.yaml` ignores that one finding in `publish.yml`.
 
 ### Recovering a failed publication
 
