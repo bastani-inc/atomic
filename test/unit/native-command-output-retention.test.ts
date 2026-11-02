@@ -18,6 +18,9 @@ const fixture = fileURLToPath(new URL("../fixtures/native-command-output-retenti
 const BATCHES = 5;
 const COMMANDS = 20;
 const BYTES = 1_000_000;
+/** How long the child process may take to run its batches, and each test, which runs one child process. */
+const CHILD_TIMEOUT_MS = 150_000;
+const TEST_TIMEOUT_MS = 180_000;
 
 interface Batch {
 	readonly owner: number;
@@ -39,7 +42,7 @@ function runBatches(open: boolean, pty = false): readonly Batch[] {
 			...(open ? { OPEN: "1" } : {}),
 			...(pty ? { PTY: "1" } : {}),
 		},
-		timeout: 150_000,
+		timeout: CHILD_TIMEOUT_MS,
 	});
 	assert.equal(result.exitCode, 0, result.stderr.toString());
 	return result.stdout
@@ -68,17 +71,17 @@ function assertFlat(batches: readonly Batch[], what: string): void {
 test.runIf(process.platform !== "win32")(
 	"a process's memory stays flat across closed sessions whose shell commands printed megabytes (#4215)",
 	() => assertFlat(runBatches(false), "closed sessions"),
-	180_000,
+	TEST_TIMEOUT_MS,
 );
 
 test.runIf(process.platform !== "win32")(
 	"a process's memory stays flat across closed sessions whose terminal commands printed megabytes (#4215)",
 	() => assertFlat(runBatches(false, true), "closed sessions"),
-	180_000,
+	TEST_TIMEOUT_MS,
 );
 
 test.runIf(process.platform !== "win32")(
 	"a long-lived session's memory stays flat while its shell commands print megabytes (#4215)",
 	() => assertFlat(runBatches(true), "batches in one open session"),
-	180_000,
+	TEST_TIMEOUT_MS,
 );
