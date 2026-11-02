@@ -1,3 +1,4 @@
+import { canReplayReasoning, isProducedByModel } from "@bastani/pi-ai/api/transform-messages";
 import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
 
 type JsonObject = Record<string, unknown>;
@@ -19,25 +20,6 @@ function isAnthropicContentBlock(value: unknown): value is AnthropicContentBlock
 function isThinkingLikeAnthropicBlock(value: unknown): boolean {
 	if (!isAnthropicContentBlock(value)) return false;
 	return value.type === "thinking" || value.type === "redacted_thinking";
-}
-
-function isSameModelAssistant(message: AssistantMessage, model: Model<Api>): boolean {
-	return message.provider === model.provider && message.api === model.api && message.model === model.id;
-}
-
-/**
- * Mirrors `canReplayForeignThinking` in @bastani/pi-ai's `transformMessages`: a *different* model
- * on the same provider and API whose API adjudicates thinking model binding itself. Its signed
- * blocks replay unchanged — including redacted ones and signed blocks whose text is empty, which
- * is Claude Fable 5.1's default shape because `thinking.display` defaults to `"omitted"`.
- *
- * This must stay conditional. For a model that does not delegate binding, pi-ai still drops or
- * flattens foreign thinking, so accepting signature-only blocks unconditionally would misalign
- * the ordinals in the opposite direction.
- */
-function delegatesForeignThinkingBinding(message: AssistantMessage, model: Model<Api>): boolean {
-	if (message.provider !== model.provider || message.api !== model.api) return false;
-	return isObject(model.compat) && (model.compat as JsonObject).delegatesThinkingModelBinding === true;
 }
 
 /**
@@ -108,25 +90,23 @@ function legacyProviderWouldEmitAssistantBlock(block: unknown): boolean {
 function legacyProviderWouldEmitAssistant(message: AssistantMessage, model: Model<Api>): boolean {
 	if (message.stopReason === "error" || message.stopReason === "aborted") return false;
 
-	// This mirrors the relevant same-model branch in @bastani/pi-ai's
-	// transformMessages() + Anthropic convertMessages() pipeline closely enough
-	// to keep assistant ordinal mapping aligned with the provider payload.
+	// This mirrors @bastani/pi-ai's transformMessages() + Anthropic convertMessages() pipeline
+	// closely enough to keep assistant ordinal mapping aligned with the provider payload, and it
+	// takes the reasoning rule from pi-ai itself so the two cannot drift.
 	//
-	// A cross-model turn on a model that delegates binding follows the *same* rule: pi-ai replays
-	// its foreign signed thinking unchanged, so a redacted or empty-text signed block is emitted
-	// there too. Without this branch, a Fable 5.1 turn whose thinking display is `"omitted"` looks
-	// non-emitting here, the ordinals desynchronise, and repair is abandoned for the whole request.
-	if (isSameModelAssistant(message, model) || delegatesForeignThinkingBinding(message, model)) {
+	// A turn whose reasoning the target may receive (the same model, or a model that delegates
+	// binding, such as Claude Fable 5.1 with `thinking.display` "omitted") emits its signed blocks,
+	// including redacted and empty-text ones.
+	if (canReplayReasoning(message, model)) {
 		return message.content.some((block) => legacyProviderWouldEmitAssistantBlock(block));
 	}
 
+	// Any other turn, such as a GPT turn left in the transcript by a cross-provider fallback, emits
+	// no reasoning at all, so a turn that held only reasoning emits nothing.
 	return message.content.some((block) => {
 		if (!isObject(block) || typeof block.type !== "string") return false;
 		if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
-		if (block.type === "toolCall") return true;
-		if (block.type !== "thinking") return false;
-		if (block.redacted === true) return false;
-		return typeof block.thinking === "string" && block.thinking.trim().length > 0;
+		return block.type === "toolCall";
 	});
 }
 
@@ -263,10 +243,11 @@ function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[]
  * construction and extension payload hooks.
  *
  * Anthropic requires thinking/redacted_thinking blocks from replayed assistant
- * messages to remain byte-for-byte identical to the original response. The
- * upstream pi-ai Anthropic converter can sanitize thinking text and drop signed
- * empty thinking. convertToLlm normalizes raw redacted_thinking blocks in its
- * transient, non-mutating LLM-compatible messages before this hook, then this guard
+ * messages to remain byte-for-byte identical to the original response.
+ * Extension `before_provider_request` hooks can rewrite them, and older pi-ai
+ * converters sanitized thinking text and dropped signed empty thinking.
+ * convertToLlm normalizes raw redacted_thinking blocks in its transient,
+ * non-mutating LLM-compatible messages before this hook, then this guard
  * restores exact same-model payloads while leaving non-Anthropic and cross-model
  * payloads unchanged.
  */
@@ -303,7 +284,7 @@ export function restoreAnthropicReplayThinkingBlocks(
 	for (const [assistantPayloadOrdinal, sourceMessage] of emittingSourceAssistants.entries()) {
 		const payloadAssistant = assistantPayloads[assistantPayloadOrdinal];
 
-		if (!isSameModelAssistant(sourceMessage, model) || !hasReplayThinkingBlock(sourceMessage, allowEmptySignature))
+		if (!isProducedByModel(sourceMessage, model) || !hasReplayThinkingBlock(sourceMessage, allowEmptySignature))
 			continue;
 		// A second fail-closed guard verifies the non-thinking shape before replacing
 		// signed blocks, protecting against equal-count ordinal misalignment.

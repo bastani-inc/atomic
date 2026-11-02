@@ -575,3 +575,137 @@ describe("restoreAnthropicReplayThinkingBlocks tracks the new pi-ai emission beh
 		expect(restored).toBe(payload);
 	});
 });
+
+/**
+ * After a fallback from a GPT model to Claude, the transcript holds GPT turns whose reasoning
+ * pi-ai drops for Anthropic, including turns that carried nothing else. The request must still
+ * carry the latest Claude turn's thinking exactly as Anthropic returned it, which `sdk.ts` gets by
+ * running this guard before and after the `before_provider_request` hooks.
+ */
+describe("restoreAnthropicReplayThinkingBlocks after a cross-provider fallback (#4185)", () => {
+	const exactThinking = "Claude plan with an unpaired surrogate \ud83d kept exactly";
+	const gptReasoning = JSON.stringify({
+		type: "reasoning",
+		id: "rs_gpt",
+		summary: [{ type: "summary_text", text: "GPT plan" }],
+		encrypted_content: "gAAAAB-gpt-encrypted-reasoning",
+	});
+
+	function copilotGptTurn(
+		content: AssistantMessage["content"],
+		stopReason: AssistantMessage["stopReason"] = "toolUse",
+	): AssistantMessage {
+		return { ...assistantMessage(content), api: "openai-responses", model: "gpt-6.1-sol", stopReason };
+	}
+
+	function toolResult(toolCallId: string): Message {
+		return {
+			role: "toolResult",
+			toolCallId,
+			toolName: "read",
+			content: [{ type: "text", text: "result" }],
+			isError: false,
+			timestamp: 3,
+		};
+	}
+
+	function latestClaudeTurn(): AssistantMessage {
+		return assistantMessage([
+			{ type: "thinking", thinking: exactThinking, thinkingSignature: "sig-latest" },
+			{ type: "toolCall", id: "toolu_latest", name: "read", arguments: { path: "b.ts" } },
+		]);
+	}
+
+	/** A `before_provider_request` hook that rewrites reasoning text, as an extension may. */
+	function rewriteAssistantThinking(payload: unknown): unknown {
+		const { messages } = payload as { messages: Array<{ role: string; content: unknown }> };
+		return {
+			...(payload as object),
+			messages: messages.map((message) =>
+				message.role !== "assistant" || !Array.isArray(message.content)
+					? message
+					: {
+							...message,
+							content: message.content.map((block: { type: string }) =>
+								block.type === "thinking" ? { ...block, thinking: "rewritten by a payload hook" } : block,
+							),
+						},
+			),
+		};
+	}
+
+	async function sendThroughProductionReplayPath(durableMessages: Message[]): Promise<unknown[]> {
+		const sourceMessages = convertToLlm(durableMessages as never);
+		const model = anthropicModel();
+		let capturedPayload: { messages: unknown[] } | undefined;
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			capturedPayload = JSON.parse(await new Response(init?.body).text()) as { messages: unknown[] };
+			return anthropicDoneResponse();
+		});
+		try {
+			await streamAnthropicMessages(
+				model as Model<"anthropic-messages">,
+				{ systemPrompt: "", messages: sourceMessages },
+				{
+					apiKey: "credential-free-test-key",
+					onPayload: (payload) =>
+						restoreAnthropicReplayThinkingBlocks(
+							rewriteAssistantThinking(restoreAnthropicReplayThinkingBlocks(payload, sourceMessages, model)),
+							sourceMessages,
+							model,
+						),
+				},
+			).result();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+		if (!capturedPayload) throw new Error("no request was sent");
+		return capturedPayload.messages;
+	}
+
+	function latestAssistantContent(messages: unknown[]): unknown {
+		const assistants = messages.filter((message) => (message as { role: string }).role === "assistant");
+		return (assistants.at(-1) as { content: unknown }).content;
+	}
+
+	it("sends the latest Claude turn's thinking unchanged when a GPT reasoning-only turn precedes it (#4185)", async () => {
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "plan it" }], timestamp: 0 },
+			copilotGptTurn(
+				[
+					{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoning },
+					{ type: "text", text: "" },
+				],
+				"stop",
+			),
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 1 },
+			copilotGptTurn([
+				{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoning },
+				{ type: "toolCall", id: "call_gpt|fc_gpt", name: "read", arguments: { path: "a.ts" } },
+			]),
+			toolResult("call_gpt|fc_gpt"),
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+		expect(JSON.stringify(messages)).not.toContain("gAAAAB-gpt-encrypted-reasoning");
+		expect(JSON.stringify(messages)).not.toContain("GPT plan");
+	});
+
+	it("sends a Claude-only session's latest thinking unchanged through the same hook (#4185)", async () => {
+		const messages = await sendThroughProductionReplayPath([
+			{ role: "user", content: [{ type: "text", text: "now do it" }], timestamp: 0 },
+			latestClaudeTurn(),
+			toolResult("toolu_latest"),
+		]);
+
+		expect(latestAssistantContent(messages)).toEqual([
+			{ type: "thinking", thinking: exactThinking, signature: "sig-latest" },
+			{ type: "tool_use", id: "toolu_latest", name: "read", input: { path: "b.ts" } },
+		]);
+	});
+});

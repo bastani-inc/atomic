@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- The Anthropic Messages converter sends signed `thinking` text back exactly as Anthropic returned it instead of stripping unpaired surrogates from it, which changed the latest assistant message and failed the request with `thinking or redacted_thinking blocks in the latest assistant message cannot be modified`. The rule that decides which models get an earlier turn's reasoning is now exported as `canReplayReasoning` (with `isProducedByModel`) from `api/transform-messages`, so callers that repair provider payloads apply the same rule as `transformMessages` ([#4185](https://github.com/bastani-inc/atomic/issues/4185))
+
 ## [0.9.59] - 2026-11-01
 
 ### Fixed

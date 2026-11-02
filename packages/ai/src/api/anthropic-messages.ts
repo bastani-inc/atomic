@@ -1853,9 +1853,11 @@ function convertMessages(
 									},
 						);
 					} else {
+						// The signature covers these exact bytes, and Anthropic rejects a latest assistant
+						// message whose signed thinking differs from what it returned, so no sanitizing here.
 						blocks.push({
 							type: "thinking",
-							thinking: sanitizeSurrogates(block.thinking),
+							thinking: block.thinking,
 							signature: thinkingSignature,
 						});
 					}
