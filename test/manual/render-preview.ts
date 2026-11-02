@@ -196,6 +196,7 @@ const run = scenarios[scenarioKey];
 const snap: StoreSnapshot = { runs: run ? [run] : [], notices: [], version: 1 };
 const store: Store = {
 	runs: () => snap.runs as RunSnapshot[],
+	run: (runId) => (snap.runs as RunSnapshot[]).find((candidate) => candidate.id === runId),
 	notices: () => [],
 	activeRunId: () => run?.id ?? null,
 	recordRunStart: () => {},

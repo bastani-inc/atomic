@@ -28,6 +28,13 @@ interface ChangedNodes {
 /** A run changed as a whole, or only in the named stages and tool nodes. */
 type RunChange = "run" | ChangedNodes;
 
+/** The store's runs: all of them in store order, and one by id or by position without a scan (#4182). */
+export interface ObservedRuns {
+	all(): readonly RunSnapshot[];
+	find(runId: string): RunSnapshot | undefined;
+	position(runId: string): number | undefined;
+}
+
 /** Execution ownership stays with the concrete store across host adoption. */
 export class WorkflowObservationRuntime {
 	readonly liveRunIds = new Set<string>();
@@ -46,7 +53,7 @@ export class WorkflowObservationRuntime {
 	private owners = new Map<string, Map<string, string[]>>();
 	private recoveryDepth = 0;
 	constructor(
-		private readonly runs: () => readonly RunSnapshot[],
+		private readonly runs: ObservedRuns,
 		private readonly invalidate: (change?: WorkflowObservationChange) => void,
 	) {}
 
@@ -87,13 +94,13 @@ export class WorkflowObservationRuntime {
 	private rootRunId(run: RunSnapshot): string {
 		if (run.rootRunId !== undefined) return run.rootRunId;
 		if (run.parentRunId === undefined) return run.id;
-		const parent = this.runs().find((candidate) => candidate.id === run.parentRunId);
+		const parent = this.runs.find(run.parentRunId);
 		return parent ? this.rootRunId(parent) : run.parentRunId;
 	}
 
 	lifecycle(target: WorkflowLifecycleTarget, attribution: WorkflowLifecycleEvent["attribution"] = "unknown"): void {
 		if (this.recovering && !this.liveRunIds.has(target.runId)) return;
-		const run = this.runs().find((candidate) => candidate.id === target.runId);
+		const run = this.runs.find(target.runId);
 		if (!run) return;
 		const rootRunId = this.rootRunId(run);
 		const now = Date.now();
@@ -121,7 +128,7 @@ export class WorkflowObservationRuntime {
 		action: WorkflowControlAction,
 		attribution: WorkflowLifecycleEvent["attribution"] = "unknown",
 	): void {
-		const run = this.runs().find((candidate) => candidate.id === runId);
+		const run = this.runs.find(runId);
 		if (!run) return;
 		if ((action === "quit" || action === "kill" || action === "pause") && this.liveRunIds.has(runId))
 			this.stoppingRunIds.add(runId);
@@ -131,7 +138,7 @@ export class WorkflowObservationRuntime {
 	}
 
 	heartbeat(runId: string, scheduledAt: number, intervalMinutes: number): void {
-		const run = this.runs().find((candidate) => candidate.id === runId);
+		const run = this.runs.find(runId);
 		if (run)
 			this.emit({
 				kind: "heartbeat",
@@ -163,7 +170,7 @@ export class WorkflowObservationRuntime {
 		if (changes === undefined) {
 			const next = new Map<string, WorkflowLifecycleTarget>();
 			const nextOwners = new Map<string, Map<string, string[]>>();
-			for (const run of this.runs()) {
+			for (const run of this.runs.all()) {
 				const owners = nextOwners.get(run.id) ?? new Map<string, string[]>();
 				nextOwners.set(run.id, owners);
 				this.captureRun(run, this.previous.has(`run:${run.id}`), next, owners);
@@ -186,9 +193,18 @@ export class WorkflowObservationRuntime {
 			if (change.toolNodeId !== undefined) nodes.tools.add(change.toolNodeId);
 			changed.set(change.runId, nodes);
 		}
-		for (const run of this.runs()) {
-			const change = changed.get(run.id);
-			if (change === undefined) continue;
+		// The changed runs in store order, found by id: a batch costs what it changed, not what the store holds.
+		const ordered = [...changed.keys()]
+			.flatMap((runId) => {
+				const position = this.runs.position(runId);
+				return position === undefined ? [] : [{ runId, position }];
+			})
+			.sort((left, right) => left.position - right.position);
+		for (const { runId } of ordered) {
+			// Found again by id: a lifecycle listener may have changed the store while an earlier run was read.
+			const run = this.runs.find(runId);
+			if (run === undefined) continue;
+			const change = changed.get(runId)!;
 			const existing = this.previous.has(`run:${run.id}`);
 			// A run never read before is read whole, so its pre-existing nodes stay historical.
 			const nodes = change === "run" || !existing ? undefined : change;
@@ -239,7 +255,7 @@ export class WorkflowObservationRuntime {
 					previous && previous.kind !== "prompt" && target.kind !== "prompt"
 						? ({ ...target, previousStatus: previous.status } as WorkflowLifecycleTarget)
 						: target,
-					this.runs().find((candidate) => candidate.id === target.runId)?.origin,
+					this.runs.find(target.runId)?.origin,
 				);
 			}
 		};
