@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -166,13 +167,71 @@ test.skipIf(process.platform === "win32")("resume refuses to change an originall
 		assert.equal((await run(definition, {}, options)).status, "completed");
 		await assert.rejects(
 			run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [] } }),
-			/immutable resource configuration/i,
+			/started without local workers or resource admission, and this resume sets localWorkers: immutable resource configuration/i,
 		);
 	} finally {
 		await backend.close();
 		removeTempDirectory(directory);
 	}
 });
+
+/** A worker definition module whose source the test edits between a root's runs. */
+const workerSource = (label: string) => `import { workflow } from "@bastani/atomic/workflows";
+export const child = workflow({
+	name: "resume-refusal-child",
+	description: ${JSON.stringify(label)},
+	inputs: {},
+	outputs: {},
+	async run() {
+		return {};
+	},
+});
+`;
+
+test.skipIf(process.platform === "win32")(
+	"a resume names each saved setting it cannot apply, and not the pool size it can (#4196)",
+	async () => {
+		const directory = makeTempDirectory("pool-resume-refusal-");
+		const journalPath = join(directory, "journal.sqlite");
+		const childPath = join(directory, "child.ts");
+		writeFileSync(childPath, workerSource("first"));
+		const journal = await resolveRunJournal({ journal: { path: journalPath } });
+		const backend = await JournalDurableBackend.open(journal);
+		const options = { runId: "root", durableBackend: backend, store: createStore() };
+		const definitions = [{ path: childPath, exportName: "child" }];
+		try {
+			const started = await run(definition, {}, { ...options, localWorkers: { count: 1, definitions } });
+			assert.equal(started.status, "completed", JSON.stringify(started));
+			// The worker definition's entry module itself is edited, and the user-wide limits shared with every
+			// other root on this database are set, alongside a pool size change.
+			writeFileSync(childPath, workerSource("second"));
+			await assert.rejects(
+				run(
+					definition,
+					{},
+					{
+						...options,
+						localWorkers: { count: 2, definitions },
+						admission: { userLimits: { session: 4 }, userDatabase: journalPath },
+					},
+				),
+				(error: Error) => {
+					assert.ok(
+						error.message.includes(`the entry module of worker definition ${childPath}#child was edited`),
+						error.message,
+					);
+					assert.match(error.message, /admission\.userLimits\.session changed from unset to 4/);
+					assert.doesNotMatch(error.message, /localWorkers\.count changed/);
+					return true;
+				},
+			);
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	POOLED_ROOT_BUDGET_MS,
+);
 
 test.skipIf(process.platform === "win32")(
 	"optional undefined resource fields survive journal round trips (#3869)",
