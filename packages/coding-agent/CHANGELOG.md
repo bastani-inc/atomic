@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A root with many children on local workers (`workflows.localWorkers`) no longer stalls its terminal for a tenth of a second or more each time it applies its children's latest activity, once the host has accumulated thousands of finished runs. Applying a batch of activity found each published run by scanning every run in the store, several times per child; runs are now looked up by id. With 300 busy children and 5,000 finished runs in the store, applying a batch now takes p90 11 ms instead of 101–145 ms, and the main thread's p99 lag drops from 88–111 ms to 11 ms ([#4182](https://github.com/bastani-inc/atomic/issues/4182))
+
 ## [0.9.62] - 2026-11-02
 
 Pooled roots that keep dispatching under load, children that survive a stalled worker, and Intercom sends that no longer report a delivered message as failed.

@@ -20,6 +20,7 @@ import type { WorkflowOutputValues } from "./types.js";
 type RunStoreMethods = Pick<
 	Store,
 	| "runs"
+	| "run"
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
@@ -51,6 +52,9 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return state.runs;
 		},
 
+		run(runId: string): RunSnapshot | undefined {
+			return context.findRun(runId);
+		},
 		notices(): readonly WorkflowNotice[] {
 			return state.notices;
 		},
@@ -76,9 +80,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		recordRunStart(run: RunSnapshot): void {
 			// Resume replaces the snapshot, not the identity's prompt answers or notices.
-			const index = state.runs.findIndex((existing) => existing.id === run.id);
-			if (index === -1) state.runs.push(run);
-			else state.runs[index] = run;
+			context.placeRun(run);
 			context.bumpAndNotify({ runId: run.id });
 		},
 
@@ -206,16 +208,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (metadata.retryAfterMs !== undefined) restored.retryAfterMs = metadata.retryAfterMs;
 			if (metadata.result !== undefined) restored.result = metadata.result;
 			if (metadata.budgetState !== undefined) restored.budgetState = metadata.budgetState;
-			const index = state.runs.findIndex((candidate) => candidate.id === source.id);
-			if (index < 0) state.runs.push(restored);
-			else state.runs[index] = restored;
+			context.placeRun(restored);
 			context.bumpAndNotify();
 			return true;
 		},
 
 		removeRun(runId: string): boolean {
-			const index = state.runs.findIndex((r) => r.id === runId);
-			if (index < 0) return false;
+			const index = context.runPosition(runId);
+			if (index === undefined) return false;
 			const run = state.runs[index]!;
 			const pending = run.pendingPrompt;
 			if (pending) {
@@ -226,7 +226,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			for (const stage of run.stages) {
 				state.stagePromptAnswers.delete(context.stagePromptAnswerKey(runId, stage.id));
 			}
-			state.runs.splice(index, 1);
+			context.removeRunAt(index);
 			for (let i = state.notices.length - 1; i >= 0; i--) {
 				if (state.notices[i]?.runId === runId) state.notices.splice(i, 1);
 			}
@@ -319,7 +319,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				state.stagePromptDrafts.size === 0
 			)
 				return;
-			state.runs.length = 0;
+			context.clearRuns();
 			state.notices.length = 0;
 			for (const entry of state.resolvers.values()) {
 				entry.reject(new Error("atomic-workflows: store cleared"));
