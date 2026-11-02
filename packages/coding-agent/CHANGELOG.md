@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A rebuilt chat in the interactive TUI no longer briefly shows a collapsed tool row with its expanded output when the row was collapsed while its expanded frame was still on its way from the engine. Rows the chat drops while the engine connection is backed up also stay released, instead of being rendered again in the engine by a render request that arrived after their disposal. ([#4169](https://github.com/bastani-inc/atomic/pull/4169))
+
 ## [0.9.61] - 2026-11-02
 
 Local worker pools that hold up under faults and load, a lighter terminal under heavy workflow load, and workflows that can work in any repository's worktree.
@@ -66,7 +70,6 @@ A lighter terminal under heavy workflow load, local worker pools that hold their
 - A stage on a local worker (`workflows.localWorkers`) that starts after a sticky Intercom broadcast (`workflow:<rootRunId>/**`) or a name or pattern send to future stages gets those messages before its first turn, under "Messages received before you started" with the real sender, even when the root is too busy to answer. Before, each such stage on a busy root could wait 60 seconds and then print a long "starting without its queued Intercom messages" warning in the chat, listing messages it may already have received. The worker now delivers the stage's queued messages itself and never waits on the root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run, not a warning per stage ([#4164](https://github.com/bastani-inc/atomic/pull/4164)).
 - A workflow run no longer keeps the live session of every stage it completed in memory until the whole run ends. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` gives its session back as soon as it completes, and one run with `ctx.stage` once the workflow no longer holds its stage context; its saved transcript still opens from the graph, `/workflow attach` or the stage chat. A session hosting long runs with hundreds of completed stages held gigabytes this way, and the garbage collection that memory caused made the interactive TUI, `/tasks` and queued messages slow to respond. ([#4166](https://github.com/bastani-inc/atomic/pull/4166))
 - In the interactive TUI, rows that the engine renders, such as tool results and extension messages, keep their last frame when the chat is rebuilt (after compaction, `/reload` or switching sessions), instead of showing `Loading isolated renderer…` until a busy engine renders each one again. A rebuilt chat also no longer leaves the renderers of the rows it replaced running in the engine for the rest of the session, and engine messages reach chat rows through one subscription instead of one per row. ([#4167](https://github.com/bastani-inc/atomic/pull/4167))
-- A rebuilt chat in the interactive TUI no longer briefly shows a collapsed tool row with its expanded output when the row was collapsed while its expanded frame was still on its way from the engine. Rows the chat drops while the engine connection is backed up also stay released, instead of being rendered again in the engine by a render request that arrived after their disposal.
 
 ## [0.9.61-alpha.1] - 2026-11-02
 
