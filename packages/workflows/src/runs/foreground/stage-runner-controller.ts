@@ -324,6 +324,8 @@ export class StageSessionController {
 	private structuredOutputExecutionFailureValue: string | undefined;
 	private structuredOutputCycleAttemptMark: number | undefined;
 	private unsubscribeTerminateWatcher: (() => void) | undefined;
+	/** Removes this stage's listener from the run's abort signal. */
+	private unbindAbortSignal: (() => void) | undefined;
 	private sessionInternalRetries = 0;
 	private unresolvedContextOverflowMessage: string | undefined;
 	private generationSealed = false;
@@ -974,6 +976,10 @@ export class StageSessionController {
 		this.pendingListeners.clear();
 		this.unsubscribeTerminateWatcher?.();
 		this.unsubscribeTerminateWatcher = undefined;
+		// The run's signal outlives this stage: a listener left on it keeps the disposed session reachable
+		// for as long as the run goes on.
+		this.unbindAbortSignal?.();
+		this.unbindAbortSignal = undefined;
 		this.terminatingToolCallIds.clear();
 		this.messageAdmission.dispose();
 		this.deliveryActivity.dispose();
@@ -1082,7 +1088,10 @@ export class StageSessionController {
 			void this.drainPendingDisposal().catch(() => {});
 		};
 		if (signal.aborted) onAbort();
-		else signal.addEventListener("abort", onAbort, { once: true });
+		else {
+			signal.addEventListener("abort", onAbort, { once: true });
+			this.unbindAbortSignal = () => signal.removeEventListener("abort", onAbort);
+		}
 	}
 
 	private markAbort(reason: Error | DOMException | string): void {

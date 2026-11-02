@@ -290,8 +290,9 @@ export interface StageControlRegistry {
 	 * transcript reopens on demand and that nothing is using: no mounted chat,
 	 * detached lease, message, turn, queue, or pause work. The remaining handles
 	 * stay registered; a released stage reopens through the post-mortem loader.
+	 * With `stageId`, consider only that stage.
 	 */
-	releaseIdle(runId: string): Promise<void>;
+	releaseIdle(runId: string, stageId?: string): Promise<void>;
 	/**
 	 * Observe stages `releaseIdle` disposed. Each listener runs once per released
 	 * stage after its session is gone, so it can leave a route that reopens the
@@ -637,8 +638,11 @@ export function createStageControlRegistry(): StageControlRegistry {
 			}
 			await disposeEntries(entries);
 		},
-		async releaseIdle(runId: string): Promise<void> {
-			for (const [stageId, entry] of [...(_byRun.get(runId) ?? [])]) {
+		async releaseIdle(runId: string, only?: string): Promise<void> {
+			const runMap = _byRun.get(runId);
+			const entries = only === undefined ? [...(runMap ?? [])] : [[only, runMap?.get(only)] as const];
+			for (const [stageId, entry] of entries) {
+				if (entry === undefined) continue;
 				try {
 					await releaseIdleEntry(runId, stageId, entry);
 				} catch (error) {

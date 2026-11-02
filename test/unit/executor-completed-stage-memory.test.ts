@@ -41,6 +41,15 @@ function heapUsedAfterCollection(): number {
 	return process.memoryUsage().heapUsed;
 }
 
+/** Heap in use once collections, the finalizers they schedule and the releases those start have all settled. */
+async function settledHeapUsed(): Promise<number> {
+	for (let round = 0; round < 4; round++) {
+		collect();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return heapUsedAfterCollection();
+}
+
 /** Fills with distinct values so no engine can share the backing store between two payloads. */
 function archiveProxy(seed: number): number[] {
 	return Array.from({ length: PAYLOAD_ELEMENTS }, (_, index) => seed + index);
@@ -49,14 +58,22 @@ function archiveProxy(seed: number): number[] {
 interface Measurement {
 	readonly retainedBytes: number;
 	readonly disposals: number;
+	/** Sessions disposed by the time of a measurement taken inside the run. */
+	readonly disposalsWhileRunning?: number;
 	readonly retainedHandles: number;
 }
+
+/**
+ * Where the measurement is taken: after the run returns, or inside the run once every stage has completed, while
+ * the run goes on, with the stages run through `ctx.stage(...).prompt` or `ctx.task`.
+ */
+type MeasurementPoint = "after-run" | "stages-while-running" | "tasks-while-running";
 
 /**
  * Each session closure owns one archive proxy, standing in for the SDK session
  * archive a live session keeps. Nothing but the session itself references it.
  */
-async function measureCompletedStages(persisted: boolean): Promise<Measurement> {
+async function measureCompletedStages(persisted: boolean, when: MeasurementPoint = "after-run"): Promise<Measurement> {
 	const registry = createStageControlRegistry();
 	const store = createStore();
 	let disposals = 0;
@@ -81,21 +98,31 @@ async function measureCompletedStages(persisted: boolean): Promise<Measurement> 
 			},
 		},
 	};
+	let whileRunning: { readonly retainedBytes: number; readonly disposals: number } | undefined;
+	const baseline = heapUsedAfterCollection();
 	const def = workflow({
 		name: "completed-stage-memory",
 		description: "",
 		inputs: {},
 		outputs: {},
 		run: async (ctx) => {
-			for (let i = 0; i < STAGES; i++) await ctx.stage(`stage-${i}`).prompt("synthetic");
+			for (let i = 0; i < STAGES; i++) {
+				if (when === "tasks-while-running") await ctx.task(`stage-${i}`, { prompt: "synthetic" });
+				else await ctx.stage(`stage-${i}`).prompt("synthetic");
+			}
+			if (when !== "after-run") whileRunning = { retainedBytes: (await settledHeapUsed()) - baseline, disposals };
 			return {};
 		},
 	});
-	const baseline = heapUsedAfterCollection();
 	await run(def, {}, { store, stageControlRegistry: registry, adapters });
-	const retainedBytes = heapUsedAfterCollection() - baseline;
+	const retainedBytes = whileRunning?.retainedBytes ?? heapUsedAfterCollection() - baseline;
 	const runId = store.runs()[0]!.id;
-	const measurement = { retainedBytes, disposals, retainedHandles: registry.forRun(runId).length };
+	const measurement = {
+		retainedBytes,
+		disposals,
+		...(whileRunning === undefined ? {} : { disposalsWhileRunning: whileRunning.disposals }),
+		retainedHandles: registry.forRun(runId).length,
+	};
 	await registry.clear();
 	return measurement;
 }
@@ -111,6 +138,21 @@ describe("completed stage memory", () => {
 			`${(measurement.retainedBytes / 2 ** 20).toFixed(1)} MiB stayed reachable after ${STAGES} saved stages; their archives total ${(TOTAL_PAYLOAD_BYTES / 2 ** 20).toFixed(0)} MiB`,
 		);
 	});
+
+	for (const [primitive, point] of [
+		["ctx.stage", "stages-while-running"],
+		["ctx.task", "tasks-while-running"],
+	] as const) {
+		test(`completed ${primitive} stages whose sessions are saved give their memory back while their run goes on`, async () => {
+			const measurement = await measureCompletedStages(true, point);
+
+			assert.equal(measurement.disposalsWhileRunning, STAGES);
+			assert.ok(
+				measurement.retainedBytes < TOTAL_PAYLOAD_BYTES / 4,
+				`${(measurement.retainedBytes / 2 ** 20).toFixed(1)} MiB stayed reachable while the run went on after ${STAGES} saved stages; their archives total ${(TOTAL_PAYLOAD_BYTES / 2 ** 20).toFixed(0)} MiB`,
+			);
+		});
+	}
 
 	test("the probe sees the memory a retained session holds (#3622)", async () => {
 		const measurement = await measureCompletedStages(false);
