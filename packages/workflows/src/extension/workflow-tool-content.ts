@@ -135,6 +135,7 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 			lines.push(`    phase: ${run.phase}, age: ${run.phaseAgeMs ?? 0}ms, last progress: ${run.lastProgressAt}`);
 		}
 		if (run.dependencyError !== undefined) lines.push(`    dependency: ${run.dependencyError}`);
+		if (run.intercomDeliveryIssue !== undefined) lines.push(`    Intercom delivery: ${run.intercomDeliveryIssue}`);
 		if (run.controlPersistence !== undefined) {
 			lines.push(`    control: ${run.controlRequestedStatus} (${run.controlPersistence})`);
 		}

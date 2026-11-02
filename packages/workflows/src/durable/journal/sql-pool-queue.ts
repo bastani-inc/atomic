@@ -346,8 +346,10 @@ export class SqlPoolQueue {
 					throw error;
 				});
 				// The attempt's identity fences it, not the clock: a lapsed lease whose worker is alive stays current
-				// until the coordinator extends it, and only reassignment or an epoch change replaces it (#3888).
-				const row = await this.current(tx, lease, token);
+				// until the coordinator extends it, and only reassignment or an epoch change replaces it (#3888). An
+				// attempt that completed its work stays current too: its stage can end before the root's background
+				// drain records the receipts of messages the stage received, and those must not be lost.
+				const row = await this.current(tx, lease, token, true);
 				if (row.epoch !== lease.epoch) throw new Error(STALE_WORK_LEASE);
 				assertSession();
 			} catch (error) {

@@ -110,7 +110,9 @@ Retryable causes include rate limits, quota/usage-limit exhaustion, auth problem
 
 A request-incompatible candidate also advances the sequence. Examples include HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length/context-window overflow; and `too large` / `invalid_request` errors. The chain can therefore reach the current user-selected model when no configured candidate can serve the request.
 
-Fallback does not retry safety refusals, ordinary task or tool failures, validation failures, cancellations, or workflow-code errors.
+A content-filter refusal also advances the sequence, without retrying the refusing model. Examples include OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, and a `content_filter` finish reason. The result's fallback list shows which model refused. Set `retry.fallbackOnContentFilter: false` in settings to keep such a refusal on the model that gave it.
+
+Fallback does not retry refused tool calls, ordinary task or tool failures, validation failures, cancellations, or workflow-code errors.
 
 There is no per-attempt idle watchdog or child wall-clock kill cap. Quiet provider responses may finish; only explicit termination or a provider failure supplies a retryable cause.
 

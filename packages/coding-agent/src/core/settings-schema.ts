@@ -107,6 +107,13 @@ const RetrySettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.retry.maxAgentDelayMs,
 		}),
 	),
+	fallbackOnContentFilter: Type.Optional(
+		Type.Boolean({
+			description:
+				"When a provider's content filter refuses a request, such as OpenAI's HTTP 422 cyber_policy, move to the next fallback model instead of retrying the same one.",
+			default: SETTINGS_DEFAULTS.retry.fallbackOnContentFilter,
+		}),
+	),
 	provider: Type.Optional(ProviderRetrySettingsSchema),
 	maxDelayMs: Type.Optional(
 		Type.Number({

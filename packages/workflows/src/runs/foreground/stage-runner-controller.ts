@@ -34,6 +34,7 @@ import {
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	type ModelFallbackFailureOptions,
 	resolveScopedModelsFromCatalog,
 	type WorkflowResolvedModelCandidate,
 	type WorkflowResolvedScopedModel,
@@ -146,9 +147,9 @@ function isRetryableSameCandidateFailure(error: unknown): boolean {
 	return isRetryableSameModelFailure(error);
 }
 
-function mayAdvanceToNextCandidate(error: unknown): boolean {
+function mayAdvanceToNextCandidate(error: unknown, options: ModelFallbackFailureOptions): boolean {
 	if (isExtensionStartupFailure(error)) return isTransientExtensionStartupFailure(error);
-	return isRetryableModelFailure(error);
+	return isRetryableModelFailure(error, options);
 }
 
 type StageMessage = StageSessionRuntime["messages"][number];
@@ -1120,6 +1121,11 @@ export class StageSessionController {
 		this.thrownErrorRetryStates.clear();
 	}
 
+	/** `retry.fallbackOnContentFilter`: whether a content-filter refusal spends the next candidate. */
+	private fallbackFailureOptions(): ModelFallbackFailureOptions {
+		return { fallbackOnContentFilter: this.retrySettings()?.fallbackOnContentFilter !== false };
+	}
+
 	private retrySettings(): WorkflowRetrySettings | undefined {
 		const managers = [
 			this.sessionSettingsManager,
@@ -1475,7 +1481,7 @@ export class StageSessionController {
 				// auth, model-unavailable, and request-incompatible failures advance
 				// to the next candidate immediately instead of burning the retry
 				// budget on a request the same model has already rejected.
-				const retryableFailure = isRetryableModelFailure(error);
+				const retryableFailure = isRetryableModelFailure(error, this.fallbackFailureOptions());
 				const sameCandidateRetryable =
 					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
 				recordProviderRateLimit(this.currentProvider(), error, workflowModelName(this.currentModelValue()));
@@ -2254,7 +2260,7 @@ export class StageSessionController {
 			}
 			throw new WorkflowPromptModelFailure(terminalFailure);
 		} catch (err) {
-			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+			if (this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err, this.fallbackFailureOptions())) {
 				this.artifactCapture.settleAttempt(true);
 				const usage = this.takeAttemptUsage(resumedSession);
 				this.modelAttempts.push({
@@ -2277,7 +2283,7 @@ export class StageSessionController {
 				...(usage === undefined ? {} : { usage }),
 				error: message,
 			});
-			if (this.opts.signal?.aborted || !isRetryableModelFailure(err)) {
+			if (this.opts.signal?.aborted || !isRetryableModelFailure(err, this.fallbackFailureOptions())) {
 				this.modelWarnings.push(...this.pendingFallbackWarnings);
 				this.pendingFallbackWarnings.length = 0;
 				this.notifyModelFallbackMetaChange();
@@ -2342,7 +2348,11 @@ export class StageSessionController {
 		// attempt it actually spent and then stops, so no further candidate is walked
 		// and no `[fallback]` warning claims a model was at fault.
 		const terminalStageDelivery = isWorkflowPendingStageDeliveryFailure(err);
-		if (!terminalStageDelivery && this.capturedStructuredOutputForAttempt() && isRetryableModelFailure(err)) {
+		if (
+			!terminalStageDelivery &&
+			this.capturedStructuredOutputForAttempt() &&
+			isRetryableModelFailure(err, this.fallbackFailureOptions())
+		) {
 			this.recordSuccessfulAttempt(candidate);
 			return "handled";
 		}
@@ -2363,7 +2373,7 @@ export class StageSessionController {
 				!this.opts.signal?.aborted &&
 				!this.startupWait.signal.aborted &&
 				!terminalStageDelivery &&
-				mayAdvanceToNextCandidate(err)
+				mayAdvanceToNextCandidate(err, this.fallbackFailureOptions())
 			) {
 				try {
 					nextIndex = await this.selectReadyCandidate(candidates, walk, index + 1);
@@ -2381,7 +2391,7 @@ export class StageSessionController {
 			this.opts.signal?.aborted ||
 			this.startupWait.signal.aborted ||
 			terminalStageDelivery ||
-			!mayAdvanceToNextCandidate(err) ||
+			!mayAdvanceToNextCandidate(err, this.fallbackFailureOptions()) ||
 			nextIndex === undefined
 		) {
 			await this.settleFailedCandidate();

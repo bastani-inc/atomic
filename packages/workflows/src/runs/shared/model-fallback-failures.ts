@@ -2,6 +2,7 @@
 
 export type {
 	ModelFallbackFailureKind,
+	ModelFallbackFailureOptions,
 	ModelFallbackFailureSignal,
 	ModelFallbackFailureSource,
 } from "@bastani/atomic";

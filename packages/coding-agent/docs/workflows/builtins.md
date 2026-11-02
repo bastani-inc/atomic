@@ -203,7 +203,7 @@ Each parsed Goal review round and Ralph review round appends convergence evidenc
 
 Declared outputs include `result`, the latest research question and artifact paths, implementation notes, optional QA video and PR reports, approval, iteration count, and review artifacts.
 
-Goal and Ralph both support reusable worktree binding through `git_worktree_dir` and `base_branch`. Use `create_pr=true` only for an explicitly authorized final action after implementation approval. For follow-up runs based on reviewer findings, pass the original task text as `acceptance_criteria` to prevent contract drift.
+Goal and Ralph both support reusable worktree binding through `git_worktree_dir` and `base_branch`. An existing worktree root of any repository is reused as-is, even when the session runs in another repository or outside Git. Creating one requires starting inside the source repository: a missing path or an empty directory becomes the worktree, and a non-empty non-Git directory receives a run-owned checkout at `<dir>/<4-hex>/<repository-name>` that resume reuses. Use `create_pr=true` only for an explicitly authorized final action after implementation approval. For follow-up runs based on reviewer findings, pass the original task text as `acceptance_criteria` to prevent contract drift.
 
 ### `open-claude-design`
 

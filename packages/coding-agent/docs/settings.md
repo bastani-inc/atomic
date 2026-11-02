@@ -147,6 +147,8 @@ To audit a routing decision, the stage's `routerSelection` in `workflow({ action
 
 If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback.
 
+A content-filter refusal, such as OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, or a `content_filter` finish reason, also moves to the next fallback, without retrying the model that refused: the same request would be refused again. The refused model is recorded in the fallback history. Set `retry.fallbackOnContentFilter` to `false` to keep such a refusal on the model that gave it. Subagents and workflow stages follow the same setting for their own `fallbackModels`.
+
 The fallback model and its thinking level remain active for later turns in the same main-chat session. Choose another model explicitly with `/model` or model cycle to change them.
 
 Workflow stages that set their own `model` or `fallbackModels` never use this list; they advance only the chain they declare. See [`fallbackModels`](/workflows/api-reference#fallbackmodels).
@@ -340,6 +342,7 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 | `retry.maxRetries` | number | `3` | Maximum agent-level retry attempts |
 | `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff (2s, 4s, 8s) |
 | `retry.maxAgentDelayMs` | number | `60000` | Maximum agent-level backoff delay (60s); `0` retries immediately |
+| `retry.fallbackOnContentFilter` | boolean | `true` | Move to the next `fallbackModels` entry when a provider's content filter refuses a request (for example OpenAI's HTTP 422 `cyber_policy`), instead of retrying the same model. `false` retries the refusal on the same model and never falls back for it |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
 | `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts. Leave unset/`0` to let Atomic's agent-level retry handle transient failures |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s); also caps how long an agent-level retry waits for a server retry hint |

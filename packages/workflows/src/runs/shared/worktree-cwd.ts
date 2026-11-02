@@ -77,7 +77,9 @@ export function resolveWorktreeStageCwd(cwd: string | undefined, setup: GitWorkt
 	const repositoryRelative = absoluteInput ? relativePathWithin(repositoryRoot, candidateRealPath) : undefined;
 	if (repositoryRelative === undefined) {
 		throw new Error(
-			`atomic-workflows: cwd ${cwd} is outside gitWorktreeDir ${setup.worktreeRoot}; use a cwd inside the invoking repository so Atomic can remap it, or omit cwd.`,
+			repositoryRoot === worktreeRoot
+				? `atomic-workflows: cwd ${cwd} is outside gitWorktreeDir ${setup.worktreeRoot}, which belongs to a different repository than the invoking cwd; choose a cwd inside the worktree, or omit cwd.`
+				: `atomic-workflows: cwd ${cwd} is outside gitWorktreeDir ${setup.worktreeRoot}; use a cwd inside the invoking repository so Atomic can remap it, or omit cwd.`,
 		);
 	}
 	const mappedCwd = resolve(setup.worktreeRoot, repositoryRelative);

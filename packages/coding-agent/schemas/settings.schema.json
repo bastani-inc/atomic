@@ -282,6 +282,11 @@
           "description": "Maximum agent-level backoff delay in milliseconds. 0 retries immediately.",
           "default": 60000
         },
+        "fallbackOnContentFilter": {
+          "type": "boolean",
+          "description": "When a provider's content filter refuses a request, such as OpenAI's HTTP 422 cyber_policy, move to the next fallback model instead of retrying the same one.",
+          "default": true
+        },
         "provider": {
           "type": "object",
           "properties": {

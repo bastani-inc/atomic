@@ -961,6 +961,157 @@ test("a sticky message queued after the stage's startup drain does not hold its 
 	}
 });
 
+test("the root records messages its worker already delivered without delivering them again", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueBroadcast("broadcast-1");
+		const received: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: ["direct-1", "broadcast-1"] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		assert.deepEqual(received, []);
+		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 0);
+		const broadcast = f.store.runs().find((run) => run.id === ROOT)?.pendingStageMessages?.[0];
+		assert.deepEqual(
+			broadcast?.deliveries?.map(({ stageId, sessionId, admission }) => ({ stageId, sessionId, admission })),
+			[{ stageId: "stage", sessionId: "session-a", admission: "context" }],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage whose child completes before the root's background drain records its receipt keeps it", async () => {
+	const f = await fixture();
+	// The root's drain reaches its first receipt only once the test lets it, as a busy root would.
+	const appending = Promise.withResolvers<void>();
+	const proceed = Promise.withResolvers<void>();
+	const handoff = new PoolStageHandoff(
+		f.backend,
+		f.store,
+		{
+			assertCurrent: (lease, work) => f.queue.assertCurrent(lease, work),
+			result: (root, id) => f.queue.result(root, id),
+			withCurrentAppend: async (lease, work, assertSession, action) => {
+				appending.resolve();
+				await proceed.promise;
+				return f.queue.withCurrentAppend(lease, work, assertSession, action);
+			},
+		},
+		f.lease,
+	);
+	try {
+		await handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueBroadcast("broadcast-1");
+		const transported: string[] = [];
+		// The worker already delivered the broadcast; the root records it.
+		const drain = handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: ["broadcast-1"] },
+			async (_from, delivered) => {
+				transported.push(delivered.id);
+			},
+		);
+		await appending.promise;
+		// Meanwhile the stage finishes and its child completes.
+		const ended = stage("stage", { sessionId: "session-a", status: "completed", endedAt: 1 });
+		await handoff.publish(f.first, [childRun([ended], { status: "completed" })]);
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			stages: [ended],
+			toolNodes: [],
+		} as never);
+		proceed.resolve();
+		await drain;
+		assert.deepEqual(transported, []);
+		const root = f.store.runs().find((run) => run.id === ROOT);
+		// The ended stage's receipt is archived by the durable owner rather than kept in the live list.
+		assert.equal(root?.pendingStageMessages?.[0]?.deliveryCount, 1);
+		assert.equal(
+			await f.backend.hasPendingStageDeliveryReceipt(ROOT, "broadcast-1", {
+				runId: descriptor.childRunId,
+				stageId: "stage",
+				sessionId: "session-a",
+				admission: "context",
+			}),
+			true,
+		);
+		assert.equal(root?.intercomDeliveryIssue, undefined);
+		// A replaced attempt still records nothing: the work is no longer the completed attempt's to report on.
+		const otherReceipt = {
+			runId: descriptor.childRunId,
+			stageId: "other",
+			sessionId: "session-x",
+			admission: "context" as const,
+		};
+		await assert.rejects(
+			f.queue.withCurrentAppend(
+				f.lease,
+				{ ...f.first, generation: f.first.generation + 1 },
+				() => {},
+				() =>
+					f.store.recordPendingStageMessageDeliveries(
+						ROOT,
+						"broadcast-1",
+						[otherReceipt],
+						new Date().toISOString(),
+						f.backend,
+					),
+			),
+			/stale/i,
+		);
+		assert.equal(await f.backend.hasPendingStageDeliveryReceipt(ROOT, "broadcast-1", otherReceipt), false);
+	} finally {
+		proceed.resolve();
+		await f.close();
+	}
+});
+
+test("failed stage drains are summarized once on the root run, never as a warning per stage", async () => {
+	const f = await fixture();
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueBroadcast("broadcast-1");
+		const failing = async () => {
+			throw new Error("Worker exited before delivery acknowledgement");
+		};
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		await assert.rejects(f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing));
+		await assert.rejects(f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing));
+		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
+		assert.match(
+			issue() ?? "",
+			/^2 stage drains on local workers failed; .*Worker exited before delivery acknowledgement/,
+		);
+		// A drain that ends because its attempt was replaced is no failure.
+		await f.replacement();
+		f.handoff.fence(f.first);
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing),
+			/stale/i,
+		);
+		assert.match(issue() ?? "", /^2 stage drains/);
+		assert.equal(warn.mock.calls.length, 0);
+	} finally {
+		warn.mockRestore();
+		await f.close();
+	}
+});
+
 test("a fresh coordinator restores pending stage messages, receipts and control intent (#3869)", async () => {
 	const f = await fixture();
 	let recovered: JournalDurableBackend | undefined;
