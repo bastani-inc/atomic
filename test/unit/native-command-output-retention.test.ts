@@ -33,9 +33,12 @@ interface Batch {
 function runBatches(open: boolean, pty = false): readonly Batch[] {
 	const result = spawnSyncCollect([process.execPath, "--expose-gc", fixture], {
 		env: {
-			// Few malloc arenas: each command's reader threads can otherwise grow glibc's per-thread arenas by a few MB in
-			// a step, which is allocator noise, not output the supervisor keeps.
+			// Resident memory measures what the supervisor keeps only if glibc gives freed buffers back. Few malloc arenas:
+			// each command's reader threads can otherwise grow per-thread arenas by a few MB in a step. A fixed mmap
+			// threshold: glibc otherwise raises it after the first large free, so later output buffers come from the heap
+			// and stay resident once freed (CI saw a terminal-command run grow 52 MB with every buffer released).
 			MALLOC_ARENA_MAX: "2",
+			MALLOC_MMAP_THRESHOLD_: "131072",
 			OWNERS: String(BATCHES),
 			COMMANDS: String(COMMANDS),
 			BYTES: String(BYTES),
