@@ -35,15 +35,77 @@ updates:
           interval: "weekly"
       cooldown:
           default-days: 0
+      groups:
+          # @babel/parser depends on a matching @babel/types (8.1.0 needs
+          # ^8.1.0), and scripts/test-duration-guard.ts passes parser nodes to
+          # @babel/types helpers. Bumped alone, the parser nests its own
+          # @babel/types and the two `Node` types stop matching (#4211), so the
+          # @babel/* packages are proposed together.
+          babel:
+              patterns:
+                  - "@babel/*"
       commit-message:
           prefix: "deps"
       labels:
           - "dependencies"
           - "npm"
+      # A dependency that upstream pi (earendil-works/pi) declares in a package
+      # Atomic carries (pi's root, ai, coding-agent and mcp manifests) comes
+      # only through the pi sync, never through a Dependabot PR: a bump here
+      # puts Atomic on a version pi does not run, and the next sync has to
+      # reconcile or undo it (closed examples: typebox #4206, vitest #4209,
+      # minimatch #4228/#4229). That holds even where Atomic is ahead of pi
+      # today. The list is every such name an Atomic manifest also declares,
+      # as recorded in test/fixtures/pi-carried-dependencies.json; refresh both
+      # on each pi sync (see "Dependabot and the pi sync" in docs/ci.md). These
+      # rules also suppress Dependabot security updates for these names, so an
+      # advisory against one is handled by a sync or a manual bump.
       ignore:
           # @types/node is pinned via a root `overrides` entry to match
           # upstream Pi's resolved lockfile (see #1489); bumps here are no-ops.
           - dependency-name: "@types/node"
+          # pi root package.json. Atomic's biome is ahead of pi's; it still
+          # moves only with a sync (or a deliberate manual bump).
+          - dependency-name: "@biomejs/biome"
+          - dependency-name: "esbuild"
+          - dependency-name: "typescript"
+          - dependency-name: "yaml"
+          # pi packages/ai (typebox is also pinned via a root `overrides` entry)
+          - dependency-name: "@earendil-works/pi-telemetry"
+          - dependency-name: "@anthropic-ai/sdk"
+          - dependency-name: "@aws-sdk/client-bedrock-runtime"
+          - dependency-name: "@google/genai"
+          - dependency-name: "@smithy/node-http-handler"
+          - dependency-name: "canvas"
+          - dependency-name: "http-proxy-agent"
+          - dependency-name: "https-proxy-agent"
+          - dependency-name: "openai"
+          - dependency-name: "partial-json"
+          - dependency-name: "typebox"
+          - dependency-name: "vitest"
+          # pi packages/coding-agent
+          - dependency-name: "@earendil-works/pi-agent-core"
+          - dependency-name: "@earendil-works/pi-codemode"
+          - dependency-name: "@earendil-works/pi-tui"
+          - dependency-name: "@silvia-odwyer/photon-node"
+          - dependency-name: "@types/cross-spawn"
+          - dependency-name: "@types/hosted-git-info"
+          - dependency-name: "@types/proper-lockfile"
+          - dependency-name: "@types/semver"
+          - dependency-name: "brace-expansion"
+          - dependency-name: "chalk"
+          - dependency-name: "cross-spawn"
+          - dependency-name: "diff"
+          - dependency-name: "grok-mermaid"
+          - dependency-name: "highlight.js"
+          - dependency-name: "hosted-git-info"
+          - dependency-name: "ignore"
+          - dependency-name: "jiti"
+          - dependency-name: "minimatch"
+          - dependency-name: "proper-lockfile"
+          - dependency-name: "quickjs-wasi"
+          - dependency-name: "semver"
+          - dependency-name: "undici"
 
     # npm packages (packages/natives)
     #
