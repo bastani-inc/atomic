@@ -12,9 +12,11 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import { QUARANTINED_CAPACITY_WAIT_MS } from "../../packages/workflows/src/workers/resource-admission.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
@@ -57,6 +59,7 @@ interface RunningPool {
 
 interface FinishedPool {
 	readonly directory: string;
+	readonly root: string;
 	readonly path: string;
 	readonly result: RunResult;
 	readonly children: readonly ChildOutcome[];
@@ -69,6 +72,9 @@ interface PoolOptions {
 	readonly workers: number;
 	readonly inProcess?: boolean;
 	readonly leaseMs?: number;
+	readonly admission?: { readonly limits?: { readonly process?: number } };
+	/** How long the root may take to finish; the test fails, instead of waiting on it, past this. */
+	readonly finishWithinMs?: number;
 }
 
 /**
@@ -86,7 +92,7 @@ async function openOrphanPool(path: string, options: PoolOptions) {
 	const pool = new LocalWorkerPool(backend, {
 		journalPath: path,
 		workers: options.workers,
-		admission: {},
+		admission: options.admission ?? {},
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
 		workerEntry: stubWorker,
 		...(options.inProcess ? { coordinator: "in-process" as const } : {}),
@@ -160,12 +166,20 @@ async function runOrphanPool(
 			{ runId: root, cwd: directory, store, durableBackend: backend },
 		);
 		await options.whileRunning?.({ directory, root, path, pool });
-		const result = await execution;
+		const result =
+			options.finishWithinMs === undefined
+				? await execution
+				: await Promise.race([
+						execution,
+						sleep(options.finishWithinMs).then(() => {
+							throw new Error(`The root did not finish within ${options.finishWithinMs} ms`);
+						}),
+					]);
 		const warnings = store
 			.notices()
 			.filter((notice) => notice.runId === root && notice.level === "warning")
 			.map((notice) => notice.message);
-		await options.afterRun({ directory, path, result, children, pool, warnings });
+		await options.afterRun({ directory, root, path, result, children, pool, warnings });
 	} finally {
 		await pool.close().catch(() => {});
 		await backend.close();
@@ -356,6 +370,162 @@ test.skipIf(process.platform === "win32")(
 			probe.mockRestore();
 			signal.mockRestore();
 			pause.mockRestore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+interface ReplayPermit {
+	readonly generation: number;
+	readonly waitedMs: number;
+	readonly outcome: "granted" | "refused";
+	readonly error?: string;
+	readonly retryable?: boolean;
+}
+
+/** What each replay of child 0 got when it asked for a process permit, in order. */
+function replayPermits(directory: string): ReplayPermit[] {
+	const path = join(directory, "replay-permits.jsonl");
+	if (!fileExistsSync(path)) return [];
+	return readTextSync(path, "utf8")
+		.split("\n")
+		.filter((line) => line !== "")
+		.map((line) => JSON.parse(line) as ReplayPermit);
+}
+
+function processPermitWaiting(path: string): boolean {
+	const journal = new DatabaseSync(path, { readOnly: true });
+	try {
+		return (
+			journal
+				.prepare("SELECT 1 FROM wf_runs_resource_permits WHERE kind = 'process' AND state = 'waiting'")
+				.get() !== undefined
+		);
+	} catch {
+		return false;
+	} finally {
+		journal.close();
+	}
+}
+
+function quarantineRefusal(group: number): RegExp {
+	return new RegExp(
+		`Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${group} `,
+	);
+}
+
+/**
+ * The orphaned group survives the bounded reap: the probe never reports it gone, signals are dropped, and the reap's
+ * pauses take no time. Its permit, the only one `admission.limits.process` = 1 allows, stays quarantined.
+ */
+function survivingReap(): () => void {
+	const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
+	const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
+	const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+	process.env.ATOMIC_TEST_ORPHAN_REPLAY_PERMIT = "1";
+	return () => {
+		delete process.env.ATOMIC_TEST_ORPHAN_REPLAY_PERMIT;
+		probe.mockRestore();
+		signal.mockRestore();
+		pause.mockRestore();
+	};
+}
+
+test.skipIf(process.platform === "win32")(
+	"a replay that only quarantined process permits keep from its process permit is refused within a bound, consumes its attempts, and lets the root finish",
+	async () => {
+		const restore = survivingReap();
+		try {
+			await runOrphanPool({
+				children: 1,
+				workers: 1,
+				inProcess: true,
+				admission: { limits: { process: 1 } },
+				// Two replays, each refused once the bound passes, and the pool's own work. Before the bound existed, the
+				// replay waited for that capacity forever while its lease was renewed.
+				finishWithinMs: 2 * QUARANTINED_CAPACITY_WAIT_MS + 30_000,
+				async afterRun({ directory, root, path, result, children }) {
+					assert.equal(result.status, "completed", result.error);
+					const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+					assert.equal(children.length, 1);
+					const failure = children[0]!.error;
+					assert.ok(failure, "the child fails once every replay was refused");
+					assert.ok(isRetryableWorkflowError(failure), String(failure));
+					assert.match(
+						failure.message,
+						/Local worker retry limit: child \S+ \(child\) failed on a fault of the pool on every attempt/,
+					);
+					assert.match(failure.message, quarantineRefusal(group));
+					const permits = replayPermits(directory);
+					assert.deepEqual(
+						permits.map(({ generation, outcome }) => [generation, outcome]),
+						[
+							[2, "refused"],
+							[3, "refused"],
+						],
+						"each refusal ends its replay's attempt",
+					);
+					for (const permit of permits) {
+						assert.match(permit.error!, quarantineRefusal(group));
+						assert.equal(permit.retryable, true);
+						assert.ok(permit.waitedMs >= QUARANTINED_CAPACITY_WAIT_MS, `waited ${permit.waitedMs} ms`);
+						assert.ok(
+							permit.waitedMs < QUARANTINED_CAPACITY_WAIT_MS + 10_000,
+							`refused after ${permit.waitedMs} ms, although its lease was renewed meanwhile`,
+						);
+					}
+					assert.equal(workRow(path, root).state, "failed");
+					assert.ok(groupAlive(group));
+					assert.deepEqual(
+						permitStates(path).filter(([, state]) => state !== "released"),
+						[["process", "granted", "cleanup unconfirmed; permit quarantined"]],
+						"the surviving group's permit stays quarantined",
+					);
+				},
+			});
+		} finally {
+			restore();
+		}
+	},
+	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a replay waiting on quarantined process permits proceeds once their groups exit within the bound",
+	async () => {
+		const restore = survivingReap();
+		try {
+			await runOrphanPool({
+				children: 1,
+				workers: 1,
+				inProcess: true,
+				admission: { limits: { process: 1 } },
+				finishWithinMs: QUARANTINED_CAPACITY_WAIT_MS + 30_000,
+				async whileRunning({ directory, path }) {
+					// The orphaned group's own permit was granted before its marker was written: a waiting permit after it
+					// is the replay's.
+					await until(() => fileExistsSync(join(directory, "orphan-group")) && processPermitWaiting(path));
+					const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
+					process.kill(-group, "SIGKILL");
+					await until(() => !groupAlive(group));
+				},
+				async afterRun({ directory, path, result, children }) {
+					assert.equal(result.status, "completed", result.error);
+					assert.deepEqual(children, [{ index: 0, status: "completed" }]);
+					const permits = replayPermits(directory);
+					assert.deepEqual(
+						permits.map(({ generation, outcome }) => [generation, outcome]),
+						[[2, "granted"]],
+					);
+					assert.ok(permits[0]!.waitedMs < QUARANTINED_CAPACITY_WAIT_MS, `waited ${permits[0]!.waitedMs} ms`);
+					assert.ok(
+						permitStates(path).every(([, state]) => state === "released"),
+						JSON.stringify(permitStates(path)),
+					);
+				},
+			});
+		} finally {
+			restore();
 		}
 	},
 	ORPHAN_PROCESS_TEST_TIMEOUT_MS,
