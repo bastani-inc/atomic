@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.9.61] - 2026-11-02
+
+A local worker pool that keeps going when one child or one worker goes wrong.
+
+- **One failing child no longer takes down the pool:** a child that fails to dispatch fails alone instead of closing the whole local worker pool, and a child whose result is recorded keeps it whatever happens to the pool afterwards ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- **Cleanup trouble is a warning, not a failure:** a worker or tool process group that survives SIGKILL shows as a warning on the root run; the worker is replaced and its child replays on another worker within its three attempts ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- **Pool faults replay instead of failing:** a child that hits `stale_work_lease`, `worker_lost` or another pool fault replays from its last checkpoint, and fails with the retryable `worker_retry_limit` only after its third attempt ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+
+### Fixed
+
+- One failing child no longer takes down a local worker pool (`workflows.localWorkers`). Before, a single child that failed to dispatch, for example on a transient storage error, closed the whole pool. On a busy machine that close often could not confirm in time that a killed worker had exited, so every other child failed with the retryable `Local worker cleanup was not confirmed`. That included children whose work had already finished, and every child the root started afterwards, so a root that retries pooled children retried them in a tight loop until it gave up. Now that failure fails only that child; the pool closes only when the root ends or the pool itself fails. A child whose result is recorded keeps it whatever happens to the pool afterwards. A worker's exit after SIGKILL is confirmed from the operating system, not from a 5-second timer that a busy coordinator could miss. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- Cleanup that a local worker pool really cannot confirm is no longer any child's failure. This covers a tool process group that survives SIGKILL and a worker that outlives it. Instead it shows as a warning on the root run and is written to that worker's log, which is kept. The worker is replaced, and its unfinished child replays on another worker within its usual three attempts. Process permits of the surviving groups stay quarantined, and closing the pool still reports them. Worker logs of a pool that failed are kept as well. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- A child on a local worker whose run fails on a fault of the pool, such as `stale_work_lease`, `worker_lost`, `storage_unavailable` or `intercom_unavailable`, is replayed from its last checkpoint within its three attempts instead of ending failed with a recoverable fault recorded as final. After the third attempt it fails with the retryable `worker_retry_limit`, naming the fault. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- A replayed child on a local worker whose `ctx.tool` call fails again, as it did on an earlier attempt, no longer fails with `Pool checkpoint identity conflict`. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+
+## [0.9.61-alpha.1] - 2026-11-02
+
+A local worker pool that keeps going when one child or one worker goes wrong.
+
+- **One failing child no longer takes down the pool:** a child that fails to dispatch fails alone instead of closing the whole local worker pool, and a child whose result is recorded keeps it whatever happens to the pool afterwards ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- **Cleanup trouble is a warning, not a failure:** a worker or tool process group that survives SIGKILL shows as a warning on the root run; the worker is replaced and its child replays on another worker within its three attempts ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+- **Pool faults replay instead of failing:** a child that hits `stale_work_lease`, `worker_lost` or another pool fault replays from its last checkpoint, and fails with the retryable `worker_retry_limit` only after its third attempt ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
+
 ### Fixed
 
 - One failing child no longer takes down a local worker pool (`workflows.localWorkers`). Before, a single child that failed to dispatch, for example on a transient storage error, closed the whole pool. On a busy machine that close often could not confirm in time that a killed worker had exited, so every other child failed with the retryable `Local worker cleanup was not confirmed`. That included children whose work had already finished, and every child the root started afterwards, so a root that retries pooled children retried them in a tight loop until it gave up. Now that failure fails only that child; the pool closes only when the root ends or the pool itself fails. A child whose result is recorded keeps it whatever happens to the pool afterwards. A worker's exit after SIGKILL is confirmed from the operating system, not from a 5-second timer that a busy coordinator could miss. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
