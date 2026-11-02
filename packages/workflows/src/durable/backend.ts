@@ -608,6 +608,8 @@ interface JournalWorkflowRecord {
 	stageOutputByReplayKey: Map<string, DurableStageCheckpoint>;
 	stageSessionByReplayKey: Map<string, DurableStageCheckpoint>;
 	nestedSnapshotVersion: NestedSnapshotVersion;
+	/** Checkpoints counted as recorded but not kept in memory (see `releaseCheckpoints`). */
+	released: number;
 }
 
 function checkpointKey(c: DurableCheckpoint): string {
@@ -706,6 +708,7 @@ class JournalProjection {
 				stageOutputByReplayKey: new Map(),
 				stageSessionByReplayKey: new Map(),
 				nestedSnapshotVersion: new NestedSnapshotVersion(handle.workflowId),
+				released: 0,
 			});
 	}
 	applyWorkflowSnapshot(handle: DurableWorkflowHandle): void {
@@ -713,7 +716,7 @@ class JournalProjection {
 		const record = this.workflows.get(handle.workflowId)!;
 		record.handle = {
 			...handle,
-			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size),
+			completedCheckpoints: Math.max(handle.completedCheckpoints, record.checkpoints.size + record.released),
 		};
 	}
 
@@ -801,6 +804,57 @@ class JournalProjection {
 	}
 
 	recordCheckpoint(recorded: DurableCheckpoint): void {
+		const rec = this.workflows.get(recorded.workflowId);
+		if (!rec) return;
+		const checkpoint = this.index(rec, recorded);
+		if (checkpoint === undefined) return;
+		rec.handle = {
+			...rec.handle,
+			completedCheckpoints: rec.checkpoints.size + rec.released,
+			updatedAt: checkpoint.completedAt,
+		};
+	}
+
+	/**
+	 * Counts a recorded checkpoint, as `recordCheckpoint` does, without keeping it in memory: the run's handle reads as
+	 * if it were recorded, and its reads do not find it. Unlike `recordCheckpoint` it cannot tell a repeat, which it
+	 * never sees: a journal folds each checkpoint event once, keyed uniquely in its run.
+	 */
+	countCheckpoint(recorded: DurableCheckpoint): void {
+		const rec = this.workflows.get(recorded.workflowId);
+		if (!rec) return;
+		rec.released++;
+		rec.handle = {
+			...rec.handle,
+			completedCheckpoints: rec.checkpoints.size + rec.released,
+			updatedAt: recorded.completedAt,
+		};
+	}
+
+	/** Drops every checkpoint of a run from memory; they stay counted, and `restoreCheckpoint` brings one back. */
+	releaseCheckpoints(workflowId: string): void {
+		const rec = this.workflows.get(workflowId);
+		if (!rec) return;
+		rec.released += rec.checkpoints.size;
+		rec.checkpoints.clear();
+		rec.toolByHash.clear();
+		rec.uiByHash.clear();
+		rec.stageOutputByReplayKey.clear();
+		rec.stageSessionByReplayKey.clear();
+		rec.nestedSnapshotVersion = new NestedSnapshotVersion(workflowId);
+	}
+
+	/**
+	 * Keeps again a checkpoint that was counted and released. Checkpoints are restored in the order they were recorded,
+	 * so each read finds what it found when every checkpoint was kept; the run's handle does not change.
+	 */
+	restoreCheckpoint(recorded: DurableCheckpoint): void {
+		const rec = this.workflows.get(recorded.workflowId);
+		if (rec !== undefined && this.index(rec, recorded) !== undefined && rec.released > 0) rec.released--;
+	}
+
+	/** Adds a checkpoint to its run's indexes; the normalized checkpoint, or undefined when the run already has it. */
+	private index(rec: JournalWorkflowRecord, recorded: DurableCheckpoint): DurableCheckpoint | undefined {
 		const checkpoint = recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded;
 		const currentCheckpoint =
 			checkpoint.kind === "stage" && checkpoint.topology === undefined
@@ -813,10 +867,8 @@ class JournalProjection {
 						},
 					}
 				: checkpoint;
-		const rec = this.workflows.get(currentCheckpoint.workflowId);
-		if (!rec) return;
 		const key = checkpointKey(currentCheckpoint);
-		if (rec.checkpoints.has(key)) return;
+		if (rec.checkpoints.has(key)) return undefined;
 		rec.checkpoints.set(key, currentCheckpoint);
 		rec.nestedSnapshotVersion.record(currentCheckpoint);
 		if (currentCheckpoint.kind === "tool") {
@@ -839,11 +891,7 @@ class JournalProjection {
 				}
 			}
 		}
-		rec.handle = {
-			...rec.handle,
-			completedCheckpoints: rec.checkpoints.size,
-			updatedAt: currentCheckpoint.completedAt,
-		};
+		return currentCheckpoint;
 	}
 
 	getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined {

@@ -310,3 +310,30 @@ test.skipIf(process.platform === "win32")(
 	},
 	3 * POOLED_ROOT_BUDGET_MS,
 );
+
+test.skipIf(process.platform === "win32")(
+	"the worker memory limit is validated and can change when a root resumes (#4197)",
+	async () => {
+		const directory = makeTempDirectory("pool-resume-memory-limit-");
+		const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
+		const backend = await JournalDurableBackend.open(journal);
+		const options = { runId: "root", durableBackend: backend, store: createStore() };
+		try {
+			for (const maxWorkerRssBytes of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+				await assert.rejects(
+					run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [], maxWorkerRssBytes } }),
+					/Invalid local worker memory limit/,
+				);
+			assert.equal((await journal.listRuns()).length, 0);
+			for (const maxWorkerRssBytes of [1_000_000_000, 2_000_000_000, undefined]) {
+				const localWorkers = { count: 1, definitions: [], maxWorkerRssBytes };
+				assert.equal((await run(definition, {}, { ...options, localWorkers })).status, "completed");
+			}
+			assert.deepEqual(backend.getWorkflow("root")?.resources?.localWorkers, { count: 1, definitions: [] });
+		} finally {
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	3 * POOLED_ROOT_BUDGET_MS,
+);

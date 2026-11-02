@@ -213,6 +213,20 @@
           "type": "string",
           "description": "Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted."
         },
+        "planningTimeoutMs": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[dD][iI][sS][aA][bB][lL][eE][dD]|[0-9]+(?:[mM][sS]|[smhSMH])?)$"
+            }
+          ],
+          "description": "Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as \"5m\", or \"disabled\"; 0 or \"disabled\" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.",
+          "default": 300000
+        },
         "modelOverrides": {
           "type": "object",
           "patternProperties": {
@@ -589,6 +603,12 @@
                   "type": "number",
                   "minimum": 0,
                   "description": "Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off."
+                },
+                "maxWorkerRssBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991,
+                  "description": "Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never)."
                 }
               },
               "additionalProperties": false

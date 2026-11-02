@@ -50,6 +50,13 @@ const CompactionSettingsSchema = Type.Object({
 				"Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted.",
 		}),
 	),
+	planningTimeoutMs: Type.Optional(
+		timeoutSetting({
+			description:
+				'Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as "5m", or "disabled"; 0 or "disabled" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.',
+			default: SETTINGS_DEFAULTS.compaction.planningTimeoutMs,
+		}),
+	),
 	modelOverrides: Type.Optional(
 		Type.Record(Type.String(), CompactionModelOverrideSchema, {
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',
@@ -430,6 +437,14 @@ const WorkflowsSettingsSchema = Type.Union(
 								minimum: 0,
 								description:
 									"Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off.",
+							}),
+						),
+						maxWorkerRssBytes: Type.Optional(
+							Type.Integer({
+								minimum: 1,
+								maximum: Number.MAX_SAFE_INTEGER,
+								description:
+									"Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never).",
 							}),
 						),
 					},

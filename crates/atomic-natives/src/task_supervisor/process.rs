@@ -133,6 +133,14 @@ impl CommandTask {
 		matches!(self.intent.terminal, CommandTerminal::Pipe {})
 			&& self.options.sink != Some(CommandOutputSink::Drained)
 	}
+	/// Frees the in-memory copies of a done command's output once its owner has closed (#4215), so nothing of it stays
+	/// in memory for as long as the process lives. What its spool holds still reads back. Output only memory held reads
+	/// as omitted from then on: all of a terminal (PTY) command's that never spilled, and the end of a spool that
+	/// overflowed its cap or failed to write. Nothing reads a closed owner's output. Called with the actor's state lock
+	/// held, so a poisoned output lock is taken as it is: freeing buffers is safe whatever a panicking reader left.
+	pub(super) fn release_output_memory(&self) {
+		self.output.lock().unwrap_or_else(std::sync::PoisonError::into_inner).release_memory();
+	}
 	#[cfg(unix)]
 	fn retain_failed(
 		&self,
@@ -340,7 +348,7 @@ impl Actor {
 		let runner = RunnerLease { cap: cap.clone() };
 		let spawn = std::thread::Builder::new().name("task-command".into()).spawn(move || {
 			actor.run_command(&runner, &resource);
-			resource.output.lock().unwrap().release_file();
+			resource.output.lock().unwrap().settle();
 			resource.finished.store(true, Ordering::Release);
 		});
 		match spawn {
@@ -1024,6 +1032,29 @@ impl OutputStore {
 		self.released = true;
 		if self.disk_len == 0 {
 			let _ = std::fs::remove_file(&self.path);
+		}
+	}
+	/// Whether the spool holds every byte the command wrote, so the in-memory copies only duplicate it.
+	fn spooled_whole(&self) -> bool {
+		self.spilled
+			&& (self.released || self.file.is_some())
+			&& !self.unavailable
+			&& !self.overflow
+			&& self.disk_len == self.byte_count
+	}
+	/// Frees the in-memory copies of the output (head, tail and foreground) and their allocations (#4215). Reads then
+	/// come from the spool alone: the same bytes when it holds them all, and otherwise an omitted range for what only
+	/// memory held.
+	fn release_memory(&mut self) {
+		self.head = Vec::new();
+		self.tail = VecDeque::new();
+		self.foreground = Vec::new();
+	}
+	/// What a settled command keeps of its output in memory: nothing, once its spool holds all of it (#4215).
+	fn settle(&mut self) {
+		self.release_file();
+		if self.spooled_whole() {
+			self.release_memory();
 		}
 	}
 	fn read_disk(&mut self, start: u64, bytes: &mut [u8]) -> Option<io::Result<()>> {
@@ -1952,6 +1983,80 @@ mod tests {
 		store.release_file();
 		assert!(!path.exists(), "empty settled spool was kept on disk");
 		assert!(store.page(0, 4).chunks.is_empty());
+	}
+
+	/// What a page reads, as its chunks' bytes and its omitted ranges.
+	fn read_back(
+		store: &mut OutputStore,
+		start: u64,
+		maximum: u64,
+	) -> (Vec<u8>, Vec<(String, String)>) {
+		let page = store.page(start, maximum);
+		let bytes = page.chunks.iter().flat_map(|chunk| chunk.bytes.iter().copied()).collect();
+		let omitted =
+			page.omitted_ranges.iter().map(|range| (range.start.clone(), range.end.clone())).collect();
+		(bytes, omitted)
+	}
+	fn holds_memory(store: &OutputStore) -> bool {
+		store.head.capacity() + store.tail.capacity() + store.foreground.capacity() > 0
+	}
+
+	// #4215: a settled command whose spool holds every byte keeps no in-memory copy, and reads back the same bytes.
+	#[test]
+	fn settled_whole_spool_frees_memory_and_reads_the_same_4215() {
+		let path = std::env::temp_dir().join(format!("atomic-output-whole-{}", std::process::id()));
+		let mut store = OutputStore::new(path, 8, 16, 1_000);
+		store.background();
+		store.append(b"abcdefghijklmnopqrstuvwxyz");
+		let before = read_back(&mut store, 0, 64);
+		assert!(holds_memory(&store));
+		store.settle();
+		assert!(!holds_memory(&store), "a settled whole spool kept its in-memory copies");
+		assert_eq!(read_back(&mut store, 0, 64), before);
+		assert_eq!(before.0, b"abcdefghijklmnopqrstuvwxyz");
+		assert_eq!(read_back(&mut store, 20, 3).0, b"uvw");
+	}
+
+	// #4215: memory is the only copy of the end of a spool that overflowed its cap, and of a spool that failed to write;
+	// settling keeps it.
+	#[test]
+	fn settled_partial_spool_keeps_its_memory_4215() {
+		let path = std::env::temp_dir().join(format!("atomic-output-capped-{}", std::process::id()));
+		let mut capped = OutputStore::new(path, 4, 8, 5);
+		capped.background();
+		capped.append(b"abcdefghij");
+		assert!(capped.overflow);
+		let before = read_back(&mut capped, 0, 64);
+		capped.settle();
+		assert!(holds_memory(&capped), "an overflowed spool dropped the only copy of its end");
+		assert_eq!(read_back(&mut capped, 0, 64), before);
+		let path = std::env::temp_dir().join(format!("atomic-output-failed-{}", std::process::id()));
+		let mut failed = OutputStore::new(path, 4, 8, 1_000);
+		failed.background();
+		failed.unavailable = true;
+		failed.append(b"abcdefghij");
+		failed.settle();
+		assert!(holds_memory(&failed), "a failed spool dropped the only copy of its output");
+	}
+
+	// #4215: an output that never spilled (a foreground terminal command) keeps its memory when it settles, and a
+	// closed owner's command frees it: what only memory held then reads as omitted.
+	#[test]
+	fn unspilled_output_is_kept_until_released_4215() {
+		let path =
+			std::env::temp_dir().join(format!("atomic-output-unspilled-{}", std::process::id()));
+		let mut store = OutputStore::new(path.clone(), 8, 16, 1_000);
+		store.append(b"terminal");
+		store.settle();
+		assert!(holds_memory(&store));
+		assert_eq!(read_back(&mut store, 0, 64).0, b"terminal");
+		store.release_memory();
+		assert!(!holds_memory(&store));
+		assert_eq!(
+			read_back(&mut store, 0, 64),
+			(Vec::new(), vec![("0".to_string(), "8".to_string())])
+		);
+		assert!(!path.exists());
 	}
 
 	#[test]

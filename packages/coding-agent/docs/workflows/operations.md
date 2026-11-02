@@ -182,7 +182,7 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow status [run-id]
 /workflow status --all
 /workflow quit <run-id|--all>
-/workflow resume <run-id> [stage-id-or-name] [message]
+/workflow resume <run-id> [stage-id-or-name] [message] [--accept-entry-changes]
 /workflows [full-workflow-uuid]
 /workflow reload
 ```
@@ -196,6 +196,7 @@ Common controls:
 /workflow pause <run-id>               # pause resumably
 /workflow pause <run-id> <stage>       # pause one stage; the others keep running
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
+/workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
 /workflows [run-id]                    # retained alias for /workflow resume (history picker)
 ```
@@ -878,6 +879,8 @@ The root workflow remains in its original process and owns the run graph, run co
 
 Worker definitions are loaded in the SDK with `loadWorkerWorkflow(absolutePath, exportName)`, then passed to `ctx.workflow(...)`. The SDK also accepts `RunOpts.localWorkers`; the settings form applies to CLI launches. Paths in worker settings resolve against the invocation working directory. `RunOpts.localWorkers` paths resolve against `cwd` (or the current working directory when omitted). On resume, Atomic checks the saved worker options and definition entry-module digests. A changed pool size (`count`) or root limits (`admission.limits`, `admission.host`) are applied, and the root records them. A definition added, removed or with an edited entry module, or any other changed setting, is refused, and the error names each change. The digest covers the entry file, not its imported dependency graph: after editing a helper module, a resume replays completed steps from the journal and runs new work with the current code.
 
+To resume after editing a definition's entry module, accept the edit: `/workflow resume <run-id> --accept-entry-changes`, or `acceptEntryChanges: true` in `RunOpts` or `runtime.resumeDurableWorkflow`. Completed steps still replay from the journal, and the root's unfinished children run the edited module, including children queued before the crash that no worker had started. Whether the edited module still replays what a child recorded is up to you: a child whose replayed calls no longer match its recorded ones fails, as any replay mismatch does. A resume may also run under another execution mode than the launch, for example a headless resume of a run launched in the terminal UI; unfinished children then run under the resume's mode.
+
 Pools work with any journal the worker processes can open by the same selection: the default local SQLite file, a SQLite file with a custom prefix, or a remote database through a [storage adapter](/storage#selecting-an-adapter) such as libSQL or Turso. Select it with `workflows.journal`, shared `storage`, `ATOMIC_WORKFLOWS_JOURNAL` or `--storage`, or `RunOpts.journal` with a `path` or an adapter. A memory journal, and a journal passed to the SDK as an object, cannot host workers. The workers always run on the root's machine. When the journal is not the default local file, the pool keeps its work queue, leases, admission state, pooled stage transcripts and worker logs in a SQLite file under `~/.atomic/workflows/pool/`, while the run's checkpoints stay in the journal. Resume such a root on the machine where it ran, with the journal selected as it was: resuming it on another machine fails with an error naming the original machine, because that machine's pool database holds the queue and leases of its children, and changing the adapter, its options, its prefix or the Atomic home directory selects another pool database and fails with an error naming both. Changing only where a credential is read from, such as the environment variable that holds the token, does not. One limit remains: if a worker is declared lost in the instant its stage takes a queued Intercom message, that message can be recorded as delivered and not offered again to the replacement worker's stage. On the default local SQLite journal this cannot happen. Start a new run to opt in; an existing unpooled run cannot change placement on resume. If new global worker settings prevent an older run from resuming, disable those settings for that resume.
 
 The supported placement is multiple local processes on Linux or macOS. Windows and any host without native process identity and boot identity refuse activation with an error. This is a containment requirement: lease expiry does not prove that an old process stopped. Remote hosts and network workers are not supported.
@@ -914,7 +917,9 @@ Each worker writes its standard error to `worker-logs/<root run ID>/<worker ID>.
 
 `admission.limits` caps concurrent agent sessions and managed tool processes for one root. A session permit covers creation through disposal, including fallback and delegated sessions. A process permit remains held until the Atomic-managed process is confirmed stopped; yielding an observation wait does not release it. Processes launched outside Atomic's managed tools are not counted. The worker count is a placement limit, separate from these resource caps.
 
-`admission.host` adds launch gates for load per CPU and free memory. These measurements are advisory; they are not operating-system resource ceilings.
+`admission.host` adds launch gates for load per CPU and free memory. These measurements are advisory; they are not operating-system resource ceilings. `minFreeMemoryBytes` holds new sessions and tool processes in every worker while the machine's free memory is below it; it does not shrink a worker that grew after its sessions started.
+
+A worker serves one child after another, and keeps in memory only what the child it runs needs: its own checkpoints, read from the journal when it claims the child, and its own stages. What it held for a finished child is let go of before it runs the next one. As a backstop, `localWorkers.maxWorkerRssBytes` replaces a worker whose resident memory has grown past that many bytes with a fresh worker once its current child ends; a running child is never interrupted, and these replacements never count as worker failures. A pool's memory is then about `localWorkers.count` times the larger of that limit and one child's working set.
 
 Without any `admission` setting, pooled stages still start one at a time, at most one every 5 seconds, while the machine's load per CPU is above `localWorkers.maxLoadPerCpu` (default `3`). See [Local worker pools](/settings#local-worker-pools).
 

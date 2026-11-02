@@ -18,6 +18,13 @@ export interface LocalWorkerOptions {
 	 * off. Not saved with the root.
 	 */
 	readonly maxLoadPerCpu?: number;
+	/**
+	 * Resident memory, in bytes, past which a local worker is replaced once the child it runs ends: the worker exits
+	 * cleanly between children and the pool starts a fresh one in its place, so whatever memory a long-lived worker
+	 * accumulated goes back to the system. A running child is never interrupted. Unset: workers are never replaced for
+	 * their memory. Not saved with the root.
+	 */
+	readonly maxWorkerRssBytes?: number;
 }
 
 /** Load per CPU above which pooled stages wait to start, unless `localWorkers.maxLoadPerCpu` says otherwise. */

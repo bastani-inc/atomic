@@ -7,3 +7,9 @@ self-hosted-runner:
     - nscloud-runner-tool-cache-*
     - nscloud-no-remote-builders
     - nscloud-container-image-cache
+paths:
+  .github/workflows/publish.yml:
+    ignore:
+      # actionlint 1.7.12 does not know GitHub's `concurrency.queue` key yet
+      # (https://github.com/rhysd/actionlint/issues/654). Drop this once it does.
+      - 'unexpected key "queue" for "concurrency" section'

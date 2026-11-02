@@ -368,6 +368,8 @@ interface WorkerSlot {
 	readonly stageCommands: Map<number, (result: StageCommandResult | undefined) => void>;
 	/** Ends the worker's attempt as its exit does; called for a worker that SIGKILL did not end within the bound. */
 	retire?: () => void;
+	/** The worker said it ends between children to give its memory back: its exit is not a crash (#4197). */
+	recycled?: boolean;
 }
 
 interface StageCommandResult {
@@ -484,6 +486,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Whether the pool has said that its workers' memory limit replaces every worker after one child. */
+	private recycleLimitReported = false;
 	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
 	private rootLeaseLost = false;
 	/** Settles once a late root renewal lands (true) or the root's lease is lost or the pool closes (false). */
@@ -842,7 +846,9 @@ export class PoolCoordinator {
 		const lease = this.lease;
 		const work = await this.retainedTransition(async () => {
 			let enqueued = await this.whileRootLate(queue, () =>
-				queue.enqueue(lease, command.descriptor, command.boundary),
+				queue.enqueue(lease, command.descriptor, command.boundary, {
+					acceptEntryChanges: command.acceptEntryChanges === true,
+				}),
 			);
 			// A child an earlier incarnation completed with a failure of the pool's own, such as a stage that lost its
 			// worker's delivery or lease on a busy host, runs again when the resumed root asks for it: the failure was not
@@ -1276,6 +1282,7 @@ export class PoolCoordinator {
 					...(options.stageStartMaxLoadPerCpu === undefined
 						? {}
 						: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
+					...(options.maxWorkerRssBytes === undefined ? {} : { maxRssBytes: options.maxWorkerRssBytes }),
 				}),
 			],
 			{
@@ -1400,6 +1407,15 @@ export class PoolCoordinator {
 						}
 					})
 					.then(async () => {
+						// A worker that ended itself between children to give its memory back (`maxWorkerRssBytes`, #4197) and
+						// exited cleanly leaves nothing to diagnose: its log goes with it, so a long run does not pile them up.
+						if (
+							slot.recycled === true &&
+							slot.work === undefined &&
+							child.exitCode === 0 &&
+							!this.keptLogs.has(logPath)
+						)
+							await rm(logPath, { force: true }).catch(() => {});
 						if (this.closed || !ready || this.desiredControl === "quit" || this.rootLeaseLost) return;
 						let work = slot.work;
 						if (work && (await this.sendResult(work.id))) {
@@ -1429,8 +1445,12 @@ export class PoolCoordinator {
 								),
 							);
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
-						// attempts, so those replacements are bounded by the children and never count toward this limit.
-						if (work === undefined && ++this.replacements > 3) this.fail(diagnosed("Local worker retry limit"));
+						// attempts, so those replacements are bounded by the children and never count toward this limit. A
+						// worker that ended itself between children for its memory did not crash: it is replaced without
+						// counting.
+						if (work === undefined && slot.recycled === true) await this.spawn();
+						else if (work === undefined && ++this.replacements > 3)
+							this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
 					.catch((error: Error) => {
@@ -1544,6 +1564,20 @@ export class PoolCoordinator {
 						const control = await leased(() => queue.control(lease));
 						if (message.revision > control.revision) throw new Error("Unknown control revision");
 						this.controlAcks.set(worker, Math.max(this.controlAcks.get(worker) ?? -1, message.revision));
+						return;
+					}
+					if (message.kind === "recycle") {
+						if (slot.work) throw new Error("Worker holds an attempt");
+						slot.recycled = true;
+						// Past its limit after its first child, a worker shows the limit is below what any worker uses: every
+						// worker is then replaced after each child, which is correct but costs a worker start per child.
+						if (message.attempts <= 1 && !this.recycleLimitReported) {
+							this.recycleLimitReported = true;
+							this.port.send({
+								kind: "health",
+								message: `localWorkers.maxWorkerRssBytes (${options.maxWorkerRssBytes} bytes) is below the resident memory of a worker that ran one child (${message.rssBytes} bytes), so every worker is replaced after each child it runs; set it well above that`,
+							});
+						}
 						return;
 					}
 					if (message.kind === "claim") {
