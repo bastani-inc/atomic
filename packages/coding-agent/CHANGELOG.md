@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A child on a local worker pool (`workflows.localWorkers`) whose attempt ends on a fault of the pool now gives back the session permits of that attempt's stages when the attempt ends. Before, the attempt's stage sessions stayed open on the worker, and their permits stayed granted until the worker exited or the pool closed. When the child replayed on the same worker under a tight `admission.limits.session` (or `admission.userLimits.session`), the replay could wait for those permits indefinitely, since the worker kept its lease alive. The worker keeps its lease while those sessions close, so a session that takes longer than `leaseMs` to shut down does not get a live worker killed. Permits of tool process groups that survived SIGKILL stay quarantined as before, and an attempt that ended this way still cannot record a result. ([#4172](https://github.com/bastani-inc/atomic/pull/4172))
+
 ## [0.9.61] - 2026-11-02
 
 Local worker pools that hold up under faults and load, a lighter terminal under heavy workflow load, and workflows that can work in any repository's worktree.
