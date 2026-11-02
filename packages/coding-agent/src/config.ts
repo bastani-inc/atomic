@@ -339,6 +339,7 @@ export const ENV_TIMING = `${ENV_PREFIX}_TIMING`;
 export const ENV_HEAP_MB = `${ENV_PREFIX}_HEAP_MB`;
 export const ENV_CODEMODE_MAX_WORKERS = `${ENV_PREFIX}_CODEMODE_MAX_WORKERS`;
 export const ENV_SELF_UPDATE_COMMAND = `${ENV_PREFIX}_SELF_UPDATE_COMMAND`;
+export const ENV_STDIN_TIMEOUT_MS = `${ENV_PREFIX}_STDIN_TIMEOUT_MS`;
 export const WORKFLOW_STAGE_SUBAGENT_GUARD_ENV = `${ENV_PREFIX}_WORKFLOW_STAGE_SUBAGENT_GUARD`;
 export function getEnvNames(name: string): string[] {
 	if (ENV_PREFIX === LEGACY_ENV_PREFIX || !name.startsWith(`${ENV_PREFIX}_`)) return [name];

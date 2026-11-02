@@ -1,27 +1,81 @@
 import chalk from "chalk";
+import { ENV_STDIN_TIMEOUT_MS, getEnvValue } from "./config.js";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
+/** How long a run waits for the first piped byte, or the end of stdin, by default. */
+export const DEFAULT_STDIN_TIMEOUT_MS = 2_000;
+
+/** `ATOMIC_STDIN_TIMEOUT_MS`: a whole number of milliseconds; `0` waits for the end of piped input. */
+function stdinTimeoutMs(): number {
+	const raw = getEnvValue(ENV_STDIN_TIMEOUT_MS)?.trim();
+	if (!raw) return DEFAULT_STDIN_TIMEOUT_MS;
+	const value = Number(raw);
+	return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_STDIN_TIMEOUT_MS;
+}
+
+function warn(message: string): void {
+	console.error(chalk.yellow(`Warning: ${message}`));
+}
+
 /**
- * Read all content from piped stdin.
- * Returns undefined if stdin is a TTY (interactive terminal).
+ * Read all content from piped stdin. Returns undefined if stdin is a TTY (interactive terminal).
+ *
+ * A harness, an agent's shell tool or a supervisor often starts Atomic with stdin an open pipe it never writes to or
+ * closes. Waiting for its end would wait forever (#4224). So when nothing, not even the end, arrives within
+ * `ATOMIC_STDIN_TIMEOUT_MS`, a run that has a prompt argument starts without stdin, and reports input that arrives
+ * later instead of dropping it silently. Input that has started arriving is read to its end, however slow. A run with
+ * no prompt argument has nothing else to run, so it keeps waiting, and says on stderr that it is waiting.
  */
-export async function readPipedStdin(): Promise<string | undefined> {
-	// If stdin is a TTY, we're running interactively - don't read stdin
-	if (process.stdin.isTTY) {
+export async function readPipedStdin(options: { readonly hasPrompt: boolean }): Promise<string | undefined> {
+	const stdin = process.stdin;
+	if (stdin.isTTY) {
 		return undefined;
 	}
+	const timeoutMs = stdinTimeoutMs();
 
 	return new Promise((resolve) => {
 		let data = "";
-		process.stdin.setEncoding("utf8");
-		process.stdin.on("data", (chunk) => {
+		let received = false;
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const onData = (chunk: string) => {
+			received = true;
 			data += chunk;
-		});
-		process.stdin.on("end", () => {
-			resolve(data.trim() || undefined);
-		});
-		process.stdin.resume();
+		};
+		const onEnd = () => settle(data.trim() || undefined);
+		const settle = (value: string | undefined) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			stdin.off("data", onData);
+			stdin.off("end", onEnd);
+			resolve(value);
+		};
+		stdin.setEncoding("utf8");
+		stdin.on("data", onData);
+		stdin.on("end", onEnd);
+		if (timeoutMs > 0) {
+			timer = setTimeout(() => {
+				if (received) return;
+				if (!options.hasPrompt) {
+					warn(
+						"Waiting for input on stdin. Pass a prompt argument, or close stdin (for example with `< /dev/null`), to start without it.",
+					);
+					return;
+				}
+				settle(undefined);
+				// Stop reading, but say so if input still arrives. The listener must not keep the process alive.
+				stdin.once("data", () => {
+					warn(
+						`Input arrived on stdin after Atomic stopped waiting for it and was ignored. Set ${ENV_STDIN_TIMEOUT_MS} to wait longer, or to 0 to wait for the end of piped input.`,
+					);
+					stdin.pause();
+				});
+				stdin.unref?.();
+			}, timeoutMs);
+		}
+		stdin.resume();
 	});
 }
 

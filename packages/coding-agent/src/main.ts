@@ -958,7 +958,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc" && !options?.internalInteractiveHarness) {
-		stdinContent = await readPipedStdin();
+		stdinContent = await readPipedStdin({ hasPrompt: parsed.messages.length > 0 || parsed.fileArgs.length > 0 });
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
 		}
