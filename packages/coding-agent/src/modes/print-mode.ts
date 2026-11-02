@@ -107,6 +107,8 @@ function terminatingStructuredOutputText(
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
 	let exitCode = 0;
+	/** Whether a model fallback ran during this invocation; only then can its answer come from another model (#4223). */
+	let fellBack = false;
 	let suppressFinalOutput = false;
 	let activePromptHadCommandError = false;
 	let session = runtimeHost.session;
@@ -206,6 +208,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			} else if (event.type === "message_end" && event.message.role === "assistant") {
 				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
 			} else if (event.type === "model_fallback_start") {
+				fellBack = true;
 				// A fallback is never silent: the answer that follows comes from another model (#4223).
 				console.error(
 					`Model fallback: ${event.from} failed, continuing on ${event.to}: ${singleLine(event.reason)}`,
@@ -231,8 +234,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		await rebindSession();
-		// The model this run was asked to use, reported beside the one it ran on after a fallback (#4223).
+		// The model this run was asked to use, reported beside the one it ran on after a fallback (#4223), and where this
+		// run's messages start, so an answer from an earlier run in a continued session is never judged.
 		const requestedModel = session.model ? `${session.model.provider}/${session.model.id}` : undefined;
+		const runSession = session;
+		const runStart = session.state.messages.length;
 
 		if (initialMessage) {
 			await promptWithScopedCommandSuppression(initialMessage, { images: initialImages });
@@ -247,14 +253,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		const lastAssistantMessage = [...state.messages].reverse().find((message) => message.role === "assistant") as
 			| AssistantMessage
 			| undefined;
+		const runAnswer =
+			fellBack && session === runSession
+				? ([...state.messages.slice(runStart)].reverse().find((message) => message.role === "assistant") as
+						| AssistantMessage
+						| undefined)
+				: undefined;
 		const ranOn =
-			lastAssistantMessage === undefined
+			runAnswer === undefined
 				? undefined
-				: ranOnModelLine({
-						kind: "agent",
-						model: `${lastAssistantMessage.provider}/${lastAssistantMessage.model}`,
-						requestedModel,
-					});
+				: ranOnModelLine({ kind: "agent", model: `${runAnswer.provider}/${runAnswer.model}`, requestedModel });
 		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
 		if (lastAssistantMessage?.stopReason === "length" && mode === "text" && !suppressFinalOutput) {
 			console.error("Response was truncated: the model reached its output token limit.");

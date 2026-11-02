@@ -7,10 +7,16 @@ import type { SettingsManager } from "../core/settings-manager.ts";
 import { showStartupInput, showStartupSelector } from "./startup-ui.ts";
 
 /**
- * The warning for a run that ignores an untrusted project's settings files, or undefined when it has none. Print, JSON
- * and RPC modes cannot ask whether to trust a project, so without it the settings are dropped without a word (#4223).
+ * The warning for a run that ignores an untrusted project's settings files, or undefined when it ignores none. Print,
+ * JSON and RPC modes cannot ask whether to trust a project, so without it the settings are dropped without a word
+ * (#4223). Interactive mode asks and shows its own banner, and so does the interactive engine child that runs it in RPC
+ * mode, whose stderr reaches the interactive screen.
  */
-export function ignoredProjectSettings(cwd: string): string | undefined {
+export function ignoredProjectSettingsWarning(
+	cwd: string,
+	run: { readonly trusted: boolean; readonly appMode: AppMode; readonly interactiveEngineChild: boolean },
+): string | undefined {
+	if (run.trusted || run.appMode === "interactive" || run.interactiveEngineChild) return undefined;
 	const ignored = getProjectConfigPaths(cwd, "settings.json").filter((path) => existsSync(path));
 	if (ignored.length === 0) return undefined;
 	return `Ignoring ${ignored.join(" and ")}: this project is not trusted. Pass --approve (-a) to trust it for this run.`;

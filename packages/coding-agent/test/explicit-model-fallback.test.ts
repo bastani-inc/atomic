@@ -5,22 +5,27 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
-import { parseArgs } from "../src/cli/args.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { parseArgs } from "../src/cli/args.js";
+import { ignoredProjectSettingsWarning } from "../src/cli/project-trust.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
 import {
 	isRetryableSameModelFailure,
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
-} from "../src/core/model-fallback-failures.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { buildSessionOptions } from "../src/main-session-options.ts";
-import { createTestResourceLoader } from "./utilities.ts";
+} from "../src/core/model-fallback-failures.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { InMemorySettingsStorage } from "../src/core/settings-storage.js";
+import { buildSessionOptions } from "../src/main-session-options.js";
+import { createTestResourceLoader } from "./utilities.js";
 
 const REQUESTED = { provider: "acct-a", id: "argon-mock", name: "Argon Mock" };
 const SETTINGS_CHAIN = { provider: "acct-b", id: "opus-mock", name: "Opus Mock" };
@@ -64,7 +69,16 @@ interface Request {
 }
 
 /** Three accounts. The requested model fails with `failure` every time; the others answer. */
-async function runSession(args: string[], failure: string, settings: { defaultToRequested?: boolean } = {}) {
+async function runSession(
+	args: string[],
+	failure: string,
+	settings: {
+		defaultToRequested?: boolean;
+		/** Settings to run with instead of the default ones; `beforePrompt` runs once the session exists. */
+		settingsManager?: SettingsManager;
+		beforePrompt?: () => void;
+	} = {},
+) {
 	const base = getModel("anthropic", "claude-sonnet-4-5")!;
 	const runtime = await ModelRuntime.create({
 		credentials: AuthStorage.inMemory(),
@@ -107,11 +121,13 @@ async function runSession(args: string[], failure: string, settings: { defaultTo
 		cleanups.push(() => runtime.unregisterProvider(account.provider));
 	}
 	// The user-level chain names another family, as in the reports.
-	const settingsManager = SettingsManager.inMemory({
-		...(settings.defaultToRequested ? { defaultProvider: REQUESTED.provider, defaultModel: REQUESTED.id } : {}),
-		fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
-		retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
-	});
+	const settingsManager =
+		settings.settingsManager ??
+		SettingsManager.inMemory({
+			...(settings.defaultToRequested ? { defaultProvider: REQUESTED.provider, defaultModel: REQUESTED.id } : {}),
+			fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
+			retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
+		});
 	const { options, diagnostics } = buildSessionOptions(parseArgs(args), [], false, runtime, settingsManager);
 	assert.deepEqual(diagnostics, []);
 	const sessionManager = SessionManager.inMemory();
@@ -126,6 +142,7 @@ async function runSession(args: string[], failure: string, settings: { defaultTo
 		tools: ["read"],
 	});
 	cleanups.push(() => session.dispose());
+	settings.beforePrompt?.();
 	await session.prompt("Say which model you are.");
 	const last = session.state.messages.findLast((message) => message.role === "assistant") as AssistantMessage;
 	return { requests, last, sessionManager };
@@ -211,6 +228,31 @@ describe("an explicit --model session keeps to its own model (#4223)", () => {
 		assert.match(fallbackChange.fallback?.reason ?? "", /cyber_policy/);
 	});
 
+	test("a session created before its project is trusted follows the project's fallbackModels once trusted (#4223)", async () => {
+		// As an interactive start that asks about trust after it created the session: the user-level chain at first, then
+		// the project's empty list once the user trusts the project.
+		const storage = new InMemorySettingsStorage();
+		storage.withLock("global", () =>
+			JSON.stringify({
+				defaultProvider: REQUESTED.provider,
+				defaultModel: REQUESTED.id,
+				fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
+				retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
+			}),
+		);
+		storage.withLock("project", () => JSON.stringify({ fallbackModels: [] }));
+		const settingsManager = SettingsManager.fromStorage(storage, { projectTrusted: false });
+		const { requests } = await runSession([], TRANSIENT_FAILURES["a 5xx"], {
+			settingsManager,
+			beforePrompt: () => settingsManager.setProjectTrusted(true),
+		});
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			Array(1 + MAX_RETRIES).fill(requestedId),
+		);
+	});
+
 	test("--no-fallback turns the settings fallbackModels off for a session without --model (#4223)", async () => {
 		const settingsChain = `${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`;
 		const withChain = await runSession([], TRANSIENT_FAILURES["a 5xx"], { defaultToRequested: true });
@@ -249,5 +291,42 @@ describe("the provider failures behind #4223 are classified explicitly", () => {
 		for (const transient of Object.values(TRANSIENT_FAILURES)) {
 			assert.equal(isUnrecognizedModelFailure(failure(transient)), false, transient);
 		}
+	});
+});
+
+describe("the warning that an untrusted project's settings are ignored (#4223)", () => {
+	function projectWithSettings(): string {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-ignored-project-settings-"));
+		mkdirSync(join(cwd, ".atomic"));
+		writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ fallbackModels: [] }));
+		cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
+		return cwd;
+	}
+
+	test("print, JSON and RPC runs name the ignored file and --approve (#4223)", () => {
+		const cwd = projectWithSettings();
+		for (const appMode of ["print", "json", "rpc"] as const) {
+			const warning = ignoredProjectSettingsWarning(cwd, { trusted: false, appMode, interactiveEngineChild: false });
+			assert.match(
+				warning ?? "",
+				/^Ignoring .*\.atomic[\\/]settings\.json: this project is not trusted\. Pass --approve/,
+			);
+		}
+	});
+
+	test("the interactive engine child, which runs in RPC mode, leaves the warning to the interactive screen (#4223)", () => {
+		const cwd = projectWithSettings();
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: false, appMode: "rpc", interactiveEngineChild: true }),
+			undefined,
+		);
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: false, appMode: "interactive", interactiveEngineChild: false }),
+			undefined,
+		);
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: true, appMode: "print", interactiveEngineChild: false }),
+			undefined,
+		);
 	});
 });

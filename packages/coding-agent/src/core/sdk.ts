@@ -717,7 +717,8 @@ async function constructAgentSession(
 					session.getAllTools().map((tool) => tool.name),
 				),
 			scopedModels: options.scopedModels,
-			fallbackModels: options.fallbackModels ?? settingsManager.getFallbackModels(),
+			// Undefined follows the settings' current `fallbackModels`, also once a project is trusted later.
+			fallbackModels: options.fallbackModels,
 			isFallbackModelAllowed: options.isFallbackModelAllowed,
 			resourceLoader,
 			customTools: options.customTools,

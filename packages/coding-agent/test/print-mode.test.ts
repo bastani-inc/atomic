@@ -521,6 +521,69 @@ describe("runPrintMode", () => {
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
+	describe("the ran-on line (#4223)", () => {
+		/** A session the run asked to use `openai/gpt-4o-mini`, whose prompt adds `added` to the transcript. */
+		function hostWhosePromptAdds(added: FakeMessage, options: { fallback?: boolean; history?: FakeMessage } = {}) {
+			const runtimeHost = createRuntimeHost(options.history ?? createCustomMessage());
+			(runtimeHost.session as FakeSession & { model?: { provider: string; id: string } }).model = {
+				provider: "openai",
+				id: "gpt-4o-mini",
+			};
+			runtimeHost.session.prompt.mockImplementation(async () => {
+				if (options.fallback) {
+					runtimeHost.session.emitEvent({
+						type: "model_fallback_start",
+						from: "openai/gpt-4o-mini",
+						to: "anthropic/claude-opus-4-8",
+						reason: "503 Service Unavailable",
+						attempt: 1,
+					});
+				}
+				runtimeHost.session.state.messages.push(added);
+			});
+			return runtimeHost;
+		}
+		const fromOtherModel = (): AssistantMessage => ({
+			...createAssistantMessage({ text: "done" }),
+			provider: "anthropic",
+			model: "claude-opus-4-8",
+		});
+		const ranOnLines = (errorSpy: { mock: { calls: unknown[][] } }) =>
+			errorSpy.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith("Model: ran on"));
+
+		it("names both models after a fallback (#4223)", async () => {
+			captureStdout();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await runPrintModeWithFakeHost(hostWhosePromptAdds(fromOtherModel(), { fallback: true }), {
+				mode: "text",
+				initialMessage: "hi",
+			});
+
+			assert.deepEqual(ranOnLines(errorSpy), [
+				"Model: ran on anthropic/claude-opus-4-8, not the requested openai/gpt-4o-mini.",
+			]);
+		});
+
+		it("is not printed for a model switch that was no fallback (#4223)", async () => {
+			captureStdout();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await runPrintModeWithFakeHost(hostWhosePromptAdds(fromOtherModel()), { mode: "text", initialMessage: "hi" });
+
+			assert.deepEqual(ranOnLines(errorSpy), []);
+		});
+
+		it("does not judge an earlier run's answer when this run added none (#4223)", async () => {
+			captureStdout();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+			const runtimeHost = hostWhosePromptAdds(createCustomMessage(), { fallback: true, history: fromOtherModel() });
+
+			await runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hi" });
+
+			assert.deepEqual(ranOnLines(errorSpy), []);
+		});
+	});
 	it("issue #1156: command-originated extension errors exit non-zero and suppress stale assistant output", async () => {
 		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
 		const { session } = runtimeHost;

@@ -90,7 +90,8 @@ class AgentSessionBase {
 	readonly settingsManager: SettingsManager;
 
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
-	protected _fallbackModels: string[];
+	/** The chain the session was created with, or undefined to follow its settings' current `fallbackModels`. */
+	protected _configuredFallbackModels: string[] | undefined;
 	protected _isFallbackModelAllowed?: (model: Model<Api>, effort: string | undefined) => boolean;
 	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	/** Models condemned for this turn by a failure retrying them cannot repair. */
@@ -98,6 +99,19 @@ class AgentSessionBase {
 	protected _fallbackOriginModel: Model<Api> | undefined;
 	protected _fallbackOriginThinkingLevel: ThinkingLevel | undefined;
 	protected _fallbackScopeGeneration = 0;
+
+	/**
+	 * The session's fallback chain. Without one of its own it follows its settings' current `fallbackModels`, so a
+	 * project trusted after the session was created applies its list, as an interactive start asks after it (#4223).
+	 */
+	protected get _fallbackModels(): string[] {
+		return this._configuredFallbackModels ?? this.settingsManager.getFallbackModels();
+	}
+
+	/** Give the session a chain of its own; it no longer follows its settings. */
+	protected set _fallbackModels(models: string[]) {
+		this._configuredFallbackModels = models;
+	}
 	protected _fallbackOriginGeneration: number | undefined;
 	protected _fallbackRestoreError: string | undefined;
 	protected _unsubscribeAgent?: () => void;
@@ -258,7 +272,7 @@ class AgentSessionBase {
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
-		this._fallbackModels = config.fallbackModels ?? [];
+		this._configuredFallbackModels = config.fallbackModels;
 		this._isFallbackModelAllowed = config.isFallbackModelAllowed;
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];

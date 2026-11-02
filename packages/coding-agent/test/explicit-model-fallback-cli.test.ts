@@ -12,7 +12,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { runCliProcess } from "./cli-test-helpers.ts";
+import { runCliProcess } from "./cli-test-helpers.js";
 
 /** A real Bun CLI process transpiles the CLI graph and the mandatory Intercom extension before its first request. */
 const REAL_CLI_PROCESS_TIMEOUT_MS = 120_000;

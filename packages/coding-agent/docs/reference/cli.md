@@ -158,7 +158,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-fallback` | Never fall back to another model in this run. Cannot be combined with `--fallback-models` |
 | `--list-models [search]` | List available models |
 
-A model named with `--model` runs as named. It falls back only to the models `--fallback-models` names, never to the `fallbackModels` setting, user or project. Child sessions that run on the main session's model, such as a subagent that names no model, inherit the same chain. In print mode, a fallback prints `Model fallback: <model> failed, continuing on <fallback>: <reason>` to stderr, and the run ends with `Model: ran on <fallback>, not the requested <model>.` A run that fails prints `Model <model> failed: <reason>`.
+A model named with `--model` runs as named. It falls back only to the models `--fallback-models` names, never to the `fallbackModels` setting, user or project. In an interactive session this holds for the whole process: after you switch models with `/model` or Ctrl+P, and in sessions you start with `/new` or `/resume`, the session still uses only `--fallback-models`. Start Atomic without `--model` to use the setting. Child sessions that run on the main session's model, such as a subagent that names no model, inherit the same chain. In print mode, a fallback prints `Model fallback: <model> failed, continuing on <fallback>: <reason>` to stderr. If the run's answer came from the fallback, it ends with `Model: ran on <fallback>, not the requested <model>.` A run that fails prints `Model <model> failed: <reason>`.
 
 ## Session Options
 

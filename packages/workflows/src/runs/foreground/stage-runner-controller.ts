@@ -34,6 +34,7 @@ import {
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
 	type ModelFallbackFailureOptions,
 	resolveScopedModelsFromCatalog,
 	type WorkflowResolvedModelCandidate,
@@ -1413,6 +1414,17 @@ export class StageSessionController {
 		return { kind: "continued" };
 	}
 
+	/**
+	 * Whether a failure nothing recognizes gets this candidate's same-model retries before the stage's own chain moves
+	 * on. It does when the chain has a candidate after this one, which the failure would otherwise switch to on its
+	 * first occurrence; with none it fails at once. The main chat applies the same rule to its chain (#4223).
+	 */
+	private async retriesUnrecognizedFailure(error: unknown): Promise<boolean> {
+		if (!this.hasExplicitModelFallbackConfig || !isUnrecognizedModelFailure(error)) return false;
+		const candidates = await this.modelCandidates();
+		return candidates[(this.activeCandidateIndex ?? 0) + 1] !== undefined;
+	}
+
 	private async promptWithThrownErrorRetry(
 		activeSession: StageSessionRuntime,
 		text: string,
@@ -1438,6 +1450,13 @@ export class StageSessionController {
 							const continuedScanStartIndex =
 								terminalScanStartIndex ?? this.lastPromptStartIndex ?? messagesBeforeAttempt.length;
 							this.throwIfEmptyCompletion(activeSession, continuedScanStartIndex);
+							// A retried unrecognized failure that fails again spends the next retry, not the chain.
+							const continuedFailure = latestTerminalAssistantFailureSince(
+								activeSession.messages,
+								continuedScanStartIndex,
+							);
+							if (continuedFailure !== undefined && (await this.retriesUnrecognizedFailure(continuedFailure)))
+								throw new WorkflowPromptModelFailure(continuedFailure);
 							return { terminalScanStartIndex: continuedScanStartIndex };
 						}
 						// A controlled pause interrupted the continuation. The resumed
@@ -1466,7 +1485,10 @@ export class StageSessionController {
 					activeSession.messages,
 					result.terminalScanStartIndex,
 				);
-				if (terminalFailure !== undefined && isWorkflowRateLimit(terminalFailure))
+				if (
+					terminalFailure !== undefined &&
+					(isWorkflowRateLimit(terminalFailure) || (await this.retriesUnrecognizedFailure(terminalFailure)))
+				)
 					throw new WorkflowPromptModelFailure(terminalFailure);
 				return {
 					terminalScanStartIndex: terminalScanStartIndex ?? result.terminalScanStartIndex,
@@ -1483,7 +1505,8 @@ export class StageSessionController {
 				// budget on a request the same model has already rejected.
 				const retryableFailure = isRetryableModelFailure(error, this.fallbackFailureOptions());
 				const sameCandidateRetryable =
-					isRetryableSameModelFailure(error) && !isUnresolvedContextOverflowFailure(error);
+					(isRetryableSameModelFailure(error) || (await this.retriesUnrecognizedFailure(error))) &&
+					!isUnresolvedContextOverflowFailure(error);
 				recordProviderRateLimit(this.currentProvider(), error, workflowModelName(this.currentModelValue()));
 				if (this.hasExplicitModelFallbackConfig && isWorkflowRateLimit(error)) {
 					this.restoreSessionMessages(activeSession, messagesBeforeAttempt, nextText, false, true);

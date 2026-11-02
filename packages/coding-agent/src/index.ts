@@ -291,6 +291,7 @@ export {
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";
