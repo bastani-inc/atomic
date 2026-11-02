@@ -64,6 +64,15 @@ export interface PoolWorkDescriptor {
 	readonly inputs: WorkflowSerializableObject;
 	readonly execution: WorkflowSerializableObject;
 }
+/** How a resumed root may enqueue the work an earlier incarnation of it queued (#4200). */
+export interface PoolEnqueueOptions {
+	/**
+	 * The resume accepted edits to the entry modules of the root's worker definitions: work an earlier incarnation
+	 * queued with another digest of the same definition's entry module, and has not finished, runs the module this
+	 * root loaded.
+	 */
+	readonly acceptEntryChanges?: boolean;
+}
 export interface PoolWork extends PoolWorkDescriptor {
 	readonly id: string;
 	/** `failed`: not completed in its root incarnation; a resumed root that enqueues it again replays it. */
@@ -127,6 +136,15 @@ function expiry(now: number, duration: number): number {
 	const expiresAt = now + duration;
 	positive(expiresAt);
 	return expiresAt;
+}
+
+/** A digest as a refusal names it, as `activatePublicPool` names an edited entry module. */
+function short(digest: string): string {
+	return digest.slice(0, 12);
+}
+
+function shownMode(mode: unknown): string {
+	return mode === undefined ? "unset" : JSON.stringify(mode);
 }
 
 export class SqlPoolQueue {
@@ -372,7 +390,12 @@ export class SqlPoolQueue {
 			if (row.epoch !== lease.epoch || row.expires_at < now) throw new Error(STALE_WORK_LEASE);
 		});
 	}
-	async enqueue(lease: Lease, descriptor: PoolWorkDescriptor, boundary: DurableStageCheckpoint): Promise<PoolWork> {
+	async enqueue(
+		lease: Lease,
+		descriptor: PoolWorkDescriptor,
+		boundary: DurableStageCheckpoint,
+		options: PoolEnqueueOptions = {},
+	): Promise<PoolWork> {
 		lease = snapshotLease(lease);
 		const { boundaryId, childRunId, scope } = descriptor;
 		const topology = boundary.topology;
@@ -426,13 +449,15 @@ export class SqlPoolQueue {
 				childRunId,
 			);
 			if (previous) {
-				if (previous.fingerprint !== fingerprint) throw new Error("Pool boundary identity conflict");
-				if ((previous.state !== "ready" && previous.state !== "failed") || previous.epoch >= lease.epoch)
-					return fromRow(previous);
+				const row =
+					previous.fingerprint === fingerprint
+						? previous
+						: await this.rebind(tx, lease, previous, json, JSON.parse(payload), fingerprint, options);
+				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch) return fromRow(row);
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
 				// work that incarnation failed or left unfinished when its pool closed.
-				await tx.run(`UPDATE ${this.work} SET state = 'ready', epoch = ? WHERE id = ?`, lease.epoch, previous.id);
-				return fromRow({ ...previous, state: "ready", epoch: lease.epoch });
+				await tx.run(`UPDATE ${this.work} SET state = 'ready', epoch = ? WHERE id = ?`, lease.epoch, row.id);
+				return fromRow({ ...row, state: "ready", epoch: lease.epoch });
 			}
 			const siblings = await tx.all<SqliteRow & { scope: string }>(
 				`SELECT json_extract(descriptor, '$.scope') AS scope FROM ${this.work} WHERE root = ?`,
@@ -489,6 +514,63 @@ export class SqlPoolQueue {
 		const outcome = await remote.append(lease, key, boundary);
 		if (outcome.status === "exists" && !isSameCheckpointValue(outcome.entry.event.payload, boundary))
 			throw new Error("Pool boundary identity conflict");
+	}
+	/**
+	 * Gives work an earlier incarnation of this root queued the descriptor `json` this incarnation enqueues it with, when
+	 * the two differ only in what a resume may change for a child (#4200): its execution mode, which decides how the
+	 * child's live work may ask for input and nothing it recorded, and, when the resume accepts entry module edits, the
+	 * digest of its definition's entry module, which only names the module the child's next attempt loads. Its recorded
+	 * steps replay from the journal either way, and its stored result, if any, is kept. Any other difference makes it
+	 * another child. Work this incarnation queued keeps its descriptor: a worker may be running it.
+	 *
+	 * Work an earlier incarnation still holds is rebound too. Its attempt is fenced, since every write it makes needs that
+	 * incarnation's root lease, and the work is claimable again only once its process groups are gone.
+	 */
+	private async rebind(
+		tx: SqliteExecutor,
+		lease: Lease,
+		previous: WorkRow,
+		json: string,
+		boundary: WorkflowSerializableObject,
+		fingerprint: string,
+		options: PoolEnqueueOptions,
+	): Promise<WorkRow> {
+		const queued = JSON.parse(previous.descriptor) as PoolWorkDescriptor;
+		const requested = JSON.parse(json) as PoolWorkDescriptor;
+		const queuedMode = queued.execution.executionMode;
+		const requestedMode = requested.execution.executionMode;
+		// The requested work with what a resume may change put back as it was queued: the same child hashes the same.
+		const { executionMode: _mode, ...execution } = requested.execution;
+		const asQueued = {
+			...requested,
+			digest: queued.digest,
+			execution: queuedMode === undefined ? execution : { ...execution, executionMode: queuedMode },
+		};
+		if (durableHash({ descriptor: asQueued, boundary }) !== previous.fingerprint)
+			throw new Error("Pool boundary identity conflict");
+		const entryEdited = queued.digest !== requested.digest;
+		if (previous.epoch >= lease.epoch) {
+			const changes = [
+				...(entryEdited ? [`entry module (sha256 ${short(queued.digest)} to ${short(requested.digest)})`] : []),
+				...(queuedMode !== requestedMode
+					? [`execution mode (${shownMode(queuedMode)} to ${shownMode(requestedMode)})`]
+					: []),
+			];
+			throw new Error(
+				`Pool boundary identity conflict: child ${requested.childRunId} is already queued by this incarnation of root ${lease.runId}, and its worker may be running it, so its ${changes.join(" and ")} cannot change`,
+			);
+		}
+		if (entryEdited && options.acceptEntryChanges !== true)
+			throw new Error(
+				`Pool boundary identity conflict: child ${requested.childRunId} was queued by an earlier run of root ${lease.runId} with the entry module of worker definition ${requested.definition} at sha256 ${short(queued.digest)}, and the root now runs that module at sha256 ${short(requested.digest)}. Resume the root with /workflow resume ${lease.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to run the child with the edited module, or restore the module.`,
+			);
+		await tx.run(
+			`UPDATE ${this.work} SET descriptor = ?, fingerprint = ? WHERE id = ?`,
+			json,
+			fingerprint,
+			previous.id,
+		);
+		return { ...previous, descriptor: json, fingerprint };
 	}
 	async claim(
 		lease: Lease,

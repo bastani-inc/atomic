@@ -46,6 +46,8 @@ export interface DurableResumeRuntime {
 			readonly onBeforeResume?: (runId: string, forkedFrom?: string) => Promise<void>;
 			readonly confirmCrossProjectFork?: (cwd: string) => Promise<boolean>;
 			readonly forkModelOwner?: string;
+			/** Resume a root whose worker entry modules were edited: see `RunOpts.acceptEntryChanges` (#4200). */
+			readonly acceptEntryChanges?: boolean;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -145,6 +147,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 							...(options?.budget === undefined ? {} : { budget: options.budget }),
 							...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 							...(options?.modelOwner === undefined ? {} : { modelOwner: options.modelOwner }),
+							...(options?.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 						},
 						durableBackend: backend,
 						resolveDefinition: async (name, cwd) =>

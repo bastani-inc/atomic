@@ -10,7 +10,7 @@ import {
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
+import { type Lease, RUN_EVENT_TYPES, StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -471,6 +471,128 @@ test("work a closed pool left unfinished, or failed, is unclaimable until a resu
 			(await pool.inspect("root")).map((item) => item.state),
 			["failed"],
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+/** Takes the root over in a new incarnation, as a resume after its process died does. */
+async function resumeRoot(f: Awaited<ReturnType<typeof fixture>>, holder: string): Promise<Lease> {
+	await f.database.run("UPDATE wf_leases SET renewed_at = 0");
+	const takeover = await f.journal.takeoverExpired("root", holder, 60_000);
+	if (takeover.status !== "acquired") assert.fail("takeover failed");
+	return takeover.lease;
+}
+
+test("a resumed root runs its unfinished children under its own execution mode, not its launch's (#4200)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const launched = await pool.enqueue(f.lease, { ...work, execution: { executionMode: "interactive" } }, boundary);
+		await pool.claim(f.lease, "dead-worker", [work], 60_000);
+		const lease = await resumeRoot(f, "resumed-coordinator");
+		await pool.releasePreviousIncarnations(lease);
+		const resumed = { ...work, execution: { executionMode: "non_interactive" } };
+		// Any other difference in how the child runs is still a different child.
+		await assert.rejects(
+			pool.enqueue(lease, { ...resumed, execution: { ...resumed.execution, cwd: "/elsewhere" } }, boundary),
+			/identity conflict/,
+		);
+		const adopted = await pool.enqueue(lease, resumed, boundary);
+		assert.equal(adopted.id, launched.id);
+		assert.deepEqual(adopted.execution, resumed.execution);
+		const claimed = await pool.claim(lease, "resumed-worker", [work], 60_000);
+		assert.equal(claimed?.id, launched.id);
+		assert.deepEqual(claimed?.execution, resumed.execution);
+		// The root adopted it, and its worker may be running it: this incarnation cannot change how it runs.
+		await assert.rejects(
+			pool.enqueue(lease, { ...work, execution: { executionMode: "interactive" } }, boundary),
+			(error: Error) => /identity conflict.*already queued by this incarnation/s.test(error.message),
+		);
+		const without = await resumeRoot(f, "resumed-again");
+		await pool.releasePreviousIncarnations(without);
+		// A resume without an execution mode runs it without one.
+		assert.deepEqual((await pool.enqueue(without, { ...work, execution: {} }, boundary)).execution, {});
+	} finally {
+		await f.close();
+	}
+});
+
+test("a resumed root runs its unfinished children with an edited entry module only when its resume accepts the edit (#4200)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		const finished = poolWorkFixture("finished");
+		const finishedWork = await pool.enqueue(f.lease, finished.work, finished.boundary);
+		const result = { runId: finished.work.childRunId, status: "completed" };
+		await pool.complete(f.lease, (await pool.claim(f.lease, "worker", [work], 60_000))!, result);
+		const unfinished = await pool.enqueue(f.lease, work, boundary);
+		await pool.claim(f.lease, "dead-worker", [work], 60_000);
+		const lease = await resumeRoot(f, "resumed-coordinator");
+		await pool.releasePreviousIncarnations(lease);
+		const edited = { definition: work.definition, digest: "sha256:edited" };
+		await assert.rejects(pool.enqueue(lease, { ...work, ...edited }, boundary), (error: Error) => {
+			assert.match(error.message, /identity conflict/);
+			assert.ok(
+				error.message.includes(`worker definition ${work.definition} at sha256 ${work.digest.slice(0, 12)}`),
+			);
+			assert.ok(error.message.includes(`at sha256 ${edited.digest.slice(0, 12)}`));
+			assert.ok(error.message.includes("/workflow resume root --accept-entry-changes"));
+			return true;
+		});
+		assert.equal((await pool.inspect("root")).find((item) => item.id === unfinished.id)?.digest, work.digest);
+		// Only the module may differ: any other difference is still another child.
+		await assert.rejects(
+			pool.enqueue(lease, { ...work, ...edited, inputs: { value: 2 } }, boundary, { acceptEntryChanges: true }),
+			(error: Error) => error.message === "Pool boundary identity conflict",
+		);
+
+		const rebound = await pool.enqueue(lease, { ...work, ...edited }, boundary, { acceptEntryChanges: true });
+		assert.equal(rebound.id, unfinished.id);
+		assert.equal(rebound.digest, edited.digest);
+		assert.equal(rebound.epoch, lease.epoch);
+		assert.equal(
+			await pool.claim(lease, "stale-worker", [work], 60_000),
+			undefined,
+			"no worker of the old module takes it",
+		);
+		assert.equal((await pool.claim(lease, "resumed-worker", [edited], 60_000))?.id, unfinished.id);
+		// A child that finished keeps its result.
+		const kept = await pool.enqueue(lease, { ...finished.work, ...edited }, finished.boundary, {
+			acceptEntryChanges: true,
+		});
+		assert.equal(kept.id, finishedWork.id);
+		assert.equal(kept.state, "completed");
+		assert.deepEqual(await pool.result("root", kept.id), result);
+	} finally {
+		await f.close();
+	}
+});
+
+test("an earlier attempt still held while its processes are reaped takes the edited module, and stays unclaimable until released (#4200)", async () => {
+	const f = await fixture();
+	try {
+		const pool = await openSqlPoolQueue(f.journal);
+		await pool.initialize(f.lease, 60_000);
+		await pool.enqueue(f.lease, work, boundary);
+		const held = (await pool.claim(f.lease, "dead-worker", [work], 60_000))!;
+		const lease = await resumeRoot(f, "resumed-coordinator");
+		// Its process groups are not confirmed gone, so the resumed coordinator retains the attempt.
+		assert.equal(await pool.releasePreviousIncarnations(lease, [held.id]), 0);
+		const edited = { definition: work.definition, digest: "sha256:edited" };
+		const enqueued = await pool.enqueue(lease, { ...work, ...edited }, boundary, { acceptEntryChanges: true });
+		assert.equal(enqueued.state, "leased");
+		assert.equal(enqueued.digest, edited.digest);
+		// The old attempt cannot write, and no worker takes the child while the old attempt's processes may run.
+		await assert.rejects(pool.renew(f.lease, held, 60_000), StaleLeaseError);
+		assert.equal(await pool.claim(lease, "resumed-worker", [edited], 60_000), undefined);
+		// Once they are gone the coordinator releases the attempt, and a worker of the edited module replays the child.
+		assert.equal(await pool.releaseRetained(lease, held, true), true);
+		const replay = await pool.claim(lease, "resumed-worker", [edited], 60_000);
+		assert.equal(replay?.id, held.id);
+		assert.equal(replay?.digest, edited.digest);
 	} finally {
 		await f.close();
 	}
