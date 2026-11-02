@@ -503,9 +503,13 @@ async function runCompactionLadder(
 		},
 	};
 	// Credential waits count against the planning time limit too: each candidate's
-	// resolution sees the limit's signal and is abandoned the moment it aborts.
-	const resolveAuth = (candidate: Model<Api>) =>
-		untilAborted(request.resolveAuth(candidate, timeLimit.signal), timeLimit.signal);
+	// resolution sees the limit's signal and is abandoned the moment it aborts. Once
+	// it has aborted, no further lookup starts, so a borrower still walking its list
+	// cannot launch abandoned work in a resolver that ignores the signal.
+	const resolveAuth = (candidate: Model<Api>): Promise<PlannerAuth | undefined> => {
+		if (timeLimit.signal?.aborted) return Promise.reject(timeLimit.signal.reason);
+		return untilAborted(request.resolveAuth(candidate, timeLimit.signal), timeLimit.signal);
+	};
 	const hardInputLimit = hardInputLimitFor(model);
 
 	// A region below the planner minimum cannot be made rankable by changing

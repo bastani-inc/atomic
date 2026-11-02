@@ -131,6 +131,38 @@ test("credential resolution counts against the planning time limit for the prima
 	assert.ok(signals.length > 0 && signals.every((signal) => signal?.aborted === true));
 });
 
+test("once the limit runs out inside a fallback's credential lookup, no later fallback's lookup starts (#4198)", async () => {
+	const stream = planner([], { stopReason: "error", errorMessage: "429 Too Many Requests" });
+	const looked: string[] = [];
+	const resolveAuth = (model: Model<Api>) => {
+		looked.push(model.id);
+		if (model.id !== backup.id) return Promise.resolve<PlannerAuth | undefined>({ apiKey: "key" });
+		// The backup's lookup ignores its signal and outlasts the limit.
+		return new Promise<PlannerAuth | undefined>((resolve) => {
+			setTimeout(() => resolve({ apiKey: "key" }), SLOW_AUTH_MS);
+		});
+	};
+
+	const run = await timed(
+		runVerbatimCompaction(
+			preparation(),
+			primary,
+			runRequest({
+				streamFn: stream.streamFn,
+				resolveAuth,
+				fallback: fallbackContext([backup, spare]),
+				urgency: "load_bearing",
+				planningTimeoutMs: PLANNING_TIME_LIMIT_MS,
+			}),
+		),
+	);
+
+	assert.ok(run !== "pending");
+	assert.equal(run.value.rung, "fresh");
+	assert.deepEqual(stream.calls, ["planner-a"], "only the primary planner was asked");
+	assert.deepEqual(looked, ["planner-a", "planner-b"], "the spare's credentials were never looked up");
+});
+
 test("cancelling during a slow credential lookup cancels promptly instead of reaching the fresh rung (#4198)", async () => {
 	const stream = planner([], { stopReason: "error", errorMessage: "429 Too Many Requests" });
 	const controller = new AbortController();
@@ -220,9 +252,10 @@ test("a fresh rung records why planning failed even without a time limit (#4198)
 	assert.match(result.freshReason ?? "", /429 Too Many Requests/);
 });
 
-test("a planning time limit beyond the platform timer maximum is honoured, not clamped (#4198)", async () => {
+test("a planning time limit beyond the platform timer maximum fires exactly at the limit, not at the clamp (#4198)", async () => {
 	vi.useFakeTimers();
 	const limitMs = 3_000_000_000;
+	const platformTimerMaxMs = 2_147_483_647;
 	const stream = planner(["planner-a"], {});
 	const run = runVerbatimCompaction(
 		preparation(),
@@ -234,11 +267,14 @@ test("a planning time limit beyond the platform timer maximum is honoured, not c
 		settled = true;
 	});
 
-	await vi.advanceTimersByTimeAsync(2_147_483_647 + 1_000);
+	await vi.advanceTimersByTimeAsync(platformTimerMaxMs + 1_000);
 	assert.equal(settled, false, "the limit must not fire at the platform timer maximum");
 	assert.equal(stream.aborted(), 0);
 
-	await vi.advanceTimersByTimeAsync(limitMs);
-	assert.equal(settled, true);
+	await vi.advanceTimersByTimeAsync(limitMs - (platformTimerMaxMs + 1_000) - 1);
+	assert.equal(settled, false, "the limit must not fire before it is reached");
+
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(settled, true, "the limit fires once it is reached");
 	assert.equal((await run).freshReason, `Compaction planning timed out after ${limitMs} ms`);
 });
