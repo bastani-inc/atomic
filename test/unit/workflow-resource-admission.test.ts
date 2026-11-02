@@ -10,6 +10,7 @@ import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/wo
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import {
 	QUARANTINED_CAPACITY_WAIT_MS,
+	QuarantinedCapacityError,
 	REAP_KILL_GRACE_MS,
 	REAP_TERM_GRACE_MS,
 	SqlResourceAdmission,
@@ -550,13 +551,14 @@ test.skipIf(process.platform === "win32")(
 			vi.useFakeTimers({ toFake: ["performance"] });
 			const replay = await SqlResourceAdmission.open(f.journals[1]!, { root: "root", holder: "replay", limits });
 			const waiter = await SqlResourceAdmission.open(f.journals[0]!, { root: "other", holder: "waiter", limits });
-			const outcome: { refusal?: unknown } = {};
-			const refused = replay.acquire("process").then(
-				() => assert.fail("capacity that only a quarantined permit holds was granted"),
-				(error: unknown) => {
-					outcome.refusal = error;
-				},
+			const refusal = replay.acquire("process").then(
+				(): Error => assert.fail("capacity that only a quarantined permit holds was granted"),
+				(error: Error) => error,
 			);
+			let refused = false;
+			void refusal.finally(() => {
+				refused = true;
+			});
 			let granted = false;
 			const waiting = waiter.acquire("process").then((release) => {
 				granted = true;
@@ -567,19 +569,13 @@ test.skipIf(process.platform === "win32")(
 			await sleep(200);
 			await vi.advanceTimersByTimeAsync(QUARANTINED_CAPACITY_WAIT_MS - 1_000);
 			await sleep(300);
-			assert.equal(
-				outcome.refusal,
-				undefined,
-				"the admission waits out the bound for the quarantined group to exit",
-			);
+			assert.equal(refused, false, "the admission waits out the bound for the quarantined group to exit");
 			await vi.advanceTimersByTimeAsync(1_000);
-			await refused;
-			// The assertion above narrowed it to undefined; the rejection handler has set it since.
-			const refusal = outcome.refusal as unknown;
-			assert.ok(refusal instanceof Error);
-			assert.ok(isRetryableWorkflowError(refusal), String(refusal));
+			const error = await refusal;
+			assert.ok(error instanceof QuarantinedCapacityError, String(error));
+			assert.ok(isRetryableWorkflowError(error));
 			assert.match(
-				refusal.message,
+				error.message,
 				new RegExp(
 					`^Local worker process cleanup unconfirmed; process permit refused after \\d+ ms: admission\\.limits\\.process \\(1\\) is held by quarantined permits of process groups ${live.group} that survived SIGKILL$`,
 				),
