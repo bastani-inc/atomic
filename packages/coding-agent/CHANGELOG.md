@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Recorded Gemini 4 Argon results in the evals snapshot used by automatic model routing: its Artificial Analysis row at high effort, Cognition FrontierCode 1.1 at medium effort, Zapier AutomationBench at high and medium effort, and Google's vendor-reported launch results, including DeepSWE v1.1, Terminal-Bench 4.0 and Terminal-Bench-Science.
+
 ## [0.9.61] - 2026-11-02
 
 A local worker pool that keeps going when one child or one worker goes wrong.
