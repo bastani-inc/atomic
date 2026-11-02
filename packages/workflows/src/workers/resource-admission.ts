@@ -314,12 +314,15 @@ export class SqlResourceAdmission {
 	): Promise<ResourcePermit> {
 		signal?.throwIfAborted();
 		const operation = randomUUID();
+		// A waiter fenced for a lapsed owner lease is released already but still recoverable, and pruning keeps it while its
+		// owner renews (#4179): ending this admission records why, so it becomes ordinary history.
 		const release = (reason = "resource cleanup confirmed") =>
 			this.storage.transaction(async (tx) => {
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE operation = ? AND state != 'released'`,
+					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE operation = ? AND (state != 'released' OR reason = ?)`,
 					reason,
 					operation,
+					FENCED_WAITER_REASON,
 				);
 			});
 		release.bindProcess = async (identity: ResourceProcessIdentity) => {
