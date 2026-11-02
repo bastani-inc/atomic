@@ -4,8 +4,8 @@
 
 ### Fixed
 
-- A local worker pool (`workflows.localWorkers`) whose journal or root answers more slowly than the work lease, as on a busy machine or while the root's process pauses, no longer stops every worker at the same moment and replays every child on a new one. A worker waiting for the pool's own answer is no longer taken for a silent one, so it keeps its child and its lease is renewed once the answer comes.
-- Lease recovery in a local worker pool no longer fails the whole pool, and with it every unfinished child at once with `stale_work_lease`, when an expired attempt changes hands while recovery acts on it, for example because its worker just exited and its child was released for replay.
+- A local worker pool (`workflows.localWorkers`) whose journal or root answers more slowly than the work lease, as on a busy machine or while the root's process pauses, no longer stops every worker at the same moment and replays every child on a new one. A worker waiting for the pool's own answer is no longer taken for a silent one, so it keeps its child and its lease is renewed once the answer comes. ([#4165](https://github.com/bastani-inc/atomic/pull/4165))
+- Lease recovery in a local worker pool no longer fails the whole pool, and with it every unfinished child at once with `stale_work_lease`, when an expired attempt changes hands while recovery acts on it, for example because its worker just exited and its child was released for replay. ([#4165](https://github.com/bastani-inc/atomic/pull/4165))
 
 ## [0.9.61] - 2026-11-02
 
