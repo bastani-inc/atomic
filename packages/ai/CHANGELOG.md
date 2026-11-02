@@ -4,6 +4,18 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.64] - 2026-11-02
+
+### Added
+
+- `api/anthropic-assistant-content` exports `anthropicAssistantReplayContent(message, model)`, which returns the content blocks an Anthropic Messages request for `model` carries for one transcript turn, or none when the request omits the turn, using the same transformation and conversion as the request. Callers that repair provider payloads can match transcript turns to payload messages without copying the converter's rules ([#4185](https://github.com/bastani-inc/atomic/issues/4185))
+
+### Fixed
+
+- The Anthropic Messages converter sends signed `thinking` text back exactly as Anthropic returned it instead of stripping unpaired surrogates from it, which changed the latest assistant message and failed the request with `thinking or redacted_thinking blocks in the latest assistant message cannot be modified` ([#4185](https://github.com/bastani-inc/atomic/issues/4185))
+
+## [0.9.64-alpha.1] - 2026-11-02
+
 ### Added
 
 - `api/anthropic-assistant-content` exports `anthropicAssistantReplayContent(message, model)`, which returns the content blocks an Anthropic Messages request for `model` carries for one transcript turn, or none when the request omits the turn, using the same transformation and conversion as the request. Callers that repair provider payloads can match transcript turns to payload messages without copying the converter's rules ([#4185](https://github.com/bastani-inc/atomic/issues/4185))
