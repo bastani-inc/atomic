@@ -133,6 +133,11 @@ impl CommandTask {
 		matches!(self.intent.terminal, CommandTerminal::Pipe {})
 			&& self.options.sink != Some(CommandOutputSink::Drained)
 	}
+	/// Frees the in-memory copies of a done command's output once its owner has closed (#4215): what its spool holds
+	/// still reads back, and nothing of it stays in memory for as long as the process lives.
+	pub(super) fn release_output_memory(&self) {
+		self.output.lock().unwrap().release_memory();
+	}
 	#[cfg(unix)]
 	fn retain_failed(
 		&self,
@@ -340,7 +345,7 @@ impl Actor {
 		let runner = RunnerLease { cap: cap.clone() };
 		let spawn = std::thread::Builder::new().name("task-command".into()).spawn(move || {
 			actor.run_command(&runner, &resource);
-			resource.output.lock().unwrap().release_file();
+			resource.output.lock().unwrap().settle();
 			resource.finished.store(true, Ordering::Release);
 		});
 		match spawn {
@@ -1024,6 +1029,29 @@ impl OutputStore {
 		self.released = true;
 		if self.disk_len == 0 {
 			let _ = std::fs::remove_file(&self.path);
+		}
+	}
+	/// Whether the spool holds every byte the command wrote, so the in-memory copies only duplicate it.
+	fn spooled_whole(&self) -> bool {
+		self.spilled
+			&& (self.released || self.file.is_some())
+			&& !self.unavailable
+			&& !self.overflow
+			&& self.disk_len == self.byte_count
+	}
+	/// Frees the in-memory copies of the output (head, tail and foreground) and their allocations (#4215). Reads then
+	/// come from the spool alone: the same bytes when it holds them all, and otherwise an omitted range for what only
+	/// memory held.
+	fn release_memory(&mut self) {
+		self.head = Vec::new();
+		self.tail = VecDeque::new();
+		self.foreground = Vec::new();
+	}
+	/// What a settled command keeps of its output in memory: nothing, once its spool holds all of it (#4215).
+	fn settle(&mut self) {
+		self.release_file();
+		if self.spooled_whole() {
+			self.release_memory();
 		}
 	}
 	fn read_disk(&mut self, start: u64, bytes: &mut [u8]) -> Option<io::Result<()>> {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The task supervisor no longer keeps finished shell commands' output in memory until the process exits. A pipe command whose output is all in its spool file keeps no in-memory copy once it settles, and every command of a closed task owner frees its in-memory output. Spooled output still reads back from its file; a terminal (PTY) command of a closed owner, which has no spool, reads as omitted. Before, each finished command kept up to about 9 MB (its head, tail and foreground buffers) for as long as the process lived, even after the session that ran it closed ([#4215](https://github.com/bastani-inc/atomic/issues/4215)).
+
 ## [0.9.58] - 2026-11-01
 
 ### Fixed
