@@ -64,6 +64,8 @@ import { disposeWorkflowSummaryService, requestWorkflowSummary } from "./workflo
 
 interface DurabilityWarningContext extends PiModelContext {
 	readonly hasUI?: boolean;
+	/** The host's run mode; `"tui"` only when a terminal UI renders the session. */
+	readonly mode?: "tui" | "rpc" | "json" | "print";
 	readonly ui?: {
 		readonly notify?: (message: string, type?: "info" | "warning" | "error") => void;
 	};
@@ -412,7 +414,9 @@ export function createWorkflowExtensionRuntimeState(
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
 		const contextTrusted = ctx?.isProjectTrusted?.();
 		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext);
-		if (models === undefined && !ctx?.generateWorkflowSummary && contextTrusted === undefined) return runtimeProxy;
+		// A terminal-UI context always gets its own runtime: its runs decide to route their console output (#4175).
+		if (models === undefined && !ctx?.generateWorkflowSummary && contextTrusted === undefined && ctx?.mode !== "tui")
+			return runtimeProxy;
 		return createExtensionRuntime({
 			registry: runtimeRef.current.registry,
 			cwd: resolveCwd(),
@@ -429,6 +433,7 @@ export function createWorkflowExtensionRuntimeState(
 			summaryContext: ctx,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
+			...(ctx?.mode === "tui" ? { routeConsoleToLog: true } : {}),
 		});
 	}
 

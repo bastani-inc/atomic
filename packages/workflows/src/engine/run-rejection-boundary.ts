@@ -23,6 +23,19 @@ export interface RunRejectionScopeOptions {
 	readonly parentRunId?: string;
 	readonly source?: string;
 	readonly fail: (error: object) => void;
+	/**
+	 * Whether this run tree's console output goes to the workflow log rather than stderr (#4175). Decided once, by the
+	 * root run's owner when the run starts; child runs inherit their root's decision.
+	 */
+	readonly consoleLog?: boolean;
+}
+
+/** One run tree's share of the workflow log, held by its scopes for as long as any of its code can still run. */
+export interface RunConsole {
+	readonly rootRunId: string;
+	bytes: number;
+	capped: boolean;
+	announced: boolean;
 }
 
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
@@ -42,6 +55,7 @@ interface ScopeState {
 	generation: number;
 	live: boolean;
 	sharedSource: boolean;
+	readonly console: RunConsole | undefined;
 }
 
 type Attribution = Map<ScopeState, RejectionEffect>;
@@ -364,14 +378,26 @@ function afterPendingRejectionReports(): Promise<void> {
 	});
 }
 
+/**
+ * The console share of the run tree whose code is executing on the current async path, when its owner routes its
+ * console output to the workflow log; undefined outside any run, and for runs whose owner does not.
+ *
+ * A run's continuations keep its scope after the run ends, so code that settles late (a `.catch` on a durable step
+ * rejected by a quit) still resolves to its run and to the decision made when the run started.
+ */
+export function currentRunConsole(): RunConsole | undefined {
+	return sharedBoundary().store.getStore()?.console;
+}
+
 export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRejectionScope {
 	const boundary = sharedBoundary();
 	ensureInstalled(boundary);
 	pruneEndedSources(boundary);
 	const parent = options.parentRunId === undefined ? undefined : boundary.runs.get(options.parentRunId);
+	const rootRunId = parent?.rootRunId ?? options.runId;
 	const scope: ScopeState = {
 		runId: options.runId,
-		rootRunId: parent?.rootRunId ?? options.runId,
+		rootRunId,
 		source: options.source === undefined ? undefined : normalizeStackPath(options.source),
 		parent,
 		fail: options.fail,
@@ -379,6 +405,12 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 		generation: 0,
 		live: true,
 		sharedSource: false,
+		console:
+			parent !== undefined
+				? parent.console
+				: options.consoleLog === true
+					? { rootRunId, bytes: 0, capped: false, announced: false }
+					: undefined,
 	};
 	boundary.scopes.add(scope);
 	boundary.runs.set(scope.runId, scope);

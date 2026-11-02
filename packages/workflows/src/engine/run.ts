@@ -855,12 +855,18 @@ async function executeRun(
 		runId,
 		...(opts.parentRun !== undefined ? { parentRunId: opts.parentRun.runId } : {}),
 		...(authoredIn !== undefined ? { source: authoredIn } : {}),
+		...(opts.routeConsoleToLog === true ? { consoleLog: true } : {}),
 		fail: (error) => {
 			if (findWorkflowGracefulQuit(error) !== undefined) return;
 			const selected = terminalEvents.selectFailure(error);
 			if (selected.kind === "failure" && !ownController.signal.aborted) ownController.abort(selected.error);
 		},
 	});
+	// Aborting the run fires its author's abort listeners synchronously in the aborting caller's context: a host quit,
+	// a cancellation registry, a tool drain. Every abort of this controller now runs inside the run's scope, so those
+	// listeners' console output is attributed to the run (#4175). The controller itself is unchanged.
+	const abortOutsideRunScope = ownController.abort.bind(ownController);
+	ownController.abort = (reason?: unknown) => rejectionScope.run(() => abortOutsideRunScope(reason));
 	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {
 		once: true,
 	});

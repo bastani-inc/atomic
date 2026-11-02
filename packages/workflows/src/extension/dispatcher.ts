@@ -65,6 +65,8 @@ async function discardUnadmittedRun(runId: string, activeStore: Store): Promise<
 
 export interface DispatcherOpts {
 	durableBackend?: DurableWorkflowBackend;
+	/** The launching runtime's decision that its root runs send their console output to the workflow log (#4175). */
+	routeConsoleToLog?: boolean;
 	localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
 	admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
 	/** Registry of compiled workflow definitions. */
@@ -243,6 +245,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					budget: args.budget,
 					models: opts.models,
 					executionMode: policy.mode,
+					...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
 					cwd: opts.cwd,
 					defaultSessionDir: opts.defaultSessionDir,
 					...(opts.origin === undefined ? {} : { origin: opts.origin }),
