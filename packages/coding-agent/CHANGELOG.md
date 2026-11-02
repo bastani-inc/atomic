@@ -5,6 +5,7 @@
 ### Fixed
 
 - A workflow run no longer keeps the live session of every stage it completed in memory until the whole run ends. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` gives its session back as soon as it completes, and one run with `ctx.stage` once the workflow no longer holds its stage context; its saved transcript still opens from the graph, `/workflow attach` or the stage chat. A session hosting long runs with hundreds of completed stages held gigabytes this way, and the garbage collection that memory caused made the interactive TUI, `/tasks` and queued messages slow to respond. ([#4166](https://github.com/bastani-inc/atomic/pull/4166))
+- In the interactive TUI, rows that the engine renders, such as tool results and extension messages, keep their last frame when the chat is rebuilt (after compaction, `/reload` or switching sessions), instead of showing `Loading isolated renderer…` until a busy engine renders each one again. A rebuilt chat also no longer leaves the renderers of the rows it replaced running in the engine for the rest of the session, and engine messages reach chat rows through one subscription instead of one per row.
 
 ## [0.9.61] - 2026-11-02
 
