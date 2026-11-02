@@ -20,9 +20,15 @@ on:
 permissions:
   contents: read
 
+# One publication at a time across every tag. Two runs publishing at once
+# (an alpha and its stable, cut back to back) both hit npm provenance conflicts,
+# and they could also race on which release GitHub marks latest. A later run
+# waits instead of being cancelled; `queue: max` keeps every waiting run in line
+# rather than letting a newer one replace the one already pending.
 concurrency:
-  group: publish-${{ github.event.inputs.tag || github.ref_name }}
+  group: publish
   cancel-in-progress: false
+  queue: max
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -745,6 +751,15 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
+      # Release tooling comes from the workflow's own commit, not SOURCE_REF, so a
+      # recovery dispatch from a repaired branch runs that branch's scripts against
+      # the unchanged tagged payload.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tooling
+          sparse-checkout: scripts/release
+          persist-credentials: false
       - uses: namespace-actions/download-artifact@7cbad919e4b0e09f17e9d6311a444ff002992b5b # v2.0.1
         with:
           name: release-assets-${{ env.RELEASE_TAG }}
@@ -756,18 +771,7 @@ jobs:
       - name: Validate and stage draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cd release-assets
-          sha256sum atomic-*.tar.gz atomic-*.zip > SHA256SUMS
-          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
-          [[ "$existing" != false ]] || { echo "GitHub Release $RELEASE_TAG is already published. Refusing to mutate a public release." >&2; exit 1; }
-          [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes
-          assets=(atomic-darwin-arm64.tar.gz atomic-darwin-x64.tar.gz atomic-linux-x64.tar.gz atomic-linux-arm64.tar.gz atomic-linux-x64-musl.tar.gz atomic-linux-arm64-musl.tar.gz atomic-windows-x64.zip atomic-windows-arm64.zip SHA256SUMS)
-          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file RELEASE_NOTES.md "${assets[@]}"
-          expected=$(printf '%s\n' "${assets[@]}" | sort)
-          actual=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)
-          [[ "$actual" == "$expected" ]] || { echo "Draft release asset set mismatch" >&2; exit 1; }
+        run: release-tooling/scripts/release/stage-github-release.sh "$RELEASE_TAG" release-assets
 
   publish-npm:
     name: Publish npm packages
@@ -782,6 +786,13 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Release tooling comes from the workflow's own commit; see stage-github-release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tooling
+          sparse-checkout: scripts/release
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: npm-packages-${{ env.RELEASE_TAG }}
@@ -796,81 +807,41 @@ jobs:
         env:
           VERSION: ${{ needs.integrity.outputs.version }}
           NPM_TAG: ${{ needs.integrity.outputs.npm-tag }}
+        # scripts/cut-release.ts reads the payload, the deferred names and the registry
+        # from these lines before it tags a release, so they stay in this file.
         run: |
           set -euo pipefail
-          declare -A tarballs=()
-          for file in payload/npm-packages/*.tgz; do
-            name=$(tar -xOf "$file" package/package.json | jq -er .name)
-            version=$(tar -xOf "$file" package/package.json | jq -er .version)
-            [[ "$version" == "$VERSION" ]] || { echo "$name has version $version, expected $VERSION" >&2; exit 1; }
-            tarballs[$name]="$file"
-          done
           packages=(@bastani/atomic-natives-darwin-arm64 @bastani/atomic-natives-darwin-x64 @bastani/atomic-natives-linux-arm64-gnu @bastani/atomic-natives-linux-arm64-musl @bastani/atomic-natives-linux-x64-gnu @bastani/atomic-natives-linux-x64-musl @bastani/atomic-natives-win32-arm64-msvc @bastani/atomic-natives-win32-x64-msvc @bastani/atomic-natives @bastani/pi-ai @bastani/atomic-storage-libsql @bastani/atomic)
-          [[ "${#tarballs[@]}" -eq "${#packages[@]}" ]] || { echo "Expected exactly twelve npm packages" >&2; exit 1; }
           # A package name that has never been published has no npm trusted publisher yet, so an
           # OIDC publish of it would fail the release. These names publish only once they exist.
           requires_registered_name=(@bastani/atomic-storage-libsql)
-          publish_package() {
-            local name=$1
-            [[ -n "${tarballs[$name]:-}" ]] || { echo "Missing package $name" >&2; return 1; }
-            if [[ " ${requires_registered_name[*]} " == *" $name "* ]]; then
-              local registration_output registration_status
-              if registration_output=$(npm view "$name" name --registry https://registry.npmjs.org 2>&1); then
-                : # The registered name can be published with its trusted publisher.
-              else
-                registration_status=$?
-                if (( registration_status < 128 )) && grep -Eq 'E404|404 Not Found|is not in this registry' <<< "$registration_output"; then
-                  echo "::warning::$name is not registered on npm yet; skipping it. Publish it once by hand and add the trusted publisher (see docs/ci.md)."
-                  return 0
-                fi
-                echo "Cannot determine whether $name is registered (npm exited $registration_status): $registration_output" >&2
-                return 1
-              fi
-            fi
-            if npm view "$name@$VERSION" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
-              echo "$name@$VERSION already exists; skipping."
-            else
-              npm publish "${tarballs[$name]}" --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
-            fi
-          }
-          platform_leaves=() dependents=()
-          for name in "${packages[@]}"; do
-            if [[ "$name" == @bastani/atomic-natives-* ]]; then platform_leaves+=("$name"); else dependents+=("$name"); fi
-          done
-          logs=$(mktemp -d)
-          pids=()
-          for name in "${platform_leaves[@]}"; do
-            publish_package "$name" > "$logs/${name##*/}.log" 2>&1 &
-            pids+=("$!")
-          done
-          failed=0
-          for index in "${!pids[@]}"; do
-            wait "${pids[$index]}" || failed=1
-            cat "$logs/${platform_leaves[$index]##*/}.log"
-          done
-          (( failed == 0 )) || { echo "A native platform package failed to publish; dependents were not published." >&2; exit 1; }
-          for name in "${dependents[@]}"; do
-            publish_package "$name"
-          done
+          deferred=()
+          for name in "${requires_registered_name[@]}"; do deferred+=(--requires-registered "$name"); done
+          release-tooling/scripts/release/publish-npm.sh --payload-dir payload/npm-packages --registry https://registry.npmjs.org "${deferred[@]}" "${packages[@]}"
 
   publish-github-release:
     name: Publish GitHub Release
     needs: [stage-github-release, publish-npm]
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 5
+    # Holds two bounded GitHub API retries (read the draft, then undraft it) of
+    # up to 105 s of backoff each, plus the tooling checkout.
+    timeout-minutes: 10
     permissions:
       contents: write
     env:
       GH_REPO: ${{ github.repository }}
     steps:
+      # Release tooling comes from the workflow's own commit; see stage-github-release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tooling
+          sparse-checkout: scripts/release
+          persist-credentials: false
       - name: Publish staged GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
-          [[ "$existing" == true ]] || { echo "Draft GitHub Release $RELEASE_TAG does not exist." >&2; exit 1; }
-          gh release edit "$RELEASE_TAG" --draft=false --prerelease=${{ contains(env.RELEASE_TAG, '-') }} --latest=${{ contains(env.RELEASE_TAG, '-') && 'false' || 'true' }}
+        run: release-tooling/scripts/release/publish-github-release.sh "$RELEASE_TAG"
 
   register-published-version:
     name: Register published version
@@ -978,21 +949,3 @@ jobs:
             attempt=$((attempt + 1))
             sleep $((attempt * 2))
           done
-
-  cleanup-draft-github-release:
-    name: Clean up failed draft GitHub Release
-    needs: [build, stage-github-release, publish-npm, publish-github-release]
-    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - name: Delete draft GitHub Release after failure
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
-          [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes

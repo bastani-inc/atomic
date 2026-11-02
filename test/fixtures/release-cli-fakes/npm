@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Fake npm for the release script tests: one npm registry kept in $RELEASE_FAKE_STATE.
+#
+#   npm view NAME@VERSION version   prints VERSION when the registry serves exactly that
+#                                   version of NAME, else E404
+#   npm view NAME name              the registration probe: prints NAME, or the scripted error
+#   npm publish TARBALL ...         refuses a version the registry already has, as npm does,
+#                                   then plays the package's next scripted outcome
+#
+# <key> below is a package name with `/` replaced by `+`. registry-<key> lists every
+# version the registry has ever accepted, one per line; a version npm can no longer
+# serve (it lags, or the version was unpublished) also has hidden-<key>@<version>,
+# holding how many more `npm view` calls miss it, or `forever`.
+#
+# Outcomes are listed one per line in <stem>.outcomes, where <stem> is
+# `publish-<key>` or `registration-<key>`. A missing file means `ok`; the last
+# line repeats once the list is used up.
+#
+# publish outcomes:
+#   ok                     publishes
+#   slow-ok                publishes after holding the publish open for 0.3 s; every publish
+#                          appends the number of publishes then in flight to inflight.log
+#   tlog-409               fails the way npm 11's provenance upload does when its own retried
+#                          transparency-log POST finds the entry its first attempt created
+#   e500                   the registry answers 500; nothing is published
+#   timeout-after-publish  the registry stores the version but the client times out, and the
+#                          next two `npm view` calls still miss it (a lagging registry view)
+#   e403                   a permission error; nothing is published
+# registration outcomes: ok; e404; killed-e404 (prints a 404, then dies of SIGTERM); or any
+# other npm error code (printed as `npm error code <it>`).
+set -euo pipefail
+state=${RELEASE_FAKE_STATE:?RELEASE_FAKE_STATE is required}
+printf 'npm %s\n' "$*" >>"$state/calls.log"
+
+key() { printf '%s' "${1//\//+}"; }
+
+next_outcome() {
+  local outcomes="$state/$1.outcomes" counter="$state/$1.count" n lines
+  if [[ ! -f "$outcomes" ]]; then
+    echo ok
+    return
+  fi
+  n=$(cat "$counter" 2>/dev/null || echo 0)
+  echo $((n + 1)) >"$counter"
+  mapfile -t lines <"$outcomes"
+  ((n < ${#lines[@]})) || n=$((${#lines[@]} - 1))
+  echo "${lines[$n]}"
+}
+
+case ${1:-} in
+view)
+  if [[ "${3:-}" == name ]]; then
+    outcome=$(next_outcome "registration-$(key "$2")")
+    case $outcome in
+    ok) echo "$2" ;;
+    e404)
+      printf 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/%s - Not found\n' "$2" >&2
+      exit 1
+      ;;
+    killed-e404)
+      printf 'npm error code E404\n' >&2
+      exit 143
+      ;;
+    *)
+      printf 'npm error code %s\n' "$outcome" >&2
+      exit 1
+      ;;
+    esac
+    exit 0
+  fi
+  name=${2%@*}
+  version=${2##*@}
+  hidden="$state/hidden-$(key "$name")@$version"
+  if [[ -f "$hidden" ]]; then
+    remaining=$(cat "$hidden")
+    if [[ "$remaining" != forever ]]; then
+      if ((remaining <= 1)); then rm -f "$hidden"; else echo $((remaining - 1)) >"$hidden"; fi
+    fi
+  elif grep -qxF "$version" "$state/registry-$(key "$name")" 2>/dev/null; then
+    echo "$version"
+    exit 0
+  fi
+  printf 'npm error code E404\nnpm error 404 No match found for version %s\n' "$version" >&2
+  exit 1
+  ;;
+publish)
+  manifest=$(tar -xOf "$2" package/package.json)
+  name=$(jq -r .name <<<"$manifest")
+  version=$(jq -r .version <<<"$manifest")
+  url="https://registry.npmjs.org/${name/\//%2f}"
+  registry="$state/registry-$(key "$name")"
+  if grep -qxF "$version" "$registry" 2>/dev/null; then
+    printf 'npm error code E403\nnpm error 403 403 Forbidden - PUT %s - You cannot publish over the previously published versions: %s.\n' "$url" "$version" >&2
+    exit 1
+  fi
+  case $(next_outcome "publish-$(key "$name")") in
+  ok)
+    echo "$version" >>"$registry"
+    echo "+ $name@$version"
+    ;;
+  slow-ok)
+    touch "$state/inflight-$(key "$name")"
+    inflight=("$state"/inflight-*)
+    echo "${#inflight[@]}" >>"$state/inflight.log"
+    command -p sleep 0.3
+    rm -f "$state/inflight-$(key "$name")"
+    echo "$version" >>"$registry"
+    echo "+ $name@$version"
+    ;;
+  tlog-409)
+    echo 'npm error code TLOG_CREATE_ENTRY_ERROR' >&2
+    echo 'npm error error creating tlog entry - (409) an equivalent entry already exists in the transparency log with UUID 108e9186e8c5677a47a1b28e2294a1c6e106d496f0c8d7220e373112c580a0bdf654493a5d632ab2' >&2
+    exit 1
+    ;;
+  e500)
+    printf 'npm error code E500\nnpm error 500 Internal Server Error - PUT %s\n' "$url" >&2
+    exit 1
+    ;;
+  timeout-after-publish)
+    echo "$version" >>"$registry"
+    echo 2 >"$state/hidden-$(key "$name")@$version"
+    printf 'npm error code ETIMEDOUT\nnpm error network request to %s failed, reason: socket hang up\n' "$url" >&2
+    exit 1
+    ;;
+  e403)
+    printf 'npm error code E403\nnpm error 403 403 Forbidden - PUT %s - You may not perform that action with these credentials.\n' "$url" >&2
+    exit 1
+    ;;
+  *)
+    echo "fake npm: unknown publish outcome" >&2
+    exit 64
+    ;;
+  esac
+  ;;
+*)
+  echo "fake npm: unsupported command: $*" >&2
+  exit 64
+  ;;
+esac

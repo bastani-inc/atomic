@@ -364,7 +364,9 @@ async function main(): Promise<void> {
 		// updates, two publish.yml runs racing the same npm version. Naming the tag
 		// ref explicitly makes that impossible regardless of what else is named.
 		await $`git -C ${ROOT} push origin ${`refs/tags/${version}:refs/tags/${version}`}`;
-		console.log(`Tag pushed. This is the publication signal: publish.yml is now running for ${version}.`);
+		console.log(
+			`Tag pushed. This is the publication signal: publish.yml now runs for ${version}, after any publication already in progress.`,
+		);
 		console.log(
 			"Do not push this tag again — a second push re-triggers the publisher against a version that is already being published.",
 		);

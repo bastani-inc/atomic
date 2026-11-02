@@ -28,11 +28,11 @@ Release tag push (`0.9.10` or `0.9.10-alpha.1`)
    ├─ stage-github-release (after build and every smoke job): join the
    │  Windows-built pair, write SHA256SUMS, create a verified draft, and refuse
    │  to change a published release
-   ├─ publish-npm: tokenless OIDC publication of the eight native leaves in
-   │  parallel, then natives, pi-ai, the libSQL adapter, and atomic in order, skipping existing versions
+   ├─ publish-npm: tokenless OIDC publication of the eight native leaves four
+   │  at a time, then natives, pi-ai, the libSQL adapter, and atomic in order,
+   │  skipping existing versions and retrying transient failures
    ├─ publish-github-release: undraft only after npm succeeds
-   ├─ register-published-version: register the published version with a GitHub OIDC JWT
-   └─ cleanup-draft-github-release: delete a draft when later work fails
+   └─ register-published-version: register the published version with a GitHub OIDC JWT
 
 Push or manual dispatch on `main`
 └─ warm-toolchain-cache.yml
@@ -90,7 +90,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 | `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-4x16` | 4 vCPU, 16 GB |
 | `codeql.yml` analyze | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
-| `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release, cleanup-draft-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
+| `publish.yml` integrity, linux-binary-smoke, build, stage-github-release, publish-github-release; native `linux-x64-gnu`, `linux-x64-musl`, `win32-x64-msvc` and `win32-arm64-msvc` (cross-compiled); alpine x64 | `blacksmith-4vcpu-ubuntu-2404` | `nscloud-ubuntu-24.04-amd64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `linux-arm64-gnu` and `linux-arm64-musl`; alpine arm64 | `blacksmith-4vcpu-ubuntu-2404-arm` | `nscloud-ubuntu-24.04-arm64-4x16` | 4 vCPU, 16 GB |
 | `publish.yml` native `darwin-arm64` | `blacksmith-6vcpu-macos-26` | `namespace-profile-atomic-release-macos-arm64-6x14` | 6 vCPU, 14 GB |
 | `publish.yml` windows-binary-smoke | `blacksmith-4vcpu-windows-2025` | `nscloud-windows-2022-amd64-4x16` | 4 vCPU, 16 GB |
@@ -410,7 +410,26 @@ Published-version registration does not follow that branch-ref path. The Worker 
 
 Registration recovery is rerunning the failed `register-published-version` job on a run whose ref is already the tag (the original tag push, or a dispatch whose `--ref` is the tag), or dispatching at the tag itself. A branch-ref dispatch cannot register. If the registration job YAML on the tag is wrong, fix it in a later tagged release rather than moving the tag.
 
-Concurrency is scoped per release tag and does not cancel an in-progress publication.
+One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)), so `.github/actionlint.yaml` ignores that one finding in `publish.yml`.
+
+### Recovering a failed publication
+
+The publication jobs are resumable, so the first move after a failure is **Re-run failed jobs** on the same run (`gh run rerun <run-id> --failed`):
+
+- Once `stage-github-release` succeeds, nothing in the workflow deletes the draft. A failure in `publish-npm` or `publish-github-release` leaves it in place for the re-run.
+- `publish-npm` skips every package version npm already has. A publish the registry refuses because the version already exists counts as published once npm serves that version; a version npm refuses but never serves, such as an unpublished one, fails the job before any dependent publishes. A re-run therefore finishes a partly published payload without publishing anything twice.
+- `publish-github-release` leaves a release an earlier attempt already published as it is.
+- A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch. If GitHub cannot say whether the failed attempt left a draft, staging stops instead of creating a second one.
+- Skipping checks only the version, not the contents: npm never takes a version twice, so a recovery that builds different contents for the same tag (a moved tag, or another `source_ref`) completes with the packages npm already had beside new GitHub assets. Recover with the same build inputs, and never move a release tag.
+- One tag has one draft, and the latest staging owns it. After a later dispatch has staged the tag again, recover from that dispatch's run, not an earlier one: re-running an earlier run would publish the draft the later build staged.
+
+Before giving up, the scripts retry transient failures with doubling waits: an npm publish up to four times (10, 20, 40 s) when it fails with a provenance transparency-log error, a registry 5xx, 408, 409 or 429, or a network error; a GitHub API call up to four times (15, 30, 60 s) on a 5xx, a 429, a secondary rate limit or a dropped connection. Other errors, such as a permission error or a missing trusted publisher, fail at once.
+
+Recover a failed release before cutting the next one on the same channel. Re-running an older stable release after a newer one has published publishes the remaining packages under npm's `latest` dist-tag and marks the older GitHub Release as Latest, moving both back. An older alpha moves npm's `next` back the same way. A full dispatch at the older tag does the same.
+
+If the draft is gone, for example because someone deleted it by hand, re-running failed jobs cannot finish the release; `publish-github-release` says so and names the command. Dispatch a full run at the tag instead: `gh workflow run publish.yml --ref <tag> -f tag=<tag>`. It rebuilds, stages the draft again, skips every npm version that already exists, and publishes the release.
+
+The scripts these jobs run live in `scripts/release/`, and each job checks them out from the workflow's own commit rather than from `source_ref`. `test/ci/release-publish-recovery.test.ts` runs the workflow's steps against fake `npm`, `gh` and `sleep` executables for each failure above.
 
 ## Lightweight integrity gate
 
@@ -696,7 +715,7 @@ GitHub Release assets are:
 
 `stage-github-release` validates `SHA256SUMS`, refuses to mutate an already-published release, replaces a prior recovery draft when necessary, and runs `gh release create --verify-tag --draft`. It verifies the exact uploaded asset-name set.
 
-After npm succeeds, `publish-github-release` changes the draft to public and sets stable/prerelease/latest metadata. If staging or either publication job fails, the cleanup job runs with pi's `always()` condition and deletes the release only when it is still a draft.
+After npm succeeds, `publish-github-release` changes the draft to public and sets stable/prerelease/latest metadata. The draft is never deleted after staging succeeds: a failed publication keeps it so that re-running the failed jobs can finish the release (see [Recovering a failed publication](#recovering-a-failed-publication)). Users never see a draft, and the next staging for the same tag replaces it. Delete it by hand only to abandon the tag. A staging attempt that fails deletes its own incomplete draft.
 
 ## npm publication
 
@@ -715,7 +734,7 @@ The npm job uses environment `npm-publish` with only `contents: read` and `id-to
 11. `@bastani/atomic-storage-libsql`
 12. `@bastani/atomic`
 
-That order publishes native leaves first, then the native root, then `@bastani/pi-ai`, then `@bastani/atomic-storage-libsql`, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapter has no ordering requirement of its own, because its peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+That order publishes native leaves first, four at a time, then the native root, then `@bastani/pi-ai`, then `@bastani/atomic-storage-libsql`, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapter has no ordering requirement of its own, because its peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Transient failures are retried; see [Recovering a failed publication](#recovering-a-failed-publication). Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
 
 ### Registering a new package name
 
@@ -734,14 +753,14 @@ After the GitHub Release is public, `register-published-version` requests a GitH
 
 ## Permissions and time limits
 
-Repository-wide workflow permissions are read-only. Only draft staging, undrafting, and failed-draft cleanup receive `contents: write`. npm publication and published-version registration receive `id-token: write`; neither receives repository write permission. Registration has no GitHub environment. Failure of registration does not republish npm packages or mutate the GitHub Release. Every job has an explicit timeout.
+Repository-wide workflow permissions are read-only. Only draft staging and undrafting receive `contents: write`. npm publication and published-version registration receive `id-token: write`; neither receives repository write permission. Registration has no GitHub environment. Failure of registration does not republish npm packages or mutate the GitHub Release. Every job has an explicit timeout.
 
 ## Workflow files
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
 | `.github/workflows/test.yml` | pushes to `main`; every pull request | workspace tests and cross-platform release smoke |
-| `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version, clean failed drafts |
+| `.github/workflows/publish.yml` | release tag push; manual recovery dispatch | verify, build, stage draft, publish npm, undraft, register the published version |
 | `.github/workflows/warm-toolchain-cache.yml` | pushes to `main`; manual dispatch on `main` | persist verified Zig tarballs and commit the Linux/Windows npm download caches and the MSVC CRT/Windows SDK cache to their Namespace release cache volumes, from `main` only |
 
 ## Repository-local release workflow gates
@@ -760,5 +779,5 @@ Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSig
 2. Require the selected base's normal CI to pass.
 3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
 4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
-5. If publication recovery is required, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
+5. If publication fails, re-run the failed jobs first (see [Recovering a failed publication](#recovering-a-failed-publication)). If that cannot finish it, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
 6. Confirm all twelve npm packages and the public GitHub Release exist with the expected dist-tag and assets.
