@@ -20,9 +20,15 @@ on:
 permissions:
   contents: read
 
+# One publication at a time across every tag. Two runs publishing at once
+# (an alpha and its stable, cut back to back) both hit npm provenance conflicts,
+# and they could also race on which release GitHub marks latest. A later run
+# waits instead of being cancelled; `queue: max` keeps every waiting run in line
+# rather than letting a newer one replace the one already pending.
 concurrency:
-  group: publish-${{ github.event.inputs.tag || github.ref_name }}
+  group: publish
   cancel-in-progress: false
+  queue: max
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -817,7 +823,9 @@ jobs:
     name: Publish GitHub Release
     needs: [stage-github-release, publish-npm]
     runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 5
+    # Holds two bounded GitHub API retries (read the draft, then undraft it) of
+    # up to 105 s of backoff each, plus the tooling checkout.
+    timeout-minutes: 10
     permissions:
       contents: write
     env:
@@ -941,21 +949,3 @@ jobs:
             attempt=$((attempt + 1))
             sleep $((attempt * 2))
           done
-
-  cleanup-draft-github-release:
-    name: Clean up failed draft GitHub Release
-    needs: [build, stage-github-release, publish-npm, publish-github-release]
-    if: ${{ always() && needs.stage-github-release.result != 'skipped' && (needs.stage-github-release.result != 'success' || needs.publish-npm.result != 'success' || needs.publish-github-release.result != 'success') }}
-    runs-on: nscloud-ubuntu-24.04-amd64-4x16
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      GH_REPO: ${{ github.repository }}
-    steps:
-      - name: Delete draft GitHub Release after failure
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          existing=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null || true)
-          [[ "$existing" != true ]] || gh release delete "$RELEASE_TAG" --yes

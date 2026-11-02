@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function registrationScript(workflow: string): string {
-	const job = jobBlock(workflow, "register-published-version", "cleanup-draft-github-release");
+	const job = jobBlock(workflow, "register-published-version");
 	const marker = "        run: |\n";
 	const start = job.indexOf(marker);
 	assert.notEqual(start, -1, "register-published-version must have a run block");
