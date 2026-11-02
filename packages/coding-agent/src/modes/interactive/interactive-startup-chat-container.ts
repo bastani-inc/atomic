@@ -1,4 +1,5 @@
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
+import { disposeRemoteRenderers } from "../interactive-engine/remote-renderer.ts";
 import { Container } from "./interactive-mode-deps.ts";
 
 /**
@@ -16,6 +17,12 @@ export class StartupChatContainer extends Container {
 
 	override render(width: number): string[] {
 		return this.startupOutputReleased ? super.render(width) : [];
+	}
+
+	/** A cleared transcript is rebuilt from new rows; the engine-rendered rows it drops are disposed. */
+	override clear(): void {
+		disposeRemoteRenderers(this.children);
+		super.clear();
 	}
 }
 
