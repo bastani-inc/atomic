@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.9.67] - 2026-11-02
+
+Long-running pools and sessions no longer grow memory without bound: local workers keep only the child they run, and finished shell commands no longer hold their output in memory.
+
+- **Bounded local worker memory:** a local worker now keeps only the checkpoints and state of the child it runs instead of every child in the pool, and the new `workflows.localWorkers.maxWorkerRssBytes` replaces a worker that still grows past a limit between children ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
+- **Finished commands free their output:** a finished shell command no longer keeps up to about 9 MB of its output in native memory until the process exits; spooled output still reads back from disk ([#4218](https://github.com/bastani-inc/atomic/pull/4218))
+
+### Added
+
+- `workflows.localWorkers.maxWorkerRssBytes`: a local worker whose resident memory has grown past this many bytes is replaced by a fresh worker once the child it runs ends, as a backstop for long pools. A running child is never interrupted, and these replacements never count as worker failures. Unset by default; not saved with the root ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
+
+### Fixed
+
+- A long-running Atomic process no longer keeps the output of every shell command it ran in memory. A finished command kept up to about 9 MB of its output in native memory until the process exited, even after its session closed, so an interactive session running for hours, workflow stages, subagents and local workers grew without bound outside the JavaScript heap. A command's spooled output stays on disk and still reads back in `/tasks` and the task tools; a terminal (PTY) command's output, which has no spool, and the end of a spool that hit its 5 GB cap or failed to write are let go once their session closes. In a test of 100 commands printing 1 MB each, memory stayed flat instead of growing by about 80 MB ([#4218](https://github.com/bastani-inc/atomic/pull/4218)).
+- Local workers no longer grow without bound while a pool runs. Every worker kept in memory the checkpoints of every child of the pool, every `ctx.tool` output included, so all workers grew together with the pool's total progress until a busy machine ran out of memory, and a worker also kept the runs and stages of every child it had finished. A worker now keeps only what the child it runs needs, reading that child's checkpoints from the journal when it claims it, and lets go of each child's state when the child ends ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
+
+## [0.9.67-alpha.1] - 2026-11-02
+
+Long-running pools and sessions no longer grow memory without bound: local workers keep only the child they run, and finished shell commands no longer hold their output in memory.
+
+- **Bounded local worker memory:** a local worker now keeps only the checkpoints and state of the child it runs instead of every child in the pool, and the new `workflows.localWorkers.maxWorkerRssBytes` replaces a worker that still grows past a limit between children ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
+- **Finished commands free their output:** a finished shell command no longer keeps up to about 9 MB of its output in native memory until the process exits; spooled output still reads back from disk ([#4218](https://github.com/bastani-inc/atomic/pull/4218))
+
 ### Added
 
 - `workflows.localWorkers.maxWorkerRssBytes`: a local worker whose resident memory has grown past this many bytes is replaced by a fresh worker once the child it runs ends, as a backstop for long pools. A running child is never interrupted, and these replacements never count as worker failures. Unset by default; not saved with the root ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
