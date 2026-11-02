@@ -44,6 +44,8 @@ export class PoolStageHandoff {
 	private readonly owners = new Map<string, string>();
 	private readonly publications = new Map<string, Promise<void>>();
 	private readonly drains = new Map<string, Promise<void>>();
+	/** Failed stage drains of this root, summarized on its run by {@link recordDeliveryIssue}. */
+	private deliveryIssues = 0;
 
 	constructor(
 		private readonly backend: JournalDurableBackend,
@@ -139,9 +141,27 @@ export class PoolStageHandoff {
 		this.drains.set(stage, drain);
 		try {
 			await drain;
+		} catch (error) {
+			// An attempt that was fenced, or a session that was replaced, ends its drain by design.
+			const current = this.attempts.get(work.id) === attempt && !attempt.fenced;
+			if (current && attempt.sessions.get(stage) === recipient.sessionId && (error as Error).message !== STALE)
+				this.recordDeliveryIssue(error as Error);
+			throw error;
 		} finally {
 			if (this.drains.get(stage) === drain) this.drains.delete(stage);
 		}
+	}
+
+	/**
+	 * A pooled stage starts without waiting for the root's drain, so the root reports a failed drain itself: as one
+	 * summary on the root run, however many stages it reaches, never as a message per stage.
+	 */
+	private recordDeliveryIssue(error: Error): void {
+		this.deliveryIssues++;
+		const drains = this.deliveryIssues === 1 ? "1 stage drain" : `${this.deliveryIssues} stage drains`;
+		this.store.recordRunExecutionState(this.lease.runId, {
+			intercomDeliveryIssue: `${drains} on local workers failed; undelivered messages stay queued and arrive live or on the stage's next drain (last: ${error.message})`,
+		});
 	}
 
 	async complete(work: Pick<PoolWork, "id" | "childRunId">): Promise<void> {
@@ -396,7 +416,7 @@ export class PoolStageHandoff {
 						action,
 					),
 				// A drain's transport is the worker's delivery request, which `deliver` answers: it must stay open for as
-				// long as the drain runs, however slowly a starved worker acknowledges. The worker bounds its own wait.
+				// long as the drain runs, however slowly a starved worker acknowledges. The stage does not wait for it.
 				{ holdUntilDrained: true },
 			);
 			attempt.deliveries.set(key, delivery);

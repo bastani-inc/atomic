@@ -961,6 +961,67 @@ test("a sticky message queued after the stage's startup drain does not hold its 
 	}
 });
 
+test("the root records messages its worker already delivered without delivering them again", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		await f.queueBroadcast("broadcast-1");
+		const received: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: ["direct-1", "broadcast-1"] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		assert.deepEqual(received, []);
+		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 0);
+		const broadcast = f.store.runs().find((run) => run.id === ROOT)?.pendingStageMessages?.[0];
+		assert.deepEqual(
+			broadcast?.deliveries?.map(({ stageId, sessionId, admission }) => ({ stageId, sessionId, admission })),
+			[{ stageId: "stage", sessionId: "session-a", admission: "context" }],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("failed stage drains are summarized once on the root run, never as a warning per stage", async () => {
+	const f = await fixture();
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueBroadcast("broadcast-1");
+		const failing = async () => {
+			throw new Error("Worker exited before delivery acknowledgement");
+		};
+		const recipient = { sessionId: "session-a", receivedMessageIds: [] };
+		await assert.rejects(f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing));
+		await assert.rejects(f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing));
+		const issue = () => f.store.runs().find((run) => run.id === ROOT)?.intercomDeliveryIssue;
+		assert.match(
+			issue() ?? "",
+			/^2 stage drains on local workers failed; .*Worker exited before delivery acknowledgement/,
+		);
+		// A drain that ends because its attempt was replaced is no failure.
+		await f.replacement();
+		f.handoff.fence(f.first);
+		await assert.rejects(
+			f.handoff.deliver(f.first, descriptor.childRunId, "stage", "stage", recipient, failing),
+			/stale/i,
+		);
+		assert.match(issue() ?? "", /^2 stage drains/);
+		assert.equal(warn.mock.calls.length, 0);
+	} finally {
+		warn.mockRestore();
+		await f.close();
+	}
+});
+
 test("a fresh coordinator restores pending stage messages, receipts and control intent (#3869)", async () => {
 	const f = await fixture();
 	let recovered: JournalDurableBackend | undefined;

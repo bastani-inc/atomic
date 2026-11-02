@@ -6,6 +6,10 @@
 
 - Recorded Gemini 4 Argon results in the evals snapshot used by automatic model routing: its Artificial Analysis row at high effort, Cognition FrontierCode 1.1 at medium effort, Zapier AutomationBench at high and medium effort, and Google's vendor-reported launch results, including DeepSWE v1.1, Terminal-Bench 4.0 and Terminal-Bench-Science ([#4161](https://github.com/bastani-inc/atomic/pull/4161)).
 
+### Fixed
+
+- A stage on a local worker (`workflows.localWorkers`) that starts after a sticky Intercom broadcast (`workflow:<rootRunId>/**`) or a name or pattern send to future stages gets those messages before its first turn, under "Messages received before you started" with the real sender, even when the root is too busy to answer. Before, each such stage on a busy root could wait 60 seconds and then print a long "starting without its queued Intercom messages" warning in the chat, listing messages it may already have received. The worker now delivers the stage's queued messages itself and never waits on the root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run, not a warning per stage.
+
 ## [0.9.61] - 2026-11-02
 
 A local worker pool that keeps going when one child or one worker goes wrong.

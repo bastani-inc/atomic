@@ -8,6 +8,8 @@ export interface RunExecutionState {
 	lastProgressAt?: number;
 	controlPersistence?: "observed" | "durable";
 	controlRequestedStatus?: "paused" | "running";
+	/** Why queued Intercom messages did not reach some stages on local workers; one summary for the run. */
+	intercomDeliveryIssue?: string;
 }
 
 export interface RunExecutionObservation extends RunExecutionState {
@@ -27,5 +29,6 @@ export function observeRunExecution(run: RunSnapshot, now = Date.now()): RunExec
 		lastProgressAt,
 		controlPersistence: run.controlPersistence,
 		controlRequestedStatus: run.controlRequestedStatus,
+		...(run.intercomDeliveryIssue === undefined ? {} : { intercomDeliveryIssue: run.intercomDeliveryIssue }),
 	};
 }
