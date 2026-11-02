@@ -721,7 +721,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return {
                 content: [{
                   type: "text",
-                  text: `The broker did not answer the send to "${to}" in time, so whether the message was queued or delivered is unknown: it may still arrive. Check before sending it again (\`intercom list\` shows queued counts), because a new send is a new message.`,
+                  text: `The broker did not answer the send to "${to}" in time, so whether the message was queued or delivered is unknown: it may still arrive. Check with the recipient before sending it again (for a workflow-stage target, \`intercom list\` shows queued counts), because a new send is a new message.`,
                 }],
                 isError: true,
                 details: { error: true, outcome: "unknown" },

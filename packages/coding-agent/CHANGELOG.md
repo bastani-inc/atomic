@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- An Intercom `send` whose broker response timed out, while the broker still answered its health check, is now reported as an unknown outcome instead of `Failed to send: Send timeout`. The broker can still queue or deliver such a message, so the tool now says to check before sending again, and marks the result `outcome: "unknown"`. Under heavy load the old wording led to resends that delivered the message twice. ([#4177](https://github.com/bastani-inc/atomic/issues/4177))
+- An Intercom `send` whose broker response timed out, while the broker still answered its health check, is now reported as an unknown outcome instead of `Failed to send: Send timeout`. The broker can still queue or deliver such a message, so the tool now says to check with the recipient before sending again, and marks the result `outcome: "unknown"`. Under heavy load the old wording led to resends that delivered the message twice. ([#4177](https://github.com/bastani-inc/atomic/issues/4177))
 
 ## [0.9.61] - 2026-11-02
 
