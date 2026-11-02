@@ -191,7 +191,15 @@ test.skipIf(process.platform === "win32")(
 			health[0]!,
 			/maxWorkerRssBytes \(1 bytes\) is below the resident memory of a worker that ran one child/,
 		);
-		assert.deepEqual(logsLeft, [], "the logs of workers replaced for their memory went with them");
+		// A replaced worker says so on its standard error before it exits, so its log, if kept, would hold that line. The
+		// fresh worker started after the last child can end on its own once the root releases its lease, before the pool
+		// closes; it keeps its (empty) log, as any worker that exits on its own does.
+		assert.deepEqual(
+			logsLeft.filter((log) => log.text.includes("ends between children")),
+			[],
+			"the logs of workers replaced for their memory went with them",
+		);
+		assert.ok(logsLeft.length <= 1, JSON.stringify(logsLeft));
 	},
 	BUDGET.timeoutMs,
 );
