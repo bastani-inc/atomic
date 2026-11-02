@@ -1,8 +1,26 @@
-import { mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	utimesSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "./database.js";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteRow,
+	SqliteTransactionOptions,
+	SqliteValue,
+	StorageDescriptor,
+} from "./database.js";
 import {
 	StorageAdapterLoadError,
 	type StorageFailureCause,
@@ -120,6 +138,118 @@ class SqliteWriteTicket {
 	}
 }
 
+let holderSequence = 0;
+const HOLDER_RECORD = /^held (\d{15})\n/;
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * Which process holds the write lock, for the error of a writer that gives up waiting for it. Each connection that
+ * takes the lock records when it took it in a file of its own next to the database, named by its process, and marks
+ * the record free once it lets go; only the holder writes its record, so records never race. Nothing reads them
+ * until a writer gives up: the live record taken most recently names the holder. A connection removes the records
+ * of exited processes when it creates its own, so the killed ones do not pile up. Recording is a diagnostic: a
+ * record that cannot be written is dropped, never a failed transaction.
+ */
+class SqliteHolderRecord {
+	private descriptor?: number;
+	private broken = false;
+	private readonly directory: string;
+	private readonly path: string;
+
+	constructor(databasePath: string) {
+		this.directory = holderDirectory(databasePath);
+		holderSequence += 1;
+		this.path = join(this.directory, `${process.pid}-${holderSequence}`);
+	}
+
+	held(): void {
+		this.write(`held ${String(Date.now()).padStart(15, "0")}\n`);
+	}
+
+	free(): void {
+		if (this.descriptor !== undefined) this.write(`free ${"0".repeat(15)}\n`);
+	}
+
+	close(): void {
+		if (this.descriptor === undefined) return;
+		try {
+			closeSync(this.descriptor);
+			unlinkSync(this.path);
+		} catch {
+			// Already gone; a leftover record of an exited process is ignored and removed by whoever reads it.
+		}
+		this.descriptor = undefined;
+	}
+
+	/** Every record has the same length and is written in place, so a reader never sees a shorter, stale tail. */
+	private write(record: string): void {
+		if (this.broken) return;
+		try {
+			if (this.descriptor === undefined) {
+				mkdirSync(this.directory, { recursive: true });
+				liveHolderRecords(this.directory);
+				this.descriptor = openSync(this.path, "w");
+			}
+			writeSync(this.descriptor, record, 0);
+		} catch {
+			this.broken = true;
+			this.close();
+		}
+	}
+}
+
+function holderDirectory(databasePath: string): string {
+	return `${databasePath}-holders`;
+}
+
+/** The records of live processes, as pid and the time each took the lock (undefined when free); others are removed. */
+function liveHolderRecords(directory: string): { readonly pid: number; readonly since?: number }[] {
+	let names: string[];
+	try {
+		names = readdirSync(directory);
+	} catch {
+		return [];
+	}
+	const live: { pid: number; since?: number }[] = [];
+	for (const name of names) {
+		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
+		if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+		if (!processAlive(pid)) {
+			try {
+				unlinkSync(join(directory, name));
+			} catch {
+				// Another connection removed it first.
+			}
+			continue;
+		}
+		let record: string;
+		try {
+			record = readFileSync(join(directory, name), "utf8");
+		} catch {
+			continue;
+		}
+		const since = HOLDER_RECORD.exec(record)?.[1];
+		live.push({ pid, ...(since === undefined ? {} : { since: Number(since) }) });
+	}
+	return live;
+}
+
+/** The live process whose record says it took the write lock most recently, and for how long it has held it. */
+function writeLockHolder(databasePath: string): { readonly pid: number; readonly heldMs: number } | undefined {
+	let holder: { pid: number; since: number } | undefined;
+	for (const { pid, since } of liveHolderRecords(holderDirectory(databasePath)))
+		if (since !== undefined && (holder === undefined || since > holder.since)) holder = { pid, since };
+	return holder === undefined ? undefined : { pid: holder.pid, heldMs: Math.max(0, Date.now() - holder.since) };
+}
+
 interface TransactionGates {
 	readonly files: Map<string, Promise<void>>;
 	readonly connections: WeakMap<DatabaseSync, Promise<void>>;
@@ -173,13 +303,26 @@ const LOCK_RETRY_BASE_DELAY_MS = 5;
 const LOCK_RETRY_MAX_DELAY_MS = 100;
 /** A writer at the head of the cross-process queue retries at least this often, so the lock it is owed does not sit idle. */
 const LOCK_RETRY_HEAD_MAX_DELAY_MS = 20;
+/**
+ * Retry cap once a writer has waited out the connection's lock wait for a transaction that waits longer: every waiter
+ * polling a stalled lock at the usual rate would burn the CPU the stalled holder needs. It stays well under
+ * `TICKET_STALE_MS`, so the writer's place in the queue stays live.
+ */
+const LOCK_RETRY_PATIENT_MAX_DELAY_MS = 500;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
+/**
+ * Longest a group commit runs its members before it commits them and takes the lock again for the rest: a batch of
+ * cheap transactions in a process starved of CPU still lets other processes' writers in between. The bound is
+ * checked between members, so one member's own work, however long, is never split.
+ */
+const GROUP_COMMIT_HOLD_MS = 100;
 
 interface QueuedTransaction {
 	readonly callback: (transaction: SqliteExecutor) => Promise<unknown>;
 	readonly resolve: (value: unknown) => void;
 	readonly reject: (error: unknown) => void;
+	readonly lockWaitMs?: number;
 }
 
 type TransactionOutcome =
@@ -232,6 +375,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	private readonly lockWaitMs: number;
 	/** Cross-process first-come-first-served order for the write lock; absent for in-memory databases. */
 	private readonly writeQueue?: SqliteWriteQueue;
+	/** This connection's record of when it holds the write lock, named in the error of a writer that gives up. */
+	private readonly holderRecord?: SqliteHolderRecord;
 
 	constructor(
 		connection: DatabaseSync,
@@ -246,7 +391,10 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.connection = connection;
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
-		if (typeof transactionIdentity === "string") this.writeQueue = new SqliteWriteQueue(transactionIdentity);
+		if (typeof transactionIdentity === "string") {
+			this.writeQueue = new SqliteWriteQueue(transactionIdentity);
+			this.holderRecord = new SqliteHolderRecord(transactionIdentity);
+		}
 	}
 
 	private driver<T>(operation: () => T): T {
@@ -295,10 +443,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * SQLITE_BUSY, so the attempt is retried after a timer. A refused writer queues with writers in other processes
 	 * and attempts the lock only when no earlier writer is still waiting, so none starves (#3978). The wait ends only
 	 * when no other connection has committed for `lockWaitMs`, whether this writer is still queued or already trying
-	 * the lock: a queued writer counts only real commits as progress, not older tickets ahead of it. Every other
-	 * failure, including a writers' queue that cannot be used, rejects at once with its cause.
+	 * the lock: a queued writer counts only real commits as progress, not older tickets ahead of it. A transaction that
+	 * waits longer than the connection's lock wait retries less often past it. The error of a writer that gives up
+	 * names the process holding the lock. Every other failure, including a writers' queue that cannot be used,
+	 * rejects at once with its cause.
 	 */
-	private async begin(): Promise<void> {
+	private async begin(lockWaitMs = this.lockWaitMs): Promise<void> {
 		let ticket: SqliteWriteTicket | undefined;
 		try {
 			// Writers already waiting in other processes go first.
@@ -313,6 +463,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (!behind) {
 					try {
 						this.tryBegin();
+						this.holderRecord?.held();
 						return;
 					} catch (error) {
 						const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
@@ -329,14 +480,25 @@ class NodeSqliteDatabase implements SqliteDatabase {
 					stalledSince = Date.now();
 				}
 				const stalledMs = Date.now() - stalledSince;
-				if (stalledMs >= this.lockWaitMs)
+				if (stalledMs >= lockWaitMs) {
+					const holder =
+						typeof this.transactionIdentity === "string" ? writeLockHolder(this.transactionIdentity) : undefined;
+					const heldBy =
+						holder === undefined ? "" : `by process ${holder.pid} (which took it ${holder.heldMs} ms ago) `;
 					throw unavailable(
 						this.descriptor,
 						lastCause,
-						`${sqliteFailureDetail(lastCause) ?? "database is locked"}; gave up after ${stalledMs} ms waiting for the write lock${behind ? " in the writers' queue" : ""}, held all that time with no other connection committing`,
+						`${sqliteFailureDetail(lastCause) ?? "database is locked"}; gave up after ${stalledMs} ms waiting for the write lock${behind ? " in the writers' queue" : ""}, held all that time ${heldBy}with no other connection committing`,
 					);
-				const delay = ticket !== undefined && !behind ? Math.min(backoff, LOCK_RETRY_HEAD_MAX_DELAY_MS) : backoff;
-				backoff = Math.min(LOCK_RETRY_MAX_DELAY_MS, backoff * 2);
+				}
+				const patient = stalledMs >= this.lockWaitMs;
+				const cap = patient
+					? LOCK_RETRY_PATIENT_MAX_DELAY_MS
+					: ticket !== undefined && !behind
+						? LOCK_RETRY_HEAD_MAX_DELAY_MS
+						: LOCK_RETRY_MAX_DELAY_MS;
+				const delay = Math.min(backoff, cap);
+				backoff = Math.min(patient ? LOCK_RETRY_PATIENT_MAX_DELAY_MS : LOCK_RETRY_MAX_DELAY_MS, backoff * 2);
 				await new Promise((resolve) => setTimeout(resolve, delay * (0.5 + Math.random() / 2)));
 			}
 		} finally {
@@ -427,12 +589,21 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	 * Group commit: transactions queued while earlier work holds the connection join one `BEGIN IMMEDIATE … COMMIT`,
 	 * each inside its own savepoint and in the order they were requested. A transaction that throws rolls back only
 	 * its savepoint and rejects only its caller; every caller settles after the shared commit, so durability is the
-	 * same as a transaction of its own. Under load one lock acquisition and one sync serve the whole batch.
+	 * same as a transaction of its own. Under load one lock acquisition and one sync serve the whole batch. A batch
+	 * waits for the lock as long as the most patient of its transactions.
 	 */
-	transaction<T>(callback: (transaction: SqliteExecutor) => Promise<T>): Promise<T> {
+	transaction<T>(
+		callback: (transaction: SqliteExecutor) => Promise<T>,
+		options?: SqliteTransactionOptions,
+	): Promise<T> {
 		if (this.closing) return Promise.reject(new StoreClosedError(this.descriptor));
 		return new Promise<T>((resolve, reject) => {
-			const queued: QueuedTransaction = { callback, resolve: resolve as (value: unknown) => void, reject };
+			const queued: QueuedTransaction = {
+				callback,
+				resolve: resolve as (value: unknown) => void,
+				reject,
+				lockWaitMs: options?.lockWaitMs,
+			};
 			if (this.openBatch !== undefined && this.openBatch.length < MAX_GROUP_COMMIT_TRANSACTIONS) {
 				this.openBatch.push(queued);
 				return;
@@ -448,15 +619,23 @@ class NodeSqliteDatabase implements SqliteDatabase {
 
 	private commitBatch(batch: QueuedTransaction[]): Promise<void> {
 		if (this.openBatch === batch) this.openBatch = undefined;
-		return gateTransaction(this.transactionIdentity, () =>
-			batch.length === 1 ? this.commitAlone(batch[0]!) : this.commitMembers(batch),
-		);
+		return gateTransaction(this.transactionIdentity, async () => {
+			try {
+				await (batch.length === 1 ? this.commitAlone(batch[0]!) : this.commitMembers(batch));
+			} finally {
+				this.holderRecord?.free();
+			}
+		});
+	}
+
+	private lockWait(batch: readonly QueuedTransaction[]): number {
+		return Math.max(...batch.map((queued) => queued.lockWaitMs ?? this.lockWaitMs));
 	}
 
 	/** A transaction with nobody queued behind it commits on its own, without savepoints. */
 	private async commitAlone(queued: QueuedTransaction): Promise<void> {
 		try {
-			await this.begin();
+			await this.begin(this.lockWait([queued]));
 		} catch (cause) {
 			queued.reject(cause);
 			return;
@@ -479,15 +658,21 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
+	/**
+	 * Runs the batch's members in one transaction, for at most `GROUP_COMMIT_HOLD_MS`: members left when it runs out
+	 * wait for the lock again, in a transaction of their own, still ahead of anything queued after them.
+	 */
 	private async commitMembers(batch: QueuedTransaction[]): Promise<void> {
 		try {
-			await this.begin();
+			await this.begin(this.lockWait(batch));
 		} catch (cause) {
 			for (const queued of batch) queued.reject(cause);
 			return;
 		}
+		const began = performance.now();
 		const outcomes: TransactionOutcome[] = [];
 		for (const queued of batch) {
+			if (outcomes.length > 0 && performance.now() - began >= GROUP_COMMIT_HOLD_MS) break;
 			const savepoint = `atomic_group_${outcomes.length}`;
 			let active = true;
 			try {
@@ -508,21 +693,26 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				outcomes.push({ ok: false, error: cause });
 			}
 		}
+		const ran = batch.slice(0, outcomes.length);
+		const remaining = batch.slice(outcomes.length);
+		let commitCause: unknown;
+		let committed = true;
 		try {
 			await this.executor.exec("COMMIT");
-		} catch (commitCause) {
+		} catch (cause) {
+			committed = false;
+			commitCause = cause;
 			await this.rollbackQuietly();
-			batch.forEach((queued, index) => {
-				const outcome = outcomes[index]!;
-				queued.reject(outcome.ok ? commitCause : outcome.error);
-			});
-			return;
 		}
-		batch.forEach((queued, index) => {
+		// Let go of the record too: members left over wait for the lock again, and another process may take it first.
+		this.holderRecord?.free();
+		ran.forEach((queued, index) => {
 			const outcome = outcomes[index]!;
-			if (outcome.ok) queued.resolve(outcome.value);
+			if (!committed) queued.reject(outcome.ok ? commitCause : outcome.error);
+			else if (outcome.ok) queued.resolve(outcome.value);
 			else queued.reject(outcome.error);
 		});
+		if (remaining.length > 0) await this.commitMembers(remaining);
 	}
 
 	/**
@@ -562,6 +752,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.closing = true;
 			this.closePromise = this.tail.then(() =>
 				this.driver(() => {
+					this.holderRecord?.close();
 					if (this.ownsConnection) this.connection.close();
 					finalizeReleasedStatements();
 				}),

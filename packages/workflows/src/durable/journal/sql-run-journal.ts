@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_SIZE,
+	JOURNAL_TRANSACTION,
 	type JournalAppendGuard,
 	type JournalBatchAppend,
 	NON_SNAPSHOT_EVENT_TYPES,
@@ -90,7 +91,7 @@ export class SqlRunJournal implements RunJournal {
 		this.tables = tables;
 		this.legacy = legacy;
 		registerSqlPoolStorage(this, {
-			transaction: (body) => this.operation(() => this.database.transaction(body)),
+			transaction: (body) => this.operation(() => this.transaction(body)),
 			read: (body) => this.operation(() => body(this.database)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
@@ -99,6 +100,7 @@ export class SqlRunJournal implements RunJournal {
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
+		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
 			const versions = await tx.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
@@ -129,7 +131,7 @@ export class SqlRunJournal implements RunJournal {
 					${c.holderId} TEXT, ${c.epoch} INTEGER NOT NULL, ${c.renewedAt} INTEGER NOT NULL
 				);
 			`);
-		});
+		}, JOURNAL_TRANSACTION);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
 		return new SqlRunJournal(database, t, legacy);
 	}
@@ -144,6 +146,11 @@ export class SqlRunJournal implements RunJournal {
 
 	private assertOpen(): void {
 		if (this.closed) throw new StorageUnavailableError(this.descriptor, new JournalClosedError());
+	}
+
+	/** A journal write transaction, waiting out a write lock held by a stalled process (`JOURNAL_TRANSACTION`). */
+	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
+		return this.database.transaction(body, JOURNAL_TRANSACTION);
 	}
 
 	private operation<T>(action: () => Promise<T>): Promise<T> {
@@ -175,14 +182,17 @@ export class SqlRunJournal implements RunJournal {
 		const { runs } = this.tables;
 		return this.operation(async () => {
 			if (await this.legacy?.find(this.database, header.runId)) return "exists";
-			const result = await this.database.run(
-				`INSERT INTO ${runs} VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(${c.runId}) DO NOTHING`,
-				header.runId,
-				header.name,
-				header.cwd,
-				header.createdAt,
-				header.status,
-				json,
+			// In a transaction, so the write waits for the lock without blocking the event loop on SQLite's busy timeout.
+			const result = await this.transaction((tx) =>
+				tx.run(
+					`INSERT INTO ${runs} VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(${c.runId}) DO NOTHING`,
+					header.runId,
+					header.name,
+					header.cwd,
+					header.createdAt,
+					header.status,
+					json,
+				),
 			);
 			return result.changes === 1 ? "created" : "exists";
 		});
@@ -323,7 +333,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] === holderId)
@@ -341,7 +351,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("holderId", holderId);
 		validateText("expectedHolder", expectedHolder);
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] !== expectedHolder)
@@ -380,7 +390,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.requireRun(tx, runId);
 				const current = await this.leaseRow(tx, runId);
 				if (current?.[c.holderId] === holderId)
@@ -408,7 +418,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				await tx.run(
 					`UPDATE ${this.tables.leases} SET ${c.renewedAt} = ${STORE_NOW} WHERE ${c.runId} = ?`,
@@ -424,7 +434,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				await tx.run(
 					`UPDATE ${this.tables.leases} SET ${c.holderId} = ? WHERE ${c.runId} = ?`,
@@ -451,7 +461,7 @@ export class SqlRunJournal implements RunJournal {
 		const prepared = this.prepare(event, options?.key, this.appendGuard.getStore());
 		const expected = options?.expectSeq;
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				return this.insert(tx, owned, prepared, expected);
 			}),
@@ -494,7 +504,7 @@ export class SqlRunJournal implements RunJournal {
 		)
 			return this.operation(() => this.appendInOneRequest(batch, owned, prepared));
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				const results: PromiseSettledResult<AppendOutcome>[] = [];
 				for (const append of prepared) {
@@ -707,7 +717,7 @@ export class SqlRunJournal implements RunJournal {
 	async deleteRun(runId: string): Promise<void> {
 		this.assertOpen();
 		validateText("runId", runId);
-		return this.operation(() => this.database.transaction((tx) => this.deleteRunData(tx, runId)));
+		return this.operation(() => this.transaction((tx) => this.deleteRunData(tx, runId)));
 	}
 
 	async deleteOwnedRun(lease: Lease, expectSeq?: number): Promise<void> {
@@ -716,7 +726,7 @@ export class SqlRunJournal implements RunJournal {
 		validateText("holderId", lease.holderId);
 		const owned = { ...lease };
 		return this.operation(() =>
-			this.database.transaction(async (tx) => {
+			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				if (expectSeq !== undefined) {
 					const actual = await this.sequence(tx, owned.runId);

@@ -4,6 +4,7 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 } from "@bastani/atomic/storage";
+import { JOURNAL_TRANSACTION } from "./internal.js";
 import { JOURNAL_COLUMNS as c, JOURNAL_SCHEMA_VERSION, JOURNAL_TABLES } from "./types.js";
 
 const CURRENT = renderStorageIdentifiers("journal", {
@@ -89,7 +90,7 @@ export class LegacyJournalRuns {
 					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
 				);
 				return new LegacyJournalRuns();
-			});
+			}, JOURNAL_TRANSACTION);
 		} catch {
 			return undefined;
 		}
