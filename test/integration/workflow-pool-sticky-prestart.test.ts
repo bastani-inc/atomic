@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
@@ -58,9 +57,6 @@ test.skipIf(process.platform === "win32")(
 		const broker = new IntercomBrokerFixture(join(directory, "agent"));
 		broker.overrideAgentDir();
 		const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-		const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
-		const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
-		const intercomPath = fileURLToPath(new URL("../../packages/intercom", import.meta.url));
 		const path = join(directory, "journal.sqlite");
 		const database = await openNodeSqliteDatabase(path);
 		const journal = await SqlRunJournal.open(database);
@@ -89,13 +85,7 @@ test.skipIf(process.platform === "win32")(
 		});
 		let execution: ReturnType<typeof run> | undefined;
 		try {
-			broker.trackBroker(
-				spawn(process.execPath, [getJitiCliPath(intercomPath), join(intercomPath, "broker/broker.ts")], {
-					env: process.env,
-					stdio: "ignore",
-				}),
-			);
-			await broker.holdSession(getBrokerSocketPath(), BROKER_STARTUP_TIMEOUT_MS);
+			await broker.startSourceBroker(BROKER_STARTUP_TIMEOUT_MS);
 			await client.connect({
 				name: SENDER,
 				cwd: directory,

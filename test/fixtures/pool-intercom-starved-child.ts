@@ -1,17 +1,16 @@
-import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
+import { sleep, writeTextSync } from "../helpers/runtime.js";
 import { poolStageOptions } from "./pool-stage-options.js";
 
 /** Waits until the test raises `test_pool_gate.released` to at least `level`. */
 async function gate(journalPath: string, level: number): Promise<true> {
 	const database = new TestSqliteDatabase(journalPath);
 	try {
-		while (Number(database.query("SELECT released FROM test_pool_gate").get()?.released ?? 0) < level) await delay(25);
+		while (Number(database.query("SELECT released FROM test_pool_gate").get()?.released ?? 0) < level) await sleep(25);
 	} finally {
 		database.close();
 	}
@@ -42,7 +41,7 @@ export const child = workflow({
 			streamSimple(model, context) {
 				const stream = createAssistantMessageEventStream();
 				const text = JSON.stringify(context.messages);
-				writeFileSync(contextPath(journalPath, label), text);
+				writeTextSync(contextPath(journalPath, label), text);
 				void gate(journalPath, 2).then(() => {
 					stream.push({ type: "done", reason: "stop", message: {
 						role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
