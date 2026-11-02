@@ -226,12 +226,9 @@ async function executeRun(
 		{ once: true },
 	);
 	const callerSignal = opts.signal;
-	// Aborting the run fires its author's abort listeners synchronously in the caller's context; once the run's scope
-	// exists, aborts run inside it, so those listeners' console output is attributed to the run (#4175).
-	let abortInRunScope = (abort: () => void): void => abort();
 	const onCallerAbort = (): void => {
 		workflowObservationRuntime(activeStore).control(runId, "kill");
-		abortInRunScope(() => ownController.abort(callerSignal?.reason));
+		ownController.abort(callerSignal?.reason);
 	};
 	const exit = createWorkflowExitManager({
 		runId,
@@ -862,11 +859,14 @@ async function executeRun(
 		fail: (error) => {
 			if (findWorkflowGracefulQuit(error) !== undefined) return;
 			const selected = terminalEvents.selectFailure(error);
-			if (selected.kind === "failure" && !ownController.signal.aborted)
-				abortInRunScope(() => ownController.abort(selected.error));
+			if (selected.kind === "failure" && !ownController.signal.aborted) ownController.abort(selected.error);
 		},
 	});
-	abortInRunScope = (abort) => rejectionScope.run(abort);
+	// Aborting the run fires its author's abort listeners synchronously in the aborting caller's context: a host quit,
+	// a cancellation registry, a tool drain. Every abort of this controller now runs inside the run's scope, so those
+	// listeners' console output is attributed to the run (#4175). The controller itself is unchanged.
+	const abortOutsideRunScope = ownController.abort.bind(ownController);
+	ownController.abort = (reason?: unknown) => rejectionScope.run(() => abortOutsideRunScope(reason));
 	ownController.signal.addEventListener("abort", () => rejectionScope.ignore(ownController.signal.reason), {
 		once: true,
 	});
@@ -988,7 +988,7 @@ async function executeRun(
 			void settled.then(() => pendingControlPersistence.delete(settled));
 		},
 		retire: async () => {
-			abortInRunScope(() => ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime")));
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 			unregisterRunControl();
 			await retireJournalExecution?.();
 		},
@@ -1025,7 +1025,7 @@ async function executeRun(
 			return resumePersistence;
 		},
 		quit: () => {
-			abortInRunScope(() => ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime")));
+			ownController.abort(new WorkflowGracefulQuitError(runId, "workflow runtime"));
 			const cleanup = dispatcher?.control?.("quit");
 			quitCleanup = cleanup;
 			if (!cleanup) return runtimeSettled.promise;
@@ -1207,7 +1207,7 @@ async function executeRun(
 		}
 		if (ownerClosing && err instanceof Error && isSessionClosedError(err)) return await suspendForClosedSession(err);
 		if (selectedTerminalEvent.kind === "failure" && pendingChildWorkflows.size > 0 && !ownController.signal.aborted) {
-			abortInRunScope(() => ownController.abort(err));
+			ownController.abort(err);
 		}
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and

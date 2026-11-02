@@ -55,8 +55,8 @@ function routerBag(): Record<symbol, RouterState | undefined> {
 
 /** Whether a logged value is a cancellation; never throws, since it only decides whether to announce the log. */
 function isAbortCancellation(value: unknown, depth = 0): boolean {
-	if (!(value instanceof Error) || depth > MAX_CAUSE_DEPTH) return false;
 	try {
+		if (!(value instanceof Error) || depth > MAX_CAUSE_DEPTH) return false;
 		if (value.name === "AbortError") return true;
 		const cause: unknown = value.cause;
 		return cause !== value && isAbortCancellation(cause, depth + 1);

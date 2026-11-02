@@ -29,6 +29,7 @@ import {
 	type RunRejectionScope,
 } from "../../packages/workflows/src/engine/run-rejection-boundary.js";
 import { createToolControlRegistry } from "../../packages/workflows/src/engine/run-tool-control-registry.js";
+import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { testRunId } from "../helpers/run-id.js";
 
@@ -308,6 +309,94 @@ test("abort listeners of a run's steps log to the run's log when the host cancel
 	const listenerLines = logLines().filter((line) => line.includes("step aborted"));
 	assert.equal(listenerLines.length, 3);
 	assert.ok(listenerLines.every((line) => line.startsWith(`${runId} error listener `)));
+});
+
+/** A workflow whose three pending steps log from their abort listeners, then optionally fail on its own. */
+function listeningWorkflow(failAfterStarting: boolean) {
+	return workflow({
+		name: "listening",
+		description: "",
+		inputs: {},
+		outputs: {},
+		async run(ctx) {
+			const pending = [1, 2, 3].map((index) =>
+				ctx.tool(
+					`wait-${index}`,
+					{ index },
+					({ signal }) =>
+						new Promise<number>((_, reject) => {
+							signal.addEventListener(
+								"abort",
+								() => {
+									console.error(`listener ${index}: step aborted`);
+									reject(signal.reason);
+								},
+								{ once: true },
+							);
+						}),
+				),
+			);
+			for (const step of pending) step.catch(() => undefined);
+			if (failAfterStarting)
+				await ctx
+					.tool("fail", {}, async () => {
+						throw new Error("a step failed");
+					})
+					.catch(() => undefined);
+			else await Promise.allSettled(pending);
+			return {};
+		},
+	});
+}
+
+async function untilActive(tools: ReturnType<typeof createToolControlRegistry>, runId: string, count: number) {
+	for (let attempt = 0; tools.active(runId).length < count && attempt < 500; attempt += 1)
+		await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+function listenerLinesFor(runId: string): string[] {
+	assert.deepEqual(
+		terminal.filter(({ text }) => text.includes("step aborted")),
+		[],
+	);
+	return logLines().filter((line) => line.startsWith(`${runId} error listener `));
+}
+
+test("abort listeners log to the run's log when the run drains its steps after a recorded failure", async () => {
+	routeToFreshDirectory();
+	const runId = testRunId("drain-after-failure");
+	await run(listeningWorkflow(true), {}, { runId, cwd: root, store: createStore(), routeConsoleToLog: true }).catch(
+		() => undefined,
+	);
+
+	assert.equal(listenerLinesFor(runId).length, 3);
+});
+
+test("abort listeners log to the run's log when a host cancellation registry aborts a run without a caller signal", async () => {
+	routeToFreshDirectory();
+	const tools = createToolControlRegistry();
+	const cancellation = createCancellationRegistry();
+	const runId = testRunId("registry-abort");
+	const settled = run(
+		listeningWorkflow(false),
+		{},
+		{ runId, cwd: root, store: createStore(), routeConsoleToLog: true, toolControlRegistry: tools, cancellation },
+	).catch(() => undefined);
+	await untilActive(tools, runId, 3);
+	assert.equal(tools.active(runId).length, 3);
+	cancellation.abort(runId, new Error("cancelled by the host"));
+	await settled;
+
+	assert.equal(listenerLinesFor(runId).length, 3);
+});
+
+test("a logged value that cannot be inspected is written without turning the console call into a failure", () => {
+	routeToFreshDirectory();
+	const { proxy, revoke } = Proxy.revocable({ kind: "resource" }, {});
+	revoke();
+
+	assert.doesNotThrow(() => open("run-revoked-proxy").run(() => console.error(proxy)));
+	assert.equal(logLines().length, 1);
 });
 
 test("an error whose metadata throws when read is logged without turning the console call into a failure", () => {
