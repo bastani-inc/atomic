@@ -9,6 +9,20 @@
 - A child on a local worker whose run fails on a fault of the pool, such as `stale_work_lease`, `worker_lost`, `storage_unavailable` or `intercom_unavailable`, is replayed from its last checkpoint within its three attempts instead of ending failed with a recoverable fault recorded as final. After the third attempt it fails with the retryable `worker_retry_limit`, naming the fault. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
 - A replayed child on a local worker whose `ctx.tool` call fails again, as it did on an earlier attempt, no longer fails with `Pool checkpoint identity conflict`. ([#4159](https://github.com/bastani-inc/atomic/pull/4159))
 
+## [0.9.60] - 2026-11-01
+
+Chats that keep working after a workflow wakes them, steadier subagent model choices, and copying that works inside Rex.
+
+- **Chats stay responsive after a workflow wakes them:** a completion notice or stage message no longer leaves the chat's own `bash` and other commands waiting on that workflow's resource admission, so they start at once even on a busy host ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+- **Subagents keep the model you asked for:** an unknown effort word such as `openai/gpt-5.5:extreme` now runs the requested model at its default level instead of silently switching to the default model, and fails with a clear error if the model is unavailable ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+- **Copying works inside Rex terminals:** copies now reach the Rex client's clipboard through OSC 52 instead of landing only on the server machine ([#4156](https://github.com/bastani-inc/atomic/pull/4156))
+
+### Fixed
+
+- A chat that a running workflow woke, for example with its completion notice or a message from one of its stages' subagents, no longer has its own `bash` and other commands wait for good on that workflow's resource admission (such as `admission.host.minFreeMemoryBytes` on a busy host), even after the run finished. A turn a delivered message starts now runs under the receiving session's own admission, or none, so the chat's commands start at once; a workflow stage's commands still use its run's admission. SDK hosts: a turn started by `sendCustomMessage`, `sendCustomMessages` or `sendUserMessage` no longer inherits the sender's `withResourceAdmission` scope ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+- A subagent launched with an effort word that is not a level, such as `model: "openai/gpt-5.5:extreme"`, now runs that model at its default level, as for an effort the model does not support, instead of silently running on the default model; a `fallbackModels` entry with such a word runs its model at that model's default level too. If the model itself is not available either, the launch fails with `Unknown model "<model>": "<word>" is not an effort level (...)` instead of running another model ([#4154](https://github.com/bastani-inc/atomic/pull/4154))
+- Copying from Atomic inside a [Rex](https://www.superlogical.com/rex/) terminal now reaches the Rex client's clipboard. Rex servers start shells without SSH variables, so Atomic treated them as local and wrote only to the server machine's clipboard (or, on FreeBSD, nowhere). Rex terminals now also send the copy through OSC 52, as SSH sessions do ([#4156](https://github.com/bastani-inc/atomic/pull/4156))
+
 ## [0.9.60-alpha.1] - 2026-11-01
 
 Chats that keep working after a workflow wakes them, steadier subagent model choices, and copying that works inside Rex.
