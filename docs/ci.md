@@ -679,6 +679,34 @@ that builds the shipped artifact.
 Action pins do not bound remote downloads; preserve acquisition deadlines even
 when the action commit is pinned.
 
+### Dependabot and the pi sync
+
+Atomic carries pi's `ai`, `coding-agent` and `mcp` packages and consumes pi's
+published `@earendil-works/*` packages, so many of its dependencies are also
+declared by upstream pi. Those dependencies move only with a pi sync. The root
+npm entry in `.github/dependabot.yml` ignores each of them by name, with no
+`versions` or `update-types` qualifier, so Dependabot proposes none of their
+updates. A Dependabot bump of one of them puts Atomic on a version pi does not
+run, and the next sync then has to reconcile or undo it: typebox (#4206),
+vitest (#4209) and minimatch (#4228, #4229) were all proposed and closed for
+that reason.
+
+The list is every dependency name that an Atomic manifest (root or
+`packages/*/package.json`) shares with pi's root or `packages/*/package.json`,
+plus the `@earendil-works/*` wildcard for pi's own packages. pi's Rust daemon
+crate is not carried, so the Cargo entry has no such rules. When a sync adds or
+drops a shared dependency, update the list in the same change: compare the
+dependency names in `git show pi/main:package.json` and
+`git show pi/main:packages/<name>/package.json` with Atomic's manifests.
+`test/ci/dependabot-pi-sync-contract.test.ts` fails if an ignored name is no
+longer declared by any Atomic manifest, if an Atomic workspace depends on an
+`@earendil-works/*` package the rules miss, or if a rule is narrowed to some
+versions or update types.
+
+Ignore rules also suppress Dependabot security updates for these names. An
+advisory against one of them is handled by a pi sync that carries the fix or,
+if pi has not moved, by a manual bump recorded as a divergence from pi.
+
 ### Binary smoke tests
 
 Linux and Windows x64 each get `@bastani/pi-ai` model data from the restored snapshot, or hydrate it once without one (`npm run hydrate:model-data`; see "Model data cached, fetched live in one place"), build the package with `build:offline`, and run `scripts/build-binaries.sh --offline-model-data` for their platform, so the script never regenerates the catalog a second time. They extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
