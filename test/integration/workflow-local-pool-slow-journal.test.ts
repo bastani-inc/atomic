@@ -7,7 +7,6 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
@@ -23,7 +22,13 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
-import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
+import {
+	makeTempDirectory,
+	readDirectorySync,
+	removeTempDirectory,
+	sleep,
+	writeFileEnsuringDir,
+} from "../helpers/runtime.js";
 
 const WORKERS = 3;
 const CHILDREN = 3;
@@ -38,7 +43,7 @@ const childPath = fileURLToPath(new URL("../fixtures/pool-committing-child.ts", 
 const BUDGET = poolTestBudgetMs(2);
 
 function startedChildren(directory: string): number {
-	return readdirSync(directory).filter((name) => name.startsWith("started-")).length;
+	return readDirectorySync(directory).filter((name) => name.startsWith("started-")).length;
 }
 
 async function waitUntil(predicate: () => boolean, what: string, budget: AbortSignal): Promise<void> {

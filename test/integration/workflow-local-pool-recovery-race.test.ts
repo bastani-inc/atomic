@@ -6,9 +6,9 @@
  */
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -61,7 +61,6 @@ test.skipIf(process.platform === "win32")(
 			coordinator: "in-process",
 		});
 		const marker = join(directory, "stalled-worker");
-		const reader = () => new DatabaseSync(path, { readOnly: true, timeout: 60_000 });
 		// Recovery reads the stalled attempt as expired. Before it acts on what it read, the attempt's worker exits and the
 		// exit releases the attempt for replay, as an exit that lands while recovery walks a long list does.
 		let raced = false;
@@ -77,16 +76,18 @@ test.skipIf(process.platform === "win32")(
 			if (raced || stalled === undefined || !fileExistsSync(marker)) return works;
 			raced = true;
 			process.kill(Number(readTextSync(marker, "utf8")), "SIGKILL");
-			const database = reader();
+			const database = await openNodeSqliteDatabase(path, { readOnly: true });
 			try {
-				const current = database.prepare("SELECT state, generation FROM wf_runs_work WHERE id = ?");
 				for (;;) {
-					const row = current.get(stalled.id) as { state: string; generation: number } | undefined;
+					const row = await database.get<{ state: string; generation: number }>(
+						"SELECT state, generation FROM wf_runs_work WHERE id = ?",
+						stalled.id,
+					);
 					if (row?.state !== "leased" || row.generation !== stalled.generation) break;
 					await sleep(10);
 				}
 			} finally {
-				database.close();
+				await database.close();
 			}
 			return works;
 		});
