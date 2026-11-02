@@ -171,7 +171,8 @@ function comparableRealPath(value: string): string {
 	return process.platform === "win32" ? realpath.toLowerCase() : realpath;
 }
 
-function comparablePathThroughExistingAncestor(value: string): string {
+/** Split `value` into its nearest existing ancestor and the missing components below it. */
+function nearestExistingAncestor(value: string): { readonly existing: string; readonly missing: readonly string[] } {
 	let existing = path.resolve(value);
 	const missing: string[] = [];
 	while (!pathExistsSync(existing)) {
@@ -180,8 +181,81 @@ function comparablePathThroughExistingAncestor(value: string): string {
 		missing.unshift(path.basename(existing));
 		existing = parent;
 	}
+	return { existing, missing };
+}
+
+function comparablePathThroughExistingAncestor(value: string): string {
+	const { existing, missing } = nearestExistingAncestor(value);
 	const resolved = path.resolve(comparableRealPath(existing), ...missing).replace(/\\/g, "/");
 	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function isFileOrLink(value: string): boolean {
+	try {
+		const entry = fs.lstatSync(value);
+		return entry.isFile() || entry.isSymbolicLink();
+	} catch {
+		return false;
+	}
+}
+
+function isDirectory(value: string): boolean {
+	try {
+		return fs.statSync(value).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Whether `directory` is a Git directory by Git's own layout rule: a `.git`
+ * directory, or a directory with `HEAD` plus either `commondir` (a linked
+ * worktree's admin directory) or `objects` and `refs` (a main, bare or separate
+ * Git directory).
+ */
+function looksLikeGitDirectory(directory: string): boolean {
+	if (!isDirectory(directory)) return false;
+	if (path.basename(directory) === ".git") return true;
+	if (!isFileOrLink(path.join(directory, "HEAD"))) return false;
+	if (isFileOrLink(path.join(directory, "commondir"))) return true;
+	return isDirectory(path.join(directory, "objects")) && isDirectory(path.join(directory, "refs"));
+}
+
+/** The Git directory that contains `target` (or would contain it once created), if any. */
+function enclosingGitMetadataDirectory(target: string): string | undefined {
+	const { existing } = nearestExistingAncestor(target);
+	let realExisting = existing;
+	try {
+		realExisting = fs.realpathSync.native(existing);
+	} catch {
+		// Keep the logical spelling when the ancestor cannot be resolved.
+	}
+	for (const candidate of new Set([...pathAncestors(existing), ...pathAncestors(realExisting)])) {
+		if (looksLikeGitDirectory(candidate)) return candidate;
+	}
+	const insideGitDir = runGitReadOnlyProbe(existing, ["rev-parse", "--is-inside-git-dir"]);
+	if (insideGitDir.status !== 0 && isGitTimeoutResult(insideGitDir)) {
+		throw new Error(
+			`Timed out while validating gitWorktreeDir ${target}. Git reported: ${gitFailureMessage(insideGitDir)}`,
+		);
+	}
+	return insideGitDir.status === 0 && insideGitDir.stdout.trim() === "true" ? existing : undefined;
+}
+
+/**
+ * The one safety guard every gitWorktreeDir passes before anything is reused or
+ * created: the path, or the nearest existing ancestor of a missing path, must not
+ * be inside Git metadata (a `.git` directory, a linked worktree's admin directory,
+ * a bare repository, or any other Git directory), nor inside the invoking checkout.
+ */
+function assertSafeGitWorktreeTarget(target: string, invokingRoot: string | undefined): void {
+	const gitDirectory = enclosingGitMetadataDirectory(target);
+	if (gitDirectory !== undefined) {
+		throw new Error(
+			`gitWorktreeDir must not be inside Git metadata: ${target} is inside the Git directory ${gitDirectory}. Choose a worktree root or a plain directory outside Git metadata.`,
+		);
+	}
+	if (invokingRoot !== undefined) validateWorktreeOutsideInvokingCheckout(target, invokingRoot);
 }
 
 function validateWorktreeOutsideInvokingCheckout(worktreeRoot: string, repoRoot: string): void {
@@ -343,25 +417,13 @@ function validateGitWorktreeRoot(worktreeRoot: string): string {
 }
 
 /**
- * Classify an existing non-empty directory. Returns the checkout's Git common
- * directory when it is a worktree root, or `undefined` when it is outside every
- * Git checkout. Subdirectories of a checkout and Git metadata directories are
- * rejected so no workflow writes into them.
+ * Classify an existing non-empty directory that already passed
+ * `assertSafeGitWorktreeTarget`. Returns the checkout's Git common directory when
+ * it is a worktree root, or `undefined` when it is outside every Git checkout.
+ * Subdirectories of a checkout are rejected so no workflow writes into them.
  */
 function existingGitWorktreeCommonDir(directory: string): string | undefined {
-	if (gitTopLevel(directory) !== undefined) return validateGitWorktreeRoot(directory);
-	const gitDir = runGitReadOnlyProbe(directory, ["rev-parse", "--absolute-git-dir"]);
-	if (gitDir.status === 0) {
-		throw new Error(
-			`gitWorktreeDir already exists inside Git metadata rather than a checkout: ${directory}. Choose a worktree root or a plain directory.`,
-		);
-	}
-	if (isGitTimeoutResult(gitDir)) {
-		throw new Error(
-			`Timed out while validating gitWorktreeDir ${directory}. Git reported: ${gitFailureMessage(gitDir)}`,
-		);
-	}
-	return undefined;
+	return gitTopLevel(directory) === undefined ? undefined : validateGitWorktreeRoot(directory);
 }
 
 function sameGitCommonDir(left: string, right: string): boolean {
@@ -369,7 +431,7 @@ function sameGitCommonDir(left: string, right: string): boolean {
 }
 
 function validateCreatedGitWorktree(worktreeRoot: string, repository: InvokingRepository): void {
-	validateWorktreeOutsideInvokingCheckout(worktreeRoot, repository.root);
+	assertSafeGitWorktreeTarget(worktreeRoot, repository.root);
 	if (!sameGitCommonDir(validateGitWorktreeRoot(worktreeRoot), gitCommonDirForWorktree(repository.root))) {
 		throw new Error(`gitWorktreeDir does not belong to the invoking Git repository: ${worktreeRoot}`);
 	}
@@ -402,7 +464,7 @@ function gitDirectoryForWorktree(cwd: string): string {
 
 function captureGitWorktreeIdentitySnapshot(setup: ResolvedGitWorktreeSetup): GitWorktreeIdentitySnapshot {
 	const { worktreeRoot, repositoryRoot } = setup.result;
-	if (setup.invokingRoot !== undefined) validateWorktreeOutsideInvokingCheckout(worktreeRoot, setup.invokingRoot);
+	assertSafeGitWorktreeTarget(worktreeRoot, setup.invokingRoot);
 	const commonDir = validateGitWorktreeRoot(worktreeRoot);
 	const stats = fs.statSync(worktreeRoot);
 	return {
@@ -457,7 +519,7 @@ function requireInvokingRepository(request: GitWorktreeSetupRequest, action: str
 
 function setupGitWorktreeFromRequest(request: GitWorktreeSetupRequest, ownerRunId?: string): ResolvedGitWorktreeSetup {
 	const { repository, target } = request;
-	if (repository !== undefined) validateWorktreeOutsideInvokingCheckout(target, repository.root);
+	assertSafeGitWorktreeTarget(target, repository?.root);
 	const entry = pathStatSync(target);
 	if (entry === undefined) return createGitWorktreeAtPath(request, false);
 	if (!entry.isDirectory()) throw new Error(`gitWorktreeDir already exists but is not a directory: ${target}`);

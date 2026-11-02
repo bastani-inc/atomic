@@ -317,3 +317,124 @@ describe("gitWorktreeDir creates worktrees in empty and non-empty directories", 
 		}
 	});
 });
+
+describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata", () => {
+	interface MetadataFixture {
+		readonly root: string;
+		readonly invoking: string;
+		/** Main-checkout `.git` of another repository. */
+		readonly otherGitDir: string;
+		/** Linked-worktree admin directory of another repository. */
+		readonly adminDir: string;
+		/** Bare repository. */
+		readonly bare: string;
+	}
+
+	function createMetadataFixture(): MetadataFixture {
+		const root = createScratch();
+		const invoking = createGitRepo(root, "invoking");
+		const other = createGitRepo(root, "other");
+		runGitChecked(other, ["worktree", "add", "--detach", join(root, "other-linked")]);
+		const adminDir = runGitChecked(join(root, "other-linked"), ["rev-parse", "--absolute-git-dir"]).trim();
+		const bare = join(root, "bare.git");
+		runGitChecked(root, ["clone", "--bare", "--quiet", other, bare]);
+		return { root, invoking, otherGitDir: join(other, ".git"), adminDir: realpathSync.native(adminDir), bare };
+	}
+
+	/** Snapshot every path below `directory`, so a rejected setup can be shown to have written nothing. */
+	function tree(directory: string): string[] {
+		return readdirSync(directory, { recursive: true, encoding: "utf8" }).sort();
+	}
+
+	function assertRejectedWithoutWrites(fixture: MetadataFixture, gitWorktreeDir: string, watched: string): void {
+		const before = tree(watched);
+		const worktreesBefore = registeredWorktrees(fixture.invoking);
+		assert.throws(
+			() => setupGitWorktree({ cwd: join(fixture.invoking, "packages", "api"), gitWorktreeDir }),
+			/gitWorktreeDir must not be inside Git metadata/,
+		);
+		assert.deepEqual(tree(watched), before);
+		assert.deepEqual(registeredWorktrees(fixture.invoking), worktreesBefore);
+	}
+
+	function emptyDirectory(parent: string, name: string): string {
+		const directory = join(parent, name);
+		mkdirSync(directory, { recursive: true });
+		assert.deepEqual(readdirSync(directory), []);
+		return directory;
+	}
+
+	test("rejects an empty directory under another repository's .git/objects/info", () => {
+		const fixture = createMetadataFixture();
+		try {
+			const target = join(fixture.otherGitDir, "objects", "info");
+			assert.deepEqual(readdirSync(target), []);
+			assertRejectedWithoutWrites(fixture, target, fixture.otherGitDir);
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects an empty directory under a linked worktree's admin directory", () => {
+		const fixture = createMetadataFixture();
+		try {
+			const target = emptyDirectory(fixture.adminDir, "empty");
+			assertRejectedWithoutWrites(fixture, target, fixture.adminDir);
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects an empty directory inside a bare repository", () => {
+		const fixture = createMetadataFixture();
+		try {
+			const target = emptyDirectory(fixture.bare, "empty");
+			assertRejectedWithoutWrites(fixture, target, fixture.bare);
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects allocating a checkout inside non-empty Git metadata directories", () => {
+		const fixture = createMetadataFixture();
+		try {
+			assertRejectedWithoutWrites(fixture, join(fixture.otherGitDir, "objects"), fixture.otherGitDir);
+			assertRejectedWithoutWrites(fixture, fixture.adminDir, fixture.adminDir);
+			assertRejectedWithoutWrites(fixture, fixture.bare, fixture.bare);
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects creating a missing path inside Git metadata directories", () => {
+		const fixture = createMetadataFixture();
+		try {
+			const cases = [
+				[join(fixture.otherGitDir, "objects", "info", "new-wt"), fixture.otherGitDir],
+				[join(fixture.adminDir, "new-wt"), fixture.adminDir],
+				[join(fixture.bare, "new-wt"), fixture.bare],
+			] as const;
+			for (const [target, watched] of cases) {
+				assertRejectedWithoutWrites(fixture, target, watched);
+				assert.equal(existsSync(target), false);
+			}
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects Git metadata from a cwd outside any Git repository", () => {
+		const fixture = createMetadataFixture();
+		try {
+			const plainCwd = emptyDirectory(fixture.root, "plain");
+			for (const target of [join(fixture.otherGitDir, "objects", "info"), fixture.adminDir, fixture.bare]) {
+				assert.throws(
+					() => setupGitWorktree({ cwd: plainCwd, gitWorktreeDir: target }),
+					/gitWorktreeDir must not be inside Git metadata/,
+				);
+			}
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+});
