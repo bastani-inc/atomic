@@ -255,6 +255,7 @@ export function createWorkflowStageFactory(input: {
 			sessionCheckpointed: false,
 			skippedForParallelFailFast: false,
 			stageControlDropped: false,
+			contextUnreachable: false,
 		};
 		const activeAskUserQuestionCalls = new Set<string>();
 		const hasActiveAskUserQuestion = (): boolean =>
@@ -537,6 +538,34 @@ export function createWorkflowStageFactory(input: {
 			hasContinuation: input.opts.continuation !== undefined,
 			hasScopedParents: stageFailFastScope?.parentIds !== undefined,
 		});
-		return createStageContext({ runtime, runTrackedStageCall });
+		const context = createStageContext({ runtime, runTrackedStageCall });
+		unreachableStageContexts.register(
+			context,
+			releaseWhenUnreachable(state, input.stageRegistry, input.runId, stageId),
+		);
+		return context;
+	};
+}
+
+/**
+ * A stage context the workflow body dropped can never prompt its stage again, so its completed stage gives its live
+ * session back while the run goes on, as every stage does when the run ends. A stage still running when its context
+ * is dropped is released when it completes.
+ */
+const unreachableStageContexts = new FinalizationRegistry<() => void>((release) => release());
+
+/**
+ * Built outside the stage factory's scope on purpose: a closure created there would share its scope, and so hold the
+ * stage's session for as long as the finalization registry holds the closure.
+ */
+function releaseWhenUnreachable(
+	state: LiveStageMutableState,
+	registry: StageControlRegistry,
+	runId: string,
+	stageId: string,
+): () => void {
+	return () => {
+		state.contextUnreachable = true;
+		void registry.releaseIdle(runId, stageId);
 	};
 }

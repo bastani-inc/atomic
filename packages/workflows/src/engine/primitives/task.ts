@@ -90,6 +90,9 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				}
 			})();
 			const stageMeta = stage.__modelFallbackMeta();
+			// Nothing outside this task can reach its stage context, so its live session need not wait for the run
+			// to end: a long run would otherwise keep every completed task's session in memory.
+			void stage.__releaseIfIdle?.();
 			return {
 				name,
 				stageName: name,

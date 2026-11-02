@@ -37,6 +37,8 @@ export interface LiveStageMutableState {
 	sessionCheckpointed: boolean;
 	skippedForParallelFailFast: boolean;
 	stageControlDropped: boolean;
+	/** The workflow body can no longer reach this stage's context, so the stage is released once it completes. */
+	contextUnreachable: boolean;
 }
 
 export interface LiveStageRuntime {
@@ -74,6 +76,13 @@ export interface LiveStageRuntime {
 	readonly throwIfStageMutationBlocked: () => void;
 }
 
-export type StageContextWithMeta = StageContext & Pick<InternalStageContext, "__modelFallbackMeta">;
+export type StageContextWithMeta = StageContext &
+	Pick<InternalStageContext, "__modelFallbackMeta"> & {
+		/**
+		 * Releases the stage's live session once it is completed, saved and unused, as the end of its run does. Only a
+		 * caller that keeps no further use of this context may call it; a released stage reopens on demand.
+		 */
+		readonly __releaseIfIdle?: () => Promise<void>;
+	};
 
 export type StageNoticeInput = Omit<StageNotice, "id" | "ts">;

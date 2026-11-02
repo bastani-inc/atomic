@@ -491,6 +491,7 @@ export function createTrackedStageCaller(input: {
 				await runtime.releaseLiveHandle().catch(() => {});
 			}
 			runtime.state.sessionCheckpointed = finalizationError === undefined;
+			if (runtime.state.contextUnreachable) void runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId);
 			input.limiter.release();
 			if (finalizationError !== undefined) throwFinalizationError(finalizationError.error);
 			delete runtime.state.readinessController;

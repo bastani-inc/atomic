@@ -150,5 +150,6 @@ export function createStageContext(input: {
 			await innerCtx.abort();
 		},
 		__modelFallbackMeta: () => innerCtx.__modelFallbackMeta(),
+		__releaseIfIdle: () => runtime.stageRegistry.releaseIdle(runtime.runId, runtime.stageId),
 	};
 }
