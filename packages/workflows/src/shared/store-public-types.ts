@@ -106,6 +106,10 @@ export interface RecordStagePromptAnswerOptions {
 }
 
 export interface Store {
+	/**
+	 * The store's runs, in the order they were first recorded. Read-only: change runs through the store's methods,
+	 * which also keep the index `run(id)` answers from.
+	 */
 	runs(): readonly RunSnapshot[];
 	/** The run with this id, found without scanning the other runs. */
 	run(runId: string): RunSnapshot | undefined;

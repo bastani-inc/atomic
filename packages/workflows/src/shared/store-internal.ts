@@ -163,16 +163,18 @@ export function createStoreState(): StoreState {
 	};
 }
 
+/** Rebuilds the index from the list; a duplicated id keeps its first position, as a linear `find` would. */
 function reindexRuns(state: StoreState): void {
 	state.runPositions.clear();
 	state.runs.forEach((run, position) => {
-		state.runPositions.set(run.id, position);
+		if (!state.runPositions.has(run.id)) state.runPositions.set(run.id, position);
 	});
 }
 
 /**
- * Where the run with this id stands in `state.runs`. The index answers in constant time; it is rebuilt only when it
- * no longer matches the list, which only a direct edit of the array returned by `runs()` causes.
+ * Where the run with this id stands in `state.runs`. The index answers in constant time. The store's own methods keep
+ * it in step with the list; a lookup that finds it out of step (a direct edit of the array `runs()` returns, which that
+ * method documents as read-only) rebuilds it. A miss is trusted while the index and the list hold as many runs.
  */
 function runPosition(state: StoreState, runId: string): number | undefined {
 	const position = state.runPositions.get(runId);
