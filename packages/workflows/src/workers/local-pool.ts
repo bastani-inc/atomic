@@ -24,7 +24,7 @@ import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { Lease, RunJournal } from "../durable/journal/types.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../durable/types.js";
-import { findWorkflowGracefulQuit, WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
+import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { ResolvedInputs, RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { acquireStandaloneIntercom } from "../runs/foreground/sdk-intercom.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -278,6 +278,8 @@ export class LocalWorkerPool {
 	private readonly works = new Map<string, PoolWork>();
 	private readonly attempts = new Map<string, PoolWorkToken & { fenced: boolean }>();
 	private readonly results = new Map<string, WorkflowSerializableObject>();
+	/** Worker cleanups the pool could not confirm, in order; each is also a warning on the root run. */
+	private readonly healthEvents: string[] = [];
 	/** Children the coordinator failed on their own, without failing the pool. */
 	private readonly workFailures = new Map<string, WorkflowInfrastructureError>();
 	private changed = Promise.withResolvers<void>();
@@ -398,6 +400,10 @@ export class LocalWorkerPool {
 		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
+	}
+	/** Health events of the pool: worker cleanups it could not confirm. None of them failed a child. */
+	get health(): readonly string[] {
+		return this.healthEvents;
 	}
 	get workerPids(): number[] {
 		return [...this.pids];
@@ -1163,14 +1169,11 @@ export class LocalWorkerPool {
 		try {
 			return await this.dispatch(definition, inputs, options);
 		} catch (error) {
-			// Only this child failed; the pool and its other children keep running.
-			if (error instanceof WorkflowInfrastructureError && [...this.workFailures.values()].includes(error))
-				throw error;
-			try {
-				if (this.desiredControl !== "quit" || !findWorkflowGracefulQuit(error)) await this.shutdown();
-			} catch (closeError) {
-				throw asWorkflowInfrastructureError(closeError) ?? closeError;
-			}
+			// One child's failure, whatever it was, is that child's: the pool and its other children keep running, and
+			// nothing the pool's shutdown reports becomes their failure. Only a pool that failed itself (its coordinator
+			// lost, or a fault it reported as the pool's) stops here; otherwise the root's own end closes it, and reports
+			// what its close could not confirm.
+			if (this.failure !== undefined || this.coordinatorLost !== undefined) await this.shutdown().catch(() => {});
 			throw asWorkflowInfrastructureError(error) ?? error;
 		}
 	}
@@ -1250,7 +1253,12 @@ export class LocalWorkerPool {
 		try {
 			for (;;) {
 				options.signal?.throwIfAborted();
-				if (this.closed) throw this.closedError(root);
+				// A child whose result is recorded keeps it, whatever happened to the pool since: a pool that closed or
+				// failed before the result reached this process still holds it in its queue.
+				if (!this.results.has(work.id) && (this.closed || this.failure !== undefined)) {
+					const recorded = await this.queue?.result(root, work.id).catch(() => undefined);
+					if (recorded !== undefined) this.results.set(work.id, recorded);
+				}
 				const result = this.results.get(work.id);
 				if (result) {
 					// When many children finish at once, each one's completion takes its own slice of a turn (#3903).
@@ -1277,6 +1285,7 @@ export class LocalWorkerPool {
 					this.endFailedChild(work, failed);
 					throw failed;
 				}
+				if (this.closed) throw this.closedError(root);
 				if (this.failure) throw this.failure;
 				if (this.budgetBlocked) await this.rootBudget!.stopAtBoundaryAsync(definition.name);
 				await this.nextChange(options.signal);
@@ -1309,6 +1318,22 @@ export class LocalWorkerPool {
 					if (run.endedAt === undefined && inChild(run)) endPooledRun(store, run, error.message);
 			});
 		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
+	}
+	/**
+	 * A worker cleanup the pool could not confirm: a warning on the root run, never a child's failure. The worker that
+	 * tripped it was retired and replaced, and its log is kept.
+	 */
+	private recordHealth(message: string): void {
+		this.healthEvents.push(message);
+		const root = this.root;
+		if (root === undefined || this.store === undefined) return;
+		this.store.recordNotice({
+			id: `local-worker-health:${root}:${this.healthEvents.length}`,
+			runId: root,
+			level: "warning",
+			message: `Local worker pool: ${message}`,
+			createdAt: Date.now(),
+		});
 	}
 	/** One budget decision for every waiting child; the coordinator refuses claims while it blocks. */
 	private evaluateBudget(): void {
@@ -1428,6 +1453,9 @@ export class LocalWorkerPool {
 			case "failure":
 				this.failure ??= new Error(event.error);
 				this.signalChange();
+				return;
+			case "health":
+				this.recordHealth(event.message);
 				return;
 			case "stage-events":
 				this.stageWatches.get(event.watch)?.({ kind: "events", events: event.events });

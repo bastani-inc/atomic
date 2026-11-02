@@ -1,7 +1,7 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rm, rmdir } from "node:fs/promises";
+import { appendFile, mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
@@ -30,6 +30,7 @@ import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import { failedOnInfrastructureFault } from "../shared/workflow-infrastructure-error.js";
+import { workerProcessExited } from "./admission-host.js";
 import type {
 	CoordinatorCommand,
 	CoordinatorCommandBody,
@@ -95,6 +96,13 @@ const LATE_ROOT_POLL_MS = RECOVERY_INTERVAL_MS;
 const MIRROR_INTERVAL_MS = 10_000;
 const STDERR_TAIL_CHARACTERS = 8192;
 const STDERR_DRAIN_GRACE_MS = 1_000;
+/**
+ * How long a worker sent SIGKILL has to be confirmed gone, counted in time this process was not stalled, before the pool
+ * reports its cleanup unconfirmed.
+ */
+const WORKER_EXIT_CONFIRMATION_MS = 5_000;
+/** Pause between checks of a worker sent SIGKILL. */
+const WORKER_EXIT_POLL_MS = 50;
 /** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
 const MAX_CHILD_ATTEMPTS = 3;
 /**
@@ -358,6 +366,8 @@ interface WorkerSlot {
 	readonly runs: Set<string>;
 	/** Stage commands awaiting the worker's result; undefined resolves a worker that exited. */
 	readonly stageCommands: Map<number, (result: StageCommandResult | undefined) => void>;
+	/** Ends the worker's attempt as its exit does; called for a worker that SIGKILL did not end within the bound. */
+	retire?: () => void;
 }
 
 interface StageCommandResult {
@@ -396,6 +406,12 @@ export class PoolCoordinator {
 	private readonly incarnations = new Map<string, ChildProcess>();
 	private readonly readyWorkers = new Set<string>();
 	private readonly logs = new Map<ChildProcess, string>();
+	/** Logs of workers whose cleanup could not be confirmed: close keeps them. */
+	private readonly keptLogs = new Set<string>();
+	/** Workers that SIGKILL did not end within the bound, already reported. */
+	private readonly unconfirmedExits = new WeakSet<ChildProcess>();
+	/** Set once the pool reported its own failure to the root: close then keeps every worker's log. */
+	private failed = false;
 	private readonly cleanups = new Set<Promise<void>>();
 	private readonly controlAcks = new Map<string, number>();
 	private readonly lastHeard = new Map<string, { readonly at: number; readonly stalled: number }>();
@@ -449,8 +465,6 @@ export class PoolCoordinator {
 	private cleanupFailure?: Error;
 	/** Work of exited workers whose leases recovery extends instead of expiring, while their process groups are reaped. */
 	private readonly held = new Set<string>();
-	/** Held work whose process groups survived reaping; its child failed and it is never released for replay. */
-	private readonly quarantined = new Set<string>();
 	/** Workers or attempts whose reap left process groups running; close reports those still running. */
 	private readonly unreaped: ProcessPermitScope[] = [];
 	/**
@@ -689,25 +703,27 @@ export class PoolCoordinator {
 	}
 
 	/**
-	 * Reaps a retained earlier attempt's process groups on this host with the bounded SIGTERM, then SIGKILL, sequence.
-	 * Once they are gone the attempt is released for replay. If any survive, only that child fails and the attempt
-	 * stays quarantined. Groups on another host cannot be reaped: the attempt stays retained until recovery confirms
-	 * them gone.
+	 * Reaps a retained earlier attempt's process groups on this host with the bounded SIGTERM, then SIGKILL, sequence,
+	 * then releases the attempt for replay. Groups that survive the bound keep their permits quarantined, and close
+	 * reports them: they are a health event of the pool, and the child replays within its attempt limit as for any lost
+	 * attempt rather than failing. Groups on another host cannot be reaped: the attempt stays retained until recovery
+	 * confirms them gone.
 	 */
 	private async reapRetained(work: PoolWork): Promise<void> {
 		try {
 			const { survivors, unprobeable } = await reapProcessGroups(this.journal!, this.root!, { attempt: work });
 			if (survivors.length > 0) {
-				this.quarantined.add(work.id);
 				this.unreaped.push({ attempt: work });
-				this.port.send({ kind: "work-failure", workId: work.id, error: unconfirmedCleanup(survivors).message });
-				return;
+				this.reportHealth(
+					undefined,
+					`${unconfirmedCleanup(survivors).message}; child ${work.childRunId} of an earlier incarnation replays`,
+				);
 			}
 			if (unprobeable.length === 0) await this.releaseRetained(work);
 		} catch (error) {
 			this.cleanupFailure ??= error instanceof Error ? error : new Error(String(error));
 		} finally {
-			if (!this.quarantined.has(work.id)) this.held.delete(work.id);
+			this.held.delete(work.id);
 		}
 	}
 
@@ -875,6 +891,7 @@ export class PoolCoordinator {
 	}
 
 	private fail(error: Error): void {
+		this.failed = true;
 		this.port.send({ kind: "failure", error: error.message });
 	}
 
@@ -1315,7 +1332,11 @@ export class PoolCoordinator {
 				terminate();
 			});
 			const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-			child.once("exit", () => {
+			// The worker's exit, or its retirement when SIGKILL did not end it within the bound: both end its attempt once.
+			let retired = false;
+			const retire = () => {
+				if (retired) return;
+				retired = true;
 				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
 					reject(
 						diagnosed(
@@ -1340,38 +1361,35 @@ export class PoolCoordinator {
 					delivery.reject(new Error("Worker exited before delivery acknowledgement"));
 				slot.deliveries.clear();
 				// The exited worker's work stays leased until its process groups are reaped, so no other worker can
-				// claim it and replay alongside them.
+				// claim it while they are being reaped.
 				const held = slot.work;
 				if (held) this.held.add(held.id);
-				// Set when this exit's cleanup failure fails only its child: the replacement is not an idle-worker crash.
-				let childFailed = false;
+				// Set when the reap leaves process groups running: the worker's health event, never its child's failure.
+				let unconfirmed: Error | undefined;
 				const cleanup = disconnected
 					.then(() => serial)
 					.then(async () => {
 						try {
 							const admission = this.admission;
 							if (!admission || (await admission.releaseStoppedSessions(worker)) === 0) return;
-							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded;
-							// groups that survive it fail only that worker's child, and never the rest of the pool.
+							// The exited worker's tool process groups belong to its fenced attempt. Reaping them is bounded.
 							const alive = await admission.reapStoppedProcesses(worker);
 							if (alive.length > 0) this.unreaped.push({ holder: worker });
 							// Close still reports any cleanup left unconfirmed, including permits never bound to a group.
 							if (this.closed && (alive.length > 0 || (await admission.releaseStoppedSessions(worker)) > 0))
 								throw unconfirmedCleanup(alive);
 							if (alive.length === 0) return;
-							const error = unconfirmedCleanup(alive);
-							if (held && (await this.queue!.result(this.root!, held.id)) === undefined) {
-								// Its lease stays held for the pool's lifetime: the child never replays alongside those groups.
-								this.quarantined.add(held.id);
-								slot.work = undefined;
-								childFailed = true;
-								this.port.send({ kind: "work-failure", workId: held.id, error: error.message });
-							}
+							// Groups that survive the reap keep their permits quarantined, and close reports them. They are a
+							// health event of the worker, which is retired and replaced, and never its child's failure: a child
+							// whose result is recorded keeps it, and an unfinished one replays on another worker within its
+							// attempt limit, as for any lost attempt (below).
+							unconfirmed = unconfirmedCleanup(alive);
+							this.reportHealth(logPath, `${unconfirmed.message}; the worker was retired and replaced`);
 						} catch (error) {
 							this.cleanupFailure = error instanceof Error ? error : new Error(String(error));
 							throw this.cleanupFailure;
 						} finally {
-							if (held && !this.quarantined.has(held.id)) this.held.delete(held.id);
+							if (held) this.held.delete(held.id);
 						}
 					})
 					.then(async () => {
@@ -1397,11 +1415,15 @@ export class PoolCoordinator {
 						// An exit whose attempt another one already replaced is not that child's failure: its owner keeps it.
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
-							this.failWork(work, diagnosed(childRetryLimit(work, "lost its worker")));
-						// Workers that crash without work are a pool-wide fault. A quarantined or failed child consumes its
-						// own work item, so those replacements are bounded by the children and never count toward this limit.
-						if (work === undefined && !childFailed && ++this.replacements > 3)
-							this.fail(diagnosed("Local worker retry limit"));
+							this.failWork(
+								work,
+								diagnosed(
+									`${childRetryLimit(work, "lost its worker")}${unconfirmed === undefined ? "" : `; ${unconfirmed.message}`}`,
+								),
+							);
+						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
+						// attempts, so those replacements are bounded by the children and never count toward this limit.
+						if (work === undefined && ++this.replacements > 3) this.fail(diagnosed("Local worker retry limit"));
 						else await this.spawn();
 					})
 					.catch((error: Error) => {
@@ -1409,7 +1431,9 @@ export class PoolCoordinator {
 					});
 				this.cleanups.add(cleanup);
 				void cleanup.finally(() => this.cleanups.delete(cleanup));
-			});
+			};
+			slot.retire = retire;
+			child.once("exit", retire);
 			child.on("message", (message: WorkerRequest) => {
 				this.observeResponsiveness();
 				this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
@@ -1487,14 +1511,24 @@ export class PoolCoordinator {
 						const fenced = slot.work;
 						slot.work = undefined;
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
-						// not replaced: it is released for replay and counts as a failed attempt, so refusals stay bounded.
+						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
+						// so refusals and faults stay bounded.
 						if (fenced && !(await this.superseded(fenced))) {
+							// Views of the attempt's stages end with it, so they reconnect to its replay.
+							this.fence(fenced);
 							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced)))
 								this.failWork(
 									fenced,
-									new Error(childRetryLimit(fenced, "was refused by the root as stale on every attempt")),
+									new Error(
+										childRetryLimit(
+											fenced,
+											message.fault === undefined
+												? "was refused by the root as stale on every attempt"
+												: `failed on a fault of the pool on every attempt (last: ${message.fault})`,
+										),
+									),
 								);
 						}
 						return;
@@ -1674,7 +1708,6 @@ export class PoolCoordinator {
 				return;
 			}
 			for (const work of expired) {
-				if (this.quarantined.has(work.id)) continue;
 				if (this.held.has(work.id)) {
 					await queue.extend(lease, work, leaseMs).catch((error: Error) => {
 						if (error.message !== STALE_WORK_LEASE) throw error;
@@ -1688,16 +1721,11 @@ export class PoolCoordinator {
 					});
 					continue;
 				}
-				if (
-					child &&
-					!(await this.stop(child).then(
-						() => true,
-						() => false,
-					))
-				)
-					continue;
+				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
+				// within its attempt limit, as for a worker that exited.
+				if (child && !(await this.stop(child))) this.retireUnconfirmed(child);
 				// Stopping the worker began its exit cleanup, which holds its work until its process groups are reaped.
-				if (this.held.has(work.id) || this.quarantined.has(work.id)) continue;
+				if (this.held.has(work.id)) continue;
 				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
 				if ((await unconfirmedProcessGroups(this.journal!, root, { attempt: work })).length > 0) continue;
 				if (work.epoch < lease.epoch) await this.releaseRetained(work);
@@ -1730,16 +1758,63 @@ export class PoolCoordinator {
 		);
 	}
 
-	private stop(child: ChildProcess): Promise<void> {
-		if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => reject(new Error("Local worker cleanup was not confirmed")), 5_000);
-			child.once("exit", () => {
-				clearTimeout(timeout);
-				resolve();
-			});
-			child.kill("SIGKILL");
-		});
+	/**
+	 * Sends SIGKILL to a worker and resolves whether its exit was confirmed: by its exit event, or by the kernel, which
+	 * reports it gone, or a zombie awaiting this process's reaping (which holds nothing). The bound counts only time this
+	 * process was not stalled: a coordinator too busy to handle a worker's exit in time, as on a host running hundreds of
+	 * workers, never reports the exit unconfirmed (the timer used to fire before the exit, which waited behind it).
+	 */
+	private async stop(child: ChildProcess): Promise<boolean> {
+		const pid = child.pid;
+		const exited = () => child.exitCode !== null || child.signalCode !== null;
+		if (pid === undefined || exited()) return true;
+		const exit = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+		// Once the kernel reports the worker exited, its exit event follows as soon as this process handles it; waiting
+		// for it lets the exit begin the worker's cleanup before the caller goes on, as it did before.
+		const confirmed = async () => {
+			await Promise.race([exit, delay(WORKER_EXIT_CONFIRMATION_MS)]);
+			return true;
+		};
+		this.observeResponsiveness();
+		child.kill("SIGKILL");
+		const since = performance.now();
+		const stalledAt = this.stalledMs;
+		for (;;) {
+			await Promise.race([exit, delay(WORKER_EXIT_POLL_MS)]);
+			if (exited()) return true;
+			if (workerProcessExited(pid)) return confirmed();
+			this.observeResponsiveness();
+			if (performance.now() - since - (this.stalledMs - stalledAt) >= WORKER_EXIT_CONFIRMATION_MS)
+				return exited() || (workerProcessExited(pid, true) && confirmed());
+		}
+	}
+
+	/**
+	 * Retires a worker that SIGKILL did not end within the bound: a health event of the pool, reported once. Its channel
+	 * is closed and its attempt ends as on its exit, so its tool process groups are reaped, its child replays on a
+	 * replacement within its attempt limit, and a replacement starts. Its exit, if it ever comes, changes nothing more.
+	 */
+	private retireUnconfirmed(child: ChildProcess): void {
+		if (this.unconfirmedExits.has(child)) return;
+		this.unconfirmedExits.add(child);
+		this.reportHealth(
+			this.logs.get(child),
+			`Local worker cleanup was not confirmed: worker process ${child.pid} was still running ${WORKER_EXIT_CONFIRMATION_MS} ms after SIGKILL; it was retired and replaced`,
+		);
+		if (child.connected) child.disconnect();
+		for (const slot of this.slots) if (slot.child === child) slot.retire?.();
+	}
+
+	/**
+	 * Reports a worker's cleanup that could not be confirmed. It is a health event of the pool, never a child's failure:
+	 * the line is appended to the worker's log, which the pool then keeps, and the root shows it as a warning on the run.
+	 */
+	private reportHealth(log: string | undefined, message: string): void {
+		if (log !== undefined) {
+			this.keptLogs.add(log);
+			void appendFile(log, `[atomic ${new Date().toISOString()}] ${message}\n`).catch(() => {});
+		}
+		this.port.send({ kind: "health", message: log === undefined ? message : `${message} (worker log: ${log})` });
 	}
 
 	private async close(): Promise<void> {
@@ -1750,10 +1825,15 @@ export class PoolCoordinator {
 		this.rateLimitOutbox.close();
 		let failure: unknown;
 		let stopping: { readonly child: ChildProcess; readonly log?: string }[] = [];
+		let confirmed: boolean[] = [];
 		try {
 			await this.recovering?.catch(() => {});
 			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
-			await Promise.all(stopping.map(({ child }) => this.stop(child)));
+			confirmed = await Promise.all(stopping.map(({ child }) => this.stop(child)));
+			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
+			stopping.forEach(({ child }, index) => {
+				if (!confirmed[index]) this.retireUnconfirmed(child);
+			});
 			await Promise.all([...this.cleanups]);
 			if (this.cleanupFailure) throw this.cleanupFailure;
 			// A reap that finished before close may have left groups running; close reports those still running.
@@ -1763,19 +1843,20 @@ export class PoolCoordinator {
 					if (!alive.includes(group)) alive.push(group);
 			if (alive.length > 0) throw unconfirmedCleanup(alive);
 			// Every worker is stopped: work they still held is no attempt's any more, so it does not stay leased
-			// after the root ends (#3996). A quit keeps it leased for the root's resume, and quarantined work keeps
-			// its lease while its process groups may still run.
+			// after the root ends (#3996). A quit keeps it leased for the root's resume.
 			if (this.desiredControl !== "quit" && this.queue !== undefined && this.lease !== undefined)
 				// A root that no longer holds its lease has handed its work to its next incarnation.
-				await this.queue.releaseClosed(this.lease, [...this.quarantined]).catch((error: Error) => {
+				await this.queue.releaseClosed(this.lease).catch((error: Error) => {
 					if (!(error instanceof StaleLeaseError)) throw error;
 				});
 		} catch (error) {
 			failure = error;
 		}
-		if (failure === undefined) {
-			const stopped = stopping.flatMap(({ child, log }) =>
-				log !== undefined && (child.exitCode !== null || child.signalCode !== null) ? [log] : [],
+		// Logs of the workers close stopped are removed when everything closed cleanly. Those of a pool that failed, and of
+		// workers whose cleanup could not be confirmed, are kept for diagnosis.
+		if (failure === undefined && !this.failed) {
+			const stopped = stopping.flatMap(({ log }, index) =>
+				log !== undefined && !this.keptLogs.has(log) && confirmed[index] === true ? [log] : [],
 			);
 			await Promise.all(stopped.map((log) => rm(log, { force: true }).catch(() => {})));
 			if (this.logDirectory !== undefined) await rmdir(this.logDirectory).catch(() => {});

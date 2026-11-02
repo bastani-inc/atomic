@@ -1071,15 +1071,7 @@ export class SqlPoolQueue {
  * Any other difference is a different checkpoint and still conflicts.
  */
 function isRecordedCheckpoint(stored: string, payload: string): boolean {
-	if (stored === payload) return true;
-	const { completedAt, startedAt } = JSON.parse(stored) as {
-		readonly completedAt?: number;
-		readonly startedAt?: number;
-	};
-	if (typeof completedAt !== "number") return false;
-	const next = JSON.parse(payload) as { readonly completedAt: number; readonly startedAt?: number };
-	if ((startedAt === undefined) !== (next.startedAt === undefined)) return false;
-	return serializeJson({ ...next, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }) === stored;
+	return stored === payload || isRecordedCheckpointValue(JSON.parse(stored), JSON.parse(payload) as DurableCheckpoint);
 }
 
 /**

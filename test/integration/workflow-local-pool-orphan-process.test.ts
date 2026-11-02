@@ -11,7 +11,6 @@ import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resu
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { RunResult } from "../../packages/workflows/src/runs/foreground/executor-types.js";
-import { WorkflowInfrastructureError } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
@@ -62,6 +61,8 @@ interface FinishedPool {
 	readonly result: RunResult;
 	readonly children: readonly ChildOutcome[];
 	readonly pool: LocalWorkerPool;
+	/** The root run's warnings, as the root's store shows them. */
+	readonly warnings: readonly string[];
 }
 
 interface PoolOptions {
@@ -152,14 +153,19 @@ async function runOrphanPool(
 	const root = testRunId("pool-orphan-process-root");
 	const children: ChildOutcome[] = [];
 	try {
+		const store = createStore();
 		const execution = run(
 			orphanRoot(child, options.children, children, true, options.followUp),
 			{},
-			{ runId: root, cwd: directory, store: createStore(), durableBackend: backend },
+			{ runId: root, cwd: directory, store, durableBackend: backend },
 		);
 		await options.whileRunning?.({ directory, root, path, pool });
 		const result = await execution;
-		await options.afterRun({ directory, path, result, children, pool });
+		const warnings = store
+			.notices()
+			.filter((notice) => notice.runId === root && notice.level === "warning")
+			.map((notice) => notice.message);
+		await options.afterRun({ directory, path, result, children, pool, warnings });
 	} finally {
 		await pool.close().catch(() => {});
 		await backend.close();
@@ -258,7 +264,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a process group that survives the bounded reap fails only its own child, and a later close reports it (#3986)",
+	"a process group that survives the bounded reap is the worker's health event: its child replays, and a later close reports the group (#3986)",
 	async () => {
 		// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
 		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
@@ -269,20 +275,19 @@ test.skipIf(process.platform === "win32")(
 				children: 2,
 				workers: 2,
 				inProcess: true,
-				async afterRun({ directory, path, result, children, pool }) {
+				async afterRun({ directory, path, result, children, pool, warnings }) {
 					assert.equal(result.status, "completed", result.error);
 					const group = Number(readTextSync(join(directory, "orphan-group"), "utf8"));
-					const failed = children[0]?.error;
-					assert.ok(failed instanceof WorkflowInfrastructureError, String(failed));
-					assert.equal(failed.code, "worker_cleanup_unconfirmed");
-					assert.equal(failed.retryable, true);
-					assert.match(failed.message, unconfirmedCleanup(group));
-					assert.deepEqual(children[1], { index: 1, status: "completed" }, "the rest of the pool keeps running");
-					assert.equal(
-						fileExistsSync(join(directory, "replay.json")),
-						false,
-						"the child never replays alongside the live group",
+					assert.deepEqual(
+						children,
+						[
+							{ index: 0, status: "completed" },
+							{ index: 1, status: "completed" },
+						],
+						"a cleanup the pool could not confirm fails no child: the unfinished one replays on another worker",
 					);
+					const replay = await readJson<{ group: number }>(join(directory, "replay.json"));
+					assert.equal(replay.group, group);
 					assert.ok(groupAlive(group));
 					assert.deepEqual(
 						signal.mock.calls.map(([, name]) => name),
@@ -293,6 +298,11 @@ test.skipIf(process.platform === "win32")(
 						["granted"],
 						"the live group's permit stays quarantined",
 					);
+					assert.equal(pool.health.length, 1, pool.health.join("\n"));
+					assert.match(pool.health[0]!, unconfirmedCleanup(group));
+					assert.match(pool.health[0]!, /the worker was retired and replaced/);
+					assert.equal(warnings.length, 1, "the root run shows the health event as a warning");
+					assert.match(warnings[0]!, unconfirmedCleanup(group));
 					// The reap finished before close started: close still reports the surviving group.
 					await assert.rejects(pool.close(), unconfirmedCleanup(group));
 				},
@@ -307,10 +317,10 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"children whose process groups survive the reap never exhaust the pool's idle-worker retry limit (#3986)",
+	"children whose process groups survive the reap replay, and never exhaust the pool's idle-worker retry limit (#3986)",
 	async () => {
-		// Four children in turn each leave a process group that never disappears, on a single worker, with no
-		// completion in between. A fifth, unrelated child is enqueued only after all four have failed.
+		// Four children in turn each leave a process group that never disappears, on a single worker. A fifth, unrelated
+		// child is enqueued only after all four have settled.
 		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
@@ -325,10 +335,8 @@ test.skipIf(process.platform === "win32")(
 					assert.equal(result.status, "completed", result.error);
 					const groups = orphanGroups(directory);
 					assert.equal(groups.length, 4, "each of the four children left its own process group");
-					for (const outcome of children.slice(0, 4)) {
-						assert.ok(outcome.error instanceof WorkflowInfrastructureError, String(outcome.error));
-						assert.equal(outcome.error.code, "worker_cleanup_unconfirmed");
-					}
+					for (const outcome of children.slice(0, 4))
+						assert.equal(outcome.status, "completed", String(outcome.error));
 					assert.deepEqual(
 						children[4],
 						{ index: 4, status: "completed" },
@@ -339,6 +347,7 @@ test.skipIf(process.platform === "win32")(
 						["granted", "granted", "granted", "granted"],
 						"every surviving group's permit stays quarantined",
 					);
+					assert.equal(pool.health.length, 4, pool.health.join("\n"));
 					await assert.rejects(pool.close(), /Local worker process cleanup unconfirmed/);
 				},
 			});
@@ -467,8 +476,9 @@ for (const mode of ["exit", "stall"] as const)
 	);
 
 /**
- * The first incarnation quarantines child 0, whose group survives its reap, so the root fails; then `resume` runs
- * the root again through `resumeDurableWorkflow` on a fresh backend and pool.
+ * The first incarnation quits while the worker holding child 0 has a tool process group that survives its reap, so
+ * the attempt stays leased for the root's resume; then `resume` runs the root again through `resumeDurableWorkflow` on
+ * a fresh backend and pool.
  */
 async function quarantineThenResume(
 	resume: (context: {
@@ -491,16 +501,22 @@ async function quarantineThenResume(
 		const probe = vi.spyOn(admissionHost, "processGroupState").mockReturnValue("alive");
 		const signal = vi.spyOn(admissionHost, "signalProcessGroup").mockImplementation(() => {});
 		const pause = vi.spyOn(admissionHost, "reapPause").mockResolvedValue();
+		// The worker goes silent once its group runs, so the root's quit, not the worker's exit, ends the attempt.
+		process.env.ATOMIC_TEST_ORPHAN_MODE = "stall";
 		const first = await openOrphanPool(path, { workers: 1, inProcess: true });
 		try {
-			const result = await run(
+			const execution = run(
 				orphanRoot(first.child, 1, [], false),
 				{},
 				{ runId: root, cwd: directory, store: createStore(), durableBackend: first.backend },
 			);
-			assert.equal(result.status, "failed");
-			assert.match(result.error ?? "", /process groups \d+ still running/);
+			await until(() => fileExistsSync(join(directory, "orphan-group")));
+			// A quit keeps the attempt leased for the resume; the close it ends with reports the surviving group.
+			await assert.rejects(first.pool.control("quit"), /process groups \d+ still running/);
+			const result = await execution;
+			assert.notEqual(result.status, "completed");
 		} finally {
+			delete process.env.ATOMIC_TEST_ORPHAN_MODE;
 			await first.pool.close().catch(() => {});
 			await first.backend.close();
 			probe.mockRestore();
@@ -612,7 +628,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a durable resume reaps a retained attempt's groups and fails only its child if they survive the bound (#3986)",
+	"a durable resume reaps a retained attempt's groups and replays its child even if they survive the bound (#3986)",
 	async () => {
 		await quarantineThenResume(async ({ directory, path, root, group, quarantined, resumeRoot }) => {
 			// The probe never reports the group gone, signals are dropped, and the reap's pauses take no time.
@@ -624,11 +640,13 @@ test.skipIf(process.platform === "win32")(
 				const resumed = await resumeRoot(outcomes);
 				const record = await resumed.completion();
 				assert.equal(record.status, "completed", record.error);
-				const failed = outcomes[0]?.error;
-				assert.ok(failed instanceof WorkflowInfrastructureError, String(failed));
-				assert.equal(failed.code, "worker_cleanup_unconfirmed");
-				assert.equal(failed.retryable, true);
-				assert.match(failed.message, unconfirmedCleanup(group));
+				assert.deepEqual(
+					outcomes,
+					[{ index: 0, status: "completed" }],
+					"a cleanup the pool could not confirm fails no child",
+				);
+				assert.equal(resumed.pool.health.length, 1, resumed.pool.health.join("\n"));
+				assert.match(resumed.pool.health[0]!, unconfirmedCleanup(group));
 				assert.deepEqual(
 					signal.mock.calls.map(([target, name]) => [target, name]),
 					[
@@ -637,8 +655,11 @@ test.skipIf(process.platform === "win32")(
 					],
 					"the resumed coordinator reaps the retained group with the bounded sequence",
 				);
-				assert.deepEqual(workRow(path, root), quarantined, "the attempt stays quarantined, never replayed");
-				assert.equal(fileExistsSync(join(directory, "replay.json")), false);
+				const replayed = workRow(path, root);
+				assert.equal(replayed.state, "completed");
+				assert.equal(replayed.generation, quarantined.generation + 1, "one replay in this incarnation");
+				const replay = await readJson<{ group: number }>(join(directory, "replay.json"));
+				assert.equal(replay.group, group);
 				assert.deepEqual(
 					permitStates(path).map(([, state]) => state),
 					["granted"],

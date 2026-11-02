@@ -33,7 +33,11 @@ import type { AgentSessionAdapter } from "../runs/foreground/stage-runner.js";
 import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
-import { workflowInfrastructureFault } from "../shared/workflow-infrastructure-error.js";
+import {
+	failedOnInfrastructureFault,
+	infrastructureFaultMessage,
+	workflowInfrastructureFault,
+} from "../shared/workflow-infrastructure-error.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
@@ -376,6 +380,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			await reader.catchUpWorkflow(start.root);
 			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			attemptFenced = false;
+			let poolFault: string | undefined;
 			if (!work) {
 				await delay(25 + Math.random() * 25);
 				continue;
@@ -566,6 +571,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// A fenced attempt aborted its run, so `result` is that abort, not the child's outcome: it is never
 				// completed with it, even when its lease was renewed meanwhile; the fenced path below replays the child.
 				if (attemptFenced) throw new WorkAttemptFencedError("Work attempt fenced before completion");
+				// A run that failed on a fault of the pool (a stale lease or admission, a lost delivery, refused storage)
+				// did not fail on its own logic, so that failure is not its outcome either: the attempt ends the same way
+				// and the child replays within its attempt limit, instead of keeping a recoverable fault as final.
+				if (failedOnInfrastructureFault(result)) {
+					poolFault = infrastructureFaultMessage(result);
+					attemptFenced = true;
+					throw new WorkAttemptFencedError(poolFault);
+				}
 				await request({ kind: "complete", result });
 			} catch (error) {
 				if (!attemptFenced) throw error;
@@ -583,7 +596,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await renewal;
 				await report;
 				await controlPulse;
-				await request({ kind: "fenced" });
+				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
 			if (rootLeaseLost) break;
 		}

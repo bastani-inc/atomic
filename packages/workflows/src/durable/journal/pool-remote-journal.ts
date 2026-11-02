@@ -127,18 +127,42 @@ export function isSameCheckpointValue(stored: unknown, next: unknown): boolean {
 	return hash(stored) === hash(next);
 }
 
+/** Times a checkpoint, or its topology, records: `startedAt` and `endedAt` or `completedAt`. */
+interface CheckpointTimes {
+	readonly startedAt?: number;
+	readonly endedAt?: number;
+	readonly completedAt?: number;
+}
+
+/** `later` with the times `recorded` has, where both have them; a time only one of them has stays a difference. */
+function withTimesOf<T extends CheckpointTimes>(later: T, recorded: CheckpointTimes): T {
+	const both = (key: keyof CheckpointTimes) => typeof recorded[key] === "number" && typeof later[key] === "number";
+	return {
+		...later,
+		...(both("startedAt") ? { startedAt: recorded.startedAt } : {}),
+		...(both("endedAt") ? { endedAt: recorded.endedAt } : {}),
+		...(both("completedAt") ? { completedAt: recorded.completedAt } : {}),
+	};
+}
+
 /**
  * Whether a checkpoint already recorded is the one being recorded again, so re-recording it keeps the first write.
- * Only its times may differ: a later attempt that replays a cached stage re-records it stamped with that replay's
- * time (#3996). Any other difference is a different checkpoint and conflicts. The comparison is of the values, not of
+ * Only its times, and the times of its topology, may differ: a later attempt that replays a cached stage re-records it
+ * stamped with that replay's time (#3996), and one that fails a tool again re-records its inspection-only failure the
+ * same way. Any other difference is a different checkpoint and conflicts. The comparison is of the values, not of
  * their text, because a journal in another database may return the payload with its keys in another order.
  */
 export function isRecordedCheckpointValue(stored: unknown, next: DurableCheckpoint): boolean {
-	const recorded = stored as DurableCheckpoint & { readonly completedAt?: number; readonly startedAt?: number };
+	const recorded = stored as DurableCheckpoint & CheckpointTimes & { readonly topology?: CheckpointTimes };
 	if (isSameCheckpointValue(recorded, next)) return true;
-	const { completedAt, startedAt } = recorded;
-	if (typeof completedAt !== "number") return false;
-	const later = next as DurableCheckpoint & { readonly completedAt: number; readonly startedAt?: number };
-	if ((startedAt === undefined) !== (later.startedAt === undefined)) return false;
-	return isSameCheckpointValue({ ...later, completedAt, ...(startedAt === undefined ? {} : { startedAt }) }, recorded);
+	if (typeof recorded.completedAt !== "number") return false;
+	const later = next as DurableCheckpoint & CheckpointTimes & { readonly topology?: CheckpointTimes };
+	if ((recorded.startedAt === undefined) !== (later.startedAt === undefined)) return false;
+	const retimed = withTimesOf(later, recorded);
+	return isSameCheckpointValue(
+		recorded.topology !== undefined && later.topology !== undefined
+			? { ...retimed, topology: withTimesOf(later.topology, recorded.topology) }
+			: retimed,
+		recorded,
+	);
 }

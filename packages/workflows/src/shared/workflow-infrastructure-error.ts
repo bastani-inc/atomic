@@ -97,3 +97,30 @@ export function failedOnInfrastructureFault(result: {
 		)
 	);
 }
+
+/** The fault a result {@link failedOnInfrastructureFault} failed on: its error, or the error of its first faulted stage. */
+export function infrastructureFaultMessage(result: {
+	readonly error?: unknown;
+	readonly failure?: unknown;
+	readonly stages?: unknown;
+}): string {
+	const names = (value: unknown): value is string =>
+		typeof value === "string" &&
+		(WORKFLOW_INFRASTRUCTURE_FAULTS.has(value) || workflowInfrastructureFault(value) !== undefined);
+	if (names(result.error)) return result.error;
+	const stage = Array.isArray(result.stages)
+		? (
+				result.stages as readonly {
+					readonly status?: unknown;
+					readonly error?: unknown;
+					readonly failureCode?: unknown;
+				}[]
+			).find(
+				(candidate) => candidate?.status === "failed" && (names(candidate.failureCode) || names(candidate.error)),
+			)
+		: undefined;
+	if (typeof stage?.error === "string") return stage.error;
+	if (typeof stage?.failureCode === "string") return stage.failureCode;
+	const code = (result.failure as { readonly code?: unknown } | null | undefined)?.code;
+	return typeof code === "string" ? code : typeof result.error === "string" ? result.error : "pool fault";
+}
