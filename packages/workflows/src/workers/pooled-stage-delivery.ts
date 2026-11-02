@@ -107,10 +107,13 @@ export interface PooledStageDeliveryOptions {
  */
 export function createPooledStageDelivery(options: PooledStageDeliveryOptions): WorkerStageDelivery {
 	const admissions = new Map<string, Map<string, Promise<void>>>();
+	/** Each session's latest sink: a root drain that finishes after a later drain began hands over through it. */
+	const sinks = new Map<string, WorkerDeliver>();
 	return {
 		routeCapability: options.routeCapability,
 		async deliverPending(deliver, recipient) {
 			const sessionId = recipient?.sessionId ?? "";
+			sinks.set(sessionId, deliver);
 			let admitted = admissions.get(sessionId);
 			if (admitted === undefined) {
 				admitted = new Map();
@@ -118,10 +121,13 @@ export function createPooledStageDelivery(options: PooledStageDeliveryOptions): 
 			}
 			const held = admitted;
 			for (const id of recipient?.receivedMessageIds ?? []) if (!held.has(id)) held.set(id, Promise.resolve());
+			// The sink decides how a message reaches the session: Intercom frames one handed over while the stage
+			// starts as pre-start context, and delivers one handed over later live, in its own delivery mode.
 			const admit: WorkerDeliver = (from, message) => {
 				const existing = held.get(message.id);
 				if (existing !== undefined) return existing;
-				const delivery = Promise.resolve().then(() => deliver(from, message));
+				const sink = sinks.get(sessionId) ?? deliver;
+				const delivery = Promise.resolve().then(() => sink(from, message));
 				held.set(message.id, delivery);
 				// A failed delivery leaves the message to the next drain.
 				delivery.catch(() => {

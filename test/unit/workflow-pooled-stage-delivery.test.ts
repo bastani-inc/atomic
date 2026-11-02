@@ -172,6 +172,31 @@ describe("pooled stage delivery", () => {
 		assert.deepEqual(received, ["second", "late", "first", "second"]);
 	});
 
+	test("a root drain that answers after a later drain began hands over through the later drain's sink", async () => {
+		const { delivery, forwarded } = deliveryWith({ queued: async () => [] });
+		const startup: string[] = [];
+		const live: string[] = [];
+		await delivery.deliverPending(
+			(_sender, message) => {
+				startup.push(message.id);
+			},
+			{ sessionId: "session-a", receivedMessageIds: [] },
+		);
+		// A reconnect drains the started stage again, with a sink that delivers live.
+		await delivery.deliverPending(
+			(_sender, message) => {
+				live.push(message.id);
+			},
+			{ sessionId: "session-a", receivedMessageIds: [] },
+		);
+		await forwarded[0]!.deliver(
+			{ id: "sender-id", name: "sender", cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 0 },
+			entry("late", 3).message as Delivered,
+		);
+		assert.equal(startup.length, 0);
+		assert.deepEqual(live, ["late"]);
+	});
+
 	test("leaves what it cannot read or deliver to the root's drain", async () => {
 		const unreadable = deliveryWith({
 			queued: async () => {
