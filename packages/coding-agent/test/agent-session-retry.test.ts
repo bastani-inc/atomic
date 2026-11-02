@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -423,22 +424,23 @@ describe("AgentSession retry", () => {
 			}),
 		];
 		for (const refusal of refusals) {
-			expect(probe._isRetryableError(refusal)).toBe(false);
-			expect(probe._isFallbackableError(refusal)).toBe(true);
+			assert.equal(probe._isRetryableError(refusal), false, refusal.errorMessage);
+			assert.equal(probe._isFallbackableError(refusal), true, refusal.errorMessage);
 		}
 		probe.settingsManager.applyOverrides({ retry: { fallbackOnContentFilter: false } });
 		for (const refusal of refusals) {
-			expect(probe._isRetryableError(refusal)).toBe(true);
-			expect(probe._isFallbackableError(refusal)).toBe(false);
+			assert.equal(probe._isRetryableError(refusal), true, refusal.errorMessage);
+			assert.equal(probe._isFallbackableError(refusal), false, refusal.errorMessage);
 		}
-		expect(
+		assert.equal(
 			probe._isRetryableError(
 				createAssistantMessage("", {
 					stopReason: "error",
 					errorMessage: "Invalid request: unknown parameter",
 				}),
 			),
-		).toBe(false);
+			false,
+		);
 	});
 
 	it("treats Codex token invalidation wrapped in abort diagnostics as fallbackable only", async () => {
