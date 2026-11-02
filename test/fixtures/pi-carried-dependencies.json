@@ -1,0 +1,68 @@
+{
+	"source": "earendil-works/pi",
+	"commit": "c856eb0b6",
+	"manifests": {
+		"package.json": [
+			"@biomejs/biome",
+			"@biomejs/wasm-nodejs",
+			"@types/node",
+			"esbuild",
+			"husky",
+			"pnpm",
+			"typescript",
+			"yaml"
+		],
+		"packages/ai/package.json": [
+			"@anthropic-ai/sdk",
+			"@aws-sdk/client-bedrock-runtime",
+			"@earendil-works/pi-schema",
+			"@earendil-works/pi-telemetry",
+			"@google/genai",
+			"@smithy/node-http-handler",
+			"@types/node",
+			"canvas",
+			"http-proxy-agent",
+			"https-proxy-agent",
+			"openai",
+			"partial-json",
+			"typebox",
+			"vitest"
+		],
+		"packages/coding-agent/package.json": [
+			"@earendil-works/pi-agent-core",
+			"@earendil-works/pi-ai",
+			"@earendil-works/pi-codemode",
+			"@earendil-works/pi-mcp",
+			"@earendil-works/pi-tui",
+			"@silvia-odwyer/photon-node",
+			"@types/cross-spawn",
+			"@types/hosted-git-info",
+			"@types/node",
+			"@types/proper-lockfile",
+			"@types/semver",
+			"brace-expansion",
+			"chalk",
+			"cross-spawn",
+			"diff",
+			"grok-mermaid",
+			"highlight.js",
+			"hosted-git-info",
+			"ignore",
+			"jiti",
+			"marked",
+			"minimatch",
+			"proper-lockfile",
+			"quickjs-wasi",
+			"semver",
+			"typebox",
+			"undici",
+			"vitest",
+			"yaml"
+		],
+		"packages/mcp/package.json": [
+			"@types/cross-spawn",
+			"cross-spawn",
+			"vitest"
+		]
+	}
+}

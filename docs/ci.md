@@ -679,6 +679,39 @@ that builds the shipped artifact.
 Action pins do not bound remote downloads; preserve acquisition deadlines even
 when the action commit is pinned.
 
+### Dependabot and the pi sync
+
+Atomic carries pi's `ai`, `coding-agent` and `mcp` packages, and its root
+manifest plays the role of pi's root. A dependency that pi declares in one of
+those four manifests moves only with a pi sync. The root npm entry in
+`.github/dependabot.yml` ignores each such dependency that an Atomic manifest
+(root or `packages/*/package.json`) also declares, by name and with no
+`versions` or `update-types` qualifier, so Dependabot proposes none of its
+updates. A Dependabot bump of one of them puts Atomic on a version pi does not
+run, and the next sync then has to reconcile or undo it: typebox (#4206),
+vitest (#4209) and minimatch (#4228, #4229) were all proposed and closed for
+that reason. pi's own `@earendil-works/*` packages fall under the same rule,
+because pi's `ai` and `coding-agent` manifests declare them.
+
+The rule holds even where Atomic is ahead of pi today: `@biomejs/biome` is
+declared at both roots and Atomic runs a newer one, but it still moves with a
+sync, or by a deliberate manual bump, not by Dependabot. A dependency that pi
+declares only in a package Atomic does not carry (for example `tui` or
+`schema`) is not ignored: no sync would ever move it. pi's Rust daemon crate is
+not carried either, so the Cargo entry has no such rules.
+
+`test/fixtures/pi-carried-dependencies.json` records the dependency names in
+pi's four carried manifests at a given pi commit.
+`test/ci/dependabot-pi-sync-contract.test.ts` requires the ignore list to equal
+exactly the names that snapshot shares with Atomic's manifests, each ignored by
+name for every version. On each pi sync, run
+`git fetch pi main && node scripts/snapshot-pi-dependencies.mjs`, then add or
+remove ignore entries until the contract test passes; it prints the difference.
+
+Ignore rules also suppress Dependabot security updates for these names. An
+advisory against one of them is handled by a pi sync that carries the fix or,
+if pi has not moved, by a manual bump recorded as a divergence from pi.
+
 ### Binary smoke tests
 
 Linux and Windows x64 each get `@bastani/pi-ai` model data from the restored snapshot, or hydrate it once without one (`npm run hydrate:model-data`; see "Model data cached, fetched live in one place"), build the package with `build:offline`, and run `scripts/build-binaries.sh --offline-model-data` for their platform, so the script never regenerates the catalog a second time. They extract the resulting archive, check required bundled files, run `--version`, and start `--no-session` from a clean temporary directory. Expected no-model/no-key exits are accepted; extension-load failures and unexpected exits fail the job.
