@@ -243,11 +243,24 @@ export class PoolStageHandoff {
 					throw outside(run.id);
 			}
 		};
-		const before = new Map(this.store.runs().map((run) => [run.id, run]));
+		const before = this.known(subtree);
 		owned(before);
 		if (subtree.some((run) => before.get(run.id) === undefined)) await this.backend.catchUpWorkflow(root);
 		await this.queue.assertCurrent(this.lease, work);
 		return () => this.commit(work, subtree, owned);
+	}
+
+	/**
+	 * The store's current copy of each published run, looked up by id: a publication costs what it publishes, not
+	 * what the store holds, which in a long-lived host is thousands of finished runs (#4182).
+	 */
+	private known(subtree: readonly RunSnapshot[]): ReadonlyMap<string, RunSnapshot> {
+		const known = new Map<string, RunSnapshot>();
+		for (const run of subtree) {
+			const existing = this.store.run(run.id);
+			if (existing !== undefined) known.set(run.id, existing);
+		}
+		return known;
 	}
 
 	private commit(
@@ -256,7 +269,7 @@ export class PoolStageHandoff {
 		owned: (known: ReadonlyMap<string, RunSnapshot>) => void,
 	): void {
 		const root = this.lease.runId;
-		const known = new Map(this.store.runs().map((run) => [run.id, run]));
+		const known = this.known(subtree);
 		owned(known);
 		const attempt = this.enter(work);
 		const execution = {
@@ -295,7 +308,7 @@ export class PoolStageHandoff {
 			}
 			// Whether a chat in this process is attached to a stage is the root's own state: a worker's
 			// republished run never knows it, and dropping it would stop the chat answering prompts.
-			const previous = this.store.runs().find((candidate) => candidate.id === run.id);
+			const previous = this.store.run(run.id);
 			for (const stage of run.stages)
 				if (previous?.stages.find((candidate) => candidate.id === stage.id)?.attached === true)
 					stage.attached = true;
@@ -312,7 +325,7 @@ export class PoolStageHandoff {
 			byId.set(run.id, run);
 		}
 		if (runs.length === 0) return [];
-		const rootRun = this.store.runs().find((run) => run.id === root);
+		const rootRun = this.store.run(root);
 		const boundary = rootRun?.stages.find((stage) => stage.id === work.boundaryId);
 		if (authoritativeWorkflowChildRunId(boundary) !== work.childRunId)
 			throw new Error(`Pool work boundary ${work.boundaryId} is not linked to ${work.childRunId} in the root run`);
@@ -371,7 +384,7 @@ export class PoolStageHandoff {
 		attempt.sessions.clear();
 		for (const id of attempt.runs) rotateWorkflowPendingStageRouteCapability(this.store, id);
 		for (const id of attempt.runs) {
-			const run = this.store.runs().find((candidate) => candidate.id === id);
+			const run = this.store.run(id);
 			if (run?.stages.some((stage) => isLive(stage)) !== true) continue;
 			this.store.recordRunStart({
 				...run,

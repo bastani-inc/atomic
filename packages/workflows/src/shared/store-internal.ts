@@ -44,6 +44,11 @@ export interface ResolverEntry {
 
 export interface StoreState {
 	readonly runs: RunSnapshot[];
+	/**
+	 * Position of each run in `runs` by id, so a lookup costs the same however many runs the store holds (#4182).
+	 * Kept by the store's own mutations; a lookup that finds it out of step with `runs` rebuilds it.
+	 */
+	readonly runPositions: Map<string, number>;
 	readonly notices: WorkflowNotice[];
 	readonly listeners: Set<(snap: StoreSnapshot) => void>;
 	readonly invalidationListeners: Set<() => void>;
@@ -67,6 +72,14 @@ export interface StoreContext {
 	/** `change` scopes observation to one run or node; pass it only when nothing outside it changed. */
 	bumpAndNotify(change?: WorkflowObservationChange): void;
 	findRun(runId: string): RunSnapshot | undefined;
+	/** Position of the run in `state.runs`, or undefined when the store does not hold it. */
+	runPosition(runId: string): number | undefined;
+	/** Adds the run, or replaces the run with its id where it stands. */
+	placeRun(run: RunSnapshot): void;
+	/** Removes the run at `position` of `state.runs`. */
+	removeRunAt(position: number): void;
+	/** Drops every run. */
+	clearRuns(): void;
 	findStage(run: RunSnapshot, stageId: string): StageSnapshot | undefined;
 	rejectPrompt(promptId: string, reason: string): void;
 	rejectStagePrompt(runId: string, stage: StageSnapshot, reason: string): void;
@@ -139,6 +152,7 @@ export function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata):
 export function createStoreState(): StoreState {
 	return {
 		runs: [],
+		runPositions: new Map(),
 		notices: [],
 		listeners: new Set(),
 		invalidationListeners: new Set(),
@@ -149,11 +163,35 @@ export function createStoreState(): StoreState {
 	};
 }
 
+/** Rebuilds the index from the list; a duplicated id keeps its first position, as a linear `find` would. */
+function reindexRuns(state: StoreState): void {
+	state.runPositions.clear();
+	state.runs.forEach((run, position) => {
+		if (!state.runPositions.has(run.id)) state.runPositions.set(run.id, position);
+	});
+}
+
+/**
+ * Where the run with this id stands in `state.runs`. The index answers in constant time. The store's own methods keep
+ * it in step with the list; a lookup that finds it out of step (a direct edit of the array `runs()` returns, which that
+ * method documents as read-only) rebuilds it. A miss is trusted while the index and the list hold as many runs.
+ */
+function runPosition(state: StoreState, runId: string): number | undefined {
+	const position = state.runPositions.get(runId);
+	if (position !== undefined && state.runs[position]?.id === runId) return position;
+	if (position === undefined && state.runPositions.size === state.runs.length) return undefined;
+	reindexRuns(state);
+	return state.runPositions.get(runId);
+}
+
 export function createStoreContext(state: StoreState = createStoreState()): StoreContext {
 	let cachedGraphVersion = -1;
 	let cachedGraphSnapshot: StoreSnapshot | undefined;
 	const graphBuilder = new GraphStoreSnapshotBuilder();
-	const observation = new WorkflowObservationRuntime(() => state.runs, bumpAndNotify);
+	const observation = new WorkflowObservationRuntime(
+		{ all: () => state.runs, find: findRun, position: (runId) => runPosition(state, runId) },
+		bumpAndNotify,
+	);
 
 	function snapshot(): StoreSnapshot {
 		return JSON.parse(
@@ -172,7 +210,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function graphRun(runId: string): RunSnapshot | undefined {
 		if (cachedGraphSnapshot !== undefined && cachedGraphVersion === state.version)
 			return findSnapshotRun(cachedGraphSnapshot.runs, runId);
-		const run = state.runs.find((candidate) => candidate.id === runId);
+		const run = findRun(runId);
 		return run === undefined ? undefined : graphBuilder.buildRun(run);
 	}
 
@@ -235,7 +273,31 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	}
 
 	function findRun(runId: string): RunSnapshot | undefined {
-		return state.runs.find((r) => r.id === runId);
+		const position = runPosition(state, runId);
+		return position === undefined ? undefined : state.runs[position];
+	}
+
+	function placeRun(run: RunSnapshot): void {
+		const position = runPosition(state, run.id);
+		if (position !== undefined) {
+			state.runs[position] = run;
+			return;
+		}
+		state.runPositions.set(run.id, state.runs.length);
+		state.runs.push(run);
+	}
+
+	function removeRunAt(position: number): void {
+		const [removed] = state.runs.splice(position, 1);
+		if (removed === undefined) return;
+		state.runPositions.delete(removed.id);
+		for (let index = position; index < state.runs.length; index++)
+			state.runPositions.set(state.runs[index]!.id, index);
+	}
+
+	function clearRuns(): void {
+		state.runs.length = 0;
+		state.runPositions.clear();
 	}
 
 	function findStage(run: RunSnapshot, stageId: string): StageSnapshot | undefined {
@@ -297,6 +359,10 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		batch,
 		bumpAndNotify,
 		findRun,
+		runPosition: (runId) => runPosition(state, runId),
+		placeRun,
+		removeRunAt,
+		clearRuns,
 		findStage,
 		rejectPrompt,
 		rejectStagePrompt,
