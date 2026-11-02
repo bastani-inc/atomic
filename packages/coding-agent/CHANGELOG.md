@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Recorded Gemini 4 Argon results in the evals snapshot used by automatic model routing: its Artificial Analysis row at high effort, Cognition FrontierCode 1.1 at medium effort, Zapier AutomationBench at high and medium effort, and Google's vendor-reported launch results, including DeepSWE v1.1, Terminal-Bench 4.0 and Terminal-Bench-Science ([#4161](https://github.com/bastani-inc/atomic/pull/4161)).
+
 ### Changed
 
 - A workflow's `gitWorktreeDir` (the `git_worktree_dir` input of `goal` and `ralph`) that names a non-empty directory which is not a Git checkout is now used as a place to put worktrees: the run gets its own checkout at `<dir>/<4-hex>/<repository-name>`, created from `base_branch` of the invoking repository, and leaves the directory's existing content alone. Every stage, retry and resume of that run uses the same checkout, and other runs pointing at the same directory get their own. An existing empty directory becomes the worktree. Before, both failed with `gitWorktreeDir already exists but is not a Git worktree`. ([#4162](https://github.com/bastani-inc/atomic/pull/4162))
