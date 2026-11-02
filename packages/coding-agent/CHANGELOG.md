@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A rebuilt chat in the interactive TUI no longer briefly shows a collapsed tool row with its expanded output when the row was collapsed while its expanded frame was still on its way from the engine. Rows the chat drops while the engine connection is backed up also stay released, instead of being rendered again in the engine by a render request that arrived after their disposal. ([#4169](https://github.com/bastani-inc/atomic/pull/4169))
+
 ## [0.9.61] - 2026-11-02
 
 Local worker pools that hold up under faults and load, a lighter terminal under heavy workflow load, and workflows that can work in any repository's worktree.
