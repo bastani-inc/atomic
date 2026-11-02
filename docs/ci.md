@@ -681,27 +681,32 @@ when the action commit is pinned.
 
 ### Dependabot and the pi sync
 
-Atomic carries pi's `ai`, `coding-agent` and `mcp` packages and consumes pi's
-published `@earendil-works/*` packages, so many of its dependencies are also
-declared by upstream pi. Those dependencies move only with a pi sync. The root
-npm entry in `.github/dependabot.yml` ignores each of them by name, with no
-`versions` or `update-types` qualifier, so Dependabot proposes none of their
+Atomic carries pi's `ai`, `coding-agent` and `mcp` packages, and its root
+manifest plays the role of pi's root. A dependency that pi declares in one of
+those four manifests moves only with a pi sync. The root npm entry in
+`.github/dependabot.yml` ignores each such dependency that an Atomic manifest
+(root or `packages/*/package.json`) also declares, by name and with no
+`versions` or `update-types` qualifier, so Dependabot proposes none of its
 updates. A Dependabot bump of one of them puts Atomic on a version pi does not
 run, and the next sync then has to reconcile or undo it: typebox (#4206),
 vitest (#4209) and minimatch (#4228, #4229) were all proposed and closed for
-that reason.
+that reason. pi's own `@earendil-works/*` packages fall under the same rule,
+because pi's `ai` and `coding-agent` manifests declare them.
 
-The list is every dependency name that an Atomic manifest (root or
-`packages/*/package.json`) shares with pi's root or `packages/*/package.json`,
-plus the `@earendil-works/*` wildcard for pi's own packages. pi's Rust daemon
-crate is not carried, so the Cargo entry has no such rules. When a sync adds or
-drops a shared dependency, update the list in the same change: compare the
-dependency names in `git show pi/main:package.json` and
-`git show pi/main:packages/<name>/package.json` with Atomic's manifests.
-`test/ci/dependabot-pi-sync-contract.test.ts` fails if an ignored name is no
-longer declared by any Atomic manifest, if an Atomic workspace depends on an
-`@earendil-works/*` package the rules miss, or if a rule is narrowed to some
-versions or update types.
+The rule holds even where Atomic is ahead of pi today: `@biomejs/biome` is
+declared at both roots and Atomic runs a newer one, but it still moves with a
+sync, or by a deliberate manual bump, not by Dependabot. A dependency that pi
+declares only in a package Atomic does not carry (for example `tui` or
+`schema`) is not ignored: no sync would ever move it. pi's Rust daemon crate is
+not carried either, so the Cargo entry has no such rules.
+
+`test/fixtures/pi-carried-dependencies.json` records the dependency names in
+pi's four carried manifests at a given pi commit.
+`test/ci/dependabot-pi-sync-contract.test.ts` requires the ignore list to equal
+exactly the names that snapshot shares with Atomic's manifests, each ignored by
+name for every version. On each pi sync, run
+`git fetch pi main && node scripts/snapshot-pi-dependencies.mjs`, then add or
+remove ignore entries until the contract test passes; it prints the difference.
 
 Ignore rules also suppress Dependabot security updates for these names. An
 advisory against one of them is handled by a pi sync that carries the fix or,
