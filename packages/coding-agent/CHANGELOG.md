@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A workflow run no longer keeps the live session of every stage it completed in memory until the whole run ends. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` gives its session back as soon as it completes, and one run with `ctx.stage` once the workflow no longer holds its stage context; its saved transcript still opens from the graph, `/workflow attach` or the stage chat. A session hosting long runs with hundreds of completed stages held gigabytes this way, and the garbage collection that memory caused made the interactive TUI, `/tasks` and queued messages slow to respond.
+- A workflow run no longer keeps the live session of every stage it completed in memory until the whole run ends. A stage run with `ctx.task`, `ctx.chain` or `ctx.parallel` gives its session back as soon as it completes, and one run with `ctx.stage` once the workflow no longer holds its stage context; its saved transcript still opens from the graph, `/workflow attach` or the stage chat. A session hosting long runs with hundreds of completed stages held gigabytes this way, and the garbage collection that memory caused made the interactive TUI, `/tasks` and queued messages slow to respond. ([#4166](https://github.com/bastani-inc/atomic/pull/4166))
 
 ## [0.9.61] - 2026-11-02
 
