@@ -13,6 +13,7 @@ import {
 	QuarantinedCapacityError,
 	REAP_KILL_GRACE_MS,
 	REAP_TERM_GRACE_MS,
+	RELEASED_PERMIT_RETENTION,
 	SqlResourceAdmission,
 	STAGE_START_SPACING_MS,
 } from "../../packages/workflows/src/workers/resource-admission.js";
@@ -283,40 +284,42 @@ test("a launch whose attempt lease lapsed under load waits for the renewal inste
 	}
 });
 
-for (const [label, fence] of [
-	[
-		"fenced",
-		"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'abandoned waiter fenced' WHERE state = 'waiting'",
-	],
-	["fenced and then pruned from history", "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"],
-] as const) {
-	test(`a live waiter ${label} after its owner lease lapsed under load rejoins the queue instead of failing (#4179)`, async () => {
-		const f = await fixture();
-		try {
-			const admission = await SqlResourceAdmission.open(f.journals[0]!, {
-				root: "root",
-				holder: "worker",
-				limits: { session: 1 },
-			});
-			const release = await admission.acquire("session");
-			const waiter = admission.acquire("session");
-			await waitForReason(admission, "root:root session");
-			// What another worker's reconcile does to a waiter whose owner lease lapsed while its process stalled.
-			await f.databases[1]!.run(fence);
-			await release();
-			const releaseWaiter = await waiter;
-			assert.deepEqual(
-				(await admission.inspect()).filter((row) => row.state === "granted").map((row) => row.kind),
-				["session"],
-			);
-			await releaseWaiter();
-		} finally {
-			await f.close();
-		}
-	});
+const FENCE_WAITERS =
+	"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'abandoned waiter fenced' WHERE state = 'waiting'";
+
+async function rejection(admission: Promise<unknown>): Promise<unknown> {
+	return admission.then(
+		() => assert.fail("a waiter released for good must not be granted"),
+		(caught: unknown) => caught,
+	);
 }
 
-test("forty waiters keep their admissions while their waiting permits are fenced and pruned over and over (#4179)", async () => {
+test("a live waiter fenced after its owner lease lapsed under load rejoins the queue instead of failing (#4179)", async () => {
+	const f = await fixture();
+	try {
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+			root: "root",
+			holder: "worker",
+			limits: { session: 1 },
+		});
+		const release = await admission.acquire("session");
+		const waiter = admission.acquire("session");
+		await waitForReason(admission, "root:root session");
+		// What another worker's reconcile does to a waiter whose owner lease lapsed while its process stalled.
+		await f.databases[1]!.run(FENCE_WAITERS);
+		await release();
+		const releaseWaiter = await waiter;
+		assert.deepEqual(
+			(await admission.inspect()).filter((row) => row.state === "granted").map((row) => row.kind),
+			["session"],
+		);
+		await releaseWaiter();
+	} finally {
+		await f.close();
+	}
+});
+
+test("forty waiters keep their admissions while their waiting permits are fenced over and over (#4179)", async () => {
 	const f = await fixture();
 	let fencing = true;
 	try {
@@ -326,12 +329,8 @@ test("forty waiters keep their admissions while their waiting permits are fenced
 			),
 		);
 		const fencer = (async () => {
-			for (let round = 0; fencing; round += 1) {
-				await f.databases[1]!.run(
-					round % 3 === 2
-						? "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"
-						: "UPDATE wf_runs_resource_permits SET state = 'released', reason = 'abandoned waiter fenced' WHERE state = 'waiting'",
-				);
+			while (fencing) {
+				await f.databases[1]!.run(FENCE_WAITERS);
 				await sleep(5);
 			}
 		})();
@@ -355,7 +354,71 @@ test("forty waiters keep their admissions while their waiting permits are fenced
 	}
 });
 
-test("a waiter refused for a reason other than a lapsed owner lease is a retryable fault of the pool (#4179)", async () => {
+test("history pruning keeps a fenced waiter's permit while its owner may be alive, then prunes it (#4179)", async () => {
+	const f = await fixture();
+	try {
+		const admission = await SqlResourceAdmission.open(f.journals[0]!, { root: "root", holder: "worker" });
+		const release = await admission.acquire("session");
+		const owner = (await admission.inspect())[0]?.owner;
+		assert.ok(owner);
+		const insert = "INSERT INTO wf_runs_resource_permits(operation, root, holder, kind, state, reason, owner)";
+		await f.databases[0]!.run(
+			`${insert} VALUES ('fenced-waiter', 'root', 'worker', 'session', 'released', 'abandoned waiter fenced', ?)`,
+			owner,
+		);
+		for (let index = 0; index < RELEASED_PERMIT_RETENTION + 50; index += 1)
+			await f.databases[0]!.run(
+				`${insert} VALUES (?, 'root', 'other', 'session', 'released', 'resource cleanup confirmed', NULL)`,
+				`history-${index}`,
+			);
+		const fencedWaiter = async () => (await admission.inspect()).some((row) => row.operation === "fenced-waiter");
+
+		await admission.reconcile();
+		assert.equal(await fencedWaiter(), true, "kept while its owner's lease is current");
+		assert.equal(
+			(await admission.inspect()).filter((row) => row.operation.startsWith("history-")).length,
+			RELEASED_PERMIT_RETENTION,
+		);
+
+		await f.databases[0]!.run("UPDATE wf_runs_resource_owners SET expires_at = 0 WHERE id = ?", owner);
+		await admission.reconcile();
+		assert.equal(await fencedWaiter(), false, "pruned once its owner has been gone longer than the retention");
+		await release();
+	} finally {
+		await f.close();
+	}
+});
+
+for (const [label, release] of [
+	[
+		"released for a host reboot",
+		"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'host reboot confirmed' WHERE state = 'waiting'",
+	],
+	["gone from history", "DELETE FROM wf_runs_resource_permits WHERE state = 'waiting'"],
+] as const) {
+	test(`a waiter whose permit was ${label} is refused as a retryable fault of the pool (#4179)`, async () => {
+		const f = await fixture();
+		try {
+			const admission = await SqlResourceAdmission.open(f.journals[0]!, {
+				root: "root",
+				holder: "worker",
+				limits: { session: 1 },
+			});
+			const releaseHolder = await admission.acquire("session");
+			const waiter = admission.acquire("session");
+			await waitForReason(admission, "root:root session");
+			await f.databases[1]!.run(release);
+			const error = await rejection(waiter);
+			assert.ok(isRetryableWorkflowError(error));
+			assert.match(String(error), /Stale resource admission attempt: the admission holder was stopped/u);
+			await releaseHolder();
+		} finally {
+			await f.close();
+		}
+	});
+}
+
+test("stopping a holder whose waiter was just fenced for a lapsed owner lease keeps that waiter refused (#4179)", async () => {
 	const f = await fixture();
 	try {
 		const admission = await SqlResourceAdmission.open(f.journals[0]!, {
@@ -363,19 +426,17 @@ test("a waiter refused for a reason other than a lapsed owner lease is a retryab
 			holder: "worker",
 			limits: { session: 1 },
 		});
-		const release = await admission.acquire("session");
+		const releaseHolder = await admission.acquire("session");
 		const waiter = admission.acquire("session");
 		await waitForReason(admission, "root:root session");
-		await f.databases[1]!.run(
-			"UPDATE wf_runs_resource_permits SET state = 'released', reason = 'host reboot confirmed' WHERE state = 'waiting'",
-		);
-		const error = await waiter.then(
-			() => assert.fail("a waiter released for good must not be granted"),
-			(caught: unknown) => caught,
-		);
+		const pool = await SqlResourceAdmission.open(f.journals[1]!, { root: "root", holder: "coordinator" });
+		// The stop's own reconcile can fence the waiter first, when its owner lease lapsed; the stop must still hold.
+		await f.databases[1]!.run(FENCE_WAITERS);
+		await pool.releaseStoppedSessions("worker");
+		await releaseHolder();
+		const error = await rejection(waiter);
 		assert.ok(isRetryableWorkflowError(error));
-		assert.match(String(error), /Stale resource admission attempt/u);
-		await release();
+		assert.match(String(error), /holder was stopped \(worker exit confirmed\)/u);
 	} finally {
 		await f.close();
 	}

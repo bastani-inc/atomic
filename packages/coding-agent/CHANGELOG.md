@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Children on a local worker pool no longer fail with `Resource admission holder was stopped` under heavy load. A waiting resource admission (a stage session, subagent or process start) whose owner lease lapsed while its process stalled was fenced by another worker's cleanup, and the next pass of its wait failed the child. A waiter holds no capacity, so a live one now rejoins the queue, including after its fenced permit was pruned from history. An admission the pool released for good, for example after its worker exited, is now a retryable `stale_work_lease` fault, replayed within the child's attempt limit, rather than a failure of the child's own work. ([#4179](https://github.com/bastani-inc/atomic/issues/4179))
+- Children on a local worker pool no longer fail with `Resource admission holder was stopped` under heavy load. A waiting resource admission (a stage session, subagent or process start) whose owner lease lapsed while its process stalled was fenced by another worker's cleanup, and the next pass of its wait failed the child. A waiter holds no capacity, so a live one now rejoins the queue. History pruning keeps a fenced waiter's permit for 10 minutes after its owner's lease lapsed, so it can still be taken back. An admission the pool released for good, for example after its worker exited, or whose permit is gone, is now a retryable `stale_work_lease` fault, replayed within the child's attempt limit, rather than a failure of the child's own work; stopping a worker also keeps its just-fenced waiters stopped. ([#4179](https://github.com/bastani-inc/atomic/issues/4179))
 
 ## [0.9.61] - 2026-11-02
 

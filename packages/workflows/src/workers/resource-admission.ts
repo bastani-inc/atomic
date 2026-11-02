@@ -67,6 +67,12 @@ export class QuarantinedCapacityError extends WorkflowInfrastructureError {
 
 /** A waiter whose owner `reconcile` saw dead or with a lapsed lease. A live owner's waiter rejoins the queue (#4179). */
 const FENCED_WAITER_REASON = "abandoned waiter fenced";
+/**
+ * How long after its owner's lease lapsed a fenced waiter's permit is kept out of history pruning, so a process that
+ * stalled that long can still take it back. A waiter whose permit is gone is refused, never recreated: the permit may
+ * have recorded a stop.
+ */
+const FENCED_WAITER_RETENTION_MS = 10 * 60_000;
 
 /**
  * A waiting admission whose permit the pool released for good while it waited: its holder was stopped (worker exit,
@@ -335,8 +341,27 @@ export class SqlResourceAdmission {
 				if (updated.changes !== 1) throw new Error("Resource process permit is no longer held");
 			});
 		};
-		const insertWaiting = (tx: SqliteExecutor) =>
-			tx.run(
+		/**
+		 * Keeps this waiter queued. `reconcile` fences a waiter whose owner lease lapsed, which a live process that stalls
+		 * under load can let happen. A waiter holds no capacity, so this live one (its owner lease was just renewed)
+		 * rejoins the queue in the same transaction it may be granted in (#4179). A permit released for any other reason,
+		 * or gone from history, stays released, and the admission is refused as a fault of the pool.
+		 */
+		const keepWaiting = async (tx: SqliteExecutor): Promise<void> => {
+			const permit = await tx.get(`SELECT state, reason FROM ${this.permits} WHERE operation = ?`, operation);
+			if (permit?.state === "released" && permit.reason === FENCED_WAITER_REASON)
+				await tx.run(`UPDATE ${this.permits} SET state = 'waiting', reason = NULL WHERE operation = ?`, operation);
+			else if (permit === undefined) throw new AdmissionHolderStoppedError("permit no longer recorded");
+			else if (permit.state !== "waiting")
+				throw new AdmissionHolderStoppedError(permit.reason === null ? undefined : String(permit.reason));
+		};
+		await this.storage.transaction(async (tx) => {
+			await tx.run(
+				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
+				OWNER_LEASE_MS,
+				this.owner,
+			);
+			await tx.run(
 				`INSERT INTO ${this.permits}(operation, root, holder, kind, state, owner, attempt) VALUES (?, ?, ?, ?, 'waiting', ?, ?)`,
 				operation,
 				this.options.root,
@@ -351,28 +376,6 @@ export class SqlResourceAdmission {
 						})
 					: null,
 			);
-		/**
-		 * Keeps this waiter queued. `reconcile` fences a waiter whose owner lease lapsed, which a live process that stalls
-		 * under load can let happen, and a fenced permit may then be pruned from history. A waiter holds no capacity, so
-		 * this live one (its owner lease was just renewed) rejoins the queue in the same transaction it is granted in
-		 * (#4179). A permit the pool released for any other reason stays released, and the admission is refused as a
-		 * fault of the pool.
-		 */
-		const keepWaiting = async (tx: SqliteExecutor): Promise<void> => {
-			const permit = await tx.get(`SELECT state, reason FROM ${this.permits} WHERE operation = ?`, operation);
-			if (permit === undefined) await insertWaiting(tx);
-			else if (permit.state === "released" && permit.reason === FENCED_WAITER_REASON)
-				await tx.run(`UPDATE ${this.permits} SET state = 'waiting', reason = NULL WHERE operation = ?`, operation);
-			else if (permit.state !== "waiting")
-				throw new AdmissionHolderStoppedError(permit.reason === null ? undefined : String(permit.reason));
-		};
-		await this.storage.transaction(async (tx) => {
-			await tx.run(
-				`UPDATE ${this.owners} SET expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + ? WHERE id = ?`,
-				OWNER_LEASE_MS,
-				this.owner,
-			);
-			await insertWaiting(tx);
 		});
 		// Since when this admission has been blocked only by capacity that quarantined permits hold.
 		let quarantinedSince: number | undefined;
@@ -535,8 +538,10 @@ export class SqlResourceAdmission {
 			);
 			if (live.some((permit) => this.needsFencing(permit, fence))) return true;
 			return !!(await db.get(
-				`SELECT 1 AS prunable FROM ${this.permits} WHERE +state = 'released' AND ticket <= ${this.prunableBefore} LIMIT 1`,
+				`SELECT 1 AS prunable FROM ${this.permits} r WHERE ${this.prunable} LIMIT 1`,
 				RELEASED_PERMIT_RETENTION,
+				FENCED_WAITER_REASON,
+				FENCED_WAITER_RETENTION_MS,
 			));
 		});
 		if (!pending) return;
@@ -603,11 +608,14 @@ export class SqlResourceAdmission {
 				ANONYMOUS_REASON,
 				ANONYMOUS_REASON,
 			);
-			// Released permits are terminal: nothing reads them but `inspect`, so only recent history is kept.
+			// Released permits are terminal: nothing reads them but `inspect`, so only recent history is kept. A waiter
+			// fenced for a lapsed owner lease is kept while its owner may still be alive to take it back (#4179).
 			await tx.run(
-				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} WHERE +state = 'released'
-				AND ticket <= ${this.prunableBefore} ORDER BY ticket LIMIT ?)`,
+				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} r WHERE ${this.prunable}
+				ORDER BY ticket LIMIT ?)`,
 				RELEASED_PERMIT_RETENTION,
+				FENCED_WAITER_REASON,
+				FENCED_WAITER_RETENTION_MS,
 				RELEASED_PERMIT_PRUNE_BATCH,
 			);
 		});
@@ -615,6 +623,14 @@ export class SqlResourceAdmission {
 	/** The newest released ticket beyond the retained history, or NULL while there is nothing to prune. */
 	private get prunableBefore(): string {
 		return `(SELECT ticket FROM ${this.permits} WHERE state = 'released' ORDER BY ticket DESC LIMIT 1 OFFSET ?)`;
+	}
+	/**
+	 * Released permits `reconcile` may delete, as a condition on alias `r`; binds the retention, the fenced-waiter reason
+	 * and its retention. A fenced waiter whose owner renewed its lease within that retention may still rejoin the queue.
+	 */
+	private get prunable(): string {
+		return `+r.state = 'released' AND r.ticket <= ${this.prunableBefore} AND (r.reason IS NOT ? OR NOT EXISTS
+			(SELECT 1 FROM ${this.owners} o WHERE o.id = r.owner AND o.expires_at >= ${NOW_MS} - ?))`;
 	}
 	/** Whether the write pass of `reconcile` would change this live permit; mirrors its statements one for one. */
 	private needsFencing(
@@ -651,6 +667,14 @@ export class SqlResourceAdmission {
 				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state IN ('waiting', 'granted') AND (kind = 'session' OR state = 'waiting')`,
 				this.options.root,
 				holder,
+			);
+			// The reconcile above may have fenced this holder's waiters for a lapsed owner lease, which a live waiter
+			// would take back (#4179): record the stop on them too, so they stay released.
+			await tx.run(
+				`UPDATE ${this.permits} SET reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state = 'released' AND reason = ?`,
+				this.options.root,
+				holder,
+				FENCED_WAITER_REASON,
 			);
 			// A quarantined permit keeps its reason; it is still counted, since its cleanup is still unconfirmed.
 			await tx.run(
