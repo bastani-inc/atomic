@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake sleep for the release script tests: records each requested delay in
+# $RELEASE_FAKE_STATE/sleep.log and returns at once.
+set -euo pipefail
+printf '%s\n' "$*" >>"${RELEASE_FAKE_STATE:?RELEASE_FAKE_STATE is required}/sleep.log"
