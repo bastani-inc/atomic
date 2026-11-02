@@ -12,14 +12,17 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { test, vi } from "vitest";
+import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { releaseDurableBackendsHeldBy } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import workflowExtension from "../../packages/workflows/src/extension/index.js";
 import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/runs/foreground/stage-session-heartbeat.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
+import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { sleep } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend } from "../helpers/store-backend.js";
@@ -86,60 +89,26 @@ test.skipIf(process.platform === "win32")(
 		const agentDir = join(root, "home/.atomic/agent");
 		const journalPath = join(root, "journal.sqlite");
 		const definition = join(project, ".atomic/workflows/pooled-root.ts");
-		await mkdir(dirname(definition), { recursive: true });
-		await mkdir(agentDir, { recursive: true });
-		await writeFile(definition, pooledRootSource(root));
-		process.chdir(project);
-		vi.stubEnv("HOME", join(root, "home"));
-		vi.stubEnv("USERPROFILE", join(root, "home"));
-		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
-		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
-		vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", journalPath);
-		// The session opens the SQLite journal its settings select, which every worker process opens too.
-		configureCurrentTestStoreBackend(undefined);
-		const { runtime: modelRuntime } = await registeredDecisionRuntime(() => {
-			throw new Error("no model is asked");
-		});
-		const settingsManager = SettingsManager.inMemory({
-			workflows: {
-				// Selected by settings, not passed as an object: every worker process opens the same journal.
-				journal: { path: journalPath },
-				localWorkers: { count: CHILDREN, definitions: [{ path: childPath, exportName: "resumedChild" }] },
-			},
-			compaction: { enabled: false },
-			sessionSummary: { enabled: false },
-		});
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: project,
-			agentDir,
-			settingsManager,
-			builtinPackagePaths: [],
-			noExtensions: true,
-			extensionFactories: [(pi) => workflowExtension(pi as unknown as ExtensionAPI)],
-		});
-		await resourceLoader.reload();
-		const { session } = await createAgentSession({
-			cwd: project,
-			agentDir,
-			modelRuntime,
-			model: decisionModel,
-			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
-			settingsManager,
-			resourceLoader,
-			sessionManager: SessionManager.inMemory(project),
-		});
-		const store = currentWorkflowStore();
-		const findRoot = () => store.runs().find((run) => run.name === "pooled-root");
-		const database = new DatabaseSync(journalPath, { readOnly: false });
+		// The session's own workflow store, read once the session exists.
+		let store: Store | undefined;
+		const findRoot = () => store?.runs().find((run) => run.name === "pooled-root");
+		let session: AgentSession | undefined;
+		let database: DatabaseSync | undefined;
+		const db = (): DatabaseSync => {
+			assert.ok(database, "the journal is open");
+			return database;
+		};
 		const rootLease = (runId: string): RootLease => {
-			const row = database
-				.prepare("SELECT holder_id, epoch, renewed_at FROM wf_leases WHERE run_id = ?")
-				.get(runId) as { holder_id: string; epoch: number; renewed_at: number };
+			const row = db().prepare("SELECT holder_id, epoch, renewed_at FROM wf_leases WHERE run_id = ?").get(runId) as {
+				holder_id: string;
+				epoch: number;
+				renewed_at: number;
+			};
 			return { holder: row.holder_id, epoch: Number(row.epoch), renewedAt: Number(row.renewed_at) };
 		};
 		const workLeases = (runId: string): WorkLease[] =>
 			(
-				database
+				db()
 					.prepare(
 						"SELECT id, state, generation, worker, epoch, expires_at FROM wf_runs_work WHERE root = ? ORDER BY id",
 					)
@@ -161,7 +130,52 @@ test.skipIf(process.platform === "win32")(
 			}));
 		const startedChildren = async () => (await readdir(root)).filter((name) => name.startsWith("started-"));
 		const budget = AbortSignal.timeout(POOL.waitMs + RENEWAL_WAIT_MS);
+		// Everything from here on is undone in `finally`, including a setup step that throws.
 		try {
+			await mkdir(dirname(definition), { recursive: true });
+			await mkdir(agentDir, { recursive: true });
+			await writeFile(definition, pooledRootSource(root));
+			process.chdir(project);
+			vi.stubEnv("HOME", join(root, "home"));
+			vi.stubEnv("USERPROFILE", join(root, "home"));
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+			vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+			vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", journalPath);
+			// The session opens the SQLite journal its settings select, which every worker process opens too.
+			configureCurrentTestStoreBackend(undefined);
+			const { runtime: modelRuntime } = await registeredDecisionRuntime(() => {
+				throw new Error("no model is asked");
+			});
+			const settingsManager = SettingsManager.inMemory({
+				workflows: {
+					// Selected by settings, not passed as an object: every worker process opens the same journal.
+					journal: { path: journalPath },
+					localWorkers: { count: CHILDREN, definitions: [{ path: childPath, exportName: "resumedChild" }] },
+				},
+				compaction: { enabled: false },
+				sessionSummary: { enabled: false },
+			});
+			const resourceLoader = new DefaultResourceLoader({
+				cwd: project,
+				agentDir,
+				settingsManager,
+				builtinPackagePaths: [],
+				noExtensions: true,
+				extensionFactories: [(pi) => workflowExtension(pi as unknown as ExtensionAPI)],
+			});
+			await resourceLoader.reload();
+			({ session } = await createAgentSession({
+				cwd: project,
+				agentDir,
+				modelRuntime,
+				model: decisionModel,
+				builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+				settingsManager,
+				resourceLoader,
+				sessionManager: SessionManager.inMemory(project),
+			}));
+			store = currentWorkflowStore();
+			database = new DatabaseSync(journalPath);
 			database.exec("PRAGMA busy_timeout = 5000");
 			await session.bindExtensions({});
 			const launchRunner = session.extensionRunner;
@@ -214,14 +228,18 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(store.runs().filter((run) => run.parentRunId === rootId).length, CHILDREN);
 			assert.equal((await startedChildren()).length, CHILDREN, "no child ran again on another worker");
 		} finally {
-			if (findRoot()?.endedAt === undefined) await writeFile(join(root, "release"), "").catch(() => {});
-			await waitUntil(
-				() => findRoot()?.endedAt !== undefined,
-				"the pooled root to settle before disposal",
-				AbortSignal.timeout(POOL.waitMs),
-			).catch(() => {});
-			database.close();
-			await session.dispose();
+			// Let a still-running root finish, then stop its pool and worker processes with the session's backend.
+			if (findRoot() !== undefined && findRoot()?.endedAt === undefined) {
+				await writeFile(join(root, "release"), "").catch(() => {});
+				await waitUntil(
+					() => findRoot()?.endedAt !== undefined,
+					"the pooled root to settle before disposal",
+					AbortSignal.timeout(POOL.waitMs),
+				).catch(() => {});
+			}
+			database?.close();
+			await session?.dispose();
+			if (store !== undefined) await releaseDurableBackendsHeldBy(store).catch(() => {});
 			vi.unstubAllEnvs();
 			process.chdir(cwd);
 			await rm(root, { recursive: true, force: true });
