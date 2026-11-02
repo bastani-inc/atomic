@@ -22,6 +22,90 @@ import {
 import { DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU, type WorkflowExecutionResources } from "./public-options.js";
 import { SqlResourceAdmission } from "./resource-admission.js";
 
+/**
+ * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
+ * and processes, and no recorded step or queued child depends on them, so a resume runs with the current ones and the
+ * root records those (#4196). `startupTimeoutMs`, `leaseMs` and `maxLoadPerCpu` are never saved.
+ */
+const RESUMABLE_SETTINGS: ReadonlySet<string> = new Set([
+	"localWorkers.count",
+	"admission.limits.session",
+	"admission.limits.process",
+	"admission.host.maxLoadPerCpu",
+	"admission.host.minFreeMemoryBytes",
+]);
+
+function shown(value: unknown): string {
+	return value === undefined ? "unset" : JSON.stringify(value);
+}
+
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Each saved setting that differs from the current one, by its settings path, and whether a resume can apply it. */
+function settingChanges(
+	path: string,
+	saved: unknown,
+	current: unknown,
+	changes: { readonly description: string; readonly resumable: boolean }[],
+): void {
+	if (isDeepStrictEqual(saved, current)) return;
+	if ((saved === undefined || isPlainRecord(saved)) && (current === undefined || isPlainRecord(current))) {
+		for (const key of new Set([...Object.keys(saved ?? {}), ...Object.keys(current ?? {})]))
+			settingChanges(`${path}.${key}`, saved?.[key], current?.[key], changes);
+		return;
+	}
+	changes.push({
+		description: `${path} changed from ${shown(saved)} to ${shown(current)}`,
+		resumable: RESUMABLE_SETTINGS.has(path),
+	});
+}
+
+/**
+ * What changed between a root's saved local worker and admission settings and the ones it resumes with. A worker
+ * definition is named by its module path and export; its digest covers only that entry module, not what it imports.
+ */
+function resourceChanges(
+	saved: WorkflowExecutionResources,
+	current: WorkflowExecutionResources,
+): { readonly description: string; readonly resumable: boolean }[] {
+	const changes: { description: string; resumable: boolean }[] = [];
+	if ((saved.localWorkers === undefined) !== (current.localWorkers === undefined))
+		changes.push({
+			description: `local workers were turned ${current.localWorkers === undefined ? "off" : "on"}`,
+			resumable: false,
+		});
+	else {
+		// Definitions are compared below, by name and entry module, so a reordered list is not a change.
+		settingChanges(
+			"localWorkers",
+			saved.localWorkers && { ...saved.localWorkers, definitions: undefined },
+			current.localWorkers && { ...current.localWorkers, definitions: undefined },
+			changes,
+		);
+	}
+	const named = (list: WorkflowExecutionResources["definitions"]) =>
+		new Map((list ?? []).map((source) => [`${source.path}#${source.exportName}`, source.digest]));
+	const before = named(saved.definitions);
+	const after = named(current.definitions);
+	for (const [name, digest] of before) {
+		const now = after.get(name);
+		if (now === undefined)
+			changes.push({ description: `worker definition ${name} is no longer listed`, resumable: false });
+		else if (now !== digest)
+			changes.push({
+				description: `the entry module of worker definition ${name} was edited (sha256 ${digest.slice(0, 12)} to ${now.slice(0, 12)})`,
+				resumable: false,
+			});
+	}
+	for (const name of after.keys())
+		if (!before.has(name)) changes.push({ description: `worker definition ${name} was added`, resumable: false });
+	settingChanges("admission", saved.admission, current.admission, changes);
+	settingChanges("coordinator", saved.coordinator, current.coordinator, changes);
+	return changes;
+}
+
 export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettings): RunOpts {
 	const configured = settings?.workflows;
 	if (!configured || Array.isArray(configured)) return options;
@@ -37,8 +121,14 @@ export async function restoreWorkerOptions(backend: DurableWorkflowBackend, opti
 	if (source !== undefined) await backend.hydrateWorkflow(source);
 	const original = source === undefined ? undefined : backend.getWorkflow(source);
 	const saved = original?.resources;
-	if (original && !saved && (options.localWorkers || options.admission))
-		throw new Error("Immutable resource configuration cannot change on an existing root");
+	if (original && !saved && (options.localWorkers || options.admission)) {
+		const set = [options.localWorkers && "localWorkers", options.admission && "admission"]
+			.filter(Boolean)
+			.join(" and ");
+		throw new Error(
+			`Root ${source} started without local workers or resource admission, and this resume sets ${set}: immutable resource configuration cannot change on an existing root. Resume it without them, or start a new run.`,
+		);
+	}
 	return {
 		...options,
 		localWorkers: options.localWorkers ?? saved?.localWorkers,
@@ -138,14 +228,24 @@ export async function activatePublicPool(
 		throw new Error(
 			`This root's local workers keep their work queue and leases in the pool database ${saved.database} on this machine, but the journal is now selected in a way that uses ${resources.coordinator.database}: its adapter, options, prefix or the agent directory changed. Resume the root with the journal selected as it was when the root started.`,
 		);
-	if (options.effectiveResources && !isDeepStrictEqual(options.effectiveResources, resources))
-		throw new Error("Worker definition compatibility or immutable resource configuration changed");
+	const refused =
+		options.effectiveResources === undefined
+			? []
+			: resourceChanges(options.effectiveResources, resources).filter((change) => !change.resumable);
+	if (refused.length > 0)
+		throw new Error(
+			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.`,
+		);
+	// A resume runs with the current pool size and root limits, and the root records them (#4196).
 	options.effectiveResources = resources;
+	// The root's own limits are saved for its workers by the root itself, once it holds its lease: see
+	// `admitWorkflowSessions`. This check comes before the root is admitted, so it leaves them alone.
 	if (resources.admission)
 		await SqlResourceAdmission.open(poolJournal, {
 			...resources.admission,
 			root: options.runId!,
 			holder: "preflight",
+			rootLimits: "unchanged",
 		});
 	if (!localWorkers) return;
 	const definitions = await Promise.all(
