@@ -107,6 +107,8 @@ export interface RecordStagePromptAnswerOptions {
 
 export interface Store {
 	runs(): readonly RunSnapshot[];
+	/** The run with this id, found without scanning the other runs. */
+	run(runId: string): RunSnapshot | undefined;
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;

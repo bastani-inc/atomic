@@ -881,10 +881,7 @@ export class LocalWorkerPool {
 	 * answer came back refused (#4022); later publications apply it otherwise.
 	 */
 	private applyHeldAnswer(runId: string, stageId: string, heldGeneration: number): void {
-		const stage = this.store
-			?.runs()
-			.find((run) => run.id === runId)
-			?.stages.find((candidate) => candidate.id === stageId);
+		const stage = this.store?.run(runId)?.stages.find((candidate) => candidate.id === stageId);
 		if (stage === undefined || this.closed) return;
 		// The root's copy of the refusing attempt's stage shows the root's own answer, not the worker's state.
 		const generation = stage.workerExecution?.generation ?? 0;
@@ -955,11 +952,7 @@ export class LocalWorkerPool {
 		const key = JSON.stringify([runId, stageId]);
 		let view = this.stageViews.get(key);
 		if (view === undefined) {
-			const stageName =
-				this.store
-					?.runs()
-					.find((run) => run.id === runId)
-					?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
+			const stageName = this.store?.run(runId)?.stages.find((stage) => stage.id === stageId)?.name ?? stageId;
 			const created: StageView = { key, holders: 0, opening: Promise.resolve(undefined) };
 			const transport = this.stageTransport((reason) => {
 				tracePooledWatch("root.view.watch-ended", { key, reason, current: this.stageViews.get(key) === created });
@@ -1029,10 +1022,9 @@ export class LocalWorkerPool {
 	 * view that delivers it and closes; a stage or run that ended reports what never arrived.
 	 */
 	private reconnectStageViews(): void {
-		const runs = this.store?.runs() ?? [];
 		const stageOf = (key: string) => {
 			const [runId, stageId] = JSON.parse(key) as [string, string];
-			const run = runs.find((candidate) => candidate.id === runId);
+			const run = this.store?.run(runId);
 			return { runId, stageId, run, stage: run?.stages.find((candidate) => candidate.id === stageId) };
 		};
 		const ended = (key: string): boolean => {
@@ -1127,7 +1119,7 @@ export class LocalWorkerPool {
 		};
 	}
 	private rootProjection(): PoolRootProjection | undefined {
-		const run = this.store?.runs().find((candidate) => candidate.id === this.root);
+		const run = this.root === undefined ? undefined : this.store?.run(this.root);
 		return run === undefined ? undefined : projectRootRun(run);
 	}
 	private rootRun(): { readonly rootRun?: PoolRootProjection } {
