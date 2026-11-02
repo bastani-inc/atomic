@@ -432,6 +432,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		}) as DurableWorkflowBackend;
 	try {
 		let controlRevision = -1;
+		/** Attempts this worker has run to their end, completed or fenced. */
+		let attempts = 0;
 		let controlState: PoolControl["state"] = "running";
 		let currentStore = createStore();
 		let activeController: AbortController | undefined;
@@ -701,8 +703,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					throw new WorkAttemptFencedError(poolFault);
 				}
 				// The child is done on this worker: what its run left open closes while the attempt still holds its lease,
-				// and the worker's stage registry forgets it before the worker serves another child (#4197).
+				// and the worker's stage registry forgets it before the worker serves another child (#4197). A session
+				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
 				await closeAttemptStages(stageControls, store, () => request({ kind: "renew" }));
+				writable = false;
 				await request({ kind: "complete", result });
 			} catch (error) {
 				if (!attemptFenced) throw error;
@@ -727,6 +731,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
 			attemptAdmission.release();
+			attempts++;
 			// The attempt's checkpoints stay in the journal; the worker's next attempt reads its own.
 			await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 			if (rootLeaseLost) break;
@@ -734,7 +739,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// grew to stays with it, whatever held it (#4197).
 			const rssBytes = process.memoryUsage.rss();
 			if (start.maxRssBytes !== undefined && rssBytes > start.maxRssBytes) {
-				await request({ kind: "recycle", rssBytes });
+				await request({ kind: "recycle", rssBytes, attempts });
 				process.stderr.write(
 					`atomic-workflows: local worker ${process.pid} ends between children: resident memory ${rssBytes} bytes is over localWorkers.maxWorkerRssBytes (${start.maxRssBytes}); the pool starts a fresh worker\n`,
 				);

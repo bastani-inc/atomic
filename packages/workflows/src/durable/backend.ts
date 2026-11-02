@@ -817,7 +817,8 @@ class JournalProjection {
 
 	/**
 	 * Counts a recorded checkpoint, as `recordCheckpoint` does, without keeping it in memory: the run's handle reads as
-	 * if it were recorded, and its reads do not find it.
+	 * if it were recorded, and its reads do not find it. Unlike `recordCheckpoint` it cannot tell a repeat, which it
+	 * never sees: a journal folds each checkpoint event once, keyed uniquely in its run.
 	 */
 	countCheckpoint(recorded: DurableCheckpoint): void {
 		const rec = this.workflows.get(recorded.workflowId);

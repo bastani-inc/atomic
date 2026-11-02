@@ -57,7 +57,7 @@ try {
 	if (ended < recycles) {
 		writeFileSync(counter, String(ended + 1));
 		// A pool that does not know the request refuses it; the worker ends all the same, as it would have.
-		await request({ kind: "recycle", rssBytes: 1 }).catch(() => {});
+		await request({ kind: "recycle", rssBytes: 1, attempts: 3 }).catch(() => {});
 		recycled = true;
 		process.disconnect();
 	} else {

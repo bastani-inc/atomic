@@ -1278,7 +1278,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			const ranged = keyRangeJournal(this.journal);
 			const ranges = ranged === undefined ? undefined : checkpointKeyRanges(selection);
 			if (ranged === undefined || ranges === undefined) {
-				// Without a key index the whole run is read once, keeping only the selected events.
+				// Without a key index the whole run is read once, keeping only the selected events. That is a read of
+				// the whole root per narrowing, so per claim for a worker; the worker journals Atomic opens are SQL.
 				for await (const entry of this.journal.read(runId)) {
 					if (entry.seq > throughSeq) break;
 					keep(entry);

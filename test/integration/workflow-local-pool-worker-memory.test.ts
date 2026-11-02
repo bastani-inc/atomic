@@ -10,6 +10,9 @@
  * As a backstop for memory a worker accumulates anyway, `localWorkers.maxWorkerRssBytes` replaces a worker that has
  * grown past it with a fresh one once its child ends. Those replacements are not crashes: however many workers end
  * that way, the pool keeps running.
+ *
+ * The pool forks the packaged worker bundle (`test/setup-packaged-local-worker.ts`), so these tests exercise worker
+ * sources only once `npm run build` in packages/coding-agent has rebuilt it.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -182,7 +185,12 @@ test.skipIf(process.platform === "win32")(
 			"each child ran once, from start to end",
 		);
 		assert.equal(new Set(starts.map((start) => start.pid)).size, 4, "each child ran on a fresh worker");
-		assert.deepEqual(health, [], "a worker replaced for its memory is no health event");
+		// One byte is below what any worker uses: the pool says so once, as a warning, and fails nothing.
+		assert.equal(health.length, 1, JSON.stringify(health));
+		assert.match(
+			health[0]!,
+			/maxWorkerRssBytes \(1 bytes\) is below the resident memory of a worker that ran one child/,
+		);
 		assert.deepEqual(logsLeft, [], "the logs of workers replaced for their memory went with them");
 	},
 	BUDGET.timeoutMs,

@@ -60,9 +60,10 @@ export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "fenced"; readonly fault?: string }
 	/**
 	 * The worker holds no attempt and is about to exit because its resident set size, `rssBytes`, passed its
-	 * `maxRssBytes`: a planned exit, not a crash, so the pool starts a replacement without counting it as a failure.
+	 * `maxRssBytes`, after running `attempts` attempts: a planned exit, not a crash, so the pool starts a replacement
+	 * without counting it as a failure.
 	 */
-	| { readonly kind: "recycle"; readonly rssBytes: number }
+	| { readonly kind: "recycle"; readonly rssBytes: number; readonly attempts: number }
 	| { readonly kind: "controlled"; readonly revision: number }
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }

@@ -486,6 +486,8 @@ export class PoolCoordinator {
 	private closed = false;
 	private closing?: Promise<void>;
 	private replacements = 0;
+	/** Whether the pool has said that its workers' memory limit replaces every worker after one child. */
+	private recycleLimitReported = false;
 	/** Set once the root's lease is gone: workers then end without counting as crashes, and none is replaced. */
 	private rootLeaseLost = false;
 	/** Settles once a late root renewal lands (true) or the root's lease is lost or the pool closes (false). */
@@ -1565,6 +1567,15 @@ export class PoolCoordinator {
 					if (message.kind === "recycle") {
 						if (slot.work) throw new Error("Worker holds an attempt");
 						slot.recycled = true;
+						// Past its limit after its first child, a worker shows the limit is below what any worker uses: every
+						// worker is then replaced after each child, which is correct but costs a worker start per child.
+						if (message.attempts <= 1 && !this.recycleLimitReported) {
+							this.recycleLimitReported = true;
+							this.port.send({
+								kind: "health",
+								message: `localWorkers.maxWorkerRssBytes (${options.maxWorkerRssBytes} bytes) is below the resident memory of a worker that ran one child (${message.rssBytes} bytes), so every worker is replaced after each child it runs; set it well above that`,
+							});
+						}
 						return;
 					}
 					if (message.kind === "claim") {
