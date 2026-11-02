@@ -98,6 +98,9 @@ export async function admitWorkflowSessions(
 		...config,
 		root: opts.parentRun?.rootRunId ?? opts.runId,
 		holder: randomUUID(),
+		// The root admits its sessions while it holds its lease, so it saves its limits here: a resume may have changed
+		// them, and its workers and children admit against what the root saved (#4196).
+		...(opts.parentRun === undefined ? { rootLimits: "replace" as const } : {}),
 	});
 	return withResourceAdmission(admission, () =>
 		callback({
