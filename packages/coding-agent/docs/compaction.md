@@ -164,6 +164,10 @@ Recoverable failure writes no boundary, schedules no continuation, and reports t
 
 A successful compaction may delete less than requested. The retry can still report a context overflow.
 
+### Planning time limit
+
+Automatic compaction (threshold, overflow recovery and post-tool preflight) gives model planning at most `compaction.planningTimeoutMs`, five minutes by default. The limit covers every planner request, same-model retry, overflow trim and borrowed fallback model. The per-request `streamDeadlineMs` cannot replace it: a planner that keeps streaming, for example long reasoning over a very large uncached transcript, never goes idle. When the limit runs out, Atomic aborts the in-flight request and treats planning as failed. Overflow recovery and post-tool preflight then start a fresh context window, so the active turn continues. Threshold auto-compaction fails with `Compaction planning timed out after <n> ms` and leaves the context unchanged. Manual compaction has no limit; press Escape to cancel it. Set the limit to `0` or `"disabled"` to turn it off.
+
 ### The fresh context window rung
 
 If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit. A region too small to plan is cleared only when known not to fit; a post-tool threshold crossing that still fits leaves it unchanged.

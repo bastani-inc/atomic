@@ -57,6 +57,12 @@ export interface CompactionRunRequest extends CompactionPlanOptions {
 	/** Per-model credentials; a borrowed candidate uses its own, never the session model's. */
 	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
 	signal?: AbortSignal;
+	/**
+	 * Wall-clock limit on model planning: every backend, planner request, retry, overflow trim
+	 * and borrowed fallback model. When it runs out, the in-flight request is aborted and the
+	 * ladder ends as if every planner had failed (#4198). Omitted or non-positive means no limit.
+	 */
+	planningTimeoutMs?: number;
 	/** Inherited by the planner and never modified across attempts. */
 	thinkingLevel: ThinkingLevel | undefined;
 	urgency: CompactionUrgency;
@@ -351,6 +357,52 @@ function freshResult(
 	};
 }
 
+/** The largest delay a platform timer accepts without clamping it to one millisecond. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * One run's planning time limit.
+ *
+ * `signal` aborts on caller cancellation or when the limit runs out; only the latter sets
+ * `expired`, so the ladder can tell a timeout (end planning, keep going) from cancellation
+ * (stop the whole run).
+ */
+interface PlanningTimeLimit {
+	readonly signal: AbortSignal | undefined;
+	expired(): boolean;
+	readonly outcome: TerminalPlannerOutcome;
+	dispose(): void;
+}
+
+function startPlanningTimeLimit(timeoutMs: number | undefined, signal: AbortSignal | undefined): PlanningTimeLimit {
+	const limitMs = timeoutMs !== undefined && Number.isFinite(timeoutMs) ? Math.floor(timeoutMs) : 0;
+	const outcome: TerminalPlannerOutcome = {
+		kind: "providerError",
+		message: `Compaction planning timed out after ${limitMs} ms`,
+	};
+	if (limitMs <= 0) return { signal, expired: () => false, outcome, dispose: () => {} };
+	const controller = new AbortController();
+	let expired = false;
+	const timer = setTimeout(
+		() => {
+			expired = true;
+			controller.abort(new Error(outcome.message));
+		},
+		Math.min(limitMs, MAX_TIMER_DELAY_MS),
+	);
+	const relayCancellation = () => controller.abort(signal?.reason);
+	signal?.addEventListener("abort", relayCancellation, { once: true });
+	return {
+		signal: controller.signal,
+		expired: () => expired,
+		outcome,
+		dispose: () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", relayCancellation);
+		},
+	};
+}
+
 /**
  * Produce one compacted transcript, tagged with the rung that produced it.
  *
@@ -362,21 +414,40 @@ function freshResult(
  * Unavailable credentials are ladder control flow, not an early throw: a
  * borrowed candidate with its own working credentials can still rank the lines,
  * and a load-bearing caller still reaches the credential-free fresh rung.
+ *
+ * `planningTimeoutMs` bounds the whole planning phase. A planner that keeps
+ * streaming never trips the per-request stream idle deadline, and retries,
+ * trims and borrowed models each repeat it, so without this limit a mid-turn
+ * compaction could hold the active turn for as long as the provider allowed.
  */
 export async function runVerbatimCompaction(
 	preparation: VerbatimCompactionPreparation,
 	model: Model<Api>,
 	request: CompactionRunRequest,
 ): Promise<CompactionRungResult> {
+	if (request.signal?.aborted) throw new Error("Compaction cancelled");
+	const timeLimit = startPlanningTimeLimit(request.planningTimeoutMs, request.signal);
+	try {
+		return await runCompactionLadder(preparation, model, request, timeLimit);
+	} finally {
+		timeLimit.dispose();
+	}
+}
+
+async function runCompactionLadder(
+	preparation: VerbatimCompactionPreparation,
+	model: Model<Api>,
+	request: CompactionRunRequest,
+	timeLimit: PlanningTimeLimit,
+): Promise<CompactionRungResult> {
 	const signal = request.signal;
-	if (signal?.aborted) throw new Error("Compaction cancelled");
 	let plannerUsage: Usage | undefined;
 	const plannerOptions = {
 		streamFn: request.streamFn,
 		sessionFilePath: request.sessionFilePath,
 		retry: request.retry,
 		callbacks: request.callbacks,
-		signal,
+		signal: timeLimit.signal,
 		onUsage: (usage: Usage) => {
 			plannerUsage = addUsage(plannerUsage, usage);
 		},
@@ -406,7 +477,7 @@ export async function runVerbatimCompaction(
 			const ranges = await planClassifierRanges(
 				preparation.region,
 				preparation.parameters,
-				(context) => classify(selection.model, context, { signal }),
+				(context) => classify(selection.model, context, { signal: timeLimit.signal }),
 				plannerOptions,
 			);
 			return {
@@ -415,14 +486,16 @@ export async function runVerbatimCompaction(
 			};
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			backendFailure = timeLimit.expired()
+				? timeLimit.outcome
+				: { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
 		}
 	}
 	if (selection.kind === "morph") {
 		try {
 			const ranges = await planMorphRanges(preparation.region, preparation.parameters, {
 				apiKey: await request.resolveMorphApiKey?.(),
-				signal,
+				signal: timeLimit.signal,
 				fetchFn: request.morphFetchFn,
 				onDiagnostics: (diagnostics) => writeMorphDiagnosticSidecar(request.sessionFilePath, diagnostics),
 			});
@@ -432,7 +505,9 @@ export async function runVerbatimCompaction(
 			};
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			backendFailure = timeLimit.expired()
+				? timeLimit.outcome
+				: { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
 		}
 	}
 	const primaryModel = selection.kind === "chat" ? selection.model : undefined;
@@ -456,12 +531,19 @@ export async function runVerbatimCompaction(
 		planner = { model: primaryModel, budget: primaryBudget, auth: primaryAuth.auth };
 	} else {
 		if (primaryModel) attempted.add(plannerAttemptKey({ model: primaryModel, budget: primaryBudget, auth: {} }));
-		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
+		planner = borrow && !timeLimit.expired() ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 	}
 
-	while (planner) {
-		const attempt = await planWithTrimming(preparation, planner, plannerOptions);
+	while (planner && !timeLimit.expired()) {
+		let attempt: PlannerAttempt;
+		try {
+			attempt = await planWithTrimming(preparation, planner, plannerOptions);
+		} catch (error) {
+			// The time limit aborted the in-flight request: end planning, not the run.
+			if (signal?.aborted || !timeLimit.expired()) throw error;
+			break;
+		}
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		if (attempt.kind === "planned") {
 			const plannerModel = borrowed ? borrowedIdentity(planner) : undefined;
@@ -519,11 +601,12 @@ export async function runVerbatimCompaction(
 			}
 		}
 		attempted.add(plannerAttemptKey(planner));
-		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
+		planner = borrow && !timeLimit.expired() ? await borrow(attempted, request.resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 	}
 
+	if (timeLimit.expired()) lastTerminal = timeLimit.outcome;
 	if (request.urgency !== "load_bearing") throw terminalError(lastTerminal);
 	return freshResult(preparation, hardInputLimit, plannerUsage);
 }

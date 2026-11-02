@@ -96,6 +96,43 @@ export function plannerScript(script: Record<string, ScriptedTurn[]>): { streamF
 	return { streamFn, calls };
 }
 
+/** A planner whose request never finishes on its own: it settles only when its signal aborts. */
+export function neverFinishingPlanner(): { streamFn: StreamFn; requests: () => number; aborted: () => number } {
+	let requests = 0;
+	let aborted = 0;
+	const streamFn = ((model: Model<Api>, _context: Context, options?: { signal?: AbortSignal }) => {
+		requests += 1;
+		const abortedMessage = (): AssistantMessage => {
+			aborted += 1;
+			return {
+				role: "assistant",
+				content: [],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "aborted",
+				timestamp: Date.now(),
+			} as AssistantMessage;
+		};
+		return {
+			result: () =>
+				new Promise<AssistantMessage>((resolve) => {
+					if (options?.signal?.aborted) resolve(abortedMessage());
+					options?.signal?.addEventListener("abort", () => resolve(abortedMessage()), { once: true });
+				}),
+		};
+	}) as unknown as StreamFn;
+	return { streamFn, requests: () => requests, aborted: () => aborted };
+}
+
 export interface RungSession {
 	session: AgentSession;
 	agent: Agent;
@@ -117,6 +154,8 @@ export interface RungSessionOptions {
 	usageTokens?: number;
 	/** Persist the session in this directory so diagnostic sidecars can be written. */
 	sessionDir?: string;
+	/** `compaction.planningTimeoutMs`; omitted keeps the default. */
+	planningTimeoutMs?: number;
 }
 
 function assistantTurn(text: string, timestamp: number, totalTokens: number): AssistantMessage {
@@ -178,6 +217,7 @@ export async function createRungSession(options: RungSessionOptions): Promise<Ru
 			compression_ratio: 0.5,
 			preserve_recent: 2,
 			...(options.reserveTokens === undefined ? {} : { reserveTokens: options.reserveTokens }),
+			...(options.planningTimeoutMs === undefined ? {} : { planningTimeoutMs: options.planningTimeoutMs }),
 		},
 	});
 	const session = new AgentSession({

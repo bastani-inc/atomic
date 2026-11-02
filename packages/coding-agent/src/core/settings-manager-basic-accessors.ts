@@ -119,6 +119,8 @@ interface SettingsManagerBasicAccessors {
 	getCompactionCompressionRatio(): number;
 	getCompactionPreserveRecent(model?: CompactionModel): number;
 	getCompactionQuery(): string | undefined;
+	/** Wall-clock limit on automatic compaction's model planning; `undefined` when disabled. */
+	getCompactionPlanningTimeoutMs(): number | undefined;
 	getCompactionSettings(model?: CompactionModel): {
 		enabled: boolean;
 		reserveTokens: number;
@@ -494,6 +496,12 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	getCompactionQuery() {
 		const query = settingsInternals(this).settings.compaction?.query?.trim();
 		return query && query.length > 0 ? query : undefined;
+	},
+
+	getCompactionPlanningTimeoutMs() {
+		const configured = parseHttpIdleTimeoutMs(settingsInternals(this).settings.compaction?.planningTimeoutMs);
+		const timeoutMs = configured ?? SETTINGS_DEFAULTS.compaction.planningTimeoutMs;
+		return timeoutMs > 0 ? timeoutMs : undefined;
 	},
 
 	getCompactionSettings(model) {

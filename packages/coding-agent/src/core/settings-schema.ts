@@ -50,6 +50,13 @@ const CompactionSettingsSchema = Type.Object({
 				"Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted.",
 		}),
 	),
+	planningTimeoutMs: Type.Optional(
+		timeoutSetting({
+			description:
+				'Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim and fallback model) as milliseconds, a duration such as "5m", or "disabled"; 0 or "disabled" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.',
+			default: SETTINGS_DEFAULTS.compaction.planningTimeoutMs,
+		}),
+	),
 	modelOverrides: Type.Optional(
 		Type.Record(Type.String(), CompactionModelOverrideSchema, {
 			description: 'Per-model overrides keyed by exact "provider/modelId" strings.',

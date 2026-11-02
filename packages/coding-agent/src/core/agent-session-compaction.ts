@@ -201,6 +201,11 @@ export async function _applyVerbatimCompaction(
 			...plan,
 			resolveAuth: options.resolvePlannerAuth,
 			signal: options.abortController.signal,
+			// Automatic compaction runs inside or ahead of an unattended turn, so its planning
+			// gets a time limit (#4198). A manual run is watched and cancelled with Escape.
+			...(options.reason === "manual"
+				? {}
+				: { planningTimeoutMs: this.settingsManager.getCompactionPlanningTimeoutMs() }),
 			thinkingLevel: this.thinkingLevel,
 			urgency: options.urgency,
 			fallback,

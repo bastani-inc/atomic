@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Automatic compaction can no longer block a turn for tens of minutes. A long session that crossed the compaction threshold after a tool result waited on the compaction planner with no overall limit. A planner that kept streaming, such as long reasoning over a very large uncached transcript, never tripped the stream idle deadline, and every retry, overflow trim and borrowed fallback model repeated it. Sessions sat 15 to 45 minutes with no new turn and no error. Model planning in automatic compaction now has a time limit, `compaction.planningTimeoutMs`, five minutes by default. When it runs out, the planner request is aborted. Post-tool and overflow compaction then start a fresh context window so the turn continues, and threshold compaction fails with a clear timeout error and leaves the context unchanged. Manual `/compact` is not limited ([#4198](https://github.com/bastani-inc/atomic/issues/4198))
+
 ## [0.9.65] - 2026-11-02
 
 Subagents launched on a named model stay on that model or fail clearly, and every report names the model a subagent actually ran on.
