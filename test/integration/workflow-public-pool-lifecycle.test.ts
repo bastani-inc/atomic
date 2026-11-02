@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -34,7 +36,10 @@ interface CoordinatorEvent {
 	message?: string;
 }
 
-/** `settings` are the `localWorkers` and `admission` options a restart passes, as a resume from the CLI passes settings. */
+/**
+ * `settings` are run options the launch or restart passes over its defaults: the `localWorkers` and `admission` options
+ * a resume from the CLI passes from the settings, its execution mode, or its opt-in to entry module changes.
+ */
 function startCoordinator(
 	directory: string,
 	mode: "fresh" | "restart",
@@ -84,7 +89,7 @@ function startCoordinator(
 				const end = buffer.indexOf("\n");
 				const parsed = JSON.parse(buffer.slice(0, end)) as CoordinatorEvent;
 				buffer = buffer.slice(end + 1);
-				if (parsed.event === "error") assert.fail(`Coordinator failed: ${parsed.message}`);
+				if (parsed.event === "error" && event !== "error") assert.fail(`Coordinator failed: ${parsed.message}`);
 				if (parsed.event === event) return parsed;
 			}
 		},
@@ -317,6 +322,158 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			await first.stop();
 			await second?.stop();
+			removeTempDirectory(directory);
+		}
+	},
+	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
+);
+
+/** The queued child's work descriptor, as the pool stored it. */
+function queuedWork(directory: string): { id: string; digest: string; execution: { executionMode?: string } } {
+	const rows = observe(directory, (database) => database.query("SELECT id, descriptor FROM wf_runs_work").all());
+	assert.equal(rows.length, 1);
+	return { id: String(rows[0]!.id), ...JSON.parse(String(rows[0]!.descriptor)) };
+}
+
+/**
+ * SIGKILLs a root once its pooled child recorded its first step, waits for that child's orphaned worker to exit, and
+ * ages the root's lease past its liveness window, as a resume much later finds it. Returns the worker that recorded it.
+ */
+async function crashAfterFirstStep(directory: string, root: ReturnType<typeof startCoordinator>): Promise<Worker> {
+	const recorded = await committedWorker(directory);
+	await root.stop();
+	await until("the orphaned worker to exit", () => (pidAlive(recorded.pid) ? undefined : true));
+	observe(directory, (database) =>
+		database.run(
+			"UPDATE wf_leases SET renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) - ? WHERE run_id = ?",
+			STALE_COORDINATOR_AGE_MS,
+			ROOT,
+		),
+	);
+	return recorded;
+}
+
+function recordedCheckpoints(directory: string): number {
+	return observe(directory, (database) =>
+		Number(
+			database
+				.query("SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'")
+				.get()!.count,
+		),
+	);
+}
+
+test.skipIf(process.platform === "win32")(
+	"a crashed root resumes under another execution mode than it launched with, and its queued child runs under the new one (#4200)",
+	async () => {
+		const directory = makeTempDirectory("public-pool-resume-mode-");
+		const first = startCoordinator(directory, "fresh", { settings: { executionMode: "interactive" } });
+		let second: ReturnType<typeof startCoordinator> | undefined;
+		try {
+			const firstReady = await first.next("ready");
+			const recorded = await crashAfterFirstStep(directory, first);
+			const queued = queuedWork(directory);
+			assert.equal(queued.execution.executionMode, "interactive");
+			await writeFileEnsuringDir(join(directory, "release"), "ready");
+			// A headless resume of an interactive launch.
+			second = startCoordinator(directory, "restart", { settings: { executionMode: "non_interactive" } });
+			const secondReady = await second.next("ready");
+			const result = await second.next("result");
+			assertSingleRootRecovered(directory, recorded, result, [firstReady, secondReady]);
+			const rebound = queuedWork(directory);
+			assert.equal(rebound.id, queued.id, "the queued child is the same work, not a second one");
+			assert.equal(rebound.execution.executionMode, "non_interactive");
+		} finally {
+			await first.stop();
+			await second?.stop();
+			removeTempDirectory(directory);
+		}
+	},
+	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
+);
+
+/** A child whose entry module itself names the version of it that ran each step. */
+const versionedChildSource = (version: string) => `import { existsSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import { Type } from "typebox";
+import { workflow } from "@bastani/atomic/workflows";
+
+export const child = workflow({
+	name: "pool-resume-entry-child",
+	description: "Records a step, then waits for release",
+	inputs: { releasePath: Type.String() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
+	async run(ctx) {
+		const first = await ctx.tool("checkpoint", {}, async () => ({ pid: process.pid, instance: "${version}:first" }));
+		const final = await ctx.tool("finish", {}, async () => {
+			while (!existsSync(ctx.inputs.releasePath)) await delay(20);
+			return { pid: process.pid, instance: "${version}:final" };
+		});
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
+	},
+});
+`;
+
+test.skipIf(process.platform === "win32")(
+	"a crashed root resumes after its worker's entry module is edited only when the resume accepts the edit, and its queued child runs the edited module (#4200)",
+	async () => {
+		const directory = makeTempDirectory("public-pool-resume-entry-");
+		const definition = join(directory, "workflows", "child.ts");
+		await writeFileEnsuringDir(definition, versionedChildSource("v1"));
+		const first = startCoordinator(directory, "fresh", { definition });
+		let refused: ReturnType<typeof startCoordinator> | undefined;
+		let accepted: ReturnType<typeof startCoordinator> | undefined;
+		try {
+			await first.next("ready");
+			const recorded = await crashAfterFirstStep(directory, first);
+			assert.equal(recorded.instance, "v1:first");
+			const queued = queuedWork(directory);
+			await writeFileEnsuringDir(definition, versionedChildSource("v2"));
+			const edited = createHash("sha256").update(readFileSync(definition)).digest("hex");
+			await writeFileEnsuringDir(join(directory, "release"), "ready");
+			// Without the opt-in the resume is refused before it starts; the refusal names the module and the opt-in.
+			refused = startCoordinator(directory, "restart", { definition });
+			const refusal = (await refused.next("error")).message ?? "";
+			assert.ok(
+				refusal.includes(
+					`the entry module of worker definition ${definition}#child was edited (sha256 ${queued.digest.slice(0, 12)} to ${edited.slice(0, 12)})`,
+				),
+				refusal,
+			);
+			assert.match(refusal, /--accept-entry-changes/);
+			assert.match(refusal, /acceptEntryChanges/);
+			await refused.stop();
+			assert.equal(recordedCheckpoints(directory), 1);
+
+			accepted = startCoordinator(directory, "restart", { definition, settings: { acceptEntryChanges: true } });
+			await accepted.next("ready");
+			const result = await accepted.next("result");
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			// The step recorded before the crash is replayed, not run again; the step after it runs the edited module.
+			assert.equal(result.outputs?.firstInstance, "v1:first");
+			assert.equal(result.outputs?.finalInstance, "v2:final");
+			assert.equal(recordedCheckpoints(directory), 1);
+			const rebound = queuedWork(directory);
+			assert.equal(rebound.id, queued.id, "the queued child is the same work, not a second one");
+			assert.equal(rebound.digest, edited);
+			await accepted.stop();
+			// The root records the module it resumed with, so a later resume of it needs no opt-in again.
+			const backend = await JournalDurableBackend.open(
+				await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } }),
+			);
+			try {
+				await backend.hydrateWorkflow(ROOT);
+				assert.deepEqual(
+					backend.getWorkflow(ROOT)?.resources?.definitions?.map((source) => source.digest),
+					[edited],
+				);
+			} finally {
+				await backend.close();
+			}
+		} finally {
+			await first.stop();
+			await refused?.stop();
+			await accepted?.stop();
 			removeTempDirectory(directory);
 		}
 	},

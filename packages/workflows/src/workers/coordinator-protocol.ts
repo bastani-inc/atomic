@@ -91,6 +91,8 @@ export type CoordinatorCommandBody =
 			readonly descriptor: PoolWorkDescriptor;
 			readonly boundary: DurableStageCheckpoint;
 			readonly rootRun?: PoolRootProjection;
+			/** The root's resume accepted edited entry modules: see `PoolEnqueueOptions` (#4200). */
+			readonly acceptEntryChanges?: boolean;
 	  }
 	| ({ readonly kind: "transport"; readonly request: number } & DeliveryPayload)
 	| { readonly kind: "undeliverable"; readonly payload: Record<string, unknown> }

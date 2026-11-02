@@ -164,6 +164,10 @@ export interface RuntimeDispatchOptions {
 	readonly signal?: AbortSignal;
 	/** Reports the exact detached identity before startup admission is awaited. */
 	readonly onRunAccepted?: (runId: string) => void;
+	/**
+	 * A continuation only: resume a root whose worker entry modules were edited, as `RunOpts.acceptEntryChanges` (#4200).
+	 */
+	readonly acceptEntryChanges?: boolean;
 }
 // ---------------------------------------------------------------------------
 // Factory
@@ -374,6 +378,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					...runOptions(options?.policy),
 					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 					...(options?.budget === undefined ? {} : { budget: options.budget }),
+					...(options?.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 					continuation: {
 						source,
 						...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),

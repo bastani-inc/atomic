@@ -19,11 +19,14 @@ import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.j
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
 import {
+	ACCEPT_ENTRY_CHANGES_FLAG,
+	type DurableResumeCommandOptions,
 	deleteWorkflowResumeEntry,
 	handleDurableResume,
 	prepareWorkflowResumeCatalog,
 	resolveWorkflowResumeTarget,
 	stageScopedDurableResumeMessage,
+	type WorkflowResumeCatalog,
 	type WorkflowRunControlDeps,
 } from "./workflow-durable-resume-command.js";
 import { captureWorkflowOwnerResources } from "./workflow-owner-resources.js";
@@ -269,9 +272,15 @@ export async function handleRunControlCommand(
 		return true;
 	}
 	if (action === "attach" || action === "resume") {
-		const target = rest[0];
-		const stageTarget = rest[1];
-		const message = action === "resume" ? rest.slice(2).join(" ").trim() || undefined : undefined;
+		// The flag may stand anywhere among the arguments: the rest are the run, its stage and the message.
+		const acceptEntryChanges = action === "resume" && rest.includes(ACCEPT_ENTRY_CHANGES_FLAG);
+		const args = acceptEntryChanges ? rest.filter((token) => token !== ACCEPT_ENTRY_CHANGES_FLAG) : rest;
+		const resumeOptions: DurableResumeCommandOptions = acceptEntryChanges ? { acceptEntryChanges: true } : {};
+		const durableResume = (workflowId: string | undefined, catalog?: WorkflowResumeCatalog) =>
+			handleDurableResume(workflowId, ctx, reporter, deps, catalog, resumeOptions);
+		const target = args[0];
+		const stageTarget = args[1];
+		const message = action === "resume" ? args.slice(2).join(" ").trim() || undefined : undefined;
 		let runId: string;
 		if (!target) {
 			const ui = ctx.ui;
@@ -282,7 +291,7 @@ export async function handleRunControlCommand(
 					);
 				} else {
 					// resume: show cross-session durable catalog in headless/print mode.
-					return await handleDurableResume(undefined, ctx, reporter, deps);
+					return await durableResume(undefined);
 				}
 				return true;
 			}
@@ -313,7 +322,7 @@ export async function handleRunControlCommand(
 				const durableEntries = picked.catalog.durable;
 				const completedEntries = picked.catalog.completed;
 				if (picked.result.kind === "durable" || picked.result.kind === "completed") {
-					return await handleDurableResume(picked.result.workflowId, ctx, reporter, deps, {
+					return await durableResume(picked.result.workflowId, {
 						resumable: durableEntries,
 						completed: completedEntries,
 					});
@@ -343,19 +352,19 @@ export async function handleRunControlCommand(
 							workflowRunResumeCandidate(run, store.runs(), requireStoreDurableBackend(store, resolved.runId)),
 						);
 					if (isDurableAuthorExit) {
-						return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+						return await durableResume(resolved.runId);
 					}
 					if (isResumableContinuation) {
 						await ensureWorkflowResourcesVisible();
 						const continuation = await deps
 							.runtimeForContext(ctx)
-							.resumeFailedRun(resolved.runId, undefined, { policy, actor: "user" });
+							.resumeFailedRun(resolved.runId, undefined, { policy, actor: "user", ...resumeOptions });
 						continuation.ok ? print(continuation.message) : fail(continuation.message);
 					} else {
 						try {
 							const result = await resumeRun(resolved.runId, { ...owner, actor: "user" });
 							if (result.ok && !isPaused && result.mode === "snapshot" && run?.exitReason === "quit") {
-								return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+								return await durableResume(resolved.runId);
 							}
 							if (result.ok && result.mode === "partial") {
 								fail(result.message ?? `Partially resumed ${result.runId}.`);
@@ -496,7 +505,7 @@ export async function handleRunControlCommand(
 						fail(stageScopedDurableResumeMessage(combined.workflowId));
 						return true;
 					}
-					return await handleDurableResume(combined.workflowId, ctx, reporter, deps);
+					return await durableResume(combined.workflowId);
 				}
 				if (combined.kind === "live") runId = combined.workflowId;
 				else {
@@ -504,7 +513,7 @@ export async function handleRunControlCommand(
 						fail(`Failed to resolve workflow resume target: ${preparationError}`);
 						return true;
 					}
-					return await handleDurableResume(target, ctx, reporter, deps);
+					return await durableResume(target);
 				}
 			}
 		} else {
@@ -581,13 +590,13 @@ export async function handleRunControlCommand(
 			requireStoreDurableBackend(store, stageRunId),
 		);
 		if (isDurableAuthorExit) {
-			return await handleDurableResume(stageRunId, ctx, reporter, deps);
+			return await durableResume(stageRunId);
 		}
 		if (isResumableContinuation) {
 			await ensureWorkflowResourcesVisible();
 			const continuation = await deps
 				.runtimeForContext(ctx)
-				.resumeFailedRun(stageRunId, stageId, { policy, actor: "user" });
+				.resumeFailedRun(stageRunId, stageId, { policy, actor: "user", ...resumeOptions });
 			continuation.ok ? print(continuation.message) : fail(continuation.message);
 			return true;
 		}
@@ -595,7 +604,7 @@ export async function handleRunControlCommand(
 		// stage-control pause. Routing directly to durable resume preserves the
 		// previous snapshot-only diversion without reopening a stale local overlay.
 		if (!isPaused && run?.exitReason === "quit" && action === "resume") {
-			return await handleDurableResume(stageRunId, ctx, reporter, deps);
+			return await durableResume(stageRunId);
 		}
 		let result: Awaited<ReturnType<typeof resumeRun>>;
 		try {
