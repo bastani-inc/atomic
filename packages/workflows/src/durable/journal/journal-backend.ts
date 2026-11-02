@@ -52,7 +52,7 @@ import {
 
 const PROCESS_HOLDER_ID = randomUUID();
 const CHANGE_APPEND_ATTEMPTS = 4;
-/** Most receipts and settlements one journal transaction writes for a run. */
+/** Most receipts, settlements and checkpoints one journal transaction writes for a run. */
 const APPEND_BATCH_LIMIT = 256;
 const processExitCleanups = new Set<() => void>();
 
@@ -296,10 +296,15 @@ export class JournalMessageScopeError extends JournalError {
 		this.name = "JournalMessageScopeError";
 	}
 }
-/** A delivery receipt or settlement waiting in a run's queue, settled with its own outcome. */
+/** A delivery receipt, settlement or checkpoint waiting in a run's queue, settled with its own outcome. */
 interface QueuedAppend {
 	readonly event: BackendEvent;
 	readonly key?: string;
+	/**
+	 * A checkpoint is written only while its run is registered here; for a run that is not, it settles without a
+	 * write, as a checkpoint committed on its own always has.
+	 */
+	readonly requiresRegisteredRun?: boolean;
 	/** Runs a function in the async context the append was issued from, which carries its pool append guard. */
 	readonly context: <R>(action: () => R) => R;
 	resolve(): void;
@@ -752,6 +757,11 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
+	/**
+	 * Commits a checkpoint through the run's append queue: checkpoints queued back to back, as a fan-out's child
+	 * boundaries are, share one journal transaction instead of one each, so work queued behind a burst of them waits for
+	 * one commit rather than for every one in turn (#4174).
+	 */
 	commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
 		if (options?.signal?.aborted)
 			return Promise.reject(
@@ -760,17 +770,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 					options.signal.reason instanceof Error ? options.signal.reason : undefined,
 				),
 			);
-		return this.serialize(checkpoint.workflowId, () => this.checkpoint(checkpoint));
-	}
-	private *checkpoint(checkpoint: DurableCheckpoint): Operation<void> {
-		validateCheckpointInvocationFingerprint(checkpoint);
-		if (!(yield* this.current(checkpoint.workflowId))) return;
-		yield* this.append(
+		try {
+			validateCheckpointInvocationFingerprint(checkpoint);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		return this.queueAppend(
 			checkpoint.workflowId,
 			{ type: E.checkpointRecorded, payload: checkpoint },
-			{
-				key: JSON.stringify([E.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]),
-			},
+			JSON.stringify([E.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]),
+			true,
 		);
 	}
 	async commitAdditiveCheckpointBestEffort(checkpoint: DurableCheckpoint): Promise<boolean> {
@@ -989,13 +998,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		});
 	}
 	/**
-	 * Queue a receipt or settlement on the run, as `serialize` would. While the run is busy, the ones queued
-	 * back to back with nothing between them are written in one journal transaction when their turn comes, so a
-	 * burst of receipts costs one commit rather than one each and an operation queued behind it, such as a
-	 * pending-stage message, waits for that one commit. Their order, and their order against every other
+	 * Queue a receipt, settlement or checkpoint on the run, as `serialize` would. While the run is busy, the ones
+	 * queued back to back with nothing between them are written in one journal transaction when their turn comes, so
+	 * a burst of them costs one commit rather than one each and an operation queued behind it, such as a pending-stage
+	 * message or a workflow's next step, waits for that one commit. Their order, and their order against every other
 	 * operation of the run, is the order they were queued in.
 	 */
-	private queueAppend(runId: string, event: BackendEvent, key?: string): Promise<void> {
+	private queueAppend(runId: string, event: BackendEvent, key?: string, requiresRegisteredRun = false): Promise<void> {
 		try {
 			this.ensureOpen();
 			this.assertExecutionActive();
@@ -1008,6 +1017,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			batch.push({
 				event,
 				...(key === undefined ? {} : { key }),
+				...(requiresRegisteredRun ? { requiresRegisteredRun } : {}),
 				context: AsyncLocalStorage.snapshot(),
 				resolve,
 				reject,
@@ -1021,8 +1031,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		}
 		return queued;
 	}
-	private *appendBatch(runId: string, batch: QueuedAppend[]): Operation<void> {
-		if (this.appendBatches.get(runId) === batch) this.appendBatches.delete(runId);
+	private *appendBatch(runId: string, queued: QueuedAppend[]): Operation<void> {
+		if (this.appendBatches.get(runId) === queued) this.appendBatches.delete(runId);
+		const batch = yield* this.registeredAppends(runId, queued);
+		if (batch.length === 0) return;
 		const appendMany = runJournalAppendMany(this.journal);
 		if (appendMany === undefined || batch.length === 1) {
 			for (const append of batch) {
@@ -1063,6 +1075,23 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			const failure = error instanceof Error ? yield* this.mapOwnership(error, runId) : (error as Error);
 			for (const append of batch.slice(settled)) append.reject(failure);
 		}
+	}
+	/**
+	 * The appends of a batch that are written: a checkpoint for a run that is not registered settles without a write,
+	 * and one whose run could not be checked fails with that check's error. The run is checked once per batch.
+	 */
+	private *registeredAppends(runId: string, batch: readonly QueuedAppend[]): Operation<QueuedAppend[]> {
+		if (!batch.some((append) => append.requiresRegisteredRun === true)) return [...batch];
+		let registered: boolean;
+		try {
+			registered = (yield* this.current(runId)) !== undefined;
+		} catch (error) {
+			for (const append of batch) if (append.requiresRegisteredRun === true) append.reject(error as Error);
+			return batch.filter((append) => append.requiresRegisteredRun !== true);
+		}
+		if (registered) return [...batch];
+		for (const append of batch) if (append.requiresRegisteredRun === true) append.resolve();
+		return batch.filter((append) => append.requiresRegisteredRun !== true);
 	}
 
 	getToolOutput(...args: Parameters<DurableWorkflowBackend["getToolOutput"]>) {
