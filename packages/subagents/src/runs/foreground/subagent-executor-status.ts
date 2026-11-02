@@ -18,6 +18,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.js";
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
+import { resultRanOnLine } from "../shared/model-fallback.js";
 import {
 	formatControlIntercomMessage,
 	formatControlNoticeMessage,
@@ -139,10 +140,15 @@ export function workflowStageAcceptsDetachedNotification(ctx: Pick<ExtensionCont
 
 function resultSummaryForIntercom(result: SingleResult): string {
 	const output = getSingleResultOutput(result);
-	if (result.status === "error" && result.error) {
-		return output ? `${result.error}\n\nOutput:\n${output}` : result.error;
-	}
-	return output || result.error || "(no output)";
+	const summary =
+		result.status === "error" && result.error
+			? output
+				? `${result.error}\n\nOutput:\n${output}`
+				: result.error
+			: output || result.error || "(no output)";
+	// A child that ran on another model than its launch asked for says so (#4188).
+	const ranOn = resultRanOnLine(result);
+	return ranOn ? `${ranOn}\n${summary}` : summary;
 }
 
 /**

@@ -225,6 +225,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			// The single-child terminal handoff would cancel unrelated siblings here.
 			modelOverride: input.modelOverrides[index],
 			modelRoute: input.modelRoutes?.[index],
+			...(task.modelConstraints ? { modelConstraints: task.modelConstraints } : {}),
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,
 			resolveCandidateModel: input.resolveCandidateModel,

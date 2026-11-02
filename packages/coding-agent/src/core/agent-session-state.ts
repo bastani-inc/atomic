@@ -153,6 +153,8 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 	const loadedSkills = getSkillCatalog(this._resourceLoader).modelSkills();
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+	const previousBase = this._baseSystemPromptOptions;
+	const previousForcedPrompt = previousBase?.forceSystemPrompt;
 
 	this._baseSystemPromptOptions = normalizeBuildSystemPromptOptions({
 		cwd: this._cwd,
@@ -172,6 +174,31 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		this._baseSystemPromptOptions.forceSystemPrompt = this._systemPromptTransform(
 			buildSystemPrompt(this._baseSystemPromptOptions),
 		);
+	}
+	// A model switch partway through a run, such as a fallback, must tell the next request which model it goes to
+	// (#4188). A running turn whose prompt is still this session's own transformed prompt takes the rebuilt one. A prompt
+	// a `before_agent_start` handler built stays the handler's, with the model section it kept from the old prompt
+	// brought up to date.
+	const run = this._runSystemPromptOptions;
+	const runPrompt = run?.forceSystemPrompt;
+	if (run && runPrompt !== undefined) {
+		const base = this._baseSystemPromptOptions;
+		const previousModelSection = previousBase ? buildSystemPromptSections(previousBase).model : undefined;
+		const modelSection = buildSystemPromptSections(base).model;
+		const forceSystemPrompt =
+			previousForcedPrompt !== undefined && runPrompt === previousForcedPrompt
+				? base.forceSystemPrompt
+				: previousModelSection && modelSection && previousModelSection !== modelSection
+					? runPrompt.split(previousModelSection).join(modelSection)
+					: runPrompt;
+		if (forceSystemPrompt !== runPrompt) {
+			this._runSystemPromptOptions = {
+				...run,
+				forceSystemPrompt,
+				selectedModel: base.selectedModel,
+				selectedThinkingLevel: base.selectedThinkingLevel,
+			};
+		}
 	}
 }
 

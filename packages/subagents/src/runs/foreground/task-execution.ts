@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentTaskHost, OperationId, WaitPolicy } from "@bastani/atomic";
+import { type AgentTaskHost, type OperationId, ranOnModelLine, type WaitPolicy } from "@bastani/atomic";
 import type {
 	Cleanup,
 	ModelParallelResponse,
@@ -16,6 +16,7 @@ import type { AgentConfig } from "../../agents/agents.js";
 import { taskRecordModel } from "../../shared/model-info.js";
 import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
+import { launchRequestedModel } from "../shared/model-fallback.js";
 import {
 	claimRunWorktree,
 	holdRunWorktree,
@@ -33,6 +34,7 @@ import {
 	type SubagentChildRecordSink,
 	subagentChildInheritance,
 	subagentChildLaunch,
+	subagentChildModelChoice,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
@@ -88,12 +90,14 @@ function settledOutputSection(
 		requestedPath?: string;
 		saveError?: string;
 	},
+	ranOn: string | undefined,
 ): string {
 	const truncated =
 		output.shown < output.total
 			? `, first ${output.shown} shown${output.path ? "; read the full output file for the rest" : ""}`
 			: "";
 	const lines = [`Output of ${taskId} (${label}, ${output.total} bytes${truncated}):`];
+	if (ranOn) lines.push(ranOn);
 	if (output.requestedPath) lines.push(`Requested output: ${output.requestedPath}`);
 	if (output.saveError) lines.push(`Output file error: ${output.saveError}`);
 	if (output.path) lines.push(`Full output: ${output.path}`);
@@ -101,17 +105,28 @@ function settledOutputSection(
 	return lines.join("\n");
 }
 
-async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput): Promise<string | undefined> {
+async function readSettledOutput(
+	host: AgentTaskHost,
+	settled: SettledTaskOutput,
+	record: TaskRecord | undefined,
+): Promise<string | undefined> {
 	const output = settled.result.output;
 	if (!output) return undefined;
 	const label = subagentTaskResultLabel(settled.result);
+	// A child that ran on another model than its launch asked for says so beside its output (#4188).
+	const ranOn = ranOnModelLine(record);
 	const kept = retainedTaskOutput(output.ownerId, output.taskId);
 	if (kept) {
-		return settledOutputSection(settled.taskId, label, {
-			...kept,
-			shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
-			total: kept.totalBytes,
-		});
+		return settledOutputSection(
+			settled.taskId,
+			label,
+			{
+				...kept,
+				shown: Math.min(kept.totalBytes, INLINE_TASK_OUTPUT_MAX_BYTES),
+				total: kept.totalBytes,
+			},
+			ranOn,
+		);
 	}
 	const unavailable = (reason: string) => `Output of ${settled.taskId} (${label}) is unavailable: ${reason}`;
 	const lease = host.resolveTask(settled.taskId);
@@ -126,7 +141,7 @@ async function readSettledOutput(host: AgentTaskHost, settled: SettledTaskOutput
 		const head =
 			page.value.chunks.map((chunk) => decoder.decode(chunk.bytes, { stream: true })).join("") + decoder.decode();
 		const shown = page.value.chunks.reduce((sum, chunk) => sum + chunk.bytes.byteLength, 0);
-		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) });
+		return settledOutputSection(settled.taskId, label, { head, shown, total: Number(output.byteCount) }, ranOn);
 	} catch (error) {
 		return unavailable(error instanceof Error ? error.message : String(error));
 	}
@@ -138,7 +153,16 @@ export async function settledTaskOutputText(
 	settled: readonly SettledTaskOutput[],
 ): Promise<string> {
 	if (!host || settled.length === 0) return "";
-	const sections = await Promise.all(settled.map((entry) => readSettledOutput(host, entry)));
+	const records = ownerTaskRecords(new Set(settled.map((entry) => entry.taskId)), host);
+	const sections = await Promise.all(
+		settled.map((entry) =>
+			readSettledOutput(
+				host,
+				entry,
+				records.find((record) => record.ref.taskId === entry.taskId),
+			),
+		),
+	);
 	const present = sections.filter((section): section is string => section !== undefined);
 	return present.length ? `\n\n${present.join("\n\n")}` : "";
 }
@@ -196,9 +220,14 @@ export function taskResponseRecords(
 	host?: AgentTaskHost,
 ): TaskRecord[] {
 	const outcomes = response.kind === "parallel" ? response.slots.map((slot) => slot.outcome) : [response];
-	const ids = new Set(
-		outcomes.flatMap((outcome) => (outcome.kind === "admitted" ? [outcome.observation.taskId] : [])),
+	return ownerTaskRecords(
+		new Set(outcomes.flatMap((outcome) => (outcome.kind === "admitted" ? [outcome.observation.taskId] : []))),
+		host,
 	);
+}
+
+/** The owner's current records of the tasks `ids` names. */
+function ownerTaskRecords(ids: ReadonlySet<TaskId>, host: AgentTaskHost | undefined): TaskRecord[] {
 	const watched = host?.watchOwnerTasks();
 	if (!watched?.ok) return [];
 	try {
@@ -299,7 +328,9 @@ export async function runAgentTask(input: {
 	const childCwd = input.options.cwd ?? input.cwd;
 	let childSession: Pick<SubagentChildRecordInput, "childSessionId" | "childSessionFile"> = {};
 	let childLaunch: Pick<SubagentChildRecordInput, "launchModel" | "launchThinkingLevel" | "launchLeafId"> = {};
-	const agentSource = input.agents.find((agent) => agent.name === input.agent)?.source;
+	const agentConfig = input.agents.find((agent) => agent.name === input.agent);
+	const agentSource = agentConfig?.source;
+	const requestedModel = launchRequestedModel(agentConfig, input.options);
 	const forked = input.forked ?? (input.options.sessionManager !== undefined && input.options.resumeSession !== true);
 	const recordChildTask = (
 		taskId: TaskId,
@@ -337,6 +368,7 @@ export async function runAgentTask(input: {
 						{ launch: subagentChildLaunch(input.task, input.intentTask, input.options) }
 					: {}),
 			inherited: subagentChildInheritance(input.options),
+			...subagentChildModelChoice(input.options, agentConfig),
 		});
 	};
 	let dispatched = false;
@@ -428,6 +460,7 @@ export async function runAgentTask(input: {
 			task: input.intentTask ?? input.task,
 			cwd: input.options.cwd ?? input.cwd,
 			...(input.options.modelRoute ? { routerSelection: input.options.modelRoute.routerSelection } : {}),
+			...(requestedModel ? { requestedModel } : {}),
 			...(input.heartbeatMs === undefined ? {} : { heartbeatMs: input.heartbeatMs }),
 		},
 		(input.operation ?? `${input.options.runId}:${input.options.index ?? 0}`) as OperationId,

@@ -138,16 +138,12 @@ function agentConfig(overrides: Partial<AgentConfig>): AgentConfig {
 	} as AgentConfig;
 }
 
-async function runAndCapture(options: {
-	agent: AgentConfig;
-	modelOverride?: string;
-	resolve?: boolean;
-}): Promise<CapturedAttempt> {
+async function launch(options: { agent: AgentConfig; modelOverride?: string; resolve?: boolean }) {
 	harness.attempts.length = 0;
 	const cwd = makeCwd();
 	const parent = await SessionManager.create(cwd, join(cwd, "sessions"));
 	await parent.appendModelChange("anthropic", "claude-fable-5");
-	await runSingleInProcess(cwd, options.agent, "do the thing", {
+	return runSingleInProcess(cwd, options.agent, "do the thing", {
 		cwd,
 		runId: "run-1",
 		testSession: { output: "done" },
@@ -164,6 +160,14 @@ async function runAndCapture(options: {
 			? {}
 			: { resolveCandidateModel: createCandidateModelResolver(registry, "anthropic") }),
 	});
+}
+
+async function runAndCapture(options: {
+	agent: AgentConfig;
+	modelOverride?: string;
+	resolve?: boolean;
+}): Promise<CapturedAttempt> {
+	await launch(options);
 	assert.equal(harness.attempts.length, 1, "exactly one attempt should start");
 	const captured = harness.attempts[0]!;
 	return { spec: captured.spec as ChildSpec, candidate: captured.candidate as ModelCandidate };
@@ -206,23 +210,25 @@ describe("fork-context subagent model selection", () => {
 		assert.deepEqual(spec.model, configuredModel);
 	});
 
-	test("an unresolvable candidate leaves the model unset rather than failing the run", async () => {
-		const { spec, candidate } = await runAndCapture({
-			agent: agentConfig({ model: "unknown-provider/absent-model" }),
-		});
+	test("a named model that does not resolve fails the launch instead of starting on another model (#4188)", async () => {
+		const result = await launch({ agent: agentConfig({ model: "unknown-provider/absent-model" }) });
 
-		assert.equal(candidate.model, undefined);
-		assert.equal(spec.model, undefined);
-		assert.equal(candidate.modelId, "unknown-provider/absent-model");
+		assert.equal(harness.attempts.length, 0, "no attempt starts, on the parent's model or any other");
+		assert.equal(result.status, "error");
+		assert.match(result.error ?? "", /^Model unknown-provider\/absent-model is not available/);
 	});
 
-	test("a host that supplies no resolver keeps the previous behavior", async () => {
+	test("a host that supplies no resolver hands the runner an unresolved named model to refuse (#4188)", async () => {
 		const { spec, candidate } = await runAndCapture({
 			agent: agentConfig({ model: CONFIGURED_MODEL_ID }),
 			resolve: false,
 		});
 
+		// Selection resolves nothing; the runner refuses to start a real session on a named model it has no model
+		// for, so the parent's model never fills it in (subagent-explicit-model-fallback covers that session).
 		assert.equal(candidate.model, undefined);
 		assert.equal(spec.model, undefined);
+		assert.equal(spec.namedModel, CONFIGURED_MODEL_ID);
+		assert.deepEqual(spec.fallbackModels, [], "and no chain to fall back on");
 	});
 });

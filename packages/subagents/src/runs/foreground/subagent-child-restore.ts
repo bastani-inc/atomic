@@ -392,7 +392,14 @@ async function relaunchChild(
 		inherited.model && (!record.inherited || resolveCandidateModel(inherited.model)?.model)
 			? inherited.model
 			: undefined;
-	if (inherited.model && !inheritedModel && !ownModel && !agent.model && !agent.fallbackModels?.length)
+	if (
+		inherited.model &&
+		!inheritedModel &&
+		!ownModel &&
+		!record.namedModel &&
+		!agent.model &&
+		!agent.fallbackModels?.length
+	)
 		return unrestorable(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
@@ -432,7 +439,13 @@ async function relaunchChild(
 		knownModelProviders: collectKnownModelProviders(ctx.modelRegistry),
 		resolveCandidateModel,
 		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
-		...(ownModel ? { modelOverride: ownModel } : {}),
+		// A launch that named its model keeps to that model and its own chain: when the model it continues on is gone, it
+		// asks for the named one again, which fails clearly when that is gone too. One that ran its parent's keeps the
+		// parent's (#4188). Either keeps the model its original launch asked for and its constraints.
+		...((ownModel ?? record.namedModel) ? { modelOverride: ownModel ?? record.namedModel } : {}),
+		...(record.namedModel === undefined ? { runsNamedModel: false as const } : {}),
+		...(record.requestedModel ? { requestedModel: record.requestedModel } : {}),
+		...(record.modelConstraints ? { modelConstraints: record.modelConstraints } : {}),
 		...(inheritedModel ? { currentModel: inheritedModel } : {}),
 		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};

@@ -22,7 +22,7 @@ import {
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { sharedAutoGroupForSet } from "../shared/intercom-group.js";
-import { resolveModelCandidate } from "../shared/model-fallback.js";
+import { resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
 import { routeSubagentModel } from "../shared/model-router.js";
 import { formatParallelResultContent } from "../shared/parallel-utils.js";
 import { recordRun } from "../shared/run-history.js";
@@ -385,7 +385,11 @@ export async function runParallelPath(
 				error: result.error,
 				...(result.cause ? { cause: result.cause } : {}),
 			})),
-			(i, agent) => `=== Task ${i + 1}: ${agent} ===`,
+			// A child that ran on another model than its launch asked for says so (#4188).
+			(i, agent) => {
+				const ranOn = resultRanOnLine(results[i] ?? {});
+				return `=== Task ${i + 1}: ${agent} ===${ranOn ? `\n${ranOn}` : ""}`;
+			},
 		);
 		const fullContent = worktreeSuffix ? `${childContent}\n\n${worktreeSuffix}` : childContent;
 

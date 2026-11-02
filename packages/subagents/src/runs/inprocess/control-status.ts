@@ -1,4 +1,5 @@
 import type { SubagentStatusGroup, SubagentToolResult } from "../../shared/types.js";
+import { resultRanOnLine } from "../shared/model-fallback.js";
 import { findSubagentControl, listSubagentControls, subagentChildPath } from "./control-registry.js";
 
 type Control = NonNullable<ReturnType<typeof findSubagentControl>>;
@@ -16,6 +17,11 @@ function settledCause(control: Control, path: string, status: string): string | 
 	return cause || undefined;
 }
 
+/** The model a child runs or ran on and the one its launch asked for, live or as its delivered result says. */
+function childModels(control: Control, path: string) {
+	return control.getChildMetadata(path) ?? control.getDeliveredResult(path);
+}
+
 function childLines(control: Control, id?: string): string[] {
 	if (id) {
 		const path = subagentChildPath(control, id);
@@ -24,6 +30,8 @@ function childLines(control: Control, id?: string): string[] {
 		const delivered = control.getDeliveredResult(path);
 		const childId = control.childIdOf(path);
 		const cause = settledCause(control, path, child.status);
+		// A child on another model than its launch asked for says so (#4188).
+		const ranOn = resultRanOnLine(childModels(control, path) ?? {});
 		return [
 			...(childId ? [`Id: ${childId}`] : []),
 			`Child: ${child.path}`,
@@ -32,6 +40,7 @@ function childLines(control: Control, id?: string): string[] {
 			`Depth: ${child.depth}`,
 			`Status: ${child.status}`,
 			...(cause ? [`Cause: ${cause}`] : []),
+			...(ranOn ? [ranOn] : []),
 			`Residency: ${child.loaded ? "loaded" : "cold"}`,
 			...(delivered?.sessionFile ? [`Session: ${delivered.sessionFile}`] : []),
 		];
@@ -39,8 +48,9 @@ function childLines(control: Control, id?: string): string[] {
 	return control.listChildren().map((child) => {
 		const childId = control.childIdOf(child.path);
 		const cause = settledCause(control, child.path, child.status);
+		const ranOn = resultRanOnLine(childModels(control, child.path) ?? {});
 		// `pause`, `resume` and `quit` take the child id, and the path too.
-		return `${child.path} — ${child.status} (${child.loaded ? "loaded" : "cold"})${childId ? ` · id ${childId}` : ""}${cause ? ` · ${cause}` : ""}`;
+		return `${child.path} — ${child.status} (${child.loaded ? "loaded" : "cold"})${childId ? ` · id ${childId}` : ""}${cause ? ` · ${cause}` : ""}${ranOn ? ` · ${ranOn.slice("Model: ".length, -1)}` : ""}`;
 	});
 }
 
@@ -52,7 +62,7 @@ function statusGroup(control: Control, id?: string): SubagentStatusGroup {
 			.filter((child) => !path || path === control.parent.path || child.path === path)
 			.map((child) => {
 				const delivered = control.getDeliveredResult(child.path);
-				const metadata = control.getChildMetadata(child.path) ?? delivered;
+				const metadata = childModels(control, child.path);
 				const childId = control.childIdOf(child.path);
 				const failure = settledCause(control, child.path, child.status);
 				return {
@@ -62,6 +72,7 @@ function statusGroup(control: Control, id?: string): SubagentStatusGroup {
 					sessionFile: delivered?.sessionFile,
 					...(metadata?.model === undefined ? {} : { model: metadata.model }),
 					...(metadata?.thinking === undefined ? {} : { thinking: metadata.thinking }),
+					...(metadata?.requestedModel === undefined ? {} : { requestedModel: metadata.requestedModel }),
 				};
 			}),
 	};

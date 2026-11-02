@@ -44,6 +44,7 @@ export {
 export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js";
 // Internal trusted-host task integration (not model authority).
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
+export { ranOnModelLine } from "./core/tasks/completion.js";
 export type { AgentIntent, OperationId, TaskId, TaskRecord, TaskResult, WaitPolicy } from "./core/tasks/contracts.js";
 export { type AdmittedAgentTask, collectAgentTasks } from "./core/tasks/execution-scope.js";
 export {

@@ -299,6 +299,91 @@ test(
 	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
 );
 
+test(
+	"a fallback promoted without a child-options adapter never starts at a default effort its constraints forbid (#4188)",
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-default-effort-"));
+		const agentDir = join(root, "agent");
+		const agentDirEnvNames = getEnvNames(ENV_AGENT_DIR);
+		const previousAgentDirEnv = Object.fromEntries(agentDirEnvNames.map((name) => [name, process.env[name]]));
+		mkdirSync(join(root, ".atomic"), { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		// The session's default effort is medium; the launch allows only high.
+		writeFileSync(join(root, ".atomic", "settings.json"), JSON.stringify({ defaultThinkingLevel: "medium" }), "utf8");
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ openai: { type: "api_key", key: "test-api-key" } }),
+			"utf8",
+		);
+		const fallback = {
+			id: "reasoning-fixture",
+			name: "Reasoning fixture",
+			reasoning: true,
+			input: ["text"],
+			contextWindow: 128_000,
+			maxTokens: 4_096,
+		};
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					openai: { api: "openai-responses", baseUrl: "https://api.openai.example/v1", models: [fallback] },
+				},
+			}),
+			"utf8",
+		);
+		for (const name of agentDirEnvNames) process.env[name] = agentDir;
+		const requests: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				requests.push(String(url));
+				return completedOpenAIResponse();
+			}),
+		);
+		clearSubagentControls();
+		try {
+			const fallbackModel = {
+				...fallback,
+				provider: "openai",
+				api: "openai-responses",
+				baseUrl: "https://api.openai.example/v1",
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			} as never;
+			const result = await runSingleInProcess(
+				root,
+				{ ...sampleAgent(), fallbackModels: ["openai/reasoning-fixture"] },
+				"answer",
+				{
+					cwd: root,
+					runId: "promoted-default-effort",
+					// An unsuffixed named model on a provider without auth: its unsuffixed fallback starts in its place.
+					modelOverride: "locked/unavailable",
+					knownModelProviders: ["locked", "openai"],
+					availableModels: [{ provider: "openai", id: fallback.id, fullId: `openai/${fallback.id}` }],
+					modelConstraints: { allowedEfforts: ["high"] },
+					resolveCandidateModel: (candidate) =>
+						candidate === "openai/reasoning-fixture" ? { model: fallbackModel } : undefined,
+					testSession: false,
+				},
+			);
+
+			assert.deepEqual(requests, [], "no request at the medium default effort");
+			assert.equal(result.status, "error", JSON.stringify(result));
+			assert.match(result.error ?? "", /openai\/reasoning-fixture at medium effort .*modelConstraints/);
+		} finally {
+			vi.unstubAllGlobals();
+			for (const name of agentDirEnvNames) {
+				if (previousAgentDirEnv[name] === undefined) delete process.env[name];
+				else process.env[name] = previousAgentDirEnv[name];
+			}
+			clearSubagentControls();
+			rmSync(root, { recursive: true, force: true });
+		}
+	},
+	LIVE_CHILD_RESOURCE_RELOAD_TIMEOUT_MS,
+);
+
 test("admission resolves restricted child management and explicit fanout policy", () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-policy-"));
 	try {

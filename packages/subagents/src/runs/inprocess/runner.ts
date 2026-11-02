@@ -158,6 +158,13 @@ export interface ChildSpec {
 	 */
 	readonly fallbackModels?: readonly string[];
 	readonly isFallbackModelAllowed?: CreateAgentSessionOptions["isFallbackModelAllowed"];
+	/**
+	 * The model the launch named, in its call or its agent, as given (`provider/model[:effort]`). The child runs only it
+	 * and its own `fallbackModels`, and a model failure that ends the child names it (#4188).
+	 */
+	readonly namedModel?: string;
+	/** The model the launch asked for, reported beside the model the child runs on; see `launchRequestedModel`. */
+	readonly requestedModel?: string;
 	readonly onProgress?: (progress: AgentProgress) => void;
 	/** Run-scoped progress.md path used to recover partial findings after parent abort. */
 	readonly progressPath?: string;
@@ -348,6 +355,7 @@ export interface ResultEnvelope {
 	readonly envelope: string;
 	readonly model?: string;
 	readonly thinking?: string;
+	readonly requestedModel?: string;
 	readonly modelAttempts?: readonly {
 		readonly model: string;
 		readonly status: TerminalStatus;
@@ -725,16 +733,93 @@ function outputFor(ownMessages: readonly TranscriptMessage[]): string {
 }
 
 /**
- * Why an attempt that settled without a stop failed, or undefined when it did not. It failed
- * only when it completed no successful assistant turn of its own: every own turn failed, or it
- * ran none (#3987). A child with a successful turn, even a tool-only one with no final text, did
- * not fail.
+ * Why an attempt that settled without a stop failed, or undefined when it did not. It failed when its last own turn
+ * ended in a model error, so a model that fails partway through the task never reads as a finished child (#4188), or
+ * when it completed no successful assistant turn of its own: every own turn failed, or it ran none (#3987). A child
+ * whose last turn succeeded, even a tool-only one with no final text, did not fail. `modelError` is the error that
+ * ended its last turn, when one did.
  */
-function noSuccessfulTurnCause(ownMessages: readonly TranscriptMessage[]): string | undefined {
+function failedChildCause(
+	ownMessages: readonly TranscriptMessage[],
+): { readonly cause: string; readonly modelError?: string } | undefined {
 	const ownTurns = ownMessages.flatMap((message) => (message.role === "assistant" ? [message] : []));
+	const lastTurn = ownTurns.at(-1);
+	if (lastTurn?.stopReason === "error") {
+		const modelError = lastTurn.errorMessage?.trim() || "the model request failed without an error message";
+		return { cause: modelError, modelError };
+	}
 	if (ownTurns.some((turn) => turn.stopReason !== "error" && turn.stopReason !== "aborted")) return undefined;
 	const errorMessage = ownTurns.findLast((turn) => turn.errorMessage?.trim())?.errorMessage?.trim();
-	return errorMessage || "Child ended without completing an assistant turn of its own.";
+	return { cause: errorMessage || "Child ended without completing an assistant turn of its own." };
+}
+
+/** The `provider/model` id the launch's named model resolves to, or its own spelling without an effort when it does not. */
+function namedModelId(spec: ChildSpec): string {
+	const named = spec.namedModel ?? "";
+	const resolved = spec.resolveCandidateModel?.(named)?.model;
+	return resolved ? `${resolved.provider}/${resolved.id}` : splitKnownThinkingSuffix(named).baseModel;
+}
+
+/** Why no other model ran in place of a named model, as its failures say. */
+const NAMED_MODEL_RULE =
+	"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.";
+
+/**
+ * Why a child launched on a named model failed when that model, and every fallback it opted into, failed: the models
+ * it ran, the error, and that no other model ran in their place (#4188).
+ */
+function namedModelFailureCause(
+	namedModel: string,
+	namedId: string,
+	ranModels: readonly string[],
+	error: string,
+): string {
+	// A restored child can continue on a fallback rather than on the model its launch named.
+	const startedOnNamed = ranModels.length === 0 || splitKnownThinkingSuffix(ranModels[0]!).baseModel === namedId;
+	const subject = startedOnNamed
+		? `Model ${namedModel} failed${ranModels.length > 1 ? `, and so did its fallbacks ${ranModels.slice(1).join(", ")}` : ""}`
+		: `This child continued on ${ranModels[0]} in place of ${namedModel}; ${ranModels.join(", ")} failed`;
+	return [
+		`${subject}: ${error}${/[.!?]$/.test(error) ? "" : "."}`,
+		NAMED_MODEL_RULE,
+		"If the failure is temporary, retry the launch; otherwise launch it on another model.",
+	].join(" ");
+}
+
+/** Fail a child whose session started on another model than the named one it could not resolve itself (#4188). */
+function assertStartedOnNamedModel(namedModel: string, started: Model<Api> | undefined): void {
+	const named = splitKnownThinkingSuffix(namedModel).baseModel;
+	const startedId = started ? `${started.provider}/${started.id}` : undefined;
+	if (started && (named.includes("/") ? startedId === named : started.id === named)) return;
+	throw new Error(
+		`Model ${namedModel} is not available: it did not resolve to a model this session can run${startedId ? `, and the session would have started on ${startedId} instead` : ""}. ${NAMED_MODEL_RULE}`,
+	);
+}
+
+/**
+ * Fail a child before its session starts on a model it may not run (#4188). Every model but the one the launch named
+ * must pass `gate`, the child session's fallback gate with its parent's, at the effort it would run at: a fallback
+ * promoted in place of an unavailable named model, a model a restored child continues on, or the model a launch that
+ * names none starts on.
+ */
+function assertStartModelAllowed(input: {
+	readonly spec: ChildSpec;
+	/** The model the child selected itself, before its parent's session options fill one in. */
+	readonly ownModel: Model<Api> | undefined;
+	readonly gate: CreateAgentSessionOptions["isFallbackModelAllowed"];
+	/** The model the child session starts on. */
+	readonly model: Model<Api> | undefined;
+	readonly effort: string | undefined;
+}): void {
+	const { spec, gate, model, effort } = input;
+	// A named model the launch could not resolve is checked once its session has picked a model.
+	if (!gate || !model || (spec.namedModel !== undefined && input.ownModel === undefined)) return;
+	const named = spec.namedModel === undefined ? undefined : spec.resolveCandidateModel?.(spec.namedModel)?.model;
+	if (named?.provider === model.provider && named.id === model.id) return;
+	if (gate(model, effort)) return;
+	throw new Error(
+		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the launch's modelConstraints do not allow it. No other model was used.`,
+	);
 }
 
 function cancelledEnvelope(
@@ -928,6 +1013,7 @@ export class AdmittedChild {
 export interface ChildRuntimeMetadata {
 	model?: string;
 	thinking?: string;
+	requestedModel?: string;
 }
 
 export interface RunningAttempt {
@@ -1238,6 +1324,8 @@ export class SubagentControlRuntime {
 			const launchLeafId = sessionManager.getLeafId();
 			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
 			let created: { session: AgentSession };
+			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
+			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
 			if (admitted.spec.testSession) {
 				created = { session: createTestSession(sessionManager, admitted.spec) };
 			} else {
@@ -1289,6 +1377,16 @@ export class SubagentControlRuntime {
 						? { fallbackModels: pinnedFallbacks }
 						: {}),
 				};
+				// Checked against the gate the child session gets, the parent's included, at the effort it starts at; once
+				// more after the session picked its default effort, when the launch chose none.
+				startGate = inherited.isFallbackModelAllowed;
+				assertStartModelAllowed({
+					spec: admitted.spec,
+					ownModel: candidate.model ?? admitted.policy.model,
+					gate: inherited.isFallbackModelAllowed,
+					model: inherited.model,
+					effort: explicitEffort.thinkingLevel ?? inherited.thinkingLevel,
+				});
 				const resourceLoader = new DefaultResourceLoader(
 					inProcessChildResourceLoaderOptions({
 						cwd: admitted.policy.cwd,
@@ -1346,6 +1444,21 @@ export class SubagentControlRuntime {
 			}
 			clearTimeout(startTimer);
 			session = created.session;
+			if (!admitted.spec.testSession) {
+				const ownModel = candidate.model ?? admitted.policy.model;
+				// A named model the launch could not resolve itself, as with a host that supplies no resolver, runs only when
+				// the child session started on it; never on the model its parent's options or settings filled in (#4188).
+				if (admitted.spec.namedModel !== undefined && !ownModel)
+					assertStartedOnNamedModel(admitted.spec.namedModel, session.model);
+				// The model and effort the session actually starts on, after its default, restore and clamping rules.
+				assertStartModelAllowed({
+					spec: admitted.spec,
+					ownModel,
+					gate: startGate,
+					model: session.model,
+					effort: session.thinkingLevel,
+				});
+			}
 			const transcriptSession = session;
 			// Snapshot at the public session-event boundary, never ahead of its queued events.
 			let observedStreamingMessage: AssistantMessage | undefined;
@@ -1489,8 +1602,18 @@ export class SubagentControlRuntime {
 			const sessionFile = session.sessionFile;
 			const producedMessages = ownMessages();
 			const output = outputFor(producedMessages);
-			// A child that settled without a stop and completed no successful turn of its own failed (#3987).
-			const noOutput = termination === undefined ? noSuccessfulTurnCause(producedMessages) : undefined;
+			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
+			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
+			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
+			const noOutput =
+				failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
+					? namedModelFailureCause(
+							admitted.spec.namedModel,
+							namedModelId(admitted.spec),
+							attemptedModels,
+							failure.modelError,
+						)
+					: failure?.cause;
 			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
@@ -1722,9 +1845,11 @@ export class SubagentControlRuntime {
 		const model = running.currentModel;
 		const thinking = running.currentThinking;
 		if (model === undefined && thinking === undefined) return undefined;
+		const requestedModel = running.child.spec.requestedModel;
 		return {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
+			...(requestedModel === undefined ? {} : { requestedModel }),
 		};
 	}
 

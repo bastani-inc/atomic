@@ -69,6 +69,11 @@ export type AgentIntent = {
 	cwd?: string;
 	parentTaskId?: TaskId;
 	readonly routerSelection?: RouterSelection;
+	/**
+	 * The model the launch asked for (`provider/model[:effort]`), kept beside the model the task reports it ran on so
+	 * a fallback to another model is visible.
+	 */
+	readonly requestedModel?: string;
 	/** Heartbeat cadence for this task in milliseconds; `0` disables. Omitted uses the owner default. */
 	readonly heartbeatMs?: number;
 };
@@ -149,10 +154,12 @@ export type TaskRecord = {
 	kind: "agent" | "command";
 	title: string;
 	agentName?: string;
-	/** Resolved execution settings, retained after completion. */
+	/** Resolved execution settings, retained after completion: the model it ran on last. */
 	model?: string;
 	thinking?: string;
 	readonly routerSelection?: RouterSelection;
+	/** The model the launch asked for; `model` differs from it after a fallback to another model. */
+	readonly requestedModel?: string;
 	/** Heartbeat cadence the task was launched with; `0` disables. Omitted uses the owner default. */
 	readonly heartbeatMs?: number;
 	execution: Execution;

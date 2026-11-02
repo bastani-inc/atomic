@@ -346,6 +346,7 @@ export class TaskHeartbeatMonitor {
 			title: singleLine(task.title, TITLE_CHARS),
 			...(task.agentName === undefined ? {} : { agentName: singleLine(task.agentName, TITLE_CHARS) }),
 			...(task.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
+			...(task.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 			elapsedMs: Math.max(0, at - entry.startedAt),
 			intervalMs: entry.intervalMs,
 		};

@@ -154,7 +154,23 @@ export interface RunSyncOptions {
 	workflowSessionMetadata?: SessionWorkflowMetadata;
 	/** Override the agent's default model (format: "provider/id" or just "id") */
 	modelOverride?: string;
+	/**
+	 * False when `modelOverride` is not a model the launch named, as for a restored child continuing on the model its
+	 * parent gave it. Otherwise a launch whose `modelOverride` or agent names a concrete model runs it with only the
+	 * agent's own fallbackModels (#4188).
+	 */
+	runsNamedModel?: false;
+	/**
+	 * The model the original launch asked for, when this launch continues it on another one, as a restored child that
+	 * had fallen back does. Reported beside the model it runs on (#4188).
+	 */
+	requestedModel?: string;
 	modelRoute?: import("../runs/shared/model-router.js").ModelRoute;
+	/**
+	 * The launch's own `modelConstraints`. With the agent's, they gate every model execution fallback may move the child
+	 * to; an auto-routed launch's route already holds them (#4188).
+	 */
+	modelConstraints?: import("./model-constraints.js").ModelConstraints;
 	/** Registry models available for heuristic bare-model resolution */
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
 	/** Providers known to the registry before auth filtering */
@@ -168,7 +184,7 @@ export interface RunSyncOptions {
 	resolveCandidateModel?: CandidateModelResolver;
 	/** Current parent-session provider to prefer for ambiguous bare model ids */
 	preferredModelProvider?: string;
-	/** Current parent-session model to try after configured fallback models */
+	/** Current parent-session model: the model of a launch that names none, and its last fallback (#4188). */
 	currentModel?: string;
 	/**
 	 * Current parent-session thinking level. Inherited by a child that pins no

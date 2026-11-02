@@ -1,3 +1,4 @@
+import { splitFallbackModel } from "../fallback-models.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
@@ -24,11 +25,27 @@ export type TaskCompletionNotice = {
 	taskId: string;
 	model?: string;
 	thinking?: string;
+	/** The model the launch asked for, when the task records one. */
+	requestedModel?: string;
 };
+
+/**
+ * The model-facing line saying an agent ran on another model than its launch asked for, or undefined when it ran on
+ * that model, at any effort, or either is unknown. Task records name the model without its effort.
+ */
+export function ranOnModelLine(
+	task?: Partial<Pick<TaskRecord, "kind" | "model" | "requestedModel">>,
+): string | undefined {
+	if (task?.kind !== "agent" || task.model === undefined || task.requestedModel === undefined) return undefined;
+	const requested = splitFallbackModel(task.requestedModel).modelId;
+	const sameModel = requested.includes("/") ? requested === task.model : task.model.endsWith(`/${requested}`);
+	return sameModel ? undefined : `Model: ran on ${task.model}, not the requested ${task.requestedModel}.`;
+}
 
 export function taskCompletionNotice(
 	envelope: TaskCompletionEnvelope,
-	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking">,
+	task?: Pick<TaskRecord, "kind" | "title" | "agentName" | "model" | "thinking"> &
+		Partial<Pick<TaskRecord, "requestedModel">>,
 	output?: string,
 ): TaskCompletionNotice {
 	const exitCode =
@@ -44,6 +61,7 @@ export function taskCompletionNotice(
 		taskId: envelope.taskId,
 		...(task?.kind === "agent" && task.model !== undefined ? { model: task.model } : {}),
 		...(task?.kind === "agent" && task.thinking !== undefined ? { thinking: task.thinking } : {}),
+		...(task?.kind === "agent" && task.requestedModel !== undefined ? { requestedModel: task.requestedModel } : {}),
 	};
 }
 
@@ -68,7 +86,8 @@ function resumeId(envelope: TaskCompletionEnvelope, task?: Partial<Pick<TaskReco
 /** Human/model-facing notice; the envelope remains the structured delivery identity. */
 export function formatTaskCompletion(
 	envelope: TaskCompletionEnvelope,
-	task?: Pick<TaskRecord, "kind" | "title" | "agentName"> & Partial<Pick<TaskRecord, "launchOperationId">>,
+	task?: Pick<TaskRecord, "kind" | "title" | "agentName"> &
+		Partial<Pick<TaskRecord, "launchOperationId" | "model" | "requestedModel">>,
 	output?: string,
 ): string {
 	const singleLine = (text: string) => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
@@ -104,6 +123,8 @@ export function formatTaskCompletion(
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
 	];
+	const ranOn = ranOnModelLine(task);
+	if (ranOn) lines.push(ranOn);
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
 	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
 	if (result.kind === "cancelled") lines.push(`Stop reason: ${result.cause}`);

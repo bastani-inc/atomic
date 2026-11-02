@@ -185,7 +185,7 @@ Atomic currently bundles these agents from `@bastani/subagents`:
 | `code-simplifier` | Simplify recently changed code under its behavior-preservation “doors” rubric. | Yes |
 | `worker` | Implement an approved task or handoff, validate the narrow change, and escalate product, architecture, or scope decisions to its supervisor. | Yes |
 
-Every bundled agent uses `model: "auto"`, without a pinned fallback chain. To pin a role, set `subagents.agentOverrides.<name>.model` in user or project settings, or pass a concrete `model` on one call. To restrict automatic choices, use `modelConstraints`, for example `{ "allowedEfforts": ["high"] }`. Routing and execution fallback do not change your main-chat model.
+Every bundled agent uses `model: "auto"`, without a pinned fallback chain. To pin a role, set `subagents.agentOverrides.<name>.model` in user or project settings, or pass a concrete `model` on one call. To restrict automatic choices, use `modelConstraints`, for example `{ "allowedEfforts": ["high"] }`. Routing and execution fallback do not change your main-chat model. A concrete `model` runs as named: the child falls back only to its agent's own `fallbackModels` that `modelConstraints` allow, and otherwise fails with an error that names the model. See [Fallback models](/subagents/reference#fallback-models).
 
 Read-oriented agents inspect and report. `debugger`, `code-simplifier`, and `worker` can edit files, so give them an explicit scope and validation target. The debugger should apply and validate an in-scope fix, not stop at a proposed patch.
 
