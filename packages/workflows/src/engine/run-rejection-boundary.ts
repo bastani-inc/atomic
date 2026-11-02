@@ -364,6 +364,16 @@ function afterPendingRejectionReports(): Promise<void> {
 	});
 }
 
+/**
+ * The root run whose workflow code is executing on the current async path, or undefined outside any run.
+ *
+ * A run's continuations keep its scope after the run ends, so code that settles late (a `.catch` on a durable step
+ * rejected by a quit) still resolves to its run.
+ */
+export function currentRunTreeId(): string | undefined {
+	return sharedBoundary().store.getStore()?.rootRunId;
+}
+
 export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRejectionScope {
 	const boundary = sharedBoundary();
 	ensureInstalled(boundary);

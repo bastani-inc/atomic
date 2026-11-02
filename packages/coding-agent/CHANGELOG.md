@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- In an interactive session, console output from a workflow's own code no longer floods the chat with one status line per message. It goes to a per-run log under `~/.atomic/agent/workflow-logs/`, and the chat shows one line per run naming that file. Cancellations from quitting a run never produce that line, so quitting a run whose code logs each failed step no longer prints a line per pending step. Print mode, SDK hosts and pooled worker processes still write console output to stderr. ([#4175](https://github.com/bastani-inc/atomic/issues/4175))
+
 ## [0.9.61] - 2026-11-02
 
 Local worker pools that hold up under faults and load, a lighter terminal under heavy workflow load, and workflows that can work in any repository's worktree.

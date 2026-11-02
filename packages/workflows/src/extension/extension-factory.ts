@@ -1,5 +1,7 @@
-import { registerExtensionContextRetirementEffect } from "@bastani/atomic";
+import { join } from "node:path";
+import { getAgentDir, registerExtensionContextRetirementEffect } from "@bastani/atomic";
 import { availableStoreDurableBackend } from "../durable/store-backend.js";
+import { routeWorkflowConsoleOutput } from "../engine/run-console.js";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import type { Store } from "../shared/store.js";
@@ -128,6 +130,8 @@ function factory(pi: ExtensionAPI): void {
 	let hostSessionContext: PiEventContext | undefined;
 	pi.on?.("session_start", (_event, ctx) => {
 		hostSessionContext = ctx;
+		// The interactive chat shows engine stderr line by line, so workflow code's console output goes to run logs (#4175).
+		if (ctx?.hasUI === true) routeWorkflowConsoleOutput(join(getAgentDir(), "workflow-logs"));
 	});
 	// Disposal and session switches abort the host session's lifetime right after sealing this extension, before any
 	// shutdown handler runs, so it is set before a run can observe a closed-session error. The lifetime is read when
