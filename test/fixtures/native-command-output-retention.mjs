@@ -4,14 +4,17 @@
 //   COMMANDS  pipe commands each owner runs (default 20)
 //   BYTES     bytes each command prints (default 500000)
 //   OPEN=1    runs every batch under one owner that stays open, as a long-lived session does, and reports after each
+//   PTY=1     runs the commands on a terminal (PTY), which keeps its output in memory only: no spool
 // Each line: { owner, rss, heapUsed, readBack }, where `readBack` says whether the batch's first command still reads
-// back its exact output after its owner closed (or, with OPEN=1, after it settled).
+// back its exact output after its owner closed (or, with OPEN=1, after it settled); null for terminal commands, whose
+// output a terminal reformats.
 import * as native from "@bastani/atomic-natives";
 
 const OWNERS = Number(process.env.OWNERS ?? 5);
 const COMMANDS = Number(process.env.COMMANDS ?? 20);
 const BYTES = Number(process.env.BYTES ?? 500_000);
 const OPEN = process.env.OPEN === "1";
+const PTY = process.env.PTY === "1";
 const supervisor = new native.TaskSupervisor();
 
 function openOwner() {
@@ -55,7 +58,7 @@ for (let owner = 0; owner < OWNERS; owner++) {
 			{
 				kind: "command",
 				command: `yes 'owner-${owner}-command-${command}' | head -c ${BYTES}`,
-				terminal: { kind: "pipe" },
+				terminal: PTY ? { kind: "pty", columns: 120, rows: 40 } : { kind: "pipe" },
 			},
 			`command-${owner}-${command}`,
 		);
@@ -67,7 +70,7 @@ for (let owner = 0; owner < OWNERS; owner++) {
 		tasks.push(started.value);
 	}
 	if (!OPEN) await closeOwner(opened);
-	const readBack = (await readAll(tasks[0])) === expected(owner, 0);
+	const readBack = PTY ? null : (await readAll(tasks[0])) === expected(owner, 0);
 	globalThis.gc();
 	globalThis.gc();
 	await new Promise((resolve) => setTimeout(resolve, 100));
