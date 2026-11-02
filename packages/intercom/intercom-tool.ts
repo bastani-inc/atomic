@@ -23,9 +23,20 @@ import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from ".
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
 import { runIntercomOperation, type IntercomAttemptResult } from "./tool-retry.js";
+import { PendingSendTimeoutError } from "./broker/pending-send-registry.js";
 
 function retryErrorDetails(retryToken: string | undefined): Record<string, unknown> {
 	return retryToken === undefined ? { error: true } : { error: true, retryToken };
+}
+
+/**
+ * The broker answered its health check but never answered this send, whose frame the client had already written, so
+ * it may still queue or deliver the message. Reporting that as a failure invites a resend, which arrives as a second
+ * message (#4177). A broker that misses its health check too is a recoverable disconnect, which the tool already
+ * retries and reports as an unknown outcome.
+ */
+function sendOutcomeUnknown(error: unknown): boolean {
+	return error instanceof PendingSendTimeoutError;
 }
 
 function retainRecoverableRetry(
@@ -705,6 +716,16 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               } else {
                 retryIdentities.release(retryIdentity);
               }
+            }
+            if (failure === error && sendOutcomeUnknown(error)) {
+              return {
+                content: [{
+                  type: "text",
+                  text: `The broker did not answer the send to "${to}" in time, so whether the message was queued or delivered is unknown: it may still arrive. Check before sending it again (\`intercom list\` shows queued counts), because a new send is a new message.`,
+                }],
+                isError: true,
+                details: { error: true, outcome: "unknown" },
+              };
             }
             return {
               content: [{
