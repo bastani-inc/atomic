@@ -539,7 +539,9 @@ describe("settings.json schema", () => {
 		assert.equal(settings.getTransport(), defaults.transport);
 		assert.equal(settings.getSteeringMode(), defaults.steeringMode);
 		assert.equal(settings.getFollowUpMode(), defaults.followUpMode);
-		assert.deepEqual(settings.getCompactionSettings(), defaults.compaction);
+		const { planningTimeoutMs, ...compactionDefaults } = defaults.compaction;
+		assert.deepEqual(settings.getCompactionSettings(), compactionDefaults);
+		assert.equal(settings.getCompactionPlanningTimeoutMs(), planningTimeoutMs);
 		assert.deepEqual(settings.getBranchSummarySettings(), defaults.branchSummary);
 		assert.deepEqual(settings.getSessionSummarySettings(), defaults.sessionSummary);
 		assert.deepEqual(settings.getRetrySettings(), {

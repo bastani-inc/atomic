@@ -11,6 +11,8 @@ export const SETTINGS_DEFAULTS = {
 		reserveTokens: 16384,
 		compression_ratio: 0.5,
 		preserve_recent: 2,
+		/** Wall-clock limit on automatic compaction's model planning, so it cannot block a turn (#4198). */
+		planningTimeoutMs: 300_000,
 	},
 	branchSummary: {
 		reserveTokens: 16384,

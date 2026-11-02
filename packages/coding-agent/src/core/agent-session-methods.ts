@@ -81,8 +81,11 @@ export interface SessionCompactOptions extends Partial<VerbatimCompactionParamet
 }
 
 export interface VerbatimCompactionApplyOptions {
-	/** Per-model planner credentials; a borrowed fallback uses its own, never the session model's. */
-	resolvePlannerAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
+	/**
+	 * Per-model planner credentials; a borrowed fallback uses its own, never the session model's.
+	 * `signal` aborts when compaction is cancelled or its planning time limit runs out.
+	 */
+	resolvePlannerAuth: (model: Model<Api>, signal?: AbortSignal) => Promise<PlannerAuth | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
 	compression_ratio?: number;
