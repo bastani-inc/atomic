@@ -339,3 +339,90 @@ test("a memory journal keeps receipts and a pending-stage message queued behind 
 	cleanups.push(() => hydrated.close());
 	assert.deepEqual(projectionState(hydrated, [sticky.id], 20), projectionState(backend, [sticky.id], 20));
 });
+
+function toolCheckpoint(index: number | string, workflowId = "run") {
+	return {
+		kind: "tool" as const,
+		workflowId,
+		checkpointId: `checkpoint-${index}`,
+		name: "tool",
+		argsHash: `hash-${index}`,
+		output: `output-${index}`,
+		completedAt: 2,
+	};
+}
+
+test("a burst of checkpoints commits in a few journal transactions and the workflow's next checkpoint waits only for them (#4174)", async () => {
+	const { journal, transactions } = await countingJournal();
+	const backend = await openBackend(journal);
+	await register(backend);
+	const before = transactions();
+	// A fan-out records one boundary checkpoint per child without awaiting any; the workflow's next step queues behind.
+	const burst = Array.from({ length: 300 }, (_, index) => backend.commitCheckpoint(toolCheckpoint(index)));
+	await backend.commitCheckpoint(toolCheckpoint("next"));
+	const beforeNextCommitted = transactions() - before;
+	await Promise.all(burst);
+
+	// One transaction per checkpoint put 300 commits ahead of the next one; a batch is 256 appends.
+	assert.ok(
+		beforeNextCommitted <= 4,
+		`${beforeNextCommitted} journal transactions before the next checkpoint committed`,
+	);
+	const written = (await journalEntries(journal)).slice(-301);
+	assert.deepEqual(
+		written.map((entry) => (entry.event.payload as { checkpointId: string }).checkpointId),
+		[...Array.from({ length: 300 }, (_, index) => `checkpoint-${index}`), "checkpoint-next"],
+	);
+	assert.deepEqual(
+		written.map((entry) => entry.seq),
+		Array.from({ length: 301 }, (_, index) => written[0]!.seq + index),
+	);
+	for (const index of [0, 150, 299, "next"])
+		assert.equal(backend.getToolOutput("run", `hash-${index}`), `output-${index}`);
+});
+
+test("checkpoints in a batch keep first-writer-wins, and one for an unregistered run settles without a write", async () => {
+	const { journal } = await countingJournal();
+	const backend = await openBackend(journal);
+	await register(backend);
+	const before = (await journalEntries(journal)).length;
+	await Promise.all([
+		backend.commitCheckpoint(toolCheckpoint(1)),
+		backend.commitCheckpoint({ ...toolCheckpoint(1), output: "changed" }),
+		backend.commitCheckpoint(toolCheckpoint(2)),
+		backend.commitCheckpoint(toolCheckpoint(1, "unregistered")),
+		backend.commitCheckpoint(toolCheckpoint(2, "unregistered")),
+	]);
+	assert.equal(backend.getToolOutput("run", "hash-1"), "output-1");
+	assert.equal((await journalEntries(journal)).length, before + 2);
+	const unregistered: JournalEntry[] = [];
+	for await (const entry of journal.read("unregistered")) unregistered.push(entry);
+	assert.deepEqual(unregistered, []);
+	assert.equal(backend.getToolOutput("unregistered", "hash-1"), undefined);
+});
+
+test("receipts and checkpoints queued back to back share one transaction in issue order (#4174)", async () => {
+	const { journal, transactions } = await countingJournal();
+	const backend = await openBackend(journal);
+	await register(backend);
+	const sticky = message("sticky");
+	assert.equal(await backend.persistPendingStageMessages("run", [sticky]), true);
+	const before = (await journalEntries(journal)).length;
+	const started = transactions();
+	await Promise.all([
+		...receiptBurst(backend, sticky.id, 1),
+		backend.commitCheckpoint(toolCheckpoint(1)),
+		...receiptBurst(backend, sticky.id, 1, 1),
+		backend.commitCheckpoint(toolCheckpoint(2)),
+	]);
+	assert.equal(transactions() - started, 1);
+	assert.deepEqual(
+		(await journalEntries(journal)).slice(before).map((entry) => entry.event.type),
+		[
+			RUN_EVENT_TYPES.messageDelivered,
+			RUN_EVENT_TYPES.checkpointRecorded,
+			RUN_EVENT_TYPES.messageDelivered,
+			RUN_EVENT_TYPES.checkpointRecorded,
+		],
+	);
+});

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow that launches many child workflows onto local workers (`workflows.localWorkers`) no longer stalls its own next steps while the children start. Every child launch and every `ctx.tool` step wrote its checkpoint in a journal transaction of its own, one after another. So a loop that launched a few dozen children and then saved its state waited for each launch's write in turn, and on a journal busy with hundreds of workers that took minutes: the loop missed its timers and launches crawled. Checkpoints queued back to back now share one transaction. With 300 busy workers, the step after a 48-child burst finished in 78 ms at the 90th percentile (253 ms at most) instead of 3.4 to 9.4 s (14 s at most), and all 300 children were running in 13 s instead of 40 to 100 s. A workflow started from the SDK also no longer pauses its host for seconds at a time when the process holds thousands of finished runs. ([#4174](https://github.com/bastani-inc/atomic/issues/4174))
+
 ## [0.9.61] - 2026-11-02
 
 Local worker pools that hold up under faults and load, a lighter terminal under heavy workflow load, and workflows that can work in any repository's worktree.
