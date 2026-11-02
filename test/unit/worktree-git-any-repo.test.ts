@@ -142,7 +142,7 @@ describe("gitWorktreeDir reuses existing worktrees of any repository", () => {
 			mkdirSync(plainCwd);
 			assert.throws(
 				() => setupGitWorktree({ cwd: plainCwd, gitWorktreeDir: join(other, "packages") }),
-				/already exists but is not a Git worktree root/,
+				/gitWorktreeDir must not be inside another Git working tree/,
 			);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
@@ -435,6 +435,86 @@ describe("gitWorktreeDir never creates or reuses a checkout inside Git metadata"
 			}
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("gitWorktreeDir never nests a checkout inside another Git working tree", () => {
+	function assertRejectedWithoutWrites(invoking: string, gitWorktreeDir: string, watched: string): void {
+		const before = readdirSync(watched, { recursive: true, encoding: "utf8" }).sort();
+		const invokingBefore = registeredWorktrees(invoking);
+		const watchedBefore = registeredWorktrees(watched);
+		assert.throws(
+			() => setupGitWorktree({ cwd: join(invoking, "packages", "api"), gitWorktreeDir }),
+			/gitWorktreeDir must not be inside another Git working tree/,
+		);
+		assert.deepEqual(readdirSync(watched, { recursive: true, encoding: "utf8" }).sort(), before);
+		assert.deepEqual(registeredWorktrees(invoking), invokingBefore);
+		assert.deepEqual(registeredWorktrees(watched), watchedBefore);
+	}
+
+	test("rejects an empty subdirectory of another repository's checkout", () => {
+		const root = createScratch();
+		try {
+			const invoking = createGitRepo(root, "invoking");
+			const other = createGitRepo(root, "other");
+			const target = join(other, "empty-subdir");
+			mkdirSync(target);
+			assertRejectedWithoutWrites(invoking, target, other);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects a missing path under another repository's checkout", () => {
+		const root = createScratch();
+		try {
+			const invoking = createGitRepo(root, "invoking");
+			const other = createGitRepo(root, "other");
+			for (const target of [join(other, "new-wt"), join(other, "packages", "api", "deeper", "new-wt")]) {
+				assertRejectedWithoutWrites(invoking, target, other);
+				assert.equal(existsSync(target), false);
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("rejects allocating inside a non-empty subdirectory of another repository's checkout", () => {
+		const root = createScratch();
+		try {
+			const invoking = createGitRepo(root, "invoking");
+			const other = createGitRepo(root, "other");
+			const target = join(other, "notes");
+			mkdirSync(target);
+			writeFileSync(join(target, "untracked.txt"), "untracked\n");
+			assertRejectedWithoutWrites(invoking, target, other);
+			assertRejectedWithoutWrites(invoking, join(other, "packages"), other);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("still creates worktrees in containers outside every Git working tree", () => {
+		const root = createScratch();
+		try {
+			const repo = createGitRepo(root, "repo");
+			const missing = join(root, "containers", "missing", "repo-wt");
+			const created = setupGitWorktree({ cwd: repo, gitWorktreeDir: missing });
+			assert.equal(created.created, true);
+			assert.equal(created.worktreeRoot, missing);
+
+			const container = createNonEmptyRoot(root);
+			const allocated = setupGitWorktree({ cwd: repo, gitWorktreeDir: container });
+			assert.equal(allocated.created, true);
+			assert.equal(dirname(dirname(allocated.worktreeRoot)), container);
+
+			const otherRoot = createGitRepo(root, "other");
+			const reused = setupGitWorktree({ cwd: repo, gitWorktreeDir: otherRoot });
+			assert.equal(reused.created, false);
+			assert.equal(reused.worktreeRoot, otherRoot);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });

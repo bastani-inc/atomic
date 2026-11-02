@@ -244,9 +244,12 @@ function enclosingGitMetadataDirectory(target: string): string | undefined {
 
 /**
  * The one safety guard every gitWorktreeDir passes before anything is reused or
- * created: the path, or the nearest existing ancestor of a missing path, must not
+ * created. The path, or the nearest existing ancestor of a missing path, must not
  * be inside Git metadata (a `.git` directory, a linked worktree's admin directory,
- * a bare repository, or any other Git directory), nor inside the invoking checkout.
+ * a bare repository, or any other Git directory) nor inside the invoking checkout.
+ * Inside any other Git working tree only that tree's own root is accepted, for
+ * reuse; empty, missing and container paths below a working tree are rejected so
+ * no checkout is nested inside another repository.
  */
 function assertSafeGitWorktreeTarget(target: string, invokingRoot: string | undefined): void {
 	const gitDirectory = enclosingGitMetadataDirectory(target);
@@ -256,6 +259,13 @@ function assertSafeGitWorktreeTarget(target: string, invokingRoot: string | unde
 		);
 	}
 	if (invokingRoot !== undefined) validateWorktreeOutsideInvokingCheckout(target, invokingRoot);
+	const { existing, missing } = nearestExistingAncestor(target);
+	const workingTree = gitTopLevel(existing);
+	if (workingTree === undefined) return;
+	if (missing.length === 0 && comparableRealPath(target) === comparableRealPath(workingTree)) return;
+	throw new Error(
+		`gitWorktreeDir must not be inside another Git working tree: ${target} is inside ${workingTree}. Pass that checkout's root to reuse it, or a path outside every Git checkout.`,
+	);
 }
 
 function validateWorktreeOutsideInvokingCheckout(worktreeRoot: string, repoRoot: string): void {

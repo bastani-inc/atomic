@@ -42,6 +42,10 @@ function timedOutGit(): GitResult {
 	return { stdout: "", stderr: "", status: null, signal: null, elapsedMs: 60_001, error };
 }
 
+function notARepositoryGit(): GitResult {
+	return { stdout: "", stderr: "fatal: not a git repository", status: 128, signal: null, elapsedMs: 1 };
+}
+
 function failingGit(args: readonly string[]): GitResult {
 	return { stdout: "", stderr: `unexpected fake git call: ${args.join(" ")}`, status: 1, signal: null, elapsedMs: 1 };
 }
@@ -201,7 +205,7 @@ describe("workflow reusable git worktree git runner", () => {
 					sourceTopLevelCalls += 1;
 					return sourceTopLevelCalls === 1 ? timedOutGit() : successfulGit(`${repo}\n`);
 				}
-				return successfulGit(`${worktree}\n`);
+				return cwd === worktree ? successfulGit(`${worktree}\n`) : notARepositoryGit();
 			}
 			if (isArgs(args, ["rev-parse", "--git-common-dir"])) return successfulGit(`${commonDir}\n`);
 			if (isArgs(args.slice(0, 3), ["worktree", "add", "--detach"])) {
@@ -241,7 +245,8 @@ describe("workflow reusable git worktree git runner", () => {
 		let identityProbeCalls = 0;
 		const runner: GitRunner = (cwd, args) => {
 			if (isArgs(args, ["rev-parse", "--show-toplevel"])) {
-				return successfulGit(`${cwd === sourceCwd ? repo : worktree}\n`);
+				if (cwd === sourceCwd) return successfulGit(`${repo}\n`);
+				return cwd === worktree ? successfulGit(`${worktree}\n`) : notARepositoryGit();
 			}
 			if (isArgs(args, ["rev-parse", "--git-common-dir"])) {
 				identityProbeCalls += 1;
