@@ -1559,3 +1559,88 @@ test("a retained reconnecting stage follows its parent to the id the replacement
 		await f.close();
 	}
 });
+
+test("applying activity batches reads only the published runs, however many finished runs the store holds (#4182)", async () => {
+	const f = await fixture();
+	try {
+		// A long-lived host keeps thousands of finished runs; each one counts when anything reads its id.
+		let reads = 0;
+		for (let index = 0; index < 5_000; index++) {
+			const id = `finished-${index}`;
+			const finished = snapshot(id, { status: "completed", endedAt: 1 });
+			Object.defineProperty(finished, "id", {
+				enumerable: true,
+				get: () => {
+					reads++;
+					return id;
+				},
+			});
+			f.store.recordRunStart(finished);
+		}
+		reads = 0;
+		const batches = [
+			[{ work: f.first, runs: [childRun([stage("stage")])] }],
+			[
+				{ work: f.first, runs: [childRun([stage("stage", { sessionId: "session-a" })])] },
+				{ work: f.first, runs: [childRun([stage("stage", { sessionId: "session-a" }), stage("next")])] },
+			],
+		];
+		for (const batch of batches)
+			assert.deepEqual(await f.handoff.publishBatch(batch), [undefined, undefined].slice(0, batch.length));
+		assert.equal(
+			reads,
+			0,
+			`applying ${batches.length} activity batches read the id of a finished run ${reads} times`,
+		);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)?.stages.map((entry) => [entry.id, entry.sessionId]),
+			[
+				["stage", "session-a"],
+				["next", undefined],
+			],
+		);
+		assert.equal(f.store.run("finished-4999")?.status, "completed");
+	} finally {
+		await f.close();
+	}
+});
+
+test("the store finds runs by id through additions, replacements, removals and clears (#4182)", () => {
+	const store = createStore();
+	for (const id of ["a", "b", "c"]) store.recordRunStart(snapshot(id));
+	const replacement = snapshot("b", { name: "b2" });
+	store.recordRunStart(replacement);
+	assert.deepEqual(
+		store.runs().map((run) => run.id),
+		["a", "b", "c"],
+	);
+	assert.equal(store.run("b"), replacement);
+	assert.equal(store.removeRun("a"), true);
+	assert.equal(store.run("a"), undefined);
+	assert.equal(store.run("c")?.id, "c");
+	store.recordRunStart(snapshot("d"));
+	assert.deepEqual(
+		["b", "c", "d"].map((id) => store.run(id)?.id),
+		["b", "c", "d"],
+	);
+	assert.equal(
+		store.restoreActiveBlockedRun(snapshot("c", { status: "failed" }), "blocked", {
+			failureKind: "provider",
+			failureCode: "rate_limit",
+			failureRecoverability: "recoverable",
+			failureDisposition: "active_blocked",
+			failureMessage: "blocked",
+			resumable: true,
+		} as never),
+		true,
+	);
+	assert.equal(store.run("c")?.status, "running");
+	assert.deepEqual(
+		store.runs().map((run) => run.id),
+		["b", "c", "d"],
+	);
+	store.clear();
+	assert.equal(store.run("b"), undefined);
+	store.recordRunStart(snapshot("e"));
+	assert.equal(store.run("e")?.id, "e");
+});

@@ -31,7 +31,17 @@ type LifecycleTarget = Parameters<WorkflowObservationRuntime["lifecycle"]>[0];
 class FullWalkObservationRuntime extends WorkflowObservationRuntime {
 	private referencePrevious = new Map<string, LifecycleTarget>();
 	constructor(private readonly source: () => readonly RunSnapshot[]) {
-		super(source, () => {});
+		super(
+			{
+				all: source,
+				find: (runId) => source().find((run) => run.id === runId),
+				position: (runId) => {
+					const position = source().findIndex((run) => run.id === runId);
+					return position < 0 ? undefined : position;
+				},
+			},
+			() => {},
+		);
 	}
 
 	override capture(): void {

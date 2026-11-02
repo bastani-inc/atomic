@@ -97,6 +97,7 @@ export type PromptResolution = { runId: string; promptId: string; response: unkn
 export function makeStore(snap: StoreSnapshot): Store {
 	return {
 		runs: () => snap.runs as RunSnapshot[],
+		run: (runId) => (snap.runs as RunSnapshot[]).find((candidate) => candidate.id === runId),
 		notices: () => [],
 		activeRunId: () => snap.runs[0]?.id ?? null,
 		recordRunStart: () => {},
