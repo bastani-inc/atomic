@@ -86,7 +86,8 @@ test("a terminal UI session routes its runs' console output to the workflow log,
 	logFromRun("unowned-run", "from a run no session owns");
 
 	const path = workflowConsoleLogPath();
-	assert.ok(path?.startsWith(join(agentDir, "workflow-logs")));
+	assert.ok(path);
+	assert.ok(path.startsWith(join(agentDir, "workflow-logs")));
 	assert.deepEqual(terminal, [
 		`atomic-workflows: run tui-run console output is in ${path}`,
 		"from a run no session owns",
