@@ -14,6 +14,8 @@
 #   applied-http-500      makes the change, then fails with HTTP 500 anyway
 #   secondary-rate-limit  fails with GitHub's secondary rate limit 403
 #   http-403              fails with a permission 403
+#   dropped-connection    fails the way gh reports a connection closed without a response
+#                         (Go's `<Method> "<url>": EOF`), changing nothing
 #   partial-upload        (create only) leaves a draft with three assets, then fails with HTTP 502
 set -euo pipefail
 state=${RELEASE_FAKE_STATE:?RELEASE_FAKE_STATE is required}
@@ -47,6 +49,7 @@ fail_with() {
   http-502) echo "HTTP 502 ($api/431927874)" >&2 ;;
   secondary-rate-limit) echo "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. ($api/431927874)" >&2 ;;
   http-403) echo "HTTP 403: Resource not accessible by integration ($api/431927874)" >&2 ;;
+  dropped-connection) echo "Patch \"$api/431927874\": EOF" >&2 ;;
   esac
   exit 1
 }
@@ -59,7 +62,7 @@ require_release() {
 
 outcome=$(next_outcome "gh-$command")
 case $outcome in
-http-500 | http-502 | secondary-rate-limit | http-403) fail_with "$outcome" ;;
+http-500 | http-502 | secondary-rate-limit | http-403 | dropped-connection) fail_with "$outcome" ;;
 esac
 
 case $command in

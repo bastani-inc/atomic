@@ -34,9 +34,11 @@ npm_publish_failure_kind() {
 }
 
 # gh_error_is_transient FILE: whether gh's stderr shows a GitHub API failure worth
-# retrying: a 5xx, a 429 or secondary rate limit, or a dropped connection.
+# retrying: a 5xx, a 429 or secondary rate limit, or a dropped or timed-out
+# connection. gh reports a connection closed without a response the way Go's
+# HTTP client does, as `<Method> "<url>": EOF`.
 gh_error_is_transient() {
-  grep -Eqi 'HTTP (5[0-9][0-9]|429)|secondary rate limit|abuse detection|connection (reset|refused)|i/o timeout|TLS handshake timeout|timeout awaiting response headers|unexpected EOF|stream error' "$1"
+  grep -Eqi 'HTTP (5[0-9][0-9]|429)|secondary rate limit|abuse detection|connection (reset|refused)|broken pipe|i/o timeout|TLS handshake timeout|timeout awaiting response headers|Client\.Timeout exceeded|context deadline exceeded|GOAWAY|stream error|(^|: )(unexpected )?EOF$' "$1"
 }
 
 # gh_retry ARGS...: run `gh ARGS...`, retrying transient GitHub API failures with

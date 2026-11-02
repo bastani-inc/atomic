@@ -320,7 +320,13 @@ function publishGitHubRelease(rel: Release, tag: string): StepRun {
 describe("publish-github-release", () => {
 	test("a transient GitHub API failure while undrafting is retried (#4217)", () => {
 		// 0.9.66: npm had fully published when `gh release edit` got HTTP 500, and the release stayed a draft.
-		for (const outcome of ["http-500", "http-502", "applied-http-500", "secondary-rate-limit"]) {
+		for (const outcome of [
+			"http-500",
+			"http-502",
+			"applied-http-500",
+			"secondary-rate-limit",
+			"dropped-connection",
+		]) {
 			const rel = release();
 			setRelease(rel, "draft");
 			script(rel, "gh-edit", [outcome, "ok"]);
