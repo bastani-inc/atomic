@@ -4,11 +4,11 @@
 
 ### Changed
 
-- A workflow's `gitWorktreeDir` (the `git_worktree_dir` input of `goal` and `ralph`) that names a non-empty directory which is not a Git checkout is now used as a place to put worktrees: the run gets its own checkout at `<dir>/<4-hex>/<repository-name>`, created from `base_branch` of the invoking repository, and leaves the directory's existing content alone. Every stage, retry and resume of that run uses the same checkout, and other runs pointing at the same directory get their own. An existing empty directory becomes the worktree. Before, both failed with `gitWorktreeDir already exists but is not a Git worktree`.
+- A workflow's `gitWorktreeDir` (the `git_worktree_dir` input of `goal` and `ralph`) that names a non-empty directory which is not a Git checkout is now used as a place to put worktrees: the run gets its own checkout at `<dir>/<4-hex>/<repository-name>`, created from `base_branch` of the invoking repository, and leaves the directory's existing content alone. Every stage, retry and resume of that run uses the same checkout, and other runs pointing at the same directory get their own. An existing empty directory becomes the worktree. Before, both failed with `gitWorktreeDir already exists but is not a Git worktree`. ([#4162](https://github.com/bastani-inc/atomic/pull/4162))
 
 ### Fixed
 
-- A workflow's `gitWorktreeDir` (the `git_worktree_dir` input of `goal` and `ralph`) can name an existing worktree of any repository, even when the session runs in another repository or outside any Git repository. Before, every launch failed before its first stage with `gitWorktreeDir already exists but does not belong to the invoking Git repository` or `gitWorktreeDir requires the workflow to be invoked from inside a Git repository`. Stages start at the worktree root unless the session is in the same repository. Creating a new worktree still requires starting inside the source repository, and the error now says to pass an existing worktree instead.
+- A workflow's `gitWorktreeDir` (the `git_worktree_dir` input of `goal` and `ralph`) can name an existing worktree of any repository, even when the session runs in another repository or outside any Git repository. Before, every launch failed before its first stage with `gitWorktreeDir already exists but does not belong to the invoking Git repository` or `gitWorktreeDir requires the workflow to be invoked from inside a Git repository`. Stages start at the worktree root unless the session is in the same repository. Creating a new worktree still requires starting inside the source repository, and the error now says to pass an existing worktree instead. ([#4162](https://github.com/bastani-inc/atomic/pull/4162))
 
 ## [0.9.61] - 2026-11-02
 
