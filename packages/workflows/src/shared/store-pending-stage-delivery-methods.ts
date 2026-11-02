@@ -282,7 +282,7 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 	};
 }
 
-function resolvePendingStageIdentity(
+export function resolvePendingStageIdentity(
 	run: {
 		readonly stages: readonly { readonly id: string; readonly name: string; readonly replayKey?: string }[];
 	},

@@ -1,6 +1,8 @@
-import type { ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import net from "node:net";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 
 const BROKER_TERMINATE_GRACE_MS = 1_000;
@@ -59,6 +61,23 @@ export class IntercomBrokerFixture {
 				resolveClosed();
 			});
 		});
+	}
+
+	/**
+	 * Starts the source checkout's broker under jiti, tracked by this fixture, and resolves once it holds a session
+	 * (see {@link holdSession}). Call {@link overrideAgentDir} first so the broker and the suite share its socket.
+	 */
+	async startSourceBroker(timeoutMs: number): Promise<void> {
+		const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
+		const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+		const intercomPath = fileURLToPath(new URL("../../packages/intercom", import.meta.url));
+		this.trackBroker(
+			spawn(process.execPath, [getJitiCliPath(intercomPath), join(intercomPath, "broker/broker.ts")], {
+				env: process.env,
+				stdio: "ignore",
+			}),
+		);
+		await this.holdSession(getBrokerSocketPath(), timeoutMs);
 	}
 
 	assertRunning(): void {
