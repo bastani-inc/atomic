@@ -24,6 +24,7 @@ export const SETTINGS_DEFAULTS = {
 		maxRetries: 3,
 		baseDelayMs: 2000,
 		maxAgentDelayMs: DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
+		fallbackOnContentFilter: true,
 		provider: {
 			maxRetryDelayMs: 60000,
 		},

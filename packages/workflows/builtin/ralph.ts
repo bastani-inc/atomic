@@ -31,7 +31,7 @@ export default workflow({
     git_worktree_dir: Type.String({
       default: "",
       description:
-        "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
+        "Optional Git worktree path. Leave at the default unless the user explicitly requested worktree isolation — stages never create git worktrees on their own. Absolute paths are used as-is; relative paths resolve from the invoking repo root (or the invoking cwd outside a Git repo). An existing Git worktree root of any repository is reused as-is, even from another repository or a non-Git cwd. Creating a worktree requires starting inside the source Git repo: a missing path or an empty directory becomes a new worktree from base_branch, and a non-empty non-Git directory is treated as a worktree root that gets this run's own <dir>/<4-hex>/<repo-name> checkout, reused on resume.",
     }),
     create_pr: Type.Boolean({
       default: false,
