@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A workflow root that runs children on local workers (`workflows.localWorkers`) and then crashed, for example when the host killed Atomic, now resumes after `workflows.localWorkers.count`, `workflows.admission.limits` or `workflows.admission.host` changed. Before, any such change refused the resume with `Worker definition compatibility or immutable resource configuration changed`. The error did not say what had changed, and a root with hours of completed work had to start over. The root now resumes with the current values and records them. Completed steps replay from the journal, and new work runs the current code, including any edited helper module. A change that the root's recorded work depends on is still refused, and the error now names each one with its old and new value: a worker definition added or removed, an edited definition entry module, changed `admission.userLimits` or `admission.userDatabase`, or local workers or admission turned on or off ([#4196](https://github.com/bastani-inc/atomic/issues/4196)).
+
 ## [0.9.65] - 2026-11-02
 
 Subagents launched on a named model stay on that model or fail clearly, and every report names the model a subagent actually ran on.

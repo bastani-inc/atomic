@@ -34,7 +34,12 @@ interface CoordinatorEvent {
 	message?: string;
 }
 
-function startCoordinator(directory: string, mode: "fresh" | "restart") {
+/** `settings` are the `localWorkers` and `admission` options a restart passes, as a resume from the CLI passes settings. */
+function startCoordinator(
+	directory: string,
+	mode: "fresh" | "restart",
+	{ definition = childPath, settings }: { definition?: string; settings?: object } = {},
+) {
 	const child = spawnProcess(
 		[
 			process.execPath,
@@ -42,9 +47,10 @@ function startCoordinator(directory: string, mode: "fresh" | "restart") {
 			join(directory, "journal.sqlite"),
 			directory,
 			ROOT,
-			childPath,
+			definition,
 			join(directory, "release"),
 			mode,
+			...(settings === undefined ? [] : [JSON.stringify(settings)]),
 		],
 		{
 			cwd: directory,
@@ -209,6 +215,105 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(after[0]!.id, before!.id);
 			assert.equal(after[0]!.state, "completed");
 			assert.ok(after[0]!.generation > before!.generation, "the restart takes a new fenced attempt");
+		} finally {
+			await first.stop();
+			await second?.stop();
+			removeTempDirectory(directory);
+		}
+	},
+	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
+);
+
+/** A helper module the resumable child imports, as a workflow's gate functions import a library file. */
+const helperSource = (version: string) =>
+	`export function gate(label: string): string {\n\treturn "${version}:" + label;\n}\n`;
+/** The lifecycle child's shape, but each step reports what the helper returned instead of a process instance id. */
+const helperChildSource = `import { existsSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import { Type } from "typebox";
+import { workflow } from "@bastani/atomic/workflows";
+import { gate } from "./lib/gate.ts";
+
+export const child = workflow({
+	name: "pool-resume-helper-child",
+	description: "Records a step through a helper, then waits for release",
+	inputs: { releasePath: Type.String() },
+	outputs: { firstPid: Type.Number(), finalPid: Type.Number(), firstInstance: Type.String(), finalInstance: Type.String() },
+	async run(ctx) {
+		const first = await ctx.tool("checkpoint", {}, async () => ({ pid: process.pid, instance: gate("first") }));
+		const final = await ctx.tool("finish", {}, async () => {
+			while (!existsSync(ctx.inputs.releasePath)) await delay(20);
+			return { pid: process.pid, instance: gate("final") };
+		});
+		return { firstPid: first.pid, finalPid: final.pid, firstInstance: first.instance, finalInstance: final.instance };
+	},
+});
+`;
+
+test.skipIf(process.platform === "win32")(
+	"a crashed root resumes after an imported helper is edited and the pool size and root limits change, keeping its recorded steps (#4196)",
+	async () => {
+		const directory = makeTempDirectory("public-pool-resume-changes-");
+		const definition = join(directory, "workflows", "child.ts");
+		const helper = join(directory, "workflows", "lib", "gate.ts");
+		await writeFileEnsuringDir(definition, helperChildSource);
+		await writeFileEnsuringDir(helper, helperSource("v1"));
+		const first = startCoordinator(directory, "fresh", { definition });
+		let second: ReturnType<typeof startCoordinator> | undefined;
+		try {
+			await first.next("ready");
+			const recorded = await committedWorker(directory);
+			assert.equal(recorded.instance, "v1:first");
+			await first.stop();
+			await until("the orphaned worker to exit", () => (pidAlive(recorded.pid) ? undefined : true));
+			observe(directory, (database) =>
+				database.run(
+					"UPDATE wf_leases SET renewed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) - ? WHERE run_id = ?",
+					STALE_COORDINATOR_AGE_MS,
+					ROOT,
+				),
+			);
+			await writeFileEnsuringDir(helper, helperSource("v2"));
+			await writeFileEnsuringDir(join(directory, "release"), "ready");
+			// The fresh root saved one worker and limits { session: 2, process: 1 }; the settings have changed since.
+			second = startCoordinator(directory, "restart", {
+				definition,
+				settings: {
+					localWorkers: { count: 2, definitions: [{ path: definition, exportName: "child" }] },
+					admission: { limits: { session: 3, process: 2 } },
+				},
+			});
+			await second.next("ready");
+			const result = await second.next("result");
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			// The step recorded before the crash is replayed, not run again; the step after it runs the edited helper.
+			assert.equal(result.outputs?.firstInstance, "v1:first");
+			assert.equal(result.outputs?.finalInstance, "v2:final");
+			assert.equal(
+				observe(directory, (database) =>
+					Number(
+						database
+							.query(
+								"SELECT COUNT(*) AS count FROM wf_events WHERE json_extract(payload, '$.name') = 'checkpoint'",
+							)
+							.get()!.count,
+					),
+				),
+				1,
+			);
+			await second.stop();
+			// The root records the settings it resumed with, so its next resume starts from them.
+			const backend = await JournalDurableBackend.open(
+				await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } }),
+			);
+			try {
+				await backend.hydrateWorkflow(ROOT);
+				const resources = backend.getWorkflow(ROOT)?.resources;
+				assert.equal(resources?.localWorkers?.count, 2);
+				assert.deepEqual(resources?.admission?.limits, { session: 3, process: 2 });
+			} finally {
+				await backend.close();
+			}
 		} finally {
 			await first.stop();
 			await second?.stop();

@@ -118,6 +118,13 @@ export interface AdmissionOptions extends AdmissionConfiguration {
 	readonly stageStartMaxLoadPerCpu?: number;
 	readonly attempt?: { readonly id: string; readonly generation: number; readonly epoch: number };
 	readonly sampleHost?: () => { freeMemoryBytes?: number; load?: number };
+	/**
+	 * The root's saved `limits` and `host`, which every holder of the root admits against. `"check"` (the default)
+	 * saves them if none are and refuses others; `"replace"` saves these, so a resumed root runs under its current
+	 * limits (#4196), and only the root itself passes it, while it holds its lease; `"unchanged"` neither saves nor
+	 * checks them, for a check made before the root is admitted.
+	 */
+	readonly rootLimits?: "check" | "replace" | "unchanged";
 }
 type PermitRow = SqliteRow & {
 	operation: string;
@@ -216,11 +223,19 @@ export class SqlResourceAdmission {
 				OWNER_LEASE_MS,
 				boot,
 			);
+			const rootLimits = options.rootLimits ?? "check";
 			for (const [scope, limits] of [
 				[`root:${options.root}`, options.limits],
 				["user", options.userLimits],
 			] as const) {
-				if (!limits && (scope === "user" || !options.host)) continue;
+				const ofRoot = scope !== "user";
+				if (ofRoot && rootLimits === "unchanged") continue;
+				if (!limits && (scope === "user" || !options.host)) {
+					// A root resumed without limits must not keep admitting against the ones it saved before.
+					if (ofRoot && rootLimits === "replace")
+						await tx.run(`DELETE FROM ${admission.configuration} WHERE scope = ?`, scope);
+					continue;
+				}
 				const config = JSON.stringify({
 					session: limits?.session ?? null,
 					process: limits?.process ?? null,
@@ -233,6 +248,10 @@ export class SqlResourceAdmission {
 								},
 							}),
 				});
+				if (ofRoot && rootLimits === "replace") {
+					await tx.run(`INSERT OR REPLACE INTO ${admission.configuration} VALUES (?, ?)`, scope, config);
+					continue;
+				}
 				await tx.run(`INSERT OR IGNORE INTO ${admission.configuration} VALUES (?, ?)`, scope, config);
 				if (
 					(await tx.get(`SELECT config FROM ${admission.configuration} WHERE scope = ?`, scope))?.config !== config
