@@ -109,8 +109,14 @@ publish_package() {
     ((status != 0)) || return 0
     case $failure in
     exists)
-      echo "$name@$VERSION is already on npm (the registry refused to publish over it); skipping."
-      return 0
+      # npm refuses the same way for a version that was unpublished, so the
+      # refusal alone does not prove dependents can install this version.
+      if npm_serves_version_eventually "$name"; then
+        echo "$name@$VERSION is already on npm (the registry refused to publish over it); skipping."
+        return 0
+      fi
+      echo "npm refuses to publish $name@$VERSION over an existing version but does not serve it (was it unpublished?); not retrying." >&2
+      return 1
       ;;
     transient) ;;
     *)
@@ -135,6 +141,17 @@ npm_has_version() {
   local found
   found=$(npm view "$1@$VERSION" version --registry "$registry" 2>/dev/null) || return 1
   [[ "$found" == "$VERSION" ]]
+}
+
+# Whether npm serves name@VERSION within the npm retry budget, allowing for a
+# registry view that lags behind a publish it has just accepted.
+npm_serves_version_eventually() {
+  local attempt
+  for ((attempt = 1; attempt <= NPM_PUBLISH_ATTEMPTS; attempt++)); do
+    npm_has_version "$1" && return 0
+    ((attempt == NPM_PUBLISH_ATTEMPTS)) || sleep "$(retry_delay "$attempt" "$NPM_RETRY_BASE_SECONDS")"
+  done
+  return 1
 }
 
 platform_leaves=() dependents=()

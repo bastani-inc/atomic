@@ -410,18 +410,20 @@ Published-version registration does not follow that branch-ref path. The Worker 
 
 Registration recovery is rerunning the failed `register-published-version` job on a run whose ref is already the tag (the original tag push, or a dispatch whose `--ref` is the tag), or dispatching at the tag itself. A branch-ref dispatch cannot register. If the registration job YAML on the tag is wrong, fix it in a later tagged release rather than moving the tag.
 
-One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)) and reports it as unexpected; ignore that one finding.
+One publication runs at a time across all tags: every run shares the `publish` concurrency group with `cancel-in-progress: false` and `queue: max`, so a run started while another publishes waits for it, and a third run does not replace the one already waiting. Cutting an alpha and its stable back to back therefore publishes them one after the other. actionlint 1.7.12 does not know the `queue` key yet ([rhysd/actionlint#654](https://github.com/rhysd/actionlint/issues/654)), so `.github/actionlint.yaml` ignores that one finding in `publish.yml`. The same file lists the Namespace runner labels as known self-hosted labels.
 
 ### Recovering a failed publication
 
 The publication jobs are resumable, so the first move after a failure is **Re-run failed jobs** on the same run (`gh run rerun <run-id> --failed`):
 
 - Once `stage-github-release` succeeds, nothing in the workflow deletes the draft. A failure in `publish-npm` or `publish-github-release` leaves it in place for the re-run.
-- `publish-npm` skips every package version npm already has, and a publish the registry refuses because the version already exists counts as published. A re-run therefore finishes a partly published payload without publishing anything twice.
+- `publish-npm` skips every package version npm already has. A publish the registry refuses because the version already exists counts as published once npm serves that version; a version npm refuses but never serves, such as an unpublished one, fails the job before any dependent publishes. A re-run therefore finishes a partly published payload without publishing anything twice.
 - `publish-github-release` leaves a release an earlier attempt already published as it is.
 - A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch.
 
 Before giving up, the scripts retry transient failures with doubling waits: an npm publish up to four times (10, 20, 40 s) when it fails with a provenance transparency-log error, a registry 5xx, 408, 409 or 429, or a network error; a GitHub API call up to four times (15, 30, 60 s) on a 5xx, a 429, a secondary rate limit or a dropped connection. Other errors, such as a permission error or a missing trusted publisher, fail at once.
+
+Recover a failed release before cutting the next one on the same channel. Re-running an older stable release after a newer one has published publishes the remaining packages under npm's `latest` dist-tag and marks the older GitHub Release as Latest, moving both back. An older alpha moves npm's `next` back the same way. A full dispatch at the older tag does the same.
 
 If the draft is gone, for example because someone deleted it by hand, re-running failed jobs cannot finish the release; `publish-github-release` says so and names the command. Dispatch a full run at the tag instead: `gh workflow run publish.yml --ref <tag> -f tag=<tag>`. It rebuilds, stages the draft again, skips every npm version that already exists, and publishes the release.
 

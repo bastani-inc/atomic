@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Fake npm for the release script tests: one npm registry kept in $RELEASE_FAKE_STATE.
 #
-#   npm view NAME@VERSION version   prints VERSION once NAME is published, else E404
+#   npm view NAME@VERSION version   prints VERSION when the registry serves exactly that
+#                                   version of NAME, else E404
 #   npm view NAME name              the registration probe: prints NAME, or the scripted error
 #   npm publish TARBALL ...         refuses a version the registry already has, as npm does,
 #                                   then plays the package's next scripted outcome
 #
+# <key> below is a package name with `/` replaced by `+`. registry-<key> lists every
+# version the registry has ever accepted, one per line; a version npm can no longer
+# serve (it lags, or the version was unpublished) also has hidden-<key>@<version>,
+# holding how many more `npm view` calls miss it, or `forever`.
+#
 # Outcomes are listed one per line in <stem>.outcomes, where <stem> is
-# `publish-<name>` or `registration-<name>` with `/` in the name replaced by `+`.
-# A missing file means `ok`; the last line repeats once the list is used up.
+# `publish-<key>` or `registration-<key>`. A missing file means `ok`; the last
+# line repeats once the list is used up.
 #
 # publish outcomes:
 #   ok                     publishes
@@ -17,8 +23,8 @@
 #   tlog-409               fails the way npm 11's provenance upload does when its own retried
 #                          transparency-log POST finds the entry its first attempt created
 #   e500                   the registry answers 500; nothing is published
-#   timeout-after-publish  the registry stores the version but the client times out, and
-#                          `npm view` keeps answering E404 for it (a lagging registry view)
+#   timeout-after-publish  the registry stores the version but the client times out, and the
+#                          next two `npm view` calls still miss it (a lagging registry view)
 #   e403                   a permission error; nothing is published
 # registration outcomes: ok; e404; killed-e404 (prints a 404, then dies of SIGTERM); or any
 # other npm error code (printed as `npm error code <it>`).
@@ -64,7 +70,13 @@ view)
   fi
   name=${2%@*}
   version=${2##*@}
-  if [[ -f "$state/published-$(key "$name")" && ! -f "$state/unlisted-$(key "$name")" ]]; then
+  hidden="$state/hidden-$(key "$name")@$version"
+  if [[ -f "$hidden" ]]; then
+    remaining=$(cat "$hidden")
+    if [[ "$remaining" != forever ]]; then
+      if ((remaining <= 1)); then rm -f "$hidden"; else echo $((remaining - 1)) >"$hidden"; fi
+    fi
+  elif grep -qxF "$version" "$state/registry-$(key "$name")" 2>/dev/null; then
     echo "$version"
     exit 0
   fi
@@ -76,13 +88,14 @@ publish)
   name=$(jq -r .name <<<"$manifest")
   version=$(jq -r .version <<<"$manifest")
   url="https://registry.npmjs.org/${name/\//%2f}"
-  if [[ -f "$state/published-$(key "$name")" ]]; then
+  registry="$state/registry-$(key "$name")"
+  if grep -qxF "$version" "$registry" 2>/dev/null; then
     printf 'npm error code E403\nnpm error 403 403 Forbidden - PUT %s - You cannot publish over the previously published versions: %s.\n' "$url" "$version" >&2
     exit 1
   fi
   case $(next_outcome "publish-$(key "$name")") in
   ok)
-    touch "$state/published-$(key "$name")"
+    echo "$version" >>"$registry"
     echo "+ $name@$version"
     ;;
   slow-ok)
@@ -91,7 +104,7 @@ publish)
     echo "${#inflight[@]}" >>"$state/inflight.log"
     command -p sleep 0.3
     rm -f "$state/inflight-$(key "$name")"
-    touch "$state/published-$(key "$name")"
+    echo "$version" >>"$registry"
     echo "+ $name@$version"
     ;;
   tlog-409)
@@ -104,7 +117,8 @@ publish)
     exit 1
     ;;
   timeout-after-publish)
-    touch "$state/published-$(key "$name")" "$state/unlisted-$(key "$name")"
+    echo "$version" >>"$registry"
+    echo 2 >"$state/hidden-$(key "$name")@$version"
     printf 'npm error code ETIMEDOUT\nnpm error network request to %s failed, reason: socket hang up\n' "$url" >&2
     exit 1
     ;;

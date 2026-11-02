@@ -31,7 +31,7 @@ published)
   echo "GitHub Release $tag is already published. Refusing to mutate a public release." >&2
   exit 1
   ;;
-draft) gh_retry release delete "$tag" --yes ;;
+draft) delete_release "$tag" ;;
 esac
 
 # Best effort: when GitHub cannot say whether a draft exists, leave it to the
@@ -41,7 +41,7 @@ delete_incomplete_draft() {
   current=$(release_state "$tag") || return 0
   if [[ "$current" == draft ]]; then
     echo "Deleting the incomplete draft GitHub Release $tag." >&2
-    gh_retry release delete "$tag" --yes
+    delete_release "$tag"
   fi
 }
 

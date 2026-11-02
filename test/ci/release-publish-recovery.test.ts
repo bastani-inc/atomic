@@ -74,8 +74,19 @@ function script(rel: Release, stem: string, outcomes: readonly string[]): void {
 	writeFileSync(join(rel.state, `${stem}.outcomes`), `${outcomes.join("\n")}\n`);
 }
 
+function registryVersions(rel: Release, name: string): string[] {
+	const path = join(rel.state, `registry-${stateKey(name)}`);
+	return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
+}
+
 function isPublished(rel: Release, name: string): boolean {
-	return existsSync(join(rel.state, `published-${stateKey(name)}`));
+	return registryVersions(rel, name).includes(VERSION);
+}
+
+/** A version the fake registry already has; `unservable` means it was unpublished and can never be served again. */
+function seedRegistry(rel: Release, name: string, version: string, options: { unservable?: boolean } = {}): void {
+	writeFileSync(join(rel.state, `registry-${stateKey(name)}`), `${version}\n`, { flag: "a" });
+	if (options.unservable) writeFileSync(join(rel.state, `hidden-${stateKey(name)}@${version}`), "forever\n");
 }
 
 function scriptPublish(rel: Release, name: string, outcomes: readonly string[]): void {
@@ -243,6 +254,28 @@ describe("publish-npm", () => {
 		assert.match(run.output, /You cannot publish over the previously published versions/);
 		assert.match(run.output, /@bastani\/atomic@1\.2\.3 is already on npm/);
 	});
+	test("a version npm refuses to publish over but never serves, such as an unpublished one, fails before any dependent (#4217)", () => {
+		const rel = release();
+		writeNpmPayload(rel);
+		const leaf = "@bastani/atomic-natives-darwin-x64";
+		seedRegistry(rel, leaf, VERSION, { unservable: true });
+		const run = publishNpm(rel);
+		assert.notEqual(run.exitCode, 0);
+		assert.match(run.output, /does not serve it/);
+		assert.match(run.output, /dependents were not published/);
+		for (const name of payload.slice(nativeLeaves.length)) assert.equal(isPublished(rel, name), false, name);
+	});
+
+	test("another version of a package already on npm does not count as this release's", () => {
+		const rel = release();
+		writeNpmPayload(rel);
+		seedRegistry(rel, "@bastani/atomic", "1.2.2");
+		const run = publishNpm(rel);
+		assert.equal(run.exitCode, 0, run.output);
+		assert.deepEqual(registryVersions(rel, "@bastani/atomic"), ["1.2.2", VERSION]);
+		assert.equal(publishAttempts(run, "@bastani/atomic"), 1);
+	});
+
 	test("transient npm failures are retried a bounded number of times with growing waits, then fail before any dependent (#4217)", () => {
 		const rel = release();
 		writeNpmPayload(rel);
@@ -383,6 +416,15 @@ describe("stage-github-release", () => {
 		assert.equal(run.exitCode, 0, run.output);
 		assertCompleteDraft(rel);
 		assert.equal(ghCalls(run, "delete"), 1);
+	});
+
+	test("a delete GitHub applied before answering 500 is not a failure (#4217)", () => {
+		const rel = release();
+		setRelease(rel, "draft", ["atomic-linux-x64.tar.gz"]);
+		script(rel, "gh-delete", ["applied-http-500", "ok"]);
+		const run = stageGitHubRelease(rel, "1.2.3");
+		assert.equal(run.exitCode, 0, run.output);
+		assertCompleteDraft(rel);
 	});
 
 	test("an upload that fails part-way is retried from a clean draft (#4217)", () => {

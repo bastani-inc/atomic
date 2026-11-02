@@ -92,3 +92,17 @@ release_state() {
     ;;
   esac
 }
+
+# delete_release TAG: delete the GitHub Release of TAG, retrying transient API
+# failures. A delete GitHub applied before answering with an error leaves the
+# release gone, and that counts as success.
+delete_release() {
+  local status
+  if gh_retry release delete "$1" --yes; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$(release_state "$1")" != missing ]] || return 0
+  return "$status"
+}

@@ -1,9 +1,11 @@
 self-hosted-runner:
+  # Namespace machine labels and runner profiles; see docs/ci.md, "Runners".
   labels:
-    - namespace-profile-atomic-*
-    - nscloud-ubuntu-24.04-*
-    - nscloud-windows-2022-*
-    - nscloud-cache-*
-    - nscloud-runner-tool-cache-*
-    - nscloud-no-remote-builders
-    - nscloud-container-image-cache
+    - nscloud-*
+    - namespace-profile-*
+paths:
+  .github/workflows/publish.yml:
+    ignore:
+      # actionlint 1.7.12 does not know GitHub's `concurrency.queue` key yet
+      # (https://github.com/rhysd/actionlint/issues/654). Drop this once it does.
+      - 'unexpected key "queue" for "concurrency" section'
