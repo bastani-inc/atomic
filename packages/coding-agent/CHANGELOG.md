@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- In an interactive session, console output from a workflow's own code no longer floods the chat with one status line per message. It goes to a per-run log under `~/.atomic/agent/workflow-logs/`, and the chat shows one line per run naming that file. Cancellations from quitting a run never produce that line, so quitting a run whose code logs each failed step no longer prints a line per pending step. Print mode, SDK hosts and pooled worker processes still write console output to stderr. ([#4175](https://github.com/bastani-inc/atomic/issues/4175))
+- In the terminal UI, console output from a workflow's own code no longer floods the chat with one status line per message. It goes to a per-run log under `~/.atomic/agent/workflow-logs/`, written as it happens, and the chat shows one line per run naming that file. Cancellations from quitting a run never produce that line, so quitting a run whose code logs each failed step no longer prints a line per pending step. A run's log stops at 8 MiB, including across a resume, and logs not written for 14 days, or beyond 1 GiB in total, are deleted when the next interactive session starts. If a log cannot be written, the chat gets one line saying so and that run's later output is dropped. Print, JSON and RPC modes, SDK hosts and pooled worker processes still write console output to stderr. ([#4175](https://github.com/bastani-inc/atomic/issues/4175))
 
 ## [0.9.61] - 2026-11-02
 

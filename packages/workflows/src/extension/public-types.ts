@@ -163,6 +163,8 @@ export interface PiExecuteContext extends PiModelContext {
 export type PiEventContext = PiCommandContext & {
 	sessionManager?: SessionManager;
 	hasUI?: boolean;
+	/** The host's run mode; `"tui"` only when a terminal UI renders this session. */
+	mode?: "tui" | "rpc" | "json" | "print";
 };
 
 export interface WorkflowResourceInfo {
