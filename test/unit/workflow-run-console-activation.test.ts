@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	stopRoutingWorkflowConsoleOutput,
 	workflowConsoleLogPath,
 } from "../../packages/workflows/src/engine/run-console.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { testRunId } from "../helpers/run-id.js";
+import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "atomic-run-console-activation-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -52,6 +52,20 @@ async function startSession(mode: "tui" | "rpc"): Promise<void> {
 	}
 }
 
+const child = workflow({
+	name: "chatty-child",
+	description: "",
+	inputs: {},
+	outputs: {},
+	async run(ctx) {
+		await ctx.tool("child-step", {}, async () => {
+			console.error("from a child workflow");
+			return 1;
+		});
+		return {};
+	},
+});
+
 const chatty = workflow({
 	name: "chatty",
 	description: "",
@@ -63,34 +77,41 @@ const chatty = workflow({
 			console.error("from a durable step");
 			return 1;
 		});
+		await ctx.workflow(child, { inputs: {} });
 		return {};
 	},
 });
 
-async function runChatty(runId: string, routeConsoleToLog: boolean): Promise<void> {
-	const result = await run(
-		chatty,
-		{},
-		{ runId, cwd: agentDir, store: createStore(), ...(routeConsoleToLog ? { routeConsoleToLog } : {}) },
+/** Launches `chatty` the way the workflow tool and `/workflow` do: through an extension runtime's dispatch. */
+async function dispatchChatty(routeConsoleToLog: boolean): Promise<string> {
+	const runtime = createExtensionRuntime({
+		definitions: [chatty],
+		store: createStore(),
+		cwd: agentDir,
+		...(routeConsoleToLog ? { routeConsoleToLog } : {}),
+	});
+	const result = await runtime.dispatch(
+		{ workflow: "chatty", inputs: {}, action: "run" },
+		{ policy: NON_INTERACTIVE_WORKFLOW_POLICY },
 	);
-	assert.equal(result.status, "completed");
+	assert.ok(result.action === "run" && "runId" in result && result.status === "completed", JSON.stringify(result));
+	return result.runId;
 }
 
 test("an RPC host with dialog UI does not turn routing on", async () => {
 	await startSession("rpc");
 	terminal.length = 0;
-	await runChatty(testRunId("rpc-run"), true);
+	await dispatchChatty(true);
 
-	assert.deepEqual(terminal, ["from the workflow body", "from a durable step"]);
+	assert.deepEqual(terminal, ["from the workflow body", "from a durable step", "from a child workflow"]);
 	assert.equal(existsSync(logs), false);
 });
 
-test("under a terminal UI, a run its owner routes logs to the workflow log, and another owner's run does not", async () => {
+test("under a terminal UI, a dispatched run its owner routes logs to the workflow log, child included, and a headless owner's run does not", async () => {
 	await startSession("tui");
 	terminal.length = 0;
-	const routed = testRunId("tui-run");
-	await runChatty(routed, true);
-	await runChatty(testRunId("headless-run"), false);
+	const routed = await dispatchChatty(true);
+	await dispatchChatty(false);
 
 	const path = workflowConsoleLogPath();
 	assert.ok(path);
@@ -99,10 +120,15 @@ test("under a terminal UI, a run its owner routes logs to the workflow log, and 
 		`atomic-workflows: run ${routed} console output is in ${path}`,
 		"from the workflow body",
 		"from a durable step",
+		"from a child workflow",
 	]);
 	const lines = readFileSync(path, "utf8").trimEnd().split("\n");
 	assert.deepEqual(
 		lines.map((line) => line.slice(line.indexOf(" ") + 1)),
-		[`${routed} error from the workflow body`, `${routed} error from a durable step`],
+		[
+			`${routed} error from the workflow body`,
+			`${routed} error from a durable step`,
+			`${routed} error from a child workflow`,
+		],
 	);
 });

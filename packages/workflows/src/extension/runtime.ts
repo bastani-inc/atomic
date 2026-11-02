@@ -435,6 +435,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				config,
 				models,
 				resolvePossibleStageEntry,
+				...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
 				policy: options?.policy,
 				modelOwner: options?.modelOwner,
 				...(options?.origin === undefined ? {} : { origin: options.origin }),

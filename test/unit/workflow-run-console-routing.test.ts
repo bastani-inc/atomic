@@ -5,6 +5,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	truncateSync,
 	utimesSync,
 	writeFileSync,
@@ -198,6 +199,36 @@ test("a call its run cannot afford caps that run only, even near the process lim
 	assert.equal(lines.filter((line) => line === "run-8 run log limit reached; its later output is dropped").length, 1);
 	assert.equal(lines.filter((line) => line.startsWith("log limit reached")).length, 0);
 	assert.equal(lines.at(-1), "run-quiet error still logged");
+});
+
+test("run-limit markers never push the log past its limit", () => {
+	routeToFreshDirectory();
+	const sevenMegabytes = "w".repeat(7 * 1024 * 1024);
+	for (let run = 0; run < 9; run += 1) open(`filler-${run}`).run(() => console.error(sevenMegabytes));
+	const path = workflowConsoleLogPath();
+	assert.ok(path);
+	const room = MAX_PROCESS_CONSOLE_LOG_BYTES - statSync(path).size;
+	open("top-up").run(() => console.error("t".repeat(room - 4300)));
+	const oversized = "o".repeat(MAX_RUN_CONSOLE_BYTES + 1);
+	for (let run = 0; run < 50; run += 1) open(`oversized-${run}`).run(() => console.error(oversized));
+
+	assert.ok(statSync(path).size <= MAX_PROCESS_CONSOLE_LOG_BYTES, `${statSync(path).size} bytes`);
+	const markers = logLines().filter((line) => line.startsWith("log limit reached"));
+	assert.equal(markers.length, 1);
+	assert.equal(logLines().at(-1), "log limit reached; later workflow console output is dropped");
+});
+
+test("a log directory that cannot be created is reported once, and routed output is dropped, not sent to the chat", () => {
+	const blocked = join(root, `blocked-${++directories}`);
+	writeFileSync(blocked, "a file where the log directory should be");
+	routeWorkflowConsoleOutput(blocked);
+	const run = open("run-without-a-directory");
+	for (let index = 0; index < 20; index += 1) run.run(() => console.error(`line ${index}`));
+	console.error("outside any run");
+
+	assert.equal(terminal.length, 2);
+	assert.match(terminal[0]?.text ?? "", /^atomic-workflows: workflow console output could not be written to /);
+	assert.equal(terminal[1]?.text, "outside any run");
 });
 
 test("a run started again by an owner that does not route its output makes its own decision", () => {

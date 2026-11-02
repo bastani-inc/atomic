@@ -28,8 +28,6 @@ const ROUTER_KEY = Symbol.for("atomic-workflows/run-console@4");
 export const MAX_RUN_CONSOLE_BYTES = 8 * 1024 * 1024;
 /** Per process log, markers included. */
 export const MAX_PROCESS_CONSOLE_LOG_BYTES = 64 * 1024 * 1024;
-/** Room kept below the process limit for the markers that announce a limit. */
-const MARKER_ALLOWANCE = 4096;
 /** Logs of exited processes not written for this long are deleted when routing starts, then the oldest until the directory fits. */
 export const CONSOLE_LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 export const MAX_CONSOLE_LOG_DIRECTORY_BYTES = 1024 * 1024 * 1024;
@@ -81,23 +79,32 @@ function processLog(state: RouterState, directory: string): ProcessLog {
 	return state.log;
 }
 
-/** Appends one routed call; returns whether its text is in the log. */
+/**
+ * Appends one routed call; returns whether its text is in the log. Every write leaves room for the process-limit
+ * marker, so the log never exceeds its limit, markers included.
+ */
 function append(log: ProcessLog, run: RunConsole, method: ConsoleMethod, args: unknown[]): boolean {
 	if (log.capped || run.capped) return false;
 	const stamp = new Date().toISOString();
+	const processMarker = `${stamp} log limit reached; later workflow console output is dropped\n`;
+	const fits = (text: string) =>
+		log.bytes + Buffer.byteLength(text) + Buffer.byteLength(processMarker) <= MAX_PROCESS_CONSOLE_LOG_BYTES;
+	const capProcess = () => {
+		log.capped = true;
+		log.bytes += writeAll(log.fd, processMarker);
+		return false;
+	};
 	const line = `${stamp} ${run.rootRunId} ${method} ${format(...args)}\n`;
 	const size = Buffer.byteLength(line);
-	// The run's share is decided first: a call its run cannot afford caps that run only, not the whole log.
+	// The run's share is decided first: a call its run cannot afford caps that run only, unless its marker no longer fits.
 	if (run.bytes + size > MAX_RUN_CONSOLE_BYTES) {
 		run.capped = true;
-		log.bytes += writeAll(log.fd, `${stamp} ${run.rootRunId} run log limit reached; its later output is dropped\n`);
+		const runMarker = `${stamp} ${run.rootRunId} run log limit reached; its later output is dropped\n`;
+		if (!fits(runMarker)) return capProcess();
+		log.bytes += writeAll(log.fd, runMarker);
 		return false;
 	}
-	if (log.bytes + size > MAX_PROCESS_CONSOLE_LOG_BYTES - MARKER_ALLOWANCE) {
-		log.capped = true;
-		log.bytes += writeAll(log.fd, `${stamp} log limit reached; later workflow console output is dropped\n`);
-		return false;
-	}
+	if (!fits(line)) return capProcess();
 	log.bytes += writeAll(log.fd, line);
 	run.bytes += size;
 	return true;
@@ -194,8 +201,10 @@ function pruneLogs(directory: string, now: number): void {
 export function routeWorkflowConsoleOutput(logDirectory: string, now = Date.now()): void {
 	const state = installedRouter();
 	if (state.logDirectory === logDirectory) return;
-	mkdirSync(logDirectory, { recursive: true });
+	// Routing starts even when the directory cannot be made: the first routed write then fails and is reported once,
+	// rather than every routed call going to stderr.
 	try {
+		mkdirSync(logDirectory, { recursive: true });
 		pruneLogs(logDirectory, now);
 	} catch {}
 	state.logDirectory = logDirectory;
