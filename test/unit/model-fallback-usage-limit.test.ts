@@ -101,9 +101,13 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
 		assert.equal(subagentsIsRetryable(failure), false);
 	});
 
-	test("safety refusals, task/tool failures, and unrelated errors remain non-retryable", () => {
+	test("safety refusals advance only as content-filter refusals; task/tool failures and unrelated errors are non-retryable", () => {
+		const refusal = new Error("request blocked by safety policy");
+		assert.equal(workflowsNormalize(refusal).kind, "content_filter");
+		assert.equal(subagentsNormalize(refusal).kind, "content_filter");
+		assert.equal(workflowsIsRetryable(refusal, { fallbackOnContentFilter: false }), false);
+		assert.equal(isRetryableSameModelFailure(refusal), false);
 		const fixtures: readonly { failure: unknown; kind: string }[] = [
-			{ failure: new Error("request blocked by safety policy"), kind: "task_failure" },
 			{ failure: new Error("tool call refused by provider"), kind: "task_failure" },
 			{ failure: new Error("command failed: exit 1"), kind: "task_failure" },
 			{ failure: new Error("tests failed: 3 failures"), kind: "task_failure" },

@@ -562,10 +562,11 @@ readonly fallbackModels?: readonly string[];
 
 - Rate limits and quota or usage-limit exhaustion, including `The usage limit has been reached`, `usage_limit_reached`, and `insufficient_quota`.
 - Auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` or `fetch failed`, and 5xx responses.
+- Content-filter refusals, such as OpenAI's HTTP 422 `cyber_policy`, Anthropic's refusal stop, or a `content_filter` finish reason. Set `retry.fallbackOnContentFilter: false` in settings to fail the stage on such a refusal instead.
 
 Before advancing, Atomic retries a thrown failure on the same candidate when another request could plausibly repair it. Rate limits, provider outages, network timeouts, and transport errors use exponential backoff from `settings.retry`. Set `retry.enabled: false` for immediate advancement.
 
-Rejected credentials, unavailable models, and incompatible requests advance immediately, as in main chat. Retrying the same candidate cannot repair these failures.
+Rejected credentials, unavailable models, incompatible requests, and content-filter refusals advance immediately, as in main chat. Retrying the same candidate cannot repair these failures. The stage's `modelAttempts` record the refusing model and its error.
 
 A stage that sets `model` or `fallbackModels` uses only the chain it declares. The `fallbackModels` list in `settings.json` and the chain of the session that launched the workflow never apply to it, so a provider failure cannot move the stage to a model or reasoning level outside the chain you declared. A stage that sets neither runs on the session's current model and keeps that session's fallback behavior.
 
