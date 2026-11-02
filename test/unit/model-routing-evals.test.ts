@@ -213,3 +213,25 @@ test("shipped Sol 6.1 evidence preserves measured efforts and isolates neighbori
 		if (id.endsWith("-fast")) assert.equal(candidateReleaseDate(catalog, id), undefined, id);
 	}
 });
+
+test("shipped Gemini 4 Argon evidence reaches Copilot routing without Gemini 3.x rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	const id = "github-copilot/gemini-4-argon";
+	const bounded = filterModelSelectionEvals(document, [id]);
+	const full = catalogEvidence(catalog, [id]);
+	for (const evidence of [bounded, full]) {
+		assert.match(evidence, /^\| gemini-4-argon \| Gemini 4 Argon \(high\) \| 2026-09-30 \|/mu);
+		assert.match(evidence, /^\| gemini-4-argon \| Gemini 4 Argon \| medium \| 47\.6 \| 52\.8 \| 60\.5 \| 66\.1 \|/mu);
+		assert.doesNotMatch(evidence, /^\| gemini-(?!4-argon(?:-medium)? \|)/mu);
+	}
+	assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= MODEL_SELECTION_EVALS_JSON_BYTES);
+	assert.match(
+		full,
+		/^\| gemini-4-argon \| Gemini 4 Argon \| DSWE \| 77\.9 \|[^\n]*Google-reported[^\n]*\| Google \|$/mu,
+	);
+	assert.match(full, /^\| gemini-4-argon-medium \| Gemini 4 Argon \| ABench \| 50\.1 \|/mu);
+	assert.equal(candidateReleaseDate(catalog, id), "2026-09-30");
+});
