@@ -13,6 +13,7 @@ import {
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_SIZE,
+	JOURNAL_TRANSACTION,
 	type JournalAppendGuard,
 	type JournalBatchAppend,
 	NON_SNAPSHOT_EVENT_TYPES,
@@ -63,11 +64,6 @@ type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
 const APPEND_SAVEPOINT = "journal_append";
-/**
- * How long a journal write waits for a write lock held with no commit anywhere before it fails. Far past the 30 s a
- * connection waits by default: a process stalled holding the lock on a host starved of CPU commits once it runs.
- */
-const JOURNAL_LOCK_WAIT_MS = 10 * 60_000;
 
 function entryFromRow(row: EventRow): JournalEntry {
 	const key = row[c.key];
@@ -104,6 +100,7 @@ export class SqlRunJournal implements RunJournal {
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
+		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
 			const versions = await tx.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
@@ -134,7 +131,7 @@ export class SqlRunJournal implements RunJournal {
 					${c.holderId} TEXT, ${c.epoch} INTEGER NOT NULL, ${c.renewedAt} INTEGER NOT NULL
 				);
 			`);
-		});
+		}, JOURNAL_TRANSACTION);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
 		return new SqlRunJournal(database, t, legacy);
 	}
@@ -151,13 +148,9 @@ export class SqlRunJournal implements RunJournal {
 		if (this.closed) throw new StorageUnavailableError(this.descriptor, new JournalClosedError());
 	}
 
-	/**
-	 * A journal write transaction. It waits out a write lock that another process holds while it stalls, instead of
-	 * failing the run that issued the write after the connection's usual lock wait: the holder commits or rolls back
-	 * once it runs again, and failing would not free the lock any sooner (#4183).
-	 */
+	/** A journal write transaction, waiting out a write lock held by a stalled process (`JOURNAL_TRANSACTION`). */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.database.transaction(body, { lockWaitMs: JOURNAL_LOCK_WAIT_MS });
+		return this.database.transaction(body, JOURNAL_TRANSACTION);
 	}
 
 	private operation<T>(action: () => Promise<T>): Promise<T> {

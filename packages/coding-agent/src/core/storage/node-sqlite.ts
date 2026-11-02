@@ -313,7 +313,8 @@ const LOCK_RETRY_PATIENT_MAX_DELAY_MS = 500;
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
 /**
  * Longest a group commit runs its members before it commits them and takes the lock again for the rest: a batch of
- * cheap transactions in a process starved of CPU still lets other processes' writers in between.
+ * cheap transactions in a process starved of CPU still lets other processes' writers in between. The bound is
+ * checked between members, so one member's own work, however long, is never split.
  */
 const GROUP_COMMIT_HOLD_MS = 100;
 
@@ -694,20 +695,21 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 		const ran = batch.slice(0, outcomes.length);
 		const remaining = batch.slice(outcomes.length);
+		let commitCause: unknown;
+		let committed = true;
 		try {
 			await this.executor.exec("COMMIT");
-		} catch (commitCause) {
+		} catch (cause) {
+			committed = false;
+			commitCause = cause;
 			await this.rollbackQuietly();
-			ran.forEach((queued, index) => {
-				const outcome = outcomes[index]!;
-				queued.reject(outcome.ok ? commitCause : outcome.error);
-			});
-			if (remaining.length > 0) await this.commitMembers(remaining);
-			return;
 		}
+		// Let go of the record too: members left over wait for the lock again, and another process may take it first.
+		this.holderRecord?.free();
 		ran.forEach((queued, index) => {
 			const outcome = outcomes[index]!;
-			if (outcome.ok) queued.resolve(outcome.value);
+			if (!committed) queued.reject(outcome.ok ? commitCause : outcome.error);
+			else if (outcome.ok) queued.resolve(outcome.value);
 			else queued.reject(outcome.error);
 		});
 		if (remaining.length > 0) await this.commitMembers(remaining);

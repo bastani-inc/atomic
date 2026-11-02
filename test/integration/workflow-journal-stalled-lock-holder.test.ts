@@ -154,6 +154,33 @@ for (const stall of ["stopped", "event loop blocked"] as const)
 	);
 
 test.skipIf(process.platform === "win32")(
+	"a process opening the journal while another process stalls holding its write lock waits instead of failing",
+	async () => {
+		const directory = makeTempDirectory("journal-stalled-holder-open-");
+		const path = join(directory, "journal.sqlite");
+		const database = await openNodeSqliteDatabase(path, { lockWaitMs: LOCK_WAIT_MS });
+		let holder: Awaited<ReturnType<typeof stallingHolder>> | undefined;
+		try {
+			holder = await stallingHolder(path, "stopped");
+			const opening = SqlRunJournal.open(database).then(
+				(journal) => journal,
+				(error: Error) => error,
+			);
+			await sleep(STALL_MS);
+			await holder.release();
+			const journal = await opening;
+			assert.ok(journal instanceof SqlRunJournal, String(journal));
+			await journal.close();
+		} finally {
+			await holder?.kill();
+			await database.close();
+			removeTempDirectory(directory);
+		}
+	},
+	TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
 	"a workflow run keeps going while another process holding the journal's write lock is stopped",
 	async () => {
 		const directory = makeTempDirectory("journal-stalled-holder-run-");

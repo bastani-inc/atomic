@@ -1,4 +1,4 @@
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteTransactionOptions } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
 	type Lease,
@@ -12,6 +12,17 @@ import {
 export type { RunJournalBatchAppend as JournalBatchAppend, RunSnapshotTail, RunVersion } from "./types.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
+
+/**
+ * How every journal write transaction waits for the write lock: up to 10 minutes of no commit anywhere, far past the
+ * 30 s a connection waits by default. A process stalled holding the lock (starved of CPU, paused for garbage
+ * collection, stopped by a signal) commits or rolls back once it runs again, and failing the waiting write would only
+ * fail its run without freeing the lock (#4183). Only waiting for the lock is longer: once a write has the lock it
+ * checks its lease or work lease as before, so a stall longer than a lease ends in that lease's expiry and fencing,
+ * never in a write applied under a lease that was lost meanwhile. Waiters keep their writers'-queue order only while
+ * they keep polling; that order is fairness, not correctness, which the checks inside each transaction keep.
+ */
+export const JOURNAL_TRANSACTION: SqliteTransactionOptions = { lockWaitMs: 10 * 60_000 };
 
 /** Event types the durable backend folds without replacing the run's handle; every other event carries it. */
 export const NON_SNAPSHOT_EVENT_TYPES = [
