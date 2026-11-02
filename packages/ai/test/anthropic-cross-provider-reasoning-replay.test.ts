@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { anthropicAssistantReplayContent } from "../src/api/anthropic-assistant-content.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
 import type { AssistantMessage, Context, FetchFunction, Message, Model } from "../src/types.ts";
 
@@ -203,5 +204,60 @@ describe("cross-provider fallback replay to Anthropic (#4185)", () => {
 		expect(assistantBlocks(messages)).toEqual([
 			[{ type: "tool_use", id: "toolu_opus", name: "bash", input: { command: "ls" } }],
 		]);
+	});
+});
+
+describe("anthropicAssistantReplayContent (#4185)", () => {
+	it("describes each assistant message of the request, including a turn sent only as its fallback marker (#4185)", async () => {
+		const model = getModel("github-copilot", "claude-opus-5.5") as Model<"anthropic-messages">;
+		const assistants: AssistantMessage[] = [
+			copilotGptTurn([{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoningItem }]),
+			copilotGptTurn([
+				{ type: "thinking", thinking: "GPT plan", thinkingSignature: gptReasoningItem },
+				{ type: "text", text: "GPT answer" },
+			]),
+			{
+				...claudeTurn(model, [
+					{ type: "thinking", thinking: "declined reasoning", thinkingSignature: "sig-declined" },
+					{ type: "fallback", fromModel: "claude-fable-5-1", toModel: "claude-opus-5" },
+					{ type: "thinking", thinking: "fallback reasoning", thinkingSignature: "sig-fallback" },
+				]),
+				model: "claude-opus-5",
+				stopReason: "length",
+			},
+			{
+				...claudeTurn(model, [{ type: "fallback", fromModel: "claude-fable-5-1", toModel: model.id }]),
+				stopReason: "length",
+			},
+			{
+				...claudeTurn(model, [{ type: "thinking", thinking: "cut off", thinkingSignature: "sig-error" }]),
+				stopReason: "error",
+			},
+			claudeTurn(model, [
+				{ type: "thinking", thinking: "signed \ud83d plan", thinkingSignature: "sig-plan" },
+				{ type: "text", text: " " },
+				{ type: "thinking", thinking: "", thinkingSignature: "sig-omitted" },
+				{ type: "thinking", thinking: "[Reasoning redacted]", thinkingSignature: "opaque", redacted: true },
+				{ type: "toolCall", id: "toolu_plan", name: "bash", arguments: { command: "ls" } },
+			]),
+		];
+		const transcript: Message[] = assistants.flatMap((assistant, index) => [
+			{ role: "user", content: `turn ${index}`, timestamp: index } satisfies Message,
+			assistant,
+		]);
+		transcript.push(toolResult("toolu_plan"));
+
+		const messages = await captureAnthropicMessages(model, { messages: transcript });
+
+		const described = assistants
+			.map((assistant) => anthropicAssistantReplayContent(assistant, model))
+			.filter((content) => content.length > 0);
+		expect(described.map((content) => content.map((block) => block.type))).toEqual([
+			["text"],
+			["fallback"],
+			["fallback"],
+			["thinking", "thinking", "redacted_thinking", "tool_use"],
+		]);
+		expect(assistantBlocks(messages)).toEqual(described);
 	});
 });

@@ -58,7 +58,7 @@ export function isProducedByModel<TApi extends Api>(message: ReasoningSource, mo
  * without its reasoning: it is dropped, never sent as text, because readable reasoning sent as
  * text becomes part of the visible reply.
  */
-export function canReplayReasoning<TApi extends Api>(message: ReasoningSource, model: Model<TApi>): boolean {
+function canReplayReasoning<TApi extends Api>(message: ReasoningSource, model: Model<TApi>): boolean {
 	if (isProducedByModel(message, model)) return true;
 	return (
 		normalizeProviderId(message.provider) === normalizeProviderId(model.provider) &&

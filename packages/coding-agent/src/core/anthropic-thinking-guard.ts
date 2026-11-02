@@ -1,4 +1,5 @@
-import { canReplayReasoning, isProducedByModel } from "@bastani/pi-ai/api/transform-messages";
+import { anthropicAssistantReplayContent } from "@bastani/pi-ai/api/anthropic-assistant-content";
+import { isProducedByModel } from "@bastani/pi-ai/api/transform-messages";
 import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
 
 type JsonObject = Record<string, unknown>;
@@ -63,51 +64,15 @@ function hasReplayThinkingBlock(message: AssistantMessage, allowEmptySignature: 
 	return message.content.some((block) => readReplayThinkingBlock(block, allowEmptySignature) !== undefined);
 }
 
-function legacyProviderWouldEmitAssistantBlock(block: unknown): boolean {
-	if (!isObject(block) || typeof block.type !== "string") return false;
-
-	if (block.type === "text") {
-		return typeof block.text === "string" && block.text.trim().length > 0;
-	}
-
-	if (block.type === "toolCall") {
-		return true;
-	}
-
-	if (block.type !== "thinking") {
-		return false;
-	}
-
-	if (block.redacted === true) {
-		return true;
-	}
-
-	if (typeof block.thinking !== "string") return false;
-	const signature = typeof block.thinkingSignature === "string" ? block.thinkingSignature : undefined;
-	return block.thinking.trim().length > 0 || (signature !== undefined && signature.trim().length > 0);
-}
-
-function legacyProviderWouldEmitAssistant(message: AssistantMessage, model: Model<Api>): boolean {
-	if (message.stopReason === "error" || message.stopReason === "aborted") return false;
-
-	// This mirrors @bastani/pi-ai's transformMessages() + Anthropic convertMessages() pipeline
-	// closely enough to keep assistant ordinal mapping aligned with the provider payload, and it
-	// takes the reasoning rule from pi-ai itself so the two cannot drift.
-	//
-	// A turn whose reasoning the target may receive (the same model, or a model that delegates
-	// binding, such as Claude Fable 5.1 with `thinking.display` "omitted") emits its signed blocks,
-	// including redacted and empty-text ones.
-	if (canReplayReasoning(message, model)) {
-		return message.content.some((block) => legacyProviderWouldEmitAssistantBlock(block));
-	}
-
-	// Any other turn, such as a GPT turn left in the transcript by a cross-provider fallback, emits
-	// no reasoning at all, so a turn that held only reasoning emits nothing.
-	return message.content.some((block) => {
-		if (!isObject(block) || typeof block.type !== "string") return false;
-		if (block.type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
-		return block.type === "toolCall";
-	});
+/**
+ * Whether the provider payload holds an assistant message for this turn, answered by pi-ai's own
+ * `transformMessages` pass and Anthropic block conversion so the ordinal mapping cannot drift from
+ * the payload. A turn left with nothing to send is omitted, such as a GPT turn that held only
+ * reasoning. A retained server-side `fallback` marker is always sent, even when it is the only
+ * block left because the turn's reasoning belongs to other models.
+ */
+function providerEmitsAssistant(message: AssistantMessage, model: Model<Api>): boolean {
+	return anthropicAssistantReplayContent(message, model).length > 0;
 }
 
 function fallbackTextBlock(block: JsonObject): AnthropicContentBlock | undefined {
@@ -271,11 +236,11 @@ export function restoreAnthropicReplayThinkingBlocks(
 	if (assistantPayloads.length === 0) return payload;
 
 	const emittingSourceAssistants = sourceMessages.filter(
-		(message): message is AssistantMessage =>
-			message.role === "assistant" && legacyProviderWouldEmitAssistant(message, model),
+		(message): message is AssistantMessage => message.role === "assistant" && providerEmitsAssistant(message, model),
 	);
-	// Fail closed if pi-ai's converter emission behavior drifts from the model above;
-	// ordinal restoration must never splice thinking into a different assistant.
+	// Fail closed when the payload no longer has one assistant per emitting turn, for example
+	// because a `before_provider_request` hook added or removed one: ordinal restoration must
+	// never splice thinking into a different assistant.
 	if (emittingSourceAssistants.length !== assistantPayloads.length) return payload;
 
 	const allowEmptySignature = isObject(model.compat) && (model.compat as JsonObject).allowEmptySignature === true;
