@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed two causes of `400 invalid_request_error: ... thinking or redacted_thinking blocks in the latest assistant message cannot be modified` when Claude continues a session after a model fallback, for example a subagent launched on `github-copilot/gpt-6.1-sol` whose fallback chain moves it to Claude Opus 5.5. Atomic restores the exact bytes of Claude's reasoning before each request, but it gave up for the whole request when an earlier turn sent Claude nothing, such as a GPT turn that held only reasoning, or sent only a Claude server-side fallback marker. The latest Claude turn could then go out with its thinking changed by a `before_provider_request` extension hook. Separately, the Anthropic converter stripped unpaired surrogates from signed thinking; it now sends signed thinking unchanged. GPT reasoning is still never sent to Claude. The same error was also reported in a long Claude-only session with no fallback; that case has not been reproduced and is not covered by this fix ([#4185](https://github.com/bastani-inc/atomic/issues/4185))
+
 ## [0.9.63] - 2026-11-02
 
 Workflow journals that survive a stalled lock holder, and pooled roots that stay responsive with thousands of finished runs.
