@@ -846,7 +846,9 @@ export class PoolCoordinator {
 		const lease = this.lease;
 		const work = await this.retainedTransition(async () => {
 			let enqueued = await this.whileRootLate(queue, () =>
-				queue.enqueue(lease, command.descriptor, command.boundary),
+				queue.enqueue(lease, command.descriptor, command.boundary, {
+					acceptEntryChanges: command.acceptEntryChanges === true,
+				}),
 			);
 			// A child an earlier incarnation completed with a failure of the pool's own, such as a stage that lost its
 			// worker's delivery or lease on a busy host, runs again when the resumed root asks for it: the failure was not

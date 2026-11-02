@@ -39,6 +39,17 @@ export interface WorkflowResumeCatalog {
 	readonly completed: readonly ResumableWorkflowEntry[];
 }
 
+/**
+ * `/workflow resume <id> --accept-entry-changes`: resume a root whose local worker definitions' entry modules were
+ * edited since it last ran, running its unfinished children with the edited modules (#4200).
+ */
+export const ACCEPT_ENTRY_CHANGES_FLAG = "--accept-entry-changes";
+
+/** What a `/workflow resume` command line asks of the resume beyond its target. */
+export interface DurableResumeCommandOptions {
+	readonly acceptEntryChanges?: boolean;
+}
+
 export interface WorkflowResumeTarget {
 	readonly kind: "live" | "durable" | "completed";
 	readonly workflowId: string;
@@ -98,6 +109,7 @@ export async function handleDurableResume(
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
 	preparedCatalog?: WorkflowResumeCatalog,
+	resumeOptions: DurableResumeCommandOptions = {},
 ): Promise<boolean> {
 	const owner = deps.owner ?? captureWorkflowOwnerResources();
 	deps = { ...deps, owner };
@@ -130,7 +142,7 @@ export async function handleDurableResume(
 			return openCompletedTarget(resolved.workflowId, catalog.completed, ctx, reporter, deps, runtime);
 		}
 		if (resolved.kind === "durable") {
-			return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
+			return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime, resumeOptions);
 		}
 
 		const completedAttempt = await openCompleted(
@@ -151,6 +163,7 @@ export async function handleDurableResume(
 			onBeforeResume: (runId, forkedFrom) =>
 				injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
 			...releasedRunAdoption("workflowId" in resolved ? resolved.workflowId : target, ctx, runtime),
+			...resumeOptions,
 		});
 		if (result.ok) {
 			print(result.message);
@@ -192,7 +205,7 @@ export async function handleDurableResume(
 		return true;
 	}
 	if (picked.result.kind === "durable") {
-		return resumeDurableTarget(picked.result.workflowId, ctx, reporter, deps, runtime);
+		return resumeDurableTarget(picked.result.workflowId, ctx, reporter, deps, runtime, resumeOptions);
 	}
 	if (picked.result.kind === "completed") {
 		return openCompletedTarget(picked.result.workflowId, catalog.completed, ctx, reporter, deps, runtime);
@@ -291,6 +304,7 @@ async function resumeDurableTarget(
 	reporter: WorkflowCommandReporter,
 	deps: WorkflowRunControlDeps,
 	runtime: ExtensionRuntime,
+	resumeOptions: DurableResumeCommandOptions,
 ): Promise<boolean> {
 	const result = await runtime.resumeDurableWorkflow(workflowId, {
 		policy: workflowPolicyFromContext(ctx),
@@ -299,6 +313,7 @@ async function resumeDurableTarget(
 		onBeforeResume: (runId, forkedFrom) =>
 			injectWorkflowResumeSummary(deps.pi, ctx, runId, undefined, forkedFrom, runtime.durableBackend()),
 		...releasedRunAdoption(workflowId, ctx, runtime),
+		...resumeOptions,
 	});
 	if (!result.ok) reporter.error(result.message);
 	else {
