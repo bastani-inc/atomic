@@ -119,7 +119,7 @@
     "quickjs-wasi": "3.6.3",
     "semver": "7.8.5",
     "turndown": "^7.2.0",
-    "typebox": "1.3.27",
+    "typebox": "1.4.3",
     "undici": "8.12.3",
     "unpdf": "1.8.1",
     "yaml": "2.9.0",
