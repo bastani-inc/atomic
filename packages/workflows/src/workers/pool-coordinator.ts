@@ -366,6 +366,8 @@ interface WorkerSlot {
 	readonly runs: Set<string>;
 	/** Stage commands awaiting the worker's result; undefined resolves a worker that exited. */
 	readonly stageCommands: Map<number, (result: StageCommandResult | undefined) => void>;
+	/** Ends the worker's attempt as its exit does; called for a worker that SIGKILL did not end within the bound. */
+	retire?: () => void;
 }
 
 interface StageCommandResult {
@@ -1330,7 +1332,11 @@ export class PoolCoordinator {
 				terminate();
 			});
 			const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-			child.once("exit", () => {
+			// The worker's exit, or its retirement when SIGKILL did not end it within the bound: both end its attempt once.
+			let retired = false;
+			const retire = () => {
+				if (retired) return;
+				retired = true;
 				void Promise.race([closed, delay(STDERR_DRAIN_GRACE_MS)]).then(() =>
 					reject(
 						diagnosed(
@@ -1425,7 +1431,9 @@ export class PoolCoordinator {
 					});
 				this.cleanups.add(cleanup);
 				void cleanup.finally(() => this.cleanups.delete(cleanup));
-			});
+			};
+			slot.retire = retire;
+			child.once("exit", retire);
 			child.on("message", (message: WorkerRequest) => {
 				this.observeResponsiveness();
 				this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
@@ -1506,6 +1514,8 @@ export class PoolCoordinator {
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
 						// so refusals and faults stay bounded.
 						if (fenced && !(await this.superseded(fenced))) {
+							// Views of the attempt's stages end with it, so they reconnect to its replay.
+							this.fence(fenced);
 							if (this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced)))
@@ -1711,11 +1721,9 @@ export class PoolCoordinator {
 					});
 					continue;
 				}
-				if (child && !(await this.stop(child))) {
-					// The worker is retired: its exit is confirmed on a later recovery, and its child replays once it is.
-					this.reportUnconfirmedExit(child);
-					continue;
-				}
+				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
+				// within its attempt limit, as for a worker that exited.
+				if (child && !(await this.stop(child))) this.retireUnconfirmed(child);
 				// Stopping the worker began its exit cleanup, which holds its work until its process groups are reaped.
 				if (this.held.has(work.id)) continue;
 				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
@@ -1781,14 +1789,20 @@ export class PoolCoordinator {
 		}
 	}
 
-	/** A worker that SIGKILL did not end within the bound is a health event of the pool, reported once. */
-	private reportUnconfirmedExit(child: ChildProcess): void {
+	/**
+	 * Retires a worker that SIGKILL did not end within the bound: a health event of the pool, reported once. Its channel
+	 * is closed and its attempt ends as on its exit, so its tool process groups are reaped, its child replays on a
+	 * replacement within its attempt limit, and a replacement starts. Its exit, if it ever comes, changes nothing more.
+	 */
+	private retireUnconfirmed(child: ChildProcess): void {
 		if (this.unconfirmedExits.has(child)) return;
 		this.unconfirmedExits.add(child);
 		this.reportHealth(
 			this.logs.get(child),
-			`Local worker cleanup was not confirmed: worker process ${child.pid} was still running ${WORKER_EXIT_CONFIRMATION_MS} ms after SIGKILL`,
+			`Local worker cleanup was not confirmed: worker process ${child.pid} was still running ${WORKER_EXIT_CONFIRMATION_MS} ms after SIGKILL; it was retired and replaced`,
 		);
+		if (child.connected) child.disconnect();
+		for (const slot of this.slots) if (slot.child === child) slot.retire?.();
 	}
 
 	/**
@@ -1816,9 +1830,9 @@ export class PoolCoordinator {
 			await this.recovering?.catch(() => {});
 			stopping = [...this.children].map((child) => ({ child, log: this.logs.get(child) }));
 			confirmed = await Promise.all(stopping.map(({ child }) => this.stop(child)));
-			// A worker still running after SIGKILL holds no child: the pool closes without it and reports it.
+			// A worker still running after SIGKILL is retired: the pool closes without it and reports it.
 			stopping.forEach(({ child }, index) => {
-				if (!confirmed[index]) this.reportUnconfirmedExit(child);
+				if (!confirmed[index]) this.retireUnconfirmed(child);
 			});
 			await Promise.all([...this.cleanups]);
 			if (this.cleanupFailure) throw this.cleanupFailure;

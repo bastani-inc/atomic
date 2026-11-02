@@ -21,7 +21,7 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { testRunId } from "../helpers/run-id.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExistsSync, makeTempDirectory, readTextSync, removeTempDirectory } from "../helpers/runtime.js";
 
 const WORKERS = 50;
 const CHILDREN = 60;
@@ -30,6 +30,8 @@ const FAULTED = 7;
 /** Longer than the five seconds the pool used to wait for a worker's exit event after SIGKILL. */
 const COORDINATOR_STALL_MS = 6_000;
 const BUDGET = poolTestBudgetMs(1);
+/** The shortest work lease a pool accepts, so lease recovery stops the silent worker soon. */
+const UNKILLABLE_LEASE_MS = 2_000;
 const childPath = fileURLToPath(new URL("../fixtures/pool-load-child.ts", import.meta.url));
 const stubWorker = fileURLToPath(new URL("../fixtures/pool-cascade-stub-worker.mjs", import.meta.url));
 
@@ -125,6 +127,95 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			vi.restoreAllMocks();
 			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker that outlives SIGKILL is retired and replaced, and its child replays",
+	async () => {
+		const directory = makeTempDirectory("pool-cleanup-unkillable-");
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "child",
+			digest: await definitionDigest(childPath),
+		});
+		process.env.ATOMIC_TEST_CASCADE_STALL_INDEX = "0";
+		process.env.ATOMIC_TEST_CASCADE_HOLD_MS = "100";
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 2,
+			admission: {},
+			definitions: [{ definition: child, path: childPath, exportName: "child" }],
+			workerEntry: stubWorker,
+			coordinator: "in-process",
+			leaseMs: UNKILLABLE_LEASE_MS,
+		});
+		// The worker that stops answering ignores SIGKILL: the signal is never delivered to it.
+		const stalledWorker = () => {
+			const marker = join(directory, "stalled-worker");
+			return fileExistsSync(marker) ? Number(readTextSync(marker, "utf8")) : undefined;
+		};
+		const kill = ChildProcess.prototype.kill;
+		vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(function (this: ChildProcess, signal) {
+			if (signal === "SIGKILL" && this.pid !== undefined && this.pid === stalledWorker()) return true;
+			return kill.call(this, signal);
+		});
+		const outcomes: ChildOutcome[] = [];
+		try {
+			const result = await run(
+				workflow({
+					name: "pool-cleanup-unkillable-root",
+					description: "",
+					inputs: {},
+					outputs: {},
+					async run(ctx) {
+						const settled = await Promise.allSettled(
+							Array.from({ length: 3 }, (_, index) => ctx.workflow(child, { inputs: { index } })),
+						);
+						for (const [index, outcome] of settled.entries())
+							outcomes.push(
+								outcome.status === "fulfilled"
+									? { index, status: outcome.value.status }
+									: { index, error: outcome.reason },
+							);
+						return {};
+					},
+				}),
+				{},
+				{
+					runId: testRunId("pool-cleanup-unkillable-root"),
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(BUDGET.waitMs),
+				},
+			);
+			assert.equal(result.status, "completed", result.error);
+			assert.deepEqual(
+				outcomes,
+				[0, 1, 2].map((index) => ({ index, status: "completed" })),
+				"the stuck worker's child replayed on a replacement",
+			);
+			const stuck = stalledWorker();
+			assert.ok(stuck !== undefined);
+			assert.equal(pool.health.length, 1, pool.health.join("\n"));
+			assert.match(pool.health[0]!, new RegExp(`worker process ${stuck} was still running .* retired and replaced`));
+		} finally {
+			delete process.env.ATOMIC_TEST_CASCADE_STALL_INDEX;
+			delete process.env.ATOMIC_TEST_CASCADE_HOLD_MS;
+			vi.restoreAllMocks();
+			await pool.close().catch(() => {});
+			const stuck = stalledWorker();
+			if (stuck !== undefined)
+				try {
+					process.kill(stuck, "SIGKILL");
+				} catch {}
 			await backend.close();
 			removeTempDirectory(directory);
 		}

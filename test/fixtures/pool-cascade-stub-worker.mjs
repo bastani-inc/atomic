@@ -2,11 +2,17 @@
 // LocalWorkerPool's internal `workerEntry` option. It claims a child, holds it for ATOMIC_TEST_CASCADE_HOLD_MS while
 // renewing its lease as a real worker's heartbeat does, then completes it. Being cheap to start, a pool of dozens of
 // them shows what the coordinator does with many workers without each one loading the workflow runtime.
+// With ATOMIC_TEST_CASCADE_STALL_INDEX=<n>, the first attempt of the child with input index n records this worker's
+// pid in `stalled-worker` beside the journal and stops answering, so lease recovery stops the worker.
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
 const start = JSON.parse(process.argv[2]);
 const holdMs = Number(process.env.ATOMIC_TEST_CASCADE_HOLD_MS ?? "1500");
+const stallIndex = process.env.ATOMIC_TEST_CASCADE_STALL_INDEX;
+const stallMarker = join(dirname(start.journalPath), "stalled-worker");
 const CHECKPOINT_EVENT = "CheckpointRecorded";
 
 let sequence = 0;
@@ -68,6 +74,10 @@ try {
 		if (!work) {
 			await delay(25);
 			continue;
+		}
+		if (String(work.inputs.index) === stallIndex && !existsSync(stallMarker)) {
+			writeFileSync(stallMarker, String(process.pid));
+			await new Promise(() => {});
 		}
 		const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
 		await delay(holdMs);
