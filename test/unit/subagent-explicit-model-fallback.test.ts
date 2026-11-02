@@ -49,6 +49,8 @@ const OVERFLOW = "The input token count (1100000) exceeds the maximum number of 
 /** How the requested model on the first account ends its turns. */
 type Trigger =
 	| "none"
+	/** Every model fails at once. */
+	| "all-fail"
 	| "startup-error"
 	| "mid-session-error"
 	| "context-overflow"
@@ -123,6 +125,8 @@ interface FixtureOptions {
 	readonly noResolver?: boolean;
 	/** Run the child in a directory of its own, and give the parent a tool the child does not have. */
 	readonly childWorkspace?: boolean;
+	/** The provider bare model names resolve against, as the parent's provider is. */
+	readonly preferredProvider?: string;
 }
 
 /** A provider the registry knows but has no auth for, so a launch on it starts on its first fallback. */
@@ -195,15 +199,17 @@ async function fixture(options: FixtureOptions) {
 				const stream = createAssistantMessageEventStream();
 				const midSession = options.trigger === "mid-session-error" || options.trigger === "mid-session-error-tools";
 				const failure =
-					fullId !== REQUESTED || options.trigger === "none"
-						? undefined
-						: options.trigger === "startup-error"
-							? UNAVAILABLE
-							: options.trigger === "context-overflow"
-								? OVERFLOW
-								: requested === 0
-									? undefined
-									: UNAVAILABLE;
+					options.trigger === "all-fail"
+						? UNAVAILABLE
+						: fullId !== REQUESTED || options.trigger === "none"
+							? undefined
+							: options.trigger === "startup-error"
+								? UNAVAILABLE
+								: options.trigger === "context-overflow"
+									? OVERFLOW
+									: requested === 0
+										? undefined
+										: UNAVAILABLE;
 				const toolCall =
 					requested === 0 &&
 					((fullId === REQUESTED && midSession) ||
@@ -266,15 +272,19 @@ async function fixture(options: FixtureOptions) {
 		requests.length = 0;
 		forked = await createForkContextResolver(parentSessions, "fork").sessionManagerForIndex(0);
 	}
-	const resolve = createCandidateModelResolver({
-		getAvailable: () => catalog,
-		find: (provider, id) => catalog.find((entry) => entry.provider === provider && entry.id === id),
-		hasConfiguredAuth: () => true,
-	});
+	const resolve = createCandidateModelResolver(
+		{
+			getAvailable: () => catalog,
+			find: (provider, id) => catalog.find((entry) => entry.provider === provider && entry.id === id),
+			hasConfiguredAuth: () => true,
+		},
+		options.preferredProvider,
+	);
 	const launch = (runId: string) =>
 		runSingleInProcess(cwd, worker(cwd, options.agentFallbackModels, options.agentModelConstraints), CHILD_TASK, {
 			cwd: childCwd,
 			...(options.requestedModel ? { requestedModel: options.requestedModel } : {}),
+			...(options.preferredProvider ? { preferredModelProvider: options.preferredProvider } : {}),
 			runId,
 			index: 0,
 			sessionDir: join(cwd, "children"),
@@ -569,6 +579,48 @@ test(
 				"Model name (used for commit attribution): Argon 4",
 				"Model name (used for commit attribution): Sol 6",
 			),
+		);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a failed named model given by its bare name is reported as the model that ran, not as a fallback",
+	async () => {
+		const { launch } = await fixture({
+			trigger: "startup-error",
+			launchModel: "argon:high",
+			preferredProvider: ACCOUNT_A,
+		});
+		const result = await launch("bare-named-failure");
+
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.ok(result.error?.startsWith(`Model argon:high failed: ${UNAVAILABLE}`), result.error);
+		assert.doesNotMatch(result.error ?? "", /continued on|fallbacks/);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a child continued on a fallback says which models failed in place of the one its launch named",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "all-fail",
+			launchModel: `${ALLOWED_OTHER}:medium`,
+			requestedModel: `${REQUESTED}:high`,
+		});
+		const result = await launch("continued-fallback-failure");
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[ALLOWED_OTHER, REQUESTED],
+		);
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.ok(
+			result.error?.startsWith(
+				`This child continued on ${ALLOWED_OTHER} in place of ${REQUESTED}:high; ${ALLOWED_OTHER}, ${REQUESTED} failed: ${UNAVAILABLE}`,
+			),
+			result.error,
 		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
