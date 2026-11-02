@@ -381,7 +381,16 @@ async function deliverPendingStageMessages(
 	commit: PendingStageDeliveryCommit,
 	recipient?: WorkflowPendingStageRecipient,
 ): Promise<void> {
-	const stickyEntries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName, recipient);
+	// A stage that ended before its drain ran (a pooled stage's root drain finishes in the background) still gets
+	// the receipts of the messages its session received; nothing new is delivered to it.
+	const stickyEntries = stickyPendingStageEntriesForStage(
+		activeStore,
+		runId,
+		stageId,
+		stageName,
+		recipient,
+		recipient?.receivedMessageIds,
+	);
 	const candidateIds = new Set(
 		[
 			...activeStore.pendingStageMessagesFor(runId, stageId),
@@ -509,7 +518,7 @@ async function deliverPendingStageMessages(
 /**
  * Sticky (D3) queued entries in the ROOT run's bucket whose target path matches this
  * stage's depth-faithful id-form or name-form path and that have not been delivered to
- * this stage yet.
+ * this stage yet. An ended stage keeps only the entries in `receivedByEndedStage`.
  */
 function stickyPendingStageEntriesForStage(
 	activeStore: Store,
@@ -517,6 +526,8 @@ function stickyPendingStageEntriesForStage(
 	stageId: string,
 	stageName: string,
 	recipient?: { readonly sessionId: string; readonly receivedMessageIds?: readonly string[] },
+	/** Messages that stay this stage's after it ended, because its session already received them. */
+	receivedByEndedStage: readonly string[] = [],
 ): readonly PendingStageMessage[] {
 	const runs = activeStore.runs();
 	const rootRunId = durableRootRunIdForRun(runs, runId);
@@ -524,7 +535,8 @@ function stickyPendingStageEntriesForStage(
 	const rootRun = runs.find((run) => run.id === rootRunId);
 	if (rootRun === undefined) return [];
 	const stage = runs.find((run) => run.id === runId)?.stages.find((candidate) => candidate.id === stageId);
-	if (stage?.status === "completed" || stage?.status === "skipped") return [];
+	const ended = stage?.status === "completed" || stage?.status === "skipped";
+	if (ended && receivedByEndedStage.length === 0) return [];
 	// Hops keep both depth-faithful spellings per ancestor (boundary-stage name or
 	// materialized child-run id, D5/D8 clarification), so a sticky target addressed
 	// through a materialized run id matches the same future stage as the name form.
@@ -544,6 +556,7 @@ function stickyPendingStageEntriesForStage(
 			)
 		)
 			return false;
+		if (ended && !receivedByEndedStage.includes(entry.message.id)) return false;
 		return stickyEntryTargetsStage(entry, rootRunId, hops, stageId, stageName);
 	});
 }
