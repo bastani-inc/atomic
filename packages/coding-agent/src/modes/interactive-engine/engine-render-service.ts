@@ -96,18 +96,18 @@ export class EngineRenderService {
 			return true;
 		}
 		if (command.type !== "engine_tool_render" && command.type !== "engine_message_render") return false;
-		if (this.disposedIds.has(command.componentId)) return true;
 		const name =
 			command.type === "engine_tool_render"
 				? `tool:${command.toolName}`
 				: `message:${command.message.customType ?? "custom"}`;
 		void runCallback({ kind: "renderer", name }, async () => {
-			// The row may have been disposed while this render waited for its turn.
+			// The row may have been disposed before this render arrived, or while it waited for its turn: rendering it
+			// now would rebuild the record its disposal released.
 			if (this.disposedIds.has(command.componentId)) return undefined;
 			return command.type === "engine_tool_render" ? this.renderTool(command) : this.renderMessage(command);
 		})
 			.then((lines) => {
-				if (lines === undefined || this.disposedIds.has(command.componentId)) return;
+				if (lines === undefined) return;
 				this.send({
 					type: "engine_custom_frame",
 					componentId: command.componentId,

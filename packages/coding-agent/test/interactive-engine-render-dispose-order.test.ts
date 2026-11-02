@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
+import { setCallbackActivityReporter } from "../src/core/callback-activity.js";
 import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { EngineRenderService } from "../src/modes/interactive-engine/engine-render-service.js";
@@ -111,53 +112,96 @@ const wait = setInterval(() => {
 	}
 });
 
-test("a render that reaches the engine after its row's disposal does not bring the renderer back", async () => {
-	const sent: InteractiveEngineMessage[] = [];
+/**
+ * An engine render service with the callback reporter the engine child installs, so a render runs a turn after its
+ * line is read, as it does in the engine. Records which rows had a renderer built and which got a frame.
+ */
+function engineRenderService() {
+	const frames: string[] = [];
+	const renderersBuilt: string[] = [];
+	setCallbackActivityReporter({ started() {}, finished() {} });
 	const service = new EngineRenderService((line) => {
 		const message = parseInteractiveEngineMessage(line.trim());
-		if (message) sent.push(message);
+		if (message?.type === "engine_custom_frame") frames.push(message.componentId);
 	});
 	service.bindSession({
-		extensionRunner: { resolveToolRenderers: () => undefined },
+		extensionRunner: {
+			// Called once for each record the service builds; each row in these tests has its own tool name.
+			resolveToolRenderers: (toolName: string) => {
+				renderersBuilt.push(toolName);
+				return undefined;
+			},
+		},
 		getToolDefinition: () => undefined,
 		sessionManager: { getCwd: () => "/" },
 	} as unknown as AgentSession);
-	const render = (componentId: string, requestId: number): InteractiveEngineCommand => ({
-		type: "engine_tool_render",
-		componentId,
-		requestId,
-		width: 80,
-		toolName: "bash",
-		toolCallId: `call_${componentId}`,
-		args: { command: "ls" },
-		executionStarted: true,
-		argsComplete: true,
-		isPartial: false,
-		expanded: false,
-		showImages: false,
-		imageWidthCells: 60,
-		outputPad: 1,
-	});
 	const line = (command: InteractiveEngineCommand) => serializeInteractiveEngineFrame(command).trim();
-	try {
-		service.handleLine(line(render("live", 1)));
-		// The disposal overtook this row's render on the way to the engine.
-		service.handleLine(line({ type: "engine_render_dispose", componentId: "disposed" }));
-		service.handleLine(line(render("disposed", 1)));
-		// Disposed while its render waits for its turn.
-		service.handleLine(line(render("disposed_while_waiting", 1)));
-		service.handleLine(line({ type: "engine_render_dispose", componentId: "disposed_while_waiting" }));
+	return {
+		frames,
+		renderersBuilt,
+		render(componentId: string) {
+			service.handleLine(
+				line({
+					type: "engine_tool_render",
+					componentId,
+					requestId: 1,
+					width: 80,
+					toolName: componentId,
+					toolCallId: `call_${componentId}`,
+					args: { command: "ls" },
+					executionStarted: true,
+					argsComplete: true,
+					isPartial: false,
+					expanded: false,
+					showImages: false,
+					imageWidthCells: 60,
+					outputPad: 1,
+				}),
+			);
+		},
+		dispose(componentId: string) {
+			service.handleLine(line({ type: "engine_render_dispose", componentId }));
+		},
+		/** Lets every scheduled render run, then the frames they send. */
+		async settle() {
+			await waitFor(() => frames.includes("live"), "the live row's frame");
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		},
+		close() {
+			service.dispose();
+			setCallbackActivityReporter(undefined);
+		},
+	};
+}
 
-		await waitFor(
-			() => sent.some((message) => message.type === "engine_custom_frame" && message.componentId === "live"),
-			"the live row's frame",
-		);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		const framed = new Set(
-			sent.flatMap((message) => (message.type === "engine_custom_frame" ? [message.componentId] : [])),
-		);
-		assert.deepEqual([...framed], ["live"]);
+test("a render that reaches the engine after its row's disposal builds no renderer for it", async () => {
+	const engine = engineRenderService();
+	try {
+		engine.dispose("disposed");
+		engine.render("disposed");
+		engine.render("live");
+		await engine.settle();
+
+		assert.deepEqual(engine.renderersBuilt, ["live"]);
+		assert.deepEqual(engine.frames, ["live"]);
 	} finally {
-		service.dispose();
+		engine.close();
+	}
+});
+
+test("a row disposed while its render waits for its turn in the engine gets no renderer", async () => {
+	const engine = engineRenderService();
+	try {
+		engine.render("disposed_while_waiting");
+		engine.render("live");
+		// Read in the same turn as the renders, before either has run.
+		engine.dispose("disposed_while_waiting");
+		assert.deepEqual(engine.renderersBuilt, [], "the renders run a turn after their lines are read");
+		await engine.settle();
+
+		assert.deepEqual(engine.renderersBuilt, ["live"]);
+		assert.deepEqual(engine.frames, ["live"]);
+	} finally {
+		engine.close();
 	}
 });
