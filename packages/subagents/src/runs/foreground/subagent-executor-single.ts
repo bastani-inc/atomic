@@ -24,7 +24,7 @@ import {
 import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { inheritedIntercomGroup, resolveChildIntercomGroup } from "../shared/intercom-group.js";
-import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.js";
+import { currentModelFullId, resolveModelCandidate, resultRanOnLine } from "../shared/model-fallback.js";
 import { routeSubagentModel } from "../shared/model-router.js";
 import { recordRun } from "../shared/run-history.js";
 import {
@@ -439,14 +439,17 @@ export async function runSinglePath(
 		};
 	}
 
+	// A child that ran on another model than its launch asked for says so (#4188).
+	const ranOn = resultRanOnLine(r);
+	const withRanOn = (text: string) => (ranOn ? `${ranOn}\n${text}` : text);
 	if (r.status === "error")
 		return {
-			content: [{ type: "text", text: formatFailedSingleRunOutput(r, finalizedOutput.displayOutput) }],
+			content: [{ type: "text", text: withRanOn(formatFailedSingleRunOutput(r, finalizedOutput.displayOutput)) }],
 			details,
 			isError: true,
 		};
 	return {
-		content: [{ type: "text", text: finalizedOutput.displayOutput || "(no output)" }],
+		content: [{ type: "text", text: withRanOn(finalizedOutput.displayOutput || "(no output)") }],
 		details,
 	};
 }

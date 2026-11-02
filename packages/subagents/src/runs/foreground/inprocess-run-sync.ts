@@ -17,7 +17,7 @@ import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
 import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
-import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
+import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import { buildModelCandidates, launchRequestedModel, modelConstraintsFallbackGate } from "../shared/model-fallback.js";
 import {
 	captureSingleOutputSnapshot,
@@ -188,6 +188,19 @@ function noSpawnableCandidatesResult(agent: AgentConfig, task: string, skippedAt
 	return { ...refusedResult(agent, task, reason), modelAttempts: skippedAttempts };
 }
 
+/** A launch that named a model none of whose candidates, the model and its agent's fallbacks, is available (#4188). */
+function namedModelUnavailableResult(agent: AgentConfig, task: string, namedModel: string, skipped: ModelAttempt[]) {
+	const reasons = skipped.map((attempt) => attempt.error).filter((reason): reason is string => reason !== undefined);
+	return {
+		...refusedResult(
+			agent,
+			task,
+			`Model ${namedModel} is not available${reasons.length ? ` (${reasons.join(" ")})` : ""}. No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.`,
+		),
+		modelAttempts: skipped,
+	};
+}
+
 /** A launch of `provider/model:word` whose word names no thinking level, and whose model does not resolve either. */
 function unknownModelResult(agent: AgentConfig, task: string, candidate: string, effort: string, baseModel: string) {
 	return refusedResult(
@@ -207,19 +220,18 @@ export async function runSingleInProcess(
 	if (!existsSync(cwd)) return refusedResult(agent, task, `cwd does not exist: ${cwd}`);
 	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	options.modelRoute?.assertCurrent();
+	const launchModel = options.modelOverride ?? agent.model ?? "";
 	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
 	// agent configures, and never another model it did not opt into: not the parent's model, nor a settings or parent
 	// session chain. An auto-routed launch keeps its ranked chain; a launch that names no model runs the parent's.
 	const namesModel =
-		!options.modelRoute &&
-		options.runsNamedModel !== false &&
-		(options.modelOverride ?? agent.model ?? "auto") !== "auto";
+		!options.modelRoute && options.runsNamedModel !== false && launchModel !== "" && launchModel !== "auto";
 	// The launch's own constraints and its agent's gate every fallback; an auto route's gate already holds them.
 	const fallbackGate = options.modelRoute
 		? options.modelRoute.allowsModel
 		: modelConstraintsFallbackGate([agent.modelConstraints, options.modelConstraints]);
 	const seenModels = new Set<string>();
-	const rawCandidates = buildModelCandidates(
+	const builtCandidates = buildModelCandidates(
 		options.modelOverride ?? agent.model,
 		[...(options.modelRoute?.fallbackModels ?? []), ...(agent.fallbackModels ?? [])],
 		options.availableModels,
@@ -232,10 +244,12 @@ export async function runSingleInProcess(
 		options.modelRoute?.fallbackModels?.length
 			? [...options.modelRoute.fallbackModels.map(() => "off"), ...(agent.fallbackThinkingLevels ?? [])]
 			: agent.fallbackThinkingLevels,
-	).filter((candidate, index) => {
+	);
+	const rawCandidates = builtCandidates.filter((candidate, index) => {
 		if (!options.modelRoute) {
-			// A named model is the caller's choice; each fallback must satisfy every constraint.
-			if (index === 0 || !fallbackGate) return true;
+			// A named model is the caller's choice. Every other candidate, a fallback or the model a launch that names none
+			// starts on, must satisfy every constraint.
+			if (!fallbackGate || (namesModel && index === 0)) return true;
 			const resolved = options.resolveCandidateModel?.(candidate);
 			return resolved === undefined || fallbackGate(resolved.model, resolved.thinkingLevel);
 		}
@@ -246,12 +260,34 @@ export async function runSingleInProcess(
 		seenModels.add(baseModel);
 		return true;
 	});
-	const filteredCandidates = filterSpawnableModelCandidates({
+	if (!options.modelRoute && builtCandidates.length > 0 && rawCandidates.length === 0)
+		return refusedResult(agent, task, "No subagent model candidate satisfies the launch's modelConstraints.");
+	let filteredCandidates = filterSpawnableModelCandidates({
 		candidates: rawCandidates,
 		availableModels: options.availableModels,
 		knownModelProviders: options.knownModelProviders,
 		currentModel: options.currentModel,
 	});
+	const resolveCandidate = options.resolveCandidateModel;
+	if (namesModel && resolveCandidate) {
+		// A named launch never starts on a model it cannot resolve: its child would run its parent's model instead.
+		const named = rawCandidates[0];
+		const namedWord = named ? splitUnknownThinkingSuffix(named) : undefined;
+		if (named && namedWord && !resolveCandidate(named))
+			return unknownModelResult(agent, task, named, namedWord.effort, namedWord.baseModel);
+		const unavailable = filteredCandidates.candidates.filter((entry) => resolveCandidate(entry) === undefined);
+		filteredCandidates = {
+			candidates: filteredCandidates.candidates.filter((entry) => !unavailable.includes(entry)),
+			skippedAttempts: [
+				...filteredCandidates.skippedAttempts,
+				...unavailable.map((entry) =>
+					skippedModelAttempt(entry, `Skipped ${entry}: no available model matches it.`),
+				),
+			],
+		};
+		if (filteredCandidates.candidates.length === 0)
+			return namedModelUnavailableResult(agent, task, launchModel, filteredCandidates.skippedAttempts);
+	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
 	const listedCandidate = filteredCandidates.candidates[0];
@@ -286,7 +322,6 @@ export async function runSingleInProcess(
 		resolvedCandidate?.unknownEffort !== undefined && unknownEffort ? unknownEffort.baseModel : listedCandidate;
 	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none; an
 	// auto-routed launch chose none itself.
-	const launchModel = options.modelOverride ?? agent.model ?? "";
 	const requestedModel = launchRequestedModel(agent, options);
 	const requestedSuffix = splitKnownThinkingSuffix(launchModel).thinkingSuffix.slice(1);
 	const requestedThinking = options.modelRoute
@@ -382,6 +417,7 @@ export async function runSingleInProcess(
 		...(fallbackCandidates.length || options.modelRoute || namesModel ? { fallbackModels: fallbackCandidates } : {}),
 		...(fallbackGate ? { isFallbackModelAllowed: fallbackGate } : {}),
 		...(namesModel ? { namedModel: launchModel } : {}),
+		...(requestedModel ? { requestedModel } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
@@ -485,6 +521,7 @@ export async function runSingleInProcess(
 						envelope: continuedOutcome.envelope,
 						...(recovered.model === undefined ? {} : { model: recovered.model }),
 						...(recovered.thinking === undefined ? {} : { thinking: recovered.thinking }),
+						...(requestedModel ? { requestedModel } : {}),
 						sessionFile: continuedOutcome.sessionFile,
 						timestamp: Date.now(),
 						artifactsDir: options.artifactsDir,
@@ -557,6 +594,7 @@ export async function runSingleInProcess(
 			envelope: outcome.envelope,
 			...(result.model === undefined ? {} : { model: result.model }),
 			...(result.thinking === undefined ? {} : { thinking: result.thinking }),
+			...(requestedModel ? { requestedModel } : {}),
 			sessionFile: outcome.sessionFile,
 			timestamp: Date.now(),
 			artifactsDir: options.artifactsDir,

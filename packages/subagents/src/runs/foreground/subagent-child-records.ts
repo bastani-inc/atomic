@@ -8,6 +8,7 @@ import {
 import type { AgentSource } from "../../agents/agent-types.js";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
+import { launchRequestedModel } from "../shared/model-fallback.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
 	isSubagentChildRecord,
@@ -126,6 +127,8 @@ export interface SubagentChildRecord {
 	 * it, which restore with the parent's model and the settings chain as fallbacks (#4188).
 	 */
 	readonly namedModel?: string;
+	/** The model the launch asked for, reported beside the one the child ran on; see `launchRequestedModel` (#4188). */
+	readonly requestedModel?: string;
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
 }
@@ -142,16 +145,20 @@ export interface SubagentChildInheritance {
 	readonly thinkingLevel?: string;
 }
 
-/** The model a launch with these options named and its own constraints, as a record keeps them (#4188). */
+/**
+ * The model a launch with these options named, the one it asked for and its own constraints, as a record keeps them
+ * (#4188). A restored launch keeps those of its original launch, not the model it continues on.
+ */
 export function subagentChildModelChoice(
 	options: RunSyncOptions,
-): Pick<SubagentChildRecord, "namedModel" | "modelConstraints"> {
-	const namedModel =
-		options.modelRoute || options.runsNamedModel === false || options.modelOverride === "auto"
-			? undefined
-			: options.modelOverride;
+	agent?: { readonly model?: string },
+): Pick<SubagentChildRecord, "namedModel" | "requestedModel" | "modelConstraints"> {
+	const named = options.requestedModel ?? options.modelOverride ?? agent?.model;
+	const namedModel = options.modelRoute || options.runsNamedModel === false || named === "auto" ? undefined : named;
+	const requestedModel = launchRequestedModel(agent, options);
 	return {
 		...(namedModel ? { namedModel } : {}),
+		...(requestedModel ? { requestedModel } : {}),
 		...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
 	};
 }

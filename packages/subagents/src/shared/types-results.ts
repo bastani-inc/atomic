@@ -239,6 +239,8 @@ export interface SubagentStatusGroup {
 			sessionFile?: string;
 			model?: string;
 			thinking?: string;
+			/** The model the child's launch asked for, when known; `model` is the one it runs or ran on (#4188). */
+			requestedModel?: string;
 		}
 	>;
 }

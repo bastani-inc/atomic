@@ -417,6 +417,11 @@ describe("workflow stage bundled resources", () => {
 		const agentDir = join(cwd, "agent");
 		mkdirSync(agentDir, { recursive: true });
 		try {
+			// The child's named model must resolve, which needs its provider's auth (#4188); the test child never calls it.
+			writeFileSync(
+				join(agentDir, "auth.json"),
+				JSON.stringify({ anthropic: { type: "api_key", key: "test-key" } }),
+			);
 			// Admission uses the in-process test child, not Intercom. Supervisor authorization
 			// otherwise starts a real detached broker before admission and makes this test
 			// depend on OS process startup under concurrent suite load.

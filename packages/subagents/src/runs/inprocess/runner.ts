@@ -163,6 +163,8 @@ export interface ChildSpec {
 	 * and its own `fallbackModels`, and a model failure that ends the child names it (#4188).
 	 */
 	readonly namedModel?: string;
+	/** The model the launch asked for, reported beside the model the child runs on; see `launchRequestedModel`. */
+	readonly requestedModel?: string;
 	readonly onProgress?: (progress: AgentProgress) => void;
 	/** Run-scoped progress.md path used to recover partial findings after parent abort. */
 	readonly progressPath?: string;
@@ -353,6 +355,7 @@ export interface ResultEnvelope {
 	readonly envelope: string;
 	readonly model?: string;
 	readonly thinking?: string;
+	readonly requestedModel?: string;
 	readonly modelAttempts?: readonly {
 		readonly model: string;
 		readonly status: TerminalStatus;
@@ -763,6 +766,22 @@ function namedModelFailureCause(namedModel: string, ranModels: readonly string[]
 	].join(" ");
 }
 
+/**
+ * Fail a child that would start on a model its launch's constraints forbid, at the effort it would run at: a fallback
+ * promoted in place of an unavailable named model, or the model a launch that names none starts on (#4188). The model
+ * a launch named runs as named.
+ */
+function assertStartModelAllowed(spec: ChildSpec, model: Model<Api> | undefined, effort: string | undefined): void {
+	const gate = spec.isFallbackModelAllowed;
+	if (!gate || !model) return;
+	const named = spec.namedModel === undefined ? undefined : spec.resolveCandidateModel?.(spec.namedModel)?.model;
+	if (named?.provider === model.provider && named.id === model.id) return;
+	if (gate(model, effort)) return;
+	throw new Error(
+		`Model ${model.provider}/${model.id}${effort ? ` at ${effort} effort` : ""} would run${spec.namedModel ? ` in place of ${spec.namedModel}` : ""}, but the launch's modelConstraints do not allow it. No other model was used.`,
+	);
+}
+
 function cancelledEnvelope(
 	session: AgentSession | undefined,
 	spec: ChildSpec,
@@ -954,6 +973,7 @@ export class AdmittedChild {
 export interface ChildRuntimeMetadata {
 	model?: string;
 	thinking?: string;
+	requestedModel?: string;
 }
 
 export interface RunningAttempt {
@@ -1315,6 +1335,11 @@ export class SubagentControlRuntime {
 						? { fallbackModels: pinnedFallbacks }
 						: {}),
 				};
+				assertStartModelAllowed(
+					admitted.spec,
+					inherited.model,
+					explicitEffort.thinkingLevel ?? inherited.thinkingLevel,
+				);
 				const resourceLoader = new DefaultResourceLoader(
 					inProcessChildResourceLoaderOptions({
 						cwd: admitted.policy.cwd,
@@ -1753,9 +1778,11 @@ export class SubagentControlRuntime {
 		const model = running.currentModel;
 		const thinking = running.currentThinking;
 		if (model === undefined && thinking === undefined) return undefined;
+		const requestedModel = running.child.spec.requestedModel;
 		return {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinking }),
+			...(requestedModel === undefined ? {} : { requestedModel }),
 		};
 	}
 

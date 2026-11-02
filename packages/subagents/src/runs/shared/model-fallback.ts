@@ -5,6 +5,7 @@ import {
 	isRetryableModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
+	ranOnModelLine,
 } from "@bastani/atomic";
 import { type Api, getSupportedThinkingLevels, type Model } from "@bastani/pi-ai/compat";
 import type { ModelConstraints } from "../../shared/model-constraints.js";
@@ -12,6 +13,7 @@ import {
 	type ModelInfo as AvailableModelInfo,
 	splitKnownThinkingSuffix,
 	THINKING_LEVELS,
+	taskRecordModel,
 } from "../../shared/model-info.js";
 import type { Usage } from "../../shared/types.js";
 
@@ -46,10 +48,26 @@ export function modelConstraintsFallbackGate(
  */
 export function launchRequestedModel(
 	agent: { readonly model?: string } | undefined,
-	options: { readonly modelOverride?: string; readonly currentModel?: string },
+	options: { readonly requestedModel?: string; readonly modelOverride?: string; readonly currentModel?: string },
 ): string | undefined {
+	if (options.requestedModel) return options.requestedModel;
 	const named = options.modelOverride ?? agent?.model;
 	return named && named !== "auto" ? named : options.currentModel;
+}
+
+/**
+ * `Model: ran on <model>, not the requested <model>.` for a child that ran on another model than its launch asked for,
+ * or undefined (#4188).
+ */
+export function resultRanOnLine(result: {
+	readonly model?: string;
+	readonly requestedModel?: string;
+}): string | undefined {
+	return ranOnModelLine({
+		kind: "agent",
+		model: taskRecordModel(result.model),
+		requestedModel: result.requestedModel,
+	});
 }
 
 interface ModelAttemptSummary {

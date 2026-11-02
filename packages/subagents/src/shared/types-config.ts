@@ -160,6 +160,11 @@ export interface RunSyncOptions {
 	 * agent's own fallbackModels (#4188).
 	 */
 	runsNamedModel?: false;
+	/**
+	 * The model the original launch asked for, when this launch continues it on another one, as a restored child that
+	 * had fallen back does. Reported beside the model it runs on (#4188).
+	 */
+	requestedModel?: string;
 	modelRoute?: import("../runs/shared/model-router.js").ModelRoute;
 	/**
 	 * The launch's own `modelConstraints`. With the agent's, they gate every model execution fallback may move the child

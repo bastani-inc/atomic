@@ -368,7 +368,7 @@ export async function runAgentTask(input: {
 						{ launch: subagentChildLaunch(input.task, input.intentTask, input.options) }
 					: {}),
 			inherited: subagentChildInheritance(input.options),
-			...subagentChildModelChoice(input.options),
+			...subagentChildModelChoice(input.options, agentConfig),
 		});
 	};
 	let dispatched = false;

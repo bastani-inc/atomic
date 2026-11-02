@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getSystemMessageText } from "@bastani/pi-ai";
+import { getCurrentTools, getSystemMessageText } from "@bastani/pi-ai";
 import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
@@ -19,6 +19,7 @@ import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
+import { inspectInProcessChildStatus } from "../../packages/subagents/src/runs/inprocess/control-status.js";
 import type { ModelConstraints } from "../../packages/subagents/src/shared/model-constraints.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 
@@ -58,11 +59,15 @@ function usage(): AssistantMessage["usage"] {
 	};
 }
 
+/** The child's own role prompt, which every model it runs on must get. */
+const CHILD_ROLE =
+	"ROLE: you are the isolated fallback-fixture child. Work only on your own task; never act as the parent.";
+
 function worker(cwd: string, fallbackModels?: string[]): AgentConfig {
 	return {
 		name: "worker",
 		description: "fallback fixture",
-		systemPrompt: "",
+		systemPrompt: CHILD_ROLE,
 		systemPromptMode: "replace",
 		inheritProjectContext: false,
 		inheritSkills: false,
@@ -86,9 +91,13 @@ interface FixtureOptions {
 	/** The launch's `modelConstraints`. */
 	readonly modelConstraints?: ModelConstraints;
 }
+
+/** A provider the registry knows but has no auth for, so a launch on it starts on its first fallback. */
+const LOCKED_ACCOUNT = "account-locked";
 interface ProviderRequest {
 	readonly model: string;
 	readonly systemPrompt: string;
+	readonly tools: readonly string[];
 }
 
 async function fixture(options: FixtureOptions) {
@@ -131,6 +140,7 @@ async function fixture(options: FixtureOptions) {
 					systemPrompt: context.messages
 						.flatMap((message) => (message.role === "system" ? [getSystemMessageText(message)] : []))
 						.join("\n"),
+					tools: getCurrentTools(context.messages).map((tool) => tool.name),
 				});
 				const stream = createAssistantMessageEventStream();
 				const failure =
@@ -203,7 +213,7 @@ async function fixture(options: FixtureOptions) {
 			testSession: false,
 			...(options.launchModel === null ? {} : { modelOverride: options.launchModel ?? `${REQUESTED}:high` }),
 			...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
-			knownModelProviders: [ACCOUNT_A, ACCOUNT_B],
+			knownModelProviders: [ACCOUNT_A, ACCOUNT_B, LOCKED_ACCOUNT],
 			...(options.parentModelOffered === false ? {} : { currentModel: `${parentModel.provider}/${parentModel.id}` }),
 			currentThinkingLevel: "medium",
 			availableModels: catalog.map((entry) => ({
@@ -275,6 +285,17 @@ test(
 		const fallbackPrompt = requests.at(-1)!.systemPrompt;
 		assert.match(fallbackPrompt, /Model name \(used for commit attribution\): Sol 6/);
 		assert.doesNotMatch(fallbackPrompt, /Argon 4/);
+		// Run status, by the run and by the child, says it too.
+		const ranOn = "ran on account-a/sol, not the requested account-a/argon:high";
+		const runStatus = inspectInProcessChildStatus("explicit-constrained-chain");
+		assert.ok(JSON.stringify(runStatus?.content).includes(ranOn), JSON.stringify(runStatus?.content));
+		const childStatus = inspectInProcessChildStatus("explicit-constrained-chain:0");
+		assert.ok(JSON.stringify(childStatus?.content).includes(ranOn), JSON.stringify(childStatus?.content));
+		assert.equal(
+			runStatus?.details?.statusGroups?.[0]?.children[0]?.requestedModel,
+			`${REQUESTED}:high`,
+			JSON.stringify(runStatus?.details?.statusGroups),
+		);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
@@ -293,6 +314,93 @@ test(
 		assert.deepEqual([...new Set(requests.map((request) => request.model))], [REQUESTED]);
 		assert.equal(result.status, "error", JSON.stringify(result));
 		assert.ok(result.error?.includes(UNAVAILABLE), result.error);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a named model that is not in its provider's catalog fails before launch instead of running the parent's model",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "startup-error",
+			launchModel: `${ACCOUNT_A}/missing:high`,
+		});
+		const result = await launch("named-missing-model");
+
+		assert.deepEqual(requests, [], "no model is asked, the parent's included");
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.match(result.error ?? "", /account-a\/missing:high is not available/);
+		assert.match(result.error ?? "", /No other model was used/);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a launch that names no model never starts on an agent fallback its modelConstraints exclude",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "startup-error",
+			parentModel: REQUESTED,
+			launchModel: null,
+			agentFallbackModels: [OTHER_FAMILY],
+			modelConstraints: { allowedModels: [REQUESTED, REQUESTED_ON_B] },
+		});
+		const result = await launch("inherited-excluded-first-fallback");
+
+		assert.deepEqual([...new Set(requests.map((request) => request.model))], [REQUESTED]);
+		assert.equal(result.status, "error", JSON.stringify(result));
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a fallback that starts in place of an unavailable named model must meet modelConstraints at the effort it would run at",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "startup-error",
+			launchModel: `${LOCKED_ACCOUNT}/argon:low`,
+			agentFallbackModels: [ALLOWED_OTHER],
+			modelConstraints: { allowedEfforts: ["high"] },
+		});
+		const result = await launch("promoted-fallback-effort");
+
+		assert.deepEqual(requests, [], "the promoted fallback would run at low, which the constraints forbid");
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.match(result.error ?? "", /modelConstraints/);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a child that falls back partway through its task to an allowed model keeps its own prompt, role and tools, with the new model's name",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "mid-session-error",
+			agentFallbackModels: [ALLOWED_OTHER],
+			modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
+		});
+		const result = await launch("mid-session-allowed-fallback");
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[REQUESTED, REQUESTED, ALLOWED_OTHER],
+			"a tool turn on the requested model, its failure, then the allowed fallback",
+		);
+		const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
+		assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
+		assert.equal(
+			after.systemPrompt,
+			before.systemPrompt.replace(
+				"Model name (used for commit attribution): Argon 4",
+				"Model name (used for commit attribution): Sol 6",
+			),
+			"the same child prompt, with only the model it runs on changed",
+		);
+		assert.deepEqual(after.tools, before.tools, "the same tools");
+		assert.deepEqual(before.tools, ["read"]);
+		assert.equal(result.model, ALLOWED_OTHER);
+		assert.equal(result.requestedModel, `${REQUESTED}:high`);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );

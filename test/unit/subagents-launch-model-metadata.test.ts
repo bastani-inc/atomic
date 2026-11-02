@@ -157,7 +157,8 @@ test("launch reasoning is clamped to the selected model's capabilities", async (
 test("unresolved candidates stay unavailable until the child session reports its actual settings", async () => {
 	await withQueuedLaunch(
 		{
-			agent: { model: "fixture/missing:low" },
+			// A launch that names its model never starts on one it cannot resolve (#4188); one that names none can.
+			agent: { fallbackModels: ["fixture/missing:low"] },
 			options: { testSession: { sessionModel: "fixture/pinned", sessionThinkingLevel: "off" } },
 		},
 		async ({ host, response, release, terminal }) => {

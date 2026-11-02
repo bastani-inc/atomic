@@ -1113,3 +1113,94 @@ test("a forked child launched with a model thinking suffix is restored on that t
 		removeTempDirectory(cwd);
 	}
 });
+
+/** A resumed parent on `haiku` that restores child `runId:0` and reports what each restored execution returned. */
+async function restoreOnHaiku(parent: Parent, resumedHost: AgentTaskHost, runId: string) {
+	const sonnet = { provider: "anthropic", id: "claude-sonnet-5-5", reasoning: true };
+	const haiku = { provider: "anthropic", id: "claude-haiku-5", reasoning: true };
+	const models = [sonnet, haiku];
+	const resumedCtx = {
+		...parent.ctx(resumedHost),
+		model: haiku,
+		thinkingLevel: "low",
+		modelRegistry: {
+			getAvailable: () => models,
+			getAll: () => models,
+			find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			hasConfiguredAuth: () => true,
+		},
+	} as unknown as ExtensionContext;
+	const results: Awaited<ReturnType<typeof runSync>>[] = [];
+	const deps: SubagentChildRestoreDeps = {
+		...restoreDeps(parent, []),
+		runtime: {
+			runSync: async (...args) => {
+				const result = await runSync(args[0], args[1], args[2], args[3], {
+					...args[4],
+					testSession: { output: "resumed" },
+				});
+				results.push(result);
+				return result;
+			},
+		},
+	};
+	const outcome = await restoreSubagentChild(deps, resumedCtx, `${runId}:0`);
+	assert.equal(outcome.kind, "restored");
+	assert.ok((await resumedHost.waitForTask(outcome.taskId as TaskId)).ok);
+	return results;
+}
+
+test("a restored child launched on a named model that is gone fails naming it instead of running the parent's model (#4188)", async () => {
+	const cwd = makeTempDirectory("subagent-child-named-gone-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		await launchInterruptedChild(cwd, parent, "named1", "lane-group", undefined, {
+			modelOverride: "anthropic/claude-retired:high",
+			currentModel: "anthropic/claude-haiku-5",
+		});
+
+		const results = await restoreOnHaiku(parent, resumedHost, "named1");
+		assert.equal(results.length, 1);
+		assert.equal(results[0]!.status, "error", JSON.stringify(results[0]));
+		assert.match(results[0]!.error ?? "", /Model anthropic\/claude-retired:high is not available/);
+		assert.doesNotMatch(results[0]!.model ?? "", /haiku/);
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
+
+test("a restored child that fell back keeps the model its launch asked for beside the one it continues on (#4188)", async () => {
+	const cwd = makeTempDirectory("subagent-child-named-fallback-");
+	const resumedHost = taskHost("parent-after-restart");
+	try {
+		const parent = parentSession(cwd);
+		const original = await launchInterruptedChild(cwd, parent, "named2", "lane-group", undefined, {
+			modelOverride: "anthropic/claude-sonnet-5-5:high",
+			modelConstraints: { allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"] },
+		});
+		assert.equal(original.namedModel, "anthropic/claude-sonnet-5-5:high");
+		// The child had moved to an allowed fallback of its own before the restart.
+		const childSession = await SessionManager.open(original.childSessionFile!, undefined, cwd);
+		await childSession.appendModelChange("anthropic", "claude-haiku-5");
+
+		const results = await restoreOnHaiku(parent, resumedHost, "named2");
+		assert.equal(results.length, 1);
+		assert.match(results[0]!.model ?? "", /^anthropic\/claude-haiku-5\b/);
+		assert.equal(results[0]!.requestedModel, "anthropic/claude-sonnet-5-5:high");
+		const restoredRecord = await waitForRecord(
+			parent,
+			"terminal",
+			(record) => record.runId === "named2" && record.taskId !== original.taskId,
+		);
+		assert.equal(restoredRecord.namedModel, "anthropic/claude-sonnet-5-5:high");
+		assert.equal(restoredRecord.requestedModel, "anthropic/claude-sonnet-5-5:high");
+		assert.deepEqual(restoredRecord.modelConstraints, {
+			allowedModels: ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5"],
+		});
+	} finally {
+		await resumedHost.close("session-close");
+		removeTempDirectory(cwd);
+	}
+});
