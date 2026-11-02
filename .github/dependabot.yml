@@ -35,6 +35,15 @@ updates:
           interval: "weekly"
       cooldown:
           default-days: 0
+      groups:
+          # @babel/parser depends on a matching @babel/types (8.1.0 needs
+          # ^8.1.0), and scripts/test-duration-guard.ts passes parser nodes to
+          # @babel/types helpers. Bumped alone, the parser nests its own
+          # @babel/types and the two `Node` types stop matching (#4211), so the
+          # @babel/* packages are proposed together.
+          babel:
+              patterns:
+                  - "@babel/*"
       commit-message:
           prefix: "deps"
       labels:
