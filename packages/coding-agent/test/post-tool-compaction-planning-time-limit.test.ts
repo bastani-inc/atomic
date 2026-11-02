@@ -276,7 +276,9 @@ for (const planner of ["trickles thinking forever", "stalls after message_start"
 		);
 		assert.equal(provider.requests[1]?.clientClosedEarly, true, "the timed-out planner request is cancelled");
 		const boundary = session.sessionManager.getBranch().find((entry) => entry.type === "compaction");
-		assert.equal((boundary?.details as { rung?: string } | undefined)?.rung, "fresh");
+		const details = boundary?.details as { rung?: string; freshReason?: string } | undefined;
+		assert.equal(details?.rung, "fresh");
+		assert.equal(details?.freshReason, `Compaction planning timed out after ${PLANNING_TIME_LIMIT_MS} ms`);
 		assert.equal(session.getLastAssistantText(), "finished after compaction");
 	});
 }

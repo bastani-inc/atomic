@@ -108,3 +108,26 @@ describe("compaction model overrides", () => {
 		}
 	});
 });
+
+describe("compaction planning time limit", () => {
+	it("parses durations, turns off only at 0 or disabled, and keeps a fractional millisecond a limit (#4198)", () => {
+		const cases: Array<[number | string | undefined, number | undefined]> = [
+			[undefined, 300_000],
+			[0, undefined],
+			["disabled", undefined],
+			["5m", 300_000],
+			["90s", 90_000],
+			[1500, 1500],
+			[0.4, 1],
+			[-1, 300_000],
+			["bogus", 300_000],
+			["", 300_000],
+		];
+		for (const [planningTimeoutMs, expected] of cases) {
+			const manager = SettingsManager.inMemory(
+				planningTimeoutMs === undefined ? {} : { compaction: { planningTimeoutMs } },
+			);
+			assert.equal(manager.getCompactionPlanningTimeoutMs(), expected, JSON.stringify(planningTimeoutMs));
+		}
+	});
+});

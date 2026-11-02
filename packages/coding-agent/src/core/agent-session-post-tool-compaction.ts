@@ -64,8 +64,8 @@ export async function _preflightPostToolContext(
 		this._emit({ type: "compaction_start", reason: "threshold", midTurn: true });
 
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async (candidate) => {
-				const auth = await this._getRequiredRequestAuth(candidate);
+			resolvePlannerAuth: async (candidate, signal) => {
+				const auth = await this._getRequiredRequestAuth(candidate, signal ?? abortController.signal);
 				return auth.apiKey || auth.headers ? authForStream(this, auth) : undefined;
 			},
 			abortController,

@@ -53,7 +53,7 @@ const CompactionSettingsSchema = Type.Object({
 	planningTimeoutMs: Type.Optional(
 		timeoutSetting({
 			description:
-				'Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim and fallback model) as milliseconds, a duration such as "5m", or "disabled"; 0 or "disabled" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.',
+				'Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as "5m", or "disabled"; 0 or "disabled" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.',
 			default: SETTINGS_DEFAULTS.compaction.planningTimeoutMs,
 		}),
 	),

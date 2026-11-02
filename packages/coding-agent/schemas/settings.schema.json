@@ -224,7 +224,7 @@
               "pattern": "^(?:[dD][iI][sS][aA][bB][lL][eE][dD]|[0-9]+(?:[mM][sS]|[smhSMH])?)$"
             }
           ],
-          "description": "Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim and fallback model) as milliseconds, a duration such as \"5m\", or \"disabled\"; 0 or \"disabled\" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.",
+          "description": "Wall-clock limit on model planning in automatic compaction (every planner request, retry, trim, fallback model and credential lookup) as milliseconds, a duration such as \"5m\", or \"disabled\"; 0 or \"disabled\" disables it. When it runs out, post-tool and overflow compaction start a fresh context window and threshold compaction fails.",
           "default": 300000
         },
         "modelOverrides": {

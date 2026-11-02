@@ -147,6 +147,7 @@ export async function _applyVerbatimCompaction(
 				summary?: { readFiles: string[]; modifiedFiles: string[] };
 				summaryFirstKeptEntryId?: string;
 				summaryTokensBefore?: number;
+				freshReason?: string;
 		  }
 		| undefined;
 
@@ -233,6 +234,7 @@ export async function _applyVerbatimCompaction(
 			...(run.summary ? { summary: run.summary } : {}),
 			...(run.summaryFirstKeptEntryId ? { summaryFirstKeptEntryId: run.summaryFirstKeptEntryId } : {}),
 			...(run.summaryTokensBefore !== undefined ? { summaryTokensBefore: run.summaryTokensBefore } : {}),
+			...(run.freshReason ? { freshReason: run.freshReason } : {}),
 		};
 	}
 	assertCompactionOpen(this);
@@ -253,6 +255,7 @@ export async function _applyVerbatimCompaction(
 		...(compacted.backend ? { backend: compacted.backend } : {}),
 		...(compacted.model ? { model: compacted.model } : {}),
 		...(compacted.summary ? { summary: compacted.summary } : {}),
+		...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const entryId = await this.sessionManager.appendCompaction(
@@ -275,6 +278,7 @@ export async function _applyVerbatimCompaction(
 		...(compacted.backend ? { backend: compacted.backend } : {}),
 		...(compacted.model ? { model: compacted.model } : {}),
 		...(compacted.summary ? { summary: compacted.summary } : {}),
+		...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
 		...(compacted.usage ? { usage: compacted.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
@@ -363,8 +367,8 @@ async function runOwnedManualCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 			...(options.compactionModel === undefined ? {} : { compactionModel: options.compactionModel }),
-			resolvePlannerAuth: async (candidate) =>
-				authForStream(this, await this._getRequiredRequestAuth(candidate, controller.signal)),
+			resolvePlannerAuth: async (candidate, signal) =>
+				authForStream(this, await this._getRequiredRequestAuth(candidate, signal ?? controller.signal)),
 			abortController: controller,
 			backupLabel: "compact",
 			reason: "manual",

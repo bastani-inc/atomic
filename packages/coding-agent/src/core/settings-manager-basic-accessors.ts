@@ -499,7 +499,9 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	},
 
 	getCompactionPlanningTimeoutMs() {
-		const configured = parseHttpIdleTimeoutMs(settingsInternals(this).settings.compaction?.planningTimeoutMs);
+		const raw = settingsInternals(this).settings.compaction?.planningTimeoutMs;
+		// A positive fraction of a millisecond is still a limit: only 0 or "disabled" turn it off.
+		const configured = typeof raw === "number" && raw > 0 && raw < 1 ? 1 : parseHttpIdleTimeoutMs(raw);
 		const timeoutMs = configured ?? SETTINGS_DEFAULTS.compaction.planningTimeoutMs;
 		return timeoutMs > 0 ? timeoutMs : undefined;
 	},

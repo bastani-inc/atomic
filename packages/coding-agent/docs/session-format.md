@@ -252,7 +252,7 @@ An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 
 The rebuilt context contains one visible `custom` message with `customType: "compaction"`, combining the durable `summary` and retained tail. Full tool-result text and retained images remain available. `firstKeptEntryId: null` means there is no retained pre-boundary tail. Post-boundary messages remain ordinary messages, and resume needs no new planning request.
 
-`details.rung` is `"planned"` or `"extension"`; `details.backupPath` is optional.
+`details.rung` is `"planned"`, `"extension"` or `"fresh"`; `details.backupPath` is optional. A `"fresh"` entry written after planning failed also carries `details.freshReason`, the cause (for example `Compaction planning timed out after 300000 ms`).
 
 Historical `compaction` records without `details.strategy: "verbatim-lines"` are retired summary-compaction records. They remain parseable and visible to audit/export tools but are inert in active LLM context.
 
