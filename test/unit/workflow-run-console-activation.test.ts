@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
-import { stopRoutingWorkflowConsoleOutput } from "../../packages/workflows/src/engine/run-console.js";
+import {
+	stopRoutingWorkflowConsoleOutput,
+	workflowConsoleLogPath,
+} from "../../packages/workflows/src/engine/run-console.js";
 import { openRunRejectionScope } from "../../packages/workflows/src/engine/run-rejection-boundary.js";
+import { store } from "../../packages/workflows/src/shared/store.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "atomic-run-console-activation-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -18,6 +22,7 @@ type Handler = (event: object, ctx: object) => unknown;
 
 afterAll(() => {
 	stopRoutingWorkflowConsoleOutput();
+	store.clear();
 	Object.assign(console, saved);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -45,28 +50,46 @@ async function startSession(mode: "tui" | "rpc"): Promise<void> {
 	}
 }
 
+function startRun(runId: string): void {
+	store.recordRunStart({
+		id: runId,
+		name: runId,
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 0,
+	});
+}
+
 function logFromRun(runId: string, text: string): void {
 	const scope = openRunRejectionScope({ runId, fail: () => {} });
 	scope.run(() => console.error(text));
 	scope.close();
 }
 
-const logs = join(agentDir, "workflow-logs");
-
-test("an RPC host with dialog UI keeps workflow console output on stderr", async () => {
+test("an RPC host with dialog UI keeps its runs' console output on stderr", async () => {
 	await startSession("rpc");
+	startRun("rpc-run");
 	terminal.length = 0;
 	logFromRun("rpc-run", "from a run under an RPC host");
 
 	assert.deepEqual(terminal, ["from a run under an RPC host"]);
-	assert.equal(existsSync(join(logs, "rpc-run.log")), false);
+	assert.equal(existsSync(join(agentDir, "workflow-logs")), false);
 });
 
-test("a terminal UI session routes workflow console output to the run's log", async () => {
+test("a terminal UI session routes its runs' console output to the workflow log, and only its runs'", async () => {
 	await startSession("tui");
+	startRun("tui-run");
 	terminal.length = 0;
 	logFromRun("tui-run", "from a run under a terminal UI");
+	logFromRun("unowned-run", "from a run no session owns");
 
-	assert.deepEqual(terminal, [`atomic-workflows: run tui-run console output is in ${join(logs, "tui-run.log")}`]);
-	assert.deepEqual(readdirSync(logs), ["tui-run.log"]);
+	const path = workflowConsoleLogPath();
+	assert.ok(path?.startsWith(join(agentDir, "workflow-logs")));
+	assert.deepEqual(terminal, [
+		`atomic-workflows: run tui-run console output is in ${path}`,
+		"from a run no session owns",
+	]);
+	assert.match(readFileSync(path, "utf8"), / tui-run error from a run under a terminal UI\n$/);
 });

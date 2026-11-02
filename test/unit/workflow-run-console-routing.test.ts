@@ -5,7 +5,6 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
-	statSync,
 	truncateSync,
 	utimesSync,
 	writeFileSync,
@@ -14,13 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
 import {
-	MAX_RUN_CONSOLE_LOG_BYTES,
-	MAX_RUN_CONSOLE_LOG_DIRECTORY_BYTES,
-	openWorkflowConsoleLogs,
-	RUN_CONSOLE_LOG_RETENTION_MS,
+	CONSOLE_LOG_RETENTION_MS,
+	MAX_CONSOLE_LOG_DIRECTORY_BYTES,
+	MAX_PROCESS_CONSOLE_LOG_BYTES,
+	MAX_RUN_CONSOLE_BYTES,
 	routeWorkflowConsoleOutput,
-	runConsoleLogPath,
 	stopRoutingWorkflowConsoleOutput,
+	workflowConsoleLogPath,
 } from "../../packages/workflows/src/engine/run-console.js";
 import {
 	openRunRejectionScope,
@@ -31,9 +30,9 @@ type Method = "log" | "warn" | "error";
 const terminal: Array<{ readonly method: Method; readonly text: string }> = [];
 const saved = { log: console.log, warn: console.warn, error: console.error };
 const root = mkdtempSync(join(tmpdir(), "atomic-run-console-"));
-let logDirectory = "";
 let directories = 0;
 const opened: RunRejectionScope[] = [];
+const ownsEveryRun = () => true;
 
 beforeAll(() => {
 	for (const method of ["log", "warn", "error"] as const) {
@@ -41,10 +40,11 @@ beforeAll(() => {
 	}
 });
 
-/** Each test logs into a fresh directory, so retention pruning and per-run files never carry over between tests. */
-function routeToFreshDirectory(): void {
-	logDirectory = join(root, `logs-${++directories}`);
-	routeWorkflowConsoleOutput(logDirectory);
+/** Each test logs into a fresh directory, so retention pruning and earlier logs never carry over between tests. */
+function routeToFreshDirectory(owns: (rootRunId: string) => boolean = ownsEveryRun): string {
+	const directory = join(root, `logs-${++directories}`);
+	routeWorkflowConsoleOutput(directory, owns);
+	return directory;
 }
 
 afterEach(() => {
@@ -72,24 +72,31 @@ function quitAbort(runId: string): Error {
 	return Object.assign(new Error(`atomic-workflows: run ${runId} suspended by workflow quit`), { name: "AbortError" });
 }
 
-function logLines(rootRunId: string): string[] {
-	return readFileSync(runConsoleLogPath(logDirectory, rootRunId), "utf8").trimEnd().split("\n");
+/** The log's lines as `<run> <method> <text>`, without their timestamps. */
+function logLines(): string[] {
+	const path = workflowConsoleLogPath();
+	assert.ok(path);
+	return readFileSync(path, "utf8")
+		.trimEnd()
+		.split("\n")
+		.map((line) => line.slice(line.indexOf(" ") + 1));
 }
 
-test("a run's console output goes to its log file, and the chat gets one line naming it", async () => {
-	routeToFreshDirectory();
+test("a run's console output goes to the process's workflow log, and the chat gets one line naming it", async () => {
+	const directory = routeToFreshDirectory();
 	await open("run-a").run(async () => {
 		for (let index = 1; index <= 40; index += 1) console.error(`dispatcher: save-${index} failed`);
 		await Promise.resolve();
 		console.log("still going");
 	});
 
-	const path = runConsoleLogPath(logDirectory, "run-a");
+	const path = workflowConsoleLogPath();
+	assert.match(path ?? "", new RegExp(`^${directory}/${process.pid}-\\d+\\.log$`));
 	assert.deepEqual(terminal, [{ method: "warn", text: `atomic-workflows: run run-a console output is in ${path}` }]);
-	const lines = logLines("run-a");
+	const lines = logLines();
 	assert.equal(lines.length, 41);
-	assert.match(lines[0] ?? "", / error dispatcher: save-1 failed$/);
-	assert.match(lines[40] ?? "", / log still going$/);
+	assert.equal(lines[0], "run-a error dispatcher: save-1 failed");
+	assert.equal(lines[40], "run-a log still going");
 });
 
 test("cancellations from quitting a run, even after its scope closed, are logged but never reach the chat", async () => {
@@ -109,90 +116,94 @@ test("cancellations from quitting a run, even after its scope closed, are logged
 	await Promise.all(pending);
 
 	assert.deepEqual(terminal, []);
-	assert.equal(logLines("run-quit").filter((line) => line.includes("suspended by workflow quit")).length, 3);
+	assert.equal(logLines().filter((line) => line.includes("suspended by workflow quit")).length, 3);
 });
 
-test("a nested run writes to its root run's log", () => {
+test("a nested run's output is tagged with its root run, and is on disk as soon as it is logged", () => {
 	routeToFreshDirectory();
 	open("root-run");
 	open("child-run", "root-run").run(() => console.warn("from the child"));
 
-	assert.deepEqual(readdirSync(logDirectory), ["root-run.log"]);
-	assert.match(logLines("root-run")[0] ?? "", / warn from the child$/);
+	assert.deepEqual(logLines(), ["root-run warn from the child"]);
 });
 
-test("output is on disk as soon as it is logged, with nothing left to flush before exit", () => {
-	routeToFreshDirectory();
-	open("run-exit").run(() => console.error("last words"));
-	assert.match(logLines("run-exit")[0] ?? "", / error last words$/);
+test("runs that the routing session does not own keep writing to the terminal", () => {
+	routeToFreshDirectory((rootRunId) => rootRunId === "owned-run");
+	open("other-owner-run").run(() => console.error("from another owner's run"));
+	open("owned-run").run(() => console.error("from an owned run"));
+
+	assert.equal(terminal[0]?.text, "from another owner's run");
+	assert.deepEqual(logLines(), ["owned-run error from an owned run"]);
 });
 
-test("a log that cannot be written is reported once, and the run's later output is dropped, not sent to the chat", () => {
-	routeToFreshDirectory();
-	mkdirSync(runConsoleLogPath(logDirectory, "run-unwritable"));
+test("a log that cannot be written is reported once, and later output is dropped, not sent to the chat", () => {
+	const directory = routeToFreshDirectory();
+	rmSync(directory, { recursive: true });
+	writeFileSync(directory, "not a directory");
 	const run = open("run-unwritable");
 	for (let index = 0; index < 20; index += 1) run.run(() => console.error(`line ${index}`));
 
 	assert.equal(terminal.length, 1);
 	assert.match(
 		terminal[0]?.text ?? "",
-		/^atomic-workflows: run run-unwritable console output could not be written to .*; its later console output is dropped$/,
+		/^atomic-workflows: workflow console output could not be written to .*; later workflow console output is dropped$/,
 	);
 });
 
-test("a resumed run's log keeps its size limit across processes", () => {
+test("a run filling its share of the log gets one marker, and other runs keep logging", () => {
 	routeToFreshDirectory();
-	const path = runConsoleLogPath(logDirectory, "run-resumed");
-	writeFileSync(path, "x".repeat(MAX_RUN_CONSOLE_LOG_BYTES));
-	open("run-resumed").run(() => console.error("more output after a restart"));
+	const megabyte = "y".repeat(1024 * 1024);
+	const noisy = open("run-noisy");
+	for (let index = 0; index <= MAX_RUN_CONSOLE_BYTES / megabyte.length + 2; index += 1)
+		noisy.run(() => console.error(megabyte));
+	open("run-quiet").run(() => console.error("still logged"));
 
-	assert.equal(statSync(path).size, MAX_RUN_CONSOLE_LOG_BYTES);
-});
-
-test("a log filling its limit gets one marker, then nothing more", () => {
-	routeToFreshDirectory();
-	const path = runConsoleLogPath(logDirectory, "run-noisy");
-	writeFileSync(path, "x".repeat(MAX_RUN_CONSOLE_LOG_BYTES - 100));
-	const run = open("run-noisy");
-	for (let index = 0; index < 10; index += 1) run.run(() => console.error("y".repeat(60)));
-
-	const tail = readFileSync(path, "utf8").slice(MAX_RUN_CONSOLE_LOG_BYTES - 100);
-	assert.equal(tail.match(/log limit reached; later output is dropped/g)?.length, 1);
-	assert.ok(statSync(path).size < MAX_RUN_CONSOLE_LOG_BYTES + 100);
-});
-
-test("open logs are bounded, and a closed one reopens without announcing its run again", () => {
-	routeToFreshDirectory();
-	const runs = Array.from({ length: 70 }, (_, index) => open(`run-${index}`));
-	for (const run of runs) run.run(() => console.error("first"));
-	runs[0]?.run(() => console.error("second"));
-
-	assert.equal(openWorkflowConsoleLogs().length, 64);
-	assert.equal(terminal.length, 70);
-	assert.deepEqual(
-		logLines("run-0").map((line) => line.split(" ").slice(2).join(" ")),
-		["first", "second"],
+	const lines = logLines();
+	assert.equal(
+		lines.filter((line) => line === "run-noisy run log limit reached; its later output is dropped").length,
+		1,
 	);
+	assert.equal(lines.at(-1), "run-quiet error still logged");
 });
 
-test("starting to route deletes logs past their retention, then the oldest until the directory fits", () => {
+test("the process log stops at its limit with one marker", () => {
+	routeToFreshDirectory();
+	const megabyte = "z".repeat(1024 * 1024);
+	const runsNeeded = Math.ceil(MAX_PROCESS_CONSOLE_LOG_BYTES / (MAX_RUN_CONSOLE_BYTES - megabyte.length)) + 1;
+	for (let run = 0; run < runsNeeded; run += 1) {
+		const scope = open(`run-${run}`);
+		for (let index = 0; index < MAX_RUN_CONSOLE_BYTES / megabyte.length - 1; index += 1)
+			scope.run(() => console.error(megabyte));
+	}
+
+	const lines = logLines();
+	assert.equal(
+		lines.filter((line) => line === "log limit reached; later workflow console output is dropped").length,
+		1,
+	);
+	assert.equal(lines.at(-1), "log limit reached; later workflow console output is dropped");
+});
+
+test("starting to route deletes exited processes' logs past retention, then the oldest until the directory fits", () => {
 	const directory = join(root, "retention");
 	mkdirSync(directory);
 	const now = Date.now();
+	const exited = 2 ** 22 + 12_345;
 	const write = (name: string, bytes: number, ageMs: number) => {
 		const path = join(directory, name);
 		writeFileSync(path, "");
 		truncateSync(path, bytes);
 		utimesSync(path, (now - ageMs) / 1000, (now - ageMs) / 1000);
 	};
-	write("stale.log", 10, RUN_CONSOLE_LOG_RETENTION_MS + 1000);
-	write("old-large.log", MAX_RUN_CONSOLE_LOG_DIRECTORY_BYTES / 2 + 1, 60_000);
-	write("recent-large.log", MAX_RUN_CONSOLE_LOG_DIRECTORY_BYTES / 2, 1000);
-	write("notes.txt", 10, RUN_CONSOLE_LOG_RETENTION_MS + 1000);
+	write(`${exited}-1.log`, 10, CONSOLE_LOG_RETENTION_MS + 1000);
+	write(`${exited + 1}-2.log`, MAX_CONSOLE_LOG_DIRECTORY_BYTES / 2 + 1, 60_000);
+	write(`${exited + 2}-3.log`, MAX_CONSOLE_LOG_DIRECTORY_BYTES / 2, 1000);
+	write(`${process.pid}-4.log`, 10, CONSOLE_LOG_RETENTION_MS + 1000);
+	write("notes.log", 10, CONSOLE_LOG_RETENTION_MS + 1000);
 
-	routeWorkflowConsoleOutput(directory, now);
+	routeWorkflowConsoleOutput(directory, ownsEveryRun, now);
 
-	assert.deepEqual(readdirSync(directory).sort(), ["notes.txt", "recent-large.log"]);
+	assert.deepEqual(readdirSync(directory).sort(), [`${exited + 2}-3.log`, `${process.pid}-4.log`, "notes.log"].sort());
 });
 
 test("console output outside any run, or with routing off, still reaches the terminal", () => {

@@ -128,11 +128,18 @@ function factory(pi: ExtensionAPI): void {
 
 	const liveGeneration = trackLiveHostGeneration(pi);
 	let hostSessionContext: PiEventContext | undefined;
+	let routingConsoleOutput = false;
 	pi.on?.("session_start", (_event, ctx) => {
 		hostSessionContext = ctx;
-		// A terminal UI shows engine stderr in the chat line by line, so workflow code's console output goes to run logs
-		// (#4175). Other modes, including RPC hosts that have dialog UI, keep it on stderr.
-		if (ctx?.mode === "tui") routeWorkflowConsoleOutput(join(getAgentDir(), "workflow-logs"));
+		// A terminal UI shows engine stderr in the chat line by line, so console output of this session's runs goes to the
+		// workflow log (#4175). It stays registered after the session ends, for a quit run's late cancellations. Runs of
+		// other owners, and every run in other modes (including RPC hosts that have dialog UI), keep using stderr.
+		if (ctx?.mode === "tui" && !routingConsoleOutput) {
+			routingConsoleOutput = true;
+			routeWorkflowConsoleOutput(join(getAgentDir(), "workflow-logs"), (rootRunId) =>
+				store.runs().some((run) => run.id === rootRunId),
+			);
+		}
 	});
 	// Disposal and session switches abort the host session's lifetime right after sealing this extension, before any
 	// shutdown handler runs, so it is set before a run can observe a closed-session error. The lifetime is read when
