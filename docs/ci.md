@@ -419,7 +419,8 @@ The publication jobs are resumable, so the first move after a failure is **Re-ru
 - Once `stage-github-release` succeeds, nothing in the workflow deletes the draft. A failure in `publish-npm` or `publish-github-release` leaves it in place for the re-run.
 - `publish-npm` skips every package version npm already has. A publish the registry refuses because the version already exists counts as published once npm serves that version; a version npm refuses but never serves, such as an unpublished one, fails the job before any dependent publishes. A re-run therefore finishes a partly published payload without publishing anything twice.
 - `publish-github-release` leaves a release an earlier attempt already published as it is.
-- A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch.
+- A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch. If GitHub cannot say whether the failed attempt left a draft, staging stops instead of creating a second one.
+- One tag has one draft, and the latest staging owns it. After a later dispatch has staged the tag again, recover from that dispatch's run, not an earlier one: re-running an earlier run would publish the draft the later build staged.
 
 Before giving up, the scripts retry transient failures with doubling waits: an npm publish up to four times (10, 20, 40 s) when it fails with a provenance transparency-log error, a registry 5xx, 408, 409 or 429, or a network error; a GitHub API call up to four times (15, 30, 60 s) on a 5xx, a 429, a secondary rate limit or a dropped connection. Other errors, such as a permission error or a missing trusted publisher, fail at once.
 

@@ -436,6 +436,26 @@ describe("stage-github-release", () => {
 		assert.equal(ghCalls(run, "create"), 2);
 	});
 
+	test("a failed upload is not retried while GitHub cannot say whether it left a draft, so no second draft appears", () => {
+		const rel = release();
+		script(rel, "gh-view", ["ok", "http-500"]);
+		script(rel, "gh-create", ["partial-upload", "ok"]);
+		const run = stageGitHubRelease(rel, "1.2.3");
+		assert.notEqual(run.exitCode, 0);
+		assert.equal(ghCalls(run, "create"), 1);
+		assert.match(run.output, /not retrying/);
+	});
+
+	test("a delete whose outcome GitHub cannot report fails staging", () => {
+		const rel = release();
+		setRelease(rel, "draft", ["atomic-linux-x64.tar.gz"]);
+		script(rel, "gh-view", ["ok", "http-500"]);
+		script(rel, "gh-delete", ["applied-http-500", "http-500"]);
+		const run = stageGitHubRelease(rel, "1.2.3");
+		assert.notEqual(run.exitCode, 0);
+		assert.equal(ghCalls(run, "create"), 0);
+	});
+
 	test("staging that keeps failing stops after bounded retries and leaves no partial draft", () => {
 		const rel = release();
 		script(rel, "gh-create", ["partial-upload"]);

@@ -34,11 +34,12 @@ published)
 draft) delete_release "$tag" ;;
 esac
 
-# Best effort: when GitHub cannot say whether a draft exists, leave it to the
-# next attempt or re-run, which replaces any draft it finds.
+# Delete the draft an attempt could not complete. Fails when GitHub cannot say
+# whether that draft exists: GitHub allows several drafts with one tag, so
+# creating again then could leave a second draft beside the first.
 delete_incomplete_draft() {
   local current
-  current=$(release_state "$tag") || return 0
+  current=$(release_state "$tag") || return 1
   if [[ "$current" == draft ]]; then
     echo "Deleting the incomplete draft GitHub Release $tag." >&2
     delete_release "$tag"
@@ -55,7 +56,11 @@ for ((attempt = 1; ; attempt++)); do
     status=$?
   fi
   cat "$err" >&2
-  delete_incomplete_draft
+  if ! delete_incomplete_draft; then
+    echo "Cannot tell whether the failed attempt left a draft GitHub Release $tag; not retrying. A re-run replaces any draft it finds." >&2
+    rm -f "$err"
+    exit "$status"
+  fi
   if ((attempt >= GH_ATTEMPTS)) || ! gh_error_is_transient "$err"; then
     rm -f "$err"
     exit "$status"
@@ -70,6 +75,6 @@ expected=$(printf '%s\n' "${assets[@]}" | sort)
 actual=$(gh_retry release view "$tag" --json assets --jq '.assets[].name' | sort)
 [[ "$actual" == "$expected" ]] || {
   echo "Draft release asset set mismatch" >&2
-  delete_incomplete_draft
+  delete_incomplete_draft || true
   exit 1
 }
