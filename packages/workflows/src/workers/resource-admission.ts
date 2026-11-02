@@ -64,6 +64,29 @@ export class QuarantinedCapacityError extends WorkflowInfrastructureError {
 		);
 	}
 }
+
+/** A waiter whose owner `reconcile` saw dead or with a lapsed lease. A live owner's waiter rejoins the queue (#4179). */
+const FENCED_WAITER_REASON = "abandoned waiter fenced";
+/**
+ * How long after its owner's lease lapsed a fenced waiter's permit is kept out of history pruning, so a process that
+ * stalled that long can still take it back. A waiter whose permit is gone is refused, never recreated: the permit may
+ * have recorded a stop.
+ */
+const FENCED_WAITER_RETENTION_MS = 10 * 60_000;
+
+/**
+ * A waiting admission whose permit the pool released for good while it waited: its holder was stopped (worker exit,
+ * host reboot), not refused by the work. A retryable fault of the pool: a pooled child's attempt ends on it and the
+ * child replays within its attempt limit (#4179).
+ */
+export class AdmissionHolderStoppedError extends WorkflowInfrastructureError {
+	constructor(reason: string | undefined) {
+		super(
+			"stale_work_lease",
+			`Stale resource admission attempt: the admission holder was stopped${reason === undefined ? "" : ` (${reason})`}`,
+		);
+	}
+}
 const NOW_MS = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 /** How often an admission whose attempt lease is late asks again whether it was renewed. */
 const LATE_ATTEMPT_POLL_MS = 100;
@@ -291,12 +314,15 @@ export class SqlResourceAdmission {
 	): Promise<ResourcePermit> {
 		signal?.throwIfAborted();
 		const operation = randomUUID();
+		// A waiter fenced for a lapsed owner lease is released already but still recoverable, and pruning keeps it while its
+		// owner renews (#4179): ending this admission records why, so it becomes ordinary history.
 		const release = (reason = "resource cleanup confirmed") =>
 			this.storage.transaction(async (tx) => {
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE operation = ? AND state != 'released'`,
+					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE operation = ? AND (state != 'released' OR reason = ?)`,
 					reason,
 					operation,
+					FENCED_WAITER_REASON,
 				);
 			});
 		release.bindProcess = async (identity: ResourceProcessIdentity) => {
@@ -317,6 +343,20 @@ export class SqlResourceAdmission {
 				);
 				if (updated.changes !== 1) throw new Error("Resource process permit is no longer held");
 			});
+		};
+		/**
+		 * Keeps this waiter queued. `reconcile` fences a waiter whose owner lease lapsed, which a live process that stalls
+		 * under load can let happen. A waiter holds no capacity, so this live one (its owner lease was just renewed)
+		 * rejoins the queue in the same transaction it may be granted in (#4179). A permit released for any other reason,
+		 * or gone from history, stays released, and the admission is refused as a fault of the pool.
+		 */
+		const keepWaiting = async (tx: SqliteExecutor): Promise<void> => {
+			const permit = await tx.get(`SELECT state, reason FROM ${this.permits} WHERE operation = ?`, operation);
+			if (permit?.state === "released" && permit.reason === FENCED_WAITER_REASON)
+				await tx.run(`UPDATE ${this.permits} SET state = 'waiting', reason = NULL WHERE operation = ?`, operation);
+			else if (permit === undefined) throw new AdmissionHolderStoppedError("permit no longer recorded");
+			else if (permit.state !== "waiting")
+				throw new AdmissionHolderStoppedError(permit.reason === null ? undefined : String(permit.reason));
 		};
 		await this.storage.transaction(async (tx) => {
 			await tx.run(
@@ -359,6 +399,7 @@ export class SqlResourceAdmission {
 						OWNER_LEASE_MS,
 						this.owner,
 					);
+					await keepWaiting(tx);
 					const { root } = this.options;
 					// A late attempt lease is waited out, delegated or not; only a replaced attempt is refused.
 					if (!(await this.assertCurrentAttempt(tx))) {
@@ -367,7 +408,7 @@ export class SqlResourceAdmission {
 							LATE_ATTEMPT_REASON,
 							operation,
 						);
-						if (waiting.changes !== 1) throw new Error("Resource admission holder was stopped");
+						if (waiting.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
 						return false;
 					}
 					let reason = hostReason;
@@ -449,7 +490,7 @@ export class SqlResourceAdmission {
 						stageStart ? 1 : 0,
 						operation,
 					);
-					if (updated.changes !== 1) throw new Error("Resource admission holder was stopped");
+					if (updated.changes !== 1) throw new AdmissionHolderStoppedError(undefined);
 					return !reason;
 				});
 				if (granted) {
@@ -500,8 +541,10 @@ export class SqlResourceAdmission {
 			);
 			if (live.some((permit) => this.needsFencing(permit, fence))) return true;
 			return !!(await db.get(
-				`SELECT 1 AS prunable FROM ${this.permits} WHERE +state = 'released' AND ticket <= ${this.prunableBefore} LIMIT 1`,
+				`SELECT 1 AS prunable FROM ${this.permits} r WHERE ${this.prunable} LIMIT 1`,
 				RELEASED_PERMIT_RETENTION,
+				FENCED_WAITER_REASON,
+				FENCED_WAITER_RETENTION_MS,
 			));
 		});
 		if (!pending) return;
@@ -513,7 +556,8 @@ export class SqlResourceAdmission {
 			for (const owner of owners) {
 				const { rebooted, stopped } = fence(owner);
 				await tx.run(
-					`UPDATE ${this.permits} SET state = 'released', reason = 'abandoned waiter fenced' WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
+					`UPDATE ${this.permits} SET state = 'released', reason = ? WHERE owner = ? AND state = 'waiting' AND (? OR EXISTS (SELECT 1 FROM ${this.owners} WHERE id = ? AND expires_at < ${NOW_MS}))`,
+					FENCED_WAITER_REASON,
 					owner.id,
 					stopped ? 1 : 0,
 					owner.id,
@@ -567,11 +611,14 @@ export class SqlResourceAdmission {
 				ANONYMOUS_REASON,
 				ANONYMOUS_REASON,
 			);
-			// Released permits are terminal: nothing reads them but `inspect`, so only recent history is kept.
+			// Released permits are terminal: nothing reads them but `inspect`, so only recent history is kept. A waiter
+			// fenced for a lapsed owner lease is kept while its owner may still be alive to take it back (#4179).
 			await tx.run(
-				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} WHERE +state = 'released'
-				AND ticket <= ${this.prunableBefore} ORDER BY ticket LIMIT ?)`,
+				`DELETE FROM ${this.permits} WHERE ticket IN (SELECT ticket FROM ${this.permits} r WHERE ${this.prunable}
+				ORDER BY ticket LIMIT ?)`,
 				RELEASED_PERMIT_RETENTION,
+				FENCED_WAITER_REASON,
+				FENCED_WAITER_RETENTION_MS,
 				RELEASED_PERMIT_PRUNE_BATCH,
 			);
 		});
@@ -579,6 +626,14 @@ export class SqlResourceAdmission {
 	/** The newest released ticket beyond the retained history, or NULL while there is nothing to prune. */
 	private get prunableBefore(): string {
 		return `(SELECT ticket FROM ${this.permits} WHERE state = 'released' ORDER BY ticket DESC LIMIT 1 OFFSET ?)`;
+	}
+	/**
+	 * Released permits `reconcile` may delete, as a condition on alias `r`; binds the retention, the fenced-waiter reason
+	 * and its retention. A fenced waiter whose owner renewed its lease within that retention may still rejoin the queue.
+	 */
+	private get prunable(): string {
+		return `+r.state = 'released' AND r.ticket <= ${this.prunableBefore} AND (r.reason IS NOT ? OR NOT EXISTS
+			(SELECT 1 FROM ${this.owners} o WHERE o.id = r.owner AND o.expires_at >= ${NOW_MS} - ?))`;
 	}
 	/** Whether the write pass of `reconcile` would change this live permit; mirrors its statements one for one. */
 	private needsFencing(
@@ -615,6 +670,14 @@ export class SqlResourceAdmission {
 				`UPDATE ${this.permits} SET state = 'released', reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state IN ('waiting', 'granted') AND (kind = 'session' OR state = 'waiting')`,
 				this.options.root,
 				holder,
+			);
+			// The reconcile above may have fenced this holder's waiters for a lapsed owner lease, which a live waiter
+			// would take back (#4179): record the stop on them too, so they stay released.
+			await tx.run(
+				`UPDATE ${this.permits} SET reason = 'worker exit confirmed' WHERE root = ? AND holder = ? AND state = 'released' AND reason = ?`,
+				this.options.root,
+				holder,
+				FENCED_WAITER_REASON,
 			);
 			// A quarantined permit keeps its reason; it is still counted, since its cleanup is still unconfirmed.
 			await tx.run(

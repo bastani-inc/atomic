@@ -53,7 +53,7 @@ import {
 	type WorkerStart,
 } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
-import { QuarantinedCapacityError, SqlResourceAdmission } from "./resource-admission.js";
+import { AdmissionHolderStoppedError, QuarantinedCapacityError, SqlResourceAdmission } from "./resource-admission.js";
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
@@ -541,10 +541,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					try {
 						return await admission.acquire(kind, signal, requestOptions);
 					} catch (error) {
-						// Capacity that only quarantined permits held was refused: a fault of the pool, so the attempt ends as
-						// one that failed on it and the child replays within its attempt limit, whatever the caller (a
-						// stage's tool, which may report it to its model and go on) does with the error.
-						if (error instanceof QuarantinedCapacityError && !attemptFenced) {
+						// Capacity that only quarantined permits held was refused, or the pool stopped the admission's holder
+						// (#4179): a fault of the pool, so the attempt ends as one that failed on it and the child replays within
+						// its attempt limit, whatever the caller (a stage's tool, which may report it to its model and go on)
+						// does with the error.
+						if (
+							(error instanceof QuarantinedCapacityError || error instanceof AdmissionHolderStoppedError) &&
+							!attemptFenced
+						) {
 							poolFault = error.message;
 							attemptFenced = true;
 							controller.abort(new WorkAttemptFencedError(error.message));
