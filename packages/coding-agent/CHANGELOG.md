@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- A child on a local worker pool (`workflows.localWorkers`) whose replay needs a tool process permit no longer waits forever when the only capacity left under `admission.limits.process` (or `admission.userLimits.process`) is held by quarantined permits of process groups that survived SIGKILL. Those permits stay quarantined, and capacity held by running work is still waited for as before. A process admission that only quarantined permits block now waits at most 15 seconds for those groups to exit, then fails with the retryable `worker_cleanup_unconfirmed`, naming the groups and the limit. That ends the child's attempt, so it replays within its three attempts and then fails with `worker_retry_limit`, letting the root finish. If the groups exit in time, the replay goes on normally.
+- A child on a local worker pool (`workflows.localWorkers`) whose replay needs a tool process permit no longer waits forever when the only capacity left under `admission.limits.process` (or `admission.userLimits.process`) is held by quarantined permits of process groups that survived SIGKILL. Those permits stay quarantined, and capacity held by running work is still waited for as before. A process admission that only quarantined permits block now waits at most 15 seconds for those groups to exit, then fails with the retryable `worker_cleanup_unconfirmed`, naming the groups and the limit. That ends the child's attempt, so it replays within its three attempts and then fails with `worker_retry_limit`, letting the root finish. If the groups exit in time, the replay goes on normally. ([#4170](https://github.com/bastani-inc/atomic/pull/4170))
 
 ## [0.9.61] - 2026-11-02
 
