@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A long-running Atomic process no longer keeps the output of every shell command it ran in memory. A finished command kept up to about 9 MB of its output in native memory until the process exited, even after its session closed, so an interactive session running for hours, workflow stages, subagents and local workers grew without bound outside the JavaScript heap. A command's spooled output stays on disk and still reads back in `/tasks` and the task tools; a terminal (PTY) command's output, which has no spool, and the end of a spool that hit its 5 GB cap or failed to write are let go once their session closes. In a test of 100 commands printing 1 MB each, memory stayed flat instead of growing by about 80 MB ([#4218](https://github.com/bastani-inc/atomic/pull/4218)).
+
 ## [0.9.66] - 2026-11-02
 
 Long sessions no longer stall for tens of minutes in automatic compaction, and a crashed workflow root on local workers can resume after its settings or worker code changed.

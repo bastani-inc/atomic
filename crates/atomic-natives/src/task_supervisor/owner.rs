@@ -231,6 +231,13 @@ impl State {
 			&& self.owners[oi].tasks.iter().all(|t| matches!(t.record.cleanup, Cleanup::Reaped {}))
 		{
 			self.owners[oi].state = "closed".into();
+			// Every task of a closed owner is done: its commands keep their spooled output on disk and none in memory,
+			// so a long-lived process does not keep every session's command output until it exits (#4215).
+			for task in &self.owners[oi].tasks {
+				if let Some(command) = &task.command {
+					command.release_output_memory();
+				}
+			}
 			self.emit(oi, None, TaskEvent::OwnerClosed {});
 		}
 	}
