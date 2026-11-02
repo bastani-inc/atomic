@@ -437,6 +437,7 @@ export {
 	getDefaultSessionDirPath,
 	getLatestCompactionBoundaryEntry,
 	type ModelChangeEntry,
+	type ModelFallbackRecord,
 	type NewSessionOptions,
 	type ProjectedSessionEntry,
 	parseSessionEntries,

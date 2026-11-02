@@ -23,7 +23,7 @@ On interactive startup, Atomic asks before trusting a project folder that contai
 
 The startup prompt appears on its own, before the interface paints, and the interface appears once you choose. If you decline, the transcript warns that project resources are ignored; if you trust the project, it does not. Project resources and borrowed project-local code stay blocked until authorized. The trust dialog does not require a model request. Trusted global and explicitly authorized CLI extensions can report the wait.
 
-Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt. Without an applicable saved trust decision, they use `defaultProjectTrust` from global settings: `ask` (default) and `never` ignore trust-gated project inputs, while `always` trusts them. Pass `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one run.
+Non-interactive modes (`-p`, `--mode json`, and `--mode rpc`) do not show a trust prompt. Without an applicable saved trust decision, they use `defaultProjectTrust` from global settings: `ask` (default) and `never` ignore trust-gated project inputs, while `always` trusts them. Pass `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one run. When such a run ignores a project settings file, it prints a warning that names the file.
 
 If no extension or saved decision applies, `defaultProjectTrust` controls the fallback behavior. Set it to `"ask"`, `"always"`, or `"never"` in `~/.atomic/agent/settings.json`, or change it with `/settings`.
 
@@ -143,7 +143,9 @@ To audit a routing decision, the stage's `routerSelection` in `workflow({ action
 
 #### fallbackModels
 
-`fallbackModels` gives main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model and advances to the next configured model after exhausting same-model retries for a retryable provider/model failure. It continues the same turn. This includes rate limits and quota/usage-limit exhaustion, such as `The usage limit has been reached`.
+`fallbackModels` gives main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model and advances to the next configured model after exhausting same-model retries for a retryable provider/model failure. It continues the same turn. This includes rate limits and quota/usage-limit exhaustion, such as `The usage limit has been reached`. A provider error that Atomic does not recognize and that carries no status or code is retried on the same model first, like a transient failure.
+
+A model named with `--model` on the command line runs as named. That session falls back only to the models `--fallback-models` names, never to this list, whether user or project. `--fallback-models` replaces this list for one run, and `--no-fallback` turns fallback off for one run. See [CLI model options](/reference/cli#model-options).
 
 If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures and cancellations do not trigger fallback.
 
@@ -175,7 +177,7 @@ Fallback entries should be fully qualified `provider/model` ids. Add a reasoning
 }
 ```
 
-Fallback attempts are visible as model changes in the session transcript and as a fallback status in the UI. Switching providers can change latency, billing, data-handling terms, and subscription/credit usage. Configure only providers you are comfortable sending the current conversation and tool context to.
+Fallback attempts are visible as model changes in the session transcript and as a fallback status in the UI. The model change records the model the turn asked for, the model that failed, and why. The fallback model's system prompt names the fallback model. In print mode (`-p`), each fallback is reported on stderr, and the run ends with `Model: ran on <fallback>, not the requested <model>.` Switching providers can change latency, billing, data-handling terms, and subscription/credit usage. Configure only providers you are comfortable sending the current conversation and tool context to.
 
 `enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain. It does not limit `model: "auto"` routing; use [`modelRouting.allowedModels`](#modelrouting) for that.
 

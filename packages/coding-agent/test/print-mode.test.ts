@@ -517,7 +517,7 @@ describe("runPrintMode", () => {
 			mode: "text",
 		});
 		expect(exitCode).toBe(1);
-		expect(errorSpy).toHaveBeenCalledWith("provider failure");
+		expect(errorSpy).toHaveBeenCalledWith("Model openai/gpt-4o-mini failed: provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});

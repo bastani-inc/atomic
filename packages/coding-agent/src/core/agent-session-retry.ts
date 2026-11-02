@@ -319,7 +319,13 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 
 		// Keep the failed attempt in raw history while durably omitting it from model projection.
 		await this._omitTrailingAssistantAttempt();
-		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		// The change records the model the turn asked for and why it moved on, so a session read later says which
+		// model ran in its place (#4223).
+		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, {
+			requested: modelLabel(this._fallbackOriginModel ?? fromModel),
+			from: modelLabel(fromModel),
+			reason: message.errorMessage || "Retryable model error",
+		});
 		_beginFallbackModelScope.call(this);
 		this.agent.state.model = nextModel;
 		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
@@ -351,6 +357,8 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		this._refreshBaseSystemPromptFromActiveTools();
 		this._emitModelChanged(nextModel, fromModel, "fallback");
 		await this._emitModelSelect(nextModel, fromModel, "fallback");
+		// The fallback model is told which model it is.
+		await this._recordSystemPromptForModelSwitch();
 		this._retryAttempt = 0;
 
 		const fallbackGeneration = this._fallbackOriginGeneration;

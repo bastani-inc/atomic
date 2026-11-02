@@ -767,19 +767,12 @@ const SAME_MODEL_RETRYABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> 
 	"transport_error",
 ]);
 
-/** True when the same model may be requested again before fallback advances. */
+/**
+ * True when the same model may be requested again before fallback advances. This includes a provider error with no
+ * status or code whose text no pattern recognizes: it may spend a fallback candidate, so it is retried per
+ * `settings.retry` first rather than switching models on its first occurrence (#4223).
+ */
 export function isRetryableSameModelFailure(error: unknown): boolean {
 	if (!isRetryableModelFailure(error)) return false;
-	const signal = normalizeModelFailureSignal(error);
-	if (!SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(signal.kind)) return false;
-	if (
-		signal.kind === "provider_unavailable" &&
-		signal.source === "assistant_message" &&
-		signal.status === undefined &&
-		signal.code === undefined &&
-		signal.name === undefined &&
-		!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(signal.message))
-	)
-		return false;
-	return true;
+	return SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(normalizeModelFailureSignal(error).kind);
 }

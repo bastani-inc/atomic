@@ -4,7 +4,6 @@ import { normalizeToolResultImages } from "../utils/tool-result-images.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
-import { normalizeBuildSystemPromptOptions } from "./system-prompt.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
@@ -167,15 +166,7 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		// canonical projection must not overwrite it at the request boundary.
 		this._callerReplacedNextRequestContext = previousSnapshot?.context !== undefined;
 		const previousContext = previousSnapshot?.context ?? compactedContext;
-		const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
-		const options = normalizeBuildSystemPromptOptions({
-			...runOptions,
-			selectedModel: this.model,
-			selectedThinkingLevel: this.thinkingLevel,
-			selectedTools: this.getActiveToolNames(),
-			toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
-			toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
-		});
+		const options = this._currentRunSystemPromptOptions();
 		const updateMessage = this._preparePromptAndToolLoadout(options, previousContext.messages);
 		this._runSystemPromptOptions = options;
 

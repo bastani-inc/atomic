@@ -14,6 +14,7 @@ import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
+import { ranOnModelLine } from "../core/tasks/completion.js";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -29,6 +30,11 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+}
+
+/** One stderr line: provider errors can carry line breaks and control characters. */
+function singleLine(text: string): string {
+	return text.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ").trim();
 }
 
 function isCommandExtensionError(error: ExtensionError): boolean {
@@ -199,6 +205,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
 			} else if (event.type === "message_end" && event.message.role === "assistant") {
 				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
+			} else if (event.type === "model_fallback_start") {
+				// A fallback is never silent: the answer that follows comes from another model (#4223).
+				console.error(
+					`Model fallback: ${event.from} failed, continuing on ${event.to}: ${singleLine(event.reason)}`,
+				);
 			}
 		});
 	};
@@ -220,6 +231,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		}
 
 		await rebindSession();
+		// The model this run was asked to use, reported beside the one it ran on after a fallback (#4223).
+		const requestedModel = session.model ? `${session.model.provider}/${session.model.id}` : undefined;
 
 		if (initialMessage) {
 			await promptWithScopedCommandSuppression(initialMessage, { images: initialImages });
@@ -231,7 +244,18 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		const state = session.state;
 		const lastMessage = state.messages[state.messages.length - 1];
-		const lastAssistantMessage = [...state.messages].reverse().find((message) => message.role === "assistant");
+		const lastAssistantMessage = [...state.messages].reverse().find((message) => message.role === "assistant") as
+			| AssistantMessage
+			| undefined;
+		const ranOn =
+			lastAssistantMessage === undefined
+				? undefined
+				: ranOnModelLine({
+						kind: "agent",
+						model: `${lastAssistantMessage.provider}/${lastAssistantMessage.model}`,
+						requestedModel,
+					});
+		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
 		if (lastAssistantMessage?.stopReason === "length" && mode === "text" && !suppressFinalOutput) {
 			console.error("Response was truncated: the model reached its output token limit.");
 			exitCode = 1;
@@ -241,7 +265,11 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			const assistantMsg = lastMessage as AssistantMessage;
 			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
 				if (mode === "text" && !suppressFinalOutput) {
-					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
+					console.error(
+						assistantMsg.stopReason === "error"
+							? `Model ${assistantMsg.provider}/${assistantMsg.model} failed: ${assistantMsg.errorMessage || "Request error"}`
+							: assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`,
+					);
 				}
 				exitCode = 1;
 			} else if (mode === "text" && !suppressFinalOutput) {

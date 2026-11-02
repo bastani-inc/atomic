@@ -27,7 +27,7 @@ import {
 	validateCredentialPrintArgs,
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
-import { createProjectTrustContext } from "./cli/project-trust.ts";
+import { createProjectTrustContext, ignoredProjectSettings } from "./cli/project-trust.ts";
 import {
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
@@ -726,6 +726,10 @@ export async function main(argv: string[], options?: MainOptions) {
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 										}
+										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
+										const ignored =
+											trusted || appMode === "interactive" ? undefined : ignoredProjectSettings(cwd);
+										if (ignored) console.error(chalk.yellow(`Warning: ${ignored}`));
 										return trusted;
 									}
 								: undefined,
@@ -824,6 +828,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					model: sessionOptions.model,
 					thinkingLevel: sessionOptions.thinkingLevel,
 					scopedModels: sessionOptions.scopedModels,
+					fallbackModels: sessionOptions.fallbackModels,
 					tools: sessionOptions.tools,
 					builtins: parsed.noMcp ? { mcp: false } : undefined,
 					excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
