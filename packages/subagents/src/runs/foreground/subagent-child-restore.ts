@@ -433,6 +433,9 @@ async function relaunchChild(
 		resolveCandidateModel,
 		...(inherited.modelProvider ? { preferredModelProvider: inherited.modelProvider } : {}),
 		...(ownModel ? { modelOverride: ownModel } : {}),
+		// Only a launch that named its model keeps to its own chain; one that ran its parent's keeps the parent's (#4188).
+		...(record.namedModel === undefined ? { runsNamedModel: false as const } : {}),
+		...(record.modelConstraints ? { modelConstraints: record.modelConstraints } : {}),
 		...(inheritedModel ? { currentModel: inheritedModel } : {}),
 		...(inherited.thinkingLevel ? { currentThinkingLevel: inherited.thinkingLevel } : {}),
 	};

@@ -124,10 +124,10 @@ test("legacy fallback effort does not override the ranked alternative's explicit
 		]);
 });
 
-test("ordinary dispatch retains agent effort and the unfiltered parent fallback", async () => {
+test("a dispatch that names its model retains agent effort and falls back only to the agent's own chain (#4188)", async () => {
 	const spec = await dispatch("low", {}, false);
 	assert.equal(spec.thinkingLevel, "high");
-	assert.deepEqual(spec.fallbackModels, ["decision-test/fallback", "decision-test/parent"]);
+	assert.deepEqual(spec.fallbackModels, ["decision-test/fallback"]);
 });
 
 test("builtin legacy effort selects ranked alternatives without widening hard constraints", async () => {

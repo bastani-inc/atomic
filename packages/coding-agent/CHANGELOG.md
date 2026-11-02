@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent launched on a concrete model, such as `model: "openai/gpt-5.5:high"`, no longer moves to a model the launch did not choose when that model fails. Before, a provider error at the start, a transient error partway through the task, or a context overflow that compaction could not resolve moved the child to your chat model or to a settings `fallbackModels` entry of another family, even one its `modelConstraints.allowedModels` excluded. The child now runs only that model and its agent's own `fallbackModels` that its `modelConstraints` allow. When none is left, it fails with an error that names the model and the provider's reason and says no other model was used. `modelConstraints` from the call and the agent definition also filter the settings chain of a child that runs your chat model. A child whose last turn ended in a model error is now reported as failed, not as completed with empty output ([#4188](https://github.com/bastani-inc/atomic/issues/4188))
+- A subagent that falls back to another model is told which model it now runs on. Before, its system prompt kept the name of the model it started on, so the child reported that model. Its result, its completion notice and the task heartbeat also name the model it ran on beside the one its launch asked for, for example `Model: ran on anthropic/claude-opus-4-8, not the requested openai/gpt-5.5:high.` ([#4188](https://github.com/bastani-inc/atomic/issues/4188))
+
 ## [0.9.64] - 2026-11-02
 
 A quiet chat when workflows log or are quit in the terminal UI, and Claude sessions that survive a cross-provider fallback.

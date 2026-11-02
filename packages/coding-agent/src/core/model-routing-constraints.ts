@@ -54,7 +54,7 @@ export const ModelConstraintsSchema = Type.Object(
 	{
 		additionalProperties: false,
 		description:
-			"Hard constraints for auto selection and execution fallback. Applicable definition and call constraints must all hold; concrete model calls keep existing behavior.",
+			"Hard constraints for auto selection and execution fallback. Applicable definition and call constraints must all hold. A concrete model still runs as named; a subagent launched on one falls back only to its agent's fallbackModels that meet them.",
 	},
 );
 export type ModelConstraints = Static<typeof ModelConstraintsSchema>;

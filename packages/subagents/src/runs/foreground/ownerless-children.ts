@@ -18,6 +18,7 @@ import {
 	type SubagentChildStopStatus,
 	subagentChildInheritance,
 	subagentChildLaunch,
+	subagentChildModelChoice,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
@@ -150,6 +151,7 @@ export function runOwnerlessChild(input: {
 						{ launch: subagentChildLaunch(input.task, undefined, input.options) }
 					: {}),
 			inherited: subagentChildInheritance(input.options),
+			...subagentChildModelChoice(input.options),
 		});
 	};
 	const settled = Promise.withResolvers<void>();

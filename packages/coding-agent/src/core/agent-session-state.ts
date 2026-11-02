@@ -153,6 +153,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const appendSystemPrompt = loaderAppendSystemPrompt.length > 0 ? loaderAppendSystemPrompt.join("\n\n") : undefined;
 	const loadedSkills = getSkillCatalog(this._resourceLoader).modelSkills();
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
+	const previousForcedPrompt = this._baseSystemPromptOptions?.forceSystemPrompt;
 
 	this._baseSystemPromptOptions = normalizeBuildSystemPromptOptions({
 		cwd: this._cwd,
@@ -172,6 +173,18 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		this._baseSystemPromptOptions.forceSystemPrompt = this._systemPromptTransform(
 			buildSystemPrompt(this._baseSystemPromptOptions),
 		);
+	}
+	// A running turn whose prompt is still this session's own transformed prompt takes the rebuilt one, so a model
+	// switch partway through a run, such as a fallback, tells the next request which model it is (#4188). A prompt a
+	// `before_agent_start` handler replaced stays the handler's.
+	const run = this._runSystemPromptOptions;
+	if (run && previousForcedPrompt !== undefined && run.forceSystemPrompt === previousForcedPrompt) {
+		this._runSystemPromptOptions = {
+			...run,
+			forceSystemPrompt: this._baseSystemPromptOptions.forceSystemPrompt,
+			selectedModel: this._baseSystemPromptOptions.selectedModel,
+			selectedThinkingLevel: this._baseSystemPromptOptions.selectedThinkingLevel,
+		};
 	}
 }
 

@@ -279,6 +279,8 @@ function observation(value: native.HostObservation): C.HostObservation {
 // Native records own lifecycle and mutable execution metadata. Routing provenance is
 // immutable host metadata, retained for the same environment lifetime as task records.
 const routerSelections = new Map<string, C.RouterSelection>();
+// The model each launch asked for, immutable launch metadata like its routing provenance.
+const requestedModels = new Map<string, string>();
 // Launch heartbeat cadences, keyed by owner and launch operation rather than task id: a command's
 // record can be observed before its native start resolves, and it must already carry its cadence.
 const launchHeartbeats = new Map<string, number>();
@@ -296,6 +298,7 @@ function rememberLaunchHeartbeat(ownerId: C.OwnerId, operation: C.OperationId, h
 function record(value: native.TaskRecord): C.TaskRecord {
 	if (value.kind !== "agent" && value.kind !== "command") throw new Error(`Invalid native task kind: ${value.kind}`);
 	const routerSelection = routerSelections.get(value.ref.taskId);
+	const requestedModel = requestedModels.get(value.ref.taskId);
 	const heartbeatMs = launchHeartbeats.get(launchKey(value.ref.ownerId, value.launchOperationId));
 	return {
 		ref: reference(value.ref),
@@ -309,6 +312,7 @@ function record(value: native.TaskRecord): C.TaskRecord {
 		...(value.model === undefined ? {} : { model: value.model }),
 		...(value.thinking === undefined ? {} : { thinking: value.thinking }),
 		...(routerSelection ? { routerSelection } : {}),
+		...(requestedModel === undefined ? {} : { requestedModel }),
 		...(heartbeatMs === undefined ? {} : { heartbeatMs }),
 		execution: execution(value.execution),
 		observation: observation(value.observation),
@@ -943,6 +947,7 @@ export class TaskSupervisor {
 		const existing = state.tasks.get(id);
 		if (existing) return { ok: true, value: existing };
 		if (intent.routerSelection) routerSelections.set(id, Object.freeze({ ...intent.routerSelection }));
+		if (intent.requestedModel) requestedModels.set(id, intent.requestedModel);
 		const task = new TaskCapability();
 		Object.freeze(task);
 		const taskState: TaskState = {

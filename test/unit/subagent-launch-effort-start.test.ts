@@ -118,11 +118,11 @@ class WedgedAdmission implements ResourceAdmission {
 interface EffortFixtureOptions {
 	/** The parent's own admission, as a workflow stage session holds one. */
 	readonly parentAdmission?: ResourceAdmission;
-	/** The requested model's quota is exhausted, so the child falls back to the parent's model. */
+	/** The requested model's quota is exhausted, so the child moves to its agent's first fallback. */
 	readonly primaryQuotaExhausted?: boolean;
 	/** The levels the requested model supports. */
 	readonly requestedModelLevels?: Model<"anthropic-messages">["thinkingLevelMap"];
-	/** The levels the parent's model, the child's fallback, supports. */
+	/** The levels the parent's model supports, which a test may list as the agent's fallback. */
 	readonly parentModelLevels?: Model<"anthropic-messages">["thinkingLevelMap"];
 	/** Per-model default thinking levels, as `modelThinkingLevels` in settings configures them. */
 	readonly modelThinkingLevels?: Record<string, ThinkingLevel>;
@@ -143,7 +143,7 @@ async function effortFixture(options: EffortFixtureOptions = {}) {
 		reasoning: true,
 		thinkingLevelMap: options.requestedModelLevels ?? UP_TO_XHIGH,
 	};
-	// The parent's own chat model, which every child falls back to.
+	// The parent's own chat model. A child launched on a named model never falls back to it unless its agent lists it.
 	const parentModel: Model<"anthropic-messages"> = {
 		...model,
 		id: "parent-model",
@@ -340,7 +340,10 @@ test(
 test(
 	"a fallback model that supports the explicit effort keeps it",
 	async () => {
-		const fixture = await effortFixture({ primaryQuotaExhausted: true });
+		const fixture = await effortFixture({
+			primaryQuotaExhausted: true,
+			agentFallbackModels: ["effort-fixture/parent-model"],
+		});
 		const result = await fixture.launch("effort-fallback-kept");
 
 		assert.equal(result.status, "ok", JSON.stringify(result));
@@ -358,6 +361,7 @@ test(
 	async () => {
 		const fixture = await effortFixture({
 			primaryQuotaExhausted: true,
+			agentFallbackModels: ["effort-fixture/parent-model"],
 			parentModelLevels: UP_TO_HIGH,
 			modelThinkingLevels: { "effort-fixture/parent-model": "low" },
 		});

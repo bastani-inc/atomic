@@ -106,9 +106,15 @@ Define ordered `fallbackModels` to recover from retryable provider or model fail
 
 With `model: "auto"`, the ranked second and third models come immediately after the primary, before steps 2 and 3. Fewer than three eligible models produce a shorter ranked list.
 
+A child launched on a concrete model, named by the `subagent` call's `model` or by the agent's own `model`, runs only that model and the agent's own `fallbackModels`. It never falls back to the current user-selected model (step 3), to the settings `fallbackModels`, or to a chain inherited from a workflow stage. The model you name is the model that runs. To allow other models, list them in the agent's `fallbackModels`, or launch with `model: "auto"` and `modelConstraints.allowedModels`. When the named model and every fallback it may use fail, the child fails with an error that names the model and the provider's reason, and says no other model was used. This applies however the model fails: at the start, partway through the task, or on a context overflow that compaction cannot resolve. A child whose last turn ended in a model error is reported as failed, even when earlier turns succeeded.
+
+`modelConstraints` from the call and the agent definition apply to every fallback, also for a concrete-model launch and for a child that inherits the current model and the settings chain. A fallback that does not satisfy all of them is skipped. A concrete model itself still runs as named.
+
+A child that falls back to another model says so. Its result keeps the model it ran on and the model its launch asked for. The child is told the model it now runs on. The `subagent` result and the completion notice add a line such as `Model: ran on anthropic/claude-opus-4-8, not the requested openai/gpt-5.5:high.`, and the task heartbeat names both models.
+
 Retryable causes include rate limits, quota/usage-limit exhaustion, auth problems, unavailable models, network timeouts, and 5xx errors. Quota signals include `The usage limit has been reached`, `usage_limit_reached`, and `insufficient_quota`. Main chat and workflow stages share one classifier for auth, model availability, request incompatibility, and transport failures.
 
-A request-incompatible candidate also advances the sequence. Examples include HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length/context-window overflow; and `too large` / `invalid_request` errors. The chain can therefore reach the current user-selected model when no configured candidate can serve the request.
+A request-incompatible candidate also advances the sequence. Examples include HTTP 400/413/422 bad, unprocessable, or payload-too-large requests; unsupported tools or parameters; context-length/context-window overflow; and `too large` / `invalid_request` errors. The chain can therefore reach the current user-selected model when no configured candidate can serve the request, unless the launch named a concrete model.
 
 A content-filter refusal also advances the sequence, without retrying the refusing model. Examples include OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, and a `content_filter` finish reason. The result's fallback list shows which model refused. Set `retry.fallbackOnContentFilter: false` in settings to keep such a refusal on the model that gave it.
 
@@ -116,7 +122,7 @@ Fallback does not retry refused tool calls, ordinary task or tool failures, vali
 
 There is no per-attempt idle watchdog or child wall-clock kill cap. Quiet provider responses may finish; only explicit termination or a provider failure supplies a retryable cause.
 
-For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt. Unknown/custom providers are still attempted, and this pre-admission check never filters out the final current user-selected model. Automatic routing additionally applies its eligible-model constraints to every fallback, including that model.
+For concrete-model calls, a known provider without configured auth is recorded as a skipped attempt. Unknown/custom providers are still attempted. For a child that names no model, this pre-admission check never filters out the final current user-selected model. Automatic routing additionally applies its eligible-model constraints to every fallback, including that model.
 
 A fallback may send the same prompt and context to a different provider. Choose models that meet your cost, privacy, and data-handling requirements. Each candidate can carry its own [reasoning effort](#reasoning-levels).
 

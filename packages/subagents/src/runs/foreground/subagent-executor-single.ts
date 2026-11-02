@@ -260,6 +260,7 @@ export async function runSinglePath(
 			index: 0,
 			modelOverride,
 			modelRoute,
+			...(params.modelConstraints ? { modelConstraints: params.modelConstraints } : {}),
 			availableModels,
 			knownModelProviders,
 			resolveCandidateModel: createCandidateModelResolver(ctx.modelRegistry, currentProvider),

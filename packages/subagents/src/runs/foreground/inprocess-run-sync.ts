@@ -18,7 +18,7 @@ import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.js";
-import { buildModelCandidates } from "../shared/model-fallback.js";
+import { buildModelCandidates, launchRequestedModel, modelConstraintsFallbackGate } from "../shared/model-fallback.js";
 import {
 	captureSingleOutputSnapshot,
 	formatSavedOutputReference,
@@ -105,6 +105,7 @@ function resultFromOutcome(
 	outcome: AttemptOutcome,
 	startedAt: number,
 	artifactPaths: ArtifactPaths | undefined,
+	requestedModel?: string,
 ): SingleResult {
 	const status = outcome.status;
 	const output =
@@ -138,6 +139,7 @@ function resultFromOutcome(
 		usage: usageFromStats(outcome.stats),
 		...(model === undefined ? {} : { model }),
 		...(thinking === undefined ? {} : { thinking }),
+		...(requestedModel ? { requestedModel } : {}),
 		...("attemptedModels" in outcome && outcome.attemptedModels?.length
 			? { attemptedModels: [...outcome.attemptedModels] }
 			: {}),
@@ -205,20 +207,38 @@ export async function runSingleInProcess(
 	if (!existsSync(cwd)) return refusedResult(agent, task, `cwd does not exist: ${cwd}`);
 	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
 	options.modelRoute?.assertCurrent();
+	// #4188: a launch that names a concrete model, in its call or its agent, runs that model and the fallbackModels its
+	// agent configures, and never another model it did not opt into: not the parent's model, nor a settings or parent
+	// session chain. An auto-routed launch keeps its ranked chain; a launch that names no model runs the parent's.
+	const namesModel =
+		!options.modelRoute &&
+		options.runsNamedModel !== false &&
+		(options.modelOverride ?? agent.model ?? "auto") !== "auto";
+	// The launch's own constraints and its agent's gate every fallback; an auto route's gate already holds them.
+	const fallbackGate = options.modelRoute
+		? options.modelRoute.allowsModel
+		: modelConstraintsFallbackGate([agent.modelConstraints, options.modelConstraints]);
 	const seenModels = new Set<string>();
 	const rawCandidates = buildModelCandidates(
 		options.modelOverride ?? agent.model,
 		[...(options.modelRoute?.fallbackModels ?? []), ...(agent.fallbackModels ?? [])],
 		options.availableModels,
 		options.preferredModelProvider,
-		options.modelRoute && options.currentModel && options.currentThinkingLevel
-			? `${options.currentModel}:${options.currentThinkingLevel}`
-			: options.currentModel,
+		namesModel
+			? undefined
+			: options.modelRoute && options.currentModel && options.currentThinkingLevel
+				? `${options.currentModel}:${options.currentThinkingLevel}`
+				: options.currentModel,
 		options.modelRoute?.fallbackModels?.length
 			? [...options.modelRoute.fallbackModels.map(() => "off"), ...(agent.fallbackThinkingLevels ?? [])]
 			: agent.fallbackThinkingLevels,
-	).filter((candidate) => {
-		if (!options.modelRoute) return true;
+	).filter((candidate, index) => {
+		if (!options.modelRoute) {
+			// A named model is the caller's choice; each fallback must satisfy every constraint.
+			if (index === 0 || !fallbackGate) return true;
+			const resolved = options.resolveCandidateModel?.(candidate);
+			return resolved === undefined || fallbackGate(resolved.model, resolved.thinkingLevel);
+		}
 		if (!options.modelRoute.allowsCandidate(candidate, options.modelRoute.routerSelection.effort ?? "off"))
 			return false;
 		const { baseModel } = splitKnownThinkingSuffix(candidate);
@@ -267,6 +287,7 @@ export async function runSingleInProcess(
 	// The effort a `provider/model:effort` launch asked for explicitly, a level or a word that names none; an
 	// auto-routed launch chose none itself.
 	const launchModel = options.modelOverride ?? agent.model ?? "";
+	const requestedModel = launchRequestedModel(agent, options);
 	const requestedSuffix = splitKnownThinkingSuffix(launchModel).thinkingSuffix.slice(1);
 	const requestedThinking = options.modelRoute
 		? undefined
@@ -357,8 +378,10 @@ export async function runSingleInProcess(
 				}
 			: undefined,
 		artifactJsonlPath: options.artifactConfig?.includeJsonl === true ? artifactPaths?.jsonlPath : undefined,
-		...(fallbackCandidates.length || options.modelRoute ? { fallbackModels: fallbackCandidates } : {}),
-		...(options.modelRoute ? { isFallbackModelAllowed: options.modelRoute.allowsModel } : {}),
+		// A named model's own chain, even an empty one, replaces any chain the child session would otherwise take up.
+		...(fallbackCandidates.length || options.modelRoute || namesModel ? { fallbackModels: fallbackCandidates } : {}),
+		...(fallbackGate ? { isFallbackModelAllowed: fallbackGate } : {}),
+		...(namesModel ? { namedModel: launchModel } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {
 					const liveProgress = { ...progress, index: options.index ?? 0 };
@@ -442,7 +465,14 @@ export async function runSingleInProcess(
 		parentAskCleanup();
 		void running.promise
 			.then(async (continuedOutcome) => {
-				const recovered = resultFromOutcome(agent, task, continuedOutcome, startedAt, artifactPaths);
+				const recovered = resultFromOutcome(
+					agent,
+					task,
+					continuedOutcome,
+					startedAt,
+					artifactPaths,
+					requestedModel,
+				);
 				await control.deliverChildResult(
 					{
 						path: continuedOutcome.path,
@@ -487,6 +517,7 @@ export async function runSingleInProcess(
 			usage: emptyUsage(),
 			...(continuedModel === undefined ? {} : { model: continuedModel }),
 			...(continuedThinking === undefined ? {} : { thinking: continuedThinking }),
+			...(requestedModel ? { requestedModel } : {}),
 			progress: {
 				index: options.index ?? 0,
 				agent: agent.name,
@@ -511,7 +542,7 @@ export async function runSingleInProcess(
 	detachCleanup();
 	parentAskCleanup();
 	const outcome = winner.value;
-	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths);
+	const result = resultFromOutcome(agent, task, outcome, startedAt, artifactPaths, requestedModel);
 	if (options.modelRoute) result.routerSelection = options.modelRoute.routerSelection;
 	if (filteredCandidates.skippedAttempts.length)
 		result.modelAttempts = [...filteredCandidates.skippedAttempts, ...(result.modelAttempts ?? [])];

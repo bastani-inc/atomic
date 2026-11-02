@@ -1,6 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
+import { ranOnModelLine } from "./completion.js";
 import type { TaskRecord } from "./contracts.js";
 
 export const TASK_HEARTBEAT_MESSAGE_TYPE = "task-heartbeat";
@@ -26,6 +27,8 @@ export type TaskHeartbeatTask = {
 	title: string;
 	agentName?: string;
 	model?: string;
+	/** The model the agent's launch asked for, when the task records one. */
+	requestedModel?: string;
 	elapsedMs: number;
 	intervalMs: number;
 	/** Agents: last reported activity. Shells: last observed output. Omitted when none was observed. */
@@ -112,7 +115,12 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 		if (task.turnCount !== undefined) parts.push(formatCount(task.turnCount, "turn"));
 		if (task.toolCount !== undefined) parts.push(formatCount(task.toolCount, "tool call"));
 		if (task.tokenCount !== undefined) parts.push(formatCount(task.tokenCount, "token"));
-		if (task.model !== undefined) parts.push(`model ${task.model}`);
+		if (task.model !== undefined)
+			parts.push(
+				ranOnModelLine({ kind: "agent", model: task.model, requestedModel: task.requestedModel })
+					? `model ${task.model}, not the requested ${task.requestedModel}`
+					: `model ${task.model}`,
+			);
 	}
 	if (task.attention !== undefined) parts.push(task.attention);
 	return parts.join(" · ");

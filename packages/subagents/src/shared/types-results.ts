@@ -198,8 +198,14 @@ export interface SingleResult {
 	pendingTaskExpands?: boolean;
 	messages?: Message[];
 	usage: Usage;
+	/** The model the child ran on last; see `requestedModel` for the one its launch asked for. */
 	model?: string;
 	thinking?: string;
+	/**
+	 * The model the launch asked for, as given (`provider/model[:effort]`): the one it named, the routed one, or the
+	 * parent's when it named none. `model` differs from it when the child ran on a fallback (#4188).
+	 */
+	requestedModel?: string;
 	routerSelection?: import("./model-constraints.js").ModelRouterOutput;
 	attemptedModels?: string[];
 	modelAttempts?: ModelAttempt[];

@@ -158,6 +158,11 @@ export interface ChildSpec {
 	 */
 	readonly fallbackModels?: readonly string[];
 	readonly isFallbackModelAllowed?: CreateAgentSessionOptions["isFallbackModelAllowed"];
+	/**
+	 * The model the launch named, in its call or its agent, as given (`provider/model[:effort]`). The child runs only it
+	 * and its own `fallbackModels`, and a model failure that ends the child names it (#4188).
+	 */
+	readonly namedModel?: string;
 	readonly onProgress?: (progress: AgentProgress) => void;
 	/** Run-scoped progress.md path used to recover partial findings after parent abort. */
 	readonly progressPath?: string;
@@ -725,16 +730,37 @@ function outputFor(ownMessages: readonly TranscriptMessage[]): string {
 }
 
 /**
- * Why an attempt that settled without a stop failed, or undefined when it did not. It failed
- * only when it completed no successful assistant turn of its own: every own turn failed, or it
- * ran none (#3987). A child with a successful turn, even a tool-only one with no final text, did
- * not fail.
+ * Why an attempt that settled without a stop failed, or undefined when it did not. It failed when its last own turn
+ * ended in a model error, so a model that fails partway through the task never reads as a finished child (#4188), or
+ * when it completed no successful assistant turn of its own: every own turn failed, or it ran none (#3987). A child
+ * whose last turn succeeded, even a tool-only one with no final text, did not fail. `modelError` is the error that
+ * ended its last turn, when one did.
  */
-function noSuccessfulTurnCause(ownMessages: readonly TranscriptMessage[]): string | undefined {
+function failedChildCause(
+	ownMessages: readonly TranscriptMessage[],
+): { readonly cause: string; readonly modelError?: string } | undefined {
 	const ownTurns = ownMessages.flatMap((message) => (message.role === "assistant" ? [message] : []));
+	const lastTurn = ownTurns.at(-1);
+	if (lastTurn?.stopReason === "error") {
+		const modelError = lastTurn.errorMessage?.trim() || "the model request failed without an error message";
+		return { cause: modelError, modelError };
+	}
 	if (ownTurns.some((turn) => turn.stopReason !== "error" && turn.stopReason !== "aborted")) return undefined;
 	const errorMessage = ownTurns.findLast((turn) => turn.errorMessage?.trim())?.errorMessage?.trim();
-	return errorMessage || "Child ended without completing an assistant turn of its own.";
+	return { cause: errorMessage || "Child ended without completing an assistant turn of its own." };
+}
+
+/**
+ * Why a child launched on a named model failed when that model, and every fallback it opted into, failed: the models
+ * it ran, the error, and that no other model ran in their place (#4188).
+ */
+function namedModelFailureCause(namedModel: string, ranModels: readonly string[], error: string): string {
+	const fallbacks = ranModels.slice(1);
+	return [
+		`Model ${namedModel} failed${fallbacks.length ? `, and so did its fallbacks ${fallbacks.join(", ")}` : ""}: ${error}${/[.!?]$/.test(error) ? "" : "."}`,
+		"No other model was used: a subagent launched on a named model runs only that model and its agent's fallbackModels that its modelConstraints allow.",
+		"If the failure is temporary, retry the launch; otherwise launch it on another model.",
+	].join(" ");
 }
 
 function cancelledEnvelope(
@@ -1489,8 +1515,13 @@ export class SubagentControlRuntime {
 			const sessionFile = session.sessionFile;
 			const producedMessages = ownMessages();
 			const output = outputFor(producedMessages);
-			// A child that settled without a stop and completed no successful turn of its own failed (#3987).
-			const noOutput = termination === undefined ? noSuccessfulTurnCause(producedMessages) : undefined;
+			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
+			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
+			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
+			const noOutput =
+				failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
+					? namedModelFailureCause(admitted.spec.namedModel, attemptedModels, failure.modelError)
+					: failure?.cause;
 			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));

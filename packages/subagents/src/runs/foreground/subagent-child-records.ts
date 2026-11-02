@@ -6,6 +6,7 @@ import {
 	type SessionStore,
 } from "@bastani/atomic";
 import type { AgentSource } from "../../agents/agent-types.js";
+import type { ModelConstraints } from "../../shared/model-constraints.js";
 import type { MaxOutputConfig, OutputMode, RunSyncOptions } from "../../shared/types.js";
 import { type SubagentChildWorktree, unparkRunWorktree } from "./run-worktrees.js";
 import {
@@ -119,6 +120,14 @@ export interface SubagentChildRecord {
 	 * Records written before Atomic recorded it have none, and take those from the owner as it is now.
 	 */
 	readonly inherited?: SubagentChildInheritance;
+	/**
+	 * The model the launch named, in its call or its agent: the child runs only it and its agent's own fallbackModels.
+	 * Absent for a launch on its parent's model or an auto-routed one, and in records written before Atomic recorded
+	 * it, which restore with the parent's model and the settings chain as fallbacks (#4188).
+	 */
+	readonly namedModel?: string;
+	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
+	readonly modelConstraints?: ModelConstraints;
 }
 
 /**
@@ -131,6 +140,20 @@ export interface SubagentChildInheritance {
 	/** The provider bare model names resolve against. */
 	readonly modelProvider?: string;
 	readonly thinkingLevel?: string;
+}
+
+/** The model a launch with these options named and its own constraints, as a record keeps them (#4188). */
+export function subagentChildModelChoice(
+	options: RunSyncOptions,
+): Pick<SubagentChildRecord, "namedModel" | "modelConstraints"> {
+	const namedModel =
+		options.modelRoute || options.runsNamedModel === false || options.modelOverride === "auto"
+			? undefined
+			: options.modelOverride;
+	return {
+		...(namedModel ? { namedModel } : {}),
+		...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
+	};
 }
 
 /** What a launch with these options inherits from its owner; see {@link SubagentChildInheritance}. */
