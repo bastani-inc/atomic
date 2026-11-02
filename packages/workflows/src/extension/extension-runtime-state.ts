@@ -64,6 +64,8 @@ import { disposeWorkflowSummaryService, requestWorkflowSummary } from "./workflo
 
 interface DurabilityWarningContext extends PiModelContext {
 	readonly hasUI?: boolean;
+	/** The host's run mode; `"tui"` only when a terminal UI renders the session. */
+	readonly mode?: "tui" | "rpc" | "json" | "print";
 	readonly ui?: {
 		readonly notify?: (message: string, type?: "info" | "warning" | "error") => void;
 	};
@@ -429,6 +431,7 @@ export function createWorkflowExtensionRuntimeState(
 			summaryContext: ctx,
 			resolveDefaultStageSessionDir,
 			beforeRestoreCompleted,
+			...(ctx?.mode === "tui" ? { routeConsoleToLog: true } : {}),
 		});
 	}
 

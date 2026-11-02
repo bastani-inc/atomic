@@ -32,7 +32,6 @@ const saved = { log: console.log, warn: console.warn, error: console.error };
 const root = mkdtempSync(join(tmpdir(), "atomic-run-console-"));
 let directories = 0;
 const opened: RunRejectionScope[] = [];
-const ownsEveryRun = () => true;
 
 beforeAll(() => {
 	for (const method of ["log", "warn", "error"] as const) {
@@ -41,9 +40,9 @@ beforeAll(() => {
 });
 
 /** Each test logs into a fresh directory, so retention pruning and earlier logs never carry over between tests. */
-function routeToFreshDirectory(owns: (rootRunId: string) => boolean = ownsEveryRun): string {
+function routeToFreshDirectory(): string {
 	const directory = join(root, `logs-${++directories}`);
-	routeWorkflowConsoleOutput(directory, owns);
+	routeWorkflowConsoleOutput(directory);
 	return directory;
 }
 
@@ -58,10 +57,11 @@ afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-function open(runId: string, parentRunId?: string): RunRejectionScope {
+/** A run scope; a root run routes its console output unless its owner said otherwise (`consoleLog: false`). */
+function open(runId: string, parentRunId?: string, consoleLog = true): RunRejectionScope {
 	const scope = openRunRejectionScope({
 		runId,
-		...(parentRunId === undefined ? {} : { parentRunId }),
+		...(parentRunId === undefined ? { consoleLog } : { parentRunId }),
 		fail: () => {},
 	});
 	opened.push(scope);
@@ -129,9 +129,9 @@ test("a nested run's output is tagged with its root run, and is on disk as soon 
 	assert.deepEqual(logLines(), ["root-run warn from the child"]);
 });
 
-test("runs that the routing session does not own keep writing to the terminal", () => {
-	routeToFreshDirectory((rootRunId) => rootRunId === "owned-run");
-	open("other-owner-run").run(() => console.error("from another owner's run"));
+test("runs whose owner does not route their output keep writing to the terminal", () => {
+	routeToFreshDirectory();
+	open("other-owner-run", undefined, false).run(() => console.error("from another owner's run"));
 	open("owned-run").run(() => console.error("from an owned run"));
 
 	assert.equal(terminal[0]?.text, "from another owner's run");
@@ -186,6 +186,31 @@ test("the process log stops at its limit with one marker", () => {
 	assert.equal(lines.at(-1), "log limit reached; later workflow console output is dropped");
 });
 
+test("a call its run cannot afford caps that run only, even near the process limit", () => {
+	routeToFreshDirectory();
+	const sevenMegabytes = "w".repeat(7 * 1024 * 1024);
+	const runs = Array.from({ length: 9 }, (_, index) => open(`run-${index}`));
+	for (const run of runs) run.run(() => console.error(sevenMegabytes));
+	runs[8]?.run(() => console.error("v".repeat(2 * 1024 * 1024)));
+	open("run-quiet").run(() => console.error("still logged"));
+
+	const lines = logLines().map((line) => line.slice(0, 80));
+	assert.equal(lines.filter((line) => line === "run-8 run log limit reached; its later output is dropped").length, 1);
+	assert.equal(lines.filter((line) => line.startsWith("log limit reached")).length, 0);
+	assert.equal(lines.at(-1), "run-quiet error still logged");
+});
+
+test("a run started again by an owner that does not route its output makes its own decision", () => {
+	routeToFreshDirectory();
+	const first = open("resumed-run");
+	first.run(() => console.error("routed by its terminal-UI owner"));
+	first.close();
+	open("resumed-run", undefined, false).run(() => console.error("resumed by a headless owner"));
+
+	assert.deepEqual(logLines(), ["resumed-run error routed by its terminal-UI owner"]);
+	assert.equal(terminal.at(-1)?.text, "resumed by a headless owner");
+});
+
 test("starting to route deletes exited processes' logs past retention, then the oldest until the directory fits", () => {
 	const directory = join(root, "retention");
 	mkdirSync(directory);
@@ -203,7 +228,7 @@ test("starting to route deletes exited processes' logs past retention, then the 
 	write(`${process.pid}-4.log`, 10, CONSOLE_LOG_RETENTION_MS + 1000);
 	write("notes.log", 10, CONSOLE_LOG_RETENTION_MS + 1000);
 
-	routeWorkflowConsoleOutput(directory, ownsEveryRun, now);
+	routeWorkflowConsoleOutput(directory, now);
 
 	assert.deepEqual(readdirSync(directory).sort(), [`${exited + 2}-3.log`, `${process.pid}-4.log`, "notes.log"].sort());
 });

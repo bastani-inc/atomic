@@ -855,6 +855,7 @@ async function executeRun(
 		runId,
 		...(opts.parentRun !== undefined ? { parentRunId: opts.parentRun.runId } : {}),
 		...(authoredIn !== undefined ? { source: authoredIn } : {}),
+		...(opts.routeConsoleToLog === true ? { consoleLog: true } : {}),
 		fail: (error) => {
 			if (findWorkflowGracefulQuit(error) !== undefined) return;
 			const selected = terminalEvents.selectFailure(error);

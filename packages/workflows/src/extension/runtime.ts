@@ -52,6 +52,8 @@ import { raceWorkflowRequestAbort } from "./workflow-request-abort.js";
 // ---------------------------------------------------------------------------
 
 export interface ExtensionRuntimeOpts {
+	/** Root runs this runtime starts or resumes send their console output to the workflow log (#4175): a terminal-UI owner. */
+	routeConsoleToLog?: boolean;
 	/** Journal selection retained for this runtime's execution and recovery. */
 	journal?: RunJournalOption;
 	/** Read when the journal first opens; used when `journal` is absent. */
@@ -241,6 +243,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				models,
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 				...(policy !== undefined ? { executionMode: policy.mode } : {}),
+				...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
 				registry,
 				cwd: runtimeCwd,
 				[hostWorkerBindings]: true,

@@ -66,6 +66,11 @@ export interface RunOpts
 	adapters?: StageAdapters;
 	effectiveResources?: import("../../workers/public-options.js").WorkflowExecutionResources;
 	[hostWorkerBindings]?: true;
+	/**
+	 * Send this root run tree's console output to the workflow log instead of stderr (#4175). Its owner sets it when a
+	 * terminal UI shows that stderr in the chat; child runs inherit their root's decision.
+	 */
+	routeConsoleToLog?: boolean;
 	/** Invocation working directory exposed to workflow definitions as ctx.cwd. */
 	cwd?: string;
 	/** HIL adapter injected by the pi runtime or test harness. */

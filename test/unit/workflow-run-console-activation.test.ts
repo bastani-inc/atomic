@@ -3,12 +3,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { run } from "../../packages/workflows/src/engine/run.js";
 import {
 	stopRoutingWorkflowConsoleOutput,
 	workflowConsoleLogPath,
 } from "../../packages/workflows/src/engine/run-console.js";
-import { openRunRejectionScope } from "../../packages/workflows/src/engine/run-rejection-boundary.js";
-import { store } from "../../packages/workflows/src/shared/store.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { testRunId } from "../helpers/run-id.js";
 
 const agentDir = mkdtempSync(join(tmpdir(), "atomic-run-console-activation-"));
 const previousAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -19,10 +21,10 @@ console.warn = (...args: unknown[]) => terminal.push(args.map(String).join(" "))
 console.error = (...args: unknown[]) => terminal.push(args.map(String).join(" "));
 const { default: factory } = await import("../../packages/workflows/src/extension/index.js");
 type Handler = (event: object, ctx: object) => unknown;
+const logs = join(agentDir, "workflow-logs");
 
 afterAll(() => {
 	stopRoutingWorkflowConsoleOutput();
-	store.clear();
 	Object.assign(console, saved);
 	if (previousAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
@@ -50,47 +52,57 @@ async function startSession(mode: "tui" | "rpc"): Promise<void> {
 	}
 }
 
-function startRun(runId: string): void {
-	store.recordRunStart({
-		id: runId,
-		name: runId,
-		inputs: {},
-		status: "running",
-		toolNodes: [],
-		stages: [],
-		startedAt: 0,
-	});
-}
-
-function logFromRun(runId: string, text: string): void {
-	const scope = openRunRejectionScope({ runId, fail: () => {} });
-	scope.run(() => console.error(text));
-	scope.close();
-}
-
-test("an RPC host with dialog UI keeps its runs' console output on stderr", async () => {
-	await startSession("rpc");
-	startRun("rpc-run");
-	terminal.length = 0;
-	logFromRun("rpc-run", "from a run under an RPC host");
-
-	assert.deepEqual(terminal, ["from a run under an RPC host"]);
-	assert.equal(existsSync(join(agentDir, "workflow-logs")), false);
+const chatty = workflow({
+	name: "chatty",
+	description: "",
+	inputs: {},
+	outputs: {},
+	async run(ctx) {
+		console.error("from the workflow body");
+		await ctx.tool("step", {}, async () => {
+			console.error("from a durable step");
+			return 1;
+		});
+		return {};
+	},
 });
 
-test("a terminal UI session routes its runs' console output to the workflow log, and only its runs'", async () => {
-	await startSession("tui");
-	startRun("tui-run");
+async function runChatty(runId: string, routeConsoleToLog: boolean): Promise<void> {
+	const result = await run(
+		chatty,
+		{},
+		{ runId, cwd: agentDir, store: createStore(), ...(routeConsoleToLog ? { routeConsoleToLog } : {}) },
+	);
+	assert.equal(result.status, "completed");
+}
+
+test("an RPC host with dialog UI does not turn routing on", async () => {
+	await startSession("rpc");
 	terminal.length = 0;
-	logFromRun("tui-run", "from a run under a terminal UI");
-	logFromRun("unowned-run", "from a run no session owns");
+	await runChatty(testRunId("rpc-run"), true);
+
+	assert.deepEqual(terminal, ["from the workflow body", "from a durable step"]);
+	assert.equal(existsSync(logs), false);
+});
+
+test("under a terminal UI, a run its owner routes logs to the workflow log, and another owner's run does not", async () => {
+	await startSession("tui");
+	terminal.length = 0;
+	const routed = testRunId("tui-run");
+	await runChatty(routed, true);
+	await runChatty(testRunId("headless-run"), false);
 
 	const path = workflowConsoleLogPath();
 	assert.ok(path);
-	assert.ok(path.startsWith(join(agentDir, "workflow-logs")));
+	assert.ok(path.startsWith(logs));
 	assert.deepEqual(terminal, [
-		`atomic-workflows: run tui-run console output is in ${path}`,
-		"from a run no session owns",
+		`atomic-workflows: run ${routed} console output is in ${path}`,
+		"from the workflow body",
+		"from a durable step",
 	]);
-	assert.match(readFileSync(path, "utf8"), / tui-run error from a run under a terminal UI\n$/);
+	const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+	assert.deepEqual(
+		lines.map((line) => line.slice(line.indexOf(" ") + 1)),
+		[`${routed} error from the workflow body`, `${routed} error from a durable step`],
+	);
 });
