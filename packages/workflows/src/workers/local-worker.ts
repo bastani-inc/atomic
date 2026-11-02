@@ -76,6 +76,27 @@ class WorkAttemptFencedError extends Error {
 	}
 }
 
+/** How long a worker waits for a fenced attempt's stage sessions to close before it goes on; they keep closing after. */
+const FENCED_STAGE_CLOSE_MS = 10_000;
+
+/**
+ * Closes the stage sessions a fenced attempt left open on this worker, which releases their session permits. Its stages
+ * never run here again, and the worker keeps its registry for the attempts it serves next: left open, they would hold
+ * their permits until the worker exits, and a replay of the attempt on this worker could wait for them indefinitely.
+ * A session that fails to close keeps its permit, as it would have before; one still closing after
+ * {@link FENCED_STAGE_CLOSE_MS} gives its permit back once it has closed, without holding up the worker meanwhile.
+ */
+async function closeAttemptStages(stageControls: StageControlRegistry, store: Store): Promise<void> {
+	const closing = Promise.allSettled(store.runs().map((run) => stageControls.clear(run.id))).then((results) => {
+		for (const result of results)
+			if (result.status === "rejected")
+				console.warn("atomic-workflows: a fenced attempt's stage session did not close", result.reason);
+	});
+	const bound = new AbortController();
+	await Promise.race([closing, delay(FENCED_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
+	bound.abort();
+}
+
 /** The registry, with each registered stage's first turn in this process recorded in `started`. */
 function trackTurnStarts(registry: StageControlRegistry, started: WeakSet<StageControlHandle>): StageControlRegistry {
 	return new Proxy(registry, {
@@ -598,6 +619,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await renewal;
 				await report;
 				await controlPulse;
+				// The fenced attempt's stages never run again here: its replay opens its own sessions. Close theirs now, so
+				// their session permits go back before this worker serves the replay, instead of when the worker exits.
+				await closeAttemptStages(stageControls, store);
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
 			if (rootLeaseLost) break;

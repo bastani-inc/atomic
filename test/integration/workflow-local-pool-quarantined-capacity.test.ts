@@ -163,6 +163,14 @@ test.skipIf(process.platform === "win32")(
 				[["exited-worker", "granted", "cleanup unconfirmed; permit quarantined"]],
 				"the quarantined permit keeps its capacity, and no refused admission holds any",
 			);
+			// Read while the worker is still alive: each ended attempt closed its stage's session, not the worker's exit.
+			assert.deepEqual(
+				(await admission.inspect())
+					.filter((permit) => permit.kind === "session" && permit.state !== "released")
+					.map((permit) => [permit.attempt, permit.state, permit.reason]),
+				[],
+				"every ended attempt gave its stage's session permit back",
+			);
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();
