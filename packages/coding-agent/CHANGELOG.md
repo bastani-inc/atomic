@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- A stage on a local worker (`workflows.localWorkers`) that starts after a sticky Intercom broadcast (`workflow:<rootRunId>/**`) or a name or pattern send to future stages gets those messages before its first turn, under "Messages received before you started" with the real sender, even when the root is too busy to answer. Before, each such stage on a busy root could wait 60 seconds and then print a long "starting without its queued Intercom messages" warning in the chat, listing messages it may already have received. The worker now delivers the stage's queued messages itself and never waits on the root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run, not a warning per stage.
+- A stage on a local worker (`workflows.localWorkers`) that starts after a sticky Intercom broadcast (`workflow:<rootRunId>/**`) or a name or pattern send to future stages gets those messages before its first turn, under "Messages received before you started" with the real sender, even when the root is too busy to answer. Before, each such stage on a busy root could wait 60 seconds and then print a long "starting without its queued Intercom messages" warning in the chat, listing messages it may already have received. The worker now delivers the stage's queued messages itself and never waits on the root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run, not a warning per stage ([#4164](https://github.com/bastani-inc/atomic/pull/4164)).
 
 ## [0.9.61] - 2026-11-02
 
