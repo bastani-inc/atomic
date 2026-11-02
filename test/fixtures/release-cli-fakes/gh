@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# Fake gh for the release script tests: one GitHub Release kept in $RELEASE_FAKE_STATE.
+#
+# release.state is `missing` (the default), `draft` or `published`; release.assets
+# lists the uploaded asset names; release.prerelease and release.latest hold the
+# flags the last `gh release edit` set. `gh release view` evaluates its `--jq`
+# expression with the real jq against {isDraft, isPrerelease, assets: [{name}]}.
+#
+# Each `gh release <command>` first plays the command's next scripted outcome from
+# gh-<command>.outcomes, one per line (a missing file means `ok`; the last line
+# repeats once the list is used up):
+#   ok                    behaves like the GitHub API
+#   http-500, http-502    fails without changing anything
+#   applied-http-500      makes the change, then fails with HTTP 500 anyway
+#   secondary-rate-limit  fails with GitHub's secondary rate limit 403
+#   http-403              fails with a permission 403
+#   partial-upload        (create only) leaves a draft with three assets, then fails with HTTP 502
+set -euo pipefail
+state=${RELEASE_FAKE_STATE:?RELEASE_FAKE_STATE is required}
+printf 'gh %s\n' "$*" >>"$state/calls.log"
+[[ "${1:-}" == release && $# -ge 3 ]] || {
+  echo "fake gh: unsupported command: $*" >&2
+  exit 64
+}
+command=$2
+tag=$3
+shift 3
+touch "$state/release.assets"
+api="https://api.github.com/repos/bastani-inc/atomic/releases"
+
+next_outcome() {
+  local outcomes="$state/$1.outcomes" counter="$state/$1.count" n lines
+  if [[ ! -f "$outcomes" ]]; then
+    echo ok
+    return
+  fi
+  n=$(cat "$counter" 2>/dev/null || echo 0)
+  echo $((n + 1)) >"$counter"
+  mapfile -t lines <"$outcomes"
+  ((n < ${#lines[@]})) || n=$((${#lines[@]} - 1))
+  echo "${lines[$n]}"
+}
+release_state() { cat "$state/release.state" 2>/dev/null || echo missing; }
+fail_with() {
+  case $1 in
+  http-500 | applied-http-500) echo "HTTP 500 ($api/431927874)" >&2 ;;
+  http-502) echo "HTTP 502 ($api/431927874)" >&2 ;;
+  secondary-rate-limit) echo "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. ($api/431927874)" >&2 ;;
+  http-403) echo "HTTP 403: Resource not accessible by integration ($api/431927874)" >&2 ;;
+  esac
+  exit 1
+}
+require_release() {
+  [[ "$(release_state)" != missing ]] || {
+    echo "release not found" >&2
+    exit 1
+  }
+}
+
+outcome=$(next_outcome "gh-$command")
+case $outcome in
+http-500 | http-502 | secondary-rate-limit | http-403) fail_with "$outcome" ;;
+esac
+
+case $command in
+view)
+  require_release
+  jq_expr=.
+  while (($#)); do
+    case $1 in
+    --jq)
+      jq_expr=$2
+      shift 2
+      ;;
+    *) shift ;;
+    esac
+  done
+  jq -n --arg state "$(release_state)" --arg prerelease "$(cat "$state/release.prerelease" 2>/dev/null || echo false)" \
+    --rawfile assets "$state/release.assets" \
+    '{isDraft: ($state == "draft"), isPrerelease: ($prerelease == "true"), assets: [$assets | split("\n")[] | select(length > 0) | {name: .}]}' |
+    jq -r "$jq_expr"
+  ;;
+delete)
+  require_release
+  echo missing >"$state/release.state"
+  : >"$state/release.assets"
+  ;;
+create)
+  if [[ "$(release_state)" != missing ]]; then
+    echo "HTTP 422: Validation Failed ($api)" >&2
+    echo "Release.tag_name already exists" >&2
+    exit 1
+  fi
+  assets=()
+  while (($#)); do
+    case $1 in
+    --title | --notes-file | --notes | --target)
+      shift 2
+      ;;
+    --*) shift ;;
+    *)
+      assets+=("${1##*/}")
+      shift
+      ;;
+    esac
+  done
+  echo draft >"$state/release.state"
+  if [[ "$outcome" == partial-upload ]]; then
+    printf '%s\n' "${assets[@]:0:3}" >"$state/release.assets"
+    fail_with http-502
+  fi
+  printf '%s\n' "${assets[@]}" >"$state/release.assets"
+  echo "https://github.com/bastani-inc/atomic/releases/tag/untagged-0123456789abcdef"
+  ;;
+edit)
+  require_release
+  while (($#)); do
+    case $1 in
+    --draft=false) echo published >"$state/release.state" ;;
+    --prerelease=*) echo "${1#--prerelease=}" >"$state/release.prerelease" ;;
+    --latest=*) echo "${1#--latest=}" >"$state/release.latest" ;;
+    esac
+    shift
+  done
+  echo "https://github.com/bastani-inc/atomic/releases/tag/$tag"
+  ;;
+*)
+  echo "fake gh: unsupported command: release $command" >&2
+  exit 64
+  ;;
+esac
+[[ "$outcome" != applied-http-500 ]] || fail_with applied-http-500
