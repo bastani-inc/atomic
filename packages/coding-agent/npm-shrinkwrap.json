@@ -15,7 +15,7 @@
 				"@earendil-works/pi-codemode": "1.4.0",
 				"@earendil-works/pi-tui": "1.4.0",
 				"@modelcontextprotocol/ext-apps": "^1.7.5",
-				"@modelcontextprotocol/sdk": "1.32.1",
+				"@modelcontextprotocol/sdk": "1.32.2",
 				"@mozilla/readability": "^0.6.0",
 				"@silvia-odwyer/photon-node": "0.3.4",
 				"@typesafe-ai/sdk": "0.7.0",
@@ -975,9 +975,9 @@
 			]
 		},
 		"node_modules/@modelcontextprotocol/sdk": {
-			"version": "1.32.1",
-			"resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.1.tgz",
-			"integrity": "sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==",
+			"version": "1.32.2",
+			"resolved": "https://registry.npmjs.org/@modelcontextprotocol/sdk/-/sdk-1.32.2.tgz",
+			"integrity": "sha512-SWsVtH/0vULSQStoZ6xxH2K09Li8fXYTMC64ZeogCdpZ3XSi1eCPOByV1OpuJxuI3OcmHhosDWYyii07tpPsLw==",
 			"license": "MIT",
 			"dependencies": {
 				"@hono/node-server": "^1.19.9 || ^2.0.5",
