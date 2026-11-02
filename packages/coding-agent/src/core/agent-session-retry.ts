@@ -7,6 +7,7 @@ import { isCodexTokenInvalidationError } from "./codex-errors.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { fallbackKey, resolveFallbackModel as resolveConfiguredFallbackModel } from "./fallback-models.ts";
 import {
+	isContentFilterRefusal,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isSafetyRefusalFailure,
@@ -49,6 +50,11 @@ function resolveFallbackModel(
 	);
 }
 
+/** `retry.fallbackOnContentFilter`: a content-filter refusal spends the next fallback candidate, not a retry. */
+function fallsBackOnContentFilter(this: AgentSession): boolean {
+	return this.settingsManager.getRetrySettings().fallbackOnContentFilter !== false;
+}
+
 /** Whether an assistant error may advance the configured fallback chain. */
 export function _isFallbackableError(this: AgentSession, message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
@@ -58,6 +64,7 @@ export function _isFallbackableError(this: AgentSession, message: AssistantMessa
 	if (provider && containsCodexTokenInvalidation(provider, message)) return true;
 	const signal = normalizeModelFailureSignal(message);
 	if (signal.kind === "cancelled" || signal.kind === "task_failure") return false;
+	if (signal.kind === "content_filter") return fallsBackOnContentFilter.call(this);
 	return isRetryableModelFailure(message);
 }
 
@@ -79,9 +86,11 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	const provider = message.provider || this.model?.provider;
 	if (provider && containsCodexTokenInvalidation(provider, message)) return false;
 
-	// Safety/refusal errors remain bounded same-model retries, but do not spend
-	// another provider candidate. The refusal grammar lives in the shared
+	// The same request gets the same content-filter refusal, so with `retry.fallbackOnContentFilter` it goes
+	// straight to the next fallback candidate. Otherwise safety/refusal errors remain bounded same-model
+	// retries that do not spend another provider candidate. The refusal grammar lives in the shared
 	// classifier so this decision cannot drift from workflow fallback handling.
+	if (isContentFilterRefusal(message) && fallsBackOnContentFilter.call(this)) return false;
 	if (isSafetyRefusalFailure(message)) return true;
 	return isRetryableSameModelFailure(message);
 }

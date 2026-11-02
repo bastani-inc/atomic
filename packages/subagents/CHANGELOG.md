@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A subagent whose model refuses the request under a provider content filter, such as OpenAI's HTTP 422 `cyber_policy`, Anthropic's refusal stop or a `content_filter` finish reason, now moves straight to its next `fallbackModels` entry instead of retrying that model and failing. Set `retry.fallbackOnContentFilter: false` to keep the refusal on that model
+
 ## [0.9.60] - 2026-11-01
 
 Subagents keep the model you asked for.

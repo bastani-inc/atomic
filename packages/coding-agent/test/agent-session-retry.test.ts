@@ -398,36 +398,39 @@ describe("AgentSession retry", () => {
 		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
 	});
 
-	it("retries structured safety-trigger errors for all providers", async () => {
+	it("sends structured content-filter refusals to the next fallback model, and retries them only when retry.fallbackOnContentFilter is off", async () => {
 		const created = await createSession({ failCount: 0 });
-		const probe = created.session as unknown as { _isRetryableError(message: AssistantMessage): boolean };
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "Provider finish_reason: content_filter",
-				}),
-			),
-		).toBe(true);
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "Provider finish_reason: content_filter",
-					provider: "github-copilot",
-					api: "openai-completions",
-					model: "gemini-3.1-pro-preview",
-				}),
-			),
-		).toBe(true);
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "The model refused to complete the request",
-				}),
-			),
-		).toBe(true);
+		const probe = created.session as unknown as {
+			_isRetryableError(message: AssistantMessage): boolean;
+			_isFallbackableError(message: AssistantMessage): boolean;
+			settingsManager: SettingsManager;
+		};
+		const refusals = [
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "Provider finish_reason: content_filter",
+			}),
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "Provider finish_reason: content_filter",
+				provider: "github-copilot",
+				api: "openai-completions",
+				model: "gemini-3.1-pro-preview",
+			}),
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "The model refused to complete the request",
+			}),
+		];
+		for (const refusal of refusals) {
+			expect(probe._isRetryableError(refusal)).toBe(false);
+			expect(probe._isFallbackableError(refusal)).toBe(true);
+		}
+		probe.settingsManager.applyOverrides({ retry: { fallbackOnContentFilter: false } });
+		for (const refusal of refusals) {
+			expect(probe._isRetryableError(refusal)).toBe(true);
+			expect(probe._isFallbackableError(refusal)).toBe(false);
+		}
 		expect(
 			probe._isRetryableError(
 				createAssistantMessage("", {
