@@ -6,11 +6,17 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentTools, getSystemMessageText } from "@bastani/pi-ai";
-import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
+import {
+	type Api,
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	getModel,
+	type Model,
+} from "@bastani/pi-ai/compat";
 import { afterEach, test } from "vitest";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -41,7 +47,13 @@ const UNAVAILABLE = "503 Service Unavailable: the model is overloaded";
 const OVERFLOW = "The input token count (1100000) exceeds the maximum number of tokens allowed (1048576).";
 
 /** How the requested model on the first account ends its turns. */
-type Trigger = "startup-error" | "mid-session-error" | "context-overflow";
+type Trigger =
+	| "none"
+	| "startup-error"
+	| "mid-session-error"
+	| "context-overflow"
+	/** As mid-session-error, and the fallback model reads the same file once more before it answers. */
+	| "mid-session-error-tools";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -64,9 +76,14 @@ function usage(): AssistantMessage["usage"] {
 const PARENT_TASK = "PARENT TASK: coordinate every child and resume the other tasks.";
 /** The child's own role prompt, which every model it runs on must get. */
 const CHILD_ROLE =
-	"ROLE: you are the isolated fallback-fixture child. Work only on your own task; never act as the parent.";
+	"ROLE: you are the isolated fallback-fixture child. Work only on your own task, and only inside your own working directory; never act as the parent.";
+/** The child's task, which names its file by a path relative to its own directory. */
+const CHILD_TASK = "Read notes.txt in your working directory, then reply done.";
+/** What `notes.txt` holds in the parent's directory and in the child's, so a read shows whose directory it ran in. */
+const PARENT_SENTINEL = "PARENT SENTINEL";
+const CHILD_SENTINEL = "CHILD SENTINEL";
 
-function worker(cwd: string, fallbackModels?: string[]): AgentConfig {
+function worker(cwd: string, fallbackModels?: string[], modelConstraints?: ModelConstraints): AgentConfig {
 	return {
 		name: "worker",
 		description: "fallback fixture",
@@ -78,6 +95,7 @@ function worker(cwd: string, fallbackModels?: string[]): AgentConfig {
 		filePath: join(cwd, "worker.md"),
 		tools: ["read"],
 		...(fallbackModels ? { fallbackModels } : {}),
+		...(modelConstraints ? { modelConstraints } : {}),
 	};
 }
 
@@ -95,6 +113,16 @@ interface FixtureOptions {
 	readonly modelConstraints?: ModelConstraints;
 	/** Launch with `context: "fork"` from a parent that already ran a turn of its own. */
 	readonly forkFromParent?: boolean;
+	/** The models the parent session's own fallback gate allows, which its children inherit. */
+	readonly parentAllowsOnly?: readonly string[];
+	/** The model the original launch asked for, when this launch continues it on another one, as a restore does. */
+	readonly requestedModel?: string;
+	/** The worker agent's own `modelConstraints`. */
+	readonly agentModelConstraints?: ModelConstraints;
+	/** Launch without a candidate resolver, as a host on the lower-level API may. */
+	readonly noResolver?: boolean;
+	/** Run the child in a directory of its own, and give the parent a tool the child does not have. */
+	readonly childWorkspace?: boolean;
 }
 
 /** A provider the registry knows but has no auth for, so a launch on it starts on its first fallback. */
@@ -105,12 +133,19 @@ interface ProviderRequest {
 	readonly tools: readonly string[];
 	/** Whether the request's history holds the parent's own request, as a forked child's does. */
 	readonly inheritsParentHistory: boolean;
+	/** The text of every tool result in the request's history. */
+	readonly toolResults: readonly string[];
 }
 
 async function fixture(options: FixtureOptions) {
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-explicit-fallback-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
-	writeFileSync(join(cwd, "notes.txt"), "notes\n");
+	writeFileSync(join(cwd, "notes.txt"), `${PARENT_SENTINEL}\n`);
+	const childCwd = options.childWorkspace ? join(cwd, "child-workspace") : cwd;
+	if (options.childWorkspace) {
+		mkdirSync(childCwd);
+		writeFileSync(join(childCwd, "notes.txt"), `${CHILD_SENTINEL}\n`);
+	}
 	const base: Model<"anthropic-messages"> = {
 		...getModel("anthropic", "claude-sonnet-4-5")!,
 		reasoning: true,
@@ -151,10 +186,16 @@ async function fixture(options: FixtureOptions) {
 					inheritsParentHistory: context.messages.some(
 						(message) => message.role === "user" && JSON.stringify(message.content).includes(PARENT_TASK),
 					),
+					toolResults: context.messages.flatMap((message) =>
+						message.role === "toolResult"
+							? [message.content.map((part) => (part.type === "text" ? part.text : "")).join("")]
+							: [],
+					),
 				});
 				const stream = createAssistantMessageEventStream();
+				const midSession = options.trigger === "mid-session-error" || options.trigger === "mid-session-error-tools";
 				const failure =
-					fullId !== REQUESTED
+					fullId !== REQUESTED || options.trigger === "none"
 						? undefined
 						: options.trigger === "startup-error"
 							? UNAVAILABLE
@@ -163,7 +204,10 @@ async function fixture(options: FixtureOptions) {
 								: requested === 0
 									? undefined
 									: UNAVAILABLE;
-				const toolCall = fullId === REQUESTED && options.trigger === "mid-session-error" && requested === 0;
+				const toolCall =
+					requested === 0 &&
+					((fullId === REQUESTED && midSession) ||
+						(fullId === ALLOWED_OTHER && options.trigger === "mid-session-error-tools"));
 				const message: AssistantMessage = {
 					role: "assistant",
 					content: failure
@@ -204,7 +248,13 @@ async function fixture(options: FixtureOptions) {
 		}),
 		sessionManager: parentSessions,
 		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
-		tools: ["read"],
+		tools: options.childWorkspace ? ["read", "bash"] : ["read"],
+		...(options.parentAllowsOnly
+			? {
+					isFallbackModelAllowed: (model: Model<Api>) =>
+						options.parentAllowsOnly!.includes(`${model.provider}/${model.id}`),
+				}
+			: {}),
 	});
 	cleanups.push(() => {
 		parent.dispose();
@@ -222,8 +272,9 @@ async function fixture(options: FixtureOptions) {
 		hasConfiguredAuth: () => true,
 	});
 	const launch = (runId: string) =>
-		runSingleInProcess(cwd, worker(cwd, options.agentFallbackModels), "reply done", {
-			cwd,
+		runSingleInProcess(cwd, worker(cwd, options.agentFallbackModels, options.agentModelConstraints), CHILD_TASK, {
+			cwd: childCwd,
+			...(options.requestedModel ? { requestedModel: options.requestedModel } : {}),
 			runId,
 			index: 0,
 			sessionDir: join(cwd, "children"),
@@ -239,7 +290,7 @@ async function fixture(options: FixtureOptions) {
 				id: entry.id,
 				fullId: `${entry.provider}/${entry.id}`,
 			})),
-			resolveCandidateModel: resolve,
+			...(options.noResolver ? {} : { resolveCandidateModel: resolve }),
 			getChildSessionOptions: parent.extensionRunner.createContext().getChildSessionOptions,
 		});
 	return { launch, requests };
@@ -428,3 +479,97 @@ for (const forkFromParent of [false, true]) {
 		REAL_CHILD_SESSION_TIMEOUT_MS,
 	);
 }
+
+test(
+	"a fallback promoted in place of an unavailable named model must also meet the gate its parent session hands down",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "none",
+			launchModel: `${LOCKED_ACCOUNT}/argon:high`,
+			agentFallbackModels: [OTHER_FAMILY],
+			modelConstraints: { allowedModels: [REQUESTED, OTHER_FAMILY] },
+			parentAllowsOnly: [REQUESTED],
+		});
+		const result = await launch("promoted-fallback-parent-gate");
+
+		assert.deepEqual(requests, [], "the parent's gate forbids the promoted fallback");
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.match(result.error ?? "", /No other model was used/);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a child continued on a fallback that its agent's constraints no longer allow resumes on the model its launch named",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "none",
+			// As a restored child that had moved from argon to sol before its agent was narrowed to argon.
+			launchModel: `${ALLOWED_OTHER}:medium`,
+			requestedModel: `${REQUESTED}:high`,
+			agentModelConstraints: { allowedModels: [REQUESTED] },
+		});
+		const result = await launch("resumed-fallback-narrowed");
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[REQUESTED],
+		);
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.equal(result.model, REQUESTED);
+		assert.equal(result.requestedModel, `${REQUESTED}:high`);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"a named launch without a candidate resolver fails instead of starting on the parent's model",
+	async () => {
+		const { launch, requests } = await fixture({ trigger: "none", noResolver: true });
+		const result = await launch("named-no-resolver");
+
+		assert.deepEqual(requests, [], "no model is asked, the parent's included");
+		assert.equal(result.status, "error", JSON.stringify(result));
+		assert.match(result.error ?? "", /account-a\/argon:high/);
+		assert.match(result.error ?? "", /No other model was used/);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);
+
+test(
+	"after a fallback partway through its task, a child in its own directory keeps its tools and reads its own files",
+	async () => {
+		const { launch, requests } = await fixture({
+			trigger: "mid-session-error-tools",
+			agentFallbackModels: [ALLOWED_OTHER],
+			modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
+			childWorkspace: true,
+		});
+		const result = await launch("mid-session-fallback-own-directory");
+
+		assert.equal(result.status, "ok", JSON.stringify(result));
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[REQUESTED, REQUESTED, ALLOWED_OTHER, ALLOWED_OTHER],
+			"a read on the requested model, its failure, then a read and the answer on the fallback",
+		);
+		for (const request of requests) {
+			assert.deepEqual(request.tools, ["read"], "only the child's own tools, never the parent's bash");
+			assert.ok(request.systemPrompt.includes(CHILD_ROLE), request.systemPrompt);
+		}
+		const afterFallbackRead = requests[3]!.toolResults;
+		assert.equal(afterFallbackRead.length, 2, "both reads, the one before the fallback and the one after");
+		for (const read of afterFallbackRead) {
+			assert.match(read, new RegExp(CHILD_SENTINEL));
+			assert.doesNotMatch(read, new RegExp(PARENT_SENTINEL));
+		}
+		assert.equal(
+			requests[2]!.systemPrompt,
+			requests[0]!.systemPrompt.replace(
+				"Model name (used for commit attribution): Argon 4",
+				"Model name (used for commit attribution): Sol 6",
+			),
+		);
+	},
+	REAL_CHILD_SESSION_TIMEOUT_MS,
+);

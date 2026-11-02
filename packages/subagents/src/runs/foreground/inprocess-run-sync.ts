@@ -18,7 +18,12 @@ import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
 import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
-import { buildModelCandidates, launchRequestedModel, modelConstraintsFallbackGate } from "../shared/model-fallback.js";
+import {
+	buildModelCandidates,
+	launchRequestedModel,
+	modelConstraintsFallbackGate,
+	resolveModelCandidate,
+} from "../shared/model-fallback.js";
 import {
 	captureSingleOutputSnapshot,
 	formatSavedOutputReference,
@@ -226,14 +231,30 @@ export async function runSingleInProcess(
 	// session chain. An auto-routed launch keeps its ranked chain; a launch that names no model runs the parent's.
 	const namesModel =
 		!options.modelRoute && options.runsNamedModel !== false && launchModel !== "" && launchModel !== "auto";
+	// The model the launch named. A restored launch that continues on a fallback named the model it was first launched
+	// on: only that one runs as named, and it follows the model continued on, which must pass every gate.
+	const namedModel = namesModel ? (options.requestedModel ?? launchModel) : undefined;
+	const baseOf = (model: string) =>
+		splitKnownThinkingSuffix(
+			resolveModelCandidate(model, options.availableModels, options.preferredModelProvider) ?? model,
+		).baseModel;
+	const namedBase = namedModel === undefined ? undefined : baseOf(namedModel);
+	const continuesOnOther = namedBase !== undefined && baseOf(launchModel) !== namedBase;
 	// The launch's own constraints and its agent's gate every fallback; an auto route's gate already holds them.
 	const fallbackGate = options.modelRoute
 		? options.modelRoute.allowsModel
 		: modelConstraintsFallbackGate([agent.modelConstraints, options.modelConstraints]);
 	const seenModels = new Set<string>();
+	const fallbackLevels = options.modelRoute?.fallbackModels?.length
+		? [...options.modelRoute.fallbackModels.map(() => "off"), ...(agent.fallbackThinkingLevels ?? [])]
+		: agent.fallbackThinkingLevels;
 	const builtCandidates = buildModelCandidates(
 		options.modelOverride ?? agent.model,
-		[...(options.modelRoute?.fallbackModels ?? []), ...(agent.fallbackModels ?? [])],
+		[
+			...(continuesOnOther && namedModel !== undefined ? [namedModel] : []),
+			...(options.modelRoute?.fallbackModels ?? []),
+			...(agent.fallbackModels ?? []),
+		],
 		options.availableModels,
 		options.preferredModelProvider,
 		namesModel
@@ -241,15 +262,14 @@ export async function runSingleInProcess(
 			: options.modelRoute && options.currentModel && options.currentThinkingLevel
 				? `${options.currentModel}:${options.currentThinkingLevel}`
 				: options.currentModel,
-		options.modelRoute?.fallbackModels?.length
-			? [...options.modelRoute.fallbackModels.map(() => "off"), ...(agent.fallbackThinkingLevels ?? [])]
-			: agent.fallbackThinkingLevels,
+		continuesOnOther && fallbackLevels ? ["", ...fallbackLevels] : fallbackLevels,
 	);
-	const rawCandidates = builtCandidates.filter((candidate, index) => {
+	const rawCandidates = builtCandidates.filter((candidate) => {
 		if (!options.modelRoute) {
-			// A named model is the caller's choice. Every other candidate, a fallback or the model a launch that names none
-			// starts on, must satisfy every constraint.
-			if (!fallbackGate || (namesModel && index === 0)) return true;
+			// A named model is the caller's choice. Every other candidate, a fallback, a model a restored child continues
+			// on, or the model a launch that names none starts on, must satisfy every constraint.
+			if (!fallbackGate || (namedBase !== undefined && splitKnownThinkingSuffix(candidate).baseModel === namedBase))
+				return true;
 			const resolved = options.resolveCandidateModel?.(candidate);
 			return resolved === undefined || fallbackGate(resolved.model, resolved.thinkingLevel);
 		}
@@ -271,7 +291,7 @@ export async function runSingleInProcess(
 	const resolveCandidate = options.resolveCandidateModel;
 	if (namesModel && resolveCandidate) {
 		// A named launch never starts on a model it cannot resolve: its child would run its parent's model instead.
-		const named = rawCandidates[0];
+		const named = continuesOnOther ? undefined : rawCandidates[0];
 		const namedWord = named ? splitUnknownThinkingSuffix(named) : undefined;
 		if (named && namedWord && !resolveCandidate(named))
 			return unknownModelResult(agent, task, named, namedWord.effort, namedWord.baseModel);
@@ -286,7 +306,7 @@ export async function runSingleInProcess(
 			],
 		};
 		if (filteredCandidates.candidates.length === 0)
-			return namedModelUnavailableResult(agent, task, launchModel, filteredCandidates.skippedAttempts);
+			return namedModelUnavailableResult(agent, task, namedModel ?? launchModel, filteredCandidates.skippedAttempts);
 	}
 	if (rawCandidates.length > 0 && filteredCandidates.candidates.length === 0)
 		return noSpawnableCandidatesResult(agent, task, filteredCandidates.skippedAttempts);
@@ -416,7 +436,7 @@ export async function runSingleInProcess(
 		// A named model's own chain, even an empty one, replaces any chain the child session would otherwise take up.
 		...(fallbackCandidates.length || options.modelRoute || namesModel ? { fallbackModels: fallbackCandidates } : {}),
 		...(fallbackGate ? { isFallbackModelAllowed: fallbackGate } : {}),
-		...(namesModel ? { namedModel: launchModel } : {}),
+		...(namedModel === undefined ? {} : { namedModel }),
 		...(requestedModel ? { requestedModel } : {}),
 		onProgress: options.onUpdate
 			? (progress) => {

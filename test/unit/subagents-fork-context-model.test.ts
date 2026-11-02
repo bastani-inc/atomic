@@ -218,13 +218,17 @@ describe("fork-context subagent model selection", () => {
 		assert.match(result.error ?? "", /^Model unknown-provider\/absent-model is not available/);
 	});
 
-	test("a host that supplies no resolver keeps the previous behavior", async () => {
+	test("a host that supplies no resolver hands the runner an unresolved named model to refuse (#4188)", async () => {
 		const { spec, candidate } = await runAndCapture({
 			agent: agentConfig({ model: CONFIGURED_MODEL_ID }),
 			resolve: false,
 		});
 
+		// Selection resolves nothing; the runner refuses to start a real session on a named model it has no model
+		// for, so the parent's model never fills it in (subagent-explicit-model-fallback covers that session).
 		assert.equal(candidate.model, undefined);
 		assert.equal(spec.model, undefined);
+		assert.equal(spec.namedModel, CONFIGURED_MODEL_ID);
+		assert.deepEqual(spec.fallbackModels, [], "and no chain to fall back on");
 	});
 });
