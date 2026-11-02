@@ -4,11 +4,11 @@
 
 ### Added
 
-- `ATOMIC_STDIN_TIMEOUT_MS` sets how long a print-mode run waits for anything on a piped stdin before a run with a prompt argument starts without it: 2000 by default, `0` to wait for the end of piped input ([#4224](https://github.com/bastani-inc/atomic/issues/4224))
+- `ATOMIC_STDIN_TIMEOUT_MS` sets how long a print-mode run waits for anything on a piped stdin before a run with a prompt argument starts without it: 2000 by default, `0` to wait for the end of piped input ([#4224](https://github.com/bastani-inc/atomic/issues/4224), [#4233](https://github.com/bastani-inc/atomic/pull/4233))
 
 ### Fixed
 
-- `atomic -p "<prompt>"` and `--mode json` no longer hang, with no output, when stdin is a pipe that stays open and never sends anything, as a script, an agent's shell tool or a supervisor often leaves it. Such a run waited for the end of stdin before it sent any request. Now, if nothing arrives within 2 seconds (`ATOMIC_STDIN_TIMEOUT_MS`), a run with a prompt argument starts without stdin, and warns if input arrives later. Piped input that has started arriving is still read to its end and merged into the prompt, as in `cat notes.md | atomic -p "Summarize"`. A run with no prompt argument still waits for stdin, and now says so on stderr ([#4224](https://github.com/bastani-inc/atomic/issues/4224))
+- `atomic -p "<prompt>"` and `--mode json` no longer hang, with no output, when stdin is a pipe that stays open and never sends anything, as a script, an agent's shell tool or a supervisor often leaves it. Such a run waited for the end of stdin before it sent any request. Now, if nothing arrives within 2 seconds (`ATOMIC_STDIN_TIMEOUT_MS`), a run with a prompt argument starts without stdin, and warns if input arrives later. Piped input that has started arriving is still read to its end and merged into the prompt, as in `cat notes.md | atomic -p "Summarize"`. A run with no prompt argument still waits for stdin, and now says so on stderr ([#4224](https://github.com/bastani-inc/atomic/issues/4224), [#4233](https://github.com/bastani-inc/atomic/pull/4233))
 
 ## [0.9.67] - 2026-11-02
 
