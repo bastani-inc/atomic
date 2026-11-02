@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- A stage whose model refuses the request under a provider content filter, such as OpenAI's HTTP 422 `cyber_policy`, Anthropic's refusal stop or a `content_filter` finish reason, now moves straight to its next `fallbackModels` entry instead of retrying that model and failing. Its `modelAttempts` record the refusing model and its error. Set `retry.fallbackOnContentFilter: false` to fail the stage on such a refusal instead
+- A stage whose model refuses the request under a provider content filter, such as OpenAI's HTTP 422 `cyber_policy`, Anthropic's refusal stop or a `content_filter` finish reason, now moves straight to its next `fallbackModels` entry instead of retrying that model and failing. Its `modelAttempts` record the refusing model and its error. Set `retry.fallbackOnContentFilter: false` to fail the stage on such a refusal instead ([#4163](https://github.com/bastani-inc/atomic/pull/4163))
 
 ## [0.9.58] - 2026-11-01
 

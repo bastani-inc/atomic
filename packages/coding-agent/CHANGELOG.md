@@ -4,11 +4,11 @@
 
 ### Added
 
-- `retry.fallbackOnContentFilter` setting (default `true`). Set it to `false` to keep a provider content-filter refusal on the model that gave it instead of moving to the next `fallbackModels` entry
+- `retry.fallbackOnContentFilter` setting (default `true`). Set it to `false` to keep a provider content-filter refusal on the model that gave it instead of moving to the next `fallbackModels` entry ([#4163](https://github.com/bastani-inc/atomic/pull/4163))
 
 ### Fixed
 
-- A provider content-filter refusal now moves a main chat, subagent or workflow stage to its next `fallbackModels` entry at once, without retrying the model that refused, and the refusing model is recorded in the fallback history. This covers OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, `content_filter` finish reasons and safety- or policy-blocked requests. Before, Anthropic and `content_filter` refusals were retried on the same model and then failed the turn, subagent or stage, and a 422 `cyber_policy` refusal fell back only because it was not recognized as a refusal
+- A provider content-filter refusal now moves a main chat, subagent or workflow stage to its next `fallbackModels` entry at once, without retrying the model that refused, and the refusing model is recorded in the fallback history. This covers OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, `content_filter` finish reasons and safety- or policy-blocked requests. Before, Anthropic and `content_filter` refusals were retried on the same model and then failed the turn, subagent or stage, and a 422 `cyber_policy` refusal fell back only because it was not recognized as a refusal ([#4163](https://github.com/bastani-inc/atomic/pull/4163))
 
 ## [0.9.61] - 2026-11-02
 
