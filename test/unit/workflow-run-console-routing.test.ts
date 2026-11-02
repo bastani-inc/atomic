@@ -261,7 +261,7 @@ test("abort listeners of a run's steps log to the run's log when the host cancel
 						`wait-${index}`,
 						{ index },
 						({ signal }) =>
-							new Promise((_, reject) => {
+							new Promise<number>((_, reject) => {
 								signal.addEventListener(
 									"abort",
 									() => {
