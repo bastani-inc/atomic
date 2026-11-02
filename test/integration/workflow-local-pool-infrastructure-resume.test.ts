@@ -11,6 +11,7 @@ import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
@@ -21,11 +22,64 @@ import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExistsSync, makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 const childPath = fileURLToPath(new URL("../fixtures/pool-infrastructure-fault-child.ts", import.meta.url));
 /** The first incarnation's pool and the resumed one's. */
 const BUDGET = poolTestBudgetMs(2);
+
+test.skipIf(process.platform === "win32")(
+	"a pooled child whose run fails on a pool infrastructure fault replays in the same root incarnation instead of keeping the failure",
+	async () => {
+		const directory = makeTempDirectory("pool-infrastructure-replay-");
+		const path = join(directory, "journal.sqlite");
+		const exportName = "faultedChild";
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName,
+			digest: await definitionDigest(childPath),
+		});
+		const statuses: string[] = [];
+		const parent = workflow({
+			name: "pool-infrastructure-replay-root",
+			description: "Root over a pooled child whose first run fails on a pool fault",
+			inputs: {},
+			outputs: {},
+			async run(ctx) {
+				statuses.push((await ctx.workflow(child, { inputs: { directory } })).status);
+				return {};
+			},
+		});
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		const pool = new LocalWorkerPool(backend, {
+			journalPath: path,
+			workers: 1,
+			definitions: [{ definition: child, path: childPath, exportName }],
+			coordinator: "in-process",
+		});
+		try {
+			const result = await run(
+				parent,
+				{},
+				{
+					runId: randomUUID(),
+					cwd: directory,
+					store: createStore(),
+					durableBackend: backend,
+					signal: AbortSignal.timeout(BUDGET.waitMs),
+				},
+			);
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.deepEqual(statuses, ["completed"], "the fault was the pool's: the child replayed rather than failed");
+			assert.ok(fileExistsSync(join(directory, "run-2")), "the child ran a second time");
+		} finally {
+			await pool.close().catch(() => {});
+			await backend.close();
+			removeTempDirectory(directory);
+		}
+	},
+	BUDGET.timeoutMs,
+);
 
 test.skipIf(process.platform === "win32")(
 	"a resumed pooled root runs again a child that an earlier incarnation failed on a pool infrastructure fault",
@@ -45,7 +99,8 @@ test.skipIf(process.platform === "win32")(
 			inputs: {},
 			outputs: {},
 			async run(ctx) {
-				const result = await ctx.workflow(child, { inputs: { directory } });
+				// The fault lasts the whole first incarnation: the child fails there on every attempt.
+				const result = await ctx.workflow(child, { inputs: { directory, persistent: true } });
 				statuses.push(result.status);
 				if (result.status !== "completed") throw new Error(`child ${result.status}`);
 				return {};
@@ -78,6 +133,7 @@ test.skipIf(process.platform === "win32")(
 			}
 			// The earlier process is gone: its lease is old enough for another process to take the root over.
 			await database.run("UPDATE wf_leases SET renewed_at = 0 WHERE run_id = ?", runId);
+			await writeFileEnsuringDir(join(directory, "recovered"), "");
 
 			const second = await JournalDurableBackend.open(journal, { ownsJournal: false });
 			const secondPool = pool(second);

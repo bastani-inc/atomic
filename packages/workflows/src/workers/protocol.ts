@@ -48,8 +48,11 @@ export interface WorkerStart {
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }
-	/** The worker ended its attempt because a reply reported it fenced; it is not a worker fault. */
-	| { readonly kind: "fenced" }
+	/**
+	 * The worker ended its attempt because a reply reported it fenced, or because its run failed on a fault of the pool
+	 * (`fault` names it); neither is a worker fault, and the child replays within its attempt limit.
+	 */
+	| { readonly kind: "fenced"; readonly fault?: string }
 	| { readonly kind: "controlled"; readonly revision: number }
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }

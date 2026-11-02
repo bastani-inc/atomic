@@ -32,6 +32,31 @@ export function admissionProcessStopped(pid: number): boolean {
 	}
 }
 
+/**
+ * Whether a worker process the pool sent SIGKILL has exited: the kernel no longer has it, or has only its zombie, which
+ * holds nothing and waits for this process to reap it. Linux reads the state from `/proc` on every call. Elsewhere the
+ * zombie check spawns `ps`, so it runs only when `final` asks for it.
+ */
+export function workerProcessExited(pid: number, final = false): boolean {
+	if (admissionProcessStopped(pid)) return true;
+	if (process.platform === "linux") {
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z");
+		} catch {
+			return admissionProcessStopped(pid);
+		}
+	}
+	if (!final) return false;
+	try {
+		return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 })
+			.trim()
+			.startsWith("Z");
+	} catch {
+		return admissionProcessStopped(pid);
+	}
+}
+
 /** What remains of a Unix process group: nothing, only zombies (which hold no resources), or a live member. */
 export type ProcessGroupState = "gone" | "zombie" | "alive";
 

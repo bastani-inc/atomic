@@ -197,6 +197,11 @@ export type CoordinatorEvent =
 	| { readonly kind: "failure"; readonly error: string }
 	/** One child failed without failing the pool. */
 	| { readonly kind: "work-failure"; readonly workId: string; readonly error: string }
+	/**
+	 * A worker's cleanup could not be confirmed (it outlived SIGKILL, or its tool process groups did): a health event of
+	 * the pool, which retires and replaces the worker. It fails no child.
+	 */
+	| { readonly kind: "health"; readonly message: string }
 	/** Ordered events of an open watch; at most one batch per watch awaits `stage-events-applied`. */
 	| { readonly kind: "stage-events"; readonly watch: WatchId; readonly events: readonly SeqEvent[] }
 	/** The last event of a watch. */
