@@ -408,6 +408,8 @@ export class PoolCoordinator {
 	private readonly incarnations = new Map<string, ChildProcess>();
 	private readonly readyWorkers = new Set<string>();
 	private readonly logs = new Map<ChildProcess, string>();
+	/** Each worker log whose write stream has not closed yet, by path, settling when it closes. */
+	private readonly openLogs = new Map<string, Promise<void>>();
 	/** Logs of workers whose cleanup could not be confirmed: close keeps them. */
 	private readonly keptLogs = new Set<string>();
 	/** Workers that SIGKILL did not end within the bound, already reported. */
@@ -1307,6 +1309,15 @@ export class PoolCoordinator {
 		this.logs.set(child, logPath);
 		let logFailure: string | undefined;
 		const log = createWriteStream(logPath, { flags: "a" });
+		this.openLogs.set(
+			logPath,
+			new Promise((resolve) =>
+				log.once("close", () => {
+					this.openLogs.delete(logPath);
+					resolve();
+				}),
+			),
+		);
 		log.on("error", (error) => {
 			logFailure = error.message;
 		});
@@ -1415,7 +1426,7 @@ export class PoolCoordinator {
 							child.exitCode === 0 &&
 							!this.keptLogs.has(logPath)
 						)
-							await rm(logPath, { force: true }).catch(() => {});
+							await this.removeLog(logPath);
 						if (this.closed || !ready || this.desiredControl === "quit" || this.rootLeaseLost) return;
 						let work = slot.work;
 						if (work && (await this.sendResult(work.id))) {
@@ -1869,6 +1880,17 @@ export class PoolCoordinator {
 	 * Reports a worker's cleanup that could not be confirmed. It is a health event of the pool, never a child's failure:
 	 * the line is appended to the worker's log, which the pool then keeps, and the root shows it as a warning on the run.
 	 */
+	/**
+	 * Removes a worker's log once its write stream has closed, waiting at most {@link STDERR_DRAIN_GRACE_MS}: a log
+	 * removed while its stream was still opening, as for a worker started just before the pool closed, came back empty
+	 * when the open landed.
+	 */
+	private async removeLog(log: string): Promise<void> {
+		const open = this.openLogs.get(log);
+		if (open !== undefined) await Promise.race([open, delay(STDERR_DRAIN_GRACE_MS)]);
+		await rm(log, { force: true }).catch(() => {});
+	}
+
 	private reportHealth(log: string | undefined, message: string): void {
 		if (log !== undefined) {
 			this.keptLogs.add(log);
@@ -1918,7 +1940,7 @@ export class PoolCoordinator {
 			const stopped = stopping.flatMap(({ log }, index) =>
 				log !== undefined && !this.keptLogs.has(log) && confirmed[index] === true ? [log] : [],
 			);
-			await Promise.all(stopped.map((log) => rm(log, { force: true }).catch(() => {})));
+			await Promise.all(stopped.map((log) => this.removeLog(log)));
 			if (this.logDirectory !== undefined) await rmdir(this.logDirectory).catch(() => {});
 		}
 		this.endStageWatches(() => true, "pool_closed");
