@@ -3,8 +3,9 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
 
-// `settings`, when given, is the JSON of the `localWorkers` and `admission` options a restart passes, as the CLI passes
-// the current settings to a resume; without it a restart passes none, and the root runs with the settings it saved.
+// `settings`, when given, is the JSON of run options this launch or restart passes, such as the `localWorkers` and
+// `admission` options the CLI passes from the current settings, or the execution mode of the launch or the resume. A
+// fresh launch passes them over its defaults; a restart without them runs with the settings its root saved.
 const [journalPath, directory, runId, childPath, releasePath, mode, settings] = process.argv.slice(2);
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const jiti = createJiti(import.meta.url, { fsCache: false });
@@ -62,9 +63,8 @@ try {
 						localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
 						admission: { limits: { session: 2, process: 1 } },
 					}
-				: settings
-					? JSON.parse(settings)
-					: {}),
+				: {}),
+			...(settings ? JSON.parse(settings) : {}),
 		},
 	);
 	send({ event: "result", status: result.status, outputs: result.result ?? null, error: result.error ?? null });

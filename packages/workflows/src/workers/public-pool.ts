@@ -43,13 +43,15 @@ function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+interface ResourceChange {
+	readonly description: string;
+	readonly resumable: boolean;
+	/** An edited entry module of a worker definition, which a resume that accepts entry changes applies (#4200). */
+	readonly entry?: true;
+}
+
 /** Each saved setting that differs from the current one, by its settings path, and whether a resume can apply it. */
-function settingChanges(
-	path: string,
-	saved: unknown,
-	current: unknown,
-	changes: { readonly description: string; readonly resumable: boolean }[],
-): void {
+function settingChanges(path: string, saved: unknown, current: unknown, changes: ResourceChange[]): void {
 	if (isDeepStrictEqual(saved, current)) return;
 	if ((saved === undefined || isPlainRecord(saved)) && (current === undefined || isPlainRecord(current))) {
 		for (const key of new Set([...Object.keys(saved ?? {}), ...Object.keys(current ?? {})]))
@@ -66,11 +68,8 @@ function settingChanges(
  * What changed between a root's saved local worker and admission settings and the ones it resumes with. A worker
  * definition is named by its module path and export; its digest covers only that entry module, not what it imports.
  */
-function resourceChanges(
-	saved: WorkflowExecutionResources,
-	current: WorkflowExecutionResources,
-): { readonly description: string; readonly resumable: boolean }[] {
-	const changes: { description: string; resumable: boolean }[] = [];
+function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExecutionResources): ResourceChange[] {
+	const changes: ResourceChange[] = [];
 	if ((saved.localWorkers === undefined) !== (current.localWorkers === undefined))
 		changes.push({
 			description: `local workers were turned ${current.localWorkers === undefined ? "off" : "on"}`,
@@ -97,6 +96,7 @@ function resourceChanges(
 			changes.push({
 				description: `the entry module of worker definition ${name} was edited (sha256 ${digest.slice(0, 12)} to ${now.slice(0, 12)})`,
 				resumable: false,
+				entry: true,
 			});
 	}
 	for (const name of after.keys())
@@ -228,15 +228,23 @@ export async function activatePublicPool(
 		throw new Error(
 			`This root's local workers keep their work queue and leases in the pool database ${saved.database} on this machine, but the journal is now selected in a way that uses ${resources.coordinator.database}: its adapter, options, prefix or the agent directory changed. Resume the root with the journal selected as it was when the root started.`,
 		);
+	// An edited entry module is applied only by a resume that accepts it: the root's queued children are then rebound to
+	// the edited module, and replaying their recorded steps with it is the author's call (#4200).
 	const refused =
 		options.effectiveResources === undefined
 			? []
-			: resourceChanges(options.effectiveResources, resources).filter((change) => !change.resumable);
+			: resourceChanges(options.effectiveResources, resources).filter(
+					(change) => !change.resumable && !(change.entry && options.acceptEntryChanges === true),
+				);
 	if (refused.length > 0)
 		throw new Error(
-			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.`,
+			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.${
+				refused.some((change) => change.entry)
+					? ` An edited entry module can also be accepted: resume with /workflow resume ${options.runId} --accept-entry-changes, or acceptEntryChanges: true in the SDK, to replay the recorded steps and run the rest of each unfinished child with the edited module.`
+					: ""
+			}`,
 		);
-	// A resume runs with the current pool size and root limits, and the root records them (#4196).
+	// A resume runs with the current pool size, root limits and accepted entry modules, and the root records them.
 	options.effectiveResources = resources;
 	// The root's own limits are saved for its workers by the root itself, once it holds its lease: see
 	// `admitWorkflowSessions`. This check comes before the root is admitted, so it leaves them alone.
@@ -261,6 +269,7 @@ export async function activatePublicPool(
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
 		maxLoadPerCpu: options.localWorkers?.maxLoadPerCpu ?? DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
+		...(options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
 		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]
 			? {}

@@ -361,6 +361,11 @@ export class LocalWorkerPool {
 			/** Load per CPU above which the root's pooled stage starts are paced; undefined or 0: never. */
 			readonly maxLoadPerCpu?: number;
 			/**
+			 * The root's resume accepted edited entry modules (`RunOpts.acceptEntryChanges`): unfinished work an earlier
+			 * incarnation queued with another digest of a definition's entry module runs the module this pool loaded (#4200).
+			 */
+			readonly acceptEntryChanges?: boolean;
+			/**
 			 * Internal: module path forked for each worker instead of the shipped worker entry.
 			 * Load tests use it to run protocol-level stub workers; public options never set it.
 			 */
@@ -1233,6 +1238,7 @@ export class LocalWorkerPool {
 				execution,
 			},
 			boundary,
+			...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
 		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
 		this.works.set(work.id, work);
