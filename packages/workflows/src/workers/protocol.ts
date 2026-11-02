@@ -45,6 +45,11 @@ export interface WorkerStart {
 	readonly promptNodes?: boolean;
 	/** Load per CPU above which the root's pooled stage starts are paced (`localWorkers.maxLoadPerCpu`). */
 	readonly stageStartMaxLoadPerCpu?: number;
+	/**
+	 * Resident set size, in bytes, past which the worker ends once its current child's attempt is over, and the pool
+	 * starts a fresh worker in its place (`localWorkers.maxWorkerRssBytes`). Undefined: never.
+	 */
+	readonly maxRssBytes?: number;
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "renew" | "budget" | "control" }
@@ -53,6 +58,11 @@ export type WorkerRequest = { readonly id: number } & (
 	 * (`fault` names it); neither is a worker fault, and the child replays within its attempt limit.
 	 */
 	| { readonly kind: "fenced"; readonly fault?: string }
+	/**
+	 * The worker holds no attempt and is about to exit because its resident set size, `rssBytes`, passed its
+	 * `maxRssBytes`: a planned exit, not a crash, so the pool starts a replacement without counting it as a failure.
+	 */
+	| { readonly kind: "recycle"; readonly rssBytes: number }
 	| { readonly kind: "controlled"; readonly revision: number }
 	| { readonly kind: "activity"; readonly runs: readonly RunSnapshot[] }
 	| { readonly kind: "route"; readonly runId: string }

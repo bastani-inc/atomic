@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `workflows.localWorkers.maxWorkerRssBytes`: a local worker whose resident memory has grown past this many bytes is replaced by a fresh worker once the child it runs ends, as a backstop for long pools. A running child is never interrupted, and these replacements never count as worker failures. Unset by default; not saved with the root ([#4197](https://github.com/bastani-inc/atomic/issues/4197))
+
+### Fixed
+
+- Local workers no longer grow without bound while a pool runs. Every worker kept in memory the checkpoints of every child of the pool, every `ctx.tool` output included, so all workers grew together with the pool's total progress until a busy machine ran out of memory, and a worker also kept the runs and stages of every child it had finished. A worker now keeps only what the child it runs needs, reading that child's checkpoints from the journal when it claims it, and lets go of each child's state when the child ends ([#4197](https://github.com/bastani-inc/atomic/issues/4197))
+
 ## [0.9.65] - 2026-11-02
 
 Subagents launched on a named model stay on that model or fail clearly, and every report names the model a subagent actually ran on.

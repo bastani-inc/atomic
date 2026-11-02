@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `workflows.localWorkers.maxWorkerRssBytes` (SDK `localWorkers.maxWorkerRssBytes`): a local worker whose resident memory has grown past this many bytes is replaced by a fresh worker once the child it runs ends. A running child is never interrupted, and these replacements never count toward the pool's worker retry limit. Unset by default; not saved with the root, so it can change before a resume ([#4197](https://github.com/bastani-inc/atomic/issues/4197))
+
+### Fixed
+
+- Local workers no longer grow without bound while a pool runs. Every worker kept in memory the checkpoints of every child of the pool, every `ctx.tool` output included, so all workers grew together with the pool's total progress, and a worker also kept the runs and stages of every child it had finished. A worker now keeps only the checkpoints of the child it runs, reading them from the journal when it claims the child, and lets go of each child's state when the child ends. In a 16-worker pool running 160 children, a worker's heap when it started its tenth child went from 153 MB to 87 MB, and the largest worker from 728 MB to 338 MB resident ([#4197](https://github.com/bastani-inc/atomic/issues/4197))
+
 ## [0.9.61] - 2026-11-02
 
 ### Fixed

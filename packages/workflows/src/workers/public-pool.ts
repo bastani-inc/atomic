@@ -92,6 +92,7 @@ export async function activatePublicPool(
 		startupTimeoutMs: undefined,
 		leaseMs: undefined,
 		maxLoadPerCpu: undefined,
+		maxWorkerRssBytes: undefined,
 		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
 	};
 	const admission = options.admission && {
@@ -161,6 +162,9 @@ export async function activatePublicPool(
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
 		maxLoadPerCpu: options.localWorkers?.maxLoadPerCpu ?? DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
+		...(options.localWorkers?.maxWorkerRssBytes === undefined
+			? {}
+			: { maxWorkerRssBytes: options.localWorkers.maxWorkerRssBytes }),
 		// The host attaches through its own resolver; an SDK caller's registry gets pooled handles.
 		...(options.stageControlRegistry === undefined || options[hostWorkerBindings]
 			? {}

@@ -37,6 +37,7 @@ import {
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
+import { SqlRunJournal } from "./sql-run-journal.js";
 import {
 	RUN_EVENT_TYPES as E,
 	JournalCasConflictError,
@@ -316,6 +317,60 @@ interface WorkflowLeaseExecution {
 	retired: boolean;
 }
 
+/**
+ * The checkpoints of a run a backend keeps in memory once `retainCheckpoints` narrowed it: those whose id is one of
+ * `ids` or starts with one of `prefixes`.
+ */
+export interface CheckpointSelection {
+	readonly ids: readonly string[];
+	readonly prefixes: readonly string[];
+}
+
+/**
+ * A journal that reads a run's events by a range of keys, through the index the keys already have. A wrapper of a
+ * journal, such as a local worker's read-only view, provides it as its own `readKeyRange`.
+ */
+export interface KeyRangeJournal {
+	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry>;
+}
+
+const CHECKPOINT_KINDS: readonly DurableCheckpoint["kind"][] = ["tool", "ui", "stage"];
+
+function selectsCheckpoint(selection: CheckpointSelection, checkpoint: DurableCheckpoint): boolean {
+	const id = checkpoint.checkpointId;
+	return selection.ids.includes(id) || selection.prefixes.some((prefix) => id.startsWith(prefix));
+}
+
+function checkpointEventKey(kind: DurableCheckpoint["kind"], checkpointId: string): string {
+	return JSON.stringify([E.checkpointRecorded, kind, checkpointId]);
+}
+
+/**
+ * The key ranges, `[from, to)`, holding the checkpoint events whose ids start with the selection's prefixes, or
+ * undefined when a prefix cannot be turned into one. A checkpoint event's key is its JSON array of event type, kind and
+ * id, and JSON escapes each character on its own, so the keys of ids with a prefix are the keys that start with that
+ * prefix's key without its closing `"]`. A prefix of printable ASCII is encoded the same in UTF-16 and UTF-8, so the
+ * range bounds hold under the binary order SQLite compares keys in.
+ */
+function checkpointKeyRanges(selection: CheckpointSelection): (readonly [string, string])[] | undefined {
+	if (selection.prefixes.some((prefix) => prefix.length === 0 || !/^[\x20-\x7e]+$/.test(prefix))) return undefined;
+	return selection.prefixes.flatMap((prefix) =>
+		CHECKPOINT_KINDS.map((kind) => {
+			const from = checkpointEventKey(kind, prefix).slice(0, -2);
+			const to = from.slice(0, -1) + String.fromCharCode(from.charCodeAt(from.length - 1) + 1);
+			return [from, to] as const;
+		}),
+	);
+}
+
+function keyRangeJournal(journal: RunJournal): KeyRangeJournal | undefined {
+	if (typeof (journal as Partial<KeyRangeJournal>).readKeyRange === "function")
+		return journal as unknown as KeyRangeJournal;
+	return journal instanceof SqlRunJournal
+		? { readKeyRange: (runId, fromKey, toKey) => SqlRunJournal.readKeyRange(journal, runId, fromKey, toKey) }
+		: undefined;
+}
+
 export class JournalDurableBackend<Journal extends RunJournal = RunJournal> implements DurableWorkflowBackend {
 	readonly persistent: boolean;
 	private readonly projection = createJournalProjection();
@@ -351,6 +406,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	private readonly catalogQueue = Symbol("catalog");
 	private readonly lost = new Map<string, Error>();
 	private readonly prompts = new Map<string, PromptReservationState>();
+	/** Runs whose checkpoints `retainCheckpoints` narrowed; every other run keeps all of its checkpoints. */
+	private readonly checkpointSelections = new Map<string, CheckpointSelection>();
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
@@ -446,7 +503,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		if (event.type === E.checkpointRecorded) {
 			const checkpoint = event.payload;
 			validateCheckpointInvocationFingerprint(checkpoint);
-			this.projection.recordCheckpoint(checkpoint);
+			const selection = this.checkpointSelections.get(entry.runId);
+			if (selection === undefined || selectsCheckpoint(selection, checkpoint))
+				this.projection.recordCheckpoint(checkpoint);
+			else this.projection.countCheckpoint(checkpoint);
 		} else if (event.type === E.messageSettled) {
 			void this.projection.archivePendingStageMessage(entry.runId, event.payload.message);
 		} else if (event.type === E.messageDelivered) {
@@ -1174,6 +1234,66 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async catchUpWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.extend(runId), false);
+	}
+	/**
+	 * Keeps in memory only the checkpoints of `runId` that `selection` selects, from now on; every other checkpoint stays
+	 * counted in the run's handle and is read from the journal again only if a later selection selects it. The selected
+	 * checkpoints the run has already folded are read back here, through the journal's key index when it has one, in the
+	 * order they were recorded, so each read finds what it would find if the backend kept every checkpoint.
+	 *
+	 * A local worker reads the root run, which holds the checkpoints of every child of the pool, and needs only those of
+	 * the child it runs: narrowed to that child, its memory follows its own child instead of the whole pool (#4197).
+	 */
+	async retainCheckpoints(runId: string, selection: CheckpointSelection): Promise<void> {
+		await this.serialize(runId, () => this.narrow(runId, selection), false);
+	}
+	private *narrow(runId: string, selection: CheckpointSelection): Operation<void> {
+		this.checkpointSelections.set(runId, selection);
+		this.projection.releaseCheckpoints(runId);
+		const folded = this.sequences.get(runId) ?? 0;
+		if (folded === 0 || (selection.ids.length === 0 && selection.prefixes.length === 0)) return;
+		// Events after `folded` are not read here: the next catch-up folds them under the new selection.
+		for (const entry of yield* this.selectedCheckpoints(runId, selection, folded)) {
+			const checkpoint = (entry.event as BackendEventOf<typeof E.checkpointRecorded, DurableCheckpoint>).payload;
+			validateCheckpointInvocationFingerprint(checkpoint);
+			this.projection.restoreCheckpoint(checkpoint);
+		}
+	}
+	/** The run's checkpoint events up to `throughSeq` that `selection` selects, in journal order. */
+	private *selectedCheckpoints(
+		runId: string,
+		selection: CheckpointSelection,
+		throughSeq: number,
+	): Operation<JournalEntry[]> {
+		return yield* invoke(async () => {
+			const selected = new Map<number, JournalEntry>();
+			const keep = (entry: JournalEntry | undefined) => {
+				const event = entry?.event as BackendEvent | undefined;
+				if (
+					entry !== undefined &&
+					entry.seq <= throughSeq &&
+					event?.type === E.checkpointRecorded &&
+					selectsCheckpoint(selection, event.payload)
+				)
+					selected.set(entry.seq, entry);
+			};
+			const ranged = keyRangeJournal(this.journal);
+			const ranges = ranged === undefined ? undefined : checkpointKeyRanges(selection);
+			if (ranged === undefined || ranges === undefined) {
+				// Without a key index the whole run is read once, keeping only the selected events.
+				for await (const entry of this.journal.read(runId)) {
+					if (entry.seq > throughSeq) break;
+					keep(entry);
+				}
+			} else {
+				for (const id of selection.ids)
+					for (const kind of CHECKPOINT_KINDS)
+						keep(await this.journal.readKey(runId, checkpointEventKey(kind, id)));
+				for (const [from, to] of ranges)
+					for await (const entry of ranged.readKeyRange(runId, from, to)) keep(entry);
+			}
+			return [...selected.values()].sort((left, right) => left.seq - right.seq);
+		});
 	}
 	/**
 	 * Brings every run up to date for the resume catalog. With a versioned journal an unchanged store is

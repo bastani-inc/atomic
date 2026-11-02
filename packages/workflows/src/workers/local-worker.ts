@@ -9,8 +9,9 @@ import {
 import { StorageProvider } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
-import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { type CheckpointSelection, JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../durable/journal/resolution.js";
+import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import { PromptReservationState, type PromptReservationToken } from "../durable/prompt-reservation-state.js";
 import { openDurableJournal, POOL_DURABLE_JOURNAL_ENV, type PoolDurableJournal } from "./pool-journal.js";
 import "../durable/journal/workflows-host-module.js";
@@ -77,22 +78,25 @@ class WorkAttemptFencedError extends Error {
 }
 
 /**
- * How long a worker waits for a fenced attempt's stage sessions to close before it ends the attempt anyway. The attempt's
+ * How long a worker waits for an attempt's stage sessions to close before it ends the attempt anyway. The attempt's
  * work lease is renewed meanwhile, so this bound is independent of the pool's `leaseMs`: it only delays the replay.
  */
-const FENCED_STAGE_CLOSE_MS = 10_000;
+const ATTEMPT_STAGE_CLOSE_MS = 10_000;
 
 /**
- * Closes the stage sessions a fenced attempt left open on this worker, which releases their session permits. Its stages
- * never run here again, and the worker keeps its registry for the attempts it serves next: left open, they would hold
- * their permits until the worker exits, and a replay of the attempt on this worker could wait for them indefinitely.
+ * Closes the stage sessions an attempt left open on this worker, which releases their session permits, and lets the
+ * worker's stage registry forget the attempt's runs. Its stages never run here again, and the worker keeps its registry
+ * for the attempts it serves next: left open, a fenced attempt's sessions would hold their permits until the worker
+ * exits, and a replay of the attempt on this worker could wait for them indefinitely; and whatever the registry kept of
+ * a finished child (its stages' session stores, and through them its run store) stayed in memory for as long as the
+ * worker lived, one child after another (#4197).
  *
  * The attempt is ended at the pool only after this: until then it still holds its work lease, so what its sessions
  * write as they close (their last transcript entries) commits, and a write the pool refused would fail their shutdown
  * and keep their permits. `renew` renews that lease on the worker's heartbeat meanwhile, so however long a session
  * takes to shut down, the worker never looks dead to the pool. A session that fails to close keeps its permit, as it
- * would have before, and one still closing after {@link FENCED_STAGE_CLOSE_MS} keeps closing in the background; the
- * caller stops the attempt's writes before it ends it, so nothing of it can commit after that.
+ * would have before, and one still closing after {@link ATTEMPT_STAGE_CLOSE_MS} keeps closing in the background; the
+ * caller stops a fenced attempt's writes before it ends it, so nothing of it can commit after that.
  */
 async function closeAttemptStages(
 	stageControls: StageControlRegistry,
@@ -102,7 +106,7 @@ async function closeAttemptStages(
 	const closing = Promise.allSettled(store.runs().map((run) => stageControls.clear(run.id))).then((results) => {
 		for (const result of results)
 			if (result.status === "rejected")
-				console.warn("atomic-workflows: a fenced attempt's stage session did not close", result.reason);
+				console.warn("atomic-workflows: an attempt's stage session did not close", result.reason);
 	});
 	let renewal: Promise<void> | undefined;
 	const pulse = () => {
@@ -120,7 +124,7 @@ async function closeAttemptStages(
 	const heartbeat = setInterval(pulse, WORKER_HEARTBEAT_INTERVAL_MS);
 	const bound = new AbortController();
 	try {
-		await Promise.race([closing, delay(FENCED_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
+		await Promise.race([closing, delay(ATTEMPT_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
 	} finally {
 		clearInterval(heartbeat);
 		bound.abort();
@@ -207,6 +211,43 @@ function failablePrompts(store: Store): WorkerStagePrompts["fail"] {
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
+/** The root's checkpoints a worker keeps in memory while it holds no attempt: none. */
+const NO_CHECKPOINTS: CheckpointSelection = { ids: [], prefixes: [] };
+
+/**
+ * The root's checkpoints an attempt reads: its child's own, which all carry the child's scope, and the child's boundary
+ * records, which the root writes under the scope (#4197). The rest of the root, every other child of the pool among
+ * them, stays in the journal.
+ */
+function attemptCheckpoints(scope: string): CheckpointSelection {
+	return { ids: [`boundary-start:${scope}`], prefixes: [`${scope}:`, `boundary-terminal:${scope}:`] };
+}
+
+/**
+ * An attempt's resource admission behind a reference the worker drops when the attempt ends. The admission is the async
+ * context an attempt runs in, and every timer, connection or other handle the attempt starts keeps its async context for
+ * as long as it lives: a pooled keep-alive connection, or a ten-minute timer, held the admission's closure and through it
+ * the whole attempt (its run store, broker and session adapter), well after its child ended (#4197). Once released, the
+ * admission refuses what a late caller asks of it, as the attempt it belonged to no longer runs.
+ */
+function releasableAdmission(admission: ResourceAdmission): {
+	readonly admission: ResourceAdmission;
+	release(): void;
+} {
+	let current: ResourceAdmission | undefined = admission;
+	return {
+		admission: {
+			acquire: (kind, signal, options) =>
+				current === undefined
+					? Promise.reject(new WorkAttemptFencedError("Work attempt ended"))
+					: current.acquire(kind, signal, options),
+		},
+		release() {
+			current = undefined;
+		},
+	};
+}
+
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
 export async function runLocalWorker(start: WorkerStart | PoolCoordinatorStart): Promise<void> {
 	if ("role" in start && start.role === POOL_COORDINATOR_ROLE) {
@@ -271,7 +312,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		} else if (reply.error) receiver?.reject(new Error(reply.error));
 		else receiver?.resolve(reply.value);
 	});
-	process.on("disconnect", () => process.exit(rootLeaseLost ? 0 : 1));
+	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
+	let recycled = false;
+	process.on("disconnect", () => process.exit(rootLeaseLost || recycled ? 0 : 1));
 	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
@@ -293,6 +336,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const journalReads = new Set(["descriptor", "getRun", "listRuns", "read", "readKey", "leaseState", "close"]);
 	const readOnlyJournal = new Proxy(journal, {
 		get(target, key) {
+			// A SQL journal's key index: an attempt reads its own child's checkpoints from the root through it (#4197).
+			if (key === "readKeyRange")
+				return target instanceof SqlRunJournal
+					? (runId: string, fromKey: string, toKey: string) =>
+							SqlRunJournal.readKeyRange(target, runId, fromKey, toKey)
+					: undefined;
 			if (typeof key !== "string" || !journalReads.has(key))
 				return () => {
 					throw new Error(`Worker journal is read-only: ${String(key)}`);
@@ -302,6 +351,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		},
 	});
 	const reader = await JournalDurableBackend.open(readOnlyJournal, { runs: [] });
+	// The root holds the checkpoints of every child of the pool; the worker keeps only those of the child it runs.
+	await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 	configurePooledWatchTrace(start.journalPath, `worker:${process.pid}`);
 	const sessions = await new StorageProvider().openSessionStore(
 		{ kind: "sqlite", path: start.journalPath, prefix: `${sqlPoolStorage(poolJournal)!.tables.runs}_pool_` },
@@ -443,6 +494,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				(source) => `${source.path}#${source.exportName}` === work.definition && source.digest === work.digest,
 			);
 			if (index < 0) throw new Error("Worker definition compatibility error");
+			await reader.retainCheckpoints(start.root, attemptCheckpoints(work.scope));
 			await reader.catchUpWorkflow(start.root);
 			const controller = new AbortController();
 			activeController = controller;
@@ -557,7 +609,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					}
 				},
 			};
-			const admitted = admittedSessionAdapter(adapter, resourceAdmission, async (signal) => {
+			// The attempt runs under this admission; it is let go of when the attempt ends (#4197).
+			const attemptAdmission = releasableAdmission(resourceAdmission);
+			const admitted = admittedSessionAdapter(adapter, attemptAdmission.admission, async (signal) => {
 				await awaitAdmission(signal);
 				await admission?.validate(signal);
 			});
@@ -597,7 +651,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					controller.signal.throwIfAborted();
 					await delay(25);
 				}
-				const result = await withResourceAdmission(resourceAdmission, () =>
+				const result = await withResourceAdmission(attemptAdmission.admission, () =>
 					run(definitions[index]!, work.inputs, {
 						...(work.execution as RunOpts),
 						...(start.promptNodes === true ? { usePromptNodesForUi: true } : {}),
@@ -646,6 +700,9 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					attemptFenced = true;
 					throw new WorkAttemptFencedError(poolFault);
 				}
+				// The child is done on this worker: what its run left open closes while the attempt still holds its lease,
+				// and the worker's stage registry forgets it before the worker serves another child (#4197).
+				await closeAttemptStages(stageControls, store, () => request({ kind: "renew" }));
 				await request({ kind: "complete", result });
 			} catch (error) {
 				if (!attemptFenced) throw error;
@@ -669,7 +726,21 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				writable = false;
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
+			attemptAdmission.release();
+			// The attempt's checkpoints stay in the journal; the worker's next attempt reads its own.
+			await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 			if (rootLeaseLost) break;
+			// Between children, a worker past its memory limit ends and the pool starts a fresh one in its place: what it
+			// grew to stays with it, whatever held it (#4197).
+			const rssBytes = process.memoryUsage.rss();
+			if (start.maxRssBytes !== undefined && rssBytes > start.maxRssBytes) {
+				await request({ kind: "recycle", rssBytes });
+				process.stderr.write(
+					`atomic-workflows: local worker ${process.pid} ends between children: resident memory ${rssBytes} bytes is over localWorkers.maxWorkerRssBytes (${start.maxRssBytes}); the pool starts a fresh worker\n`,
+				);
+				recycled = true;
+				break;
+			}
 		}
 	} catch (error) {
 		// The root released its lease (teardown) or lost it to another incarnation: nothing is left to serve, and
@@ -681,5 +752,5 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		if (poolJournal !== journal) await poolJournal.close().catch(() => {});
 	}
 	// Closing the channel ends the process (exit code 0) instead of waiting for the pool to disconnect it.
-	if (rootLeaseLost) process.disconnect?.();
+	if (rootLeaseLost || recycled) process.disconnect?.();
 }

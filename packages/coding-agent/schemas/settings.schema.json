@@ -589,6 +589,12 @@
                   "type": "number",
                   "minimum": 0,
                   "description": "Load per CPU (1-minute load average / CPU cores) above which pooled stages start one at a time, at most one every 5 seconds. Default: 3. 0 turns it off."
+                },
+                "maxWorkerRssBytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991,
+                  "description": "Resident memory in bytes past which a local worker is replaced by a fresh one once its current child ends. A running child is never interrupted. Default: unset (never)."
                 }
               },
               "additionalProperties": false
