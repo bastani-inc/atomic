@@ -13,7 +13,11 @@ import { durableBackendForRun, durableRootRunIdForRun } from "../../durable/run-
 import { requireStoreDurableBackend } from "../../durable/store-backend.js";
 import { pendingStageMessageAdmissionOrder } from "../../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../../shared/pending-stage-route-capability.js";
-import { stageMatchesPathPattern, workflowBoundaryHops } from "../../shared/pending-stage-status.js";
+import {
+	stageMatchesPathPattern,
+	type WorkflowBoundaryHop,
+	workflowBoundaryHops,
+} from "../../shared/pending-stage-status.js";
 import type { Store } from "../../shared/store.js";
 import type { PendingStageMessage } from "../../shared/store-types.js";
 import { parseWorkflowStageTarget } from "../../shared/workflow-stage-target.js";
@@ -85,35 +89,10 @@ export interface WorkflowPendingStageDeliveryOptions {
 	/**
 	 * `deliverPending` settles only when its drain does, never at the stall bound. A local worker pool's root sets
 	 * it: the `deliver` a pooled stage passes reaches the stage's worker only while that call is pending, so releasing
-	 * the call early would leave the still-running drain with a closed transport and fail the stage. The worker
-	 * applies the stall bound to its stage's startup itself ({@link untilDrainedOrStalled}).
+	 * the call early would leave the still-running drain with a closed transport. The worker has already delivered
+	 * what it read from the journal and does not hold its stage's startup on this drain.
 	 */
 	readonly holdUntilDrained?: boolean;
-}
-
-/**
- * Settles with `drain`, or resolves once it made no progress for {@link PENDING_STAGE_READY_STALL_MS}; the drain
- * keeps running. `drain` receives the function that records progress.
- */
-export function untilDrainedOrStalled(drain: (progress: () => void) => Promise<void>): Promise<void> {
-	let lastProgressAt = Date.now();
-	const running = drain(() => {
-		lastProgressAt = Date.now();
-	});
-	return new Promise<void>((resolve, reject) => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const check = (): void => {
-			const remaining = lastProgressAt + PENDING_STAGE_READY_STALL_MS - Date.now();
-			if (remaining <= 0) {
-				resolve();
-				return;
-			}
-			timer = setTimeout(check, remaining);
-			timer.unref?.();
-		};
-		running.then(resolve, reject).finally(() => clearTimeout(timer));
-		check();
-	});
 }
 
 export function createWorkflowPendingStageDelivery(
@@ -402,7 +381,16 @@ async function deliverPendingStageMessages(
 	commit: PendingStageDeliveryCommit,
 	recipient?: WorkflowPendingStageRecipient,
 ): Promise<void> {
-	const stickyEntries = stickyPendingStageEntriesForStage(activeStore, runId, stageId, stageName, recipient);
+	// A stage that ended before its drain ran (a pooled stage's root drain finishes in the background) still gets
+	// the receipts of the messages its session received; nothing new is delivered to it.
+	const stickyEntries = stickyPendingStageEntriesForStage(
+		activeStore,
+		runId,
+		stageId,
+		stageName,
+		recipient,
+		recipient?.receivedMessageIds,
+	);
 	const candidateIds = new Set(
 		[
 			...activeStore.pendingStageMessagesFor(runId, stageId),
@@ -530,7 +518,7 @@ async function deliverPendingStageMessages(
 /**
  * Sticky (D3) queued entries in the ROOT run's bucket whose target path matches this
  * stage's depth-faithful id-form or name-form path and that have not been delivered to
- * this stage yet.
+ * this stage yet. An ended stage keeps only the entries in `receivedByEndedStage`.
  */
 function stickyPendingStageEntriesForStage(
 	activeStore: Store,
@@ -538,6 +526,8 @@ function stickyPendingStageEntriesForStage(
 	stageId: string,
 	stageName: string,
 	recipient?: { readonly sessionId: string; readonly receivedMessageIds?: readonly string[] },
+	/** Messages that stay this stage's after it ended, because its session already received them. */
+	receivedByEndedStage: readonly string[] = [],
 ): readonly PendingStageMessage[] {
 	const runs = activeStore.runs();
 	const rootRunId = durableRootRunIdForRun(runs, runId);
@@ -545,16 +535,14 @@ function stickyPendingStageEntriesForStage(
 	const rootRun = runs.find((run) => run.id === rootRunId);
 	if (rootRun === undefined) return [];
 	const stage = runs.find((run) => run.id === runId)?.stages.find((candidate) => candidate.id === stageId);
-	if (stage?.status === "completed" || stage?.status === "skipped") return [];
+	const ended = stage?.status === "completed" || stage?.status === "skipped";
+	if (ended && receivedByEndedStage.length === 0) return [];
 	// Hops keep both depth-faithful spellings per ancestor (boundary-stage name or
 	// materialized child-run id, D5/D8 clarification), so a sticky target addressed
 	// through a materialized run id matches the same future stage as the name form.
 	const hops = workflowBoundaryHops(runs, runId);
 	if (hops === undefined) return [];
 	return (rootRun.pendingStageMessages ?? []).filter((entry) => {
-		if (entry.sticky !== true || entry.status !== "queued") return false;
-		const parsed = entry.targetPath === undefined ? undefined : parseWorkflowStageTarget(entry.targetPath);
-		if (parsed === undefined || parsed.rootRunId !== rootRunId) return false;
 		if (
 			(entry.deliveries ?? []).some(
 				(delivery) =>
@@ -568,8 +556,26 @@ function stickyPendingStageEntriesForStage(
 			)
 		)
 			return false;
-		return stageMatchesPathPattern(parsed.segments, hops, [stageId, stageName]);
+		if (ended && !receivedByEndedStage.includes(entry.message.id)) return false;
+		return stickyEntryTargetsStage(entry, rootRunId, hops, stageId, stageName);
 	});
+}
+
+/**
+ * Whether a queued sticky (D3) entry of the root run `rootRunId` targets a stage reached through `hops`, by its
+ * depth-faithful id-form or name-form path. Delivery receipts are not consulted.
+ */
+export function stickyEntryTargetsStage(
+	entry: PendingStageMessage,
+	rootRunId: string,
+	hops: readonly WorkflowBoundaryHop[],
+	stageId: string,
+	stageName: string,
+): boolean {
+	if (entry.sticky !== true || entry.status !== "queued") return false;
+	const parsed = entry.targetPath === undefined ? undefined : parseWorkflowStageTarget(entry.targetPath);
+	if (parsed === undefined || parsed.rootRunId !== rootRunId) return false;
+	return stageMatchesPathPattern(parsed.segments, hops, [stageId, stageName]);
 }
 
 function claimPendingDelivery(
@@ -592,7 +598,8 @@ function claimPendingDelivery(
 	};
 }
 
-function toPendingStageSender(entry: PendingStageMessage): WorkflowPendingStageSender {
+/** The sender a queued entry is delivered from: the identity it was sent with. */
+export function toPendingStageSender(entry: PendingStageMessage): WorkflowPendingStageSender {
 	return {
 		...entry.from,
 		cwd: entry.from.cwd ?? "",

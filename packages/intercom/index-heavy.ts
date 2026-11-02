@@ -1663,6 +1663,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     const generation = runtimeGeneration;
+    // A reconnect while the startup drains still run is remembered, not dropped: the second startup drain's queue
+    // snapshot can predate a sticky message the broker could not forward while this stage was disconnected.
+    let startupDrained = false;
+    let redrainRequested = false;
     const deliverPending = async (started = false): Promise<void> => {
       const receivedMessageIds = ctx.sessionManager.getBranch().flatMap((entry) => {
         if (entry.type !== "custom_message" || entry.customType !== "intercom_message") return [];
@@ -1670,17 +1674,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         return typeof id === "string" ? [id] : [];
       });
       await pendingStageDelivery.deliverPending(
+        // Only a message handed over while the stage is still starting is pre-start context. A drain can outlive
+        // the startup (a pooled stage's root drain finishes in the background): what it hands over afterwards
+        // takes the live path, with its own delivery mode and live framing.
         (from, message) =>
-          started
+          started || startupDrained
             ? handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, false, true)
             : handleIncomingMessage(ctx, from as SessionInfo, message as Message, undefined, true),
         { sessionId: ctx.sessionManager.getSessionId(), receivedMessageIds },
       );
     };
-    // A reconnect while the startup drains still run is remembered, not dropped: the second startup drain's queue
-    // snapshot can predate a sticky message the broker could not forward while this stage was disconnected.
-    let startupDrained = false;
-    let redrainRequested = false;
     const redrain = (): void => {
       if (!getLiveContext(ctx, generation)) return;
       if (!startupDrained) {

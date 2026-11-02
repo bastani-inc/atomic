@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -398,44 +399,48 @@ describe("AgentSession retry", () => {
 		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
 	});
 
-	it("retries structured safety-trigger errors for all providers", async () => {
+	it("sends structured content-filter refusals to the next fallback model, and retries them only when retry.fallbackOnContentFilter is off", async () => {
 		const created = await createSession({ failCount: 0 });
-		const probe = created.session as unknown as { _isRetryableError(message: AssistantMessage): boolean };
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "Provider finish_reason: content_filter",
-				}),
-			),
-		).toBe(true);
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "Provider finish_reason: content_filter",
-					provider: "github-copilot",
-					api: "openai-completions",
-					model: "gemini-3.1-pro-preview",
-				}),
-			),
-		).toBe(true);
-		expect(
-			probe._isRetryableError(
-				createAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "The model refused to complete the request",
-				}),
-			),
-		).toBe(true);
-		expect(
+		const probe = created.session as unknown as {
+			_isRetryableError(message: AssistantMessage): boolean;
+			_isFallbackableError(message: AssistantMessage): boolean;
+			settingsManager: SettingsManager;
+		};
+		const refusals = [
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "Provider finish_reason: content_filter",
+			}),
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "Provider finish_reason: content_filter",
+				provider: "github-copilot",
+				api: "openai-completions",
+				model: "gemini-3.1-pro-preview",
+			}),
+			createAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "The model refused to complete the request",
+			}),
+		];
+		for (const refusal of refusals) {
+			assert.equal(probe._isRetryableError(refusal), false, refusal.errorMessage);
+			assert.equal(probe._isFallbackableError(refusal), true, refusal.errorMessage);
+		}
+		probe.settingsManager.applyOverrides({ retry: { fallbackOnContentFilter: false } });
+		for (const refusal of refusals) {
+			assert.equal(probe._isRetryableError(refusal), true, refusal.errorMessage);
+			assert.equal(probe._isFallbackableError(refusal), false, refusal.errorMessage);
+		}
+		assert.equal(
 			probe._isRetryableError(
 				createAssistantMessage("", {
 					stopReason: "error",
 					errorMessage: "Invalid request: unknown parameter",
 				}),
 			),
-		).toBe(false);
+			false,
+		);
 	});
 
 	it("treats Codex token invalidation wrapped in abort diagnostics as fallbackable only", async () => {

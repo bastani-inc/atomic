@@ -415,6 +415,12 @@ export class PoolCoordinator {
 	private readonly cleanups = new Set<Promise<void>>();
 	private readonly controlAcks = new Map<string, number>();
 	private readonly lastHeard = new Map<string, { readonly at: number; readonly stalled: number }>();
+	/**
+	 * Requests of each worker this coordinator has not answered yet. A worker sends its next renewal, control poll or
+	 * usage report only once the previous one is answered, so while one waits here the worker waits on the pool: its
+	 * silence is the pool's (a slow journal, a busy root), not the worker's, and lease recovery must not end it.
+	 */
+	private readonly awaiting = new Map<string, number>();
 	private readonly pendingActivity = new Map<string, PoolActivityEntry>();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
 	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: string }>();
@@ -1352,6 +1358,7 @@ export class PoolCoordinator {
 				this.readyWorkers.delete(worker);
 				this.controlAcks.delete(worker);
 				this.lastHeard.delete(worker);
+				this.awaiting.delete(worker);
 				this.slots.delete(slot);
 				this.endStageWatches((watch) => watch.slot === slot, "worker_exited");
 				for (const settle of slot.stageCommands.values()) settle(undefined);
@@ -1639,11 +1646,19 @@ export class PoolCoordinator {
 					await this.sendResult(work.id);
 				});
 				const response = handled.then((value) => routeReady ?? value);
-				if (message.kind !== "delivery" && message.kind !== "delivery-ready")
-					serial = handled.then(
-						() => {},
-						() => {},
-					);
+				// A delivery waits on the worker's own acknowledgements, so it does not count as the pool's wait.
+				if (message.kind !== "delivery" && message.kind !== "delivery-ready") {
+					this.awaiting.set(worker, (this.awaiting.get(worker) ?? 0) + 1);
+					// The worker's silence counts from the pool's answer, not from its question.
+					const answered = () => {
+						const left = (this.awaiting.get(worker) ?? 1) - 1;
+						if (left > 0) this.awaiting.set(worker, left);
+						else this.awaiting.delete(worker);
+						if (this.incarnations.get(worker) === child)
+							this.lastHeard.set(worker, { at: performance.now(), stalled: this.stalledMs });
+					};
+					serial = handled.then(answered, answered);
+				}
 				void response.then(
 					(value) => child.send({ id: message.id, value }, replied),
 					(error: Error) => {
@@ -1729,7 +1744,13 @@ export class PoolCoordinator {
 				// An attempt whose process groups are not confirmed gone is never released for replay, in any incarnation.
 				if ((await unconfirmedProcessGroups(this.journal!, root, { attempt: work })).length > 0) continue;
 				if (work.epoch < lease.epoch) await this.releaseRetained(work);
-				else await queue.expire(lease, work);
+				// An attempt that changed hands since it was read (its worker's exit released it, its worker completed it,
+				// another worker claimed it) has nothing left to expire. Its fault is never the pool's: thrown from here it
+				// failed the whole pool, and so every unfinished child of the pool at once.
+				else
+					await queue.expire(lease, work).catch((error: Error) => {
+						if (error.message !== STALE_WORK_LEASE) throw error;
+					});
 			}
 		})().finally(() => {
 			this.recovering = undefined;
@@ -1746,6 +1767,10 @@ export class PoolCoordinator {
 		this.lastTick = now;
 	}
 
+	/**
+	 * Whether a worker still runs its attempt: it is running and connected, and it either waits for this coordinator's
+	 * answer or was heard within its work lease, not counting this process's own stalls.
+	 */
 	private isLive(worker: string, child: ChildProcess): boolean {
 		this.observeResponsiveness();
 		const heard = this.lastHeard.get(worker);
@@ -1754,7 +1779,8 @@ export class PoolCoordinator {
 			child.signalCode === null &&
 			child.connected &&
 			heard !== undefined &&
-			performance.now() - heard.at - (this.stalledMs - heard.stalled) < this.options!.leaseMs
+			((this.awaiting.get(worker) ?? 0) > 0 ||
+				performance.now() - heard.at - (this.stalledMs - heard.stalled) < this.options!.leaseMs)
 		);
 	}
 

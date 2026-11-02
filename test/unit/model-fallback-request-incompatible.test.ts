@@ -87,7 +87,12 @@ describe("request/context incompatibility fallback (#1580)", () => {
 		// A 400/413/422 wrapper hiding a refusal/cancel must still stop the fallback.
 		assert.equal(isRetryableModelFailure({ status: 400, stopReason: "aborted", errorMessage: "aborted" }), false);
 		assert.equal(isRetryableModelFailure({ statusCode: 422, name: "AbortError", message: "aborted by user" }), false);
-		assert.equal(isRetryableModelFailure({ httpStatus: 400, message: "content_filter" }), false);
+		// A content-filter refusal stays a refusal: it advances only as one, and not when that is switched off.
+		assert.equal(normalizeModelFailureSignal({ httpStatus: 400, message: "content_filter" }).kind, "content_filter");
+		assert.equal(
+			isRetryableModelFailure({ httpStatus: 400, message: "content_filter" }, { fallbackOnContentFilter: false }),
+			false,
+		);
 		assert.equal(
 			isRetryableModelFailure({ status: 422, diagnostics: [{ error: { message: "command failed" } }] }),
 			false,
@@ -116,15 +121,18 @@ describe("request/context incompatibility fallback (#1580)", () => {
 			message: "invalid_request_error",
 			diagnostics: [{ error: { finish_reason: "content_filter" } }],
 		};
-		assert.equal(isRetryableModelFailure(wrapperWithContentFilterDiagnostic), false);
-		assert.equal(normalizeModelFailureSignal(wrapperWithContentFilterDiagnostic).kind, "task_failure");
+		assert.equal(
+			isRetryableModelFailure(wrapperWithContentFilterDiagnostic, { fallbackOnContentFilter: false }),
+			false,
+		);
+		assert.equal(normalizeModelFailureSignal(wrapperWithContentFilterDiagnostic).kind, "content_filter");
 
 		const wrapperWithSafetyDiagnostic = {
 			errorMessage: "400 bad request",
 			diagnostics: [{ error: { message: "blocked by safety policy" } }],
 		};
-		assert.equal(isRetryableModelFailure(wrapperWithSafetyDiagnostic), false);
-		assert.equal(normalizeModelFailureSignal(wrapperWithSafetyDiagnostic).kind, "task_failure");
+		assert.equal(isRetryableModelFailure(wrapperWithSafetyDiagnostic, { fallbackOnContentFilter: false }), false);
+		assert.equal(normalizeModelFailureSignal(wrapperWithSafetyDiagnostic).kind, "content_filter");
 	});
 
 	test("genuine request-incompatible wrappers still classify as fallbackable", () => {

@@ -5,7 +5,7 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 # Evals
 
-Last Accessed: 2026-10-26 (GPT-6.1 Terra additions; earlier rows retain their snapshot dates below).
+Last Accessed: 2026-11-02 (Gemini 4 Argon additions; earlier rows retain their snapshot dates below).
 
 Key:
 
@@ -46,16 +46,18 @@ Key:
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28, 5 GPT-6.1 Sol rows accessed 2026-09-29, 5 Claude Haiku 5.5 rows accessed 2026-10-07, and 6 GPT-6.1 Terra rows accessed 2026-10-26.
+Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28, 5 GPT-6.1 Sol rows accessed 2026-09-29, 5 Claude Haiku 5.5 rows accessed 2026-10-07, 6 GPT-6.1 Terra rows accessed 2026-10-26, and 1 Gemini 4 Argon row accessed 2026-11-02.
 
 Sources and access dates for later additions. Release dates are not evaluation run dates; AA does not publish run dates. These are AA measurements, not vendor launch-table results. AA's [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) uses mini-swe-agent for TB4, all 66 tasks, pass@1 averaged over three repeats, a 500-step cap and no context compaction.
 
 - GPT-6.1 Sol: five effort rows accessed 2026-09-29 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and [model page](https://artificialanalysis.ai/models/gpt-6-1-sol).
 - Claude Haiku 5.5: rows accessed 2026-10-07 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low) model pages. AA labels these configurations "with fallback". All five pages publish non-estimated indices and twelve component measurements in their public structured data, although their text rendering says "Not publicly available". Missing `ONH` remains unknown; the published hallucination rate is a different metric.
 - GPT-6.1 Terra: six rows accessed 2026-10-26 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/gpt-6-1-terra), [xhigh](https://artificialanalysis.ai/models/gpt-6-1-terra-xhigh), [high](https://artificialanalysis.ai/models/gpt-6-1-terra-high), [medium](https://artificialanalysis.ai/models/gpt-6-1-terra-medium), [low](https://artificialanalysis.ai/models/gpt-6-1-terra-low), and [non-reasoning](https://artificialanalysis.ai/models/gpt-6-1-terra-non-reasoning) model pages. All six publish non-estimated indices in their public structured data. Columns AA does not publish for Terra remain `∅`.
+- Gemini 4 Argon: `high`, the only configuration AA publishes, accessed 2026-11-02 from the [model page](https://artificialanalysis.ai/models/gemini-4-argon). AA now publishes `idx`, `OA`, `Omni`, `Harvey` and `MLCR` only on revised versions (Intelligence Index v5.0, Omniscience v1.1), so they stay `∅`. SciCode is under AA review.
 
 | slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| gemini-4-argon | Gemini 4 Argon (high) | 2026-09-30 | ∅ | 49.2 | 56.5 | 77.5 | 57.1 | 61.8 | 57.1 | 21.8 | 27.1 | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 48.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-terra | GPT-6.1 Terra (max) | 2026-10-26 | 48.1 | 45.1 | 48.8 | 60.2 | 55.6 | 55.1 | 46.2 | 28.6 | 28.0 | 49.1 | 62.0 | 82.7 | 29.8 | ∅ | ∅ | ∅ | ∅ | 84.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-terra-xhigh | GPT-6.1 Terra (xhigh) | 2026-10-26 | 45.4 | 41.6 | 45.8 | 59.9 | 46.5 | 53.4 | 43.7 | 26.6 | 26.6 | 49.6 | 58.5 | 81.7 | 28.7 | ∅ | ∅ | ∅ | ∅ | 83.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-terra-high | GPT-6.1 Terra (high) | 2026-10-26 | 43.9 | 38.2 | 42.7 | 58.5 | 41.9 | 51.6 | 43.3 | 28.0 | 25.7 | 50.0 | 56.9 | 82.3 | 28.4 | ∅ | ∅ | ∅ | ∅ | 83.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
@@ -797,6 +799,8 @@ GPT-6.1 Sol was added 2026-09-29 and accessed that day in the [primary JSON](htt
 
 Claude Haiku 5.5 was added and accessed 2026-10-07 in the [primary JSON](https://cognition.com/data/frontiercode-leaderboard/data.json). Its best score on both sets is max effort under the Claude Code harness; the run date is unpublished. No unfair-internet-use flag rate is recorded here. Mean cost per Main rollout is $1.33.
 
+Gemini 4 Argon was added and accessed 2026-11-02 in the same JSON (low, medium and high under `devin-cli`). Medium is best on Main; low edges it on Extended (60.6). Run date unpublished.
+
 Key:
 
 - FrontierCode: mergeability of agent-written pull requests on tasks built by open-source maintainers, graded by rubrics, unit tests and other verifiers for correctness, test quality, scope discipline, style and codebase conventions. Runs that consult solution-bearing sources such as the original pull request score zero.
@@ -817,6 +821,7 @@ Key:
 | gpt-6-sol | GPT-6 Sol | max | 49.3 | 54.3 | 60.7 | 66.3 | 0.0 | $2.07 |
 | grok-4-6 | Grok 4.6 | high | 48.0 | 53.1 | 61.3 | 67.0 | 0.7 | $2.88 |
 | grok-4-7 | Grok 4.7 | high | 47.6 | 53.1 | 59.4 | 65.2 | 1.3 | $6.65 |
+| gemini-4-argon | Gemini 4 Argon | medium | 47.6 | 52.8 | 60.5 | 66.1 | 1.2 | $6.74 |
 | gpt-5-6-sol | GPT-5.6 Sol | max | 47.5 | 52.9 | 60.6 | 66.6 | 0.0 | $5.19 |
 | claude-opus-4-8 | Opus 4.8 | max | 46.5 | 51.6 | 59.6 | 65.5 | 0.6 | $9.62 |
 | claude-haiku-5-5 | Haiku 5.5 | max | 46.4 | 51.7 | 58.4 | 64.7 | ∅ | $1.33 |
@@ -861,6 +866,7 @@ Sources and access dates:
 - GPT-6.1 Sol, accessed 2026-09-29: OpenAI = [Sol 6.1 announcement](https://openai.com/index/introducing-gpt-6-1-sol/) and [system card](https://deploymentsafety.openai.com/gpt-6-1-sol); Artificial Analysis = [Sol 6.1 model page](https://artificialanalysis.ai/models/gpt-6-1-sol) and [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking). OpenAI's external benchmark results are vendor-reported, not benchmark-owner leaderboard rows. They ran in its research environment or API; individual harness revisions and run dates are not stated. AA's TBSci result is independent evidence from its own harness. No matching Sol 6.1 row was retrieved from the DeepSWE, TB-Science, Zapier, Surge GDP.pdf, OSWorld or ARC Prize owner leaderboards on that date.
 - Claude Haiku 5.5, accessed 2026-10-07: Anthropic = [launch announcement](https://www.anthropic.com/claude-haiku-5-5), published that day. These launch-table results are vendor-reported; effort, harness revisions, and evaluation run dates are not stated unless shown in the setting. GDPval-AA and AA-Briefcase are raw Elo, not the normalized AA columns above. Artificial Analysis independently measures Haiku 5.5 Terminal-Bench-Science in its **with-fallback** configuration, from the effort-specific model pages for [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low); these are not Anthropic launch-table results. No Haiku 5.5 result was published on the checked [DeepSWE leaderboard](https://deepswe.datacurve.ai/) on 2026-10-07; no row is added to that table.
 - GPT-6.1 Terra, accessed 2026-10-26: OpenAI = [launch announcement](https://openai.com/index/introducing-gpt-6-1-terra/) and [system card addendum](https://deploymentsafety.openai.com/gpt-6-1-terra). These results are vendor-reported; harness revisions and run dates are not stated. The announcement text states one numeric Terra score on an external benchmark, TB4 at max effort; its Agents' Last Exam, MMMU-Pro, OSWorld 2.1 and Terminal-Bench-Science comparisons state no Terra score and are not transcribed. The system card reports cybersecurity results at the maximum tested solution length without naming an effort; its internal evaluations are excluded. Artificial Analysis independently measures Terminal-Bench-Science for the six configurations whose model pages are listed in the Intelligence Index section above. No GPT-6.1 Terra result was published on the [DeepSWE leaderboard](https://deepswe.datacurve.ai/), the [TB-Science leaderboard](https://www.terminal-bench-science.ai/), the [FrontierCode data](https://cognition.com/data/frontiercode-leaderboard/data.json), or the visible [AutomationBench leaderboard](https://zapier.com/benchmarks) on that date; no row is added to those tables.
+- Gemini 4 Argon, accessed 2026-11-02: Google = [model card](https://deepmind.google/models/model-cards/gemini-4-argon/) and [methodology](https://deepmind.google/models/evals-methodology/gemini-4-argon), vendor-reported at the highest thinking setting, pass@1; "from X" rows are Google's attribution, not separately retrieved. Zapier = [AutomationBench](https://zapier.com/benchmarks). The [DeepSWE leaderboard](https://deepswe.datacurve.ai/) had no Argon row.
 
 Artificial Analysis Terminal-Bench-Science rows use the [evaluation page](https://artificialanalysis.ai/evaluations/terminal-bench-science) and [AA's general methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking): version 0.1.0, 70 tasks, mini-swe-agent, pass@1 averaged over three repeats, and a 1,000-step cap. These are AA's general settings, not a separately documented model-specific harness revision. Evaluation run dates are unpublished.
 
@@ -874,6 +880,7 @@ Key:
 - `OSW21`: OSWorld 2.1, computer-use workflows; the Haiku result covers the offline subset.
 - `FC11`: FrontierCode 1.1 Main, weighted rubric score; distinct from all-blocking-criteria pass rate.
 - `Chart`: Chartography, chart understanding without tools.
+- `VALS`: Vals Index. `VFA`: Vals Finance Agent v2. `HLAB`: Harvey's Legal Agent Benchmark. `FSWE`: FrontierSWE v2. `VCB`: Vibe Code Bench. `PTB`: PostTrainBench v1.1. `CWE`: CWE-bench v1. `LAB2`: LABBench 2. `RBench`: RiemannBench. `GW128`, `GW1M`: GraphWalks BFS F1, up to 128k and 256k to 1M tokens. `LVB`: LVBench.
 
 - `ALE`: [Agents' Last Exam](https://agents-last-exam.org/), long-horizon professional tasks in real software, from financial modeling to engineering and media production.
 - `OSW2`, `OSW2s`: [OSWorld 2.0](https://osworld-v2.xlang.ai/), long-horizon computer-use workflows operating desktop applications through the screen; partial credit and strict all-pass scoring.
@@ -892,6 +899,27 @@ Key:
 
 | slug | Model | Benchmark | Score | Setting | Source |
 | --- | --- | --- | ---: | --- | --- |
+| gemini-4-argon | Gemini 4 Argon | DSWE | 77.9 | v1.1, mini-swe-agent; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | FSWE | 55.0 | v2; Google-reported, from Proximal's leaderboard | Google |
+| gemini-4-argon | Gemini 4 Argon | TB4 | 57.4 | v4.0; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | TBSci | 57.6 | v0.1, 6x verifier timeout; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | TBSci | 52.9 | high effort; AA general settings above | Artificial Analysis |
+| gemini-4-argon | Gemini 4 Argon | VCB | 91.9 | Google-reported, from Vals AI's leaderboard | Google |
+| gemini-4-argon | Gemini 4 Argon | ABench | 51.3 | v1.0.6, private set, high effort | Zapier |
+| gemini-4-argon-medium | Gemini 4 Argon | ABench | 50.1 | v1.0.6, private set, medium effort | Zapier |
+| gemini-4-argon | Gemini 4 Argon | PTB | 45.3 | v1.1, OpenCode harness, 10 hours on one H100; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | VALS | 68.9 | Google-reported, from Vals AI | Google |
+| gemini-4-argon | Gemini 4 Argon | VFA | 65.4 | Google-reported, from Vals AI | Google |
+| gemini-4-argon | Gemini 4 Argon | HLAB | 19.6 | Google-reported, from Vals AI | Google |
+| gemini-4-argon | Gemini 4 Argon | ALE | 39.5 | ALE-Claw harness, 5-hour window, binary pass rate; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | OSW2 | 69.2 | offline subset, partial, best of 3 runs, Gemini CUA harness with batch tool calls and compaction, 08.08 patch; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | LAB2 | 88.8 | terminal with bioinformatics tools, Python, R and internet; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | RBench | 76.0 | Google-reported, from Surge's leaderboard | Google |
+| gemini-4-argon | Gemini 4 Argon | GW128 | 99.7 | BFS F1, 650 items up to 128k; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | GW1M | 84.2 | BFS F1, 200 problems at 256k to 1M; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | Chart | 71.6 | no tools; Google-reported, from Surge's leaderboard | Google |
+| gemini-4-argon | Gemini 4 Argon | LVB | 91.7 | no tools, 1 FPS; Google-reported, self-computed | Google |
+| gemini-4-argon | Gemini 4 Argon | CWE | 68.0 | v1, pass@1; Google-reported, from the public leaderboard | Google |
 | gpt-6-1-terra | GPT-6.1 Terra | TB4 | 50.3 | max effort; v4.0; OpenAI-reported, harness not stated | OpenAI |
 | gpt-6-1-terra | GPT-6.1 Terra | XBench | 97.1 | ACE-normalized mean capability score; max tested solution length; effort not stated | OpenAI |
 | gpt-6-1-terra | GPT-6.1 Terra | SECPro | 83.3 | pass@1; max tested solution length; effort not stated | OpenAI |

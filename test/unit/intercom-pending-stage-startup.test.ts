@@ -13,6 +13,10 @@ import {
 } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures.js";
+import {
+	createPooledStageDelivery,
+	type PooledStageDeliveryOptions,
+} from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
 import { sleep } from "../helpers/runtime.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
@@ -488,6 +492,100 @@ test("a reconnect during the stage's second startup drain still delivers a messa
 	} finally {
 		releaseCommit.resolve();
 		await startup?.catch(() => {});
+		await fire("session_shutdown");
+	}
+});
+
+test("a message a pooled stage's root drain hands over after startup keeps its delivery mode and live framing", async () => {
+	const runId = "39580000-0000-4000-8000-000000000004";
+	const group = `workflow:${runId}`;
+	vi.spyOn(IntercomClient.prototype, "connect").mockResolvedValue();
+	vi.spyOn(IntercomClient.prototype, "isConnected").mockReturnValue(true);
+	vi.spyOn(IntercomClient.prototype, "registerLiveWorkflowStageRoute").mockResolvedValue();
+	vi.spyOn(IntercomClient.prototype, "disconnect").mockResolvedValue();
+	const sender = { id: "planner", name: "planner", cwd: "", model: "", pid: 0, startedAt: 0, lastActivity: 0 };
+	// The root is busy: its drains answer only when the test hands their messages over.
+	const rootDrains: Parameters<PooledStageDeliveryOptions["forward"]>[1][] = [];
+	const delivery = createPooledStageDelivery({
+		routeCapability: "capability",
+		queued: async () => [
+			{
+				id: "before-start",
+				runId,
+				stageKey: "review",
+				from: sender,
+				message: { id: "before-start", timestamp: 1, content: { text: "before-start" } },
+				queuedAt: new Date(1).toISOString(),
+				admissionOrder: 1,
+				status: "queued",
+			},
+		],
+		forward: async (_recipient, deliver) => {
+			rootDrains.push(deliver);
+		},
+		fail: () => {},
+	});
+	const handlers = new Map<string, Array<(event: never, ctx: ExtensionContext) => void | Promise<void>>>();
+	const sent: { content: string; id: string; options: { triggerTurn?: boolean; deliverAs?: string } }[] = [];
+	const branch: Array<{ type: "custom_message"; customType: string; details: { message: { id: string } } }> = [];
+	intercomHeavy({
+		on(name: string, handler: (event: never, ctx: ExtensionContext) => void | Promise<void>) {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+		},
+		registerTool() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		appendEntry() {},
+		getSessionName: () => undefined,
+		events: createEventBus(),
+		sendMessage(
+			message: { content: string; customType: string; details: { message: { id: string } } },
+			options: { triggerTurn?: boolean; deliverAs?: string },
+		) {
+			sent.push({ content: message.content, id: message.details.message.id, options });
+			branch.push({ type: "custom_message", ...message });
+		},
+	} as never);
+	const ctx = {
+		hasUI: false,
+		cwd: process.cwd(),
+		isIdle: () => true,
+		ui: { notify() {} },
+		sessionManager: { getSessionId: () => "stage-session", getBranch: () => branch },
+		orchestrationContext: {
+			kind: "workflow-stage",
+			workflowRunId: runId,
+			workflowStageId: "review",
+			workflowStageName: "review",
+			intercomGroup: group,
+			pendingStageDelivery: delivery,
+		},
+	};
+	const fire = async (name: string) => {
+		for (const handler of handlers.get(name) ?? []) await handler({} as never, ctx as never);
+	};
+	try {
+		await fire("session_start");
+		assert.deepEqual(
+			sent.map(({ id }) => id),
+			["before-start"],
+		);
+		assert.match(sent[0]!.content, /Messages received before you started/);
+		// The stage has started. The root catches up and hands over a follow-up queued after the worker read the journal.
+		assert.ok(rootDrains.length > 0);
+		await rootDrains.at(-1)!(sender, {
+			id: "late",
+			timestamp: 2,
+			content: { text: "late follow-up" },
+			delivery: "followUp",
+		} as Parameters<(typeof rootDrains)[number]>[1]);
+		const late = sent.find(({ id }) => id === "late");
+		assert.ok(late, "the late message reached the session");
+		assert.doesNotMatch(late.content, /Messages received before you started/);
+		assert.equal(late.options.deliverAs, "followUp");
+		assert.equal(late.options.triggerTurn, true);
+	} finally {
 		await fire("session_shutdown");
 	}
 });

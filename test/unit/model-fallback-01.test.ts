@@ -401,22 +401,26 @@ describe("model fallback helpers", () => {
 		}
 	});
 
-	test("retry classifier refuses provider content filters and refusal signals", () => {
+	test("content-filter refusals spend a fallback candidate unless fallbackOnContentFilter is off; tool refusals do not", () => {
 		const refusalCases: ReadonlyArray<{
 			label: string;
 			failure: unknown;
+			expectedKind: "content_filter" | "task_failure";
 			expectedSource?: "diagnostic";
 		}> = [
 			{
 				label: "assistant content_filter message",
+				expectedKind: "content_filter",
 				failure: { role: "assistant", stopReason: "error", errorMessage: "content_filter" },
 			},
 			{
 				label: "assistant finish_reason content_filter field",
+				expectedKind: "content_filter",
 				failure: { role: "assistant", stopReason: "error", finish_reason: "content_filter" },
 			},
 			{
 				label: "diagnostic content_filter code",
+				expectedKind: "content_filter",
 				failure: {
 					role: "assistant",
 					stopReason: "error",
@@ -427,23 +431,27 @@ describe("model fallback helpers", () => {
 			},
 			{
 				label: "safety policy refusal",
+				expectedKind: "content_filter",
 				failure: { role: "assistant", stopReason: "error", errorMessage: "request blocked by safety policy" },
 			},
 			{
 				label: "tool refusal",
+				expectedKind: "task_failure",
 				failure: { role: "assistant", stopReason: "error", errorMessage: "tool call refused by provider" },
 			},
 			{
 				label: "provider refusal",
+				expectedKind: "content_filter",
 				failure: { role: "assistant", stopReason: "error", errorMessage: "provider refused this request" },
 			},
 		];
 
-		for (const { label, failure, expectedSource } of refusalCases) {
+		for (const { label, failure, expectedKind, expectedSource } of refusalCases) {
 			const signal = normalizeModelFailureSignal(failure);
-			assert.equal(signal.kind, "task_failure", label);
+			assert.equal(signal.kind, expectedKind, label);
 			if (expectedSource !== undefined) assert.equal(signal.source, expectedSource, label);
-			assert.equal(isRetryableModelFailure(failure), false, label);
+			assert.equal(isRetryableModelFailure(failure), expectedKind === "content_filter", label);
+			assert.equal(isRetryableModelFailure(failure, { fallbackOnContentFilter: false }), false, label);
 		}
 	});
 

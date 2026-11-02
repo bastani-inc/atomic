@@ -548,6 +548,7 @@ describe("settings.json schema", () => {
 			baseDelayMs: defaults.retry.baseDelayMs,
 			maxAgentDelayMs: defaults.retry.maxAgentDelayMs,
 			maxRetryDelayMs: defaults.retry.provider.maxRetryDelayMs,
+			fallbackOnContentFilter: defaults.retry.fallbackOnContentFilter,
 		});
 		assert.equal(settings.getProviderRetrySettings().maxRetryDelayMs, defaults.retry.provider.maxRetryDelayMs);
 		assert.equal(settings.getHideThinkingBlock(), defaults.hideThinkingBlock);
