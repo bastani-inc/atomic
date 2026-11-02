@@ -6,7 +6,7 @@ import {
 	JournalDurableBackend,
 } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import type { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { JournalEntry, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
@@ -94,17 +94,25 @@ const harnesses: Record<string, () => Promise<Harness>> = {
 		const path = join(directory, "journal.sqlite");
 		const writer = await JournalDurableBackend.open(await openSqlRunJournal(path));
 		const opened: JournalDurableBackend[] = [];
+		const closers: (() => Promise<void>)[] = [];
 		return {
 			writer,
 			async open() {
 				const journal: SqlRunJournal = await openSqlRunJournal(path);
 				const reads = countReads(journal);
-				const backend = await JournalDurableBackend.open(journal, { runs: [] });
+				// The journal with its key index, as a local worker's read-only view of a SQL journal provides it.
+				const indexed = Object.assign(Object.create(journal) as SqlRunJournal, {
+					readKeyRange: (runId: string, fromKey: string, toKey: string) =>
+						SqlRunJournal.readKeyRange(journal, runId, fromKey, toKey),
+				});
+				const backend = await JournalDurableBackend.open(indexed, { runs: [], ownsJournal: false });
 				opened.push(backend);
+				closers.push(() => journal.close());
 				return { backend, reads };
 			},
 			async close() {
 				for (const backend of opened) await backend.close();
+				for (const close of closers) await close();
 				await writer.close();
 				removeTempDirectory(directory);
 			},

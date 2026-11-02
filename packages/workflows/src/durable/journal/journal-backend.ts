@@ -37,7 +37,6 @@ import {
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { MemoryRunJournal } from "./memory-run-journal.js";
-import { SqlRunJournal } from "./sql-run-journal.js";
 import {
 	RUN_EVENT_TYPES as E,
 	JournalCasConflictError,
@@ -327,8 +326,9 @@ export interface CheckpointSelection {
 }
 
 /**
- * A journal that reads a run's events by a range of keys, through the index the keys already have. A wrapper of a
- * journal, such as a local worker's read-only view, provides it as its own `readKeyRange`.
+ * A journal that reads a run's events by a range of keys, through the index the keys already have. It is not part of a
+ * journal's public shape: a wrapper provides it as its own `readKeyRange`, as a local worker's read-only view of a SQL
+ * journal does (`SqlRunJournal.readKeyRange`).
  */
 export interface KeyRangeJournal {
 	readKeyRange(runId: string, fromKey: string, toKey: string): AsyncIterable<JournalEntry>;
@@ -364,10 +364,8 @@ function checkpointKeyRanges(selection: CheckpointSelection): (readonly [string,
 }
 
 function keyRangeJournal(journal: RunJournal): KeyRangeJournal | undefined {
-	if (typeof (journal as Partial<KeyRangeJournal>).readKeyRange === "function")
-		return journal as unknown as KeyRangeJournal;
-	return journal instanceof SqlRunJournal
-		? { readKeyRange: (runId, fromKey, toKey) => SqlRunJournal.readKeyRange(journal, runId, fromKey, toKey) }
+	return typeof (journal as Partial<KeyRangeJournal>).readKeyRange === "function"
+		? (journal as unknown as KeyRangeJournal)
 		: undefined;
 }
 

@@ -13,7 +13,7 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -45,8 +45,13 @@ interface PooledRun {
 	readonly error?: unknown;
 	readonly starts: readonly ChildStart[];
 	readonly health: readonly string[];
-	/** Whether the root's worker log directory is left once the pool closed. */
-	readonly logsLeft: boolean;
+	/** The worker logs left once the pool closed, with their sizes and contents. */
+	readonly logsLeft: readonly { readonly name: string; readonly text: string }[];
+}
+
+function workerLogs(logDirectory: string): PooledRun["logsLeft"] {
+	if (!existsSync(logDirectory)) return [];
+	return readdirSync(logDirectory).map((name) => ({ name, text: readTextSync(join(logDirectory, name), "utf8") }));
 }
 
 /**
@@ -114,7 +119,7 @@ async function runChildren(
 			error: result.error,
 			starts,
 			health: workers.health,
-			logsLeft: existsSync(join(directory, "worker-logs", encodeURIComponent(root))),
+			logsLeft: workerLogs(join(directory, "worker-logs", encodeURIComponent(root))),
 		};
 	} finally {
 		await workers.close().catch(() => {});
@@ -178,7 +183,7 @@ test.skipIf(process.platform === "win32")(
 		);
 		assert.equal(new Set(starts.map((start) => start.pid)).size, 4, "each child ran on a fresh worker");
 		assert.deepEqual(health, [], "a worker replaced for its memory is no health event");
-		assert.equal(logsLeft, false, "the logs of workers replaced for their memory went with them");
+		assert.deepEqual(logsLeft, [], "the logs of workers replaced for their memory went with them");
 	},
 	BUDGET.timeoutMs,
 );
