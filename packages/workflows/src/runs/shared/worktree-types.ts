@@ -83,13 +83,13 @@ export interface GitWorktreeSetupOptions {
 }
 
 export interface GitWorktreeSetupResult {
-	/** Root checkout path that was requested/created/reused. */
+	/** Root of the checkout in use: the requested path, or the checkout allocated beneath a non-empty requested directory. */
 	worktreeRoot: string;
-	/** Effective workflow cwd, preserving the caller's repo-relative subdirectory inside the worktree. */
+	/** Effective workflow cwd: the caller's repo-relative subdirectory inside the worktree when the caller is in the same repository, otherwise the worktree root. */
 	cwd: string;
-	/** Invoking checkout root reported by Git. */
+	/** Invoking checkout root reported by Git when the worktree belongs to the invoking repository; otherwise the worktree root itself. */
 	repositoryRoot: string;
-	/** Whether this call created a new linked worktree. Existing roots are reused as-is. */
+	/** Whether this call created a new linked worktree. Existing worktrees are reused as-is. */
 	created: boolean;
 }
 

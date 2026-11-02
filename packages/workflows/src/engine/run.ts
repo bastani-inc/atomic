@@ -394,7 +394,7 @@ async function executeRun(
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
 	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs),
-		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache);
+		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();
 	let workflowCwd: string | undefined;

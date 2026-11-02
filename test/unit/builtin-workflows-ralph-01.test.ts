@@ -127,10 +127,11 @@ describe("ralph", () => {
 		assert.equal(fieldDefault(mod.default.inputs.create_pr), false);
 		assert.equal(fieldRequired(mod.default.inputs.create_pr), false);
 		const description = fieldDescription(mod.default.inputs.git_worktree_dir);
-		assert.match(description, /inside a Git repo/);
-		assert.match(description, /absolute paths are used as-is/);
-		assert.match(description, /relative paths resolve from the repo root/);
-		assert.match(description, /existing Git worktrees from the invoking repository are reused\/shared as-is/);
+		assert.match(description, /Absolute paths are used as-is/);
+		assert.match(description, /relative paths resolve from the invoking repo root/);
+		assert.match(description, /existing Git worktree root of any repository is reused as-is/);
+		assert.match(description, /Creating a worktree requires starting inside the source Git repo/);
+		assert.match(description, /non-empty non-Git directory is treated as a worktree root/);
 		const createPrDescription = fieldDescription(mod.default.inputs.create_pr);
 		assert.match(createPrDescription, /pull-request creation stage/);
 		assert.match(createPrDescription, /Defaults to false/);
