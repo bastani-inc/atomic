@@ -20,6 +20,7 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { inspectInProcessChildStatus } from "../../packages/subagents/src/runs/inprocess/control-status.js";
+import { createForkContextResolver } from "../../packages/subagents/src/shared/fork-context.js";
 import type { ModelConstraints } from "../../packages/subagents/src/shared/model-constraints.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 
@@ -59,6 +60,8 @@ function usage(): AssistantMessage["usage"] {
 	};
 }
 
+/** The parent's own request, which a forked child inherits as reference-only history. */
+const PARENT_TASK = "PARENT TASK: coordinate every child and resume the other tasks.";
 /** The child's own role prompt, which every model it runs on must get. */
 const CHILD_ROLE =
 	"ROLE: you are the isolated fallback-fixture child. Work only on your own task; never act as the parent.";
@@ -90,6 +93,8 @@ interface FixtureOptions {
 	readonly agentFallbackModels?: string[];
 	/** The launch's `modelConstraints`. */
 	readonly modelConstraints?: ModelConstraints;
+	/** Launch with `context: "fork"` from a parent that already ran a turn of its own. */
+	readonly forkFromParent?: boolean;
 }
 
 /** A provider the registry knows but has no auth for, so a launch on it starts on its first fallback. */
@@ -98,6 +103,8 @@ interface ProviderRequest {
 	readonly model: string;
 	readonly systemPrompt: string;
 	readonly tools: readonly string[];
+	/** Whether the request's history holds the parent's own request, as a forked child's does. */
+	readonly inheritsParentHistory: boolean;
 }
 
 async function fixture(options: FixtureOptions) {
@@ -141,6 +148,9 @@ async function fixture(options: FixtureOptions) {
 						.flatMap((message) => (message.role === "system" ? [getSystemMessageText(message)] : []))
 						.join("\n"),
 					tools: getCurrentTools(context.messages).map((tool) => tool.name),
+					inheritsParentHistory: context.messages.some(
+						(message) => message.role === "user" && JSON.stringify(message.content).includes(PARENT_TASK),
+					),
 				});
 				const stream = createAssistantMessageEventStream();
 				const failure =
@@ -179,6 +189,7 @@ async function fixture(options: FixtureOptions) {
 	}
 	const find = (fullId: string) => catalog.find((entry) => `${entry.provider}/${entry.id}` === fullId)!;
 	const parentModel = find(options.parentModel ?? OTHER_FAMILY);
+	const parentSessions = await SessionManager.create(cwd, join(cwd, "parent-sessions"));
 	const { session: parent } = await createAgentSession({
 		cwd,
 		agentDir: join(cwd, "agent"),
@@ -191,7 +202,7 @@ async function fixture(options: FixtureOptions) {
 			defaultThinkingLevel: "medium",
 			fallbackModels: [OTHER_FAMILY],
 		}),
-		sessionManager: await SessionManager.create(cwd, join(cwd, "parent-sessions")),
+		sessionManager: parentSessions,
 		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
 		tools: ["read"],
 	});
@@ -199,6 +210,12 @@ async function fixture(options: FixtureOptions) {
 		parent.dispose();
 		clearSubagentControls();
 	});
+	let forked: SessionManager | undefined;
+	if (options.forkFromParent) {
+		await parent.prompt(PARENT_TASK);
+		requests.length = 0;
+		forked = await createForkContextResolver(parentSessions, "fork").sessionManagerForIndex(0);
+	}
 	const resolve = createCandidateModelResolver({
 		getAvailable: () => catalog,
 		find: (provider, id) => catalog.find((entry) => entry.provider === provider && entry.id === id),
@@ -211,6 +228,7 @@ async function fixture(options: FixtureOptions) {
 			index: 0,
 			sessionDir: join(cwd, "children"),
 			testSession: false,
+			...(forked ? { sessionManager: forked } : {}),
 			...(options.launchModel === null ? {} : { modelOverride: options.launchModel ?? `${REQUESTED}:high` }),
 			...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
 			knownModelProviders: [ACCOUNT_A, ACCOUNT_B, LOCKED_ACCOUNT],
@@ -371,36 +389,42 @@ test(
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );
 
-test(
-	"a child that falls back partway through its task to an allowed model keeps its own prompt, role and tools, with the new model's name",
-	async () => {
-		const { launch, requests } = await fixture({
-			trigger: "mid-session-error",
-			agentFallbackModels: [ALLOWED_OTHER],
-			modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
-		});
-		const result = await launch("mid-session-allowed-fallback");
+for (const forkFromParent of [false, true]) {
+	test(
+		`a ${forkFromParent ? "forked" : "fresh"} child that falls back partway through its task to an allowed model keeps its own prompt, role and tools, with the new model's name`,
+		async () => {
+			const { launch, requests } = await fixture({
+				trigger: "mid-session-error",
+				agentFallbackModels: [ALLOWED_OTHER],
+				modelConstraints: { allowedModels: [REQUESTED, ALLOWED_OTHER] },
+				forkFromParent,
+			});
+			const result = await launch(`mid-session-allowed-fallback-${forkFromParent ? "fork" : "fresh"}`);
 
-		assert.equal(result.status, "ok", JSON.stringify(result));
-		assert.deepEqual(
-			requests.map((request) => request.model),
-			[REQUESTED, REQUESTED, ALLOWED_OTHER],
-			"a tool turn on the requested model, its failure, then the allowed fallback",
-		);
-		const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
-		assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
-		assert.equal(
-			after.systemPrompt,
-			before.systemPrompt.replace(
-				"Model name (used for commit attribution): Argon 4",
-				"Model name (used for commit attribution): Sol 6",
-			),
-			"the same child prompt, with only the model it runs on changed",
-		);
-		assert.deepEqual(after.tools, before.tools, "the same tools");
-		assert.deepEqual(before.tools, ["read"]);
-		assert.equal(result.model, ALLOWED_OTHER);
-		assert.equal(result.requestedModel, `${REQUESTED}:high`);
-	},
-	REAL_CHILD_SESSION_TIMEOUT_MS,
-);
+			assert.equal(result.status, "ok", JSON.stringify(result));
+			assert.deepEqual(
+				requests.map((request) => request.model),
+				[REQUESTED, REQUESTED, ALLOWED_OTHER],
+				"a tool turn on the requested model, its failure, then the allowed fallback",
+			);
+			const [before, , after] = requests as [ProviderRequest, ProviderRequest, ProviderRequest];
+			assert.ok(before.systemPrompt.includes(CHILD_ROLE), before.systemPrompt);
+			assert.equal(
+				after.systemPrompt,
+				before.systemPrompt.replace(
+					"Model name (used for commit attribution): Argon 4",
+					"Model name (used for commit attribution): Sol 6",
+				),
+				"the same child prompt, with only the model it runs on changed",
+			);
+			assert.deepEqual(after.tools, before.tools, "the same tools");
+			assert.deepEqual(before.tools, ["read"]);
+			assert.doesNotMatch(after.systemPrompt, /PARENT TASK/);
+			assert.equal(before.inheritsParentHistory, forkFromParent);
+			assert.equal(after.inheritsParentHistory, forkFromParent);
+			assert.equal(result.model, ALLOWED_OTHER);
+			assert.equal(result.requestedModel, `${REQUESTED}:high`);
+		},
+		REAL_CHILD_SESSION_TIMEOUT_MS,
+	);
+}
