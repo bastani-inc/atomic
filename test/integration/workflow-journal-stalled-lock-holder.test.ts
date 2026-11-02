@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -112,7 +113,7 @@ for (const stall of ["stopped", "event loop blocked"] as const)
 
 				holder = await stallingHolder(path, stall);
 				const stopWatching = watchEventLoop();
-				const started = performance.now();
+				let settledDuringStall = 0;
 				const writes = [
 					journal.createRun({ runId: "child", name: "child", cwd: "", createdAt: 0, status: "running" }),
 					journal.append(lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "running" } } as never),
@@ -120,15 +121,22 @@ for (const stall of ["stopped", "event loop blocked"] as const)
 					pool.claim(lease, "worker", [{ definition: work.definition, digest: work.digest }], 600_000),
 				];
 				const settled = Promise.allSettled(writes);
+				for (const write of writes)
+					void write.then(
+						() => settledDuringStall++,
+						() => settledDuringStall++,
+					);
 				await sleep(STALL_MS);
 				const maxGapMs = stopWatching();
+				// A stopped holder still holds the lock: nothing can have committed, or failed, yet.
+				if (stall === "stopped")
+					assert.equal(settledDuringStall, 0, "a write settled while the holder was stopped");
 				await holder.release();
 				const outcomes = await settled;
 				assert.deepEqual(
 					outcomes.map((outcome) => (outcome.status === "rejected" ? String(outcome.reason) : "fulfilled")),
 					["fulfilled", "fulfilled", "fulfilled", "fulfilled"],
 				);
-				assert.ok(performance.now() - started >= STALL_MS, "the writes waited for the holder");
 				if (stall === "stopped")
 					assert.ok(
 						maxGapMs < 1_000,
@@ -295,3 +303,25 @@ test.skipIf(process.platform === "win32")(
 	},
 	TEST_TIMEOUT_MS,
 );
+
+test("a connection's write-lock record goes away when it closes, and records of exited processes are removed", async () => {
+	const directory = makeTempDirectory("journal-holder-records-");
+	const path = join(directory, "journal.sqlite");
+	const holders = `${path}-holders`;
+	// A process that was killed while it held the lock left its record behind; pids this large are never live.
+	mkdirSync(holders, { recursive: true });
+	writeFileSync(join(holders, "999999999-1"), `held ${String(Date.now()).padStart(15, "0")}\n`);
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		await database.transaction((tx) => tx.exec("CREATE TABLE probe(x)"));
+		assert.deepEqual(
+			readdirSync(holders).map((name) => name.split("-")[0]),
+			[String(process.pid)],
+		);
+		await database.close();
+		assert.deepEqual(readdirSync(holders), []);
+	} finally {
+		await database.close();
+		removeTempDirectory(directory);
+	}
+});

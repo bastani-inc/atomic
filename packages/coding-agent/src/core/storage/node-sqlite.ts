@@ -154,7 +154,8 @@ function processAlive(pid: number): boolean {
  * Which process holds the write lock, for the error of a writer that gives up waiting for it. Each connection that
  * takes the lock records when it took it in a file of its own next to the database, named by its process, and marks
  * the record free once it lets go; only the holder writes its record, so records never race. Nothing reads them
- * until a writer gives up: the live record taken most recently names the holder. Recording is a diagnostic: a
+ * until a writer gives up: the live record taken most recently names the holder. A connection removes the records
+ * of exited processes when it creates its own, so the killed ones do not pile up. Recording is a diagnostic: a
  * record that cannot be written is dropped, never a failed transaction.
  */
 class SqliteHolderRecord {
@@ -194,6 +195,7 @@ class SqliteHolderRecord {
 		try {
 			if (this.descriptor === undefined) {
 				mkdirSync(this.directory, { recursive: true });
+				liveHolderRecords(this.directory);
 				this.descriptor = openSync(this.path, "w");
 			}
 			writeSync(this.descriptor, record, 0);
@@ -208,24 +210,23 @@ function holderDirectory(databasePath: string): string {
 	return `${databasePath}-holders`;
 }
 
-/** The live process whose record says it took the write lock most recently, and for how long it has held it. */
-function writeLockHolder(databasePath: string): { readonly pid: number; readonly heldMs: number } | undefined {
-	const directory = holderDirectory(databasePath);
+/** The records of live processes, as pid and the time each took the lock (undefined when free); others are removed. */
+function liveHolderRecords(directory: string): { readonly pid: number; readonly since?: number }[] {
 	let names: string[];
 	try {
 		names = readdirSync(directory);
 	} catch {
-		return undefined;
+		return [];
 	}
-	let holder: { pid: number; since: number } | undefined;
+	const live: { pid: number; since?: number }[] = [];
 	for (const name of names) {
-		const pid = Number(name.slice(0, name.indexOf("-")));
+		const pid = Number(/^(\d+)-/.exec(name)?.[1] ?? Number.NaN);
 		if (!Number.isSafeInteger(pid) || pid <= 0) continue;
 		if (!processAlive(pid)) {
 			try {
 				unlinkSync(join(directory, name));
 			} catch {
-				// Another reader removed it first.
+				// Another connection removed it first.
 			}
 			continue;
 		}
@@ -235,9 +236,17 @@ function writeLockHolder(databasePath: string): { readonly pid: number; readonly
 		} catch {
 			continue;
 		}
-		const since = Number(HOLDER_RECORD.exec(record)?.[1] ?? Number.NaN);
-		if (Number.isFinite(since) && (holder === undefined || since > holder.since)) holder = { pid, since };
+		const since = HOLDER_RECORD.exec(record)?.[1];
+		live.push({ pid, ...(since === undefined ? {} : { since: Number(since) }) });
 	}
+	return live;
+}
+
+/** The live process whose record says it took the write lock most recently, and for how long it has held it. */
+function writeLockHolder(databasePath: string): { readonly pid: number; readonly heldMs: number } | undefined {
+	let holder: { pid: number; since: number } | undefined;
+	for (const { pid, since } of liveHolderRecords(holderDirectory(databasePath)))
+		if (since !== undefined && (holder === undefined || since > holder.since)) holder = { pid, since };
 	return holder === undefined ? undefined : { pid: holder.pid, heldMs: Math.max(0, Date.now() - holder.since) };
 }
 
