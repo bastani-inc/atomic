@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.62] - 2026-11-02
+
+Pooled roots that keep dispatching under load, children that survive a stalled worker, and Intercom sends that no longer report a delivered message as failed.
+
+- **Pooled roots no longer stall while children start:** checkpoints queued back to back share one journal transaction, so a loop that launches dozens of children keeps to its timers; with 300 busy workers, all children ran in 13 s instead of up to 100 s ([#4181](https://github.com/bastani-inc/atomic/pull/4181))
+- **A stalled worker's waiting admissions survive:** a waiting stage, subagent or process admission fenced while its process stalled rejoins the queue instead of failing its child with `Resource admission holder was stopped`, and an admission released for good is a retryable pool fault ([#4180](https://github.com/bastani-inc/atomic/pull/4180))
+- **Unanswered sends are an unknown outcome:** an Intercom send the broker never answered is reported as possibly delivered, not as `Failed to send`, so it is not resent as a duplicate ([#4178](https://github.com/bastani-inc/atomic/pull/4178))
+
+### Fixed
+
+- A workflow that launches many child workflows onto local workers (`workflows.localWorkers`) no longer stalls its own next steps while the children start. Every child launch and every `ctx.tool` step wrote its checkpoint in a journal transaction of its own, one after another. So a loop that launched a few dozen children and then saved its state waited for each launch's write in turn, and on a journal busy with hundreds of workers that took minutes: the loop missed its timers and launches crawled. Checkpoints queued back to back now share one transaction. With 300 busy workers, the step after a 48-child burst finished in 78 ms at the 90th percentile (253 ms at most) instead of 3.4 to 9.4 s (14 s at most), and all 300 children were running in 13 s instead of 40 to 100 s. A workflow started from the SDK also no longer pauses its host for seconds at a time when the process holds thousands of finished runs. ([#4174](https://github.com/bastani-inc/atomic/issues/4174))
+- Children on a local worker pool no longer fail with `Resource admission holder was stopped` under heavy load. A waiting resource admission (a stage session, subagent or process start) whose owner lease lapsed while its process stalled was fenced by another worker's cleanup, and the next pass of its wait failed the child. A waiter holds no capacity, so a live one now rejoins the queue. History pruning keeps a fenced waiter's permit for 10 minutes after its owner's lease lapsed, so it can still be taken back. An admission the pool released for good, for example after its worker exited, or whose permit is gone, is now a retryable `stale_work_lease` fault, replayed within the child's attempt limit, rather than a failure of the child's own work; stopping a worker also keeps its just-fenced waiters stopped. ([#4179](https://github.com/bastani-inc/atomic/issues/4179))
+- An Intercom `send` whose broker response timed out, while the broker still answered its health check, is now reported as an unknown outcome instead of `Failed to send: Send timeout`. The broker can still queue or deliver such a message, so the tool now says to check with the recipient before sending again, and marks the result `outcome: "unknown"`. Under heavy load the old wording led to resends that delivered the message twice. ([#4177](https://github.com/bastani-inc/atomic/issues/4177))
+
+## [0.9.62-alpha.1] - 2026-11-02
+
+Pooled roots that keep dispatching under load, children that survive a stalled worker, and Intercom sends that no longer report a delivered message as failed.
+
+- **Pooled roots no longer stall while children start:** checkpoints queued back to back share one journal transaction, so a loop that launches dozens of children keeps to its timers; with 300 busy workers, all children ran in 13 s instead of up to 100 s ([#4181](https://github.com/bastani-inc/atomic/pull/4181))
+- **A stalled worker's waiting admissions survive:** a waiting stage, subagent or process admission fenced while its process stalled rejoins the queue instead of failing its child with `Resource admission holder was stopped`, and an admission released for good is a retryable pool fault ([#4180](https://github.com/bastani-inc/atomic/pull/4180))
+- **Unanswered sends are an unknown outcome:** an Intercom send the broker never answered is reported as possibly delivered, not as `Failed to send`, so it is not resent as a duplicate ([#4178](https://github.com/bastani-inc/atomic/pull/4178))
+
 ### Fixed
 
 - A workflow that launches many child workflows onto local workers (`workflows.localWorkers`) no longer stalls its own next steps while the children start. Every child launch and every `ctx.tool` step wrote its checkpoint in a journal transaction of its own, one after another. So a loop that launched a few dozen children and then saved its state waited for each launch's write in turn, and on a journal busy with hundreds of workers that took minutes: the loop missed its timers and launches crawled. Checkpoints queued back to back now share one transaction. With 300 busy workers, the step after a 48-child burst finished in 78 ms at the 90th percentile (253 ms at most) instead of 3.4 to 9.4 s (14 s at most), and all 300 children were running in 13 s instead of 40 to 100 s. A workflow started from the SDK also no longer pauses its host for seconds at a time when the process holds thousands of finished runs. ([#4174](https://github.com/bastani-inc/atomic/issues/4174))
