@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import chalk from "chalk";
 import { ENV_STDIN_TIMEOUT_MS, getEnvValue } from "./config.js";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
@@ -6,13 +8,22 @@ import type { SettingsManager } from "./core/settings-manager.ts";
 /** How long a run waits for the first piped byte, or the end of stdin, by default. */
 export const DEFAULT_STDIN_TIMEOUT_MS = 2_000;
 
-/** `ATOMIC_STDIN_TIMEOUT_MS`: a whole number of milliseconds; `0` waits for the end of piped input. */
+/** The longest delay a timer holds: a longer one fires after 1 ms instead. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * `ATOMIC_STDIN_TIMEOUT_MS`: a whole number of milliseconds, at most `MAX_TIMER_DELAY_MS` (about 24.8 days); `0` waits
+ * for the end of piped input.
+ */
 function stdinTimeoutMs(): number {
 	const raw = getEnvValue(ENV_STDIN_TIMEOUT_MS)?.trim();
 	if (!raw) return DEFAULT_STDIN_TIMEOUT_MS;
 	const value = Number(raw);
-	return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_STDIN_TIMEOUT_MS;
+	return Number.isSafeInteger(value) && value >= 0 ? Math.min(value, MAX_TIMER_DELAY_MS) : DEFAULT_STDIN_TIMEOUT_MS;
 }
+
+/** What `readPipedStdin` needs of stdin. */
+export type PipedInput = Readable & { readonly isTTY?: boolean; unref?(): void };
 
 function warn(message: string): void {
 	console.error(chalk.yellow(`Warning: ${message}`));
@@ -27,8 +38,12 @@ function warn(message: string): void {
  * later instead of dropping it silently. Input that has started arriving is read to its end, however slow. A run with
  * no prompt argument has nothing else to run, so it keeps waiting, and says on stderr that it is waiting.
  */
-export async function readPipedStdin(options: { readonly hasPrompt: boolean }): Promise<string | undefined> {
-	const stdin = process.stdin;
+export async function readPipedStdin(options: {
+	readonly hasPrompt: boolean;
+	/** The stream to read; `process.stdin` unless given. */
+	readonly stdin?: PipedInput;
+}): Promise<string | undefined> {
+	const stdin = options.stdin ?? process.stdin;
 	if (stdin.isTTY) {
 		return undefined;
 	}
@@ -39,11 +54,14 @@ export async function readPipedStdin(options: { readonly hasPrompt: boolean }): 
 		let received = false;
 		let settled = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const onData = (chunk: string) => {
+		// Decoded here rather than with `setEncoding`, which holds back a partial character: a first byte that arrived
+		// before the deadline, as part of a character whose rest came later, would not count as input arriving.
+		const decoder = new StringDecoder("utf8");
+		const onData = (chunk: Buffer | string) => {
 			received = true;
-			data += chunk;
+			data += typeof chunk === "string" ? chunk : decoder.write(chunk);
 		};
-		const onEnd = () => settle(data.trim() || undefined);
+		const onEnd = () => settle((data + decoder.end()).trim() || undefined);
 		const settle = (value: string | undefined) => {
 			if (settled) return;
 			settled = true;
@@ -52,7 +70,6 @@ export async function readPipedStdin(options: { readonly hasPrompt: boolean }): 
 			stdin.off("end", onEnd);
 			resolve(value);
 		};
-		stdin.setEncoding("utf8");
 		stdin.on("data", onData);
 		stdin.on("end", onEnd);
 		if (timeoutMs > 0) {

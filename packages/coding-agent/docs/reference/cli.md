@@ -291,7 +291,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
-| `ATOMIC_STDIN_TIMEOUT_MS` | How long a print-mode run waits, in milliseconds, for anything on a piped stdin before a run with a prompt argument starts without it; default `2000`, `0` waits for the end of piped input (`PI_STDIN_TIMEOUT_MS` is a legacy alias) |
+| `ATOMIC_STDIN_TIMEOUT_MS` | How long a print-mode run waits, in milliseconds, for anything on a piped stdin before a run with a prompt argument starts without it; default `2000`, at most `2147483647`, `0` waits for the end of piped input (`PI_STDIN_TIMEOUT_MS` is a legacy alias) |
 | `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks (`PI_TELEMETRY` is a legacy alias) |
 | `NODE_COMPILE_CACHE` | Override the directory for Node's persistent compile cache, which Atomic enables automatically on Node >= 22.8 to speed up startup (most noticeable on Windows). Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
 | `PI_CACHE_RETENTION` | Prompt-cache retention: `long` (default), `short`, or `none`, subject to provider/model support |
