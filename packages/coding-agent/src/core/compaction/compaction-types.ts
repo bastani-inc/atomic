@@ -136,6 +136,8 @@ export interface VerbatimCompactionDetails {
 	tokensBefore?: number;
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
+	/** Present only on a fresh rung reached after planning failed, e.g. `Compaction planning timed out after 300000 ms`. */
+	freshReason?: string;
 	backupPath?: string;
 }
 
@@ -163,6 +165,8 @@ export interface VerbatimCompactionResult {
 	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	/** Present only when a borrowed fallback model ranked the lines. */
 	plannerModel?: CompactionPlannerModel;
+	/** Present only on a fresh rung reached after planning failed: why no planner could rank the lines. */
+	freshReason?: string;
 	/** Aggregate usage across every planner request and retry in this compaction. */
 	usage?: Usage;
 	backupPath?: string;

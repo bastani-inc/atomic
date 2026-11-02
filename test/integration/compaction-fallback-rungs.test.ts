@@ -6,9 +6,38 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { VerbatimCompactionDetails } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import type { CompactionEntry } from "../../packages/coding-agent/src/core/session-manager.js";
-import { createRungSession, plannerScript } from "./compaction-rung-session.js";
+import { createRungSession, neverFinishingPlanner, plannerScript } from "./compaction-rung-session.js";
 
 const THROTTLED = { errorMessage: "429 Too Many Requests" };
+/** Planning time limit for the never-finishing planner tests; the setting's default is minutes. */
+const PLANNING_TIME_LIMIT_MS = 100;
+/** Generous bound on a run that, without a planning time limit, never settles. */
+const RUN_SETTLE_BOUND_MS = 10_000;
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<"settled" | "pending"> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			promise.then(
+				() => "settled" as const,
+				() => "settled" as const,
+			),
+			new Promise<"pending">((resolve) => {
+				timer = setTimeout(() => resolve("pending"), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
+function autoCompaction(built: { session: unknown }) {
+	return (
+		built.session as {
+			_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+		}
+	)._runAutoCompaction.bind(built.session);
+}
 
 function boundary(manager: {
 	getBranch(): Array<{ type: string }>;
@@ -300,6 +329,46 @@ test("post-tool preflight is load-bearing: it completes without scheduling a con
 		assert.equal(ends[0].midTurn, true);
 		assert.equal(ends[0].errorMessage, undefined);
 		assert.equal(ends[0].result?.rung, "fresh");
+	} finally {
+		built.dispose();
+	}
+});
+
+test("threshold auto-compaction gives up on a planner that never finishes and leaves the context unchanged (#4198)", async () => {
+	const planner = neverFinishingPlanner();
+	const built = await createRungSession({ streamFn: planner.streamFn, planningTimeoutMs: PLANNING_TIME_LIMIT_MS });
+	try {
+		const run = autoCompaction(built)("threshold", false);
+		assert.equal(await settleWithin(run, RUN_SETTLE_BOUND_MS), "settled");
+
+		assert.equal(boundary(built.manager), undefined);
+		assert.equal(planner.aborted(), planner.requests(), "the in-flight planner request is aborted");
+		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{
+			aborted?: boolean;
+			errorMessage?: string;
+		}>;
+		assert.equal(ends.length, 1);
+		assert.equal(ends[0].aborted, false);
+		assert.match(ends[0].errorMessage ?? "", /Compaction planning timed out after 100 ms/);
+	} finally {
+		built.dispose();
+	}
+});
+
+test("cancelling an automatic compaction still cancels it while planning has a time limit (#4198)", async () => {
+	const planner = neverFinishingPlanner();
+	const built = await createRungSession({ streamFn: planner.streamFn, planningTimeoutMs: 60_000 });
+	try {
+		const run = autoCompaction(built)("overflow", false);
+		while (planner.requests() === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+		built.session.abortCompaction();
+		assert.equal(await settleWithin(run, RUN_SETTLE_BOUND_MS), "settled");
+
+		// Cancellation must not be mistaken for a timeout and reach the fresh rung.
+		assert.equal(boundary(built.manager), undefined);
+		const ends = built.events.filter((event) => event.type === "compaction_end") as Array<{ aborted?: boolean }>;
+		assert.equal(ends.length, 1);
+		assert.equal(ends[0].aborted, true);
 	} finally {
 		built.dispose();
 	}

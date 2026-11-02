@@ -565,8 +565,8 @@ export async function _runAutoCompaction(
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
 		const result = await this._applyVerbatimCompaction({
-			resolvePlannerAuth: async (candidate) => {
-				const authResult = await this._getRequiredRequestAuth(candidate, controller.signal);
+			resolvePlannerAuth: async (candidate, signal) => {
+				const authResult = await this._getRequiredRequestAuth(candidate, signal ?? controller.signal);
 				return authResult.apiKey || authResult.headers ? authForStream(this, authResult) : undefined;
 			},
 			abortController: controller,

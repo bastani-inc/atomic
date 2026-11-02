@@ -54,9 +54,18 @@ export interface CompactionPlanOptions {
 
 /** One compaction run's request. Urgency is required; there is no default. */
 export interface CompactionRunRequest extends CompactionPlanOptions {
-	/** Per-model credentials; a borrowed candidate uses its own, never the session model's. */
-	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>;
+	/**
+	 * Per-model credentials; a borrowed candidate uses its own, never the session model's.
+	 * `signal` aborts when the run is cancelled or its planning time limit runs out.
+	 */
+	resolveAuth: (model: Model<Api>, signal?: AbortSignal) => Promise<PlannerAuth | undefined>;
 	signal?: AbortSignal;
+	/**
+	 * Wall-clock limit on model planning: every backend, planner request, retry, overflow trim
+	 * and borrowed fallback model. When it runs out, the in-flight request is aborted and the
+	 * ladder ends as if every planner had failed (#4198). Omitted or non-positive means no limit.
+	 */
+	planningTimeoutMs?: number;
 	/** Inherited by the planner and never modified across attempts. */
 	thinkingLevel: ThinkingLevel | undefined;
 	urgency: CompactionUrgency;
@@ -87,6 +96,8 @@ export type CompactionRungResult = CompactedTranscript & {
 	summary?: { readFiles: string[]; modifiedFiles: string[] };
 	summaryFirstKeptEntryId?: string;
 	summaryTokensBefore?: number;
+	/** Present only on the fresh rung after planning failed: why no planner could rank the lines. */
+	freshReason?: string;
 };
 
 /** Runner-internal fresh-window build: the transcript plus the tail decision. */
@@ -326,7 +337,7 @@ function authFailureOutcome(error: unknown): TerminalPlannerOutcome {
 
 /** Resolve one model's credentials, normalizing a rejection and `undefined` alike. */
 async function resolvePlannerAuth(
-	resolveAuth: CompactionRunRequest["resolveAuth"],
+	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>,
 	model: Model<Api>,
 ): Promise<{ auth: PlannerAuth } | { failure: TerminalPlannerOutcome }> {
 	try {
@@ -337,10 +348,47 @@ async function resolvePlannerAuth(
 	}
 }
 
+/**
+ * Settle with `promise`, or reject as soon as `signal` aborts.
+ *
+ * Credential resolution may ignore the signal it is given; racing it keeps the
+ * planning time limit and cancellation a hard bound on the ladder either way.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) {
+		void promise.catch(() => {});
+		return Promise.reject(signal.reason);
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => {
+			void promise.catch(() => {});
+			reject(signal.reason);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/** The message a terminal planner outcome reports, as recorded on a fresh rung. */
+function terminalMessage(outcome: TerminalPlannerOutcome | undefined): string | undefined {
+	return outcome ? terminalError(outcome).message : undefined;
+}
+
 function freshResult(
 	preparation: VerbatimCompactionPreparation,
 	hardInputLimit: number,
 	usage?: Usage,
+	freshReason?: string,
 ): CompactionRungResult {
 	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
 	return {
@@ -348,6 +396,60 @@ function freshResult(
 		rung: "fresh",
 		keptTail: fresh.keptTail,
 		...(usage ? { usage } : {}),
+		...(freshReason ? { freshReason } : {}),
+	};
+}
+
+/** The largest delay a platform timer accepts without clamping it to one millisecond. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * One run's planning time limit.
+ *
+ * `signal` aborts on caller cancellation or when the limit runs out; only the latter sets
+ * `expired`, so the ladder can tell a timeout (end planning, keep going) from cancellation
+ * (stop the whole run).
+ */
+interface PlanningTimeLimit {
+	readonly signal: AbortSignal | undefined;
+	expired(): boolean;
+	readonly outcome: TerminalPlannerOutcome;
+	dispose(): void;
+}
+
+function startPlanningTimeLimit(timeoutMs: number | undefined, signal: AbortSignal | undefined): PlanningTimeLimit {
+	// Any positive limit stays a limit: a sub-millisecond value rounds up rather than to "disabled".
+	const limitMs = timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.ceil(timeoutMs) : 0;
+	const outcome: TerminalPlannerOutcome = {
+		kind: "providerError",
+		message: `Compaction planning timed out after ${limitMs} ms`,
+	};
+	if (limitMs <= 0) return { signal, expired: () => false, outcome, dispose: () => {} };
+	const controller = new AbortController();
+	let expired = false;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const startedAt = Date.now();
+	// Re-arm in platform-sized steps so a limit beyond the timer maximum is honoured exactly.
+	const arm = () => {
+		const remainingMs = limitMs - (Date.now() - startedAt);
+		if (remainingMs <= 0) {
+			expired = true;
+			controller.abort(new Error(outcome.message));
+			return;
+		}
+		timer = setTimeout(arm, Math.min(remainingMs, MAX_TIMER_DELAY_MS));
+	};
+	arm();
+	const relayCancellation = () => controller.abort(signal?.reason);
+	signal?.addEventListener("abort", relayCancellation, { once: true });
+	return {
+		signal: controller.signal,
+		expired: () => expired,
+		outcome,
+		dispose: () => {
+			if (timer !== undefined) clearTimeout(timer);
+			signal?.removeEventListener("abort", relayCancellation);
+		},
 	};
 }
 
@@ -362,24 +464,51 @@ function freshResult(
  * Unavailable credentials are ladder control flow, not an early throw: a
  * borrowed candidate with its own working credentials can still rank the lines,
  * and a load-bearing caller still reaches the credential-free fresh rung.
+ *
+ * `planningTimeoutMs` bounds the whole planning phase. A planner that keeps
+ * streaming never trips the per-request stream idle deadline, and retries,
+ * trims and borrowed models each repeat it, so without this limit a mid-turn
+ * compaction could hold the active turn for as long as the provider allowed.
  */
 export async function runVerbatimCompaction(
 	preparation: VerbatimCompactionPreparation,
 	model: Model<Api>,
 	request: CompactionRunRequest,
 ): Promise<CompactionRungResult> {
+	if (request.signal?.aborted) throw new Error("Compaction cancelled");
+	const timeLimit = startPlanningTimeLimit(request.planningTimeoutMs, request.signal);
+	try {
+		return await runCompactionLadder(preparation, model, request, timeLimit);
+	} finally {
+		timeLimit.dispose();
+	}
+}
+
+async function runCompactionLadder(
+	preparation: VerbatimCompactionPreparation,
+	model: Model<Api>,
+	request: CompactionRunRequest,
+	timeLimit: PlanningTimeLimit,
+): Promise<CompactionRungResult> {
 	const signal = request.signal;
-	if (signal?.aborted) throw new Error("Compaction cancelled");
 	let plannerUsage: Usage | undefined;
 	const plannerOptions = {
 		streamFn: request.streamFn,
 		sessionFilePath: request.sessionFilePath,
 		retry: request.retry,
 		callbacks: request.callbacks,
-		signal,
+		signal: timeLimit.signal,
 		onUsage: (usage: Usage) => {
 			plannerUsage = addUsage(plannerUsage, usage);
 		},
+	};
+	// Credential waits count against the planning time limit too: each candidate's
+	// resolution sees the limit's signal and is abandoned the moment it aborts. Once
+	// it has aborted, no further lookup starts, so a borrower still walking its list
+	// cannot launch abandoned work in a resolver that ignores the signal.
+	const resolveAuth = (candidate: Model<Api>): Promise<PlannerAuth | undefined> => {
+		if (timeLimit.signal?.aborted) return Promise.reject(timeLimit.signal.reason);
+		return untilAborted(request.resolveAuth(candidate, timeLimit.signal), timeLimit.signal);
 	};
 	const hardInputLimit = hardInputLimitFor(model);
 
@@ -406,7 +535,7 @@ export async function runVerbatimCompaction(
 			const ranges = await planClassifierRanges(
 				preparation.region,
 				preparation.parameters,
-				(context) => classify(selection.model, context, { signal }),
+				(context) => classify(selection.model, context, { signal: timeLimit.signal }),
 				plannerOptions,
 			);
 			return {
@@ -415,14 +544,16 @@ export async function runVerbatimCompaction(
 			};
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			backendFailure = timeLimit.expired()
+				? timeLimit.outcome
+				: { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
 		}
 	}
 	if (selection.kind === "morph") {
 		try {
 			const ranges = await planMorphRanges(preparation.region, preparation.parameters, {
-				apiKey: await request.resolveMorphApiKey?.(),
-				signal,
+				apiKey: await untilAborted(Promise.resolve(request.resolveMorphApiKey?.()), timeLimit.signal),
+				signal: timeLimit.signal,
 				fetchFn: request.morphFetchFn,
 				onDiagnostics: (diagnostics) => writeMorphDiagnosticSidecar(request.sessionFilePath, diagnostics),
 			});
@@ -432,13 +563,15 @@ export async function runVerbatimCompaction(
 			};
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			backendFailure = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
+			backendFailure = timeLimit.expired()
+				? timeLimit.outcome
+				: { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
 		}
 	}
 	const primaryModel = selection.kind === "chat" ? selection.model : undefined;
 	const primaryBudget = resolvePlannerRequest(primaryModel ?? model, request.thinkingLevel);
 	const primaryAuth = primaryModel
-		? await resolvePlannerAuth(request.resolveAuth, primaryModel)
+		? await resolvePlannerAuth(resolveAuth, primaryModel)
 		: {
 				failure: {
 					kind: "providerError" as const,
@@ -448,6 +581,7 @@ export async function runVerbatimCompaction(
 							: `Compaction backend ${selection.kind} is not yet available`,
 				},
 			};
+	if (signal?.aborted) throw new Error("Compaction cancelled");
 	let lastTerminal: TerminalPlannerOutcome | undefined = "failure" in primaryAuth ? primaryAuth.failure : undefined;
 	let borrowed = primaryModel !== model;
 	let planner: BorrowedPlanner | undefined;
@@ -456,12 +590,20 @@ export async function runVerbatimCompaction(
 		planner = { model: primaryModel, budget: primaryBudget, auth: primaryAuth.auth };
 	} else {
 		if (primaryModel) attempted.add(plannerAttemptKey({ model: primaryModel, budget: primaryBudget, auth: {} }));
-		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
+		planner = borrow && !timeLimit.expired() ? await borrow(attempted, resolveAuth) : undefined;
 		borrowed = planner !== undefined;
+		if (signal?.aborted) throw new Error("Compaction cancelled");
 	}
 
-	while (planner) {
-		const attempt = await planWithTrimming(preparation, planner, plannerOptions);
+	while (planner && !timeLimit.expired()) {
+		let attempt: PlannerAttempt;
+		try {
+			attempt = await planWithTrimming(preparation, planner, plannerOptions);
+		} catch (error) {
+			// The time limit aborted the in-flight request: end planning, not the run.
+			if (signal?.aborted || !timeLimit.expired()) throw error;
+			break;
+		}
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 		if (attempt.kind === "planned") {
 			const plannerModel = borrowed ? borrowedIdentity(planner) : undefined;
@@ -519,11 +661,12 @@ export async function runVerbatimCompaction(
 			}
 		}
 		attempted.add(plannerAttemptKey(planner));
-		planner = borrow ? await borrow(attempted, request.resolveAuth) : undefined;
+		planner = borrow && !timeLimit.expired() ? await borrow(attempted, resolveAuth) : undefined;
 		borrowed = planner !== undefined;
 		if (signal?.aborted) throw new Error("Compaction cancelled");
 	}
 
+	if (timeLimit.expired()) lastTerminal = timeLimit.outcome;
 	if (request.urgency !== "load_bearing") throw terminalError(lastTerminal);
-	return freshResult(preparation, hardInputLimit, plannerUsage);
+	return freshResult(preparation, hardInputLimit, plannerUsage, terminalMessage(lastTerminal));
 }

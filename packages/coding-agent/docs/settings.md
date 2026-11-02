@@ -286,6 +286,7 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 | `compaction.compression_ratio` | number | `0.5` | Fraction of compactable transcript **lines to keep** (`0 < value < 1`) |
 | `compaction.preserve_recent` | number | `2` | Exact number of newest context-visible messages kept outside the compactable region; `0` keeps none |
 | `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
+| `compaction.planningTimeoutMs` | number or string | `300000` | Wall-clock limit on model planning in automatic compaction, covering every planner request, retry, overflow trim and borrowed fallback model and the credential lookups in between. When it runs out, post-tool and overflow compaction start a fresh context window so the turn continues, and threshold compaction fails without changing context. Accepts milliseconds, duration strings such as `5m`, or `"disabled"`/`0` to disable. See [Compaction](/compaction#planning-time-limit) |
 | `compaction.modelOverrides` | object | `{}` | Exact `"provider/modelId"` keys with optional `reserveTokens` and `preserve_recent` overrides |
 
 ```json

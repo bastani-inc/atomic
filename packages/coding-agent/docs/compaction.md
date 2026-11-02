@@ -164,11 +164,15 @@ Recoverable failure writes no boundary, schedules no continuation, and reports t
 
 A successful compaction may delete less than requested. The retry can still report a context overflow.
 
+### Planning time limit
+
+Automatic compaction (threshold, overflow recovery and post-tool preflight) gives model planning at most `compaction.planningTimeoutMs`, five minutes by default. The limit covers every planner, classifier or Morph request, same-model retry, overflow trim and borrowed fallback model, and the credential lookups in between. The per-request `streamDeadlineMs` cannot replace it: a planner that keeps streaming, for example long reasoning over a very large uncached transcript, never goes idle. When the limit runs out, Atomic aborts the in-flight request and treats planning as failed. Overflow recovery and post-tool preflight then start a fresh context window, so the active turn continues. Threshold auto-compaction fails with `Compaction planning timed out after <n> ms` and leaves the context unchanged. The limit does not cover extension `session_before_compact` handlers, which run before planning; they receive the compaction's abort signal. Manual compaction has no limit; press Escape to cancel it. Set the limit to `0` or `"disabled"` to turn it off.
+
 ### The fresh context window rung
 
 If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit. A region too small to plan is cleared only when known not to fit; a post-tool threshold crossing that still fits leaves it unchanged.
 
-The chat shows `✻ Context cleared (compaction degraded)` rather than `✻ Context compacted`, and results record `details.rung: "fresh"`. Check what context remains before continuing important work.
+The chat shows `✻ Context cleared (compaction degraded)` rather than `✻ Context compacted`, and results record `details.rung: "fresh"`. When planning failed first, `details.freshReason` names the cause, for example `Compaction planning timed out after 300000 ms` or the last planner's provider error. Check what context remains before continuing important work.
 
 Clearing context does not fix provider rate limits or guarantee the next turn succeeds. Atomic refuses a follow-up request still known to exceed the hard input limit. A committed boundary remains visible even if that request fails; `compaction_end` can contain both `result` and `errorMessage`.
 
