@@ -10,7 +10,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
 import {
 	CONSOLE_LOG_RETENTION_MS,
@@ -91,7 +91,9 @@ test("a run's console output goes to the process's workflow log, and the chat ge
 	});
 
 	const path = workflowConsoleLogPath();
-	assert.match(path ?? "", new RegExp(`^${directory}/${process.pid}-\\d+\\.log$`));
+	assert.ok(path);
+	assert.equal(dirname(path), directory);
+	assert.match(basename(path), new RegExp(`^${process.pid}-\\d+\\.log$`));
 	assert.deepEqual(terminal, [{ method: "warn", text: `atomic-workflows: run run-a console output is in ${path}` }]);
 	const lines = logLines();
 	assert.equal(lines.length, 41);
