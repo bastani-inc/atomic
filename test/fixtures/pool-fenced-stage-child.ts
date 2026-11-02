@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
+import { AuthStorage, DefaultResourceLoader, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
 import { Type } from "typebox";
@@ -20,12 +20,15 @@ function mark(directory: string, prefix: string): number {
 /**
  * A pooled child with one agent stage. Its first run's stage starts a turn that holds until it is aborted, and while it
  * holds, the run fails on a fault of the pool, which ends the attempt with the stage's session still open. Every later
- * run's stage replies at once and the child completes. Each run leaves `run-<n>` and each turn `turn-<n>` in `directory`.
+ * run's stage replies at once and the child completes. Each run leaves `run-<n>` and each turn `turn-<n>` in `directory`,
+ * holding the pid of the worker that ran it. With `shutdownMs`, the first run's stage session takes that long to shut
+ * down, as an extension's `session_shutdown` cleanup can; it leaves `shutdown-1` when it starts and `shutdown-2` when
+ * it ends.
  */
 export const child = workflow({
 	name: "pool-fenced-stage-child",
 	description: "Local worker stage whose first attempt is fenced while the stage is open",
-	inputs: { directory: Type.String() },
+	inputs: { directory: Type.String(), shutdownMs: Type.Optional(Type.Number()) },
 	outputs: { text: Type.String() },
 	async run(ctx) {
 		const { directory } = ctx.inputs;
@@ -81,13 +84,35 @@ export const child = workflow({
 				return stream;
 			},
 		});
+		const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } });
+		const { shutdownMs } = ctx.inputs;
+		let resourceLoader: DefaultResourceLoader | undefined;
+		if (first && shutdownMs !== undefined) {
+			resourceLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir: cwd,
+				settingsManager,
+				noExtensions: true,
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_shutdown", async () => {
+							mark(directory, "shutdown");
+							await delay(shutdownMs);
+							mark(directory, "shutdown");
+						});
+					},
+				],
+			});
+			await resourceLoader.reload();
+		}
 		const stage = ctx.stage("agent", {
 			cwd,
 			agentDir: cwd,
 			modelRuntime,
 			model: modelRuntime.getModel("pool-fixture", "fixture")!,
-			settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: false }, retry: { enabled: false } }),
+			settingsManager,
 			builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+			...(resourceLoader === undefined ? {} : { resourceLoader }),
 		} as never);
 		const text = stage.complete("Reply");
 		if (first) {

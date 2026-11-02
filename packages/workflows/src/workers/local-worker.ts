@@ -76,25 +76,56 @@ class WorkAttemptFencedError extends Error {
 	}
 }
 
-/** How long a worker waits for a fenced attempt's stage sessions to close before it goes on; they keep closing after. */
+/**
+ * How long a worker waits for a fenced attempt's stage sessions to close before it ends the attempt anyway. The attempt's
+ * work lease is renewed meanwhile, so this bound is independent of the pool's `leaseMs`: it only delays the replay.
+ */
 const FENCED_STAGE_CLOSE_MS = 10_000;
 
 /**
  * Closes the stage sessions a fenced attempt left open on this worker, which releases their session permits. Its stages
  * never run here again, and the worker keeps its registry for the attempts it serves next: left open, they would hold
  * their permits until the worker exits, and a replay of the attempt on this worker could wait for them indefinitely.
- * A session that fails to close keeps its permit, as it would have before; one still closing after
- * {@link FENCED_STAGE_CLOSE_MS} gives its permit back once it has closed, without holding up the worker meanwhile.
+ *
+ * The attempt is ended at the pool only after this: until then it still holds its work lease, so what its sessions
+ * write as they close (their last transcript entries) commits, and a write the pool refused would fail their shutdown
+ * and keep their permits. `renew` renews that lease on the worker's heartbeat meanwhile, so however long a session
+ * takes to shut down, the worker never looks dead to the pool. A session that fails to close keeps its permit, as it
+ * would have before, and one still closing after {@link FENCED_STAGE_CLOSE_MS} keeps closing in the background; the
+ * caller stops the attempt's writes before it ends it, so nothing of it can commit after that.
  */
-async function closeAttemptStages(stageControls: StageControlRegistry, store: Store): Promise<void> {
+async function closeAttemptStages(
+	stageControls: StageControlRegistry,
+	store: Store,
+	renew: () => Promise<unknown>,
+): Promise<void> {
 	const closing = Promise.allSettled(store.runs().map((run) => stageControls.clear(run.id))).then((results) => {
 		for (const result of results)
 			if (result.status === "rejected")
 				console.warn("atomic-workflows: a fenced attempt's stage session did not close", result.reason);
 	});
+	let renewal: Promise<void> | undefined;
+	const pulse = () => {
+		// A refused renewal (another attempt replaced this one) leaves the worker holding no lease to be fenced for.
+		renewal ??= renew()
+			.then(
+				() => {},
+				() => {},
+			)
+			.finally(() => {
+				renewal = undefined;
+			});
+	};
+	pulse();
+	const heartbeat = setInterval(pulse, WORKER_HEARTBEAT_INTERVAL_MS);
 	const bound = new AbortController();
-	await Promise.race([closing, delay(FENCED_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
-	bound.abort();
+	try {
+		await Promise.race([closing, delay(FENCED_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
+	} finally {
+		clearInterval(heartbeat);
+		bound.abort();
+		await renewal;
+	}
 }
 
 /** The registry, with each registered stage's first turn in this process recorded in `started`. */
@@ -308,43 +339,46 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		}
 		return state;
 	};
-	const backend = new Proxy(reader, {
-		get(target, key) {
-			if (
-				typeof key !== "string" ||
-				key === "then" ||
-				/^(archive|readSettled|readPending|hasCached|hasPending|getPending)/.test(key)
-			)
-				return undefined;
-			if (key === "persistent") return true;
-			if (key === "workflowOwnership") return () => "local";
-			if (key === "persistPendingStageMessages") return async () => false;
-			if (key === "reservePendingPrompt")
-				return async (workflowId: string, reservationId: string) =>
-					reservationsOf(workflowId).reserve(reservationId);
-			if (key === "pendingPromptToken")
-				return async (workflowId: string, reservationId: string) => reservationsOf(workflowId).claim(reservationId);
-			if (key === "releasePendingPrompt")
-				return async (workflowId: string, reservationId: string, token: PromptReservationToken) =>
-					reservationsOf(workflowId).release(reservationId, token);
-			if (key === "commitCheckpoint" || key === "commitAdditiveCheckpointBestEffort")
-				return async (
-					checkpoint: Parameters<DurableWorkflowBackend["commitCheckpoint"]>[0],
-					options?: { readonly signal?: AbortSignal },
-				) => {
-					options?.signal?.throwIfAborted();
-					await commit({ kind: "checkpoint", checkpoint });
-					return true;
+	/** The root state as an attempt sees it: reads from the root's journal, writes through `write` to the pool. */
+	const attemptBackend = (write: typeof commit): DurableWorkflowBackend =>
+		new Proxy(reader, {
+			get(target, key) {
+				if (
+					typeof key !== "string" ||
+					key === "then" ||
+					/^(archive|readSettled|readPending|hasCached|hasPending|getPending)/.test(key)
+				)
+					return undefined;
+				if (key === "persistent") return true;
+				if (key === "workflowOwnership") return () => "local";
+				if (key === "persistPendingStageMessages") return async () => false;
+				if (key === "reservePendingPrompt")
+					return async (workflowId: string, reservationId: string) =>
+						reservationsOf(workflowId).reserve(reservationId);
+				if (key === "pendingPromptToken")
+					return async (workflowId: string, reservationId: string) =>
+						reservationsOf(workflowId).claim(reservationId);
+				if (key === "releasePendingPrompt")
+					return async (workflowId: string, reservationId: string, token: PromptReservationToken) =>
+						reservationsOf(workflowId).release(reservationId, token);
+				if (key === "commitCheckpoint" || key === "commitAdditiveCheckpointBestEffort")
+					return async (
+						checkpoint: Parameters<DurableWorkflowBackend["commitCheckpoint"]>[0],
+						options?: { readonly signal?: AbortSignal },
+					) => {
+						options?.signal?.throwIfAborted();
+						await write({ kind: "checkpoint", checkpoint });
+						return true;
+					};
+				if (typeof key === "string" && reads.has(key)) {
+					const value = Reflect.get(target, key);
+					return typeof value === "function" ? value.bind(target) : value;
+				}
+				return () => {
+					throw new Error(`Worker cannot mutate root state: ${String(key)}`);
 				};
-			if (typeof key === "string" && reads.has(key)) {
-				const value = Reflect.get(target, key);
-				return typeof value === "function" ? value.bind(target) : value;
-			}
-			return () => {
-				throw new Error(`Worker cannot mutate root state: ${String(key)}`);
-			};
-		},
-	}) as DurableWorkflowBackend;
+			},
+		}) as DurableWorkflowBackend;
 	try {
 		let controlRevision = -1;
 		let controlState: PoolControl["state"] = "running";
@@ -414,6 +448,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			activeController = controller;
 			heldAttempt = work;
 			const store = createStore();
+			// Every write of this attempt goes through here. Once the attempt is ended at the pool, none goes further: a
+			// fenced attempt's stage session still closing would otherwise write into the attempt this worker serves next.
+			let writable = true;
+			const write: typeof commit = (mutation) =>
+				writable ? commit(mutation) : Promise.reject(new WorkAttemptFencedError("Work attempt ended"));
+			const backend = attemptBackend(write);
 			currentStore = store;
 			// Stages of this attempt raise human input here; the root answers through the airlock (#3996).
 			const stageUiBroker = new WorkerStageUiBroker(store);
@@ -573,7 +613,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 								backend: reader,
 								store,
 								root: start.root,
-								commit,
+								commit: write,
 							}),
 						},
 					}),
@@ -621,7 +661,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await controlPulse;
 				// The fenced attempt's stages never run again here: its replay opens its own sessions. Close theirs now, so
 				// their session permits go back before this worker serves the replay, instead of when the worker exits.
-				await closeAttemptStages(stageControls, store);
+				await closeAttemptStages(stageControls, store, () => request({ kind: "renew" }));
+				writable = false;
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}
 			if (rootLeaseLost) break;
