@@ -47,10 +47,24 @@ fn spool_is_orphaned(owner_start: Option<u64>, last_written: u64) -> bool {
 }
 
 pub(super) fn sweep_orphaned_spools(directory: &Path, current_pid: u32) -> usize {
+	sweep_spools_with(directory, current_pid, System::new())
+}
+
+/// Removes the spools in `directory` whose owner has exited, reading process
+/// liveness from `system`. When the process table cannot be read, no owner can
+/// be confirmed dead, so every spool is kept for a later sweep: removing one
+/// could delete the output of a command that is still running.
+fn sweep_spools_with(
+	directory: &Path,
+	current_pid: u32,
+	system: Result<System, sysinfo::Error>,
+) -> usize {
+	let Ok(mut system) = system else {
+		return 0;
+	};
 	let Ok(entries) = fs::read_dir(directory) else {
 		return 0;
 	};
-	let mut system = System::new();
 	let mut removed = 0;
 	for entry in entries.flatten() {
 		let name = entry.file_name();
@@ -130,5 +144,24 @@ mod tests {
 		assert!(!dead_exists, "spool of an exited process was kept");
 		assert!(own_exists, "sweep removed the current process's spool");
 		assert!(unrelated_exists, "sweep removed a file it does not own");
+	}
+
+	#[test]
+	fn sweep_keeps_every_spool_when_the_process_table_is_unavailable() {
+		let directory = std::env::temp_dir().join(format!(
+			"atomic-spool-sweep-unavailable-{}-{}",
+			std::process::id(),
+			SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+		));
+		fs::create_dir_all(&directory).unwrap();
+		// The sweep cannot check this owner, so it must not remove the spool.
+		let unverifiable = directory.join(format!("{SPOOL_PREFIX}0-task-0.1-ff"));
+		fs::write(&unverifiable, b"output").unwrap();
+		let removed =
+			sweep_spools_with(&directory, std::process::id(), Err(sysinfo::Error::Unsupported));
+		let kept = unverifiable.exists();
+		fs::remove_dir_all(&directory).unwrap();
+		assert_eq!(removed, 0);
+		assert!(kept, "sweep removed a spool whose owner it could not check");
 	}
 }
