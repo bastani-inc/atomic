@@ -4,10 +4,12 @@
 
 ### Added
 
+- `retry.fallbackOnContentFilter` setting (default `true`). Set it to `false` to keep a provider content-filter refusal on the model that gave it instead of moving to the next `fallbackModels` entry ([#4163](https://github.com/bastani-inc/atomic/pull/4163))
 - Recorded Gemini 4 Argon results in the evals snapshot used by automatic model routing: its Artificial Analysis row at high effort, Cognition FrontierCode 1.1 at medium effort, Zapier AutomationBench at high and medium effort, and Google's vendor-reported launch results, including DeepSWE v1.1, Terminal-Bench 4.0 and Terminal-Bench-Science ([#4161](https://github.com/bastani-inc/atomic/pull/4161)).
 
 ### Fixed
 
+- A provider content-filter refusal now moves a main chat, subagent or workflow stage to its next `fallbackModels` entry at once, without retrying the model that refused, and the refusing model is recorded in the fallback history. This covers OpenAI's HTTP 422 `cyber_policy` ("This content was flagged for possible cybersecurity risk"), Anthropic's refusal stop, `content_filter` finish reasons and safety- or policy-blocked requests. Before, Anthropic and `content_filter` refusals were retried on the same model and then failed the turn, subagent or stage, and a 422 `cyber_policy` refusal fell back only because it was not recognized as a refusal ([#4163](https://github.com/bastani-inc/atomic/pull/4163))
 - A stage on a local worker (`workflows.localWorkers`) that starts after a sticky Intercom broadcast (`workflow:<rootRunId>/**`) or a name or pattern send to future stages gets those messages before its first turn, under "Messages received before you started" with the real sender, even when the root is too busy to answer. Before, each such stage on a busy root could wait 60 seconds and then print a long "starting without its queued Intercom messages" warning in the chat, listing messages it may already have received. The worker now delivers the stage's queued messages itself and never waits on the root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run, not a warning per stage ([#4164](https://github.com/bastani-inc/atomic/pull/4164)).
 
 ## [0.9.61] - 2026-11-02

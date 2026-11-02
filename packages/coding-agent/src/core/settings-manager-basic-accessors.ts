@@ -137,6 +137,7 @@ interface SettingsManagerBasicAccessors {
 		baseDelayMs: number;
 		maxAgentDelayMs: number;
 		maxRetryDelayMs?: number;
+		fallbackOnContentFilter: boolean;
 	};
 	getHttpProxy(): string | undefined;
 	setHttpProxy(proxy: string | undefined): void;
@@ -548,6 +549,9 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			maxRetryDelayMs: this.getProviderRetrySettings().maxRetryDelayMs,
 			maxAgentDelayMs:
 				settingsInternals(this).settings.retry?.maxAgentDelayMs ?? SETTINGS_DEFAULTS.retry.maxAgentDelayMs,
+			fallbackOnContentFilter:
+				settingsInternals(this).settings.retry?.fallbackOnContentFilter ??
+				SETTINGS_DEFAULTS.retry.fallbackOnContentFilter,
 		};
 	},
 

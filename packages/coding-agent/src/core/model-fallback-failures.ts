@@ -97,6 +97,7 @@ export type ModelFallbackFailureKind =
 	| "transport_error"
 	| "model_unavailable"
 	| "request_incompatible"
+	| "content_filter"
 	| "cancelled"
 	| "task_failure"
 	| "unknown";
@@ -116,6 +117,12 @@ export interface ModelFallbackFailureSignal {
 	readonly status?: number;
 	readonly code?: string | number;
 	readonly name?: string;
+}
+
+/** How a caller treats a provider content-filter refusal; `retry.fallbackOnContentFilter` in settings. */
+export interface ModelFallbackFailureOptions {
+	/** Whether a content-filter refusal may spend the next fallback candidate. Defaults to true. */
+	readonly fallbackOnContentFilter?: boolean;
 }
 
 const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Set([
@@ -261,8 +268,11 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
 	if (normalizedCode === undefined) return undefined;
-	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "task_failure";
-	if (normalizedCode.includes("safety") || normalizedCode.includes("policy")) return "task_failure";
+	// A refused tool call, such as `tool_call_refusal` or `tool_use_refused_by_policy`, before the policy words.
+	if (/(?:^|_)tool(?:_|$)/.test(normalizedCode) && normalizedCode.includes("refus")) return "task_failure";
+	if (normalizedCode.includes("content_filter") || normalizedCode.includes("contentfilter")) return "content_filter";
+	// Includes OpenAI's `cyber_policy`.
+	if (normalizedCode.includes("safety") || normalizedCode.includes("policy")) return "content_filter";
 	switch (normalizedCode) {
 		case "blocked":
 		case "blocked_by_provider":
@@ -270,10 +280,7 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
 		case "blocked_by_policy":
 		case "provider_refusal":
 		case "refusal":
-		case "tool_refusal":
-		case "tool_call_refusal":
-		case "tool_use_refusal":
-			return "task_failure";
+			return "content_filter";
 		default:
 			return undefined;
 	}
@@ -380,17 +387,29 @@ const REQUEST_INCOMPATIBLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bbad[_\s-]?request\b/i,
 ];
 
-const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
+/** A provider declined the request's content under its usage policy: the model will refuse it again. */
+const CONTENT_FILTER_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bthe\s+model\s+refused\s+to\s+complete\s+the\s+request\b/i,
 	/\bfinish[_\s-]?reason\b[^\n]*\bcontent[_\s-]?filter\b/i,
 	/\bcontent[_\s-]?filter(?:ed|ing)?\b/i,
+	/\bcyber[_\s-]?policy\b/i,
+	// OpenAI's cyber safeguard: "This content was flagged for possible cybersecurity risk."
+	/\bflagged\s+for\s+(?:possible|potential(?:ly)?)\b[^\n]*\b(?:risk|harm(?:ful)?|safety|policy|cyber\w*)\b/i,
 	/\b(?:safety|policy)\b[^\n]*\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b/i,
 	/\b(?:refus(?:e|al|ed|es|ing)?|block(?:ed|ing)?|filter(?:ed|ing)?|violat(?:e|ion|ed|ing)?|disallow(?:ed|ing)?|reject(?:ed|ion|ing)?)\b[^\n]*\b(?:safety|policy)\b/i,
+	/\bprovider[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
+	/\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
+];
+
+const TOOL_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\btool[_\s-]?(?:call|use)?[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
 	/\btool(?:\s+call|\s+use)?\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b/i,
 	/\brefus(?:e|al|ed|es|ing)?\b[^\n]*\btool(?:\s+call|\s+use)?\b/i,
-	/\bprovider[_\s-]?refus(?:e|al|ed|es|ing)?\b/i,
-	/\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
+];
+
+const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
+	...CONTENT_FILTER_FAILURE_PATTERNS,
+	...TOOL_REFUSAL_FAILURE_PATTERNS,
 ];
 
 const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
@@ -430,7 +449,10 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 	if (TRANSPORT_CANCELLATION_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "network_timeout";
 	if (CANCELLED_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "cancelled";
 	if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
-	if (PROVIDER_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
+	// A refused tool call is about that call, whatever policy the provider names: another model is asked the same
+	// tool call. So it is checked before the content-filter grammar, which "refused ... safety policy" also matches.
+	if (TOOL_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
+	if (CONTENT_FILTER_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "content_filter";
 	return undefined;
 }
 
@@ -528,13 +550,14 @@ function classifyAssistantRefusalSignal(
 }
 
 function isRefusalSignal(signal: ModelFallbackFailureSignal): boolean {
-	return signal.kind === "cancelled" || signal.kind === "task_failure";
+	return signal.kind === "cancelled" || signal.kind === "task_failure" || signal.kind === "content_filter";
 }
 
 function nestedSignalPriority(signal: ModelFallbackFailureSignal): number {
 	switch (signal.kind) {
 		case "cancelled":
 		case "task_failure":
+		case "content_filter":
 			return 100;
 		case "auth_on_candidate_provider":
 			return 90;
@@ -712,18 +735,29 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 	};
 }
 
-/** Whether a task-failure signal is a provider safety/refusal response. */
+/** Whether a failure is a provider safety/refusal response: a content-filter refusal, or a refused tool call. */
 export function isSafetyRefusalFailure(error: unknown): boolean {
 	const signal = normalizeModelFailureSignal(error);
+	if (signal.kind === "content_filter") return true;
 	if (signal.kind !== "task_failure") return false;
 	const text = `${signal.message}\n${signal.code ?? ""}\n${signal.name ?? ""}`;
 	return PROVIDER_REFUSAL_FAILURE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-/** True when this failure may spend a configured model fallback candidate. */
-export function isRetryableModelFailure(error: unknown): boolean {
+/** Whether a provider's content filter refused the request, as OpenAI's HTTP 422 `cyber_policy` does. */
+export function isContentFilterRefusal(error: unknown): boolean {
+	return normalizeModelFailureSignal(error).kind === "content_filter";
+}
+
+/**
+ * True when this failure may spend a configured model fallback candidate. A content-filter refusal does unless
+ * `options.fallbackOnContentFilter` is false.
+ */
+export function isRetryableModelFailure(error: unknown, options?: ModelFallbackFailureOptions): boolean {
 	if (error === undefined) return false;
-	return FALLBACKABLE_FAILURE_KINDS.has(normalizeModelFailureSignal(error).kind);
+	const kind = normalizeModelFailureSignal(error).kind;
+	if (kind === "content_filter") return options?.fallbackOnContentFilter !== false;
+	return FALLBACKABLE_FAILURE_KINDS.has(kind);
 }
 
 const SAME_MODEL_RETRYABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Set([
