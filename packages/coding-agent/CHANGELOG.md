@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- A long-running Atomic process no longer keeps the output of every shell command it ran in memory. A finished command kept up to about 9 MB of its output in native memory until the process exited, even after its session closed, so an interactive session running for hours, workflow stages, subagents and local workers grew without bound outside the JavaScript heap. A command's spooled output stays on disk and still reads back in `/tasks` and the task tools; a terminal (PTY) command's output, which has no spool, and the end of a spool that hit its 5 GB cap or failed to write are let go once their session closes. In a test of 100 commands printing 1 MB each, memory stayed flat instead of growing by about 80 MB ([#4218](https://github.com/bastani-inc/atomic/pull/4218)).
 - Local workers no longer grow without bound while a pool runs. Every worker kept in memory the checkpoints of every child of the pool, every `ctx.tool` output included, so all workers grew together with the pool's total progress until a busy machine ran out of memory, and a worker also kept the runs and stages of every child it had finished. A worker now keeps only what the child it runs needs, reading that child's checkpoints from the journal when it claims it, and lets go of each child's state when the child ends ([#4214](https://github.com/bastani-inc/atomic/pull/4214))
 
 ## [0.9.66] - 2026-11-02
