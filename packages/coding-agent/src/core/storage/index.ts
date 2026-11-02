@@ -4,6 +4,7 @@ export type {
 	SqliteRow,
 	SqliteRunResult,
 	SqliteStatement,
+	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
 } from "./database.js";
