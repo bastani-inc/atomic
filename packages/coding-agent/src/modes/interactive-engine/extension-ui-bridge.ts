@@ -202,6 +202,17 @@ export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime)
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getRemoteCommands() : [];
 }
 
+/**
+ * Clear the engine child's queue and return exactly the messages it removed. The host's copy of that queue lags
+ * the engine by a round trip, so a host that restores the queue to its editor restores this answer rather than
+ * its copy (#4257). Returns `undefined` for a session that runs in this process, whose `clearQueue()` is exact.
+ */
+export function clearInteractiveEngineQueue(
+	runtime: AgentSessionRuntime,
+): Promise<{ steering: string[]; followUp: string[] }> | undefined {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.clearEngineQueue() : undefined;
+}
+
 export function getInteractiveEngineResourceOverlaps(runtime: AgentSessionRuntime): readonly ResourceOverlap[] {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getResourceOverlaps() : [];
 }

@@ -297,7 +297,7 @@ declare module "./interactive-mode-base.ts" {
 		unregisterSignalHandlers(): void;
 		handleCtrlZ(): void;
 		handleFollowUp(): Promise<void>;
-		handleDequeue(): void;
+		handleDequeue(): Promise<void>;
 		refreshBuiltInHeader(): void;
 		updateEditorBorderColor(): void;
 		cycleThinkingLevel(): Promise<void>;
@@ -313,16 +313,16 @@ declare module "./interactive-mode-base.ts" {
 		showNewVersionNotification(newVersion: string, targetContainer?: Container): void;
 		showPackageUpdateNotification(packages: string[], targetContainer?: Container): void;
 		getAllQueuedMessages(): { steering: string[]; followUp: string[] };
-		clearAllQueues(options?: { preserveUnprotectedCustomMessages?: boolean }): {
+		clearAllQueues(options?: { preserveUnprotectedCustomMessages?: boolean }): Promise<{
 			steering: string[];
 			followUp: string[];
-		};
+		}>;
 		updatePendingMessagesDisplay(): void;
 		restoreQueuedMessagesToEditor(options?: {
 			abort?: boolean;
 			currentText?: string;
 			preserveUnprotectedCustomMessages?: boolean;
-		}): number;
+		}): Promise<number>;
 		queueCompactionMessage(text: string, mode: "steer" | "followUp"): void;
 		isExtensionCommand(text: string): boolean;
 		flushCompactionQueue(options?: { willRetry?: boolean; afterPrompt?: boolean }): Promise<void>;

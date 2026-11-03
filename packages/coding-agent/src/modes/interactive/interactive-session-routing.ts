@@ -172,7 +172,7 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 				}
 
 				if (this.session.isStreaming) {
-					this.restoreQueuedMessagesToEditor();
+					await this.restoreQueuedMessagesToEditor();
 					await this.session.abort();
 				}
 				if (this.session.isCompacting) {

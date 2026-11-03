@@ -809,36 +809,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
 			getFollowUpMessages: { configurable: true, value: () => [...this.followUpMessages] },
+			// The cached copy lags the engine by a round trip. A caller that restores the queue to an editor uses
+			// `clearEngineQueue()`, whose result is exactly what the engine removed (#4257).
 			clearQueue: {
 				configurable: true,
 				value: () => {
-					const queued: QueueSnapshot = {
-						steering: [...this.steeringMessages],
-						followUp: [...this.followUpMessages],
-					};
-					const pendingClear = this.pendingQueueClear ?? {
-						snapshot: queued,
-						queueUpdateGeneration: this.queueUpdateGeneration,
-						count: 0,
-						succeeded: false,
-					};
-					this.pendingQueueClear = pendingClear;
-					pendingClear.count += 1;
-					this.steeringMessages = [];
-					this.followUpMessages = [];
-					this.dispatchBestEffort(
-						"clear queue",
-						this.health
-							.trackControlRequest(() => this.client.requestInternal({ type: "clear_queue" }))
-							.then(
-								() => this.settleQueueClear(pendingClear, true),
-								(error: Error) => {
-									this.settleQueueClear(pendingClear, false);
-									throw error;
-								},
-							),
-					);
-					return queued;
+					const { snapshot, removed } = this.beginQueueClear();
+					this.dispatchBestEffort("clear queue", removed);
+					return snapshot;
 				},
 			},
 			pauseQueuedMessages: { configurable: true, value: () => this.queuePause.pause() },
@@ -976,6 +954,49 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				message: `Interactive engine ${label} failed: ${error.message}`,
 			});
 		});
+	}
+
+	/**
+	 * Remove the engine's queued messages and return exactly what it removed, steering then follow-up, each in queue
+	 * order. This includes a message the engine queued after the `queue_update` the host last saw, which the cached
+	 * copy cannot know about, and leaves out one the engine has already taken into a turn (#4257).
+	 *
+	 * The cached copy empties at once and is restored if the clear fails before any newer `queue_update`.
+	 */
+	clearEngineQueue(): Promise<QueueSnapshot> {
+		const { removed } = this.beginQueueClear();
+		return removed;
+	}
+
+	/** Empty the cached queue and ask the engine to clear its own, answering with the engine's removed messages. */
+	private beginQueueClear(): { snapshot: QueueSnapshot; removed: Promise<QueueSnapshot> } {
+		const snapshot: QueueSnapshot = {
+			steering: [...this.steeringMessages],
+			followUp: [...this.followUpMessages],
+		};
+		const pendingClear = this.pendingQueueClear ?? {
+			snapshot,
+			queueUpdateGeneration: this.queueUpdateGeneration,
+			count: 0,
+			succeeded: false,
+		};
+		this.pendingQueueClear = pendingClear;
+		pendingClear.count += 1;
+		this.steeringMessages = [];
+		this.followUpMessages = [];
+		const removed = this.health
+			.trackControlRequest(() => this.client.requestInternal<QueueSnapshot>({ type: "clear_queue" }))
+			.then(
+				(engineRemoved) => {
+					this.settleQueueClear(pendingClear, true);
+					return engineRemoved;
+				},
+				(error: Error) => {
+					this.settleQueueClear(pendingClear, false);
+					throw error;
+				},
+			);
+		return { snapshot, removed };
 	}
 
 	private settleQueueClear(pendingClear: PendingQueueClear, succeeded: boolean): void {

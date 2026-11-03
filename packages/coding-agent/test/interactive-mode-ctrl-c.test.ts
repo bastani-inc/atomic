@@ -174,7 +174,7 @@ describe("InteractiveMode Ctrl+C", () => {
 			settingsManager: { getDoubleEscapeAction: () => "none" },
 			isBashMode: false,
 			lastEscapeTime: 0,
-			restoreQueuedMessagesToEditor: vi.fn(),
+			restoreQueuedMessagesToEditor: vi.fn().mockResolvedValue(0),
 			showError,
 			tuiInputSubscriptions: new Set(),
 			addTuiInputListener: InteractiveMode.prototype.addTuiInputListener,
