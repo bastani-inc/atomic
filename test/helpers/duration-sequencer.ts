@@ -40,7 +40,8 @@ export type FileDurations = Readonly<Record<string, number>>;
 export type DurationRecord = Readonly<Record<"linux" | "win32", FileDurations>>;
 
 const record: DurationRecord = JSON.parse(readFileSync(new URL("./test-file-durations.json", import.meta.url), "utf8"));
-const recordedDurations = process.platform === "win32" ? record.win32 : record.linux;
+/** This OS's recorded durations: the weights this process shards and orders by. */
+export const recordedDurations: FileDurations = process.platform === "win32" ? record.win32 : record.linux;
 
 function weightOf(path: string, durations: FileDurations): number {
 	return (durations[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;

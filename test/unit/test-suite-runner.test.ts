@@ -10,7 +10,7 @@ import { bunExecutable, fileExists, readStreamText, readText, spawnProcess } fro
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const runner = join(root, "scripts/run-test-suite.ts");
 
-type Mode = "success" | "failure" | "headroom" | "unresolved" | "blind" | "no-report";
+type Mode = "success" | "failure" | "headroom" | "unresolved" | "blind" | "no-report" | "stale-record";
 
 /**
  * A stand-in for vitest that the wrapper cannot tell from the real thing.
@@ -56,6 +56,10 @@ if (mode === "headroom") {
 } else if (mode === "failure") {
   report = { numTotalTests: 1, testResults: [testFile("test/unit/unrelated.test.ts", [failed("unrelated failure")])] };
   code = 7;
+} else if (mode === "stale-record") {
+  // A file the duration record has never seen, far heavier than the weight the sequencer gives an unknown file.
+  const heavy = { ...testFile("/runner/work/atomic/atomic/test/unit/never-recorded-heavy.test.ts", [passed("heavy", 500)]), startTime: 1000, endTime: 122000 };
+  report = { numTotalTests: 1, testResults: [heavy] };
 }
 
 if (outputFile && report !== undefined) writeFileSync(outputFile, typeof report === "string" ? report : JSON.stringify(report));
@@ -146,6 +150,24 @@ test(
 		const result = await fixture("success");
 		assert.equal(result.code, 0);
 		assert.deepEqual(logArtifacts(result.files), ["fixture-suite-durations.md"]);
+	},
+	WRAPPER_FIXTURE_TIMEOUT_MS,
+);
+
+test(
+	"a green suite warns, without failing, about a file that ran far longer than the duration record the shards are balanced by",
+	async () => {
+		const result = await fixture("stale-record");
+		assert.equal(result.code, 0, result.output);
+		assert.match(
+			result.output,
+			/::warning title=Stale test durations: fixture suite::1 file\(s\)[^\n]*test\/unit\/never-recorded-heavy\.test\.ts took 121 s, recorded none \(weighed as 20 s\)/,
+		);
+		assert.match(
+			result.summary,
+			/Stale test durations[\s\S]*\| test\/unit\/never-recorded-heavy\.test\.ts \| 121 s \|/,
+		);
+		assert.doesNotMatch(result.output, /::error/);
 	},
 	WRAPPER_FIXTURE_TIMEOUT_MS,
 );
