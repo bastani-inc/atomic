@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
@@ -8,7 +10,7 @@ import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.ts";
 import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.ts";
 import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
 import type { RpcResponse } from "../src/modes/rpc/rpc-types.ts";
-import { delayedOutputCommand, outputCommand } from "./helpers/rpc-shell-commands.js";
+import { delayedOutputCommand, gatedOutputCommand, outputCommand } from "./helpers/rpc-shell-commands.js";
 import { createHarness } from "./suite/harness.ts";
 
 function runtimeFor(session: Awaited<ReturnType<typeof createHarness>>["session"]): AgentSessionRuntime {
@@ -24,8 +26,36 @@ function handlerFor(harness: Awaited<ReturnType<typeof createHarness>>, output: 
 	});
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-	while (!predicate()) await new Promise((resolve) => setTimeout(resolve, 5));
+const REPLACEMENT_READY_TIMEOUT_MS = 10_000;
+const REPLACEMENT_SETTLE_TIMEOUT_MS = 10_000;
+const REPLACEMENT_DRAIN_TIMEOUT_MS = 5_000;
+
+async function settleWithin<T>(pending: Promise<T>, timeoutMs: number, description: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`Timed out after ${timeoutMs}ms waiting for ${description}`)),
+			timeoutMs,
+		);
+	});
+	try {
+		return await Promise.race([pending, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function runEveryCleanup(steps: ReadonlyArray<() => unknown>): Promise<void> {
+	const failures: unknown[] = [];
+	for (const step of steps) {
+		try {
+			await step();
+		} catch (error) {
+			failures.push(error);
+		}
+	}
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1) throw new AggregateError(failures, `${failures.length} cleanup steps failed`);
 }
 
 describe("correlated RPC bash streaming", () => {
@@ -137,7 +167,9 @@ describe("correlated RPC bash streaming", () => {
 	});
 
 	// #3105: replacement drains cancelled shell output into its original session.
-	it("keeps cancelled bash output with its source during real session replacement", async () => {
+	it("keeps cancelled bash output with its source during real session replacement (#4220)", async ({
+		onTestFinished,
+	}) => {
 		const first = await createHarness();
 		const second = await createHarness();
 		const secondServices = {
@@ -167,20 +199,45 @@ describe("correlated RPC bash streaming", () => {
 			output: (event) => output.push(event),
 		});
 
+		const releaseMarker = join(first.tempDir, "replacement-bash.release");
 		const bash = handle({
 			id: "replacement-bash",
 			type: "bash",
-			command: delayedOutputCommand("before", 0.1, "after"),
+			command: gatedOutputCommand(releaseMarker, "before", "after"),
 		});
-		await waitFor(() =>
-			output.some(
-				(event) =>
-					(event as { type?: string; delta?: string }).type === "bash_execution_update" &&
-					(event as { delta?: string }).delta === "before",
-			),
+		onTestFinished(() =>
+			runEveryCleanup([
+				() => first.session.abortBash("replacement-bash"),
+				() => writeFileSync(releaseMarker, ""),
+				() =>
+					settleWithin(
+						bash.catch(() => undefined),
+						REPLACEMENT_DRAIN_TIMEOUT_MS,
+						"the replacement bash request to drain",
+					),
+				() => binding.disposeSubscriptions(),
+				() => second.cleanup(),
+				() => first.cleanup(),
+			]),
 		);
-		await expect(handle({ id: "replace", type: "new_session" })).resolves.toMatchObject({ success: true });
-		await expect(bash).resolves.toMatchObject({
+		await vi.waitFor(
+			() => {
+				const started = output.some(
+					(event) =>
+						(event as { type?: string; delta?: string }).type === "bash_execution_update" &&
+						(event as { delta?: string }).delta === "before",
+				);
+				if (!started) throw new Error("bash has not streamed its first output yet");
+			},
+			{ timeout: REPLACEMENT_READY_TIMEOUT_MS, interval: 5 },
+		);
+		const [replacement, bashResult] = await settleWithin(
+			Promise.all([handle({ id: "replace", type: "new_session" }), bash]),
+			REPLACEMENT_SETTLE_TIMEOUT_MS,
+			"session replacement to cancel the bash request",
+		);
+		expect(replacement).toMatchObject({ success: true });
+		expect(bashResult).toMatchObject({
 			id: "replacement-bash",
 			success: true,
 			data: { output: "before", cancelled: true },
@@ -191,10 +248,6 @@ describe("correlated RPC bash streaming", () => {
 		expect(updates).toEqual(["before"]);
 		expect(first.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(1);
 		expect(second.session.messages.filter((message) => message.role === "bashExecution")).toHaveLength(0);
-
-		binding.disposeSubscriptions();
-		second.cleanup();
-		first.cleanup();
 	});
 
 	it("emits exactly one correlated error response when bash execution throws", async () => {
