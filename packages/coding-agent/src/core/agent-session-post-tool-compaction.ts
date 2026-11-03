@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
+import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
@@ -35,7 +36,9 @@ export async function _preflightPostToolContext(
 
 	// Tool-result persistence is ordered on AgentSession's event queue, while Pi
 	// may reach its next-turn hook as soon as its own listener barrier settles.
-	await this._agentEventQueue;
+	await this._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
+	// #4226: a run with an unsaved message ends at its request boundary; it compacts nothing first.
+	if (this._persistenceFailure !== undefined) return messages;
 	// Manual compaction owns the next boundary and aborts the active run before
 	// planning. Do not append a competing mid-turn boundary in that brief gap.
 	if (this._compactionAbortController !== undefined || this._manualCompactionPromise !== undefined) {

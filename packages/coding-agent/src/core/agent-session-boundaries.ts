@@ -10,6 +10,7 @@
 
 import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { persistenceStopError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { COMPACTION_AUTO_QUERY } from "./compaction/compaction-parameters.js";
 import {
@@ -80,6 +81,9 @@ export function _installAgentRequestProjection(this: AgentSession): void {
 		// so the last message_end cannot settle before earlier handlers. A failed listener
 		// is reported through the queue's own recovery, never through the request.
 		await this._agentEventQueue.catch(() => {});
+		// #4226: a run with a message that could not be saved sends no further request.
+		const stop = persistenceStopError(this);
+		if (stop) throw stop;
 		// Atomic honors a caller's complete replacement context from prepareNextTurnWithContext
 		// for exactly the request it prepared.
 		const callerReplaced = this._callerReplacedNextRequestContext;
@@ -115,6 +119,8 @@ export function _installAgentBoundaryHooks(this: AgentSession): void {
 		this._boundaryDispatchedMessages.add(turn.message);
 		const extensionContinue = await this._dispatchTurnEndBoundary(turn.message, turn.toolResults, true);
 		const previousDecision = await previousFinishTurn?.(turn, signal);
+		// #4226: end before steering is polled once a message of this run is known to be unsaved.
+		if (this._persistenceFailure !== undefined) return { action: "end" };
 		if (previousDecision?.action === "end") return previousDecision;
 		if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 		return undefined;
@@ -133,6 +139,7 @@ export async function _dispatchTurnEndBoundary(
 	// The boundary resolves persisted entry IDs. From finishTurn, session listeners may
 	// still be persisting this turn; from the serialized event queue they already have.
 	if (awaitPersistence) await this._agentEventQueue.catch(() => {});
+	if (this._messagesWithFailedPersistence.has(message) || this._persistenceFailure !== undefined) return false;
 	const messageEntryId = this._findPersistedMessageEntryId(message);
 	if (!messageEntryId) {
 		this._extensionRunner.emitError({
