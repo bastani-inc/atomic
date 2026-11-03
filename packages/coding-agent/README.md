@@ -1,29 +1,29 @@
-> Atomic fork note: this package is vendored from pi's `packages/coding-agent` and rebranded via `package.json` as `@bastani/atomic`, CLI binary `atomic`, `piConfig.name = "atomic"`, and `piConfig.configDir = ".atomic"`.
-
 <p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
+  <a href="https://github.com/bastani-inc/atomic">
+    <img alt="Atomic" src="https://raw.githubusercontent.com/bastani-inc/atomic/main/packages/coding-agent/docs/logo.svg" width="324">
   </a>
 </p>
+
 <p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@bastani/atomic"><img alt="npm" src="https://img.shields.io/npm/v/@bastani/atomic?style=flat-square" /></a>
+  <b>The verifiable coding agent runtime. Build your engineering process as explicit, checkable execution graphs.</b>
 </p>
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+<p align="center">
+  <a href="https://docs.bastani.ai/"><img alt="Docs" src="https://img.shields.io/badge/docs-atomic-blue?style=flat-square" /></a>
+  <a href="https://discord.gg/9CvdXUGXR4"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
+  <a href="https://www.npmjs.com/package/@bastani/atomic"><img alt="npm" src="https://img.shields.io/npm/v/@bastani/atomic?style=flat-square" /></a>
+  <a href="https://github.com/bastani-inc/atomic"><img alt="GitHub" src="https://img.shields.io/badge/github-bastani--inc%2Fatomic-181717?style=flat-square&logo=github" /></a>
+</p>
 
 ---
 
-Atomic is a minimal terminal coding harness. Adapt Atomic to your workflows, not the other way around, without having to fork and modify Atomic internals. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
+Atomic is a verifiable coding agent runtime for the terminal. Run engineering work as explicit, checkable workflows with control, alignment, and evidence, and adapt Atomic to how you work without forking it. Extend it with TypeScript [Extensions](#extensions), [Skills](#skills), [Prompt Templates](#prompt-templates), and [Themes](#themes). Put your extensions, skills, prompt templates, and themes in [Atomic Packages](#atomic-packages) and share them with others via npm or git.
 
 Atomic ships with powerful defaults plus first-party bundled extensions for workflows, subagents, MCP, web access, and intercom. You can still adapt or replace any workflow by writing extensions, skills, prompt templates, themes, or Atomic packages that match how you work.
 
-Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
+Atomic runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps.
 
-## Share your OSS coding agent sessions
-
-If you use Atomic for open source work, consider sharing coding-agent sessions using an Atomic-owned workflow or your team's dataset process.
-
-Public OSS session data can help improve models, prompts, tools, and evaluations using real development workflows. Upstream Pi session-sharing resources may still be useful for historical context, but they are not the primary Atomic publication path.
+See the [Atomic documentation](https://docs.bastani.ai/) for guides, and [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md) to get involved.
 
 ## Table of Contents
 
