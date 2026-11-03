@@ -555,6 +555,8 @@ Like `before_provider_headers`, it fires again when Atomic retries a request aft
 
 This hook can rewrite provider-level system instructions or remove them entirely. Those payload-level changes are not reflected by `ctx.getSystemPrompt()`, which reports Atomic's system prompt string rather than the final serialized provider payload.
 
+The payload is the full request. Providers that continue from a previous response (OpenAI Codex over WebSocket, Anthropic message threads) may send only the part that is new since the previous request.
+
 ```typescript
 pi.on("before_provider_request", (event, ctx) => {
   console.log(JSON.stringify(event.payload, null, 2));
