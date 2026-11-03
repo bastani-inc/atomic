@@ -644,4 +644,42 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			await close();
 		}
 	});
+
+	it("searches the transcripts of a run's stages, which session listings leave out", async () => {
+		const base = customRunControl();
+		const control: WorkflowRunControl = {
+			...base,
+			getRun: async (runId) => {
+				const detail = await base.getRun(runId);
+				if (runId !== "run-new") return detail;
+				return {
+					...detail,
+					stages: [
+						{ id: "s1", name: "build", status: "completed", sessionId: "stage-session" },
+						{ id: "s2", name: "deploy", status: "failed", sessionId: "never-saved-stage" },
+					],
+				};
+			},
+		};
+		const { store, read, search, close } = await opened(() => control);
+		try {
+			await store.create(
+				{
+					...header("stage-session", resolve("/projects/alpha-worktree"), BASE),
+					internal: true,
+					workflow: { runId: "run-new", stageId: "s1", stageName: "build" },
+				},
+				[entry("s", "the flaky handshake came from a stale certificate", BASE + 1000)],
+			);
+			for (const url of ["history://", "history://workflows", "history://workflows/run-new"]) {
+				const found = await search("stale certificate", url);
+				const label = found.match(/(history:\/\/sessions\/stage-session):(\d+):/);
+				assert.ok(label, `stage transcript match for ${url}:\n${found}`);
+				assertExcludes(found, "unreadable");
+				assertIncludes(await read(`${label[1]}:${label[2]}-${label[2]}`), "stale certificate");
+			}
+		} finally {
+			await close();
+		}
+	});
 });

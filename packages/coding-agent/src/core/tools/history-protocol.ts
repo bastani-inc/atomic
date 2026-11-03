@@ -63,8 +63,9 @@ export const HISTORY_HELP = [
 	"  history://workflows                 recent workflow runs, newest first (?limit=N, ?offset=N)",
 	"  history://workflows/<runId>[:N-M]   one run: inputs, stages with their sessions, result",
 	'Search any of them with the search tool, e.g. paths "history://sessions" or "history://" (both); matches are',
-	"labelled with a URL and line number to read with :N-M. A search covers one page of records (25 by default); its",
-	"first result says which records it covered and the ?offset=N URL that continues it.",
+	"labelled with a URL and line number to read with :N-M. A search of workflow runs also searches their stages'",
+	"transcripts. A search covers one page of records (25 by default); its first result says which records it covered",
+	"and the ?offset=N URL that continues it.",
 	"Sessions of other projects appear only with ?project=all or ?project=<dir>; use that only when the user asks.",
 ].join("\n");
 
@@ -417,23 +418,50 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		return [...coverage("sessions", target, candidates.length, window.length, unreadable), ...out];
 	}
 
+	/**
+	 * Matches in one run and in its stages' transcripts. Stage sessions are internal, so session listings and session
+	 * searches leave them out; the run reaches them. A stage that never saved a session has nothing to search.
+	 */
+	async function searchRun(
+		runId: string,
+		request: InternalSearchRequest,
+	): Promise<{ readonly lines: string[]; readonly unreadable: number }> {
+		const detail = await requireWorkflows().getRun(runId);
+		const lines = searchLines(`history://workflows/${runId}`, runLines(detail), request);
+		const store = sources.sessionStore();
+		let unreadable = 0;
+		for (const stage of detail.stages) {
+			if (!store || !stage.sessionId) continue;
+			try {
+				if (!(await store.readHeader(stage.sessionId))) continue;
+				const transcript = await loadTranscript(store, stage.sessionId, true);
+				lines.push(...searchLines(`history://sessions/${stage.sessionId}`, transcript, request));
+			} catch {
+				unreadable++;
+			}
+		}
+		return { lines, unreadable };
+	}
+
 	async function searchWorkflows(target: HistoryTarget, request: InternalSearchRequest): Promise<string[]> {
-		const control = requireWorkflows();
-		if (target.id !== undefined)
-			return searchLines(
-				`history://workflows/${await authorizedRunId(target.id)}`,
-				await readRun(target.id),
-				request,
-			);
+		requireWorkflows();
+		if (target.id !== undefined) {
+			const runId = await authorizedRunId(target.id);
+			const { lines, unreadable } = await searchRun(runId, request);
+			return [
+				...(unreadable > 0 ? [`history://workflows/${runId}:0: [${unreadable} stage transcripts unreadable]`] : []),
+				...lines,
+			];
+		}
 		const runs = await recentRuns();
 		const window = runs.slice(target.offset, target.offset + target.limit);
 		const out: string[] = [];
 		let unreadable = 0;
 		for (const run of window) {
 			try {
-				out.push(
-					...searchLines(`history://workflows/${run.runId}`, runLines(await control.getRun(run.runId)), request),
-				);
+				const found = await searchRun(run.runId, request);
+				out.push(...found.lines);
+				unreadable += found.unreadable;
 			} catch {
 				unreadable++;
 			}
