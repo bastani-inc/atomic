@@ -552,16 +552,36 @@ function hashThreadPrefix(
 		fallbacks,
 		params.speed,
 	]);
-	const conversation = JSON.stringify(messages, (key, value: unknown) => {
-		// Cache markers don't change what a message means, but they move: Atomic puts one on the
-		// newest message, so the message that had it in the last request has none in this one.
-		if (key === "cache_control") return undefined;
-		// To attach that marker, the newest user message's string content is sent as one text block;
-		// the next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }].
-		if (key === "content" && typeof value === "string") return [{ type: "text", text: value }];
-		return value;
-	});
+	const conversation = JSON.stringify(messages.map(normalizeThreadMessage));
 	return shortHash(settings + conversation);
+}
+
+/**
+ * Normalizes one message so messages that mean the same to the API compare equal. Only message and
+ * content-block fields are touched; tool inputs and every other value compare exactly as sent.
+ *
+ * - Cache markers don't change what a message means, but they move: Atomic puts one on the newest
+ *   message, so the message that had it in the last request has none in this one.
+ * - To attach that marker, the newest user message's string content is sent as one text block; the
+ *   next request sends the same message as a string: "hi" vs [{ type: "text", text: "hi" }]. The
+ *   same holds for a tool result's content.
+ */
+function normalizeThreadMessage(message: unknown): unknown {
+	if (message === null || typeof message !== "object") return message;
+	const { content, ...rest } = message as { content?: unknown };
+	return { ...rest, content: normalizeThreadContent(content) };
+}
+
+function normalizeThreadContent(content: unknown): unknown {
+	if (typeof content === "string") return [{ type: "text", text: content }];
+	if (!Array.isArray(content)) return content;
+	return content.map((block: unknown) => {
+		if (block === null || typeof block !== "object") return block;
+		const { cache_control: _cacheControl, ...rest } = block as { cache_control?: unknown; type?: unknown };
+		if (rest.type !== "tool_result") return rest;
+		const toolResult = rest as { content?: unknown };
+		return { ...toolResult, content: normalizeThreadContent(toolResult.content) };
+	});
 }
 
 interface PreparedThreadRequest {

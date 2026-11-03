@@ -1,11 +1,30 @@
+import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { type AnthropicOptions, stream } from "../src/api/anthropic-messages.ts";
 import { cleanupSessionResources } from "../src/session-resources.ts";
 import type { AssistantMessage, Message, Model, Tool, ToolResultMessage } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const THREADS_BETA = "message-threads-2026-08-12";
+
+/** Asserts that `actual` contains `expected`: objects match key by key, arrays element by element. */
+function assertMatches(actual: unknown, expected: unknown, path = "value"): void {
+	if (Array.isArray(expected)) {
+		assert.ok(Array.isArray(actual), `${path} is not an array`);
+		assert.equal(actual.length, expected.length, `${path} length`);
+		expected.forEach((item, index) => assertMatches(actual[index], item, `${path}[${index}]`));
+		return;
+	}
+	if (expected !== null && typeof expected === "object") {
+		assert.ok(actual !== null && typeof actual === "object", `${path} is not an object`);
+		for (const [key, value] of Object.entries(expected)) {
+			assertMatches((actual as Record<string, unknown>)[key], value, `${path}.${key}`);
+		}
+		return;
+	}
+	assert.equal(actual, expected, path);
+}
 const grammarError =
 	"The compiled grammar is too large, which would cause performance issues. Simplify your tool schemas or reduce the number of strict tools.";
 
@@ -236,24 +255,24 @@ describe("Anthropic message threads", () => {
 		messages.push(user("second"));
 		const result = await say(h, messages);
 
-		expect(result.stopReason).toBe("stop");
+		assert.equal(result.stopReason, "stop");
 		const [create, next] = h.requests;
-		expect(create.body.thread).toEqual({ type: "create" });
-		expect(create.body.system).toBeDefined();
-		expect(create.body.tools).toBeDefined();
-		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_1" });
-		expect(next.body).not.toHaveProperty("system");
-		expect(next.body).not.toHaveProperty("tools");
+		assert.deepEqual(create.body.thread, { type: "create" });
+		assert.notEqual(create.body.system, undefined);
+		assert.notEqual(create.body.tools, undefined);
+		assert.deepEqual(next.body.thread, { type: "continue", previous_message_id: "msg_1" });
+		assert.equal(Object.hasOwn(next.body, "system"), false);
+		assert.equal(Object.hasOwn(next.body, "tools"), false);
 		// The first user message had string content turned into a cached block on request 1,
 		// and plain string content on request 2; the cache marker moved to the new message.
-		expect(create.body.messages[0].content).toEqual([
+		assert.deepEqual(create.body.messages[0].content, [
 			{ type: "text", text: "first", cache_control: { type: "ephemeral" } },
 		]);
-		expect(next.body.messages).toEqual([
+		assert.deepEqual(next.body.messages, [
 			{ role: "user", content: [{ type: "text", text: "second", cache_control: { type: "ephemeral" } }] },
 		]);
-		expect(create.betas).toContain(THREADS_BETA);
-		expect(next.betas).toEqual(create.betas);
+		assert.ok(create.betas.includes(THREADS_BETA));
+		assert.deepEqual(next.betas, create.betas);
 	});
 
 	it("continues after a reply that ends in tool calls, without placeholder results in the prefix", async () => {
@@ -263,14 +282,14 @@ describe("Anthropic message threads", () => {
 		);
 		const messages = [user("look it up")];
 		const first = await say(h, messages);
-		expect(first.stopReason).toBe("toolUse");
+		assert.equal(first.stopReason, "toolUse");
 		messages.push(toolResult("toolu_1", "lookup"));
 		await say(h, messages);
 
 		const next = h.requests[1];
-		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_tool" });
-		expect(next.body.messages).toHaveLength(1);
-		expect(next.body.messages[0]).toMatchObject({
+		assert.deepEqual(next.body.thread, { type: "continue", previous_message_id: "msg_tool" });
+		assert.equal(next.body.messages.length, 1);
+		assertMatches(next.body.messages[0], {
 			role: "user",
 			content: [{ type: "tool_result", tool_use_id: "toolu_1" }],
 		});
@@ -289,13 +308,13 @@ describe("Anthropic message threads", () => {
 		messages.push(user("second"));
 		await say(h, messages, { model, options: { thinkingEnabled: true, effort: "low" } });
 
-		expect(h.requests[0].body.messages.map((message) => message.output_config?.effort ?? message.role)).toEqual([
+		assert.deepEqual(h.requests[0].body.messages.map((message) => message.output_config?.effort ?? message.role), [
 			"user",
 			"high",
 		]);
 		const next = h.requests[1];
-		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_a" });
-		expect(next.body.messages.map((message) => message.output_config?.effort ?? message.role)).toEqual([
+		assert.deepEqual(next.body.thread, { type: "continue", previous_message_id: "msg_a" });
+		assert.deepEqual(next.body.messages.map((message) => message.output_config?.effort ?? message.role), [
 			"user",
 			"low",
 		]);
@@ -313,9 +332,9 @@ describe("Anthropic message threads", () => {
 		await say(h, messages, { model });
 
 		const next = h.requests[1];
-		expect(next.body.thread?.type).toBe("continue");
-		expect(next.body.messages.map((message) => message.role)).toEqual(["user", "system"]);
-		expect(JSON.stringify(next.body.messages[1].content)).toContain("tool_addition");
+		assert.equal(next.body.thread?.type, "continue");
+		assert.deepEqual(next.body.messages.map((message) => message.role), ["user", "system"]);
+		assert.ok(JSON.stringify(next.body.messages[1].content).includes("tool_addition"));
 	});
 
 	it.each<[string, TurnInput, TurnInput]>([
@@ -335,8 +354,8 @@ describe("Anthropic message threads", () => {
 		await say(h, messages, before);
 		messages.push(user("second"));
 		await say(h, messages, after);
-		expect(threadOf(h.requests[1])).toEqual({ type: "create" });
-		expect(h.requests[1].body.messages).toHaveLength(3);
+		assert.deepEqual(threadOf(h.requests[1]), { type: "create" });
+		assert.equal(h.requests[1].body.messages.length, 3);
 	});
 
 	it("creates a new thread when the request has no messages beyond the stored prefix", async () => {
@@ -344,7 +363,7 @@ describe("Anthropic message threads", () => {
 		const messages = [user("first")];
 		await say(h, messages);
 		await turn(h, messages);
-		expect(threadOf(h.requests[1])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[1]), { type: "create" });
 	});
 
 	it.each([
@@ -361,24 +380,24 @@ describe("Anthropic message threads", () => {
 		const onPayload = vi.fn();
 		const result = await say(h, messages, { options: { onPayload } });
 
-		expect(result.stopReason).toBe("stop");
-		expect(onPayload).toHaveBeenCalledTimes(1);
-		expect(h.requests).toHaveLength(3);
+		assert.equal(result.stopReason, "stop");
+		assert.equal(onPayload.mock.calls.length, 1);
+		assert.equal(h.requests.length, 3);
 		const [, rejected, resend] = h.requests;
-		expect(rejected.body.thread?.type).toBe("continue");
-		expect(resend.body.thread).toEqual({ type: "create" });
-		expect(resend.body.messages).toHaveLength(3);
-		expect(resend.body.system).toBeDefined();
-		expect(resend.betas).toEqual(rejected.betas);
-		expect(result.diagnostics).toHaveLength(1);
-		expect(result.diagnostics![0]).toMatchObject({
+		assert.equal(rejected.body.thread?.type, "continue");
+		assert.deepEqual(resend.body.thread, { type: "create" });
+		assert.equal(resend.body.messages.length, 3);
+		assert.notEqual(resend.body.system, undefined);
+		assert.deepEqual(resend.betas, rejected.betas);
+		assert.equal(result.diagnostics?.length, 1);
+		assertMatches(result.diagnostics![0], {
 			type: "anthropic_thread_fallback",
 			details: { reason: errorCode },
 		});
 
 		messages.push(user("third"));
 		await say(h, messages);
-		expect(threadOf(h.requests[3])).toEqual({ type: "continue", previous_message_id: "msg_3" });
+		assert.deepEqual(threadOf(h.requests[3]), { type: "continue", previous_message_id: "msg_3" });
 	});
 
 	it.each([
@@ -392,17 +411,17 @@ describe("Anthropic message threads", () => {
 		h.queue.push(() => errorResponse(400, message, errorCode));
 		const result = await say(h, messages);
 
-		expect(result.stopReason).toBe("stop");
-		expect(result.diagnostics?.[0]).toMatchObject({
+		assert.equal(result.stopReason, "stop");
+		assertMatches(result.diagnostics?.[0], {
 			type: "anthropic_thread_fallback",
 			details: { reason: errorCode ?? "400" },
 		});
 		messages.push(user("third"));
 		await say(h, messages);
 		const later = h.requests[3];
-		expect(later.body).not.toHaveProperty("thread");
+		assert.equal(Object.hasOwn(later.body, "thread"), false);
 		// The resend was accepted with the threads beta, so the beta list stays the same.
-		expect(later.betas).toEqual(h.requests[0].betas);
+		assert.deepEqual(later.betas, h.requests[0].betas);
 	});
 
 	it("shows the error when the resend fails too and keeps threads on", async () => {
@@ -415,12 +434,12 @@ describe("Anthropic message threads", () => {
 			() => errorResponse(400, "Real problem"),
 		);
 		const failed = await turn(h, messages);
-		expect(failed.stopReason).toBe("error");
-		expect(failed.errorMessage).toContain("Real problem");
-		expect(h.requests).toHaveLength(3);
+		assert.equal(failed.stopReason, "error");
+		assert.ok(failed.errorMessage?.includes("Real problem"));
+		assert.equal(h.requests.length, 3);
 
 		await turn(h, messages);
-		expect(threadOf(h.requests[3])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[3]), { type: "create" });
 	});
 
 	it.each([
@@ -433,14 +452,14 @@ describe("Anthropic message threads", () => {
 		messages.push(user("second"));
 		h.queue.push(() => errorResponse(status, message));
 		const failed = await turn(h, messages);
-		expect(failed.stopReason).toBe("error");
-		expect(failed.errorMessage).toContain(message);
-		expect(h.requests).toHaveLength(2);
-		expect(failed.diagnostics).toBeUndefined();
+		assert.equal(failed.stopReason, "error");
+		assert.ok(failed.errorMessage?.includes(message));
+		assert.equal(h.requests.length, 2);
+		assert.equal(failed.diagnostics, undefined);
 
 		// Threads stay on: after a fix such as compaction, the next request starts a new thread.
 		await turn(h, messages);
-		expect(threadOf(h.requests[2])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[2]), { type: "create" });
 	});
 
 	it("leaves strict tool rejections to the strict tool fallback", async () => {
@@ -449,10 +468,10 @@ describe("Anthropic message threads", () => {
 		const h = harness();
 		h.queue.push(() => errorResponse(400, grammarError));
 		const result = await turn(h, [user("first")], { model, tools: [strictTool] });
-		expect(result.stopReason).toBe("stop");
-		expect(h.requests).toHaveLength(2);
-		expect(h.requests.map((request) => threadOf(request)?.type)).toEqual(["create", "create"]);
-		expect(result.diagnostics?.map((diagnostic) => diagnostic.type)).toEqual(["anthropic_strict_tools_fallback"]);
+		assert.equal(result.stopReason, "stop");
+		assert.equal(h.requests.length, 2);
+		assert.deepEqual(h.requests.map((request) => threadOf(request)?.type), ["create", "create"]);
+		assert.deepEqual(result.diagnostics?.map((diagnostic) => diagnostic.type), ["anthropic_strict_tools_fallback"]);
 	});
 
 	it("starts a new thread when a retried continue finds the thread in flight", async () => {
@@ -465,8 +484,8 @@ describe("Anthropic message threads", () => {
 			() => errorResponse(400, "in flight", "thread_continue_in_flight"),
 		);
 		const result = await say(h, messages, { options: { maxRetries: 1 } });
-		expect(result.stopReason).toBe("stop");
-		expect(h.requests.map((request) => threadOf(request)?.type)).toEqual([
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(h.requests.map((request) => threadOf(request)?.type), [
 			"create",
 			"continue",
 			"continue",
@@ -487,10 +506,10 @@ describe("Anthropic message threads", () => {
 		const options: AnthropicOptions = { headers: { "anthropic-beta": header } };
 		const messages = [user("first")];
 		const result = await say(h, messages, { options });
-		expect(result.stopReason).toBe("stop");
+		assert.equal(result.stopReason, "stop");
 		messages.push(user("second"));
 		await say(h, messages, { options });
-		expect(h.requests.map((request) => threadOf(request)?.type)).toEqual(["create", undefined, undefined]);
+		assert.deepEqual(h.requests.map((request) => threadOf(request)?.type), ["create", undefined, undefined]);
 	});
 
 	it.each<[string, ReplySpec | "abort"]>([
@@ -517,15 +536,15 @@ describe("Anthropic message threads", () => {
 		});
 		messages.push(first, user("second"));
 		await turn(h, messages);
-		expect(threadOf(h.requests[1])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[1]), { type: "create" });
 	});
 
 	it("does not use threads with cacheRetention none", async () => {
 		const h = harness();
 		const messages = [user("first")];
 		await say(h, messages, { options: { cacheRetention: "none" } });
-		expect(h.requests[0].body).not.toHaveProperty("thread");
-		expect(h.requests[0].betas).not.toContain(THREADS_BETA);
+		assert.equal(Object.hasOwn(h.requests[0].body, "thread"), false);
+		assert.ok(!h.requests[0].betas.includes(THREADS_BETA));
 	});
 
 	it("matches Claude Code tool names across turns with OAuth", async () => {
@@ -536,10 +555,10 @@ describe("Anthropic message threads", () => {
 		const options: AnthropicOptions = { apiKey: "sk-ant-oat-test" };
 		const messages = [user("read it")];
 		const first = await say(h, messages, { tools: [tool("read")], options });
-		expect(first.content.find((block) => block.type === "toolCall")).toMatchObject({ name: "read" });
+		assertMatches(first.content.find((block) => block.type === "toolCall"), { name: "read" });
 		messages.push(toolResult("toolu_1", "read"));
 		await say(h, messages, { tools: [tool("read")], options });
-		expect(threadOf(h.requests[1])).toEqual({ type: "continue", previous_message_id: "msg_oauth" });
+		assert.deepEqual(threadOf(h.requests[1]), { type: "continue", previous_message_id: "msg_oauth" });
 	});
 
 	it("sends cache warming replays without a thread and keeps the conversation's thread", async () => {
@@ -551,11 +570,11 @@ describe("Anthropic message threads", () => {
 		await say(h, messages);
 
 		const [real, warm, next] = h.requests;
-		expect(warm.body).not.toHaveProperty("thread");
-		expect(warm.body.max_tokens).toBe(1);
-		expect(warm.body.messages).toEqual(real.body.messages);
-		expect(warm.betas).toEqual(real.betas);
-		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_1" });
+		assert.equal(Object.hasOwn(warm.body, "thread"), false);
+		assert.equal(warm.body.max_tokens, 1);
+		assert.deepEqual(warm.body.messages, real.body.messages);
+		assert.deepEqual(warm.betas, real.betas);
+		assert.deepEqual(next.body.thread, { type: "continue", previous_message_id: "msg_1" });
 	});
 });
 
@@ -572,10 +591,10 @@ describe("Anthropic message threads in Atomic", () => {
 		messages.push(user("second"));
 		await say(h, messages, { model });
 		for (const request of h.requests) {
-			expect(request.body).not.toHaveProperty("thread");
-			expect(request.betas).not.toContain(THREADS_BETA);
+			assert.equal(Object.hasOwn(request.body, "thread"), false);
+			assert.ok(!request.betas.includes(THREADS_BETA));
 		}
-		expect(h.requests[1].body).toHaveProperty("system");
+		assert.equal(Object.hasOwn(h.requests[1].body, "system"), true);
 	});
 
 	it.each<[string, Partial<Model<"anthropic-messages">>]>([
@@ -586,21 +605,21 @@ describe("Anthropic message threads in Atomic", () => {
 		const h = harness();
 		const model: Model<"anthropic-messages"> = { ...baseModel, ...overrides };
 		await say(h, [user("first")], { model });
-		expect(h.requests[0].body).not.toHaveProperty("thread");
-		expect(h.requests[0].betas).not.toContain(THREADS_BETA);
+		assert.equal(Object.hasOwn(h.requests[0].body, "thread"), false);
+		assert.ok(!h.requests[0].betas.includes(THREADS_BETA));
 
 		const enabled: Model<"anthropic-messages"> = { ...model, compat: { supportsMessageThreads: true } };
 		await say(h, [user("again")], { model: enabled });
-		expect(threadOf(h.requests[1])).toEqual({ type: "create" });
-		expect(h.requests[1].betas).toContain(THREADS_BETA);
+		assert.deepEqual(threadOf(h.requests[1]), { type: "create" });
+		assert.ok(h.requests[1].betas.includes(THREADS_BETA));
 	});
 
 	it("turns threads off with compat.supportsMessageThreads false on api.anthropic.com", async () => {
 		const h = harness();
 		const model: Model<"anthropic-messages"> = { ...baseModel, compat: { supportsMessageThreads: false } };
 		await say(h, [user("first")], { model });
-		expect(h.requests[0].body).not.toHaveProperty("thread");
-		expect(h.requests[0].betas).not.toContain(THREADS_BETA);
+		assert.equal(Object.hasOwn(h.requests[0].body, "thread"), false);
+		assert.ok(!h.requests[0].betas.includes(THREADS_BETA));
 	});
 
 	it("continues a fast-mode thread with the base model and speed, and starts a new one when speed changes", async () => {
@@ -615,12 +634,12 @@ describe("Anthropic message threads in Atomic", () => {
 		messages.push(user("second"));
 		await say(h, messages, { model: fast });
 		const next = h.requests[1];
-		expect(next.body.thread).toEqual({ type: "continue", previous_message_id: "msg_1" });
-		expect(next.body).toMatchObject({ model: "claude-test", speed: "fast" });
+		assert.deepEqual(next.body.thread, { type: "continue", previous_message_id: "msg_1" });
+		assertMatches(next.body, { model: "claude-test", speed: "fast" });
 
 		messages.push(user("third"));
 		await say(h, messages, { model: { ...fast, id: "claude-test", fastRoute: undefined } });
-		expect(threadOf(h.requests[2])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[2]), { type: "create" });
 	});
 
 	it("does not use threads with a caller-supplied client", async () => {
@@ -628,7 +647,7 @@ describe("Anthropic message threads in Atomic", () => {
 		const { default: Anthropic } = await import("@anthropic-ai/sdk");
 		const client = new Anthropic({ apiKey: "test-key", fetch: h.fetch, maxRetries: 0 });
 		await say(h, [user("first")], { options: { client } });
-		expect(h.requests[0].body).not.toHaveProperty("thread");
+		assert.equal(Object.hasOwn(h.requests[0].body, "thread"), false);
 	});
 
 	it("frees a session's thread state with cleanupSessionResources", async () => {
@@ -638,6 +657,35 @@ describe("Anthropic message threads in Atomic", () => {
 		cleanupSessionResources(h.sessionId);
 		messages.push(user("second"));
 		await say(h, messages);
-		expect(threadOf(h.requests[1])).toEqual({ type: "create" });
+		assert.deepEqual(threadOf(h.requests[1]), { type: "create" });
+	});
+});
+
+describe("Anthropic message thread prefix comparison", () => {
+	it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+		["a cache_control field", { value: "x", cache_control: "keep" }, { value: "x" }],
+		["a string content field", { content: "x" }, { content: [{ type: "text", text: "x" }] }],
+	])("starts a new thread when an earlier tool argument's %s is edited", async (_name, sent, edited) => {
+		const h = harness();
+		h.queue.push((request) =>
+			reply(request, { id: "msg_tool", toolCalls: [{ id: "toolu_1", name: "lookup", input: sent }] }),
+		);
+		const messages = [user("look it up")];
+		await say(h, messages);
+		messages.push(toolResult("toolu_1", "lookup"));
+		const onPayload = (payload: unknown) => {
+			const body = payload as WireBody;
+			for (const message of body.messages) {
+				if (!Array.isArray(message.content)) continue;
+				for (const block of message.content as Array<{ type: string; input?: unknown }>) {
+					if (block.type === "tool_use") block.input = structuredClone(edited);
+				}
+			}
+			return body;
+		};
+		await say(h, messages, { options: { onPayload } });
+		const next = h.requests[1];
+		assert.deepEqual(next.body.thread, { type: "create" });
+		assert.equal(next.body.messages.length, 3);
 	});
 });
