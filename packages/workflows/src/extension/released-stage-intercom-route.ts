@@ -40,12 +40,11 @@ function announcementFor(
 	released: ReleasedStage,
 	answer: ReleasedStageAnnouncement["answer"],
 ): ReleasedStageAnnouncement | undefined {
-	const runs = store.runs();
-	const run = runs.find((candidate) => candidate.id === released.runId);
+	const run = store.run(released.runId);
 	const stage = run?.stages.find((candidate) => candidate.id === released.stageId);
 	// Only a stage that connected to Intercom at startup was a peer before release.
 	if (run === undefined || stage?.pendingStageDeliveryAvailable !== true) return undefined;
-	const rootRunId = durableRootRunIdForRun(runs, run.id);
+	const rootRunId = durableRootRunIdForRun(store, run.id);
 	if (rootRunId === undefined) return undefined;
 	// A name containing "/" or "*" is not a canonical path segment; its id stays addressable.
 	const stageKeys = [released.stageId, released.stageName].filter((key) => !key.includes("/") && !key.includes("*"));

@@ -9,7 +9,13 @@ import { type BoundedStickyDeliveryStates, boundStickyDeliveryStates } from "./s
 import type { StickyStageDeliveryStatus } from "./sticky-stage-delivery-status.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { PendingStageMessage, PendingStageMessageDelivery, RunSnapshot, StageSnapshot } from "./store-types.js";
-import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "./workflow-run-ownership.js";
+import {
+	authoritativeWorkflowChildRunId,
+	type RunLookup,
+	type RunSource,
+	type RunsById,
+	reciprocalWorkflowRootRunId,
+} from "./workflow-run-ownership.js";
 import { matchStagePathSegments, splitStagePathSegments } from "./workflow-stage-path-matching.js";
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "./workflow-stage-target.js";
 
@@ -47,6 +53,8 @@ export function boundPossibleStageDeliveryStates(
  */
 export class WorkflowTopologyIndex {
 	private lineage: LineageValue[] = [];
+	/** Where each run's lineage starts in `lineage`. */
+	private lineageStarts = new Map<string, number>();
 	private runById = new Map<string, RunSnapshot>();
 	private readonly roots = new Map<string, string | undefined>();
 	private readonly hops = new Map<string, readonly WorkflowBoundaryHop[] | undefined>();
@@ -54,18 +62,39 @@ export class WorkflowTopologyIndex {
 	refresh(runs: readonly RunSnapshot[]): void {
 		const runById = new Map(runs.map((run) => [run.id, run]));
 		const lineage: LineageValue[] = [];
+		const lineageStarts = new Map<string, number>();
 		for (const run of runs) {
-			lineage.push(run.id, run.rootRunId, run.parentRunId, run.parentStageId);
-			if (run.parentRunId === undefined) continue;
-			const parent = runById.get(run.parentRunId);
-			const boundary = parent?.stages.find((stage) => stage.id === run.parentStageId);
-			lineage.push(parent !== undefined, boundary?.name, authoritativeWorkflowChildRunId(boundary));
+			lineageStarts.set(run.id, lineage.length);
+			pushLineage(lineage, run, runById);
 		}
 		if (sameValues(lineage, this.lineage)) return;
 		this.lineage = lineage;
+		this.lineageStarts = lineageStarts;
 		this.runById = runById;
 		this.roots.clear();
 		this.hops.clear();
+	}
+
+	/**
+	 * Whether the lineage of these runs, and of the runs under them, is still what the last refresh saw, so every
+	 * answer the index gives holds without a refresh. Reads only those runs; a run the last refresh did not see, or
+	 * one the source no longer holds, is a change.
+	 */
+	holds(source: Required<Pick<RunLookup, "run" | "childRuns">>, runIds: Iterable<string>): boolean {
+		const runs: RunsById = { get: (runId) => source.run(runId) };
+		const values: LineageValue[] = [];
+		const unchanged = (run: RunSnapshot): boolean => {
+			const start = this.lineageStarts.get(run.id);
+			if (start === undefined) return false;
+			values.length = 0;
+			pushLineage(values, run, runs);
+			return values.every((value, index) => this.lineage[start + index] === value);
+		};
+		for (const runId of runIds) {
+			const run = source.run(runId);
+			if (run === undefined || !unchanged(run) || !source.childRuns(runId).every(unchanged)) return false;
+		}
+		return true;
 	}
 
 	rootOf(runId: string): string | undefined {
@@ -81,6 +110,15 @@ export class WorkflowTopologyIndex {
 		this.hops.set(runId, hops);
 		return hops;
 	}
+}
+
+/** A run's lineage: its id, declared root and parent link, then whether its parent exists and its boundary. */
+function pushLineage(values: LineageValue[], run: RunSnapshot, runs: RunsById): void {
+	values.push(run.id, run.rootRunId, run.parentRunId, run.parentStageId);
+	if (run.parentRunId === undefined) return;
+	const parent = runs.get(run.parentRunId);
+	const boundary = parent?.stages.find((stage) => stage.id === run.parentStageId);
+	values.push(parent !== undefined, boundary?.name, authoritativeWorkflowChildRunId(boundary));
 }
 
 function boundaryHops(
@@ -204,18 +242,21 @@ export class PossibleStageRowsIndex {
 
 	/**
 	 * Rows equal to recomputing every row from scratch, with each row's delivery states bounded by
-	 * {@link boundStickyDeliveryStates}. Call `topology.refresh(runs)` first.
+	 * {@link boundStickyDeliveryStates}. Call `topology.refresh(runs)` first, or check that `topology.holds` for the
+	 * changed runs. `runs` may hold only the runs that name this root as their topology root or declared root, in
+	 * store order; `lookup` then finds the root's durable owner.
 	 */
 	rows(
 		runs: readonly RunSnapshot[],
 		rootRun: RunSnapshot,
 		availableBackend: DurableWorkflowBackend | undefined,
+		lookup: RunSource = runs,
 	): readonly PossibleStageRow[] {
 		if (isTerminalRunStatus(rootRun.status)) return [];
 		this.refreshEntries(rootRun.pendingStageMessages ?? []);
-		const resolvedBackend = availableRunDurableBackend(runs, this.rootRunId) ?? availableBackend;
+		const resolvedBackend = availableRunDurableBackend(lookup, this.rootRunId) ?? availableBackend;
 		const backend =
-			resolvedBackend === undefined ? undefined : durableBackendForRun(resolvedBackend, runs, this.rootRunId);
+			resolvedBackend === undefined ? undefined : durableBackendForRun(resolvedBackend, lookup, this.rootRunId);
 		this.refreshReceipts(backend);
 		this.refreshStages(runs);
 		for (const state of this.patterns) if (state.dirty) this.recompute(state, backend);

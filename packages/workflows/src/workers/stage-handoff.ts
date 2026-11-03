@@ -172,9 +172,7 @@ export class PoolStageHandoff {
 		const terminals = new Map<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>();
 		// Terminal boundaries settle the child's own nested runs; a child without any skips the scan of every
 		// root checkpoint, which made the completion of a wide fan-out quadratic in its width.
-		const nested = this.store
-			.runs()
-			.some((run) => run.endedAt === undefined && run.id !== work.childRunId && this.owners.get(run.id) === work.id);
+		const nested = this.ownedRunIds(work).some((id) => id !== work.childRunId && this.unended(id) !== undefined);
 		for (const checkpoint of nested ? this.backend.listCheckpoints(root) : []) {
 			const boundary = checkpoint.kind === "stage" ? checkpoint.topology?.boundary : undefined;
 			if (checkpoint.kind !== "stage" || boundary?.event !== "terminal") continue;
@@ -190,8 +188,9 @@ export class PoolStageHandoff {
 		result: RunResult,
 		terminals: ReadonlyMap<string, { status: RunSnapshot["status"]; outputs: RunSnapshot["result"] }>,
 	): void {
-		for (const run of this.store.runs()) {
-			if (run.endedAt !== undefined || this.owners.get(run.id) !== work.id) continue;
+		for (const id of this.ownedRunIds(work)) {
+			const run = this.unended(id);
+			if (run === undefined) continue;
 			if (run.id === work.childRunId) {
 				// Each stage keeps the worker lease it showed; a stage only the result has takes the attempt's.
 				const executions = new Map(run.stages.map((stage) => [stage.id, stage.workerExecution]));
@@ -216,6 +215,24 @@ export class PoolStageHandoff {
 			const terminal = terminals.get(run.id);
 			if (terminal !== undefined) this.store.recordRunEnd(run.id, terminal.status, terminal.outputs);
 		}
+	}
+
+	/**
+	 * The runs this work published and the store still holds, in store order: a completion costs what the work
+	 * owns, not what the store holds, which in a long-lived host is thousands of finished runs (#4190).
+	 */
+	private ownedRunIds(work: Pick<PoolWork, "id">): string[] {
+		const held: { readonly id: string; readonly position: number }[] = [];
+		for (const id of this.attempts.get(work.id)?.runs ?? []) {
+			const position = this.store.runPosition(id);
+			if (position !== undefined) held.push({ id, position });
+		}
+		return held.sort((left, right) => left.position - right.position).map(({ id }) => id);
+	}
+
+	private unended(runId: string): RunSnapshot | undefined {
+		const run = this.store.run(runId);
+		return run?.endedAt === undefined ? run : undefined;
 	}
 
 	fence(work: Pick<PoolWork, "id" | "generation">): void {

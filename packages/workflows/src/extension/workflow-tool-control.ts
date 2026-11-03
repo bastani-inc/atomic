@@ -207,7 +207,7 @@ async function quitToolNodeAction(
 	// pre-abort snapshot.
 	await Promise.resolve();
 	await Promise.resolve();
-	const workflowStatus = store.runs().find((candidate) => candidate.id === runId)?.status ?? "cancelled";
+	const workflowStatus = store.run(runId)?.status ?? "cancelled";
 	const abandonedNote = aborted.abandoned ? " The callback ignored its abort signal and was abandoned." : "";
 	return {
 		action,
@@ -324,10 +324,7 @@ function activePauseTargets(store: Store, runIds: readonly string[], stageId?: s
 
 function retainedPauseMessage(store: Store, targets: ReturnType<typeof activePauseTargets>): string | undefined {
 	const retained = targets.filter((target) =>
-		store
-			.runs()
-			.find((run) => run.id === target.runId)
-			?.stages.some((stage) => stage.id === target.stageId && stage.status === "paused"),
+		store.run(target.runId)?.stages.some((stage) => stage.id === target.stageId && stage.status === "paused"),
 	);
 	return retained.length === 0
 		? undefined
@@ -694,7 +691,7 @@ export async function workflowResumeAction(
 		};
 	}
 	const backend = requireStoreDurableBackend(store, target.runId);
-	const exact = store.runs().find((run) => run.id === target.runId);
+	const exact = store.run(target.runId);
 	const shadow =
 		exact === undefined
 			? "not_shadow"
@@ -747,7 +744,7 @@ export async function workflowResumeAction(
 		return { action: "resume", runId: target.runId, status: "noop", message: stage.message, code: stage.code };
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const run = store.runs().find((candidate) => candidate.id === stageRunId);
+	const run = store.run(stageRunId);
 	const hadPausedRunState = run?.status === "paused";
 	const endedBeforeResume = run?.endedAt !== undefined;
 	const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);

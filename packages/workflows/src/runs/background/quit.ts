@@ -140,7 +140,7 @@ async function executeQuitRunWithAction(
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
 	const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
-	const run = activeStore.runs().find((candidate) => candidate.id === runId);
+	const run = activeStore.run(runId);
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 	workflowObservationRuntime(activeStore).control(runId, action, opts?.actor);
@@ -188,12 +188,11 @@ async function executeQuitRunWithAction(
 			pauseFailures.push(`${target.controlRunId}/${target.handle.stageId}: ${message}`);
 			return;
 		}
-		const controlRun = activeStore.runs().find((candidate) => candidate.id === target.controlRunId);
+		const controlRun = activeStore.run(target.controlRunId);
 		if (controlRun?.endedAt !== undefined) return;
 		activeStore.recordStagePaused(target.controlRunId, target.handle.stageId);
 		const stage = activeStore
-			.runs()
-			.find((candidate) => candidate.id === target.controlRunId)
+			.run(target.controlRunId)
 			?.stages.find((candidate) => candidate.id === target.handle.stageId);
 		if (stage?.status === "paused") {
 			pausedRunIds.add(target.controlRunId);
@@ -231,7 +230,7 @@ async function executeQuitRunWithAction(
 	// A nested run whose tool was aborted has no paused stage of its own; mark it
 	// paused too so the boundary's live state matches the root's.
 	for (const handle of toolHandles) if (handle.runId !== runId) pausedRunIds.add(handle.runId);
-	const current = activeStore.runs().find((candidate) => candidate.id === runId);
+	const current = activeStore.run(runId);
 	if (current === undefined) return { ok: false, runId, reason: "not_found" };
 	// A quit that suspended the executor still owns its durable transition.
 	if (current.endedAt !== undefined && runtimeQuit === undefined) return { ok: false, runId, reason: "already_ended" };
@@ -386,10 +385,7 @@ function collectCancelledToolNodes(
 	toolHandles: readonly ToolControlHandle[],
 ): readonly WorkflowCancelledToolNode[] {
 	return toolHandles.flatMap((handle) => {
-		const node = activeStore
-			.runs()
-			.find((candidate) => candidate.id === handle.runId)
-			?.toolNodes.find((candidate) => candidate.id === handle.nodeId);
+		const node = activeStore.run(handle.runId)?.toolNodes.find((candidate) => candidate.id === handle.nodeId);
 		if (node === undefined || node.status !== "cancelled") return [];
 		return [{ runId: handle.runId, nodeId: handle.nodeId, node: structuredClone(node) }];
 	});

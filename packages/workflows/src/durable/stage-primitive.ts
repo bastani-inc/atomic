@@ -762,7 +762,7 @@ export function recordCachedStageWithTracker(
 	const stageId = sourceStageId ?? cachedStageId(runId, replayKey);
 	let parentIds = tracker.onSpawn(stageId, name);
 	const sourceParents = sourceStageId === undefined ? undefined : checkpoint.topology?.parentIds;
-	const run = store.runs().find((candidate) => candidate.id === runId);
+	const run = store.run(runId);
 	const restored = sourceParents?.map(
 		(sourceId) =>
 			sourceToReplayedNodeIds?.get(sourceId) ??

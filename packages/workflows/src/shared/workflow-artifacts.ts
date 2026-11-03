@@ -217,7 +217,7 @@ export function createWorkflowArtifactRunStateResolver(): WorkflowArtifactRunSta
 		let durable: WorkflowArtifactRunState | undefined;
 		if (backend !== undefined) {
 			try {
-				durable = durableRunState(availableRunDurableBackend(store.runs(), runId) ?? backend, runId);
+				durable = durableRunState(availableRunDurableBackend(store, runId) ?? backend, runId);
 			} catch {
 				backendReady = false;
 				return localState === "protected" ? "protected" : undefined;
