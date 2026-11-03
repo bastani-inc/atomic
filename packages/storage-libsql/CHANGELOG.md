@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.71] - 2026-11-03
+
+### Fixed
+
+- Several processes opening one `file:` database at once no longer fail the open with `SQLITE_BUSY: database is locked` while the file is switched to the write-ahead log. SQLite does not wait for another connection's lock while it changes a file's journal mode, so the switch failed at once whenever another process was writing a file still in the rollback journal, such as a new file or one from before the adapter used WAL, or switching it at the same moment. The open now retries the switch for up to the 5-second busy timeout, as every other statement waits ([#4270](https://github.com/bastani-inc/atomic/issues/4270))
+
+## [0.9.71-alpha.1] - 2026-11-03
+
 ### Fixed
 
 - Several processes opening one `file:` database at once no longer fail the open with `SQLITE_BUSY: database is locked` while the file is switched to the write-ahead log. SQLite does not wait for another connection's lock while it changes a file's journal mode, so the switch failed at once whenever another process was writing a file still in the rollback journal, such as a new file or one from before the adapter used WAL, or switching it at the same moment. The open now retries the switch for up to the 5-second busy timeout, as every other statement waits ([#4270](https://github.com/bastani-inc/atomic/issues/4270))
