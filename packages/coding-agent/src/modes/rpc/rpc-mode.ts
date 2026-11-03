@@ -67,7 +67,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 	const output = outputBuffer.output;
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const extensionUICapabilities: RpcExtensionUICapabilities = { questionnaire: false };
-	const signalCleanupHandlers: Array<() => void> = [];
 	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
 	const customUi = keybindings ? new EngineCustomUiService(writeRawStdout, keybindings) : undefined;
 	const renderService = interactiveEngineChild ? new EngineRenderService(writeRawStdout) : undefined;
@@ -93,6 +92,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 
 	let shutdownRequested = false;
 	let shuttingDown = false;
+	// SIGTERM/SIGHUP received so far. Only a repeated signal forces exit during shutdown.
+	let signalCount = 0;
 	let inputReady = false;
 	let activeCommands = 0;
 	// Count detached prompt work as well as input handling so responses precede shutdown.
@@ -181,21 +182,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		return cause === "signal";
 	};
 
+	/** Dispose the runtime and exit. Runs once; later calls (stdin EOF after a signal) do nothing. */
 	async function shutdown(
 		exitCode = 0,
 		signal?: NodeJS.Signals,
 		cause: "signal" | "input-end" | "request" = "request",
-	): Promise<never> {
-		if (shuttingDown) {
-			process.exit(exitCode);
-		}
+	): Promise<void> {
+		if (shuttingDown) return;
 		shuttingDown = true;
 		detachInput();
 		process.stdin.pause();
 		await handleCommand.disposeActiveBash();
-		for (const cleanup of signalCleanupHandlers) {
-			cleanup();
-		}
 		sessionBinding.disposeSubscriptions();
 		engineLiveness.stop();
 		customUi?.dispose();
@@ -232,12 +229,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		}
 
 		for (const signal of signals) {
-			const handler = () => {
+			const exitCode = signal === "SIGHUP" ? 129 : 143;
+			// Handlers stay registered until exit: without one, a signal during shutdown would kill
+			// the process before dispose() finishes.
+			process.on(signal, () => {
+				signalCount++;
 				killTrackedDetachedChildren();
-				void shutdown(signal === "SIGHUP" ? 129 : 143, signal, "signal");
-			};
-			process.on(signal, handler);
-			signalCleanupHandlers.push(() => process.off(signal, handler));
+				if (!shuttingDown) {
+					void shutdown(exitCode, signal, "signal");
+				} else if (signalCount > 1) {
+					// Process managers often close stdin and send SIGTERM together, so one signal
+					// during shutdown is not a request to skip cleanup; a repeated one is.
+					process.exit(exitCode);
+				}
+			});
 		}
 	};
 

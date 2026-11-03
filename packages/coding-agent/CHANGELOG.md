@@ -5,6 +5,7 @@
 ### Fixed
 
 - `/model` shows the account's display name for GitHub Copilot models discovered from the account's model list instead of repeating the model ID. Model IDs, and the IDs sent to Copilot, are unchanged. Run `atomic update --models` once to replace names cached by an earlier version.
+- RPC mode no longer cuts off shutdown cleanup, such as a pending MCP token refresh, when stdin closes and `SIGTERM` arrives together, which process managers like Paseo and systemd do. Once a shutdown has started, a stdin close or a single signal no longer interrupts it; a second signal still exits at once. Print mode likewise no longer dies from a signal that arrives during its final cleanup (upstream [#11752](https://github.com/earendil-works/pi/pull/11752)).
 
 ## [0.9.71] - 2026-11-03
 
