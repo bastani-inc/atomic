@@ -17,10 +17,7 @@ export interface ResumeAcknowledgementResult {
 }
 
 function targetStage(store: Store, target: ResumeAcknowledgementTarget): StageSnapshot | undefined {
-	return store
-		.runs()
-		.find((run) => run.id === target.controlRunId)
-		?.stages.find((stage) => stage.id === target.handle.stageId);
+	return store.run(target.controlRunId)?.stages.find((stage) => stage.id === target.handle.stageId);
 }
 
 function targetIsActuallyPaused(store: Store, target: ResumeAcknowledgementTarget): boolean {

@@ -24,10 +24,8 @@ export function aggregateWorkflowRootRunId(store: Store, runId: string): string 
 export function workflowHasPausedStages(store: Store, runId: string): boolean {
 	return expandedControlRunIds(store, runId).some(
 		(controlRunId) =>
-			store
-				.runs()
-				.find((run) => run.id === controlRunId)
-				?.stages.some((stage) => stage.status === "paused" || stage.status === "blocked") ?? false,
+			store.run(controlRunId)?.stages.some((stage) => stage.status === "paused" || stage.status === "blocked") ??
+			false,
 	);
 }
 

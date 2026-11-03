@@ -324,10 +324,7 @@ function activePauseTargets(store: Store, runIds: readonly string[], stageId?: s
 
 function retainedPauseMessage(store: Store, targets: ReturnType<typeof activePauseTargets>): string | undefined {
 	const retained = targets.filter((target) =>
-		store
-			.runs()
-			.find((run) => run.id === target.runId)
-			?.stages.some((stage) => stage.id === target.stageId && stage.status === "paused"),
+		store.run(target.runId)?.stages.some((stage) => stage.id === target.stageId && stage.status === "paused"),
 	);
 	return retained.length === 0
 		? undefined

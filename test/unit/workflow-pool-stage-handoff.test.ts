@@ -20,6 +20,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { asWorkflowInfrastructureError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
+import { holdFinishedRuns } from "../helpers/finished-runs.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -1648,27 +1649,6 @@ test("the store finds runs by id through additions, replacements, removals and c
 	store.recordRunStart(snapshot("e"));
 	assert.equal(store.run("e")?.id, "e");
 });
-
-/** Fills the store with finished runs that count every read of their fields, as a long-lived host holds them. */
-function holdFinishedRuns(store: ReturnType<typeof createStore>, count: number): { reads: number } {
-	const counter = { reads: 0 };
-	for (let index = 0; index < count; index++) {
-		const finished = snapshot(`finished-${index}`, { status: "completed", endedAt: 1 });
-		for (const field of ["id", "endedAt", "stages", "parentRunId", "rootRunId", "status"] as const) {
-			const value = finished[field];
-			Object.defineProperty(finished, field, {
-				enumerable: true,
-				get: () => {
-					counter.reads++;
-					return value;
-				},
-			});
-		}
-		store.recordRunStart(finished);
-	}
-	counter.reads = 0;
-	return counter;
-}
 
 test("completing a work item reads none of the finished runs the store holds (#4190)", async () => {
 	const f = await fixture();

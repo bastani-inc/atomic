@@ -104,9 +104,8 @@ export function reconcileTerminalRunResult(
 	fallback: Omit<RunResult, "runId" | "stages" | "toolNodes">,
 	onRunEnd: RunOpts["onRunEnd"],
 ): RunResult {
-	const canonical = activeStore
-		.runs()
-		.find((snapshot) => snapshot.id === runId && isTerminalRunStatus(snapshot.status));
+	const stored = activeStore.run(runId);
+	const canonical = stored !== undefined && isTerminalRunStatus(stored.status) ? stored : undefined;
 	const result =
 		canonical !== undefined
 			? runResultFromSnapshot(canonical)

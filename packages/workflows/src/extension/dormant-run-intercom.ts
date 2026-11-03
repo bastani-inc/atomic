@@ -126,7 +126,7 @@ export function registerDormantRunIntercomRoutes(
 	let disposed = false;
 	let examined: Promise<void> = Promise.resolve();
 	let recheck: ReturnType<typeof setTimeout> | undefined;
-	const isLive = (runId: string): boolean => activeStore.runs().some((run) => run.id === runId);
+	const isLive = (runId: string): boolean => activeStore.run(runId) !== undefined;
 	const holdSubagents = (run: DormantRun, ctx: PiEventContext | undefined): void => {
 		const stageSessionIds = run.stages.flatMap((stage) => {
 			const sessionId =

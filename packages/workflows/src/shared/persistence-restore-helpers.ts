@@ -484,7 +484,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 	}
 
 	for (const [runId, start] of started) {
-		if (store.runs().some((run) => run.id === runId)) continue;
+		if (store.run(runId) !== undefined) continue;
 		const end = ended.get(runId);
 		const status = restoreTerminalRunStatus(end?.status);
 		if (end === undefined || status === undefined) continue;

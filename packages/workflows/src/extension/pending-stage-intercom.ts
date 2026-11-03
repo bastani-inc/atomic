@@ -28,9 +28,15 @@ import type {
 	PendingStageQueueResult,
 	PendingStageSender,
 	PendingStickyStageMessageInput,
+	RunSnapshot,
 	StageSnapshot,
 } from "../shared/store-types.js";
-import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
+import {
+	findRunInSource,
+	type RunSource,
+	reciprocalWorkflowRootRunId,
+	runsInSource,
+} from "../shared/workflow-run-ownership.js";
 import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
 import {
 	formatWorkflowStageTarget,
@@ -381,7 +387,7 @@ export function registerPendingStageIntercomBridge(
 		const parsedTarget = parseWorkflowStageTarget(payload.target);
 		if (parsedTarget === undefined) return;
 		if (!ownsRun(parsedTarget.rootRunId)) return;
-		if (parsedTarget.kind === "path" && isMaterializedNonAgentTarget(runs, parsedTarget)) {
+		if (parsedTarget.kind === "path" && isMaterializedNonAgentTarget(activeStore, parsedTarget)) {
 			payload.handled = true;
 			payload.completion = Promise.resolve({
 				outcome: "refused",
@@ -389,12 +395,12 @@ export function registerPendingStageIntercomBridge(
 			});
 			return;
 		}
-		const destination = resolveMaterializedStage(runs, payload.target);
+		const destination = resolveMaterializedStage(activeStore, payload.target);
 		if (destination === undefined) {
 			// Slice 3 (D3/D4): an unresolved target (future stage, glob, or `**`) is accepted
 			// speculatively as a sticky entry in the root run's durable bucket.
 			if (payload.live === true) return;
-			const rootRun = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			const rootRun = activeStore.run(parsedTarget.rootRunId);
 			if (rootRun === undefined) return;
 			payload.handled = true;
 			payload.completion = deliverStickyTarget(activeStore, runs, rootRun, payload, parsedTarget).then(
@@ -407,7 +413,7 @@ export function registerPendingStageIntercomBridge(
 			);
 			return;
 		}
-		const rootRunId = durableRootRunIdForRun(runs, destination.run.id);
+		const rootRunId = durableRootRunIdForRun(activeStore, destination.run.id);
 		if (rootRunId === undefined) return;
 		const resolvedEvent = {
 			...payload,
@@ -442,7 +448,7 @@ export function registerPendingStageIntercomBridge(
 			// a resolved-but-terminal stage keep today's unknown-target refusal — only
 			// future/pattern targets classify as pending_stage_ask_unsupported.
 			if (payload.message.expectsReply === true) return;
-			const stickyRoot = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			const stickyRoot = activeStore.run(parsedTarget.rootRunId);
 			if (stickyRoot === undefined || isTerminalRunStatus(stickyRoot.status)) return;
 			payload.handled = true;
 			payload.completion = deliverStickyTarget(activeStore, runs, stickyRoot, payload, parsedTarget);
@@ -552,7 +558,7 @@ function nonAgentNodes(run: ReturnType<Store["runs"]>[number]): { readonly id: s
 	];
 }
 
-function isMaterializedNonAgentTarget(runs: ReturnType<Store["runs"]>, target: WorkflowStageTarget): boolean {
+function isMaterializedNonAgentTarget(runs: RunSource, target: WorkflowStageTarget): boolean {
 	const run = resolveMaterializedRun(runs, target);
 	if (run === undefined) return false;
 	const stageKey = target.segments.at(-1);
@@ -579,7 +585,7 @@ function resolveIndexedChildRun(
 }
 
 function resolveChildRun(
-	runs: ReturnType<Store["runs"]>,
+	runs: readonly RunSnapshot[],
 	parent: ReturnType<Store["runs"]>[number],
 	segment: string,
 ): ReturnType<Store["runs"]>[number] | undefined {
@@ -593,11 +599,11 @@ function resolveChildRun(
 }
 
 function resolveMaterializedRun(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	parsed: WorkflowStageTarget,
 ): ReturnType<Store["runs"]>[number] | undefined {
 	if (parsed.kind !== "path") return undefined;
-	const rootRun = runs.find((candidate) => candidate.id === parsed.rootRunId);
+	const rootRun = findRunInSource(runs, parsed.rootRunId);
 	if (rootRun === undefined) return undefined;
 	let run: ReturnType<Store["runs"]>[number] = rootRun;
 	for (const segment of parsed.segments.slice(0, -1)) {
@@ -605,14 +611,12 @@ function resolveMaterializedRun(
 		// `workflow:<root>/<grandchildRunId>/<stageId>`, so match on the parsed invocation root
 		// rather than requiring a direct child of the previous hop. Run ids win over boundary
 		// stage names of the same spelling.
-		const runById = runs.filter(
-			(candidate) => candidate.id === segment && durableRootRunIdForRun(runs, candidate.id) === parsed.rootRunId,
-		);
-		if (runById.length === 1) {
-			run = runById[0]!;
+		const runById = findRunInSource(runs, segment);
+		if (runById !== undefined && durableRootRunIdForRun(runs, runById.id) === parsed.rootRunId) {
+			run = runById;
 			continue;
 		}
-		const child = resolveChildRun(runs, run, segment);
+		const child = resolveChildRun(runsInSource(runs), run, segment);
 		if (child === undefined) return undefined;
 		run = child;
 	}
@@ -620,7 +624,7 @@ function resolveMaterializedRun(
 }
 
 function resolveMaterializedStage(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	target: string,
 ):
 	| {
@@ -702,7 +706,7 @@ async function queueAndPersist(
 		queuedAt: new Date().toISOString(),
 	};
 	const rootBackend = requireStoreDurableBackend(activeStore, event.runId);
-	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
+	const backend = durableBackendForRun(rootBackend, activeStore, event.runId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	// The broker has already authorized the immutable registration identity.
 	// Preserve the sender identity in the durable entry, but use its current
@@ -787,7 +791,7 @@ async function deliverStickyTarget(
 		matchingLiveStages(runs, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
 			? undefined
 			: true;
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = pendingStageSenderGroup(event, runGroup);
 	const request: PendingStickyStageMessageInput = {
@@ -887,7 +891,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	if (parsedTarget === undefined) return false;
 	const runs = activeStore.runs();
 	const rootRunId = parsedTarget.rootRunId;
-	const rootRun = runs.find((candidate) => candidate.id === rootRunId);
+	const rootRun = activeStore.run(rootRunId);
 	const entry = rootRun?.pendingStageMessages?.find(
 		(candidate) => candidate.sticky === true && candidate.message.id === event.messageId,
 	);
@@ -903,7 +907,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 			admission: "transport" as const,
 		}));
 	if (records.length === 0) return false;
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return false;
 	const unconfirmedRecords = [];
 	for (const record of records) {

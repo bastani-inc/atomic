@@ -832,10 +832,7 @@ async function executeRun(
 		recordCachedStage,
 		stage: (name, options, replayKey) => {
 			const stage = runtime.stage(name, options);
-			const stageId = activeStore
-				.runs()
-				.find((r) => r.id === runId)
-				?.stages.at(-1)?.id;
+			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
 			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
 			return stage;
 		},

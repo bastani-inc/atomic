@@ -512,7 +512,8 @@ function foreignRunningResult(name: string, workflowId: string): ResumeDurableRe
 }
 
 function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["store"]): ResumeDurableResult {
-	const here = store?.runs().some((r) => r.id === workflowId && r.endedAt === undefined) === true;
+	const current = store?.run(workflowId);
+	const here = current !== undefined && current.endedAt === undefined;
 	return {
 		ok: false,
 		reason: "not_resumable",
@@ -530,7 +531,8 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
  */
 function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: string): boolean {
 	if (store === undefined) return false;
-	return store.runs().some((r) => r.id === workflowId && r.endedAt === undefined && r.exitReason !== "quit");
+	const run = store.run(workflowId);
+	return run !== undefined && run.endedAt === undefined && run.exitReason !== "quit";
 }
 
 /** Remove local snapshots that do not exist in the journal. */

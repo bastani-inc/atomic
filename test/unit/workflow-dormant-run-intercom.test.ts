@@ -13,6 +13,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { JournalTestBackend } from "../helpers/journal-backend.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { expireWorkflowLease } from "../helpers/workflow-lease.js";
@@ -204,9 +205,15 @@ async function interruptedRun(
 	return crashedLeaseHeld ? await JournalTestBackend.create(writer.databasePath) : await writer.reopen();
 }
 
-function dormantHost(store: Store, cwd: string, backend: DurableWorkflowBackend, recheckMs?: number) {
+function dormantHost(
+	store: Store,
+	cwd: string,
+	backend: DurableWorkflowBackend,
+	recheckMs?: number,
+	withBridge = true,
+) {
 	const host = restartedHost(cwd);
-	cleanups.push(registerPendingStageIntercomBridge(host.pi as never, store));
+	if (withBridge) cleanups.push(registerPendingStageIntercomBridge(host.pi as never, store));
 	const dormant = registerDormantRunIntercomRoutes(host.pi as never, store, {
 		prepareBackend: async () => {
 			await backend.hydrateResumableWorkflows();
@@ -219,13 +226,13 @@ function dormantHost(store: Store, cwd: string, backend: DurableWorkflowBackend,
 	return { ...host, dormant };
 }
 
-async function restartedSession() {
+async function restartedSession(options: { readonly store?: Store; readonly bridge?: boolean } = {}) {
 	const cwd = makeTempDirectory("dormant-run-");
 	cleanups.push(() => removeTempDirectory(cwd));
 	const sessionStore = new MemorySessionStore();
 	const backend = await interruptedRun(cwd, sessionStore);
-	const store = createStore();
-	const host = dormantHost(store, cwd, backend);
+	const store = options.store ?? createStore();
+	const host = dormantHost(store, cwd, backend, undefined, options.bridge);
 	await host.start();
 	await host.dormant.settled();
 	return { cwd, sessionStore, backend, store, host };
@@ -492,4 +499,27 @@ test("disposing the dormant routes releases their subagent holds without refusin
 	host.dormant.dispose();
 	await waitFor(() => hold?.releases.length === 1);
 	assert.deepEqual(hold?.releases, [{ refusal: undefined }]);
+});
+
+test("a store change and a message for an interrupted run do not scan the runs the store holds (#4190)", async () => {
+	const real = createStore();
+	const { store, scans } = countRunListScans(real);
+	const { host } = await restartedSession({ store, bridge: false });
+	holdFinishedRuns(real, 5_000);
+	scans.reads = 0;
+	real.recordRunStart({
+		id: "unrelated-run",
+		name: "unrelated",
+		inputs: {},
+		status: "running",
+		stages: [],
+		toolNodes: [],
+		startedAt: 1,
+	});
+	assert.equal(scans.reads, 0, `a store change scanned the run list ${scans.reads} times`);
+	assert.deepEqual(await host.send(`${GROUP}/lane`, "dormant-4190", "for the lane"), {
+		outcome: "queued",
+		position: 1,
+	});
+	assert.equal(scans.reads, 0, `a message to an interrupted run scanned the run list ${scans.reads} times`);
 });

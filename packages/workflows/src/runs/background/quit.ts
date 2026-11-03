@@ -192,8 +192,7 @@ async function executeQuitRunWithAction(
 		if (controlRun?.endedAt !== undefined) return;
 		activeStore.recordStagePaused(target.controlRunId, target.handle.stageId);
 		const stage = activeStore
-			.runs()
-			.find((candidate) => candidate.id === target.controlRunId)
+			.run(target.controlRunId)
 			?.stages.find((candidate) => candidate.id === target.handle.stageId);
 		if (stage?.status === "paused") {
 			pausedRunIds.add(target.controlRunId);
@@ -386,10 +385,7 @@ function collectCancelledToolNodes(
 	toolHandles: readonly ToolControlHandle[],
 ): readonly WorkflowCancelledToolNode[] {
 	return toolHandles.flatMap((handle) => {
-		const node = activeStore
-			.runs()
-			.find((candidate) => candidate.id === handle.runId)
-			?.toolNodes.find((candidate) => candidate.id === handle.nodeId);
+		const node = activeStore.run(handle.runId)?.toolNodes.find((candidate) => candidate.id === handle.nodeId);
 		if (node === undefined || node.status !== "cancelled") return [];
 		return [{ runId: handle.runId, nodeId: handle.nodeId, node: structuredClone(node) }];
 	});
