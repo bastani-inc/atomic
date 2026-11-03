@@ -1,7 +1,7 @@
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
-import { theme } from "./global-theme.ts";
+import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
+import { getGlobalTheme, theme } from "./global-theme.ts";
 import type { Theme } from "./theme-class.ts";
 
 type CliHighlightTheme = Record<string, (s: string) => string>;
@@ -208,4 +208,33 @@ export function getSettingsListTheme(): import("@earendil-works/pi-tui").Setting
 		cursor: theme.fg("accent", "→ "),
 		hint: (text: string) => theme.fg("dim", text),
 	};
+}
+
+export class CodeHighlighter {
+	private last?: {
+		code: string;
+		lang: string | undefined;
+		theme: Theme | undefined;
+		languageCount: number;
+		lines: readonly string[];
+	};
+
+	/** Like {@link highlightCode}. The result is shared with later calls, so callers must not modify it. */
+	highlight(code: string, lang: string | undefined): readonly string[] {
+		// Renderers cannot tell a theme change from any other redraw, so the highlighter checks what its result depends on.
+		const currentTheme = getGlobalTheme();
+		const languageCount = getHighlightLanguageCount();
+		const last = this.last;
+		if (
+			last?.code === code &&
+			last.lang === lang &&
+			last.theme === currentTheme &&
+			last.languageCount === languageCount
+		) {
+			return last.lines;
+		}
+		const lines = highlightCode(code, lang);
+		this.last = { code, lang, theme: currentTheme, languageCount, lines };
+		return lines;
+	}
 }

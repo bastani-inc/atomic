@@ -934,7 +934,7 @@ Each returned image is an `ImageContent` block whose `mimeType` follows the resp
 
 ## Classification
 
-Classifier models consume structured JSON state and answer one or more typed questions. They do not use chat or image-generation APIs. TypeSafe's Jev model is available from these built-in providers:
+Classifier models consume structured JSON state and answer one or more typed questions. They do not use chat or image-generation APIs. Built-in providers include TypeSafe's Jev and Microsoft-Decision-1:
 
 | Provider | Model IDs | Auth |
 | --- | --- | --- |
@@ -943,6 +943,7 @@ Classifier models consume structured JSON state and answer one or more typed que
 | `cloudflare-workers-ai` | `typesafe/jev`, `typesafe/jev-1.14.0`, `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni` | `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID` |
 | `vercel-ai-gateway` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
 | `opencode` | `jev-1.13`, `jev-1.13-free` | `OPENCODE_API_KEY` |
+| `github-copilot` | `microsoft-decision-1` | `COPILOT_GITHUB_TOKEN` or GitHub Copilot OAuth |
 
 ```typescript
 import { builtinModels } from '@bastani/pi-ai/providers/all';

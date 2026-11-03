@@ -1,5 +1,4 @@
 import { Type } from "typebox";
-import { Compile } from "typebox/compile";
 import { describe, expect, it } from "vitest";
 import type { JsonValue, Tool, ToolCall } from "../src/types.ts";
 import { validateToolArguments } from "../src/utils/validation.ts";
@@ -61,7 +60,7 @@ describe("validateToolArguments", () => {
 		}
 	});
 
-	it("coerces serialized plain JSON schemas with AJV-compatible primitive rules", () => {
+	it("coerces plain JSON schemas with pi-schema's coercion rules", () => {
 		const passingCases: Array<{
 			schema: Tool["parameters"];
 			input: unknown;
@@ -75,7 +74,8 @@ describe("validateToolArguments", () => {
 			{ schema: { type: "boolean" } as Tool["parameters"], input: "false", expected: false },
 			{ schema: { type: "boolean" } as Tool["parameters"], input: 1, expected: true },
 			{ schema: { type: "boolean" } as Tool["parameters"], input: 0, expected: false },
-			{ schema: { type: "string" } as Tool["parameters"], input: null, expected: "" },
+			// pi-schema applies TypeBox's conversion rules first: null is "null" for a required string.
+			{ schema: { type: "string" } as Tool["parameters"], input: null, expected: "null" },
 			{ schema: { type: "string" } as Tool["parameters"], input: true, expected: "true" },
 			{ schema: { type: "null" } as Tool["parameters"], input: "", expected: null },
 			{ schema: { type: "null" } as Tool["parameters"], input: 0, expected: null },
@@ -90,6 +90,11 @@ describe("validateToolArguments", () => {
 				input: "1",
 				expected: 1,
 			},
+			{ schema: { type: "boolean" } as Tool["parameters"], input: "1", expected: true },
+			{ schema: { type: "boolean" } as Tool["parameters"], input: "0", expected: false },
+			{ schema: { type: "null" } as Tool["parameters"], input: "null", expected: null },
+			{ schema: { type: "integer" } as Tool["parameters"], input: "42.1", expected: 42 },
+			{ schema: { type: "array", items: { type: "number" } } as Tool["parameters"], input: "7", expected: [7] },
 		];
 
 		for (const testCase of passingCases) {
@@ -184,10 +189,6 @@ describe("validateToolArguments", () => {
 			{ type: ["array", "null"], items: { type: "string" } } as Tool["parameters"],
 			null,
 		);
-		// The CSP test above selects TypeBox's process-wide interpreted fallback, so exercise the generated validator explicitly.
-		const generatedCheck = new Function(Compile(tool.parameters).Code())() as (value: unknown) => boolean;
-
-		expect(generatedCheck(toolCall.arguments)).toBe(true);
 		expect(validateToolArguments(tool, toolCall)).toEqual({ value: null });
 	});
 
@@ -196,10 +197,10 @@ describe("validateToolArguments", () => {
 			schema: Tool["parameters"];
 			input: unknown;
 		}> = [
-			{ schema: { type: "boolean" } as Tool["parameters"], input: "1" },
-			{ schema: { type: "boolean" } as Tool["parameters"], input: "0" },
-			{ schema: { type: "null" } as Tool["parameters"], input: "null" },
-			{ schema: { type: "integer" } as Tool["parameters"], input: "42.1" },
+			{ schema: { type: "boolean" } as Tool["parameters"], input: "yes" },
+			{ schema: { type: "number" } as Tool["parameters"], input: "abc" },
+			{ schema: { type: "null" } as Tool["parameters"], input: "nil" },
+			{ schema: { type: "integer" } as Tool["parameters"], input: "4x" },
 		];
 
 		for (const testCase of failingCases) {
@@ -207,6 +208,78 @@ describe("validateToolArguments", () => {
 			expect(() => validateToolArguments(tool, toolCall)).toThrow("Validation failed");
 		}
 	});
+	it("lists pi-schema's errors for a plain JSON schema, then the arguments it received", () => {
+		const { tool, toolCall } = createToolCallWithPlainSchema({ type: "number" } as Tool["parameters"], "many");
+		expect(() => validateToolArguments(tool, toolCall)).toThrow(
+			'Validation failed for tool "echo":\n  - value: expected number, got string\n\nReceived arguments:\n{\n  "value": "many"\n}',
+		);
+	});
+
+	it("reports a missing required property of a plain JSON schema at the property", () => {
+		const { tool, toolCall } = createToolCallWithPlainSchema({ type: "string" } as Tool["parameters"], "x");
+		expect(() => validateToolArguments(tool, { ...toolCall, arguments: {} })).toThrow("  - value: missing");
+	});
+
+	it("returns a copy of the arguments for a plain JSON schema, also when nothing is coerced", () => {
+		const { tool, toolCall } = createToolCallWithPlainSchema({ type: "string" } as Tool["parameters"], "x");
+		const args = validateToolArguments(tool, toolCall);
+		expect(args).toEqual({ value: "x" });
+		expect(args).not.toBe(toolCall.arguments);
+	});
+
+	it("rejects only the argument at a plain JSON schema's unresolved $ref, not every call", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: {
+				type: "object",
+				properties: { name: { type: "string" }, extra: { $ref: "#/definitions/Missing" } },
+				required: ["name"],
+			} as Tool["parameters"],
+		};
+		const call = (args: Record<string, JsonValue>): ToolCall => ({
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: args,
+		});
+
+		expect(validateToolArguments(tool, call({ name: "a" }))).toEqual({ name: "a" });
+		expect(() => validateToolArguments(tool, call({ name: "a", extra: 1 }))).toThrow(
+			"  - extra: unresolved reference #/definitions/Missing",
+		);
+	});
+
+	it("checks the url format in plain JSON schemas", () => {
+		const { tool, toolCall } = createToolCallWithPlainSchema(
+			{ type: "string", format: "url" } as Tool["parameters"],
+			"not a url",
+		);
+		expect(() => validateToolArguments(tool, toolCall)).toThrow("Validation failed");
+		expect(
+			validateToolArguments(tool, { ...toolCall, arguments: { value: "https://example.com/a" } }),
+		).toEqual({ value: "https://example.com/a" });
+	});
+
+	it("keeps validating TypeBox schemas with TypeBox, refinements included", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: Type.Object({
+				count: Type.Refine(Type.Number(), (value) => value > 0, () => "count must be positive"),
+			}),
+		};
+		const call = (count: JsonValue): ToolCall => ({
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: { count },
+		});
+
+		expect(validateToolArguments(tool, call("3"))).toEqual({ count: 3 });
+		expect(() => validateToolArguments(tool, call(-1))).toThrow("count must be positive");
+	});
+
 	it("reports malformed arguments JSON instead of validating empty arguments (#10897)", () => {
 		const tool: Tool = {
 			name: "echo",

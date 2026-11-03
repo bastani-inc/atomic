@@ -1,10 +1,22 @@
+import { type CoercingValidator, compile } from "@earendil-works/pi-schema";
+import { formats } from "@earendil-works/pi-schema/formats";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { Value } from "typebox/value";
 import type { Tool, ToolCall } from "../types.ts";
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();
-const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+// One compiled pi-schema validator per plain JSON Schema object: tool schemas are long-lived, so the WeakMap drops
+// entries with their tools.
+const jsonSchemaValidatorCache = new WeakMap<object, CoercingValidator>();
+
+/**
+ * Whether TypeBox built this schema. TypeBox marks every schema it builds with a non-enumerable `~kind` property; a
+ * plain JSON Schema object (an MCP tool's, a JSON round-tripped declaration, a pi-schema builder's) has none.
+ */
+function isTypeBoxSchema(schema: object): boolean {
+	return Object.hasOwn(schema, "~kind");
+}
 
 interface JsonSchemaObject {
 	type?: string | string[];
@@ -297,7 +309,7 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 }
 
 /**
- * Finds a tool by name and validates the tool call arguments against its TypeBox schema
+ * Finds a tool by name and validates the tool call arguments against its parameter schema
  * @param tools Array of tool definitions
  * @param toolCall The tool call from the LLM
  * @returns The validated arguments
@@ -311,33 +323,73 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
 	return validateToolArguments(tool, toolCall);
 }
 
+function getJsonSchemaValidator(schema: object): CoercingValidator {
+	const cached = jsonSchemaValidatorCache.get(schema);
+	if (cached) {
+		return cached;
+	}
+	// A $ref that names nothing (a dangling definition in an MCP server's schema) rejects only values at its place,
+	// instead of making every call of the tool fail.
+	const validator = compile(schema, { formats, coerce: true, unresolvedRefs: "reject" });
+	jsonSchemaValidatorCache.set(schema, validator);
+	return validator;
+}
+
+/** A pi-schema error path (a JSON Pointer) as the dotted path the model sees: `/edits/0/oldText` -> `edits.0.oldText`. */
+function formatJsonPointerPath(pointer: string): string {
+	if (pointer === "") return "root";
+	return pointer
+		.slice(1)
+		.split("/")
+		.map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~"))
+		.join(".");
+}
+
 /**
- * Validates tool call arguments against the tool's TypeBox schema
- * @param tool The tool definition with TypeBox schema
+ * Validates tool call arguments against the tool's parameter schema.
+ *
+ * A schema TypeBox built is converted and checked by TypeBox, so TypeBox features outside JSON Schema (refinements,
+ * formats registered with `Format.Set()`) keep applying. Any other JSON Schema (an MCP tool's, a pi-schema builder's,
+ * a plain object) is coerced and checked by `@earendil-works/pi-schema` (`compile(schema, { coerce: true }).parse()`):
+ * models often send `"42"` for a number, a single value for an array, or `null` for an omitted optional property.
+ * @param tool The tool definition with its parameter schema
  * @param toolCall The tool call from the LLM
- * @returns The validated (and potentially coerced) arguments
+ * @returns The validated (and potentially coerced) arguments, always a copy of the tool call's
  * @throws Error with formatted message if validation fails
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	if (toolCall.argumentsError) {
 		throw new Error(`Invalid arguments for tool "${toolCall.name}": ${toolCall.argumentsError}`);
 	}
+	const parameters: object = tool.parameters;
+	if (!isTypeBoxSchema(parameters)) {
+		// A copy, so tools that modify their arguments never modify the tool call in the transcript.
+		const result = getJsonSchemaValidator(parameters).parse(structuredClone(toolCall.arguments));
+		if (result.ok) {
+			return result.value;
+		}
+		const errors = result.errors
+			.map((error) => `  - ${formatJsonPointerPath(error.path)}: ${error.message}`)
+			.join("\n");
+		throw new Error(
+			`Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`,
+		);
+	}
+	const schema = tool.parameters as Tool["parameters"] & JsonSchemaObject;
 	const args = structuredClone(toolCall.arguments);
-	normalizeOptionalNulls(args, tool.parameters as JsonSchemaObject);
-	Value.Convert(tool.parameters, args);
+	normalizeOptionalNulls(args, schema);
+	Value.Convert(schema, args);
 
-	const validator = getValidator(tool.parameters);
-	if (!Object.getOwnPropertySymbols(tool.parameters).includes(TYPEBOX_KIND)) {
-		const coerced = coerceWithJsonSchema(args, tool.parameters as JsonSchemaObject);
-		if (coerced !== args) {
-			if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
-				for (const key of Object.keys(args)) {
-					delete args[key];
-				}
-				Object.assign(args, coerced);
-			} else {
-				return validator.Check(coerced) ? coerced : args;
+	const validator = getValidator(schema);
+	const coerced = coerceWithJsonSchema(args, schema);
+	if (coerced !== args) {
+		if (typeof args === "object" && args !== null && typeof coerced === "object" && coerced !== null) {
+			for (const key of Object.keys(args)) {
+				delete args[key];
 			}
+			Object.assign(args, coerced);
+		} else {
+			return validator.Check(coerced) ? coerced : args;
 		}
 	}
 

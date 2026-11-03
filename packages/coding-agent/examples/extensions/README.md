@@ -22,9 +22,10 @@ cp permission-gate.ts ~/.atomic/agent/extensions/
 | `protected-paths.ts` | Blocks writes to protected paths (.env, .git/, node_modules/) |
 | `confirm-destructive.ts` | Confirms before destructive session actions (clear, switch, fork) |
 | `dirty-repo-guard.ts` | Prevents session changes with uncommitted git changes |
-| `sandbox/` | OS-level sandboxing using `@anthropic-ai/sandbox-runtime` with per-project config |
 | `project-trust.ts` | Demonstrates the `project_trust` event for user/global and CLI extensions |
 | `gondolin/` | Route built-in tools and `!` commands into a Gondolin micro-VM |
+
+For isolation setup and limitations, see [Run Atomic in an isolated environment](../../docs/containerization.md).
 
 ### Custom Tools
 

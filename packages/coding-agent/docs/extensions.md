@@ -252,6 +252,13 @@ Imports from `node_modules/` are resolved automatically.
 
 For distributed Atomic packages installed with `atomic install` (npm or git), runtime deps must be in `dependencies`. Package installation uses production dependency installs by default, so `devDependencies` are not available at runtime; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers.
 
+### Tool parameter schemas
+
+A tool's `parameters` can be a TypeBox schema or any plain JSON Schema object. Atomic validates the model's arguments against it, after coercing loosely typed values (for example a numeric string to a number, `"true"` to `true`, `null` in an optional property dropped):
+
+- **TypeBox schemas** are converted and checked by TypeBox, so TypeBox features outside JSON Schema, such as `Type.Refine()` and formats registered with `Format.Set()`, apply. Validation errors use TypeBox's messages.
+- **Plain JSON Schema** (for example an MCP server's tool schema, or a schema from `@earendil-works/pi-schema`'s builders) is coerced and checked by `@earendil-works/pi-schema`. A single value is also wrapped into a one-item array, the `url` and `json-pointer-uri-fragment` formats are checked, and a `$ref` that names nothing rejects only the argument at its place instead of every call. Validation errors use pi-schema's messages, such as `- path: missing` or `- limit: expected number, got string`.
+
 Node.js built-ins (`node:fs`, `node:path`, etc.) are also available.
 
 ## Writing an Extension

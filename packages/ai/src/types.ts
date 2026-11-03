@@ -852,7 +852,12 @@ export type ConstrainedSamplingConfig =
 			variants: GrammarVariants;
 	  };
 
-export interface Tool<TParameters extends TSchema = TSchema> {
+/**
+ * A tool the model may call. `parameters` is the JSON Schema of its arguments: a TypeBox schema (the default type, which
+ * also types the arguments through TypeBox's `Static`), a schema from `@earendil-works/pi-schema`'s builders, or any
+ * plain JSON Schema object such as an MCP server's.
+ */
+export interface Tool<TParameters extends object = TSchema> {
 	name: string;
 	description: string;
 	parameters: TParameters;
