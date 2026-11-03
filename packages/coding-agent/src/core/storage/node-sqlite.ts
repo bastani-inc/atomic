@@ -30,6 +30,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
 /** A ticket its owner has not refreshed for this long belongs to a process that died or stopped waiting. */
 const TICKET_STALE_MS = 2_000;
@@ -328,12 +329,6 @@ interface QueuedTransaction {
 type TransactionOutcome =
 	| { readonly ok: true; readonly value: unknown }
 	| { readonly ok: false; readonly error: unknown };
-
-/** SQLITE_BUSY, including its extended codes: another connection holds the lock this statement needs. */
-function isSqliteBusy(cause: unknown): boolean {
-	const code = (cause as { errcode?: unknown } | null | undefined)?.errcode;
-	return typeof code === "number" && (code & 0xff) === 5;
-}
 
 /** The driver's own reason, kept in the error message so it survives relays that forward only `message`. */
 function sqliteFailureDetail(cause: unknown): string | undefined {
@@ -784,7 +779,12 @@ export async function openNodeSqliteDatabase(
 		if (!readOnly && path !== ":memory:") await mkdir(dirname(path), { recursive: true });
 		connection = new Database(path, { readOnly });
 		connection.exec(`PRAGMA busy_timeout=${busyTimeoutMs}`);
-		if (!readOnly) connection.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+		if (!readOnly) {
+			const writable = connection;
+			// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
+			await switchToWriteAheadLog((sql) => writable.exec(sql), busyTimeoutMs);
+			writable.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
+		}
 		const location = connection.location();
 		const identity = location === null ? connection : await realpath(location);
 		return new NodeSqliteDatabase(connection, descriptor, true, identity, lockWaitMs);
@@ -798,13 +798,17 @@ export async function openNodeSqliteDatabase(
 	}
 }
 
+/** The busy timeout `wrapNodeSqliteDatabase` sets on a caller's connection. */
+const WRAPPED_BUSY_TIMEOUT_MS = 5000;
+
 export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase {
 	const descriptor = { adapter: "node-sqlite", location: ":memory:" };
 	try {
 		descriptor.location = connection.location() || ":memory:";
-		connection.exec(
-			"PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON",
-		);
+		connection.exec(`PRAGMA busy_timeout=${WRAPPED_BUSY_TIMEOUT_MS}`);
+		// SQLite does not wait for another process's lock while it changes the mode; the switch waits itself.
+		switchToWriteAheadLogSync((sql) => connection.exec(sql), WRAPPED_BUSY_TIMEOUT_MS);
+		connection.exec("PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON");
 		return new NodeSqliteDatabase(connection, descriptor, false);
 	} catch (cause) {
 		throw unavailable(descriptor, cause);

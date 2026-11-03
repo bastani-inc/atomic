@@ -93,6 +93,7 @@ function makeSubmitStub(options?: {
 			isStreaming: options?.isStreaming === true,
 			isBashRunning: false,
 			queuedMessagesPaused: false,
+			subscribe: () => () => {},
 			prompt: async (text: string, promptOptions?: { streamingBehavior?: string }) => {
 				if (options?.failSend) fail();
 				state.prompted.push({

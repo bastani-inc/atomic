@@ -529,7 +529,11 @@ export async function main(argv: string[], options?: MainOptions) {
 				resourceLoader.getExtensions().extensions.flatMap((extension) => Array.from(extension.flags.values())),
 			);
 		} else {
-			await listModels(modelRuntime, typeof parsed.listModels === "string" ? parsed.listModels : undefined);
+			await listModels(
+				modelRuntime,
+				typeof parsed.listModels === "string" ? parsed.listModels : undefined,
+				startupSettingsManager,
+			);
 		}
 		process.exit(0);
 	}

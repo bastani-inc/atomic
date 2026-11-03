@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -161,6 +162,28 @@ describe("UsageMeterComponent context color", () => {
 		const [line] = usageMeter.render(120);
 		expect(line).toContain(theme.fg("error", "101.2%/200k"));
 		expect(line).not.toContain(theme.fg("warning", "101.2%/200k"));
+	});
+});
+describe("FooterComponent model label", () => {
+	beforeAll(() => {
+		initTheme(undefined, false);
+	});
+
+	const statusLine = (providerCount: number, model: Parameters<typeof createSession>[0]): string =>
+		stripAnsi(new FooterComponent(createSession(model), createFooterData(providerCount)).render(200)[0] ?? "");
+	const sonnet = { sessionName: "", provider: "anthropic", modelId: "claude-sonnet-4-5", reasoning: true };
+
+	it("shows the raw model ID and its level, as provider/id when several providers are configured (#4269)", () => {
+		assert.match(statusLine(1, { ...sonnet, thinkingLevel: "high" }), /^claude-sonnet-4-5 {2}high • /);
+		assert.match(statusLine(2, { ...sonnet, thinkingLevel: "high" }), /^anthropic\/claude-sonnet-4-5 {2}high • /);
+	});
+
+	it("shows off for a reasoning model, and no level for a model without reasoning (#4269)", () => {
+		assert.match(statusLine(2, { ...sonnet, thinkingLevel: "off" }), /^anthropic\/claude-sonnet-4-5 {2}off • /);
+		assert.match(
+			statusLine(2, { ...sonnet, modelId: "gpt-4o", provider: "openai", reasoning: false }),
+			/^openai\/gpt-4o • /,
+		);
 	});
 });
 describe("FooterComponent width handling", () => {

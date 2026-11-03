@@ -8,7 +8,7 @@ import { test } from "vitest";
 import { notifyDetachedForegroundChildExit } from "../../packages/subagents/src/runs/foreground/subagent-executor-status.js";
 import { SUBAGENT_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 
-function completionSummary(result: { model?: string; requestedModel?: string }): string {
+function completionSummary(result: { model?: string; thinking?: string; requestedModel?: string }): string {
 	const notices: { summary?: string }[] = [];
 	const events = {
 		on: () => () => {},
@@ -36,8 +36,13 @@ function completionSummary(result: { model?: string; requestedModel?: string }):
 }
 
 test("a detached child's completion notice names the model it ran on beside the one its launch asked for", () => {
-	const summary = completionSummary({ model: "account-a/sol", requestedModel: "account-a/argon:high" });
-	assert.match(summary, /^Model: ran on account-a\/sol, not the requested account-a\/argon:high\.$/m);
+	const summary = completionSummary({
+		model: "account-a/sol",
+		thinking: "medium",
+		requestedModel: "account-a/argon:high",
+	});
+	// Each model reads as its raw ID and level (#4269).
+	assert.match(summary, /^Model: ran on account-a\/sol {2}medium, not the requested account-a\/argon {2}high\.$/m);
 	assert.match(summary, /review findings/);
 });
 

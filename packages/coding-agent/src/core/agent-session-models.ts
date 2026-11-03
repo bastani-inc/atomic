@@ -5,7 +5,7 @@ import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
-import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { requestedThinkingLevelForModelSwitch } from "./model-switch-thinking-level.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
@@ -388,14 +388,11 @@ export function _getThinkingLevelForModelSwitch(
 	if (explicitLevel !== undefined) {
 		return explicitLevel;
 	}
-	if (targetModel) {
-		const perModel = this.settingsManager.getModelThinkingLevel(targetModel.provider, targetModel.id);
-		if (perModel !== undefined) return perModel;
-	}
-	if (!this.supportsThinking()) {
-		return this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
-	}
-	return this.thinkingLevel;
+	// Shared with the model lists, so the level they show beside a model is the one selecting it applies (#4269).
+	return requestedThinkingLevelForModelSwitch(targetModel, {
+		settings: this.settingsManager,
+		current: { model: this.model, thinkingLevel: this.thinkingLevel },
+	});
 }
 
 export function _clampThinkingLevel(

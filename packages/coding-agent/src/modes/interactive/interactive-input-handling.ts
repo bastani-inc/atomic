@@ -458,12 +458,24 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
 				let accepted = false;
+				// An engine sends its answer to this prompt together with the first events of the turn it started, and
+				// the host handles those events before the answer's callback runs. If the session already showed the
+				// message, echoing it again here would show it twice (#4272).
+				let shownBySession = false;
+				const stopWatching = this.session.subscribe((event) => {
+					if (
+						event.type === "message_start" &&
+						event.message.role === "user" &&
+						this.getUserMessageText(event.message) === text
+					)
+						shownBySession = true;
+				});
 				try {
 					await this.session.prompt(text, {
 						streamingBehavior: "steer",
 						preflightResult: (success, disposition) => {
 							accepted = success;
-							if (success && disposition === "started" && !text.startsWith("/"))
+							if (success && disposition === "started" && !text.startsWith("/") && !shownBySession)
 								this.renderDeferredUserInput(text);
 						},
 					});
@@ -475,6 +487,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					}
 					restoreRefusedSubmission(this, error, submittedDraft);
 					return;
+				} finally {
+					stopWatching();
 				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();

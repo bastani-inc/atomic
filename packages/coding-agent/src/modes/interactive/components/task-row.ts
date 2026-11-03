@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import { taskOutcomeStatus } from "../../../core/tasks/command-output.js";
 import { isResumableStop } from "../../../core/tasks/completion.js";
 import type { TaskRecord } from "../../../core/tasks/contracts.js";
@@ -33,12 +34,11 @@ export function taskLabel(task: TaskRecord): string {
 export function taskTitle(task: TaskRecord): string {
 	return task.title || taskLabel(task);
 }
+/** An agent's model as every model label reads: its raw `provider/id`, then its level (#4269). */
 export function taskModelText(task: Pick<TaskRecord, "kind" | "model" | "thinking">): string {
 	if (task.kind !== "agent") return "";
 	return taskDisplayText(
-		[task.model ?? "model unavailable", task.thinking ? `thinking ${task.thinking}` : "thinking unavailable"].join(
-			" · ",
-		),
+		task.model === undefined ? "model unavailable" : formatModelLabel(task.model, { thinkingLevel: task.thinking }),
 	);
 }
 export function taskShortId(task: TaskRecord): string {

@@ -1,5 +1,5 @@
 // @ts-check
-import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError } from "@bastani/atomic/storage";
+import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
 
 /**
  * @typedef {{ url: string, authToken?: string, namespace?: string, headers?: Readonly<Record<string, string>> }} LibsqlDatabaseOptions
@@ -156,8 +156,10 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		await database.exec("PRAGMA foreign_keys = ON");
 		// Readers and the one writer of a file share it through the write-ahead log, as in Atomic's own SQLite stores;
 		// in the default rollback journal a read refuses a writer's commit and the other way round. The mode is stored
-		// in the file, so this changes it once and costs nothing afterwards.
-		if (local) await database.exec("PRAGMA journal_mode = WAL");
+		// in the file, so this changes it once and costs nothing afterwards. SQLite does not wait for another
+		// connection's lock while it changes the mode, so the switch waits out the busy timeout itself: several
+		// processes opening one new file at once, or one writing it, would otherwise fail the open with SQLITE_BUSY.
+		if (local) await switchToWriteAheadLog((sql) => database.exec(sql), FILE_BUSY_TIMEOUT_MS);
 		return database;
 	} catch (error) {
 		await database.close().catch(() => {});

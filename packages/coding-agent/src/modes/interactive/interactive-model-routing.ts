@@ -1,6 +1,8 @@
-import { clampThinkingLevel } from "@bastani/pi-ai/compat";
+import { clampThinkingLevel, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { boundedInteractiveModelRefresh } from "../../core/bounded-model-refresh.ts";
+import { formatModelLabel } from "../../core/model-label.ts";
+import { thinkingLevelForModelSwitch } from "../../core/model-switch-thinking-level.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -65,7 +67,7 @@ InteractiveModeBase.prototype.handleModelCommand = async function (
 			await this.session.setModel(model, { persist: true });
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
-			this.showStatus(`Model: ${model.id}`);
+			this.showStatus(`Model: ${formatModelLabel(model, { thinkingLevel: this.session.thinkingLevel })}`);
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 		} catch (error) {
 			this.showError(error instanceof Error ? error.message : String(error));
@@ -178,7 +180,7 @@ InteractiveModeBase.prototype.showModelSelector = function (
 					this.updateEditorBorderColor();
 					done();
 					void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
-					this.showStatus(`Model: ${model.id}`);
+					this.showStatus(`Model: ${formatModelLabel(model, { thinkingLevel: this.session.thinkingLevel })}`);
 				} catch (error) {
 					done();
 					this.showError(error instanceof Error ? error.message : String(error));
@@ -189,6 +191,7 @@ InteractiveModeBase.prototype.showModelSelector = function (
 				this.ui.requestRender();
 			},
 			initialSearchInput,
+			this.session.thinkingLevel,
 		);
 		return { component: selector, focus: selector, dispose: () => selector.dispose() };
 	});
@@ -248,6 +251,17 @@ InteractiveModeBase.prototype.showModelsSelector = function (this: InteractiveMo
 				allModels: availableModels,
 				enabledModelIds: currentEnabledIds,
 				refreshStatus: "Refreshing model catalogs…",
+				// The level Ctrl+P cycling gives each model: its scoped level, else the level a switch to it applies.
+				thinkingLevelFor: (model) => {
+					if (modelsAreEqual(this.session.model, model)) return this.session.thinkingLevel;
+					const scoped = this.session.scopedModels.find((entry) => modelsAreEqual(entry.model, model));
+					return scoped?.thinkingLevel !== undefined
+						? clampThinkingLevel(model, scoped.thinkingLevel)
+						: thinkingLevelForModelSwitch(model, {
+								settings: this.settingsManager,
+								current: { model: this.session.model, thinkingLevel: this.session.thinkingLevel },
+							});
+				},
 			},
 			{
 				onChange: (enabledIds) => {

@@ -117,7 +117,12 @@ async function modelSelectorView(runtime: ModelRuntime, providers: string[]) {
 		const selector = new ModelSelectorComponent(
 			{ requestRender: () => {} } as unknown as TUI,
 			undefined,
-			{ getDefaultProvider: () => undefined, getDefaultModel: () => undefined } as unknown as SettingsManager,
+			{
+				getDefaultProvider: () => undefined,
+				getDefaultModel: () => undefined,
+				getModelThinkingLevel: () => undefined,
+				getDefaultThinkingLevel: () => undefined,
+			} as unknown as SettingsManager,
 			runtime,
 			[],
 			() => {},
@@ -128,7 +133,7 @@ async function modelSelectorView(runtime: ModelRuntime, providers: string[]) {
 		// The refresh is offline, so it settles in milliseconds; vi.waitFor's default one second is ample.
 		await vi.waitFor(() => assert.match(rendered(), /Model catalogs refreshed\./));
 		hint &&= rendered().includes(MODEL_SELECTOR_HINT);
-		if (rendered().includes(`[${provider}]`)) listed.push(provider);
+		if (rendered().includes(`${provider}/`)) listed.push(provider);
 		selector.dispose();
 	}
 	return { hint, listed };

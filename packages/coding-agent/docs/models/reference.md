@@ -105,8 +105,8 @@ In `models.json`, `headers` values must be strings. A `null` suppression marker 
 | `compat.supportsMidConvoToolChanges` | No | model default | Anthropic: enable native tool additions/removals; requires mid-conversation system messages |
 
 Current behavior:
-- `/model`, `--list-models`, and the interactive footer display entries by model `id`.
-- The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
+- `/model`, `--list-models`, the interactive footer, status messages, fallback notices, and subagent and workflow labels show a model by its raw `provider/id` (or `id` where the provider is already clear), followed by the reasoning level it runs at, e.g. `anthropic/claude-sonnet-4-5  high`. That is the string `--model provider/id:level` takes.
+- The configured `name` is used for model matching and secondary model detail text, such as the dim column in `/model`. It never replaces the model id.
 - `input` lists the modalities **Atomic can send**. Possible values are `["text"]`, `["text", "image"]`, and `["text", "image", "pdf"]`.
 
 PDF support is a platform capability, not a per-model one. Anthropic documents that ["All active models support PDF processing"](https://platform.claude.com/docs/en/build-with-claude/pdf-support), through the same vision path as images, so upstream metadata includes it on every Claude entry.

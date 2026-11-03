@@ -346,6 +346,11 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 			type: "model_fallback_start",
 			from: modelLabel(fromModel),
 			to: `${nextModel.provider}/${nextModel.id}`,
+			// Levels for reasoning models, so a notice can show each model's level beside its ID (#4269).
+			...(fromModel.reasoning && currentThinkingLevel !== undefined
+				? { fromThinkingLevel: currentThinkingLevel }
+				: {}),
+			...(nextModel.reasoning ? { toThinkingLevel: nextLevel } : {}),
 			reason: message.errorMessage || "Retryable model error",
 			attempt: this._fallbackAttemptedKeys.size - 1,
 		});

@@ -5,6 +5,7 @@ import chalk from "chalk";
 import { APP_NAME } from "../config.js";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { formatModelLabel } from "./model-label.ts";
 import { resolveCliModel } from "./model-resolver-cli.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
@@ -141,7 +142,7 @@ export async function findInitialModel(options: {
 			return {
 				model: undefined,
 				thinkingLevel: DEFAULT_THINKING_LEVEL,
-				fallbackMessage: `Configured default model ${defaultProvider}/${defaultModelId} is unavailable: ${uncachedHint}, or choose another model with /model.`,
+				fallbackMessage: `Configured default model ${formatModelLabel({ provider: defaultProvider, id: defaultModelId })} is unavailable: ${uncachedHint}, or choose another model with /model.`,
 				fallbackReason: "configured-provider-unsupported",
 			};
 		}

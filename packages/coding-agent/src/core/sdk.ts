@@ -32,6 +32,7 @@ import {
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
+import { formatModelLabel } from "./model-label.ts";
 import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
@@ -306,9 +307,10 @@ async function constructAgentSession(
 		if (!model) {
 			const { provider, modelId } = existingSession.model;
 			const uncachedHint = uncachedCopilotModelHint(provider, modelId, modelRuntime);
+			const label = formatModelLabel({ provider, id: modelId });
 			modelFallbackMessage = uncachedHint
-				? `Could not restore model ${provider}/${modelId}: ${uncachedHint}, or choose another model with /model.`
-				: `Could not restore model ${provider}/${modelId}`;
+				? `Could not restore model ${label}: ${uncachedHint}, or choose another model with /model.`
+				: `Could not restore model ${label}`;
 			// A saved Copilot model that is only missing from the cache must not be replaced silently.
 			modelFallbackReason = uncachedHint ? "configured-provider-unsupported" : "session-restore";
 		}

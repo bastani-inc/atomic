@@ -1,4 +1,5 @@
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
 	Container,
 	type Focusable,
@@ -8,9 +9,15 @@ import {
 	Spacer,
 	Text,
 	type TUI,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
+import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.js";
+import {
+	type ModelSwitchThinkingContext,
+	thinkingLevelForModelSwitch,
+} from "../../../core/model-switch-thinking-level.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getDistinctModelName, getModelSelectorSearchText } from "../model-search.ts";
@@ -53,6 +60,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: ModelItem[] = [];
 	private selectedIndex: number = 0;
 	private currentModel?: Model<Api>;
+	private thinkingContext: ModelSwitchThinkingContext;
 	private defaultModelKey?: string;
 	private modelRuntime: ModelRuntime;
 	private onSelectCallback: (model: Model<Api>) => void;
@@ -77,11 +85,22 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		onSelect: (model: Model<Api>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
+		/**
+		 * The level the current model runs at. Rows show the level selecting each model applies, which a model without a
+		 * saved level inherits from this one while the current model reasons.
+		 */
+		currentThinkingLevel?: ThinkingLevel,
 	) {
 		super();
 
 		this.tui = tui;
 		this.currentModel = currentModel;
+		this.thinkingContext = {
+			settings: _settingsManager,
+			...(currentThinkingLevel === undefined
+				? {}
+				: { current: { model: currentModel, thinkingLevel: currentThinkingLevel } }),
+		};
 		const defaultProvider = _settingsManager.getDefaultProvider();
 		const defaultModel = _settingsManager.getDefaultModel();
 		this.defaultModelKey = defaultProvider && defaultModel ? `${defaultProvider}/${defaultModel}` : undefined;
@@ -267,23 +286,30 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		);
 		const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
 
-		// Show visible slice of filtered models
-		for (let i = startIndex; i < endIndex; i++) {
-			const item = this.filteredModels[i];
-			if (!item) continue;
-
-			const isSelected = i === this.selectedIndex;
+		// Each row is the model's raw ID and the level selecting it applies, exactly what `--model provider/id:level`
+		// takes (#4269). That holds for the current model too: selecting it reapplies a saved per-model level. A display
+		// name that adds words the ID lacks follows in a dim column, aligned across the visible rows.
+		const rows = this.filteredModels.slice(startIndex, endIndex).map((item) => ({
+			item,
+			label: formatModelLabel(item.model, {
+				thinkingLevel: thinkingLevelForModelSwitch(item.model, this.thinkingContext),
+			}),
+			name: getDistinctModelName({ id: item.id, name: item.model.name }),
+		}));
+		const labelWidth = Math.max(0, ...rows.map((row) => visibleWidth(row.label)));
+		for (const [offset, { item, label, name }] of rows.entries()) {
+			const isSelected = startIndex + offset === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = `${item.provider}/${item.id}` === this.defaultModelKey;
 
 			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
 			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
 			const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
-			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-			const name = getDistinctModelName({ id: item.id, name: item.model.name });
-			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
-			const providerBadge = theme.fg("muted", `[${item.provider}]`);
-			const line = `${cursor}${currentMarker}${modelText}${nameText} ${providerBadge}${defaultBadge}`;
+			const modelText = isSelected ? theme.fg("accent", label) : label;
+			const nameText = name
+				? `${" ".repeat(labelWidth - visibleWidth(label))}${MODEL_LABEL_SEPARATOR}${theme.fg("muted", name)}`
+				: "";
+			const line = `${cursor}${currentMarker}${modelText}${nameText}${defaultBadge}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}

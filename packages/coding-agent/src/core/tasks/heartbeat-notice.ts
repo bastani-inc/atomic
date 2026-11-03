@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
 import { ranOnModelLine } from "./completion.js";
@@ -27,6 +28,8 @@ export type TaskHeartbeatTask = {
 	title: string;
 	agentName?: string;
 	model?: string;
+	/** The level `model` runs at, when the task reports one. */
+	thinking?: string;
 	/** The model the agent's launch asked for, when the task records one. */
 	requestedModel?: string;
 	elapsedMs: number;
@@ -115,12 +118,15 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 		if (task.turnCount !== undefined) parts.push(formatCount(task.turnCount, "turn"));
 		if (task.toolCount !== undefined) parts.push(formatCount(task.toolCount, "tool call"));
 		if (task.tokenCount !== undefined) parts.push(formatCount(task.tokenCount, "token"));
-		if (task.model !== undefined)
+		if (task.model !== undefined) {
+			const model = formatModelLabel(task.model, { thinkingLevel: task.thinking });
 			parts.push(
-				ranOnModelLine({ kind: "agent", model: task.model, requestedModel: task.requestedModel })
-					? `model ${task.model}, not the requested ${task.requestedModel}`
-					: `model ${task.model}`,
+				task.requestedModel !== undefined &&
+					ranOnModelLine({ kind: "agent", model: task.model, requestedModel: task.requestedModel })
+					? `model ${model}, not the requested ${formatModelReferenceLabel(task.requestedModel)}`
+					: `model ${model}`,
 			);
+		}
 	}
 	if (task.attention !== undefined) parts.push(task.attention);
 	return parts.join(" · ");

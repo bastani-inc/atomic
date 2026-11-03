@@ -1,4 +1,4 @@
-import { Container } from "@earendil-works/pi-tui";
+import { type Component, Container } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { InteractiveMode } from "../../src/modes/interactive/interactive-mode.ts";
 import type { InteractiveSubmission } from "../../src/modes/interactive/interactive-submission.ts";
@@ -83,6 +83,8 @@ export interface InteractiveSubmissionHost {
 	runUserPromptTurn: (input: InteractiveSubmission | string) => Promise<void>;
 	setupKeyHandlers: () => void;
 	setupEditorSubmitHandler: () => void;
+	handleFollowUp: () => Promise<void>;
+	getUserMessageText: InteractiveMode["getUserMessageText"];
 }
 
 const BOUND_MODE_METHODS = [
@@ -100,6 +102,8 @@ const BOUND_MODE_METHODS = [
 	"runUserPromptTurn",
 	"setupKeyHandlers",
 	"setupEditorSubmitHandler",
+	"handleFollowUp",
+	"getUserMessageText",
 ] as const;
 
 export function createInteractiveSubmissionHost(session: AgentSession): InteractiveSubmissionHost {
@@ -184,6 +188,8 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 		runUserPromptTurn: async () => {},
 		setupKeyHandlers() {},
 		setupEditorSubmitHandler() {},
+		handleFollowUp: async () => {},
+		getUserMessageText: () => "",
 	};
 	for (const name of BOUND_MODE_METHODS) {
 		const method: (this: InteractiveSubmissionHost, ...args: never[]) => unknown = Reflect.get(
@@ -202,6 +208,57 @@ export function pressAltUp(host: InteractiveSubmissionHost): void {
 	const dequeue = host.defaultEditor.actions.get("app.message.dequeue");
 	if (!dequeue) throw new Error("the editor has no dequeue action registered");
 	dequeue();
+}
+
+/** Type `text` and press Alt+Enter, which queues it as a follow-up while the agent works. */
+export async function pressAltEnter(host: InteractiveSubmissionHost, text: string): Promise<void> {
+	const followUp = host.defaultEditor.actions.get("app.message.followUp");
+	if (!followUp) throw new Error("the editor has no follow-up action registered");
+	host.editor.setText(text);
+	await Promise.resolve(followUp());
+}
+
+type ChatLine = Component & { text: string };
+
+/**
+ * Show user messages in a chat as InteractiveMode does: the host's own echo of a submission and the session's
+ * `message_start` for it go through InteractiveMode's echo bookkeeping and its `message_start` handler. Returns the
+ * user messages the chat shows, in order. The host's `rendered` and `discarded` records stop being kept.
+ */
+export function showUserMessagesInChat(host: InteractiveSubmissionHost): () => string[] {
+	const chat = new Container();
+	Object.assign(host, {
+		isInitialized: true,
+		footer: { invalidate() {} },
+		programStatus: { handleEvent() {} },
+		chatContainer: chat,
+		deferredRenderedUserInputs: [],
+		deferredRenderedUserInputComponents: new Map(),
+		addMessageToChat: (message: Parameters<InteractiveMode["getUserMessageText"]>[0]) => {
+			const text = host.getUserMessageText(message);
+			const line: ChatLine = { text, render: () => [text], invalidate() {} };
+			chat.addChild(line);
+		},
+	});
+	for (const name of [
+		"renderDeferredUserInput",
+		"consumeDeferredRenderedUserInput",
+		"discardDeferredRenderedUserInput",
+	] as const) {
+		const method: (this: InteractiveSubmissionHost, ...args: never[]) => unknown = Reflect.get(
+			InteractiveMode.prototype,
+			name,
+		);
+		Reflect.set(host, name, (...args: never[]) => method.apply(host, args));
+	}
+	const handleEvent: (this: InteractiveSubmissionHost, event: object) => Promise<void> = Reflect.get(
+		InteractiveMode.prototype,
+		"handleEvent",
+	);
+	host.session.subscribe((event) => {
+		if (event.type === "message_start" && event.message.role === "user") void handleEvent.call(host, event);
+	});
+	return () => chat.children.map((line) => (line as ChatLine).text);
 }
 
 export function startInteractiveInputLoop(host: InteractiveSubmissionHost): { stop: () => void; done: Promise<void> } {

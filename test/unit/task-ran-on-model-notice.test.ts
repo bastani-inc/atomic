@@ -6,7 +6,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "vitest";
-import { formatTaskCompletion, taskCompletionNotice } from "../../packages/coding-agent/src/core/tasks/completion.js";
+import {
+	formatTaskCompletion,
+	ranOnModelLine,
+	taskCompletionNotice,
+} from "../../packages/coding-agent/src/core/tasks/completion.js";
 import type * as C from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { formatTaskHeartbeatStatus } from "../../packages/coding-agent/src/core/tasks/heartbeat-notice.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
@@ -49,7 +53,8 @@ test("a subagent that ran on a fallback model records the requested model and it
 		assert.equal(task.requestedModel, REQUESTED);
 		assert.equal(task.model, "account-b/opus");
 		const text = formatTaskCompletion(envelope, task, "review findings");
-		assert.match(text, /^Model: ran on account-b\/opus, not the requested account-a\/argon:high\.$/m);
+		// Both models show as their raw ID and level, the way every model label reads (#4269).
+		assert.match(text, /^Model: ran on account-b\/opus {2}high, not the requested account-a\/argon {2}high\.$/m);
 		assert.equal(taskCompletionNotice(envelope, task).requestedModel, REQUESTED);
 	} finally {
 		await fixture.dispose();
@@ -73,10 +78,19 @@ test("a running subagent's heartbeat status names the model it runs on and the o
 			title: "Review the diff",
 			agentName: "worker",
 			model,
+			thinking: "high",
 			requestedModel: REQUESTED,
 			elapsedMs: 60_000,
 			intervalMs: 300_000,
 		});
-	assert.match(status("account-b/opus"), /model account-b\/opus, not the requested account-a\/argon:high/);
+	assert.match(status("account-b/opus"), /model account-b\/opus {2}high, not the requested account-a\/argon {2}high/);
 	assert.doesNotMatch(status("account-a/argon"), /not the requested/);
+});
+
+test("a model whose own ID ends in a level word keeps it whole, with its level after it (#4269)", () => {
+	// Only the configured request is a `provider/id[:level]` reference; the model a task ran on is a resolved ID.
+	assert.equal(
+		ranOnModelLine({ kind: "agent", model: "account-b/opus:high", thinking: "low", requestedModel: REQUESTED }),
+		"Model: ran on account-b/opus:high  low, not the requested account-a/argon  high.",
+	);
 });

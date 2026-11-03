@@ -1,4 +1,5 @@
 import { splitFallbackModel } from "../fallback-models.ts";
+import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
@@ -31,15 +32,18 @@ export type TaskCompletionNotice = {
 
 /**
  * The model-facing line saying an agent ran on another model than its launch asked for, or undefined when it ran on
- * that model, at any effort, or either is unknown. Task records name the model without its effort.
+ * that model, at any effort, or either is unknown. Task records name the model without its effort, which `thinking`
+ * carries; both models read as their raw ID and level, like every model label (#4269).
  */
 export function ranOnModelLine(
-	task?: Partial<Pick<TaskRecord, "kind" | "model" | "requestedModel">>,
+	task?: Partial<Pick<TaskRecord, "kind" | "model" | "thinking" | "requestedModel">>,
 ): string | undefined {
 	if (task?.kind !== "agent" || task.model === undefined || task.requestedModel === undefined) return undefined;
 	const requested = splitFallbackModel(task.requestedModel).modelId;
 	const sameModel = requested.includes("/") ? requested === task.model : task.model.endsWith(`/${requested}`);
-	return sameModel ? undefined : `Model: ran on ${task.model}, not the requested ${task.requestedModel}.`;
+	if (sameModel) return undefined;
+	const ranOn = formatModelLabel(task.model, { thinkingLevel: task.thinking });
+	return `Model: ran on ${ranOn}, not the requested ${formatModelReferenceLabel(task.requestedModel)}.`;
 }
 
 export function taskCompletionNotice(

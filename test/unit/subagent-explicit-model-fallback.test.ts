@@ -365,7 +365,7 @@ test(
 		assert.match(fallbackPrompt, /Model name \(used for commit attribution\): Sol 6/);
 		assert.doesNotMatch(fallbackPrompt, /Argon 4/);
 		// Run status, by the run and by the child, says it too.
-		const ranOn = "ran on account-a/sol, not the requested account-a/argon:high";
+		const ranOn = "ran on account-a/sol  high, not the requested account-a/argon  high";
 		const runStatus = inspectInProcessChildStatus("explicit-constrained-chain");
 		assert.ok(JSON.stringify(runStatus?.content).includes(ranOn), JSON.stringify(runStatus?.content));
 		const childStatus = inspectInProcessChildStatus("explicit-constrained-chain:0");

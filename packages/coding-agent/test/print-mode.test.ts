@@ -7,6 +7,7 @@ import {
 	type Model,
 	type ToolResultMessage,
 } from "@bastani/pi-ai/compat";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";
@@ -523,18 +524,30 @@ describe("runPrintMode", () => {
 	});
 	describe("the ran-on line (#4223)", () => {
 		/** A session the run asked to use `openai/gpt-4o-mini`, whose prompt adds `added` to the transcript. */
-		function hostWhosePromptAdds(added: FakeMessage, options: { fallback?: boolean; history?: FakeMessage } = {}) {
+		function hostWhosePromptAdds(
+			added: FakeMessage,
+			options: {
+				fallback?: boolean;
+				history?: FakeMessage;
+				levels?: { from: ThinkingLevel; to: ThinkingLevel };
+			} = {},
+		) {
 			const runtimeHost = createRuntimeHost(options.history ?? createCustomMessage());
-			(runtimeHost.session as FakeSession & { model?: { provider: string; id: string } }).model = {
-				provider: "openai",
-				id: "gpt-4o-mini",
+			const session = runtimeHost.session as FakeSession & {
+				model?: { provider: string; id: string; reasoning?: boolean };
+				thinkingLevel?: ThinkingLevel;
 			};
+			session.model = { provider: "openai", id: "gpt-4o-mini", ...(options.levels ? { reasoning: true } : {}) };
+			if (options.levels) session.thinkingLevel = options.levels.from;
 			runtimeHost.session.prompt.mockImplementation(async () => {
 				if (options.fallback) {
 					runtimeHost.session.emitEvent({
 						type: "model_fallback_start",
 						from: "openai/gpt-4o-mini",
 						to: "anthropic/claude-opus-4-8",
+						...(options.levels
+							? { fromThinkingLevel: options.levels.from, toThinkingLevel: options.levels.to }
+							: {}),
 						reason: "503 Service Unavailable",
 						attempt: 1,
 					});
@@ -562,6 +575,27 @@ describe("runPrintMode", () => {
 
 			assert.deepEqual(ranOnLines(errorSpy), [
 				"Model: ran on anthropic/claude-opus-4-8, not the requested openai/gpt-4o-mini.",
+			]);
+		});
+
+		it("shows each model's level in the fallback and ran-on lines (#4269)", async () => {
+			captureStdout();
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await runPrintModeWithFakeHost(
+				hostWhosePromptAdds(fromOtherModel(), { fallback: true, levels: { from: "high", to: "medium" } }),
+				{ mode: "text", initialMessage: "hi" },
+			);
+
+			const lines = errorSpy.mock.calls.map(([line]) => String(line));
+			assert.ok(
+				lines.includes(
+					"Model fallback: openai/gpt-4o-mini  high failed, continuing on anthropic/claude-opus-4-8  medium: 503 Service Unavailable",
+				),
+				lines.join("\n"),
+			);
+			assert.deepEqual(ranOnLines(errorSpy), [
+				"Model: ran on anthropic/claude-opus-4-8  medium, not the requested openai/gpt-4o-mini  high.",
 			]);
 		});
 

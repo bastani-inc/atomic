@@ -17,3 +17,4 @@ export { assertStorageSchemaVersion } from "./schema.js";
 export * from "./selection.js";
 export type { SessionStore } from "./session/types.js";
 export * from "./sqlite-facade.js";
+export { switchToWriteAheadLog } from "./write-ahead-log.js";

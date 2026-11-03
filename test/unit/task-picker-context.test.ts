@@ -68,7 +68,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 	});
 	const render = () => stripAnsi(stage.render(120).join("\n"));
 	// PR #2926: preserve the full context assertion with the platform's native separators.
-	const context = `(openai-codex) gpt-6-astra medium • ${join("~", "Documents/projects/atomic")} (main)`;
+	const context = `openai-codex/gpt-6-astra  medium • ${join("~", "Documents/projects/atomic")} (main)`;
 	try {
 		submitStageChatText(stage, "/tasks");
 		await flush();
@@ -92,7 +92,7 @@ test("workflow compact picker retains exact owner context through empty, live an
 			}),
 		);
 		tasks.store.drain();
-		assert.match(render(), /provider\/resolved.*thinking low/);
+		assert.match(render(), /provider\/resolved {2}low/);
 		stage.handleInput("\x1b[A");
 		assert.match(render(), /Second owner task/);
 		stage.handleInput("\r");

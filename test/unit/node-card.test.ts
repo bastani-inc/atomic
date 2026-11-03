@@ -565,7 +565,7 @@ describe("renderNodeCard — metadata line", () => {
 			});
 			const lines = renderNodeCard(stage, { theme, queuedMessageCount: 1_000_000 });
 			const rows = lines.map(stripAnsi);
-			const modelRow = rows.findIndex((row) => row.includes("gpt-5-mini · high"));
+			const modelRow = rows.findIndex((row) => row.includes("gpt-5-mini  high"));
 			const statusRow = rows.findIndex((row) =>
 				row.includes(status === "skipped" ? "cancelled" : status === "awaiting_input" ? "awaiting input" : status),
 			);
@@ -740,8 +740,8 @@ describe("renderNodeCard — metadata line", () => {
 		// #1859 follow-up: the thinking level is load-bearing too, not only the
 		// fast marker. A long model id must lose characters before the level does.
 		for (const [model, level, expected] of [
-			["anthropic/claude-haiku-4-5", "high", "· high"],
-			["anthropic/claude-sonnet-4-5-20250929", "medium", "· medium"],
+			["anthropic/claude-haiku-4-5-20251001", "high", "  high"],
+			["anthropic/claude-sonnet-4-5-20250929", "medium", "  medium"],
 		] as const) {
 			const lines = renderNodeCard(
 				makeStage({ status: "running", startedAt: Date.now() - 500, model, thinkingLevel: level }),
@@ -759,7 +759,7 @@ describe("renderNodeCard — metadata line", () => {
 			theme,
 		});
 		for (const line of lines) assert.equal(visibleWidth(line), NODE_W);
-		assert.match(stripAnsi(lines[2]!), /…-fast · high/);
+		assert.match(stripAnsi(lines[2]!), /…-fast {2}high/);
 	});
 
 	test("keeps both the thinking level and the fast marker on overflow, truncating the model", () => {
@@ -773,7 +773,7 @@ describe("renderNodeCard — metadata line", () => {
 			{ theme },
 		);
 		const modelRow = stripAnsi(lines[2]!).replaceAll("│", "").trim();
-		assert.ok(modelRow.endsWith("-fast · high"), modelRow);
+		assert.ok(modelRow.endsWith("-fast  high"), modelRow);
 		assert.match(modelRow, /…/);
 	});
 });

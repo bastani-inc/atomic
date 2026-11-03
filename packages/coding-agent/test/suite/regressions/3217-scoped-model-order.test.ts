@@ -92,10 +92,10 @@ describe("issue #3217 scoped model ordering", () => {
 
 		const renderedLines = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
-			.filter((line) => line.includes(`[${modelOne.provider}]`));
+			.filter((line) => line.includes(`${modelOne.provider}/`));
 		const orderedIds = renderedLines.slice(0, 3).map((line) => {
-			const [modelId] = line.trim().replace(/^→\s*/, "").replace(/^✓\s*/, "").split(" ");
-			return modelId ?? "";
+			const [label] = line.trim().replace(/^→\s*/, "").replace(/^✓\s*/, "").split(" ");
+			return label?.slice(`${modelOne.provider}/`.length) ?? "";
 		});
 
 		expect(orderedIds).toEqual([modelTwo.id, modelOne.id, modelThree.id]);
