@@ -549,7 +549,7 @@ describe("DefaultPackageManager", () => {
 			assertNotCalledWith(runCommandSpy, "git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
-		it("retries an incomplete git update before clearing its repair marker", async () => {
+		it("installs dependencies and retries the clean on the next update when git clean fails (upstream #11597)", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const markerPath = join(dirname(targetDir), `.repo.${APP_NAME}-update-incomplete`);
@@ -583,8 +583,20 @@ describe("DefaultPackageManager", () => {
 					}
 				});
 
-			await assert.rejects(packageManager.update(source), rejectsWithMessage("simulated clean failure"));
+			const progressMessages: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "progress" && event.message) progressMessages.push(event.message);
+			});
+
+			await packageManager.update(source);
 			assert.equal(existsSync(markerPath), true);
+			assert.ok(progressMessages.some((message) => message.includes("Could not remove all untracked files")));
+			assertCalledWith(
+				runCommandSpy,
+				"npm",
+				["install", "--omit=dev", "--legacy-peer-deps", "--no-audit", "--no-fund"],
+				{ cwd: targetDir },
+			);
 
 			await packageManager.update(source);
 
@@ -592,7 +604,7 @@ describe("DefaultPackageManager", () => {
 			assert.equal(existsSync(markerPath), false);
 		});
 
-		it("repairs deleted git dependencies when cleaning fails", async () => {
+		it("installs git dependencies when cleaning fails (upstream #11597)", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
@@ -618,7 +630,7 @@ describe("DefaultPackageManager", () => {
 					if (args[0] === "clean") throw new Error("simulated clean failure");
 				});
 
-			await assert.rejects(packageManager.update(source), rejectsWithMessage("simulated clean failure"));
+			await packageManager.update(source);
 
 			assertCalledWith(
 				runCommandSpy,
