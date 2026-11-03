@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Copilot discovers models from the account's `/models` catalog, so models the account offers but the built-in catalog lacks appear in `/model`, `--list-models` and workflow catalogs. It works with OAuth and API-key credentials, and the list is cached in `models-store.json` for offline startup. A discovered model keeps the exact advertised ID as its ID and name, is marked `discovered: true`, and can be adjusted with `modelOverrides`; built-in entries keep their curated metadata.
+
+### Changed
+
+- GitHub Copilot fast models are the exact IDs the account's model list advertises; Atomic no longer derives Copilot `<base>-fast` variants from the login's fast list. A configured default model, or a resumed session's Copilot fast model, that is not cached yet stops with a message to run `atomic update --models` instead of switching to another model.
+
 ### Fixed
 
 - Shell commands report their result as soon as they exit. Every `bash` call, through a pipe or a terminal (PTY), waited about 250 ms after its command exited, because the task supervisor always waited out its full termination grace before confirming that the command's processes were gone. It now confirms that as soon as they are, so ten trivial commands take about 0.15 s instead of about 2.7 s, and a stopped command whose processes exit on TERM settles at once too. Processes a command leaves running still get TERM, and KILL once the grace ends ([#4268](https://github.com/bastani-inc/atomic/issues/4268)).

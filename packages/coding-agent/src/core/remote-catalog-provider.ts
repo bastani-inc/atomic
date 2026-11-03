@@ -296,3 +296,88 @@ export function withPersonalizedCatalog(
 		},
 	};
 }
+
+/** Lists the models an account offers that `catalog` lacks. */
+export type DiscoverModels = (
+	catalog: readonly AnyModel[],
+	context: RefreshModelsContext,
+) => Promise<readonly AnyModel[]>;
+
+function isDiscoveredModel(model: AnyModel): boolean {
+	return isModelType(model, "chat") && model.discovered === true;
+}
+
+function modelKey(model: AnyModel): string {
+	return `${getModelType(model)}\0${model.id}`;
+}
+
+function withSavedModels(entry: ModelsStoreEntry, saved: readonly AnyModel[]): ModelsStoreEntry {
+	return { ...entry, models: [...entry.models, ...saved] };
+}
+
+/**
+ * Add the models an account offers beyond the provider's catalog. Each network refresh runs the
+ * wrapped provider's own refresh first, then `discover`. Discovered models are saved in the
+ * provider's stored entry beside the wrapped provider's data, so a later start restores them without
+ * the network. The catalog always wins: a discovered ID the catalog also lists is dropped, so a
+ * curated entry is never replaced.
+ */
+export function withDiscoveredModels(provider: Provider, discover: DiscoverModels): Provider {
+	let discovered: readonly AnyModel[] = [];
+	const catalogModels = (): readonly AnyModel[] => provider.getAllModels?.() ?? provider.getModels();
+	const withDiscovered = (catalog: readonly AnyModel[]): AnyModel[] => {
+		const owned = new Set(catalog.map(modelKey));
+		return [...catalog, ...discovered.filter((model) => !owned.has(modelKey(model)))];
+	};
+
+	return {
+		...provider,
+		getModels: () => withDiscovered(provider.getModels()).filter((model) => isModelType(model, "chat")),
+		getAllModels: () => withDiscovered(catalogModels()),
+		refreshModels: async (context) => {
+			const stored = context.stored;
+			const saved = (stored?.models ?? []).filter(
+				(model) => model.provider === provider.id && isDiscoveredModel(model),
+			);
+			let catalogEntry: ModelsStoreEntry | undefined = stored && {
+				...stored,
+				models: stored.models.filter((model) => !isDiscoveredModel(model)),
+			};
+			if (
+				!(await context.publish({
+					update: () => {
+						discovered = saved;
+					},
+				}))
+			) {
+				return;
+			}
+			try {
+				await provider.refreshModels?.({
+					...context,
+					stored: catalogEntry,
+					publish: (publication) => {
+						if (publication.persist === undefined) return context.publish(publication);
+						catalogEntry = publication.persist ?? undefined;
+						return context.publish({
+							...publication,
+							persist: withSavedModels(publication.persist ?? { models: [] }, saved),
+						});
+					},
+				});
+			} finally {
+				if (context.allowNetwork && !context.signal.aborted) {
+					const found = await discover(catalogModels(), context);
+					if (!context.signal.aborted) {
+						await context.publish({
+							persist: withSavedModels(catalogEntry ?? { models: [] }, found),
+							update: () => {
+								discovered = found;
+							},
+						});
+					}
+				}
+			}
+		},
+	};
+}

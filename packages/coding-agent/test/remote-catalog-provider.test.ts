@@ -11,8 +11,10 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VERSION } from "../src/config.ts";
 import {
+	type DiscoverModels,
 	type PersonalizeCatalog,
 	REMOTE_CATALOG_MODEL_TYPES,
+	withDiscoveredModels,
 	withPersonalizedCatalog,
 	withRemoteCatalog,
 } from "../src/core/remote-catalog-provider.ts";
@@ -459,5 +461,104 @@ describe("personalized catalog provider", () => {
 		await provider.refreshModels?.(await offline());
 		expect(provider.getModels()).toEqual([]);
 		expect(provider.getAllModels?.().map((entry) => entry.id)).toEqual(["image"]);
+	});
+});
+
+describe("discovered models provider", () => {
+	const discoveredModel = (id: string): Model<"openai-completions"> => ({ ...model(id), discovered: true });
+	const ids = (provider: Provider) => provider.getModels().map((entry) => entry.id);
+
+	function discoveringProvider(discover: DiscoverModels, localGeneratedAt = 1_000): Provider {
+		return withDiscoveredModels(withRemoteCatalog(builtinProvider(), "https://pi.dev", localGeneratedAt), discover);
+	}
+
+	function stubCatalogOverlay(response: () => Response) {
+		return vi.spyOn(globalThis, "fetch").mockImplementation(async () => response());
+	}
+
+	it("adds discovered models after the catalog and restores them offline beside the catalog overlay", async () => {
+		const fetchSpy = stubCatalogOverlay(() =>
+			Response.json([model("remote")], { headers: { "last-modified": new Date(2_000).toUTCString() } }),
+		);
+		const seen: string[][] = [];
+		const discover = vi.fn<DiscoverModels>(async (catalog) => {
+			seen.push(catalog.map((entry) => entry.id));
+			return [discoveredModel("found")];
+		});
+		const store = new InMemoryModelsStore();
+		const online = discoveringProvider(discover);
+		await online.refreshModels?.(await makeRefreshContext(store, online.id, { credential: { type: "api_key" } }));
+
+		expect(seen).toEqual([["static", "remote"]]);
+		expect(ids(online)).toEqual(["static", "remote", "found"]);
+		const saved = await store.read(online.id);
+		expect(saved?.models.map((entry) => entry.id)).toEqual(["remote", "found"]);
+		expect(saved?.lastModified).toBe(2_000);
+
+		fetchSpy.mockClear();
+		const restarted = discoveringProvider(async () => {
+			throw new Error("not used offline");
+		});
+		await restarted.refreshModels?.(await makeRefreshContext(store, restarted.id, { allowNetwork: false }));
+		expect(ids(restarted)).toEqual(["static", "remote", "found"]);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("keeps the catalog entry when a discovered model has the same ID", async () => {
+		stubCatalogOverlay(() => new Response("not found", { status: 404 }));
+		const provider = discoveringProvider(async () => [{ ...discoveredModel("static"), name: "Account static" }]);
+		const store = new InMemoryModelsStore();
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
+		expect(provider.getModels()).toEqual([model("static")]);
+	});
+
+	it("keeps saved discovered models while the catalog overlay refreshes on its own schedule", async () => {
+		const fetchSpy = stubCatalogOverlay(() =>
+			Response.json([model("remote")], { headers: { "last-modified": new Date(2_000).toUTCString() } }),
+		);
+		const store = new InMemoryModelsStore();
+		const first = discoveringProvider(async () => [discoveredModel("found")]);
+		await first.refreshModels?.(await makeRefreshContext(store, first.id, { credential: { type: "api_key" } }));
+
+		const second = discoveringProvider(async () => [discoveredModel("found"), discoveredModel("newer")]);
+		await second.refreshModels?.(await makeRefreshContext(store, second.id, { credential: { type: "api_key" } }));
+		// The overlay was checked moments ago, so only discovery ran.
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(ids(second)).toEqual(["static", "remote", "found", "newer"]);
+		expect((await store.read(second.id))?.models.map((entry) => entry.id)).toEqual(["remote", "found", "newer"]);
+	});
+
+	it("still discovers when the catalog overlay request fails, then reports that failure", async () => {
+		stubCatalogOverlay(() => new Response("unavailable", { status: 503 }));
+		const store = new InMemoryModelsStore();
+		const provider = discoveringProvider(async () => [discoveredModel("found")]);
+		await expect(
+			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
+		).rejects.toThrow("Model catalog request failed for test-provider: 503");
+		expect(ids(provider)).toEqual(["static", "found"]);
+		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["found"]);
+	});
+
+	it("keeps the saved discovered models when discovery fails", async () => {
+		stubCatalogOverlay(() => new Response("not found", { status: 404 }));
+		const store = new InMemoryModelsStore();
+		await store.write("test-provider", { models: [discoveredModel("found")], checkedAt: 1 });
+		const provider = discoveringProvider(async () => {
+			throw new Error("account list unavailable");
+		});
+		await expect(
+			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
+		).rejects.toThrow("account list unavailable");
+		expect(ids(provider)).toEqual(["static", "found"]);
+		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["found"]);
+	});
+
+	it("does not discover without the network", async () => {
+		const discover = vi.fn<DiscoverModels>(async () => [discoveredModel("found")]);
+		const store = new InMemoryModelsStore();
+		const provider = discoveringProvider(discover);
+		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { allowNetwork: false }));
+		expect(discover).not.toHaveBeenCalled();
+		expect(ids(provider)).toEqual(["static"]);
 	});
 });

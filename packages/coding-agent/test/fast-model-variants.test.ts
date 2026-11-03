@@ -712,55 +712,13 @@ describe("ModelRuntime fast model catalog", () => {
 		assert.equal(base.fastRoute, undefined);
 	});
 
-	it("gates Copilot Astra fast on the exact account entitlement without a priority tier", async () => {
-		const entitled = await runtimeWithCopilotCredential(["gpt-6-astra-fast"]);
-		const fast = entitled.getModel("github-copilot", "gpt-6-astra-fast");
-		assert.ok(fast);
-		assert.equal(fast.api, "openai-responses");
-		assert.deepEqual(fast.fastRoute, {
-			baseModelId: "gpt-6-astra",
-			upstreamModelId: "gpt-6-astra-fast",
-		});
-		assert.ok((await entitled.getAvailable()).some((m) => m.provider === "github-copilot" && m.id === fast.id));
-		const none = await runtimeWithCopilotCredential([]);
-		assert.equal(none.getModel("github-copilot", "gpt-6-astra-fast"), undefined);
-		assert.ok(none.getModel("github-copilot", "gpt-6-astra"));
+	it("derives no Copilot fast model from a login's fast list; only the account's model list adds one", async () => {
+		const runtime = await runtimeWithCopilotCredential(["claude-opus-4.8-fast"]);
+		assert.ok(runtime.getModel("github-copilot", "claude-opus-4.8"));
+		assert.equal(runtime.getModel("github-copilot", "claude-opus-4.8-fast"), undefined);
+		const available = await runtime.getAvailable();
 		assert.equal(
-			(await none.getAvailable()).some((m) => m.provider === "github-copilot" && m.id === "gpt-6-astra"),
-			false,
-		);
-	});
-
-	it("resolves a Copilot fast ID only while its entitlement is advertised", async () => {
-		const entitled = await runtimeWithCopilotCredential(["claude-opus-4.8-fast"]);
-		const fast = entitled.getModel("github-copilot", "claude-opus-4.8-fast");
-		assert.ok(fast);
-		assert.deepEqual(fast.fastRoute, {
-			baseModelId: "claude-opus-4.8",
-			upstreamModelId: "claude-opus-4.8-fast",
-		});
-		const available = await entitled.getAvailable();
-		assert.equal(
-			available.some((entry) => entry.provider === "github-copilot" && entry.id === "claude-opus-4.8-fast"),
-			true,
-		);
-
-		// A different advertised entitlement exposes only that sibling, never the one it does not cover.
-		const other = await runtimeWithCopilotCredential(["claude-opus-5-fast"]);
-		assert.equal(other.getModel("github-copilot", "claude-opus-4.8-fast"), undefined);
-		assert.ok(other.getModel("github-copilot", "claude-opus-5-fast"));
-		const otherAvailable = await other.getAvailable();
-		const otherFastIds = otherAvailable
-			.filter((entry) => entry.provider === "github-copilot" && entry.fastRoute !== undefined)
-			.map((entry) => entry.id);
-		assert.deepEqual(otherFastIds, ["claude-opus-5-fast"]);
-
-		// No advertised entitlement means no fast sibling anywhere.
-		const none = await runtimeWithCopilotCredential([]);
-		assert.equal(none.getModel("github-copilot", "claude-opus-4.8-fast"), undefined);
-		const noneAvailable = await none.getAvailable();
-		assert.equal(
-			noneAvailable.some((entry) => entry.provider === "github-copilot" && entry.fastRoute !== undefined),
+			available.some((entry) => entry.provider === "github-copilot" && entry.fastRoute !== undefined),
 			false,
 		);
 	});

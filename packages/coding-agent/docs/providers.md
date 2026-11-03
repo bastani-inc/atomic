@@ -113,14 +113,15 @@ Auto routing excludes Ultrafast unless `modelConstraints.allowedModels` explicit
 
 ### Fast models
 
-Fast inference is a model choice, not a mode. Where a provider supports it, Atomic adds a second selectable model whose canonical ID is the base model ID plus `-fast` — for example `openai-codex/gpt-5.6-sol-fast`. It appears in `/model`, in `atomic --list-models`, and in workflow model catalogs alongside its normal sibling, and it is persisted and restored by that exact ID. Select it anywhere you name a model, including with a thinking suffix: `openai-codex/gpt-5.6-sol-fast:medium`.
+Fast inference is a model choice, not a mode. When a provider enables fast mode through an API parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives a second selectable model whose canonical ID is the base model ID plus `-fast` and that sets the parameter — for example `anthropic/claude-opus-5-fast`. When a provider publishes fast mode as its own model ID (GitHub Copilot), Atomic uses that ID exactly as the provider publishes it, with no derivation. Either way the fast model appears in `/model`, in `atomic --list-models`, and in workflow model catalogs alongside its normal sibling, and it is persisted and restored by that exact ID. Select it anywhere you name a model, including with a thinking suffix: `anthropic/claude-opus-5-fast:high`.
 
-Four provider paths produce these variants:
+Three provider paths derive these variants:
 
 - First-party OpenAI `openai/*` and OpenAI Codex `openai-codex/*` models that advertise Fast (see [Fast and Ultrafast tiers](#fast-and-ultrafast-tiers)) send the **base** upstream model ID plus the fixed `service_tier: priority`. A renamed provider, proxy, Azure OpenAI, OpenRouter, or generic OpenAI-compatible provider does not receive a synthetic fast variant.
 - First-party xAI `xai/*` models get a fast variant for every Grok model, such as `xai/grok-4.7-fast`. It sends the **base** upstream model ID with xAI's [Priority Processing](https://docs.x.ai/developers/advanced-api-usage/priority-processing) `service_tier: priority`. xAI has no separate `-fast` model IDs for current Grok models. OpenRouter, Vercel AI Gateway, and renamed or proxied xAI-compatible providers do not receive a synthetic fast variant.
 - First-party Anthropic `anthropic/*` exposes [fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode) for Claude Opus 5.5, Claude Opus 5, and Claude Opus 4.8: `anthropic/claude-opus-5-5-fast`, `anthropic/claude-opus-5-fast`, and `anthropic/claude-opus-4-8-fast`. Each sends the **base** upstream model ID with `speed: "fast"` and the `fast-mode-2026-02-01` beta header. It works with API keys and Claude subscription logins. Amazon Bedrock, Google Vertex, GitHub Copilot, OpenRouter, and renamed or proxied Anthropic-compatible providers do not receive a synthetic fast variant.
-- GitHub Copilot exposes only the real fast sibling IDs the OAuth model catalog advertises for the signed-in account, and only when the corresponding base model exists in Atomic's Copilot catalog. It sends those suffixed IDs verbatim with no OpenAI service-tier field. Copilot fast models require the account catalog metadata obtained through `/login`; a raw `COPILOT_GITHUB_TOKEN` does not provide that metadata.
+
+GitHub Copilot publishes fast models as their own IDs in the account's model list. Atomic offers each one under exactly the advertised ID, sends that ID upstream unchanged with no service-tier field, and derives no Copilot `-fast` ID of its own. See [GitHub Copilot](#github-copilot).
 
 The selection Atomic records stays the canonical `-fast` identity even when the outbound request carries the base upstream model ID, so sessions, usage rows, fallback attempts, workflow metadata, and subagent labels all keep normal and fast apart. There is no separate `fast` badge anywhere in the UI: the model ID already says it.
 
@@ -162,12 +163,20 @@ Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. 
 
 - Press Enter for github.com, or enter your GitHub Enterprise Server domain
 - A personal access token works either way: save it with `/login github-copilot` → **Use an API key**, or set `COPILOT_GITHUB_TOKEN`. A saved key takes precedence over the environment variable
-- Models come from the bundled `pi-ai` GitHub Copilot catalog; an OAuth credential narrows the list to the ids your account can actually use
+- Models come from the bundled `pi-ai` GitHub Copilot catalog plus the models your account's `/models` list offers that the bundled catalog lacks; an OAuth credential narrows the list to the ids your account can actually use
 - If you get "model not supported", enable it in VS Code: Copilot Chat → model selector → select model → "Enable"
 
 Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, for example `atomic --model github-copilot/gpt-6.1-sol:high`. Their context windows and reasoning levels are in [OpenAI built-in models](/models/reference#openai-built-in-models). The OAuth account catalog still controls availability, so a listed model does not guarantee that Copilot has enabled it for your account.
 
-`github-copilot/gpt-6-astra-fast` appears only when the OAuth account catalog advertises that exact fast ID. It sends `gpt-6-astra-fast` unchanged with no `service_tier`, unlike first-party OpenAI's priority route. A raw `COPILOT_GITHUB_TOKEN` cannot supply that fast entitlement.
+Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. A model found this way:
+
+- keeps the exact ID the account advertises as both its ID and its name, and is sent upstream unchanged
+- is marked `discovered: true` in the catalog; its limits, image input and reasoning efforts come from the account's list, and `modelOverrides` adjusts them like any other model
+- does not request 24-hour prompt-cache retention, because some Copilot models reject it and the list does not say which; set `compat.supportsLongCacheRetention` in `modelOverrides` for one that accepts it
+- never replaces a bundled entry with the same ID, which keeps its curated metadata
+- is skipped when the account disables its policy, hides it from the model picker, or does not list tool-call support
+
+A Copilot fast model appears only when the account's list advertises its exact ID. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. If the configured default model, or the fast model of a resumed session, is a Copilot model that is not cached yet, Atomic stops with a message instead of switching models; run `atomic update --models` once with network access.
 
 #### Endpoint routing for personal access tokens
 

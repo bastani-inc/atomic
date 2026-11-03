@@ -320,14 +320,12 @@ describe("default model selection", () => {
 	});
 
 	/**
-	 * Copilot fast siblings are advertised per account and the advertisement can change between
-	 * sessions (a policy flip or plan change). Reconstruction must not resurrect one the credential no
-	 * longer entitles: the synthesized model would carry no route metadata, so it would send the
-	 * `-fast` wire ID under an entitlement the account does not have. Refusing lets `sdk.ts`'s existing
-	 * `Could not restore model …` / `session-restore` path fire, which is louder and does not silently
-	 * substitute a different model.
+	 * Copilot fast models come only from the account's model list, which Atomic caches after a catalog
+	 * refresh. An absent saved fast ID is never reconstructed from another model's metadata, whatever
+	 * the login lists: the warning names the exact saved ID and asks for a refresh, and the fast ID
+	 * itself is never handed back.
 	 */
-	describe("Copilot fast-sibling restoration follows the credential's advertisement", () => {
+	describe("Copilot fast model restoration needs the cached account list", () => {
 		async function copilotRuntime(fastModelIds: string[], availableModelIds = ["claude-opus-4.8"]) {
 			const registry = await createInMemoryModelRegistry(
 				AuthStorage.inMemory({
@@ -344,84 +342,34 @@ describe("default model selection", () => {
 			return getModelRuntime(registry);
 		}
 
-		test("refuses an unentitled fast ID instead of reconstructing it", async () => {
-			const modelRuntime = await copilotRuntime([]);
-
-			expect(modelRuntime.getModel("github-copilot", "claude-opus-4.8-fast")).toBeUndefined();
-			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "claude-opus-4.8-fast")).toBe(false);
-			// The loud existing path: a warning naming the exact saved ID, then ordinary initial-model
-			// selection. The unentitled fast ID itself is never handed back.
-			const result = await restoreModelFromSession(
-				"github-copilot",
-				"claude-opus-4.8-fast",
-				undefined,
-				false,
-				modelRuntime,
-			);
-			expect(result.fallbackMessage).toContain(
-				"Could not restore model github-copilot/claude-opus-4.8-fast (model no longer exists)",
-			);
-			expect(result.model?.id).not.toBe("claude-opus-4.8-fast");
-		});
-
-		test("restores an entitled fast ID from the catalog, with its route metadata", async () => {
-			const modelRuntime = await copilotRuntime(["claude-opus-4.8-fast"]);
-
-			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "claude-opus-4.8-fast")).toBe(true);
-			const result = await restoreModelFromSession(
-				"github-copilot",
-				"claude-opus-4.8-fast",
-				undefined,
-				false,
-				modelRuntime,
-			);
-			expect(result.fallbackMessage).toBeUndefined();
-			expect(result.model?.id).toBe("claude-opus-4.8-fast");
-			expect(result.model?.fastRoute).toEqual({
-				baseModelId: "claude-opus-4.8",
-				upstreamModelId: "claude-opus-4.8-fast",
-			});
-		});
-
-		test("refuses an advertised fast ID when its base model is absent from the catalog", async () => {
-			const modelRuntime = await copilotRuntime(["future-copilot-model-fast"]);
-
-			expect(modelRuntime.getModel("github-copilot", "future-copilot-model")).toBeUndefined();
-			expect(modelRuntime.getModel("github-copilot", "future-copilot-model-fast")).toBeUndefined();
-			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "future-copilot-model-fast")).toBe(false);
-			const result = await restoreModelFromSession(
-				"github-copilot",
+		test.each([
+			["no fast ID", [], ["claude-opus-4.8"], "claude-opus-4.8-fast"],
+			["the fast ID", ["claude-opus-4.8-fast"], ["claude-opus-4.8"], "claude-opus-4.8-fast"],
+			[
+				"a fast ID without a catalog base",
+				["future-copilot-model-fast"],
+				["claude-opus-4.8"],
 				"future-copilot-model-fast",
-				undefined,
-				false,
-				modelRuntime,
-			);
-			expect(result.fallbackMessage).toContain(
-				"Could not restore model github-copilot/future-copilot-model-fast (model no longer exists)",
-			);
-			expect(result.model?.id).not.toBe("future-copilot-model-fast");
-		});
-
-		test("restores an advertised ordinary Copilot model whose name ends in -fast", async () => {
-			// Copilot's per-account advertisement is the authority, not the name shape. An ID the account
-			// lists as an ordinary picker/policy model is ordinary even when it ends in `-fast`; the
-			// provider's own filterModels reaches the same conclusion by checking route metadata first.
-			const modelRuntime = await copilotRuntime([], ["provider-owned-probe-fast", "claude-opus-4.8"]);
-
-			expect(modelRuntime.getModel("github-copilot", "provider-owned-probe-fast")).toBeUndefined();
-			expect(modelRuntime.canRestoreUnknownModel("github-copilot", "provider-owned-probe-fast")).toBe(true);
-			const result = await restoreModelFromSession(
-				"github-copilot",
+			],
+			[
+				"the ID as an ordinary model",
+				[],
+				["provider-owned-probe-fast", "claude-opus-4.8"],
 				"provider-owned-probe-fast",
-				undefined,
-				false,
-				modelRuntime,
-			);
-			expect(result.fallbackMessage).toBeUndefined();
-			expect(result.model?.id).toBe("provider-owned-probe-fast");
-			// Reconstructed models carry no route metadata, so it routes as the ordinary model it is.
-			expect(result.model?.fastRoute).toBeUndefined();
-		});
+			],
+		])(
+			"refuses an absent fast ID when the login lists %s, and asks for a refresh",
+			async (_label, fast, available, id) => {
+				const modelRuntime = await copilotRuntime(fast, available);
+
+				expect(modelRuntime.getModel("github-copilot", id)).toBeUndefined();
+				expect(modelRuntime.canRestoreUnknownModel("github-copilot", id)).toBe(false);
+				const result = await restoreModelFromSession("github-copilot", id, undefined, false, modelRuntime);
+				expect(result.fallbackMessage).toContain(`Could not restore model github-copilot/${id}`);
+				expect(result.fallbackMessage).toContain("update --models");
+				expect(result.model?.id).not.toBe(id);
+			},
+		);
 
 		test("still reconstructs a missing Copilot model that is not a fast sibling", async () => {
 			const modelRuntime = await copilotRuntime([]);

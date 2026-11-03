@@ -2,6 +2,7 @@
  * GitHub Copilot OAuth flow
  */
 
+import { COPILOT_API_VERSION, COPILOT_HEADERS } from "../../api/github-copilot-headers.ts";
 import { GITHUB_COPILOT_MODELS } from "../../providers/github-copilot.models.ts";
 import { sleep } from "../../utils/sleep.ts";
 import { OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
@@ -11,14 +12,6 @@ import { trustedHttpUrl } from "./trusted-url.ts";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("SXYxLmI1MDdhMDhjODdlY2ZlOTg=");
-
-const COPILOT_HEADERS = {
-	"User-Agent": "GitHubCopilotChat/0.35.0",
-	"Editor-Version": "vscode/1.107.0",
-	"Editor-Plugin-Version": "copilot-chat/0.35.0",
-	"Copilot-Integration-Id": "vscode-chat",
-} as const;
-const COPILOT_API_VERSION = "2026-06-01";
 
 type DeviceCodeResponse = {
 	device_code: string;

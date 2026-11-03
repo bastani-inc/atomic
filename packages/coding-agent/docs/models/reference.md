@@ -135,7 +135,7 @@ Notes for every row:
 - Codex's `minimal` UI alias is not a separate API effort, and Codex's client-side `ultra` orchestration preset is not an API reasoning level; neither appears as its own effort in Atomic's selector.
 - Mid-conversation effort changes are explained in [Changing GPT-6 thinking levels](#changing-gpt-6-thinking-levels).
 - On Amazon Bedrock, Atomic sends each ID unchanged and sends the selected effort as Bedrock's OpenAI `reasoning_effort` field.
-- On GitHub Copilot, requests use Copilot's Responses endpoint, and account policy controls availability. Copilot Fast choices require exact account advertisement, and Codex's Ultrafast tier does not apply. The table lists no Copilot rates.
+- On GitHub Copilot, requests use Copilot's Responses endpoint, and account policy controls availability. Copilot fast models are the exact IDs the account's model list advertises, not derived variants, and Codex's Ultrafast tier does not apply. The table lists no Copilot rates.
 - Atomic does not synthesize Azure OpenAI Astra entries. Other catalogs are imported as published: OpenRouter publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-pro`, and the Vercel AI Gateway publishes `openai/gpt-6-astra` and `openai/gpt-6-astra-fast`, with their request-wide long-context prices. Vercel owns its suffixed ID, so it remains route-less and does not gain Atomic's first-party fast-route behavior.
 - On OpenAI Responses, these models use the newer prompt-cache payload. `cacheRetention: "long"` sends `prompt_cache_options.ttl: "30m"` instead of the legacy `prompt_cache_retention: "24h"`; `none` sends explicit mode without a cache key, and `short` sends neither cache option. Earlier Responses models keep the 24-hour field for long retention.
 
@@ -322,8 +322,9 @@ compaction thresholds, footer/stats, session replay, and RPC/SDK state.
 }
 ```
 
-Built-in models take their `contextWindow` from the bundled `pi-ai` catalog. To
-change one, use `modelOverrides`:
+Built-in models take their `contextWindow` from the bundled `pi-ai` catalog, and
+GitHub Copilot models discovered from your account's model list take it from that
+list. To change one, use `modelOverrides`:
 
 ```json
 {
@@ -433,7 +434,7 @@ Behavior notes:
 
 ## Derived Fast Model Variants
 
-For providers that support fast inference, Atomic adds a second selectable model whose ID is the base model ID plus `-fast` (for example `openai-codex/gpt-5.6-sol-fast`). Derivation runs **after** built-in composition, `models.json` custom models, extension model lists, and `modelOverrides` on those models, so it sees the final catalog. A `modelOverrides` entry keyed on a derived `-fast` ID is then applied to the derived entry itself. See [Providers](/providers#fast-models) for eligibility and what each provider sends upstream.
+When a provider enables fast mode through an API parameter (OpenAI and xAI `service_tier`, Anthropic `speed`), Atomic derives a `<id>-fast` variant that sets that parameter (for example `anthropic/claude-opus-5-fast`). When a provider publishes fast mode as its own model ID (GitHub Copilot), Atomic uses that ID exactly as the provider publishes it, with no derivation; the rest of this section covers derived variants only. Derivation runs **after** built-in composition, `models.json` custom models, extension model lists, and `modelOverrides` on those models, so it sees the final catalog. A `modelOverrides` entry keyed on a derived `-fast` ID is then applied to the derived entry itself. See [Providers](/providers#fast-models) for eligibility and what each provider sends upstream.
 
 These rules apply when you write `models.json`:
 

@@ -4,6 +4,15 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- `github-copilot` discovers models from the account's `/models` list. `discoverGitHubCopilotModels(catalog, context)` reads the list with the effective OAuth or API-key credential and returns the chat models the catalog lacks, each under its exact advertised ID as both ID and name and marked `discovered: true`; `parseGitHubCopilotDiscoveredModels(response, catalog)` applies the same rules to a response. Entries with a disabled policy, hidden from the model picker, without tool-call support, or already in the catalog are skipped, so curated entries keep their metadata. A fast entry carries fast route metadata only when its `family` names another model.
+- `Model.discovered` marks a model found in the account's own model list rather than in the built-in catalog.
+
+### Changed
+
+- `github-copilot` availability keeps fast-route models for a credential without a fast list, such as an API key, because only the account's own model list adds them. A login that lists its fast IDs offers each listed ID even when it is not a picker entry.
+
 ## [0.9.64] - 2026-11-02
 
 ### Added

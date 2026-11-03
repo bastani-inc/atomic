@@ -46,6 +46,7 @@ import {
 	type ProviderHeaders,
 } from "@bastani/pi-ai";
 import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
+import { discoverGitHubCopilotModels } from "@bastani/pi-ai/providers/github-copilot";
 import { personalizeOpenRouterCatalog } from "@bastani/pi-ai/providers/openrouter";
 import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
@@ -54,8 +55,6 @@ import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { containsAuthConfig } from "./credential-screening.ts";
 import {
-	copilotAdvertisedFastModelIds,
-	copilotAdvertisesModelId,
 	FAST_MODEL_ID_SUFFIX,
 	type FastModelVariantDiagnostic,
 	isGitHubCopilotModel,
@@ -89,7 +88,7 @@ import {
 	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
-import { withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
+import { withDiscoveredModels, withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
@@ -236,7 +235,11 @@ export class ModelRuntime implements Models {
 					builtinModelDataGeneratedAt,
 				);
 			}
-			return withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+			const withCatalog = withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+			// GitHub Copilot adds the models the account's own list offers beyond the catalog.
+			return provider.id === "github-copilot"
+				? withDiscoveredModels(withCatalog, discoverGitHubCopilotModels)
+				: withCatalog;
 		});
 		const runtime = new ModelRuntime(
 			credentials,
@@ -294,7 +297,6 @@ export class ModelRuntime implements Models {
 	 */
 	private withDerivedFastModels(provider: Provider): Provider {
 		return withFastModelVariants(provider, {
-			getCopilotFastModelIds: () => copilotAdvertisedFastModelIds(this.credentials.peek("github-copilot")),
 			getModelOverrides: () => this.config.getProvider(provider.id)?.modelOverrides,
 			getCustomModelIds: () => new Set(this.config.getProvider(provider.id)?.models?.map((model) => model.id)),
 			getExtensionOwnedApis: () => {
@@ -503,13 +505,11 @@ export class ModelRuntime implements Models {
 	/**
 	 * Whether an authenticated provider may reconstruct an absent saved model ID.
 	 *
-	 * Pass `modelId` whenever it is known. GitHub Copilot advertises every model it offers per account,
-	 * so a `-fast` ID that appears in neither the picker list nor the fast-sibling list is definitively
-	 * not restorable. An ID advertised as a fast sibling also requires its corresponding base model in
-	 * the catalog; otherwise reconstruction would invent a route-less fast identity. An ID advertised
-	 * as an ordinary model stays ordinary whatever its name ends in. Every other provider keeps the
-	 * provider-scoped answer, so a provider-owned model whose upstream name merely ends in `-fast`
-	 * (several exist under `vercel-ai-gateway`) still restores.
+	 * Pass `modelId` whenever it is known. GitHub Copilot fast models come only from the account's
+	 * model list, which Atomic caches after a catalog refresh, so an absent Copilot `-fast` ID is never
+	 * reconstructed from another model's metadata: restoring it fails and asks for a refresh instead.
+	 * Every other provider keeps the provider-scoped answer, so a provider-owned model whose upstream
+	 * name merely ends in `-fast` (several exist under `vercel-ai-gateway`) still restores.
 	 */
 	canRestoreUnknownModel(providerId: string, modelId?: string): boolean {
 		providerId = normalizeProviderId(providerId);
@@ -518,12 +518,7 @@ export class ModelRuntime implements Models {
 			isGitHubCopilotModel({ provider: providerId }) &&
 			modelId.endsWith(FAST_MODEL_ID_SUFFIX)
 		) {
-			const credential = this.credentials.peek(providerId);
-			if (!copilotAdvertisesModelId(credential, modelId)) return false;
-			if (copilotAdvertisedFastModelIds(credential)?.includes(modelId) === true) {
-				const baseModelId = modelId.slice(0, -FAST_MODEL_ID_SUFFIX.length);
-				if (!this.models.getModel(providerId, baseModelId)) return false;
-			}
+			return false;
 		}
 		return canRestoreUnknownModelProvider(
 			providerId,

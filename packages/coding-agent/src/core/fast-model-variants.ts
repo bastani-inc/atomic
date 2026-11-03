@@ -150,22 +150,6 @@ export function copilotAdvertisedFastModelIds(credential: Credential | undefined
 	return advertisedModelIds(credential.fastModelIds);
 }
 
-/**
- * Whether a stored GitHub Copilot OAuth credential advertises this exact model ID at all — as a
- * selectable picker/policy model or as a fast sibling.
- *
- * Copilot's per-account advertisement is the authority the provider's own `filterModels` uses, so
- * restoration consults the same lists. An ID the account advertises as an ordinary model is ordinary,
- * whatever its name ends in.
- */
-export function copilotAdvertisesModelId(credential: Credential | undefined, modelId: string): boolean {
-	if (credential?.type !== "oauth") return false;
-	return (
-		advertisedModelIds(credential.availableModelIds)?.includes(modelId) === true ||
-		advertisedModelIds(credential.fastModelIds)?.includes(modelId) === true
-	);
-}
-
 /** A model without tier metadata keeps offering Fast; one that lists its tiers must advertise it, as in Codex. */
 function advertisesFastServiceTier(model: Model<Api>): boolean {
 	return model.serviceTiers === undefined || getServiceTierCost(model, FAST_MODEL_SERVICE_TIER) !== undefined;
