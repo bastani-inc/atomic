@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, vi } from "vitest";
-import { listModels } from "../src/cli/list-models.ts";
-import { resolveCliModel } from "../src/core/model-resolver-cli.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { listModels } from "../src/cli/list-models.js";
+import { resolveCliModel } from "../src/core/model-resolver-cli.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 describe("--list-models", () => {
 	let harness: Harness | undefined;

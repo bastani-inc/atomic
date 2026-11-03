@@ -1,5 +1,5 @@
 import { splitFallbackModel } from "../fallback-models.ts";
-import { formatModelLabel } from "../model-label.ts";
+import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
@@ -43,7 +43,7 @@ export function ranOnModelLine(
 	const sameModel = requested.includes("/") ? requested === task.model : task.model.endsWith(`/${requested}`);
 	if (sameModel) return undefined;
 	const ranOn = formatModelLabel(task.model, { thinkingLevel: task.thinking });
-	return `Model: ran on ${ranOn}, not the requested ${formatModelLabel(task.requestedModel)}.`;
+	return `Model: ran on ${ranOn}, not the requested ${formatModelReferenceLabel(task.requestedModel)}.`;
 }
 
 export function taskCompletionNotice(

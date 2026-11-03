@@ -297,6 +297,7 @@ export {
 } from "./core/model-fallback-failures.ts";
 export {
 	formatModelLabel,
+	formatModelReferenceLabel,
 	MODEL_LABEL_SEPARATOR,
 	type ModelLabelOptions,
 	type ModelLabelSubject,

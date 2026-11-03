@@ -2,7 +2,7 @@
  * Formatting utilities for display output
  */
 
-import { formatModelLabel } from "@bastani/atomic";
+import { formatModelReferenceLabel } from "@bastani/atomic";
 import { THINKING_LEVELS } from "./model-info.js";
 import type { Usage } from "./types.js";
 
@@ -20,7 +20,7 @@ export function formatTokens(n: number): string {
 export function formatModelThinking(model?: string, thinking?: string): string {
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
 	if (!model) return explicitThinking ? `thinking ${explicitThinking}` : "";
-	return formatModelLabel(model, { thinkingLevel: explicitThinking });
+	return formatModelReferenceLabel(model, { thinkingLevel: explicitThinking });
 }
 
 /**

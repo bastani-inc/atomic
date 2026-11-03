@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { resolveCliModel } from "../src/core/model-resolver-cli.ts";
+import { resolveCliModel } from "../src/core/model-resolver-cli.js";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 

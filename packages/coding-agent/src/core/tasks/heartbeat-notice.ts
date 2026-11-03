@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { formatModelLabel } from "../model-label.ts";
+import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { formatSize } from "../tools/truncate.ts";
 import { ranOnModelLine } from "./completion.js";
@@ -123,7 +123,7 @@ export function formatTaskHeartbeatStatus(task: TaskHeartbeatTask): string {
 			parts.push(
 				task.requestedModel !== undefined &&
 					ranOnModelLine({ kind: "agent", model: task.model, requestedModel: task.requestedModel })
-					? `model ${model}, not the requested ${formatModelLabel(task.requestedModel)}`
+					? `model ${model}, not the requested ${formatModelReferenceLabel(task.requestedModel)}`
 					: `model ${model}`,
 			);
 		}

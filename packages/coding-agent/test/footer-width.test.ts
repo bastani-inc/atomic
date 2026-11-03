@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -173,13 +174,14 @@ describe("FooterComponent model label", () => {
 	const sonnet = { sessionName: "", provider: "anthropic", modelId: "claude-sonnet-4-5", reasoning: true };
 
 	it("shows the raw model ID and its level, as provider/id when several providers are configured (#4269)", () => {
-		expect(statusLine(1, { ...sonnet, thinkingLevel: "high" })).toMatch(/^claude-sonnet-4-5 {2}high • /);
-		expect(statusLine(2, { ...sonnet, thinkingLevel: "high" })).toMatch(/^anthropic\/claude-sonnet-4-5 {2}high • /);
+		assert.match(statusLine(1, { ...sonnet, thinkingLevel: "high" }), /^claude-sonnet-4-5 {2}high • /);
+		assert.match(statusLine(2, { ...sonnet, thinkingLevel: "high" }), /^anthropic\/claude-sonnet-4-5 {2}high • /);
 	});
 
 	it("shows off for a reasoning model, and no level for a model without reasoning (#4269)", () => {
-		expect(statusLine(2, { ...sonnet, thinkingLevel: "off" })).toMatch(/^anthropic\/claude-sonnet-4-5 {2}off • /);
-		expect(statusLine(2, { ...sonnet, modelId: "gpt-4o", provider: "openai", reasoning: false })).toMatch(
+		assert.match(statusLine(2, { ...sonnet, thinkingLevel: "off" }), /^anthropic\/claude-sonnet-4-5 {2}off • /);
+		assert.match(
+			statusLine(2, { ...sonnet, modelId: "gpt-4o", provider: "openai", reasoning: false }),
 			/^openai\/gpt-4o • /,
 		);
 	});

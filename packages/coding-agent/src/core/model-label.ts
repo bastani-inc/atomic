@@ -30,20 +30,32 @@ export interface ModelLabelOptions {
 /**
  * A model's label: `provider/id` (or `id` with `omitProvider`), followed by its level when it has reasoning.
  *
- * A string is a model reference as configured or recorded (`provider/id[:level]`). Its own level suffix wins over
- * `thinkingLevel`, and since a reference cannot say whether the model reasons, any level it carries is shown.
+ * A string is a resolved `provider/id`, shown whole: an ID may itself end in a level word such as `:high`. Since a
+ * string cannot say whether the model reasons, any `thinkingLevel` given is shown. Use
+ * {@link formatModelReferenceLabel} for a configured `provider/id[:level]` reference.
  */
 export function formatModelLabel(model: ModelLabelSubject | string, options: ModelLabelOptions = {}): string {
 	let reference: string;
 	let level: string | undefined;
 	if (typeof model === "string") {
-		const parsed = splitFallbackModel(model);
-		const slash = parsed.modelId.indexOf("/");
-		reference = options.omitProvider && slash >= 0 ? parsed.modelId.slice(slash + 1) : parsed.modelId;
-		level = parsed.thinkingLevel ?? options.thinkingLevel;
+		const slash = model.indexOf("/");
+		reference = options.omitProvider && slash >= 0 ? model.slice(slash + 1) : model;
+		level = options.thinkingLevel;
 	} else {
 		reference = options.omitProvider ? model.id : `${model.provider}/${model.id}`;
 		level = model.reasoning ? options.thinkingLevel : undefined;
 	}
 	return level ? `${reference}${options.separator ?? MODEL_LABEL_SEPARATOR}${level}` : reference;
+}
+
+/**
+ * The label of a configured model reference (`provider/id[:level]`, as `--model`, `fallbackModels` and a launch's
+ * requested model are written): its ID, then the level its suffix names, else `thinkingLevel`.
+ */
+export function formatModelReferenceLabel(reference: string, options: ModelLabelOptions = {}): string {
+	const parsed = splitFallbackModel(reference);
+	return formatModelLabel(parsed.modelId, {
+		...options,
+		thinkingLevel: parsed.thinkingLevel ?? options.thinkingLevel,
+	});
 }
