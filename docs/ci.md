@@ -7,8 +7,8 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 ```text
 Pull request / selected branch push
 └─ test.yml (five concurrent work jobs + one result gate)
-   ├─ unit-tests (Linux, Windows; four shards each): build package -> one unit shard
-   ├─ integration-tests (Linux, Windows; three shards each): build package -> one integration shard
+   ├─ unit-tests (Linux, Windows; five shards each): build package -> one unit shard
+   ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
    ├─ agent-suite (Linux, Windows; three shards each): native bindings -> one pi-ai + coding-agent shard (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
@@ -272,11 +272,11 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to twenty-three work-job instances and three
+Five independent job definitions expand to twenty-seven work-job instances and three
 result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
 serial dependencies between suites. The unit, integration and agent suites are split
-by file across four, three and three jobs per OS (see [Sharded suites](#sharded-suites));
+by file across five, four and three jobs per OS (see [Sharded suites](#sharded-suites));
 no test is removed.
 
 
@@ -300,27 +300,32 @@ Each test job runs one shard of its suites, passing `--shard=<i>/<n>` through np
 
 | Job | Shards per OS | Command |
 | --- | ---: | --- |
-| `unit-tests` | 4 | `npm run test:unit -- --shard=<i>/4` |
-| `integration-tests` | 3 | `npm run test:integration -- --shard=<i>/3` |
+| `unit-tests` | 5 | `npm run test:unit -- --shard=<i>/5` |
+| `integration-tests` | 4 | `npm run test:integration -- --shard=<i>/4` |
 | `agent-suite` | 3 | `npm run test --workspace=@bastani/pi-ai -- --shard=<i>/3`, then the same for `@bastani/atomic` |
 
 A whole-suite job's wall time was set by its longest files and by its total. Pooled-worker integration files ran for four to eight minutes each, and the unit suite alone took 7–10 minutes on one runner. Sharding spreads each suite over several 8-vCPU runners, and long files are split so that none outlasts its shard's share.
 
-The root `vitest.config.ts` and `packages/coding-agent/vitest.config.ts` set `test/helpers/duration-sequencer.ts` as the sequencer; the pi-ai suite (about 25 s) keeps Vitest's own split. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer uses the per-file durations measured on CI for the current OS, recorded in `test/helpers/test-file-durations.json` by repository-relative path. Each file costs its duration plus 2 s to collect. A shard's expected wall time is its longest file or its total spread over 7 workers (Vitest's default on the 8-vCPU runners), whichever is larger. Files are placed longest first, each in the shard whose expected wall time would be lowest with it, and each shard starts its longest files first. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file.
+The root `vitest.config.ts` and `packages/coding-agent/vitest.config.ts` set `test/helpers/duration-sequencer.ts` as the sequencer; the pi-ai suite (about 25 s) keeps Vitest's own split. Vitest's own `--shard` splits files by a hash of their path and, with no local results cache (every CI run), starts the largest files first; neither looks at duration. The sequencer uses the per-file durations measured on CI for the current OS, recorded in `test/helpers/test-file-durations.json` by repository-relative path. Each file costs its duration plus 2 s to collect. A shard's expected wall time is its longest file or its total spread over 7 workers (Vitest's default on the 8-vCPU runners), whichever is larger. Files are placed longest first, each in the shard whose expected wall time would be lowest with it, and each shard starts its longest files first. No assignment finishes before its heaviest file or before every shard's balanced share of the suite, so a shard expected to finish within the larger of the two counts as finishing at it, and among those the least loaded shard takes the file. Without that floor, the heavy files that fit in any shard's share all went to the shard whose longest file was shortest: a Windows unit shard drew eight of the twelve heaviest files, which each start child processes, and running side by side its tests took 904 s against the 607 s recorded. And a shard holding a file longer than every share kept it alone while the other shards split the process-heavy files: a Windows integration shard of seventeen of them ran each about 1.7 times its recorded time and timed a test out. Every shard computes the same assignment from the same file list, so each file runs in exactly one shard. A file missing from the record counts as 20 s, so a stale record skews the balance but never drops or repeats a file. `test/unit/duration-sequencer.test.ts` checks this on the real configs of the unit, integration and coding-agent suites: for two to five shards it runs the configured sequencer for every shard and requires the union of the shards' files to equal the suite's full file list, each file once.
 
-The shard counts follow the measured totals. Integration runs three shards per OS. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 145 s) runs its 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 130 s. Either file alone sets its shard's floor, and three shards already fill each OS to about that floor. A fourth runner would add setup cost without shortening the slowest shard.
+The shard counts follow the measured totals. Integration runs four shards per OS. Its pool files start worker processes, so they are CPU-bound and slow down as a shard's 7 workers compete for its 8 vCPUs: in November three Linux shards had 3,300–3,500 worker-seconds of collection and tests between them, about 160 s each if perfectly balanced, and the slowest measured 240–290 s. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 115–125 s) runs its 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 95–125 s. Either file alone sets its shard's floor, and four shards bring the other shards' share to about that floor.
+
+Shard times vary more between runner VMs than between shards. In November the same shard's files, assigned the same way, took up to twice as long to import and run from one run to the next (one Linux unit shard: 343, 310 and 513 s of import), so a run's slowest shard is mostly its slowest VM. Balancing evens out the expected work; the shard counts leave room for that spread.
 
 The load gate measures the root's main-thread lag against fixed bounds, so it must not share its runner with other files. Unsharded, it happened to run last and alone. Sharded and longest-first, it started beside about five other pool files, and its p99 lag reached 105.6 ms of its 100 ms bound ([run 40577049870](https://github.com/bastani-inc/atomic/actions/runs/40577049870)). It is now its own Vitest project, `integration-load-gate`, with `sequence.groupOrder: 1`. Vitest runs it after every other integration file of the run or shard has finished. `npm run test:integration` selects both projects, and the sequencer counts the gate's time after its shard's other files rather than beside them.
 
-Unit runs four shards per OS: its 1,094 files need about 540 s on Linux and 610 s on Windows of one runner's 7 workers, and four shards bring each under three minutes. The agent suite runs three: its coding-agent files need about 340 s and 380 s. Neither suite has a file that outlasts its shard's share, now that the four longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s).
+Unit runs five shards per OS: in November its 1,140 files needed 3,300–4,000 worker-seconds of collection and tests on Linux and 4,000–5,700 on Windows, and with four shards the slowest took over three minutes in about half the runs. The agent suite runs three: its coding-agent files need about 340 s and 380 s. Neither suite has a file that outlasts its shard's share, now that the longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s; and in November, once they had grown back, `workflow-unhandled-rejection-attribution-concurrency` 157–231 s, `workflow-stop-reason-containment` 146–165 s and `workflow-unhandled-rejection-attribution` 124–147 s on Windows, and `native-command-output-retention` 121 s on Linux). Each Node case in those files starts a child process that loads the workflow engine from source through jiti, about 5 s on Linux and 10 s on Windows, so a file of a dozen cases per runtime outlasts its shard on its own. Their shared helpers are in `test/helpers/`.
 
-Refresh the record when shard times drift apart, from recent CI runs' reports for each OS:
+The pool root fixtures the integration suite starts as processes of their own (`test/fixtures/pool-*-root.mjs`, `public-pool-coordinator.mjs`) load the workflow sources through jiti with its disk cache, as the source worker entry does. Without it, each start took about 5 s of CPU instead of 2.5 s, and a test that crashes and resumes a root starts several.
+
+Refresh the record when shard times drift apart, from the reports of several recent CI runs (each report's OS comes from its artifact name; a file that appears in several reports gets its mean):
 
 ```sh
-gh run download <run-id> -p 'test-diagnostics-*' -D /tmp/test-reports
-bun run scripts/test-file-durations.ts --os linux /tmp/test-reports/*linux*/*.json
-bun run scripts/test-file-durations.ts --os win32 /tmp/test-reports/*windows*/*.json
+for run in <run-id> <run-id> <run-id>; do gh run download "$run" -p 'test-diagnostics-*' -D "/tmp/test-reports/$run"; done
+bun run scripts/test-file-durations.ts /tmp/test-reports/*/*/*.json
 ```
+
+A stale record never fails CI. `scripts/run-test-suite.ts` compares each shard's measured file durations with the record and, for a file at least 30 s and a factor of two away from its weight (a heavy new file, or one that gained cases), adds a `Stale test durations` warning and a step-summary table naming it and the refresh above. A new file without a recorded duration is expected and is only named when it is far heavier than the 20 s an unknown file weighs.
 
 ### The `test` job is a result gate
 
@@ -332,7 +337,7 @@ The gate exists to fail closed:
 - `if: always()` is mandatory. A job whose `needs` failed is *skipped*, and GitHub counts a skipped required check as satisfied, which would turn a red suite green.
 - The gate fails on `failure`, `cancelled`, and `skipped`. Because `needs.<job>.result` collapses a matrix to one value, the gate asserts every platform's work jobs.
 
-The work jobs are named by platform, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`, and integration jobs also by shard, for example `integration-tests (linux-x64, 2/3)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names. Because the gate needs `integration-tests` as a whole, any failed, cancelled or skipped shard fails it.
+The work jobs are named by platform, for example `unit-tests (linux-x64)` and `unit-tests (windows-x64)`, and integration jobs also by shard, for example `integration-tests (linux-x64, 2/4)`. Their `runner` matrix key holds the Namespace runner profile label. No ruleset or contract depends on the work-job names. Because the gate needs `integration-tests` as a whole, any failed, cancelled or skipped shard fails it.
 
 When changing a required-check name, emit the replacement first, update the repository ruleset, then remove the old context. Never remove a context while branch rules still require it.
 

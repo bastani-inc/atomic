@@ -1,65 +1,15 @@
 import assert from "node:assert/strict";
-import { join, resolve } from "node:path";
 import { describe, test } from "vitest";
-import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import {
+	assertContained,
+	RUNTIMES,
+	type Runtime,
+	report,
+	runFixture,
+} from "../helpers/workflow-unhandled-rejection-attribution.js";
 
-const ROOT = resolve(moduleDir(import.meta.url), "../..");
-const FIXTURE = join(ROOT, "test/fixtures/workflow-unhandled-rejection-attribution.ts");
+/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
 const REAL_CHILD_TIMEOUT_MS = 120_000;
-
-interface Runtime {
-	readonly name: string;
-	readonly command: () => string[];
-}
-
-const RUNTIMES: readonly Runtime[] = [
-	{ name: "Node", command: () => [process.execPath, "--import", "jiti/register"] },
-	{ name: "Bun", command: () => [bunExecutable()] },
-];
-
-interface Outcome {
-	readonly exitCode: number;
-	readonly stdout: string;
-	readonly stderr: string;
-}
-
-interface Report {
-	readonly status: string;
-	readonly error?: string;
-	readonly exited?: boolean;
-	readonly exitReason?: string;
-	readonly inspected: { readonly kind: string; readonly status?: string };
-	readonly healthy?: { readonly status: string; readonly error?: string };
-	readonly runs?: ReadonlyArray<{ readonly workflow: string; readonly status: string; readonly error?: string }>;
-}
-
-function runFixture(
-	runtime: Runtime,
-	args: readonly string[],
-	runtimeFlags: readonly string[] = [],
-	env: Record<string, string> = {},
-): Outcome {
-	const [executable, ...preload] = runtime.command();
-	const result = spawnSyncCollect([executable as string, ...runtimeFlags, ...preload, FIXTURE, ...args], {
-		cwd: ROOT,
-		env: { ...process.env, ...env },
-		timeout: REAL_CHILD_TIMEOUT_MS,
-	});
-	return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
-}
-
-function report(outcome: Outcome): Report {
-	const line = outcome.stdout.trim().split("\n").at(-1) ?? "";
-	return JSON.parse(line) as Report;
-}
-
-function assertContained(outcome: Outcome): Report {
-	assert.equal(outcome.exitCode, 0, `${outcome.stdout}\n${outcome.stderr}`);
-	const reported = report(outcome);
-	assert.equal(reported.status, "failed");
-	assert.deepEqual(reported.inspected, { kind: "found", status: "failed" });
-	return reported;
-}
 
 const [NODE, BUN] = RUNTIMES;
 

@@ -28,8 +28,8 @@ on:
 # The work runs as five independent jobs. Root suites duplicate setup so neither
 # waits for the other; no shared producer sits on their critical path.
 #
-#   unit-tests      build package -> one of four unit shards (per OS)
-#   integration-tests build package -> one of three integration shards (per OS)
+#   unit-tests      build package -> one of five unit shards (per OS)
+#   integration-tests build package -> one of four integration shards (per OS)
 #   agent-suite     build ai + native bindings -> one of three pi-ai and coding-agent shards (per OS)
 #   release-archive build package -> build-binaries.sh -> archive smoke
 #   static-checks   typecheck, docs, Mintlify, CI contracts (Linux)
@@ -47,13 +47,13 @@ on:
 # shape; see docs/ci.md ("Runners") before resizing one.
 jobs:
   unit-tests:
-    name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/4)
+    name: unit-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/5)
     strategy:
       matrix:
-        # Four shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts).
+        # Five shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts).
         # The result gate needs every shard. See docs/ci.md ("Sharded suites").
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
         include:
           # The three suites run on 8 vCPU: on 4 vCPU they averaged 54-77% CPU, and
           # Windows unit/integration hit their caps at p95. See docs/ci.md ("Sizing").
@@ -65,8 +65,8 @@ jobs:
             timeout_minutes: 14
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Slowest unsharded job (925 s, 411 s of it setup with a 261 s checkout) with a quarter of its 514 s of tests,
-    # plus 50%; see docs/ci.md ("Per-job time limits").
+    # Calibrated for four shards (the slowest unsharded job, 925 s, 411 s of it setup with a 261 s checkout, with a
+    # quarter of its 514 s of tests, plus 50%) and kept at five; see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       # One standard clone on every OS. The Namespace git mirror is not used: see
@@ -172,8 +172,8 @@ jobs:
         run: npm run build
       - name: Unit tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 4)"
-          -- npm run test:unit -- --shard=${{ matrix.shard }}/4
+          bun run scripts/run-test-suite.ts --label "unit tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 5)"
+          -- npm run test:unit -- --shard=${{ matrix.shard }}/5
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -187,13 +187,13 @@ jobs:
           retention-days: 14
 
   integration-tests:
-    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/3)
+    name: integration-tests (${{ matrix.binary_platform }}, ${{ matrix.shard }}/4)
     strategy:
       matrix:
-        # Three shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
+        # Four shards per OS, balanced by per-OS file durations measured on CI (test/helpers/duration-sequencer.ts). The result
         # gate below needs every shard, so the required check still covers the whole suite on both hosts.
         binary_platform: [linux-x64, windows-x64]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
         include:
           - binary_platform: linux-x64
             runner: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.integration-tests.linux-amd64
@@ -203,7 +203,8 @@ jobs:
             timeout_minutes: 12
       fail-fast: false
     runs-on: ${{ matrix.runner }}
-    # Slowest four-shard job (340 s) scaled to three shards, plus 50%; see docs/ci.md ("Per-job time limits").
+    # Calibrated for three shards (the slowest four-shard job, 340 s, scaled to three, plus 50%) and kept now that there
+    # are four again; see docs/ci.md ("Per-job time limits").
     timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -293,8 +294,8 @@ jobs:
         run: npm run build
       - name: Integration tests
         run: >-
-          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 3)"
-          -- npm run test:integration -- --shard=${{ matrix.shard }}/3
+          bun run scripts/run-test-suite.ts --label "integration tests (${{ matrix.binary_platform }} ${{ matrix.shard }} of 4)"
+          -- npm run test:integration -- --shard=${{ matrix.shard }}/4
         env:
           # Hard-require the installed-package Node smoke on both supported hosts.
           ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"

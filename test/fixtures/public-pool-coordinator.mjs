@@ -8,7 +8,9 @@ import { createJiti } from "jiti";
 // fresh launch passes them over its defaults; a restart without them runs with the settings its root saved.
 const [journalPath, directory, runId, childPath, releasePath, mode, settings] = process.argv.slice(2);
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const jiti = createJiti(import.meta.url, { fsCache: false });
+// Transforms cached on disk, keyed by source hash, as packages/workflows/src/workers/local-worker-entry.mjs caches
+// them: loading the workflow sources uncached costs this process about twice the CPU at every start.
+const jiti = createJiti(import.meta.url, { fsCache: true });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 const { loadWorkerWorkflow, run, workflow } = await load("../../packages/workflows/src/index.ts");
 const { createToolControlRegistry } = await load("../../packages/workflows/src/engine/run-tool-control-registry.ts");
