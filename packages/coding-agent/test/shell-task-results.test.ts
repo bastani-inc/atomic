@@ -77,6 +77,17 @@ async function release(owner: AgentTaskHost, id: TaskId) {
 	);
 }
 
+/**
+ * Launch a command in the background and let it run only once the launch has yielded. A command that
+ * settles before its background yield is observed returns its result inline, with no task to wait on,
+ * and a trivial command can settle within milliseconds of admission.
+ */
+async function launchReleased(owner: AgentTaskHost, command: string): Promise<TaskId> {
+	const id = await launch(owner, `read value; ${command}`);
+	await release(owner, id);
+	return id;
+}
+
 /** What the agent loop does with a tool that throws: the message becomes the result text. */
 async function settleLikeAgentLoop(
 	run: () => Promise<ShellResult>,
@@ -137,7 +148,7 @@ describe("shell task results are friendly (#3828)", () => {
 			async () => {
 				const owner = host();
 				try {
-					const id = await launch(owner, "printf 'hello\\n'");
+					const id = await launchReleased(owner, "printf 'hello\\n'");
 					const tool = factory(process.cwd(), { taskOwner: owner.ownerBinding });
 					const args = { action: "wait", id, budgetMs: 5000 } as const;
 					const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
@@ -160,7 +171,7 @@ describe("shell task results are friendly (#3828)", () => {
 			async () => {
 				const owner = host();
 				try {
-					const id = await launch(owner, "printf 'FAIL src/parser.test.ts\\n'; exit 1");
+					const id = await launchReleased(owner, "printf 'FAIL src/parser.test.ts\\n'; exit 1");
 					const tool = factory(process.cwd(), { taskOwner: owner.ownerBinding });
 					const args = { action: "wait", id, budgetMs: 5000 } as const;
 					const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
@@ -305,7 +316,7 @@ describe("shell task results are friendly (#3828)", () => {
 		async () => {
 			const owner = host();
 			try {
-				const id = await launch(owner, "exit 0");
+				const id = await launchReleased(owner, "exit 0");
 				const tool = createBashToolDefinition(process.cwd(), { taskOwner: owner.ownerBinding });
 				const args = { action: "wait", id, budgetMs: 5000 } as const;
 				const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
@@ -332,7 +343,7 @@ describe("shell task results are friendly (#3828)", () => {
 			for (const key of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(key, longTemp);
 			const owner = host();
 			try {
-				const id = await launch(owner, "seq 1 5000");
+				const id = await launchReleased(owner, "seq 1 5000");
 				const tool = createBashToolDefinition(process.cwd(), { taskOwner: owner.ownerBinding });
 				const args = { action: "wait", id, budgetMs: 5000 } as const;
 				const outcome = await settleLikeAgentLoop(() => tool.execute("wait", args));
@@ -376,8 +387,8 @@ describe("shell task results are friendly (#3828)", () => {
 		async () => {
 			const owner = host();
 			try {
-				const ok = await launch(owner, "printf 'ok\\n'");
-				const bad = await launch(owner, "exit 3");
+				const ok = await launchReleased(owner, "printf 'ok\\n'");
+				const bad = await launchReleased(owner, "exit 3");
 				const tool = createBashToolDefinition(process.cwd(), { taskOwner: owner.ownerBinding });
 				const done = await settleLikeAgentLoop(() =>
 					tool.execute("wait", { action: "wait", id: ok, budgetMs: 5000 }),

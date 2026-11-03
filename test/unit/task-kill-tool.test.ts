@@ -156,23 +156,40 @@ test("registered kill rejects malformed, unknown, foreign and agent IDs without 
 	}
 });
 
+/** Write one line to the task's stdin; the refusal is returned, since a cancellation may win the race. */
+async function finish(owner: AgentTaskHost, id: TaskId) {
+	const task = owner.resolveTask(id);
+	assert.ok(task.ok);
+	const input = owner.ownerBinding.supervisor.taskStdin(task.value);
+	if (!input.ok) return input;
+	return owner.ownerBinding.supervisor.writeTaskInput(input.value, crypto.randomUUID() as OperationId, {
+		kind: "bytes",
+		bytes: Buffer.from("go\n"),
+	});
+}
+
 test("kill preserves natural completion and the winner of concurrent completion/cancellation", async () => {
 	const owner = host();
 	const registered = tools(owner);
 	try {
 		for (const finishFirst of [true, false]) {
+			// The command finishes only when the test writes its stdin, so the launch yields first: a command that
+			// settles before its background yield is observed returns its result inline, with no task to kill.
 			const launch = await registered.bash.execute("quick", {
-				command: "printf original-result",
+				command: "read value; printf original-result",
 				wait: { kind: "background" },
 			});
 			const observation = (launch.details as BashToolDetails).observation;
 			assert.ok(observation?.kind === "yielded");
 			const id = observation.taskId;
+			const finishing = finish(owner, id);
+			if (finishFirst) assert.ok((await finishing).ok);
 			const original = finishFirst ? await settled(owner, id) : undefined;
 			const results = await Promise.all([
 				registered.kill.execute("race-a", { id }),
 				registered.kill.execute("race-b", { id }),
 			]);
+			await finishing;
 			const final = await settled(owner, id);
 			assert.ok(final.execution.kind === "settled");
 			if (original) {
