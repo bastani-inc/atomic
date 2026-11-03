@@ -10,9 +10,9 @@ import {
 	releaseOpenGates,
 	sleep,
 	waitFor,
-} from "./helpers/busy-submission-rig.ts";
-import { pressAltUp } from "./helpers/interactive-submission-host.ts";
-import { getUserTexts } from "./suite/harness.ts";
+} from "./helpers/busy-submission-rig.js";
+import { pressAltUp } from "./helpers/interactive-submission-host.js";
+import { getUserTexts } from "./suite/harness.js";
 
 /** Long enough that the engine's reply to a request is still in flight while the test acts. */
 const ENGINE_TO_HOST_LAG_MS = 150;

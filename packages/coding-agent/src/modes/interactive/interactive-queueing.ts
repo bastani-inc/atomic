@@ -66,7 +66,9 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 		removed = await clearing;
 	} catch (error) {
 		this.compactionQueuedMessages = [...held, ...this.compactionQueuedMessages];
-		this.compactionSendFailed ||= heldSendFailed;
+		// If compaction ended meanwhile, its flush found the queue empty and nothing else will send these. Marked as
+		// unsent, they go out in order ahead of the next submission, as a batch whose first send failed does.
+		this.compactionSendFailed ||= heldSendFailed || (held.length > 0 && !this.compactionActive);
 		this.updatePendingMessagesDisplay();
 		throw error;
 	}

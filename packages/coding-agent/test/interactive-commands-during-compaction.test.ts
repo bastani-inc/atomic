@@ -508,6 +508,46 @@ describe("isolated host when the engine cannot clear its queue", () => {
 	});
 });
 
+describe("isolated host when compaction ends while Alt+Up waits for the engine", () => {
+	test("sends the messages the editor kept ahead of the next submission after the clear fails (#4257)", async () => {
+		const invocations: string[] = [];
+		const rig = await createCompactingRig("isolated", invocations);
+		const pair = rig.pair;
+		assert.ok(pair, "isolated rigs have an engine");
+		const releaseCompaction = holdCompaction(rig);
+		const compaction = startCompaction(rig, "manual");
+		await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+		await submit("typed first");
+		// The clear is still on its way, and will fail, when compaction ends: the end finds nothing held to send.
+		pair.failCommand("clear_queue", "engine unavailable");
+		pair.setLag({ toEngineMs: 200 });
+		pressAltUp(rig.host);
+		releaseCompaction();
+		await compaction;
+		await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+		await settleTraffic(rig);
+
+		assert.equal(rig.host.editor.getText(), "");
+		assert.deepEqual(
+			rig.host.notices.filter((notice) => notice.startsWith("error: Failed to restore")),
+			["error: Failed to restore queued messages: engine unavailable"],
+		);
+		assert.deepEqual(rig.host.getAllQueuedMessages().steering, ["typed first"]);
+
+		pair.failCommand("clear_queue", undefined);
+		pair.setLag({ toEngineMs: 0 });
+		await submit("next prompt");
+		await waitFor("both messages to be sent", () => getUserTexts(rig.engine).length === 2);
+		await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+		assert.deepEqual(getUserTexts(rig.engine), ["typed first", "next prompt"]);
+		assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
+	});
+});
+
 describe("engine command catalog", () => {
 	function engineHost(commands: RpcSlashCommand[]): { session: object; runtimeHost: IsolatedInteractiveRuntime } {
 		const runtimeHost = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;
