@@ -9,6 +9,8 @@ import type { SkillCatalog } from "../skill-catalog.ts";
 import { sessionScratchDir } from "../storage/session/scratch-directory.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
+import { createHistoryRouter } from "../tools/history-protocol.ts";
+import { composeInternalRouters } from "../tools/resource-selectors.ts";
 import type {
 	ForkHandler,
 	NavigateTreeHandler,
@@ -26,8 +28,11 @@ import type {
 	OrchestrationContext,
 	SubagentChildPolicy,
 } from "./types.ts";
+import type { WorkflowRunControl } from "./workflow-run-control.js";
 export interface ExtensionContextSource {
 	observeWorkflowActivity: ExtensionContext["observeWorkflowActivity"];
+	/** The run control the workflows extension registered, for history:// reads of workflow runs. */
+	getWorkflowRunControl?(): WorkflowRunControl | undefined;
 	getChildSessionOptions?: ExtensionContext["getChildSessionOptions"];
 	getExtensionPaths?(): string[];
 	assertActive(): void;
@@ -293,10 +298,19 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				(manager.isPersisted()
 					? sessionScratchDir(getAgentDir(), manager.getCwd(), manager.getSessionId())
 					: undefined);
-			if (!sessionDir) return undefined;
+			const history = createHistoryRouter({
+				cwd: source.getCwd(),
+				currentSessionId: manager.getSessionId(),
+				sessionStore: () => manager.getSessionStore(),
+				workflows: () => source.getWorkflowRunControl?.(),
+			});
+			if (!sessionDir) return history;
 			const artifactsDir = join(sessionDir, "artifacts");
 			registerArtifactDir(artifactsDir);
-			return createArtifactRouter(() => [artifactsDir]);
+			return composeInternalRouters(
+				createArtifactRouter(() => [artifactsDir]),
+				history,
+			);
 		},
 		get orchestrationContext() {
 			source.assertActive();

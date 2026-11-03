@@ -6,6 +6,7 @@ import {
 	type WorkflowRunControlOutcome,
 	type WorkflowRunControlStatus,
 	WorkflowRunControlUnavailableError,
+	type WorkflowRunListFilter,
 	WorkflowRunNotFoundError,
 	WorkflowRunNotResumableError,
 	WorkflowRunOwnershipError,
@@ -17,7 +18,7 @@ import {
 } from "@bastani/atomic";
 import type { DurableWorkflowCatalogEntries } from "../durable/backend.js";
 import { JournalError } from "../durable/journal/types.js";
-import { canonicalDirectory, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
+import { canonicalDirectory, isProjectRootRun, isSdkDurableRunInScope } from "../durable/sdk-recovery-scope.js";
 import { awaitJobSettlement } from "../runs/background/ended-run-settlement.js";
 import { currentJobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import { describeErrorWithCauses } from "../shared/error-with-causes.js";
@@ -28,6 +29,12 @@ import type { PiEventContext, PiExecuteContext, WorkflowToolArgs } from "./publi
 import type { WorkflowToolResult } from "./render-result.js";
 import { classifyControlError, type WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import { flushWorkflowActivityPublications } from "./workflow-observation.js";
+
+type RunScope = (
+	entry: DurableWorkflowCatalogEntries["resumable"][number],
+	cwd: string | undefined,
+	canonicalize: (path: string) => string,
+) => boolean;
 
 export interface SessionRunControlHost {
 	/** The same executor the registered `workflow` tool runs, so ownership and durability rules are shared. */
@@ -175,68 +182,76 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 	const target = (runId: string | WorkflowRunAllTarget): Pick<WorkflowToolArgs, "runId" | "all"> =>
 		typeof runId === "string" ? { runId } : { all: true };
 
-	return {
-		async listRuns(filter) {
-			const result = await request({
-				action: "status",
-				...(filter?.status === undefined ? {} : { statusFilter: filter.status }),
-			});
-			if (result.action !== "status")
-				throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
-			const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
-			const cwd = host.context()?.cwd;
-			const canonicalPaths = new Map<string, string>();
-			const canonicalize = (path: string): string => {
-				const cached = canonicalPaths.get(path);
-				if (cached !== undefined) return cached;
-				const canonical = canonicalDirectory(path);
-				canonicalPaths.set(path, canonical);
-				return canonical;
+	const list = async (
+		filter: WorkflowRunListFilter | undefined,
+		inScope: RunScope,
+		finished: (catalog: DurableWorkflowCatalogEntries) => DurableWorkflowCatalogEntries["completed"],
+	): Promise<WorkflowRunSummary[]> => {
+		const result = await request({
+			action: "status",
+			...(filter?.status === undefined ? {} : { statusFilter: filter.status }),
+		});
+		if (result.action !== "status")
+			throw failure("control_failed", `Unexpected workflow result: ${result.action}`, undefined);
+		const catalog = filter?.includeDurable ? await host.catalog?.() : undefined;
+		const cwd = host.context()?.cwd;
+		const canonicalPaths = new Map<string, string>();
+		const canonicalize = (path: string): string => {
+			const cached = canonicalPaths.get(path);
+			if (cached !== undefined) return cached;
+			const canonical = canonicalDirectory(path);
+			canonicalPaths.set(path, canonical);
+			return canonical;
+		};
+		const entries = [...(catalog?.resumable ?? []), ...(catalog === undefined ? [] : finished(catalog))].filter(
+			(entry) => inScope(entry, cwd, canonicalize),
+		);
+		const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
+		const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
+		const runs: WorkflowRunSummary[] = result.runs.map((run) => {
+			const snapshot = snapshots.get(run.runId);
+			const entry = saved.get(run.runId);
+			const label = snapshot?.label ?? entry?.label;
+			return {
+				...run,
+				label,
+				identity: workflowIdentity(run.runId, label, snapshot?.inputs ?? entry?.inputs),
+				summary: snapshot?.summary ?? entry?.summary,
+				summarizedThrough: snapshot?.summarizedThrough ?? entry?.summarizedThrough,
 			};
-			const entries = [...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])].filter((entry) =>
-				isSdkDurableRunInScope(entry, cwd, canonicalize),
-			);
-			const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
-			const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
-			const runs: WorkflowRunSummary[] = result.runs.map((run) => {
-				const snapshot = snapshots.get(run.runId);
-				const entry = saved.get(run.runId);
-				const label = snapshot?.label ?? entry?.label;
-				return {
-					...run,
-					label,
-					identity: workflowIdentity(run.runId, label, snapshot?.inputs ?? entry?.inputs),
-					summary: snapshot?.summary ?? entry?.summary,
-					summarizedThrough: snapshot?.summarizedThrough ?? entry?.summarizedThrough,
-				};
+		});
+		const seen = new Set(runs.map((run) => run.runId));
+		for (const entry of entries) {
+			if (seen.has(entry.workflowId)) continue;
+			if (
+				filter?.status === "awaiting_input"
+					? entry.pendingPrompts === 0
+					: filter?.status !== undefined && filter.status !== entry.status
+			)
+				continue;
+			seen.add(entry.workflowId);
+			runs.push({
+				runId: entry.workflowId,
+				name: entry.name,
+				status: entry.status,
+				startedAt: entry.createdAt,
+				elapsedMs: Math.max(0, entry.updatedAt - entry.createdAt),
+				activeStages: [],
+				awaitingInputCount: entry.pendingPrompts,
+				awaitingInput: [],
+				label: entry.label,
+				identity: workflowIdentity(entry.workflowId, entry.label, entry.inputs),
+				summary: entry.summary,
+				summarizedThrough: entry.summarizedThrough,
 			});
-			const seen = new Set(runs.map((run) => run.runId));
-			for (const entry of entries) {
-				if (seen.has(entry.workflowId)) continue;
-				if (
-					filter?.status === "awaiting_input"
-						? entry.pendingPrompts === 0
-						: filter?.status !== undefined && filter.status !== entry.status
-				)
-					continue;
-				seen.add(entry.workflowId);
-				runs.push({
-					runId: entry.workflowId,
-					name: entry.name,
-					status: entry.status,
-					startedAt: entry.createdAt,
-					elapsedMs: Math.max(0, entry.updatedAt - entry.createdAt),
-					activeStages: [],
-					awaitingInputCount: entry.pendingPrompts,
-					awaitingInput: [],
-					label: entry.label,
-					identity: workflowIdentity(entry.workflowId, entry.label, entry.inputs),
-					summary: entry.summary,
-					summarizedThrough: entry.summarizedThrough,
-				});
-			}
-			return runs;
-		},
+		}
+		return runs;
+	};
+
+	return {
+		listRuns: (filter) => list(filter, isSdkDurableRunInScope, (catalog) => catalog.completed),
+		listProjectRuns: () =>
+			list({ includeDurable: true }, isProjectRootRun, (catalog) => catalog.completedAll ?? catalog.completed),
 		async getRun(runId) {
 			const result = await request({ action: "status", runId });
 			if (result.action !== "statusDetail")

@@ -3,7 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
-import { canonicalDirectory, isSdkDurableRunInScope } from "../../packages/workflows/src/durable/sdk-recovery-scope.js";
+import {
+	canonicalDirectory,
+	isProjectRootRun,
+	isSdkDurableRunInScope,
+} from "../../packages/workflows/src/durable/sdk-recovery-scope.js";
 
 const roots: string[] = [];
 
@@ -47,4 +51,15 @@ test("startup recovery matches a run recorded through a symlinked project direct
 test("startup recovery keeps distinct project directories apart", () => {
 	const { real } = symlinkedProject();
 	assert.notEqual(canonicalDirectory(real), canonicalDirectory(join(real, "..")));
+});
+
+test("a project root run needs no model owner, while SDK recovery scope still does (#4252)", () => {
+	const { real } = symlinkedProject();
+	const handle = { workflowId: "run-1", invocationCwd: real };
+	assert.equal(isProjectRootRun(handle, real), true);
+	assert.equal(isSdkDurableRunInScope({ ...handle, modelOwner: undefined }, real), false);
+	assert.equal(isSdkDurableRunInScope({ ...handle, modelOwner: "session" }, real), true);
+	assert.equal(isProjectRootRun({ ...handle, rootWorkflowId: "parent" }, real), false);
+	assert.equal(isProjectRootRun({ ...handle, invocationCwd: undefined }, real), false);
+	assert.equal(isProjectRootRun(handle, join(real, "..")), false);
 });

@@ -41,6 +41,7 @@ import { readUrlBranch } from "./read-url.ts";
 import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import {
 	type InternalResourceContext,
+	isInternalUrl,
 	parseArchiveSelector,
 	readArchiveSelector,
 	readInternalSelector,
@@ -56,7 +57,7 @@ const readSchema = Type.Object(
 	{
 		path: Type.String({
 			description:
-				"File, directory, archive member, SQLite selector, internal resource, image, document, or URL to read. Append selectors such as :raw, :conflicts, :N, :A-B, :A+C, or :A-B,C-D to scope output.",
+				"File, directory, archive member, SQLite selector, internal resource (skill://, local://, artifact://, conflict://, history://), image, document, or URL to read. Append selectors such as :raw, :conflicts, :N, :A-B, :A+C, or :A-B,C-D to scope output.",
 		}),
 	},
 	{ additionalProperties: false },
@@ -328,7 +329,7 @@ export function createReadToolDefinition(
 		name: "read",
 		label: "read",
 		description:
-			"Read files, directories, archives, SQLite databases, internal resources, images, documents, and URLs through one path string.",
+			"Read files, directories, archives, SQLite databases, internal resources (including history:// for past sessions and workflow runs), images, documents, and URLs through one path string.",
 		promptSnippet: readToolSystemPromptContribution.snippet,
 		promptGuidelines: [...readToolSystemPromptContribution.guidelines],
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -516,11 +517,7 @@ export function createReadToolDefinition(
 								});
 								return;
 							}
-							if (
-								/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(
-									effectivePath,
-								)
-							) {
+							if (isInternalUrl(effectivePath)) {
 								const sourcePath = effectivePath.startsWith("local://")
 									? resolveInternalSelector(effectivePath, executionCwd)
 									: undefined;

@@ -898,6 +898,7 @@ export class ExtensionRunner {
 			getChildSessionOptions: (options) => this.runtime.getChildSessionOptions?.(options) ?? options,
 			getExtensionPaths: () => this.getExtensionPaths(),
 			observeWorkflowActivity: (observer) => this.runtime.workflowActivityHub.observeWorkflowActivity(observer),
+			getWorkflowRunControl: () => this.getWorkflowRunControl(),
 			...(this.taskHostBinding ? { getAgentTaskHost: this.taskHostBinding } : {}),
 			getUIContext: () => this.uiContext,
 			getMode: () => this.mode,

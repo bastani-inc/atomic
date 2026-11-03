@@ -145,6 +145,12 @@ export interface WorkflowRunControlOutcome {
 /** Typed run management for the workflow runs owned by one session, as registered by the workflows extension. */
 export interface WorkflowRunControl {
 	listRuns(filter?: WorkflowRunListFilter): Promise<readonly WorkflowRunSummary[]>;
+	/**
+	 * Every root run recorded for this session's project, including runs the user started with `/workflow` that
+	 * `listRuns({ includeDurable: true })` leaves out because no model session owns them. Optional: a host without
+	 * it is read through `listRuns({ includeDurable: true })`.
+	 */
+	listProjectRuns?(): Promise<readonly WorkflowRunSummary[]>;
 	getRun(runId: string): Promise<WorkflowRunDetail>;
 	getStages(runId: string, filter?: WorkflowStageListFilter): Promise<readonly WorkflowRunStageSummary[]>;
 	pause(runId: string, options?: WorkflowRunPauseOptions): Promise<WorkflowRunControlOutcome>;
