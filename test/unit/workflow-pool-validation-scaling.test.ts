@@ -192,7 +192,7 @@ async function commitReads(children: number, checkpoints: number): Promise<ReadC
 }
 
 test(
-	"a pool commit's validation reads the same rows however long the root's checkpoint history is",
+	"a pool commit's validation reads the same rows however long the root's checkpoint history is (#4271)",
 	async () => {
 		const small = await commitReads(40, 500);
 		const large = await commitReads(400, 5_000);
@@ -338,7 +338,7 @@ async function totalReads(rows: number): Promise<ReadCounts> {
 }
 
 test(
-	"reading a root's usage total reads no usage rows however many the root has",
+	"reading a root's usage total reads no usage rows however many the root has (#4271)",
 	async () => {
 		const small = await totalReads(1_000);
 		const large = await totalReads(40_000);
