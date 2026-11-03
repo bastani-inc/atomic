@@ -32,6 +32,7 @@ interface RpcSessionBindingOptions {
 	/** Present in the interactive engine child, which reports workflow activity to its host. */
 	writeEngineLine?: (line: string) => void;
 	requestShutdown: () => void;
+	checkShutdownRequested?: () => void;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 }
 
@@ -52,6 +53,7 @@ export class RpcSessionBinding {
 	private readonly inputForm: EngineInputFormService | undefined;
 	private readonly writeEngineLine: ((line: string) => void) | undefined;
 	private readonly requestShutdown: () => void;
+	private readonly checkShutdownRequested: (() => void) | undefined;
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
 
 	private footerDataProvider: FooterDataProvider | undefined;
@@ -61,6 +63,7 @@ export class RpcSessionBinding {
 		pendingExtensionRequests,
 		extensionUICapabilities,
 		requestShutdown,
+		checkShutdownRequested,
 		customUi,
 		renderService,
 		sessionPicker,
@@ -73,6 +76,7 @@ export class RpcSessionBinding {
 		this.pendingExtensionRequests = pendingExtensionRequests;
 		this.extensionUICapabilities = extensionUICapabilities;
 		this.requestShutdown = requestShutdown;
+		this.checkShutdownRequested = checkShutdownRequested;
 		this.customUi = customUi;
 		this.renderService = renderService;
 		this.sessionPicker = sessionPicker;
@@ -201,6 +205,7 @@ export class RpcSessionBinding {
 		}
 		this.unsubscribe = session.subscribe((event) => {
 			this.output(toJsonEvent(event));
+			if (event.type === "agent_settled") this.checkShutdownRequested?.();
 		});
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {
 			await waitForRawStdoutBackpressure();

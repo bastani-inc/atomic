@@ -180,7 +180,7 @@ pi.registerCommand("project-status", {
 Request a graceful shutdown of Atomic.
 
 - **Interactive mode:** Deferred until the agent becomes idle (after processing all queued steering and follow-up messages).
-- **RPC mode:** Deferred until the next idle state (after completing the current command response, when waiting for the next command).
+- **RPC mode:** Runs when the session is idle and all command responses have been written. An idle request does not need another client command to trigger it. Requests during startup wait for input setup; requests during a turn wait for it to settle. If an extension starts compaction outside a turn, shutdown waits for the next command or turn after compaction finishes.
 - **Print mode:** No-op. The process exits automatically when all prompts are processed.
 
 Emits `session_shutdown` event to all extensions before exiting. Available in all contexts (event handlers, tools, commands, shortcuts).

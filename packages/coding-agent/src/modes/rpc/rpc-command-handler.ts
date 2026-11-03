@@ -43,6 +43,7 @@ interface RpcCommandHandlerOptions {
 	 * host can still run UI and admin commands meanwhile. The host keeps prompts queued itself.
 	 */
 	detachCompaction?: boolean;
+	beginCommand?: () => () => void;
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -85,6 +86,7 @@ export function createRpcCommandHandler({
 	reloadResources,
 	shouldRetryResources,
 	detachCompaction,
+	beginCommand,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -116,6 +118,7 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "prompt": {
+				const finishCommand = beginCommand?.();
 				let preflightSucceeded = false;
 				let acceptedAsQueued = false;
 				void (async () => {
@@ -135,19 +138,21 @@ export function createRpcCommandHandler({
 							}
 						},
 					});
-				})().catch((promptError: unknown) => {
-					if (!preflightSucceeded) {
-						output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
-					} else if (acceptedAsQueued) {
-						// Input held during compaction is answered as queued before its turn is prepared. If that
-						// preparation fails, the session keeps the input queued; tell the client why, once (#4251).
-						output({
-							type: "agent_continue_error",
-							source: "post_compaction",
-							errorMessage: `Failed to send queued message: ${formatRpcErrorMessage(promptError)}`,
-						});
-					}
-				});
+				})()
+					.catch((promptError: unknown) => {
+						if (!preflightSucceeded) {
+							output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
+						} else if (acceptedAsQueued) {
+							// Input held during compaction is answered as queued before its turn is prepared. If that
+							// preparation fails, the session keeps the input queued; tell the client why, once (#4251).
+							output({
+								type: "agent_continue_error",
+								source: "post_compaction",
+								errorMessage: `Failed to send queued message: ${formatRpcErrorMessage(promptError)}`,
+							});
+						}
+					})
+					.finally(() => finishCommand?.());
 				return undefined;
 			}
 

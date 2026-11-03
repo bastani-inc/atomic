@@ -9,7 +9,8 @@ interface RpcInputLineHandlerOptions {
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	handleCommand: RpcCommandHandler;
-	checkShutdownRequested: () => Promise<void>;
+	checkShutdownRequested: () => void | Promise<void>;
+	beginCommand?: () => () => void;
 	handleInteractiveEngineLine?: (line: string) => boolean;
 	/**
 	 * Announce that this child owns a correlated request, before any handler
@@ -50,6 +51,7 @@ export function createRpcInputLineHandler({
 	pendingExtensionRequests,
 	handleCommand,
 	checkShutdownRequested,
+	beginCommand,
 	handleInteractiveEngineLine,
 	announceRequestAccepted,
 }: RpcInputLineHandlerOptions): (line: string) => Promise<void> {
@@ -77,6 +79,7 @@ export function createRpcInputLineHandler({
 		}
 
 		const command = parsed as RpcCommand;
+		const finishCommand = beginCommand?.();
 		try {
 			const identity = getCommandIdentity(command);
 			for (const pending of pendingAdmissions) {
@@ -105,6 +108,8 @@ export function createRpcInputLineHandler({
 			const failed = getCommandIdentity(command);
 			output(createRpcErrorResponse(failed.id, failed.type, formatRpcErrorMessage(commandError), commandError));
 			await waitForRawStdoutBackpressure();
+		} finally {
+			finishCommand?.();
 		}
 	};
 }

@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- Process idle extension `ctx.shutdown()` requests in RPC mode without waiting for another client command, while preserving command responses before exit.
+
 - Tool rows reuse syntax highlighting until their code, theme, or grammars change, and streamed assistant messages reuse rendered Markdown blocks (upstream pi 0f21a331).
 - Shell commands report their result as soon as they exit. Every `bash` call, through a pipe or a terminal (PTY), waited about 250 ms after its command exited, because the task supervisor always waited out its full termination grace before confirming that the command's processes were gone. It now confirms that as soon as they are, so ten trivial commands take about 0.15 s instead of about 2.7 s, and a stopped command whose processes exit on TERM settles at once too. Processes a command leaves running still get TERM, and KILL once the grace ends ([#4268](https://github.com/bastani-inc/atomic/issues/4268)).
 - Several processes opening one SQLite store at once no longer fail with `database is locked` while the file is switched to the write-ahead log, for example pooled workflow processes starting on a new journal. SQLite does not wait for another connection's lock while it changes a file's journal mode, so the switch failed at once whenever another process was writing a file still in the rollback journal or switching it at the same moment. Opening a store, and wrapping a connection with `wrapNodeSqliteDatabase`, now retries the switch until the busy timeout has passed, as every other statement waits. Storage adapters can do the same with the new `switchToWriteAheadLog` from `@bastani/atomic/storage` ([#4270](https://github.com/bastani-inc/atomic/issues/4270))
