@@ -52,3 +52,31 @@ describe("model search text", () => {
 		expect(filtered[0]).toEqual(items[1]);
 	});
 });
+
+describe("model selector search ranking (pi-tui 1.5.0 fuzzyMatch)", () => {
+	test("ranks models containing the query above scattered matches (upstream #11220)", () => {
+		const models: ModelSearchItem[] = [
+			{ provider: "openrouter", id: "openai/gpt-oss-120b", name: "OpenAI: gpt-oss-120b" },
+			{ provider: "openrouter", id: "anthropic/claude-sonnet-4.5", name: "Anthropic: Claude Sonnet 4.5" },
+			{ provider: "openrouter", id: "anthropic/claude-opus-4.1", name: "Anthropic: Claude Opus 4.1" },
+			{ provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+			{ provider: "anthropic", id: "claude-opus-4-1", name: "Claude Opus 4.1" },
+		];
+
+		const result = fuzzyFilter(models, "opus", getModelSelectorSearchText).map((model) => model.id);
+
+		assert.deepEqual(result.slice(0, 2).sort(), ["anthropic/claude-opus-4.1", "claude-opus-4-1"]);
+	});
+
+	test("ranks the typed model above models sharing a long provider prefix (upstream #10065)", () => {
+		const models: ModelSearchItem[] = [
+			{ provider: "fireworks", id: "accounts/fireworks/models/deepseek-v4-flash-0731" },
+			{ provider: "fireworks", id: "accounts/fireworks/models/kimi-k3" },
+			{ provider: "fireworks", id: "accounts/fireworks/routers/firerouter", name: "FireRouter" },
+		];
+
+		const result = fuzzyFilter(models, "firerouter", getModelSelectorSearchText);
+
+		assert.equal(result[0]?.id, "accounts/fireworks/routers/firerouter");
+	});
+});

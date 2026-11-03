@@ -42,41 +42,49 @@ const expectedArtifacts = new Map([
 	[
 		"@earendil-works/pi-agent-core",
 		{
-			version: "1.4.0",
-			integrity: "sha512-PoKY84SKUwnt7S5QBZaGUqfNO1kjP3KHpHUA9QpFTj4cOjaVWMYIcBPJ6FDRCdE8Zen9OSECQUd0uUfVgtSmgA==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.4.0.tgz",
+			version: "1.5.0",
+			integrity: "sha512-FOj+jXj48DbzMycR/ghNa2KcsqWmvOln24e0FnQOVgnd8vn5H79g335WdHaZUVdRo+zCeogb40/qPPlCWFuvmA==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.5.0.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-ai",
 		{
-			version: "1.4.0",
-			integrity: "sha512-hQM/C4+1w8rHYACzDDf+0vQMnEnpzIop1tptIERVgR3ZeT/hHSzBNG8PaWPgxWQjqSeKCyBZSyp8uTT6eKK1pQ==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.4.0.tgz",
+			version: "1.5.0",
+			integrity: "sha512-VeWxNqTHSqRCf8AcY/6kvNwh+neRL6MPxZPePVztIQy6qqK9MR/YoCSN/ZgDnIyCD3pqEXgRyQbzk4KV4uvjbg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.5.0.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-tui",
 		{
-			version: "1.4.0",
-			integrity: "sha512-4obPOjgOD7g4mGSlngIvxyujC1UPdmyI9zdVthbr8GufacFEX+Ce0+scPgHg++k2xj5+QjESM2d5TxvIuzCVmg==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.4.0.tgz",
+			version: "1.5.0",
+			integrity: "sha512-56KqrDVeLF18k+syppVbT35Ai1opbM44ot+sL7O3K40CaWwXCiwOpqEFugDBAILtAhseZh6uYIuYxPPOJHLFAA==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.5.0.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-telemetry",
 		{
-			version: "1.4.0",
-			integrity: "sha512-MLIfowwUYIY65jSjMX82paZOrX/NTvLk6D08h+3Jq42a99RzUOewzuCR0zOlPul3D6UBfddat76VT6LvsHEs1w==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.4.0.tgz",
+			version: "1.5.0",
+			integrity: "sha512-VW3tcVdnNfl/Vk8wHPTzZdKkxcsCOM12ppiO4DXnd9wMxUCmOfLt/wvUnWeKWbTVlVSRg0uqKtnnhE2UCsG2Bw==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.5.0.tgz",
 		},
 	],
 	[
 		"@earendil-works/pi-codemode",
 		{
-			version: "1.4.0",
-			integrity: "sha512-23CNAXpS9DuLzPMyYuvrXVVio46x4YhffCgCqaWmF7F5H8PooqjrQvX4ucF6M0BhUd+x2tV6r1J0dv8cCME4Cg==",
-			resolved: "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.4.0.tgz",
+			version: "1.5.0",
+			integrity: "sha512-PLBJZ17AEWGzOlAAcFuOkw3PxkOti0JlFuZQyeF2GRTqbpuYo4k9t8YqUV2uOQVzrUnKdxahwaFUqc1eNS1WAg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.5.0.tgz",
+		},
+	],
+	[
+		"@earendil-works/pi-schema",
+		{
+			version: "1.5.0",
+			integrity: "sha512-RW0MbT2tR65OY6xMsgB/yVBb7m/RTNwA+9hurSN1vVXfHZRVmVnXbruBPrx/PzbrQnW5yLVlMRWxErGDQtF1Hg==",
+			resolved: "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.5.0.tgz",
 		},
 	],
 ]);
@@ -108,7 +116,7 @@ if (!existsSync(distAppPath)) {
 	);
 }
 
-test("Pi v1.4.0 source declarations and lockfiles stay synchronized", async () => {
+test("Pi v1.5.0 source declarations and lockfiles stay synchronized", async () => {
 	let declarationCount = 0;
 	let externalDeclarationCount = 0;
 	for (const [workspace, names] of declarations) {
@@ -160,7 +168,7 @@ test("Pi v1.4.0 source declarations and lockfiles stay synchronized", async () =
 		for (const [packagePath, entry] of Object.entries(lock.packages)) {
 			for (const [name, range] of Object.entries(entry.dependencies ?? {})) {
 				if (!name.startsWith("@earendil-works/pi-")) continue;
-				assert.match(range, /^\^?1\.4\.0$/, `${lockPath}: ${packagePath} -> ${name}`);
+				assert.match(range, /^\^?1\.5\.0$/, `${lockPath}: ${packagePath} -> ${name}`);
 			}
 		}
 	}
@@ -229,7 +237,7 @@ test("binary pipelines require generated Pi model data and OAuth assets", async 
 	assert.ok(releaseBuilder.includes("assert-pi-runtime-assets.ts --node-modules"));
 });
 
-publishArtifactTest("Pi v1.4.0 generated publish artifacts match source declarations", async () => {
+publishArtifactTest("Pi v1.5.0 generated publish artifacts match source declarations", async () => {
 	for (const [workspace, names] of declarations) {
 		if (workspace === "packages/coding-agent") continue;
 		const source = await readJson<Manifest>(join(root, workspace, "package.json"));
@@ -245,6 +253,6 @@ publishArtifactTest("Pi v1.4.0 generated publish artifacts match source declarat
 	}
 });
 
-binaryAppTest("standalone app bundle embeds Pi v1.4.0 catalog and OAuth runtime markers", () => {
+binaryAppTest("standalone app bundle embeds Pi v1.5.0 catalog and OAuth runtime markers", () => {
 	assertPiRuntimeAssets({ nodeModulesRoot: join(root, "node_modules"), appBundlePath: distAppPath });
 });

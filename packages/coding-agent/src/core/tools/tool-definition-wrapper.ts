@@ -1,18 +1,18 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolParams } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import { runCallback, runSynchronousCallback } from "../callback-activity.ts";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 import type { ToolConcurrency } from "./tool-concurrency.ts";
 
 declare module "@earendil-works/pi-agent-core" {
-	interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> {
+	interface AgentTool<TParameters extends object = object, TDetails = any> {
 		/** Optional per-tool character cap for model-visible result persistence. Use Infinity to opt out. */
 		maxResultSizeChars?: number;
 		/** Optional prompt metadata retained by factory-created tools registered as extensions. */
 		promptSnippet?: string;
 		promptGuidelines?: string[];
 		/** Ordering against the other calls of the same assistant message; see ToolDefinition.concurrency. */
-		concurrency?: ToolConcurrency<Static<TParameters>>;
+		concurrency?: ToolConcurrency<AgentToolParams<TParameters>>;
 	}
 }
 
@@ -51,7 +51,7 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 					)
 			: undefined,
 		executionMode: definition.executionMode,
-		concurrency: definition.concurrency,
+		concurrency: definition.concurrency as AgentTool<TParams>["concurrency"],
 		execute: (toolCallId, params, signal, onUpdate, context?: ExtensionContext) =>
 			runCallback({ kind: "tool.execute", name: definition.name, toolCallId }, () =>
 				definition.execute(
