@@ -4,7 +4,7 @@ import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { abortBash } from "./agent-session-bash.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
-import { flushPendingCustomMessagesInRun, recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
+import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -265,7 +265,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	}
 	if (event.type === "turn_end") {
 		this._lastAssistantToolResults = event.toolResults;
-		await flushPendingCustomMessagesInRun(this);
+		await this._flushPendingCustomMessages(true);
 	}
 
 	// Handle session persistence

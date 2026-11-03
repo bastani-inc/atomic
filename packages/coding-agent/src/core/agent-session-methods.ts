@@ -281,7 +281,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_commitAdmittedCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_commitAdmittedCustomMessages<T>(messages: CustomMessage<T>[], options?: SendMessagesOptions): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): Promise<void>;
-	_flushPendingCustomMessages(): Promise<void>;
+	_flushPendingCustomMessages(withinRun?: boolean): Promise<void>;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_sendInterruptCustomMessageNow<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;
 	_ensureActiveInterruptQueueHold(): InterruptQueueHold;

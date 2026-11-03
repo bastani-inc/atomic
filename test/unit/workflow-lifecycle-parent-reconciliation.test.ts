@@ -311,8 +311,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 			"clear at the in-flight boundary must persist one hidden reconciliation entry",
 		);
 	});
-	// #4254: like any unsaved message, a failed hidden-reconciliation write stops the run; it is not retried within it.
-	test("a transient hidden-reconciliation persistence failure stops the run, and the next prompt saves it without duplicating the durable card", async () => {
+	// Like any unsaved message, a failed hidden-reconciliation write stops the run; it is not retried within it.
+	test("a transient hidden-reconciliation persistence failure stops the run, and the next prompt saves it without duplicating the durable card (#4254)", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: "run-persist-retry",
@@ -385,8 +385,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
 		assert.equal(hiddenEntries().length, 1, "one hidden reconciliation is durable after the next prompt");
 	});
-	// #4254: the failed write stops the run without a retry within it; disposal's final flush then saves it.
-	test("session disposal saves a consumed reconciliation whose failed write stopped the run", async () => {
+	// The failed write stops the run without a retry within it; disposal's final flush then saves it.
+	test("session disposal saves a consumed reconciliation whose failed write stopped the run (#4254)", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: "run-dispose-retry",

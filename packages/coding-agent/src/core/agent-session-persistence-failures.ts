@@ -1,8 +1,8 @@
 /**
  * A message the session could not save stops the run that hit it (#4226). The failure is recorded and reported here,
  * once per run; the request boundary (`persistenceStopError` in agent-session-events.ts) then ends the run. This
- * module imports no agent-session module at runtime, so the event, boundary, prompt and tool-hook modules can all use
- * it without an import cycle.
+ * module imports no agent-session module at runtime, so the event, message-queue and tool-hook modules can all use it
+ * without an import cycle.
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -38,22 +38,5 @@ export function recordPersistenceFailure(session: AgentSession, message: AgentMe
 			error: failure,
 			stack: error instanceof Error ? error.stack : undefined,
 		});
-	}
-}
-
-/**
- * #4254: saves the custom messages a run buffered while it streamed (`triggerTurn: false`). One that cannot be saved
- * stops the run like any other unsaved message: it is reported once and stays buffered for the next prompt, and the
- * run saves nothing more.
- */
-export async function flushPendingCustomMessagesInRun(session: AgentSession): Promise<void> {
-	if (session._persistenceFailure !== undefined) return;
-	try {
-		await session._flushPendingCustomMessages();
-	} catch (error) {
-		const unsaved = session._pendingCustomMessages[0];
-		// A listener that throws after the message was saved is no save failure; it still fails the turn.
-		if (unsaved === undefined || session._entryIdsByMessage.has(unsaved)) throw error;
-		recordPersistenceFailure(session, unsaved, error);
 	}
 }

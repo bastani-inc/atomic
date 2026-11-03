@@ -12,7 +12,6 @@ import type { AssistantMessage, ToolResultMessage } from "@bastani/pi-ai/compat"
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { persistenceStopError } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { flushPendingCustomMessagesInRun } from "./agent-session-persistence-failures.ts";
 import { COMPACTION_AUTO_QUERY } from "./compaction/compaction-parameters.js";
 import {
 	DEFAULT_COMPRESSION_RATIO,
@@ -387,7 +386,7 @@ export async function _runBeforeSettleBoundary(this: AgentSession): Promise<bool
 			async (entries) => await this._buildBoundaryContext(entries, "agent_before_settle"),
 		);
 		await this._commitBoundaryDrafts(result.entries);
-		await flushPendingCustomMessagesInRun(this);
+		await this._flushPendingCustomMessages(true);
 		// #4254: a buffered custom message that could not be saved ends the run here.
 		if (this._persistenceFailure !== undefined) return false;
 		const finalContext = await this._buildBoundaryContext([], "agent_before_settle");

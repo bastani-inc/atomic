@@ -5,7 +5,6 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
-import { flushPendingCustomMessagesInRun } from "./agent-session-persistence-failures.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
 import {
 	formatNoApiKeyFoundMessage,
@@ -571,7 +570,7 @@ async function settleAgentRun(session: AgentSession): Promise<void> {
 	try {
 		await session._agentEventQueue;
 		// #4254: once the run stopped on an unsaved message, settling neither saves again nor rethrows its error.
-		await flushPendingCustomMessagesInRun(session);
+		await session._flushPendingCustomMessages(true);
 	} finally {
 		// A failed event or flush must still close and settle the run; otherwise the open-run
 		// marker and active prompt count leak and later interactive messages stay queued forever.

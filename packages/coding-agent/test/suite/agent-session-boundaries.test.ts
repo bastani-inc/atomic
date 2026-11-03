@@ -6,7 +6,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../src/core/agent-session-persistent-custom-messages.ts";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../src/core/agent-session-persistent-custom-messages.js";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/index.ts";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -662,7 +662,7 @@ describe("AgentSession actionable boundaries", () => {
 		}
 	});
 
-	// #4254: a custom message saved outside its own message_end append stops the run like any other unsaved message.
+	// A custom message saved outside its own message_end append stops the run like any other unsaved message.
 	describe.each([
 		{ continuation: "a terminal response", continueAtBoundary: false },
 		{ continuation: "an explicit boundary continuation", continueAtBoundary: true },
