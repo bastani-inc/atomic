@@ -45,6 +45,19 @@ async function settleWithin<T>(pending: Promise<T>, timeoutMs: number, descripti
 	}
 }
 
+async function runEveryCleanup(steps: ReadonlyArray<() => unknown>): Promise<void> {
+	const failures: unknown[] = [];
+	for (const step of steps) {
+		try {
+			await step();
+		} catch (error) {
+			failures.push(error);
+		}
+	}
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1) throw new AggregateError(failures, `${failures.length} cleanup steps failed`);
+}
+
 describe("correlated RPC bash streaming", () => {
 	it("preserves observed stdout/stderr order in typed events before completion", async () => {
 		const harness = await createHarness();
@@ -192,18 +205,21 @@ describe("correlated RPC bash streaming", () => {
 			type: "bash",
 			command: gatedOutputCommand(releaseMarker, "before", "after"),
 		});
-		onTestFinished(async () => {
-			first.session.abortBash("replacement-bash");
-			writeFileSync(releaseMarker, "");
-			await settleWithin(
-				bash.catch(() => undefined),
-				REPLACEMENT_DRAIN_TIMEOUT_MS,
-				"the replacement bash request to drain",
-			);
-			binding.disposeSubscriptions();
-			await second.cleanup();
-			await first.cleanup();
-		});
+		onTestFinished(() =>
+			runEveryCleanup([
+				() => first.session.abortBash("replacement-bash"),
+				() => writeFileSync(releaseMarker, ""),
+				() =>
+					settleWithin(
+						bash.catch(() => undefined),
+						REPLACEMENT_DRAIN_TIMEOUT_MS,
+						"the replacement bash request to drain",
+					),
+				() => binding.disposeSubscriptions(),
+				() => second.cleanup(),
+				() => first.cleanup(),
+			]),
+		);
 		await vi.waitFor(
 			() => {
 				const started = output.some(
