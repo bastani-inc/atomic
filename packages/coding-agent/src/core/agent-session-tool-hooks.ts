@@ -1,6 +1,7 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
+import { isReportedPersistenceFailure } from "./agent-session-events.js";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
@@ -203,9 +204,11 @@ async function settleFallbackAfterTurn(
 			session._isEmptyCompletion?.(turn.message) === true ||
 			session._isSafetyRefusal?.(turn.message) === true);
 	if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
-		// As at the request boundary, a failed event listener does not fail the turn. A message that
-		// could not be saved was already reported where its append failed (#4226).
-		await session._agentEventQueue.catch(() => {});
+		// A message that could not be saved was already reported where its append failed (#4226);
+		// any other listener failure still fails the turn.
+		await session._agentEventQueue.catch((error: unknown) => {
+			if (!isReportedPersistenceFailure(error)) throw error;
+		});
 		await session._settleFallbackModelScope();
 	}
 }

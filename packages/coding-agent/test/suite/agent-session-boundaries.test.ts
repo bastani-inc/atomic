@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/index.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionManager } from "../../src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -491,23 +492,42 @@ describe("AgentSession actionable boundaries", () => {
 			await otherWriter.appendCustomEntry("other-writer", {});
 
 			const second = harness.session.prompt("second");
-			await vi.waitFor(() => expect(harness.eventsOfType("agent_end")).toHaveLength(2));
+			await vi.waitFor(() => assert.equal(harness.eventsOfType("agent_end").length, 2));
 
-			expect(errors).toEqual(
-				["user", "assistant", "toolResult", "assistant"].map((role) =>
-					expect.stringMatching(
-						new RegExp(
-							`^<session> message_end: could not persist the ${role} message: Session conflict: \\S+, expected \\d+, actual \\d+$`,
-						),
-					),
+			assert.deepEqual(
+				errors.map(
+					(error) =>
+						/^<session> message_end: could not persist the (\w+) message: Session conflict: \S+, expected \d+, actual \d+$/.exec(
+							error,
+						)?.[1],
 				),
+				["user", "assistant", "toolResult", "assistant"],
 			);
 			await second;
-			expect(getMessageText(harness.session.messages.at(-1))).toBe("second reply");
+			assert.equal(getMessageText(harness.session.messages.at(-1)), "second reply");
 		} finally {
 			await harness.cleanup();
 			rmSync(sessionDir, { recursive: true, force: true });
 		}
+	});
+
+	it("still fails the turn when a session listener throws on the final assistant message_end (#4226)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		let thrown = false;
+		harness.session.subscribe((event) => {
+			if (event.type !== "message_end" || event.message.role !== "assistant" || thrown) return;
+			thrown = true;
+			throw new Error("listener failed on the final reply");
+		});
+		harness.setResponses([fauxAssistantMessage("final reply")]);
+
+		await harness.session.prompt("hello");
+
+		const last = harness.session.messages.at(-1);
+		assert.ok(last?.role === "assistant");
+		assert.equal(last.stopReason, "error");
+		assert.match(last.errorMessage ?? "", /listener failed on the final reply/);
 	});
 
 	it("does not compact from usage belonging to a boundary-omitted assistant", async () => {

@@ -63,6 +63,11 @@ export function _emitQueueUpdate(this: AgentSession): void {
 }
 
 const consumedQueuedMessageEvents = new WeakSet<object>();
+const reportedPersistenceFailures = new WeakSet<object>();
+
+export function isReportedPersistenceFailure(error: unknown): boolean {
+	return typeof error === "object" && error !== null && reportedPersistenceFailures.has(error);
+}
 
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
@@ -245,6 +250,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		} catch (error) {
 			// #4226: an unsaved message has no entry for turn_end to resolve; name the cause here instead.
 			this._messagesWithFailedPersistence.add(event.message);
+			if (typeof error === "object" && error !== null) reportedPersistenceFailures.add(error);
 			// #3105: disposal reports failures that interrupt it through its own rejection.
 			if (!this._disposed) {
 				this._extensionRunner.emitError({
