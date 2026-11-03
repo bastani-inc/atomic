@@ -38,20 +38,25 @@ test("the longest files go to different shards", () => {
 	assert.equal(new Set(["a", "b", "c"].map((name) => owner(`test/integration/${name}.test.ts`))).size, 3);
 });
 
-test("shards balance their expected wall time: the longest file or the total over the shard's workers", () => {
-	// One long file, plus as many short ones as two shards' workers take in about its time: summing weights alone
-	// (plain longest-processing-time-first) would put a share of the short files beside the long one and finish
-	// that shard last.
-	const record: Record<string, number> = { "test/integration/long.test.ts": 100_000 };
+test("a long file sets its shard's wall time, and short files share that shard's other workers without outlasting it", () => {
+	// One long file, plus as many short ones as two shards' workers take in about its time. No assignment finishes
+	// before the long file, so the shard holding it should not sit with six idle workers while the other shard runs every
+	// short file: a Windows integration shard that ran one 104 s file alone left the other shards seventeen to thirty
+	// process-heavy files each, which slowed each other down enough to time a test out.
+	const long = "test/integration/long.test.ts";
+	const record: Record<string, number> = { [long]: 100_000 };
 	for (let i = 0; i < 4 * SHARD_WORKERS; i++)
 		record[`test/integration/short-${String(i).padStart(2, "0")}.test.ts`] = 23_000;
 	const weight = (path: string) => (record[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
 	const paths = Object.keys(record);
-	const walls = [1, 2].map((index) => {
-		const shard = shardByDuration(paths, record, index, 2);
-		return Math.max(...shard.map(weight), shard.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS);
-	});
-	assert.ok(Math.max(...walls) <= 1.1 * Math.min(...walls), `unbalanced shards: ${walls.join(", ")}`);
+	const shards = [1, 2].map((index) => shardByDuration(paths, record, index, 2));
+	const walls = shards.map((shard) =>
+		Math.max(...shard.map(weight), shard.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS),
+	);
+	const bound = Math.max(weight(long), paths.reduce((sum, path) => sum + weight(path), 0) / SHARD_WORKERS / 2);
+	assert.ok(Math.max(...walls) <= 1.1 * bound, `shards outlast the long file: ${walls.join(", ")}`);
+	const beside = shards.find((shard) => shard.includes(long))!.filter((path) => path !== long);
+	assert.ok(beside.length >= SHARD_WORKERS, `only ${beside.length} short files ran beside the long one`);
 });
 
 test("a serial file (run alone after the rest) leaves its shard fewer parallel files", () => {

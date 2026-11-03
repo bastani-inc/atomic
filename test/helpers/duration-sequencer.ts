@@ -55,11 +55,14 @@ function weightOf(path: string, durations: FileDurations): number {
  * lower-numbered shard. Ties between files break by path, so the result depends only on the set of paths, not on the
  * order they arrive in.
  *
- * A shard expected to finish within the balanced average (every shard's share of the suite) counts as finishing at
- * that average. Without that floor, a heavy file that fits in any shard's share went to the shard whose longest file
- * was shortest, so one shard drew most of a suite's heavy files and ran them side by side: they each start child
- * processes, and competing for the runner's CPUs they ran about half again slower (the Windows unit shard that drew
- * eight of the twelve). With it, those files go to the least loaded shard in turn.
+ * No assignment finishes before its heaviest file, nor before every shard's balanced share of the suite, so a shard
+ * expected to finish within the larger of the two counts as finishing at it. Without that floor, a heavy file that fit
+ * in any shard's share went to the shard whose longest file was shortest, so one shard drew most of a suite's heavy
+ * files and ran them side by side: they each start child processes, and competing for the runner's CPUs they ran about
+ * half again slower (the Windows unit shard that drew eight of the twelve). And the shard holding a file longer than
+ * every share kept it alone, its other workers idle, while the remaining shards took every process-heavy file between
+ * them (a Windows integration shard of seventeen such files timed a test out). With it, files go to the least loaded
+ * shard in turn until a shard would run past the floor.
  */
 export function shardByDuration(
 	paths: readonly string[],
@@ -75,15 +78,18 @@ export function shardByDuration(
 	type Shard = (typeof shards)[number];
 	let parallelTotal = 0;
 	let serialTotal = 0;
+	let heaviest = 0;
 	for (const path of paths) {
-		if (serial.has(path)) serialTotal += weightOf(path, durations);
-		else parallelTotal += weightOf(path, durations);
+		const weight = weightOf(path, durations);
+		if (serial.has(path)) serialTotal += weight;
+		else parallelTotal += weight;
+		heaviest = Math.max(heaviest, weight);
 	}
-	const balanced = (parallelTotal / SHARD_WORKERS + serialTotal) / count;
-	/** The shard's expected wall time with one more file of `weight`, at least the balanced average. */
+	const floor = Math.max(heaviest, (parallelTotal / SHARD_WORKERS + serialTotal) / count);
+	/** The shard's expected wall time with one more file of `weight`, at least the floor. */
 	const wallWith = (shard: Shard, weight: number, isSerial: boolean) =>
 		Math.max(
-			balanced,
+			floor,
 			isSerial
 				? Math.max(shard.longest, shard.total / SHARD_WORKERS) + shard.serial + weight
 				: Math.max(shard.longest, weight, (shard.total + weight) / SHARD_WORKERS) + shard.serial,
