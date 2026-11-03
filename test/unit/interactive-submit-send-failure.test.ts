@@ -83,6 +83,7 @@ function makeSubmitStub(options?: {
 		editorContainer: { children: options?.editorMounted === false ? [] : [editor] },
 		ui: { setFocus: () => {}, requestRender: () => {} },
 		pendingUserInputs: [],
+		compactionQueuedMessages: [],
 		manualCompactionTakeoverPending: false,
 		get compactionActive(): boolean {
 			return this.session.isCompacting || this.manualCompactionTakeoverPending;

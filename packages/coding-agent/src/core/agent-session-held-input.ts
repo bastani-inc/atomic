@@ -13,8 +13,13 @@ export interface HeldInput {
 	/** Set by `clearQueue()`: the text went back to the caller and must not be sent. */
 	cancelled: boolean;
 	/** Settles once the input has started its turn, queued, been handled, or failed. */
-	readonly admitted: PromiseWithResolvers<void>;
-	readonly cancellation: PromiseWithResolvers<void>;
+	readonly admitted: Settlement;
+	readonly cancellation: Settlement;
+}
+
+interface Settlement {
+	readonly promise: Promise<void>;
+	readonly resolve: () => void;
 }
 
 const heldInputs = new WeakMap<object, HeldInput[]>();
