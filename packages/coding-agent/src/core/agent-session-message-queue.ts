@@ -50,7 +50,7 @@ function serializeInterruptMutation(owner: AgentSession, operation: () => Promis
 
 /**
  * Queue a steering message (already expanded, no extension command check). `typed` is the text that was submitted,
- * if an `input` hook or an expansion changed it; `clearQueue()` gives it back.
+ * when an `input` hook or an expansion may have changed it; `clearQueue()` gives it back.
  */
 export async function _queueSteer(
 	this: AgentSession,
