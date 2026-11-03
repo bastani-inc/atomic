@@ -8,6 +8,10 @@
 - `--list-models` output changed for scripts that parse it. Columns are tab-separated. The `provider` and `model` columns are now one `model` column holding `provider/id`, and the `thinking` yes/no column is now `level`: the reasoning level `--model provider/id` starts that model at, empty for a model without reasoning. The header row is `model`, `level`, `context`, `max-out`, `images` ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 - `model_fallback_start` session events carry the optional `fromThinkingLevel` and `toThinkingLevel` of reasoning models, so a fallback that only changes the level can say so. `from` and `to` are unchanged `provider/id` strings ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 
+### Fixed
+
+- Shell commands report their result as soon as they exit. Every `bash` call, through a pipe or a terminal (PTY), waited about 250 ms after its command exited, because the task supervisor always waited out its full termination grace before confirming that the command's processes were gone. It now confirms that as soon as they are, so ten trivial commands take about 0.15 s instead of about 2.7 s, and a stopped command whose processes exit on TERM settles at once too. Processes a command leaves running still get TERM, and KILL once the grace ends ([#4268](https://github.com/bastani-inc/atomic/issues/4268)).
+
 ## [0.9.70] - 2026-11-03
 
 Alt+Up no longer loses or duplicates a queued message in the default interactive mode, and internal URL expansion in `bash` and `powershell` is now conservative about where it replaces a URL with a path.
