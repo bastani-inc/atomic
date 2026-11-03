@@ -43,6 +43,7 @@ export {
 	type ThemeInfo,
 } from "./theme-loading.ts";
 export {
+	CodeHighlighter,
 	getEditorTheme,
 	getLanguageFromPath,
 	getMarkdownTheme,

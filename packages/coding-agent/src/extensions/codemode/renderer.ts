@@ -10,8 +10,12 @@ import {
 } from "../../core/tools/render-utils.ts";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
-import { highlightCode, type Theme } from "../../modes/interactive/theme/theme.js";
+import { CodeHighlighter, type Theme } from "../../modes/interactive/theme/theme.js";
 import type { CodemodeNestedCall, CodemodeToolDetails, codemodeSchema } from "./tool.js";
+
+interface CodemodeRenderState {
+	scriptHighlighter?: CodeHighlighter;
+}
 
 const SCRIPT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n$/;
 function hint(theme: Theme, count: number, noun: string): string {
@@ -58,7 +62,11 @@ export const codemodeRenderers: Pick<
 		}
 		component.addChild(new Text(title, 0, 0));
 		if (code) {
-			const highlighted = highlightCode(replaceTabs(code.replace(/\r/g, "").trimEnd()), "javascript").join("\n");
+			const state = context.state as CodemodeRenderState;
+			state.scriptHighlighter ??= new CodeHighlighter();
+			const highlighted = state.scriptHighlighter
+				.highlight(replaceTabs(code.replace(/\r/g, "").trimEnd()), "javascript")
+				.join("\n");
 			component.addChild(
 				context.expanded
 					? new Text(highlighted, 0, 0)

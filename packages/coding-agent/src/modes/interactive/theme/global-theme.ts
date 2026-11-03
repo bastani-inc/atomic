@@ -20,6 +20,10 @@ export const theme: Theme = new Proxy({} as Theme, {
 	},
 });
 
+export function getGlobalTheme(): Theme | undefined {
+	return (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY];
+}
+
 function setGlobalTheme(t: Theme): void {
 	(globalThis as Record<symbol, Theme>)[THEME_KEY] = t;
 	(globalThis as Record<symbol, Theme>)[THEME_KEY_OLD] = t;

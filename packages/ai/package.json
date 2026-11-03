@@ -59,14 +59,14 @@
 		"CHANGELOG.md"
 	],
 	"scripts": {
-		"clean": "shx rm -rf dist",
+		"clean": "node ../../scripts/package-files.mjs clean dist",
 		"generate-models": "node scripts/generate-models.ts --strict",
 		"hydrate-model-data": "node scripts/generate-models.ts --strict --data-only",
 		"generate-model-catalog": "node scripts/generate-models.ts --strict --json-only --json-output .artifacts/model-catalog",
 		"generate-decision-models": "node scripts/generate-decision-models.ts --strict",
 		"check:model-data": "node scripts/check-model-data.ts",
 		"build": "npm run generate-models && npm run build:offline",
-		"build:offline": "npm run check:model-data && tsc -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data",
+		"build:offline": "npm run check:model-data && tsc -p tsconfig.build.json && node ../../scripts/package-files.mjs clean dist/providers/data && node ../../scripts/package-files.mjs copy src/providers/data dist/providers",
 		"test": "vitest --run",
 		"typecheck": "node ../../scripts/bun-typecheck.mjs -p tsconfig.json",
 		"check": "biome check --error-on-warnings . && npm run typecheck",
@@ -89,7 +89,6 @@
 	"devDependencies": {
 		"@types/node": "24.12.4",
 		"canvas": "3.2.3",
-		"shx": "0.3.4",
 		"typescript": "7.0.2",
 		"vitest": "4.1.12"
 	},

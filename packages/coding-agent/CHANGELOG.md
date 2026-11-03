@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool rows reuse syntax highlighting until their code, theme, or grammars change, and streamed assistant messages reuse rendered Markdown blocks (upstream pi 0f21a331).
+
+### Removed
+
+- Removed the native sandbox extension example; use the documented container and VM isolation options instead. Build scripts now use Node filesystem operations instead of `shx` (upstream pi b4c2e92a).
+
 ### Breaking Changes
 
 - `AgentTool` from `@earendil-works/pi-agent-core` 1.5.0 takes any JSON Schema object as `parameters` and types `params` through `@earendil-works/pi-schema`. Extension code that builds an `AgentTool` directly keeps the static type of TypeBox schemas of the common kinds (String, Number, Integer, Boolean, Null, Literal, Array, Object, Union, Record, Unsafe, Unknown, Any); other kinds such as `Type.Enum`, `Type.Tuple` and `Type.Intersect` now give `params: unknown`, so narrow `params` yourself or use one of the mapped kinds. Tools registered through `registerTool()` and `ToolDefinition` are unchanged
