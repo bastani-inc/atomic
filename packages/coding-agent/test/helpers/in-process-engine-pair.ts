@@ -112,6 +112,8 @@ export interface EngineHostPair {
 	engine: Harness;
 	hostHarness: Harness;
 	runtime: IsolatedInteractiveRuntime;
+	/** Write a record to the host as the engine's stdout would. */
+	engineOutput: (record: object) => void;
 	setLag: (lag: { toEngineMs?: number; toHostMs?: number }) => void;
 	cleanup: () => Promise<void>;
 }
@@ -151,6 +153,7 @@ export async function createEngineHostPair(
 		engine,
 		hostHarness,
 		runtime,
+		engineOutput: (record) => client.engineOutput(record as RpcResponse),
 		setLag: (next) => {
 			if (next.toEngineMs !== undefined) lag.toEngineMs = next.toEngineMs;
 			if (next.toHostMs !== undefined) lag.toHostMs = next.toHostMs;
