@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `pi.registerMarkdownTransformer()` takes an optional `{ messageTypes }` that selects the Markdown surfaces a transformer runs on. Besides user, assistant, and thinking Markdown, transformers can now opt into `custom` (custom messages without a registered renderer and skill blocks), `summary` (branch summaries), and `changelog` (What's New and `/changelog`). Without options a transformer runs on user, assistant, and thinking Markdown as before. The built-in Mermaid renderer now also draws diagrams in expanded branch summaries (upstream [#11756](https://github.com/earendil-works/pi/pull/11756)).
+
 ### Fixed
 
 - `/model` shows the account's display name for GitHub Copilot models discovered from the account's model list instead of repeating the model ID. Model IDs, and the IDs sent to Copilot, are unchanged. Run `atomic update --models` once to replace names cached by an earlier version.

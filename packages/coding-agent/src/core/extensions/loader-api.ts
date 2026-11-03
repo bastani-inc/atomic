@@ -37,7 +37,9 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ExtensionRuntime,
+	MarkdownMessageType,
 	MarkdownTransformer,
+	MarkdownTransformerOptions,
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
@@ -47,6 +49,8 @@ import type {
 import type { WorkflowRunControl } from "./workflow-run-control.js";
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
+
+const DEFAULT_MARKDOWN_MESSAGE_TYPES: readonly MarkdownMessageType[] = ["user", "assistant", "assistant-thinking"];
 
 const apiLifetime = Symbol.for("atomic.extension-api-lifetime.v1");
 type ExtensionWithLifetime = Extension & {
@@ -312,9 +316,12 @@ export function createExtensionAPI(
 			extension.messageRenderers.set(customType, captureRegistrationInvocation(renderer) as MessageRenderer);
 		},
 
-		registerMarkdownTransformer(transformer: MarkdownTransformer): void {
+		registerMarkdownTransformer(transformer: MarkdownTransformer, options?: MarkdownTransformerOptions): void {
 			assertActive();
-			extension.markdownTransformer = captureRegistrationInvocation(transformer);
+			extension.markdownTransformer = captureRegistrationInvocation({
+				transformer,
+				messageTypes: new Set(options?.messageTypes ?? DEFAULT_MARKDOWN_MESSAGE_TYPES),
+			});
 		},
 
 		registerEntryRenderer<T>(customType: string, renderer: EntryRenderer<T>): void {

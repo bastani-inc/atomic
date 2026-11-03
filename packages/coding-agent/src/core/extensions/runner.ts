@@ -800,6 +800,7 @@ export class ExtensionRunner {
 		return findMessageRenderer(this.extensions, customType);
 	}
 
+	/** Markdown transformers in extension load order; each one leaves Markdown of unregistered surfaces unchanged. */
 	getMarkdownTransformers(): MarkdownTransformer[] {
 		return collectMarkdownTransformers(this.extensions);
 	}

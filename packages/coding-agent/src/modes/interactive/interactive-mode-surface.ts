@@ -31,6 +31,7 @@ import type {
 	KeybindingsManager,
 	LoaderIndicatorOptions,
 	LoginDialogComponent,
+	Markdown,
 	MarkdownTheme,
 	Message,
 	MissingSessionCwdError,
@@ -79,6 +80,7 @@ declare module "./interactive-mode-base.ts" {
 		reportInstallTelemetry(version: string): void;
 		getMarkdownThemeWithSettings(): MarkdownTheme;
 		getMarkdownTransformers(): MarkdownTransformer[];
+		createChangelogMarkdown(markdown: string, paddingX: number, paddingY: number): Markdown;
 		formatDisplayPath(p: string): string;
 		formatExtensionDisplayPath(path: string): string;
 		formatContextPath(p: string): string;

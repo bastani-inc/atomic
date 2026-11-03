@@ -795,15 +795,24 @@ Register a custom TUI renderer for messages with your `customType`. The renderer
 
 ### pi.registerMarkdownTransformer(transformer)
 
-Register a synchronous, display-only transformer for Markdown in normal user text, assistant text, and thinking blocks. Atomic runs transformers in extension load order. Each extension retains one transformer, so a later call from that extension replaces its prior transformer. Each transformer receives the Markdown returned by the prior transformer, then Atomic renders the final value with its built-in Markdown renderer.
+Register a synchronous, display-only transformer for Markdown before Atomic renders it in interactive mode. Atomic runs transformers in extension load order. Each extension retains one transformer, so a later call from that extension replaces its prior transformer. Each transformer receives the Markdown returned by the prior transformer, then Atomic renders the final value with its built-in Markdown renderer.
+
+The optional second argument, `pi.registerMarkdownTransformer(transformer, options)`, takes `options.messageTypes`. By default a transformer runs on normal user text, assistant text, and thinking blocks; `messageTypes` lists the surfaces it runs on instead:
+
+| `messageType` | Surface |
+| --- | --- |
+| `"user"`, `"assistant"`, `"assistant-thinking"` | Transcript messages (default) |
+| `"custom"` | Custom messages from `pi.sendMessage()` without a registered message renderer, and expanded skill blocks (their content, without Atomic's header) |
+| `"summary"` | Expanded branch summaries (the summary, without Atomic's header) |
+| `"changelog"` | Atomic's changelog: "What's New" at startup and `/changelog` |
 
 The transformer receives the Markdown string and a context with:
 
-- `messageType` — `"user"`, `"assistant"`, or `"assistant-thinking"`
-- `isStreaming` — `true` for partial assistant updates; `false` for user, finalized assistant, and restored messages
+- `messageType` — one of the surfaces above
+- `isStreaming` — `true` for partial assistant updates; `false` otherwise
 - `availableWidth` — exact terminal columns available for the transformed Markdown content
-- `messageId` — the session entry id when the message is rendered from the saved session (resume, `/tree`, rebuilds); `undefined` for live messages
-- `timestamp` — the session entry's ISO timestamp under the same conditions; `undefined` for live messages
+- `messageId` — the session entry id when the message is rendered from the saved session (resume, `/tree`, rebuilds); `undefined` for live messages and the changelog
+- `timestamp` — the session entry's ISO timestamp under the same conditions; `undefined` for live messages and the changelog
 
 Return the transformed Markdown:
 
@@ -812,9 +821,14 @@ pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
   if (isStreaming || messageType === "assistant-thinking") return markdown;
   return markdown.replaceAll("-->", "→");
 });
+
+// Show :warning: shortcodes in the changelog as a symbol.
+pi.registerMarkdownTransformer((markdown) => markdown.replaceAll(":warning:", "⚠"), {
+  messageTypes: ["changelog"],
+});
 ```
 
-If a transformer throws, Atomic keeps the Markdown produced so far and continues with the next transformer. The hook never changes the original message, session transcript, or model context. It runs for new user messages, assistant streaming updates, restored session messages, and terminal-width changes, so keep transformers synchronous and inexpensive. Isolated-engine rendering does not run host-side display transformers.
+If a transformer throws, Atomic keeps the Markdown produced so far and continues with the next transformer. The hook never changes the original message, session transcript, or model context. It runs for new messages, assistant streaming updates, restored session messages, and terminal-width changes, so keep transformers synchronous and inexpensive. Isolated-engine rendering does not run host-side display transformers.
 
 ### pi.registerShortcut(shortcut, options)
 

@@ -71,7 +71,13 @@ export function findMessageRenderer(extensions: Extension[], customType: string)
 }
 
 export function collectMarkdownTransformers(extensions: Extension[]): MarkdownTransformer[] {
-	return extensions.flatMap((extension) => (extension.markdownTransformer ? [extension.markdownTransformer] : []));
+	return extensions.flatMap((extension): MarkdownTransformer[] => {
+		if (!extension.markdownTransformer) return [];
+		const { transformer, messageTypes } = extension.markdownTransformer;
+		return [
+			(markdown, context) => (messageTypes.has(context.messageType) ? transformer(markdown, context) : markdown),
+		];
+	});
 }
 
 export function findEntryRenderer(extensions: Extension[], customType: string): EntryRenderer | undefined {

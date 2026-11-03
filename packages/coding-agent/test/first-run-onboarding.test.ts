@@ -250,6 +250,8 @@ describe("first-run onboarding", () => {
 			},
 			version: "0.2.0",
 			getMarkdownThemeWithSettings: () => ({}),
+			getMarkdownTransformers: () => [],
+			createChangelogMarkdown: Reflect.get(InteractiveMode.prototype, "createChangelogMarkdown"),
 			ui: { requestRender: vi.fn() },
 		};
 		const showStartupNoticesIfNeeded = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (
@@ -291,6 +293,8 @@ describe("first-run onboarding", () => {
 			},
 			version: "0.2.0",
 			getMarkdownThemeWithSettings: () => ({}),
+			getMarkdownTransformers: () => [],
+			createChangelogMarkdown: Reflect.get(InteractiveMode.prototype, "createChangelogMarkdown"),
 			ui: { requestRender: vi.fn() },
 		};
 		const showStartupNoticesIfNeeded = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (
@@ -332,6 +336,8 @@ describe("first-run onboarding", () => {
 			},
 			version: "0.2.0",
 			getMarkdownThemeWithSettings: () => ({}),
+			getMarkdownTransformers: () => [],
+			createChangelogMarkdown: Reflect.get(InteractiveMode.prototype, "createChangelogMarkdown"),
 			ui: { requestRender: vi.fn() },
 		};
 		const showStartupNoticesIfNeeded = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (

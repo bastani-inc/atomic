@@ -1,7 +1,9 @@
 import { Box, Container, Markdown, type MarkdownTheme, MouseRegion, Text } from "@earendil-works/pi-tui";
 import type { ParsedSkillBlock } from "../../../core/agent-session.js";
+import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
+import { createMarkdownTransform } from "./markdown-transform.ts";
 
 /**
  * Component that renders a skill invocation message with collapsed/expanded state.
@@ -13,17 +15,26 @@ export class SkillInvocationMessageComponent extends Box {
 	private skillBlock: ParsedSkillBlock;
 	private markdownTheme: MarkdownTheme;
 	private renderLatex: boolean;
+	private markdownTransformers: readonly MarkdownTransformer[];
+	private messageId?: string;
+	private timestamp?: string;
 
 	constructor(
 		skillBlock: ParsedSkillBlock,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		renderLatex = true,
 		outputPad = 1,
+		markdownTransformers: readonly MarkdownTransformer[] = [],
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super(outputPad, 1, (t) => theme.bg("customMessageBg", t));
 		this.skillBlock = skillBlock;
 		this.markdownTheme = markdownTheme;
 		this.renderLatex = renderLatex;
+		this.markdownTransformers = markdownTransformers;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 		this.updateDisplay();
 	}
 
@@ -50,16 +61,27 @@ export class SkillInvocationMessageComponent extends Box {
 			const label = theme.fg("customMessageLabel", `\x1b[1m[skill]\x1b[22m`);
 			content.addChild(new Text(label, 0, 0));
 			const header = `**${this.skillBlock.name}**\n\n`;
+			const transform = createMarkdownTransform(
+				"custom",
+				() => false,
+				this.markdownTransformers,
+				this.messageId,
+				this.timestamp,
+			);
 			content.addChild(
 				new Markdown(
-					header + this.skillBlock.content,
+					this.skillBlock.content,
 					0,
 					0,
 					this.markdownTheme,
 					{
 						color: (text: string) => theme.fg("customMessageText", text),
 					},
-					{ renderLatex: this.renderLatex },
+					{
+						// Transformers see only the skill content, not Atomic's header.
+						transform: (markdown, width) => header + transform(markdown, width),
+						renderLatex: this.renderLatex,
+					},
 				),
 			);
 		} else {

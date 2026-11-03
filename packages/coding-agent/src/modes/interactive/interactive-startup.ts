@@ -44,7 +44,6 @@ import {
 	getNewEntries,
 	getPiUserAgent,
 	isInstallTelemetryEnabled,
-	Markdown,
 	type MarkdownTheme,
 	normalizeChangelogLinks,
 	onThemeChange,
@@ -132,7 +131,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 		} else {
 			targetContainer.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
 			targetContainer.addChild(new Spacer(1));
-			targetContainer.addChild(new Markdown(changelogMarkdown.trim(), 1, 0, this.getMarkdownThemeWithSettings()));
+			targetContainer.addChild(this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0));
 			targetContainer.addChild(new Spacer(1));
 		}
 		targetContainer.addChild(new DynamicBorder());

@@ -15,7 +15,6 @@ import {
 	getChangelogPath,
 	getShareViewerUrl,
 	hyperlink,
-	Markdown,
 	MissingSessionCwdError,
 	normalizeChangelogLinks,
 	os,
@@ -466,7 +465,7 @@ InteractiveModeBase.prototype.handleChangelogCommand = function (this: Interacti
 	this.chatContainer.addChild(new DynamicBorder());
 	this.chatContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
 	this.chatContainer.addChild(new Spacer(1));
-	this.chatContainer.addChild(new Markdown(changelogMarkdown, 1, 1, this.getMarkdownThemeWithSettings()));
+	this.chatContainer.addChild(this.createChangelogMarkdown(changelogMarkdown, 1, 1));
 	this.chatContainer.addChild(new DynamicBorder());
 	this.ui.requestRender();
 };

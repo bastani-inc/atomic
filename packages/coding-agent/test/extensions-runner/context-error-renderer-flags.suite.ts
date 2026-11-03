@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { discoverAndLoadExtensions } from "../../src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../../src/core/extensions/runner.ts";
-import type { ExtensionActions, ExtensionContextActions, ProviderConfig } from "../../src/core/extensions/types.ts";
+import type {
+	ExtensionActions,
+	ExtensionContextActions,
+	MarkdownMessageType,
+	ProviderConfig,
+} from "../../src/core/extensions/types.ts";
 import { KeybindingsManager } from "../../src/core/keybindings.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ModelRuntime } from "../../src/core/model-runtime.ts";
@@ -156,6 +161,38 @@ describe("ExtensionRunner", () => {
 				);
 
 			expect(transformed).toBe("second:first:input");
+		});
+
+		it("runs Markdown transformers only on their message types", async () => {
+			fs.writeFileSync(
+				path.join(extensionsDir, "markdown-default.ts"),
+				`export default function(pi) { pi.registerMarkdownTransformer((markdown) => markdown + " default"); }`,
+			);
+			fs.writeFileSync(
+				path.join(extensionsDir, "markdown-opt-in.ts"),
+				`export default function(pi) {
+					pi.registerMarkdownTransformer((markdown) => markdown + " opt-in", {
+						messageTypes: ["assistant", "changelog", "summary"],
+					});
+				}`,
+			);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const transformers = runner.getMarkdownTransformers();
+			const apply = (messageType: MarkdownMessageType) =>
+				transformers.reduce(
+					(markdown, transformer) =>
+						transformer(markdown, { messageType, isStreaming: false, availableWidth: 80 }),
+					"text",
+				);
+
+			expect(apply("user")).toBe("text default");
+			expect(apply("assistant-thinking")).toBe("text default");
+			expect(apply("assistant")).toBe("text default opt-in");
+			expect(apply("changelog")).toBe("text opt-in");
+			expect(apply("summary")).toBe("text opt-in");
+			expect(apply("custom")).toBe("text");
 		});
 	});
 
