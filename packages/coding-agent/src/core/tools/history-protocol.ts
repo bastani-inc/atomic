@@ -491,9 +491,16 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 				searchWorkflows(target, request),
 			]);
 			if (sessions.status === "rejected" && workflows.status === "rejected") throw sessions.reason;
+			// Line 0 carries notes about the search itself, so a source that failed is named even beside matches.
+			const results = (domain: Domain, label: string, settled: PromiseSettledResult<string[]>): string[] =>
+				settled.status === "fulfilled"
+					? settled.value
+					: [
+							`history://${domain}:0: [${label} not searched: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}]`,
+						];
 			return [
-				...(sessions.status === "fulfilled" ? sessions.value : []),
-				...(workflows.status === "fulfilled" ? workflows.value : []),
+				...results("sessions", "sessions", sessions),
+				...results("workflows", "workflow runs", workflows),
 			].join("\n");
 		},
 	};

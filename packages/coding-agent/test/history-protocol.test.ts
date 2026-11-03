@@ -702,4 +702,24 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			await close();
 		}
 	});
+
+	it("says which history a search of history:// could not reach, and why", async () => {
+		const failing: WorkflowRunControl = {
+			...customRunControl(),
+			listRuns: async () => {
+				throw new Error("the workflow journal is locked");
+			},
+		};
+		const { store, search, close } = await opened(() => failing);
+		try {
+			await store.create(header("launch-notes", PROJECT, BASE), [entry("l", "launch checklist", BASE + 1000)]);
+			const found = await search("launch", "history://");
+			assertIncludes(found, "history://sessions/launch-notes:");
+			assertIncludes(found, "workflow runs not searched: the workflow journal is locked");
+			const nothing = await search("no such phrase", "history://");
+			assertIncludes(nothing, "workflow runs not searched: the workflow journal is locked");
+		} finally {
+			await close();
+		}
+	});
 });
