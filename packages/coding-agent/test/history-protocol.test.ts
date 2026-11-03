@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {
 	WorkflowRunControl,
@@ -28,8 +28,9 @@ import type { InternalResourceContext } from "../src/core/tools/resource-selecto
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
-const PROJECT = "/projects/alpha";
-const OTHER_PROJECT = "/projects/beta";
+// Absolute on every platform, as a session's recorded cwd is; `?project=<dir>` resolves the same way.
+const PROJECT = resolve("/projects/alpha");
+const OTHER_PROJECT = resolve("/projects/beta");
 const CURRENT_ID = "current-session";
 
 function entry(id: string, text: string, at: number, role: "user" | "assistant" = "user"): SessionEntry {
