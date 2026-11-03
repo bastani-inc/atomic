@@ -4,12 +4,12 @@ import {
 	type Focusable,
 	getKeybindings,
 	Input,
+	replaceControlCharacters,
 	Spacer,
 	Text,
 	TruncatedText,
 	type TUI,
 } from "@earendil-works/pi-tui";
-import { replaceControlCharacters } from "../../../utils/ansi.js";
 import { copyToClipboard } from "../../../utils/clipboard.js";
 import { openBrowser } from "../../../utils/open-browser.ts";
 import { theme } from "../theme/theme.js";
