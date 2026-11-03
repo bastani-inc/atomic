@@ -14,7 +14,7 @@
 				"@earendil-works/pi-agent-core": "1.5.0",
 				"@earendil-works/pi-codemode": "1.5.0",
 				"@earendil-works/pi-tui": "1.5.0",
-				"@modelcontextprotocol/ext-apps": "^1.7.5",
+				"@modelcontextprotocol/ext-apps": "^2.0.4",
 				"@modelcontextprotocol/sdk": "1.32.2",
 				"@mozilla/readability": "^0.6.0",
 				"@silvia-odwyer/photon-node": "0.3.4",
@@ -962,20 +962,25 @@
 			"license": "BSD-2-Clause"
 		},
 		"node_modules/@modelcontextprotocol/ext-apps": {
-			"version": "1.7.5",
-			"resolved": "https://registry.npmjs.org/@modelcontextprotocol/ext-apps/-/ext-apps-1.7.5.tgz",
-			"integrity": "sha512-TjPH2S2y5UEGKhmI6+XGFuqfqOV4ppe1x6DA3txnUaEWkgtA4G5vo14jGKFZmegdkZ1H4QMLyujLvoU1BEdnAg==",
+			"version": "2.0.4",
+			"resolved": "https://registry.npmjs.org/@modelcontextprotocol/ext-apps/-/ext-apps-2.0.4.tgz",
+			"integrity": "sha512-B+PcbuGiaf0e5I3uy4iO5tS3Abo+5w8JvZFzHMzQdq9yVwP836zJkw2+KCGOQ0r4TM1fuQi4JdnbuWjkS4aBvg==",
 			"license": "MIT",
 			"dependencies": {
 				"@standard-schema/spec": "^1.1.0"
 			},
 			"peerDependencies": {
-				"@modelcontextprotocol/sdk": "^1.29.0",
+				"@modelcontextprotocol/client": "^2.0.0",
+				"@modelcontextprotocol/core": "^2.0.0",
+				"@modelcontextprotocol/server": "^2.0.0",
 				"react": "^17.0.0 || ^18.0.0 || ^19.0.0",
 				"react-dom": "^17.0.0 || ^18.0.0 || ^19.0.0",
-				"zod": "^3.25.0 || ^4.0.0"
+				"zod": "^4.2.0"
 			},
 			"peerDependenciesMeta": {
+				"@modelcontextprotocol/server": {
+					"optional": true
+				},
 				"react": {
 					"optional": true
 				},
