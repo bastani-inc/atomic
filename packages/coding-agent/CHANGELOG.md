@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Slash commands that do not send a prompt no longer wait for compaction. During automatic compaction or `/compact`, extension commands such as `/workflow connect` and `/workflow status` were queued like messages until compaction finished. During `/compact`, `/tasks`, model changes and session commands such as `/new` waited as well, and `/tasks` could close Atomic with a timeout error after 30 seconds. These commands now run at once, and a session command such as `/new` cancels the compaction. Only input that becomes a model message waits: plain messages, steering and follow-up messages, prompt templates and skills. They are still sent after compaction, in the order you typed them ([#4251](https://github.com/bastani-inc/atomic/issues/4251))
+- Slash commands that do not send a prompt no longer wait for compaction. During automatic compaction or `/compact`, extension commands such as `/workflow connect` and `/workflow status` were queued like messages until compaction finished. During `/compact`, `/tasks`, model changes and session commands such as `/new` waited as well, and `/tasks` could close Atomic with a timeout error after 30 seconds. These commands now run at once, and a session command such as `/new` cancels the compaction. Only input that becomes a model message waits: plain messages, steering and follow-up messages, prompt templates and skills. They are still sent after compaction, in the order you typed them. A message that a command sends while compaction runs, for example through `pi.sendUserMessage()`, also waits and is sent once compaction ends, instead of starting a model turn against the transcript being compacted ([#4251](https://github.com/bastani-inc/atomic/issues/4251))
 
 ## [0.9.68] - 2026-11-03
 

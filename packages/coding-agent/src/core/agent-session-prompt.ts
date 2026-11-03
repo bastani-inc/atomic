@@ -32,6 +32,8 @@ import { getSkillCatalog } from "./skill-catalog.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
 const openRuns = new WeakMap<AgentSession, number>();
+/** Settles once the last input held for compaction has started its turn, queued, or failed. */
+const compactionHolds = new WeakMap<AgentSession, Promise<void>>();
 
 function openRun(session: AgentSession): void {
 	openRuns.set(session, (openRuns.get(session) ?? 0) + 1);
@@ -129,6 +131,52 @@ function queuesBehindOpenRun(session: AgentSession, options: PromptOptions | und
 	return openRuns.has(session) && options?.streamingBehavior !== undefined && options.source !== "extension";
 }
 
+function compactionSettlement(session: AgentSession): Promise<unknown> | undefined {
+	const pending = [
+		session._manualCompactionPromise,
+		session._autoCompactionCompletion,
+		session._branchSummaryCompletion,
+	].filter((settlement) => settlement !== undefined);
+	return pending.length === 0 ? undefined : Promise.allSettled(pending);
+}
+
+function untilSessionEnds(work: Promise<unknown>, lifetime: AbortSignal): Promise<void> {
+	if (lifetime.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const finish = () => {
+			lifetime.removeEventListener("abort", finish);
+			resolve();
+		};
+		lifetime.addEventListener("abort", finish, { once: true });
+		void work.then(finish, finish);
+	});
+}
+
+/**
+ * Hold input that would start a turn while the session compacts (#4251): a turn started now would send the
+ * transcript that compaction is rewriting. Held input waits until no compaction runs and every earlier held
+ * message has started its turn, queued, or failed, so it goes out once and in arrival order. Returns the
+ * callback that lets the next held message go, to call once this one has done the same.
+ */
+async function holdForCompaction(session: AgentSession, lifetime: AbortSignal): Promise<() => void> {
+	const earlier = compactionHolds.get(session);
+	const { promise: done, resolve } = Promise.withResolvers<void>();
+	compactionHolds.set(session, done);
+	const release = () => {
+		resolve();
+		if (compactionHolds.get(session) === done) compactionHolds.delete(session);
+	};
+	if (earlier) await untilSessionEnds(earlier, lifetime);
+	for (
+		let settlement = compactionSettlement(session);
+		session.isCompacting && settlement !== undefined && !lifetime.aborted;
+		settlement = compactionSettlement(session)
+	) {
+		await untilSessionEnds(settlement, lifetime);
+	}
+	return release;
+}
+
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
 	this._activePromptCount += 1;
@@ -189,6 +237,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
+	let releaseCompactionHold: (() => void) | undefined;
 	const admission = reserveAdmissionForQueuedPrompt(this, text, options);
 
 	try {
@@ -258,24 +307,37 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (earlierAdmissions) await earlierAdmissions;
 		assertCurrent();
 
+		let delivery = options;
+		const startsTurn =
+			!(this.isStreaming || this._isPreparingRun || this._isBeforeSettle) &&
+			!queuesDuringAgentSettled(this, options) &&
+			!queuesBehindOpenRun(this, options);
+		if (compactionHolds.has(this) || (this.isCompacting && startsTurn)) {
+			releaseCompactionHold = await holdForCompaction(this, lifetime);
+			assertCurrent();
+			// The sender found the session idle. If held input ahead of this message started a turn
+			// meanwhile, this message follows it instead of being refused as a second prompt.
+			delivery = { ...options, streamingBehavior: options?.streamingBehavior ?? "followUp" };
+		}
+
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
 		const busy = this.isStreaming || this._isPreparingRun || this._isBeforeSettle;
-		const settling = queuesDuringAgentSettled(this, options) || (!busy && queuesBehindOpenRun(this, options));
+		const settling = queuesDuringAgentSettled(this, delivery) || (!busy && queuesBehindOpenRun(this, delivery));
 		if (busy || settling) {
-			if (!options?.streamingBehavior) {
+			if (!delivery?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
 			const queued =
-				options.streamingBehavior === "followUp"
+				delivery.streamingBehavior === "followUp"
 					? this._queueFollowUp(expandedText, currentImages)
 					: this._queueSteer(expandedText, currentImages);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
-			workflowDelivery?.delivered?.(options.streamingBehavior);
+			workflowDelivery?.delivered?.(delivery.streamingBehavior);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -392,6 +454,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		throw error;
 	} finally {
 		admission.release();
+		// A started run is now preparing, so held input released next queues behind it.
+		releaseCompactionHold?.();
 	}
 
 	assertCurrent();

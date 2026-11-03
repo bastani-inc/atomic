@@ -160,6 +160,8 @@ pi.registerCommand("monitor", {
 
 Control flow helpers.
 
+`ctx.isIdle()` reports whether the agent is streaming a response. It stays `true` while the session compacts, because a `sendUserMessage()` sent then waits for compaction to end instead of starting a turn.
+
 ### ctx.isProjectTrusted()
 
 Returns whether project-local trust is active for the current extension context. Use this before reading project-local config, loading project-local resources, or exposing actions that should only run after the user has trusted the cwd.
@@ -643,7 +645,7 @@ pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 
 - `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates instead of sending the text literally. Defaults to `false`, so an extension-authored message is sent as-is unless it opts in; an unknown command falls through to a literal send.
 
-When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error.
+When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error. While the session compacts, the message waits and is sent once compaction ends, after messages sent before it; if one of those has started a turn by then, a message without `deliverAs` is delivered as a follow-up.
 
 See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
 

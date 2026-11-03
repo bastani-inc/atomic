@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
-import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.ts";
-import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.ts";
-import type { RpcOutputRecord } from "../src/modes/rpc/rpc-responses.ts";
-import type { RpcResponse } from "../src/modes/rpc/rpc-types.ts";
-import { sleep, waitFor } from "./helpers/busy-submission-rig.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.js";
+import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.js";
+import type { RpcOutputRecord } from "../src/modes/rpc/rpc-responses.js";
+import type { RpcResponse } from "../src/modes/rpc/rpc-types.js";
+import { sleep, waitFor } from "./helpers/busy-submission-rig.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 type CompactionInternals = {
 	_applyVerbatimCompaction(): Promise<VerbatimCompactionResult | undefined>;

@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { Container } from "@earendil-works/pi-tui";
 import { afterEach, describe, test, vi } from "vitest";
-import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
-import type { ExtensionFactory } from "../src/core/extensions/index.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcSlashCommand } from "../src/modes/rpc/rpc-types.ts";
-import { createRig, type Rig, releaseOpenGates, type Wiring, waitFor } from "./helpers/busy-submission-rig.ts";
-import { getUserTexts } from "./suite/harness.ts";
+import type { VerbatimCompactionResult } from "../src/core/compaction/index.js";
+import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import type { RpcSlashCommand } from "../src/modes/rpc/rpc-types.js";
+import {
+	createRig,
+	DUPLICATE_DELIVERY_SETTLE_MS,
+	type Rig,
+	releaseOpenGates,
+	sleep,
+	type Wiring,
+	waitFor,
+} from "./helpers/busy-submission-rig.js";
+import { getUserTexts } from "./suite/harness.js";
 
 type CompactionInternals = {
 	_applyVerbatimCompaction(): Promise<VerbatimCompactionResult | undefined>;
@@ -37,14 +46,71 @@ function workflowCommand(invocations: string[]): ExtensionFactory {
 	};
 }
 
-async function createCompactingRig(wiring: Wiring, invocations: string[]): Promise<Rig> {
-	const rig = await createRig(wiring, "quiet", { extensions: [workflowCommand(invocations)] });
-	rigs.push(rig);
-	rig.engine.setResponses(Array.from({ length: 4 }, () => fauxAssistantMessage("done")));
+/** Commands that send user messages, written like the send-user-message example extension. */
+function messageCommands(invocations: string[]): ExtensionFactory {
+	return (pi) => {
+		pi.registerCommand("ask", {
+			description: "Send a user message",
+			handler: async (args, ctx) => {
+				invocations.push(`ask ${args}`);
+				if (!ctx.isIdle()) {
+					ctx.ui.notify("Agent is busy", "warning");
+					return;
+				}
+				pi.sendUserMessage(args);
+			},
+		});
+		pi.registerCommand("steer", {
+			description: "Send a steering message",
+			handler: async (args) => {
+				invocations.push(`steer ${args}`);
+				pi.sendUserMessage(args, { deliverAs: "steer" });
+			},
+		});
+		pi.registerCommand("followup", {
+			description: "Send a follow-up message",
+			handler: async (args) => {
+				invocations.push(`followup ${args}`);
+				pi.sendUserMessage(args, { deliverAs: "followUp" });
+			},
+		});
+	};
+}
+
+/** Route the host session's compaction events through InteractiveMode's own event handler, as the TUI does. */
+function attachCompactionEventHandler(rig: Rig): void {
+	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
+		this: object,
+		event: { type: string },
+	) => Promise<void>;
+	Object.assign(rig.host, {
+		isInitialized: true,
+		footer: { invalidate() {} },
+		programStatus: { handleEvent() {} },
+		manualCompactionTakeoverPending: false,
+		autoCompactionLoader: undefined,
+		autoCompactionEscapeHandlerSaved: false,
+		statusContainer: new Container(),
+		chatContainer: new Container(),
+	});
+	Object.assign(rig.host.settingsManager, { getShowTerminalProgress: () => false, getClearOnShrink: () => false });
+	Object.assign(rig.host.ui, { terminal: { setProgress() {} } });
 	Object.defineProperty(rig.host, "compactionActive", {
 		configurable: true,
-		get: () => rig.host.session.isCompacting,
+		get: () => rig.host.session.isCompacting || Reflect.get(rig.host, "manualCompactionTakeoverPending") === true,
 	});
+	rig.host.session.subscribe(async (event) => {
+		if (event.type === "compaction_start" || event.type === "compaction_end") await handleEvent.call(rig.host, event);
+	});
+}
+
+async function createCompactingRig(wiring: Wiring, invocations: string[]): Promise<Rig> {
+	const rig = await createRig(wiring, "quiet", {
+		extensions: [workflowCommand(invocations), messageCommands(invocations)],
+	});
+	rigs.push(rig);
+	rig.engine.setResponses(Array.from({ length: 6 }, () => fauxAssistantMessage("done")));
+	attachCompactionEventHandler(rig);
 	if (rig.pair) {
 		const runtime = rig.pair.runtime;
 		await runtime.waitUntilResourcesReady();
@@ -68,6 +134,10 @@ function holdCompaction(rig: Rig): () => void {
 function startCompaction(rig: Rig, kind: CompactionKind): Promise<unknown> {
 	if (kind === "manual") return rig.host.session.compact().catch((error: Error) => error);
 	return (rig.engine.session as unknown as CompactionInternals)._runAutoCompaction("threshold", false);
+}
+
+function providerRequests(rig: Rig): number {
+	return rig.engine.faux.state.callCount;
 }
 
 for (const wiring of ["local", "isolated"] as const) {
@@ -100,15 +170,42 @@ for (const wiring of ["local", "isolated"] as const) {
 				]);
 				assert.deepEqual(getUserTexts(rig.engine), []);
 
+				// The compaction_end handler releases the held prompts; nothing flushes them by hand.
 				releaseCompaction();
 				await compaction;
-				await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
-				await rig.host.flushCompactionQueue({ willRetry: false });
-
 				await waitFor("held prompts to reach the session in order", () =>
 					isDeepEqual(getUserTexts(rig.engine), ["first prompt", "second prompt"]),
 				);
 				assert.deepEqual(rig.host.compactionQueuedMessages, []);
+			});
+
+			test("holds messages an extension command sends until compaction ends, then sends each once (#4251)", async () => {
+				const invocations: string[] = [];
+				const rig = await createCompactingRig(wiring, invocations);
+				const releaseCompaction = holdCompaction(rig);
+				const compaction = startCompaction(rig, kind);
+				await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+				await submit("/ask first");
+				await submit("/steer second");
+				await submit("/followup third");
+				await waitFor("the commands to run during compaction", () => invocations.length === 3);
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+				assert.deepEqual(invocations, ["ask first", "steer second", "followup third"]);
+				assert.equal(rig.engine.session.isCompacting, true, "compaction must still be running");
+				assert.equal(providerRequests(rig), 0, "no provider request may start during compaction");
+				assert.deepEqual(getUserTexts(rig.engine), []);
+
+				releaseCompaction();
+				await compaction;
+				await waitFor("the held messages to be sent after compaction", () =>
+					isDeepEqual(getUserTexts(rig.engine), ["first", "second", "third"]),
+				);
+				await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+				assert.deepEqual(getUserTexts(rig.engine), ["first", "second", "third"]);
 			});
 		});
 	}
