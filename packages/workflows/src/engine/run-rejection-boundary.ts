@@ -418,7 +418,10 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 	};
 	boundary.scopes.add(scope);
 	boundary.runs.set(scope.runId, scope);
-	if (scope.source !== undefined) markSharedSource(boundary, scope.source);
+	if (scope.source !== undefined) {
+		markSharedSource(boundary, scope.source);
+		if (endedInAnotherRunTree(boundary, scope.source, scope)) scope.sharedSource = true;
+	}
 	return {
 		run: (callback) => boundary.store.run(scope, callback),
 		contain: (promise, effect = "fail-run") => {

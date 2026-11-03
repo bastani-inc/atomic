@@ -23,27 +23,31 @@ interface RunReport {
 }
 
 interface Report {
+	readonly retiredRejections: number;
 	readonly first: RunReport;
 	readonly replacement: RunReport;
 }
 
 for (const runtime of RUNTIMES) {
 	describe(`retired execution rejection on ${runtime.name}`, () => {
-		test(
-			"a retired execution's late rejection never fails its replacement with the same durable run ID (#4192)",
-			() => {
-				const [executable, ...preload] = runtime.command();
-				const result = spawnSyncCollect(
-					[executable as string, "--unhandled-rejections=warn", ...preload, FIXTURE],
-					{ cwd: ROOT, env: process.env, timeout: REAL_CHILD_TIMEOUT_MS },
-				);
-				const stdout = result.stdout.toString();
-				assert.equal(result.exitCode, 0, `${stdout}\n${result.stderr.toString()}`);
-				const reported = JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Report;
-				assert.equal(reported.first.status, "completed");
-				assert.deepEqual(reported.replacement, { status: "completed" });
-			},
-			REAL_CHILD_TIMEOUT_MS,
-		);
+		for (const abortTiming of ["within-grace", "after-grace"] as const) {
+			test(
+				`a retired execution's late rejection never fails its replacement with the same durable run ID, aborted ${abortTiming} (#4192)`,
+				() => {
+					const [executable, ...preload] = runtime.command();
+					const result = spawnSyncCollect(
+						[executable as string, "--unhandled-rejections=warn", ...preload, FIXTURE, abortTiming],
+						{ cwd: ROOT, env: process.env, timeout: REAL_CHILD_TIMEOUT_MS },
+					);
+					const stdout = result.stdout.toString();
+					assert.equal(result.exitCode, 0, `${stdout}\n${result.stderr.toString()}`);
+					const reported = JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as Report;
+					assert.equal(reported.retiredRejections, 1);
+					assert.equal(reported.first.status, "completed");
+					assert.deepEqual(reported.replacement, { status: "completed" });
+				},
+				REAL_CHILD_TIMEOUT_MS,
+			);
+		}
 	});
 }
