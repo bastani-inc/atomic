@@ -1,9 +1,7 @@
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import { getHighlightLanguageCount } from "../../../utils/syntax-highlight.js";
-import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
-import { getGlobalTheme } from "./global-theme.js";
-import { theme } from "./global-theme.ts";
+import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
+import { getGlobalTheme, theme } from "./global-theme.ts";
 import type { Theme } from "./theme-class.ts";
 
 type CliHighlightTheme = Record<string, (s: string) => string>;
