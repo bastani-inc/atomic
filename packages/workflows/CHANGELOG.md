@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Under Bun, a retired run's late unhandled rejection no longer fails a replacement run that has the same durable run ID and workflow source. The rejection is now reported by the runtime instead of being attributed to the replacement ([#4192](https://github.com/bastani-inc/atomic/issues/4192))
+
 ## [0.9.67] - 2026-11-02
 
 ### Added

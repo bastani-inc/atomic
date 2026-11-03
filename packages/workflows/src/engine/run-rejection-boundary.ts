@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 import { isStaleExtensionContextError } from "@bastani/atomic";
 import { normalizeStackPath, parsePromptStackFrame } from "../runs/shared/prompt-callsite.js";
@@ -48,6 +49,7 @@ interface PrimitiveEntry {
 interface ScopeState {
 	readonly runId: string;
 	readonly rootRunId: string;
+	readonly execution: string;
 	readonly source: string | undefined;
 	parent: ScopeState | undefined;
 	fail: (error: object) => void;
@@ -168,7 +170,7 @@ function recordedOwners(boundary: RejectionBoundary, reason: unknown): RecordedO
 function pruneEndedSources(boundary: RejectionBoundary): void {
 	const now = Date.now();
 	for (const [source, trees] of boundary.ended) {
-		for (const [rootRunId, endedAt] of trees) if (now - endedAt > ENDED_RUN_GRACE_MS) trees.delete(rootRunId);
+		for (const [execution, endedAt] of trees) if (now - endedAt > ENDED_RUN_GRACE_MS) trees.delete(execution);
 		if (trees.size === 0) boundary.ended.delete(source);
 	}
 }
@@ -176,12 +178,13 @@ function pruneEndedSources(boundary: RejectionBoundary): void {
 function recordEndedRun(boundary: RejectionBoundary, scope: ScopeState): void {
 	if (scope.source === undefined) return;
 	const trees = boundary.ended.get(scope.source) ?? new Map<string, number>();
-	trees.set(scope.rootRunId, Date.now());
+	trees.set(scope.execution, Date.now());
 	boundary.ended.set(scope.source, trees);
 }
 
 function endedInAnotherRunTree(boundary: RejectionBoundary, source: string, live: ScopeState): boolean {
-	for (const endedRoot of boundary.ended.get(source)?.keys() ?? []) if (endedRoot !== live.rootRunId) return true;
+	for (const endedExecution of boundary.ended.get(source)?.keys() ?? [])
+		if (endedExecution !== live.execution) return true;
 	return false;
 }
 
@@ -398,6 +401,7 @@ export function openRunRejectionScope(options: RunRejectionScopeOptions): RunRej
 	const scope: ScopeState = {
 		runId: options.runId,
 		rootRunId,
+		execution: parent?.execution ?? randomUUID(),
 		source: options.source === undefined ? undefined : normalizeStackPath(options.source),
 		parent,
 		fail: options.fail,
