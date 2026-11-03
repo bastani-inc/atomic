@@ -291,6 +291,7 @@ export {
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";
@@ -437,6 +438,7 @@ export {
 	getDefaultSessionDirPath,
 	getLatestCompactionBoundaryEntry,
 	type ModelChangeEntry,
+	type ModelFallbackRecord,
 	type NewSessionOptions,
 	type ProjectedSessionEntry,
 	parseSessionEntries,

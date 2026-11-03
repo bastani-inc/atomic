@@ -46,6 +46,10 @@ export interface Args {
 	sessionPrefix?: string;
 	storage?: StorageFlagArgument;
 	models?: string[];
+	/** `--fallback-models`: the only models this run may fall back to, in order. */
+	fallbackModels?: string[];
+	/** `--no-fallback`: this run never falls back to another model. */
+	noFallback?: boolean;
 	tools?: string[];
 	excludeTools?: string[];
 	noTools?: boolean;
@@ -181,6 +185,22 @@ export function parseArgs(args: string[]): Args {
 				.split(",")
 				.map((s) => s.trim())
 				.filter((pattern) => pattern.length > 0);
+		} else if (arg === "--fallback-models") {
+			const value = args[i + 1];
+			if (value === undefined || value.startsWith("-")) {
+				result.diagnostics.push({
+					type: "error",
+					message: "--fallback-models requires a comma-separated list of provider/model IDs",
+				});
+				continue;
+			}
+			i++;
+			result.fallbackModels = value
+				.split(",")
+				.map((s) => s.trim())
+				.filter((model) => model.length > 0);
+		} else if (arg === "--no-fallback") {
+			result.noFallback = true;
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
 		} else if (arg === "--no-builtin-tools" || arg === "-nbt") {
@@ -287,6 +307,10 @@ export function parseArgs(args: string[]): Args {
 		}
 	}
 
+	if (result.noFallback && result.fallbackModels !== undefined) {
+		result.diagnostics.push({ type: "error", message: "--no-fallback cannot be combined with --fallback-models" });
+	}
+
 	if (result.sessionStorePath !== undefined) {
 		const conflict =
 			result.sessionDir !== undefined ? "--session-dir" : result.noSession ? "--no-session" : undefined;
@@ -352,6 +376,10 @@ ${chalk.bold("Options:")}
   --name, -n <name>              Set session display name
   --models <patterns>            Comma-separated model patterns for ctrl+p cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
+  --fallback-models <models>     Comma-separated provider/model[:thinking] IDs this run may fall back to,
+                                 in order. Replaces the fallbackModels setting for this run
+  --no-fallback                  Never fall back to another model in this run. A run with --model
+                                 falls back only to --fallback-models
   --no-tools, -nt                Disable every tool, including Intercom, even with --tools
   --no-builtin-tools, -nbt       Disable built-in tools by default but keep extension/custom tools enabled
   --tools, -t <tools>            Comma-separated allowlist of tool names or patterns (*)
