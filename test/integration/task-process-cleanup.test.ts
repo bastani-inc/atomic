@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { test } from "vitest";
 import type { OperationId, Result } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import { fileExists, readJson, sleep } from "../helpers/runtime.js";
+import { fileExists, readJson, readText, sleep } from "../helpers/runtime.js";
 
 function value<T, E>(result: Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? "accepted" : JSON.stringify(result.error));
@@ -189,6 +189,75 @@ test.runIf(process.platform !== "win32")(
 			assert.ok(Object.hasOwn(terminal.result, "exitCode"));
 		} finally {
 			value(await supervisor.closeTaskOwner(owner, "session-close"));
+		}
+	},
+);
+
+const terminals = [
+	["pipe", { kind: "pipe" }],
+	["pty", { kind: "pty", columns: 80, rows: 24 }],
+] as const;
+/** Milliseconds from launch to settlement, and the settled result. */
+async function settle(command: string, terminal: (typeof terminals)[number][1]) {
+	const { supervisor, owner } = setup();
+	try {
+		const started = performance.now();
+		const task = value(
+			await supervisor.startCommandTask(
+				owner,
+				{ kind: "command", command, terminal },
+				crypto.randomUUID() as OperationId,
+			),
+		);
+		const outcome = value(await supervisor.waitForTask(task, 5000));
+		const elapsed = performance.now() - started;
+		assert.ok(outcome.kind === "settled", JSON.stringify(outcome));
+		return { elapsed, result: outcome.result };
+	} finally {
+		value(await supervisor.closeTaskOwner(owner, "session-close"));
+	}
+}
+// The supervisor's TERM-to-KILL grace for members left in a command's process group.
+const TERM_GRACE_MS = 250;
+
+test.each(terminals)(
+	"a command whose group is empty settles without the termination grace (%s) (#4268)",
+	async (_, terminal) => {
+		const timings: number[] = [];
+		for (let index = 0; index < 5; index++) {
+			const { elapsed, result } = await settle("exit 0", terminal);
+			assert.deepEqual(result, { ...result, kind: "completed", exitCode: 0 });
+			timings.push(elapsed);
+		}
+		timings.sort((a, b) => a - b);
+		assert.ok(timings[2] < TERM_GRACE_MS / 2, `settled in ${timings.map((ms) => ms.toFixed(1)).join(", ")} ms`);
+	},
+);
+
+test.runIf(process.platform !== "win32").each(terminals)(
+	"a member left behind ends on TERM at once, or on KILL after the grace, and never outlives settlement (%s) (#4268)",
+	async (_, terminal) => {
+		const directory = await mkdtemp(join(tmpdir(), "task-straggler-"));
+		try {
+			// One member exits on TERM; the other ignores TERM (and the terminal's hangup) until KILL.
+			for (const [ignores, trap] of [
+				[false, ""],
+				[true, `trap "" TERM HUP; `],
+			] as const) {
+				const pidPath = join(directory, ignores ? "ignores" : "exits");
+				const { elapsed, result } = await settle(
+					`/bin/sh -c '${trap}echo $$ > "$1"; exec sleep 30' sh '${pidPath}' </dev/null >/dev/null 2>&1 & while [ ! -s '${pidPath}' ]; do sleep 0.01; done`,
+					terminal,
+				);
+				const straggler = Number((await readText(pidPath)).trim());
+				assert.deepEqual(result, { ...result, kind: "completed", exitCode: 0 });
+				assert.equal(alive(straggler), false, `straggler ${straggler} outlived settlement`);
+				if (ignores)
+					assert.ok(elapsed >= TERM_GRACE_MS, `settled after ${elapsed.toFixed(1)} ms, before the grace`);
+				else assert.ok(elapsed < TERM_GRACE_MS, `settled after ${elapsed.toFixed(1)} ms, after the grace`);
+			}
+		} finally {
+			await rm(directory, { recursive: true, force: true });
 		}
 	},
 );

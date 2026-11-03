@@ -125,6 +125,9 @@ pub(super) struct CommandTask {
 	process_group: std::sync::atomic::AtomicI32,
 	#[cfg(all(test, unix))]
 	kill_error: std::sync::atomic::AtomicI32,
+	/// Signal the group by number, as macOS and Linux before 6.9 do, even where a pidfd could.
+	#[cfg(all(test, target_os = "linux"))]
+	group_by_number: bool,
 	#[cfg(all(test, unix))]
 	signals: Mutex<Vec<(libc::pid_t, libc::c_int)>>,
 }
@@ -154,23 +157,25 @@ impl CommandTask {
 		*self.retained.lock().unwrap() = Some(FailedProcess { reference, child, message, readers });
 	}
 	#[cfg(unix)]
-	fn signal_group(&self, pid: libc::pid_t, signal: libc::c_int) -> io::Result<()> {
+	fn signal_group(&self, group: &ProcessGroup, signal: libc::c_int) -> io::Result<()> {
 		#[cfg(test)]
-		self.signals.lock().unwrap().push((pid, signal));
+		self.signals.lock().unwrap().push((group.pid, signal));
 		#[cfg(test)]
 		if signal == libc::SIGKILL && self.kill_error.load(Ordering::Acquire) != 0 {
 			return Err(io::Error::from_raw_os_error(self.kill_error.load(Ordering::Acquire)));
 		}
-		if unsafe { libc::kill(-pid, signal) } == 0 {
+		let Err(error) = group.send(signal) else {
 			return Ok(());
-		}
-		let error = io::Error::last_os_error();
-		// Darwin reports EPERM when a group contains only an unreaped zombie.
-		// Defer that refusal only while we still own the exited leader. Cleanup
-		// must subsequently reap it and independently confirm the group is gone;
-		// this does not treat a signal refusal as evidence of successful cleanup.
+		};
+		// Darwin reports EPERM when a group contains only zombies. Defer that refusal
+		// only once the leader has exited: while we still own its unreaped zombie, or
+		// after we reaped it. Cleanup must subsequently reap it and independently
+		// confirm the group is gone; this does not treat a signal refusal as evidence
+		// of successful cleanup.
 		#[cfg(target_os = "macos")]
-		if error.raw_os_error() == Some(libc::EPERM) && child_exited_without_reaping(pid)? {
+		if error.raw_os_error() == Some(libc::EPERM)
+			&& (group.reaped || child_exited_without_reaping(group.pid)?)
+		{
 			return Ok(());
 		}
 		if error.raw_os_error() == Some(libc::ESRCH) { Ok(()) } else { Err(error) }
@@ -291,6 +296,8 @@ impl Actor {
 			process_group: std::sync::atomic::AtomicI32::new(0),
 			#[cfg(all(test, unix))]
 			kill_error: std::sync::atomic::AtomicI32::new(0),
+			#[cfg(all(test, target_os = "linux"))]
+			group_by_number: TEST_GROUP_BY_NUMBER.get(),
 			#[cfg(all(test, unix))]
 			signals: Mutex::new(Vec::new()),
 		});
@@ -474,6 +481,12 @@ impl Actor {
 		};
 		let pid = child.id() as libc::pid_t;
 		command.process_group.store(pid, Ordering::Release);
+		// Opened while the leader is unreaped, so its PID still names this command's group.
+		let mut group = ProcessGroup::new(pid);
+		#[cfg(all(test, target_os = "linux"))]
+		if command.group_by_number {
+			group.pidfd = None;
+		}
 		{
 			let mut state = self.state.lock().unwrap();
 			let (oi, ti) = state.runner(self.id, &runner.cap).unwrap();
@@ -562,55 +575,67 @@ impl Actor {
 				} else {
 					libc::SIGTERM
 				};
-				if let Err(error) = command.signal_group(pid, signal) {
+				if let Err(error) = command.signal_group(&group, signal) {
 					cleanup_failure = Some(error.to_string());
 				}
 				stopping = Some(Instant::now());
 			}
 			if let Some(stop) = stopping {
-				if !killed && stop.elapsed() >= PROCESS_TERM_GRACE {
-					// The direct child has not been reaped: its PID, and therefore our PGID, cannot be reused.
-					// A successful escalation can resolve an earlier TERM refusal;
-					// reaping and group disappearance must still be confirmed below.
-					cleanup_failure =
-						command.signal_group(pid, libc::SIGKILL).err().map(|error| error.to_string());
-					killed = true;
+				// A refused output-limit KILL ends cleanup at once, as a refused escalation does below.
+				if killed && cleanup_failure.is_some() {
+					break;
 				}
-				if killed {
+				// The first signal went out above while the leader was unreaped. Reap it as soon as
+				// it exits: its zombie would keep the group alive, so a group that is already empty
+				// could not be told apart from one with members left until the grace ran out (#4268).
+				if status.is_none() {
+					match child.try_wait() {
+						Ok(value) => status = value,
+						Err(error) => {
+							cleanup_failure = Some(error.to_string());
+							break;
+						},
+					}
+					group.reaped = status.is_some();
+				}
+				// Probe the group once the leader is reaped, independently of EOF.
+				let gone = if status.is_some() {
+					match group.gone() {
+						Ok(gone) => gone,
+						Err(error) => {
+							// Darwin also returns EPERM for zombie-only groups after the
+							// leader is reaped. Other parents may still be reaping members.
+							// Retry only this read-only probe within the existing bound:
+							// ESRCH is still required, and persistent refusal stays a failure.
+							#[cfg(target_os = "macos")]
+							if error.raw_os_error() == Some(libc::EPERM)
+								&& stop.elapsed() < PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE
+							{
+								std::thread::sleep(PROCESS_POLL);
+								continue;
+							}
+							cleanup_failure = Some(error.to_string());
+							break;
+						},
+					}
+				} else {
+					false
+				};
+				if gone && ((stdout_eof && stderr_eof) || setup_failure.is_some()) {
+					// Confirmed gone: an earlier refused TERM left nothing behind to clean up.
+					cleanup_failure = None;
+					break;
+				}
+				if !killed && !gone && stop.elapsed() >= PROCESS_TERM_GRACE {
+					// Members outlived the grace, or the leader is still running. Either the leader is
+					// unreaped, or the probe just above found the group alive: see ProcessGroup for why
+					// that keeps this KILL on this command's group. A successful escalation can resolve
+					// an earlier TERM refusal; group disappearance must still be confirmed.
+					cleanup_failure =
+						command.signal_group(&group, libc::SIGKILL).err().map(|error| error.to_string());
+					killed = true;
 					if cleanup_failure.is_some() {
 						break;
-					}
-					// No more signals are permitted after this point. Reap the leader,
-					// then confirm the entire group disappeared, independently of EOF.
-					if status.is_none() {
-						match child.try_wait() {
-							Ok(value) => status = value,
-							Err(error) => {
-								cleanup_failure = Some(error.to_string());
-								break;
-							},
-						}
-					}
-					if status.is_some() {
-						match process_group_gone(pid) {
-							Ok(true) if (stdout_eof && stderr_eof) || setup_failure.is_some() => break,
-							Ok(_) => {},
-							Err(error) => {
-								// Darwin also returns EPERM for zombie-only groups after the
-								// leader is reaped. Other parents may still be reaping members.
-								// Retry only this read-only probe within the existing bound:
-								// ESRCH is still required, and persistent refusal stays a failure.
-								#[cfg(target_os = "macos")]
-								if error.raw_os_error() == Some(libc::EPERM)
-									&& stop.elapsed() < PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE
-								{
-									std::thread::sleep(PROCESS_POLL);
-									continue;
-								}
-								cleanup_failure = Some(error.to_string());
-								break;
-							},
-						}
 					}
 				}
 				if stop.elapsed() >= PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE {
@@ -728,6 +753,92 @@ fn process_group_gone(pid: libc::pid_t) -> io::Result<bool> {
 	}
 	let error = io::Error::last_os_error();
 	if error.raw_os_error() == Some(libc::ESRCH) { Ok(true) } else { Err(error) }
+}
+/// One command's process group, signalled and probed by the identity of its leader.
+///
+/// Until the leader is reaped, its zombie holds the group ID, so `kill(-pid)` can reach no other group.
+/// Settlement reaps the leader as soon as it exits, after the first group signal (TERM, or KILL for an
+/// output-limit stop), so that a group with nobody left shows as gone (ESRCH) at once instead of after
+/// the TERM grace (#4268). From then on only the group's members hold the ID, and POSIX forbids reusing a
+/// process group ID while the group exists. A group signal after the reap (the KILL for members that
+/// outlived the grace) is therefore sent only straight after a probe found the group alive.
+///
+/// That leaves one window: the group's last member is reaped, the kernel hands the freed ID to a new
+/// process, and that process makes itself a group leader, all between two probes (one [`PROCESS_POLL`]),
+/// and its group is still alive when the grace ends. It would then be probed as alive and receive the
+/// KILL. Linux and macOS hand out PIDs cyclically, so this needs the allocator to come all the way round
+/// to this ID within that poll. On Linux 6.9 and later the window does not exist: signals and probes go
+/// through a pidfd of the leader with `PIDFD_SIGNAL_PROCESS_GROUP`, which addresses the group by the
+/// kernel's own object for it, never by its number, so a reused number cannot be reached.
+#[cfg(unix)]
+struct ProcessGroup {
+	/// The leader's PID, which is also the group's ID.
+	pid: libc::pid_t,
+	/// The leader has been reaped, so a refusal can no longer come from its zombie (see `signal_group`).
+	reaped: bool,
+	#[cfg(target_os = "linux")]
+	pidfd: Option<std::os::fd::OwnedFd>,
+}
+#[cfg(unix)]
+impl ProcessGroup {
+	/// Must run while the leader is unreaped, so that `pid` still names this command's group.
+	fn new(pid: libc::pid_t) -> Self {
+		Self {
+			pid,
+			reaped: false,
+			#[cfg(target_os = "linux")]
+			pidfd: group_pidfd(pid),
+		}
+	}
+	/// Signals every member, with kill(2)'s result for a group: Ok if any member accepted it.
+	fn send(&self, signal: libc::c_int) -> io::Result<()> {
+		#[cfg(target_os = "linux")]
+		if let Some(pidfd) = &self.pidfd {
+			return signal_group_pidfd(pidfd, signal);
+		}
+		if unsafe { libc::kill(-self.pid, signal) } == 0 {
+			Ok(())
+		} else {
+			Err(io::Error::last_os_error())
+		}
+	}
+	/// True once no process is left in the group, zombies included.
+	fn gone(&self) -> io::Result<bool> {
+		match self.send(0) {
+			Ok(()) => Ok(false),
+			Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(true),
+			Err(error) => Err(error),
+		}
+	}
+}
+/// A pidfd of the leader that can signal its whole group, or None where it cannot: before Linux 6.9, which
+/// rejects `PIDFD_SIGNAL_PROCESS_GROUP`, or under a seccomp filter that refuses either call. The group is
+/// then signalled through `kill(-pid)`.
+#[cfg(target_os = "linux")]
+fn group_pidfd(pid: libc::pid_t) -> Option<std::os::fd::OwnedFd> {
+	use std::os::fd::FromRawFd;
+	// pidfd_open always sets close-on-exec, so no other child inherits the descriptor.
+	let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0 as libc::c_long) };
+	if fd < 0 {
+		return None;
+	}
+	let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as std::os::fd::RawFd) };
+	// The unreaped leader keeps its group alive, so this fails only where the kernel cannot do it.
+	signal_group_pidfd(&pidfd, 0).is_ok().then_some(pidfd)
+}
+#[cfg(target_os = "linux")]
+fn signal_group_pidfd(pidfd: &std::os::fd::OwnedFd, signal: libc::c_int) -> io::Result<()> {
+	use std::os::fd::AsRawFd;
+	let sent = unsafe {
+		libc::syscall(
+			libc::SYS_pidfd_send_signal,
+			pidfd.as_raw_fd() as libc::c_long,
+			signal as libc::c_long,
+			std::ptr::null::<libc::siginfo_t>(),
+			libc::PIDFD_SIGNAL_PROCESS_GROUP as libc::c_long,
+		)
+	};
+	if sent == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 /// macOS `posix_spawn` refuses to hand a child any descriptor at or above
 /// `OPEN_MAX`, even though the process may still open descriptors past it.
@@ -870,6 +981,10 @@ type SpoolCandidate = fn(&std::path::Path, u32) -> io::Result<PathBuf>;
 #[cfg(test)]
 thread_local! {
 	static TEST_SPOOL_CANDIDATE: std::cell::Cell<SpoolCandidate> = const { std::cell::Cell::new(spool_candidate) };
+}
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+	static TEST_GROUP_BY_NUMBER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Raw bytes retain original offsets; consumers carry incomplete UTF-8 while decoding.
@@ -1608,10 +1723,8 @@ mod tests {
 		}
 		assert_eq!(unsafe { libc::kill(-pid, 0) }, -1);
 		assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
-		assert_eq!(
-			*command.signals.lock().unwrap(),
-			vec![(pid, libc::SIGTERM), (pid, libc::SIGKILL)]
-		);
+		// Only zombies were left once the leader was reaped, so nothing was alive to KILL (#4268).
+		assert_eq!(*command.signals.lock().unwrap(), vec![(pid, libc::SIGTERM)]);
 	}
 
 	// #2884: EOF and the shell's exit are not proof that a closed-stdio descendant exited.
@@ -1746,6 +1859,113 @@ mod tests {
 		actor.shutdown();
 		assert_eq!(command.signals.lock().unwrap().len(), 2);
 		std::fs::remove_dir_all(path).unwrap();
+	}
+	/// Each terminal with each way this platform signals a group: on Linux both through a pidfd (where the
+	/// kernel supports it) and by number, the path macOS and Linux before 6.9 take.
+	#[cfg(unix)]
+	fn group_cases() -> Vec<(CommandTerminal, bool)> {
+		let by_number: &[bool] = if cfg!(target_os = "linux") { &[false, true] } else { &[true] };
+		[CommandTerminal::Pipe {}, CommandTerminal::Pty { columns: 80, rows: 24 }]
+			.into_iter()
+			.flat_map(|terminal| by_number.iter().map(move |&by_number| (terminal.clone(), by_number)))
+			.collect()
+	}
+	/// Runs one command to settlement; returns how long it took, its record, its group signals and its group.
+	#[cfg(unix)]
+	fn settle(
+		command: &str,
+		terminal: &CommandTerminal,
+		#[cfg_attr(not(target_os = "linux"), allow(unused_variables))] by_number: bool,
+	) -> (Duration, TaskRecord, Vec<(libc::pid_t, libc::c_int)>, libc::pid_t) {
+		let (actor, owner) = command_owner();
+		let intent = CommandIntent { terminal: terminal.clone(), ..pipe_intent(command) };
+		let started = Instant::now();
+		#[cfg(target_os = "linux")]
+		TEST_GROUP_BY_NUMBER.set(by_number);
+		let launched = actor.start_command(&owner, intent, "settle".into());
+		#[cfg(target_os = "linux")]
+		TEST_GROUP_BY_NUMBER.set(false);
+		launched.unwrap();
+		let task = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		assert!(task.join_until(started + PROCESS_SHUTDOWN_GRACE), "{terminal:?} did not settle");
+		let elapsed = started.elapsed();
+		let record = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		actor.shutdown();
+		let signals = task.signals.lock().unwrap().clone();
+		(elapsed, record, signals, task.process_group.load(Ordering::Acquire))
+	}
+	#[cfg(unix)]
+	fn assert_completed(record: &TaskRecord, case: &str) {
+		let exit_code = match &record.execution {
+			Execution::Settled { result: TaskResult::Completed { exit_code, .. } } => *exit_code,
+			other => panic!("{case}: {other:?}"),
+		};
+		assert_eq!(exit_code, Some(0.0), "{case}");
+		assert!(matches!(record.cleanup, Cleanup::Reaped {}), "{case}: {:?}", record.cleanup);
+	}
+	#[cfg(unix)]
+	fn assert_gone(pid: libc::pid_t, case: &str) {
+		assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "{case}: process {pid} survived cleanup");
+		assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+	}
+	/// A shell that leaves one member behind in its group, closed off from its output, and exits.
+	#[cfg(unix)]
+	fn leave_member(path: &std::path::Path, trap: &str) -> String {
+		format!(
+			"/bin/sh -c '{trap}echo $$ > \"$1\"; exec sleep 30' sh '{0}' </dev/null >/dev/null 2>&1 & while [ ! -s '{0}' ]; do sleep 0.01; done",
+			path.display()
+		)
+	}
+	// #4268: a command whose group is empty when it exits settles at once, not after the TERM grace.
+	#[cfg(unix)]
+	#[test]
+	fn command_with_an_empty_group_settles_without_the_term_grace_4268() {
+		for (terminal, by_number) in group_cases() {
+			let case = format!("{terminal:?}, by number: {by_number}");
+			let (elapsed, record, signals, pid) = settle("printf done", &terminal, by_number);
+			assert_completed(&record, &case);
+			assert!(elapsed < PROCESS_TERM_GRACE / 2, "{case}: settled after {elapsed:?}");
+			assert_eq!(signals, vec![(pid, libc::SIGTERM)], "{case}: nothing was left to kill");
+		}
+	}
+	// #4268: a member left behind that exits on TERM ends the wait as soon as it is gone.
+	#[cfg(unix)]
+	#[test]
+	fn straggler_that_exits_on_term_settles_before_the_grace_4268() {
+		let path = std::env::temp_dir().join(format!("atomic-term-straggler-{}", std::process::id()));
+		for (terminal, by_number) in group_cases() {
+			let case = format!("{terminal:?}, by number: {by_number}");
+			let (elapsed, record, signals, pid) =
+				settle(&leave_member(&path, ""), &terminal, by_number);
+			let straggler: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+			std::fs::remove_file(&path).unwrap();
+			assert_completed(&record, &case);
+			assert_gone(straggler, &case);
+			assert!(elapsed < PROCESS_TERM_GRACE, "{case}: settled after {elapsed:?}");
+			assert_eq!(signals, vec![(pid, libc::SIGTERM)], "{case}: TERM was enough");
+		}
+	}
+	// #4268: a member left behind that ignores TERM still gets KILL once the grace ends, and does not survive.
+	#[cfg(unix)]
+	#[test]
+	fn straggler_that_ignores_term_is_killed_after_the_grace_4268() {
+		let path = std::env::temp_dir().join(format!("atomic-kill-straggler-{}", std::process::id()));
+		for (terminal, by_number) in group_cases() {
+			let case = format!("{terminal:?}, by number: {by_number}");
+			// The terminal's hangup when its session leader exits must not end the member either.
+			let command = leave_member(&path, "trap \"\" TERM HUP; ");
+			let (elapsed, record, signals, pid) = settle(&command, &terminal, by_number);
+			let straggler: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+			std::fs::remove_file(&path).unwrap();
+			assert_completed(&record, &case);
+			assert_gone(straggler, &case);
+			assert!(elapsed >= PROCESS_TERM_GRACE, "{case}: settled after {elapsed:?}");
+			assert_eq!(
+				signals,
+				vec![(pid, libc::SIGTERM), (pid, libc::SIGKILL)],
+				"{case}: the member needed KILL"
+			);
+		}
 	}
 	// #2884: failed cleanup retains the live OS child without a blocked worker.
 	#[cfg(unix)]

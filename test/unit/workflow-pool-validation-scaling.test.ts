@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { POOL_USAGE_FIELDS, upsertPoolUsage } from "../../packages/workflows/src/durable/journal/pool-stage-usage.js";
@@ -12,14 +12,66 @@ import type { DurableCheckpoint } from "../../packages/workflows/src/durable/typ
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
-/** Per-commit cost may grow this much from a 10× smaller history before it counts as scaling with history. */
-const MAX_HISTORY_SLOWDOWN = 3;
-/** Building and timing two journals with thousands of rows each is structural cost, not a slow test. */
+/** Building a journal with thousands of rows is structural cost, not a slow test. */
 const HISTORY_FIXTURE_TIMEOUT_MS = 120_000;
-const SAMPLES = 25;
-/** A usage total takes microseconds, so each sample times a run of them. */
-const TOTALS_PER_SAMPLE = 20;
+/** Steady-state commits measured after the index has been built from the history. */
+const MEASURED_COMMITS = 10;
+/** Usage totals read per measurement. */
+const READS = 20;
 const OUTPUT = "x".repeat(600);
+
+/** What the statements run through a database read: rows handed back, and the tables each SELECT reads from. */
+interface ReadCounts {
+	statements: number;
+	rows: number;
+	tables: Record<string, number>;
+}
+
+/**
+ * A database that counts what every statement run through it reads, as the run-list counters do for the store.
+ * Row counts are deterministic, so "stays flat" is checked as equal counts at two history sizes, never as a timing.
+ */
+function countReads(database: SqliteDatabase): { database: SqliteDatabase; reads: ReadCounts; reset(): void } {
+	const reads: ReadCounts = { statements: 0, rows: 0, tables: {} };
+	const note = (sql: string, rows: number) => {
+		reads.statements++;
+		reads.rows += rows;
+		if (/^\s*SELECT\b/i.test(sql))
+			for (const [, table] of sql.matchAll(/\b(?:FROM|JOIN)\s+(\w+)/gi))
+				reads.tables[table!] = (reads.tables[table!] ?? 0) + 1;
+	};
+	const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+		exec: (sql) => executor.exec(sql),
+		async run(sql, ...params: readonly SqliteValue[]) {
+			note(sql, 0);
+			return executor.run(sql, ...params);
+		},
+		async get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) {
+			const row = await executor.get<T>(sql, ...params);
+			note(sql, row ? 1 : 0);
+			return row;
+		},
+		async all<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) {
+			const rows = await executor.all<T>(sql, ...params);
+			note(sql, rows.length);
+			return rows;
+		},
+	});
+	return {
+		database: {
+			...wrap(database),
+			descriptor: database.descriptor,
+			transaction: (callback, options) => database.transaction((tx) => callback(wrap(tx)), options),
+			close: () => database.close(),
+		},
+		reads,
+		reset() {
+			reads.statements = 0;
+			reads.rows = 0;
+			reads.tables = {};
+		},
+	};
+}
 
 const { work, boundary } = poolWorkFixture();
 const run = { ...boundary.topology!.boundary!.child };
@@ -27,7 +79,8 @@ const run = { ...boundary.topology!.boundary!.child };
 async function poolFixture() {
 	const directory = makeTempDirectory("pool-validation-scaling-");
 	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
-	const journal = await SqlRunJournal.open(database);
+	const counter = countReads(database);
+	const journal = await SqlRunJournal.open(counter.database);
 	await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
 	const acquired = await journal.acquire("root", "coordinator");
 	assert.equal(acquired.status, "acquired");
@@ -39,6 +92,7 @@ async function poolFixture() {
 	assert.ok(attempt);
 	return {
 		database,
+		counter,
 		journal,
 		lease,
 		pool,
@@ -102,19 +156,14 @@ async function recordHistory(tx: SqliteExecutor, children: number, checkpoints: 
 	}
 }
 
-function median(values: number[]): number {
-	const sorted = [...values].sort((left, right) => left - right);
-	return sorted[Math.floor(sorted.length / 2)]!;
-}
-
-/** Median time of one pool commit of a fresh stage checkpoint for the leased child, after `checkpoints` are recorded. */
-async function commitTime(children: number, checkpoints: number): Promise<number> {
+/** What `MEASURED_COMMITS` steady-state pool commits of fresh stage checkpoints read, after `checkpoints` are recorded. */
+async function commitReads(children: number, checkpoints: number): Promise<ReadCounts> {
 	const f = await poolFixture();
 	try {
 		await f.database.transaction((tx) => recordHistory(tx, children, checkpoints));
-		const samples: number[] = [];
-		for (let index = 0; index < SAMPLES + 3; index++) {
-			const started = performance.now();
+		for (let index = 0; index < MEASURED_COMMITS + 3; index++) {
+			// The first commits build the index from the whole history; only steady-state commits are measured.
+			if (index === 3) f.counter.reset();
 			await f.pool.commit(f.lease, f.attempt, `stage-${index}`, {
 				kind: "checkpoint",
 				checkpoint: {
@@ -135,24 +184,21 @@ async function commitTime(children: number, checkpoints: number): Promise<number
 					},
 				},
 			});
-			// The first commits build the index from the whole history; only steady-state commits are measured.
-			if (index >= 3) samples.push(performance.now() - started);
 		}
-		return median(samples);
+		return structuredClone(f.counter.reads);
 	} finally {
 		await f.close();
 	}
 }
 
 test(
-	"a pool commit's validation stays flat as the root's checkpoint history grows",
+	"a pool commit's validation reads the same rows however long the root's checkpoint history is (#4271)",
 	async () => {
-		const small = await commitTime(40, 500);
-		const large = await commitTime(400, 5_000);
-		assert.ok(
-			large < small * MAX_HISTORY_SLOWDOWN,
-			`5,000 checkpoints: ${large.toFixed(2)} ms per commit; 500 checkpoints: ${small.toFixed(2)} ms`,
-		);
+		const small = await commitReads(40, 500);
+		const large = await commitReads(400, 5_000);
+		assert.deepEqual(large, small, "a commit's reads must not depend on how many checkpoints were recorded");
+		// Each commit reads the new events past the index's watermark, not the history: a handful of rows, not hundreds.
+		assert.ok(small.rows <= MEASURED_COMMITS * 10, `${small.rows} rows read by ${MEASURED_COMMITS} commits`);
 	},
 	HISTORY_FIXTURE_TIMEOUT_MS,
 );
@@ -268,8 +314,8 @@ test("a journal written before usage totals existed reports its full SUM", async
 	}
 });
 
-/** Median time to read a root's usage total with `rows` usage rows charged to it. */
-async function totalTime(rows: number): Promise<number> {
+/** What `READS` reads of a root's usage total take, with `rows` usage rows charged to the root. */
+async function totalReads(rows: number): Promise<ReadCounts> {
 	const f = await poolFixture();
 	try {
 		const ledger = await openSqlPoolUsage(f.journal);
@@ -283,27 +329,22 @@ async function totalTime(rows: number): Promise<number> {
 				});
 		});
 		await ledger.total("root");
-		const samples: number[] = [];
-		for (let index = 0; index < SAMPLES; index++) {
-			const started = performance.now();
-			for (let read = 0; read < TOTALS_PER_SAMPLE; read++) await ledger.total("root");
-			samples.push((performance.now() - started) / TOTALS_PER_SAMPLE);
-		}
-		return median(samples);
+		f.counter.reset();
+		for (let read = 0; read < READS; read++) await ledger.total("root");
+		return structuredClone(f.counter.reads);
 	} finally {
 		await f.close();
 	}
 }
 
 test(
-	"reading a root's usage total stays flat as its usage rows grow",
+	"reading a root's usage total reads no usage rows however many the root has (#4271)",
 	async () => {
-		const small = await totalTime(1_000);
-		const large = await totalTime(40_000);
-		assert.ok(
-			large < small * MAX_HISTORY_SLOWDOWN,
-			`40,000 usage rows: ${large.toFixed(3)} ms per total; 1,000 rows: ${small.toFixed(3)} ms`,
-		);
+		const small = await totalReads(1_000);
+		const large = await totalReads(40_000);
+		assert.deepEqual(large, small, "a usage total's reads must not depend on how many usage rows the root has");
+		assert.equal(large.rows, READS, "each total is one row of the totals table");
+		assert.deepEqual(Object.keys(large.tables), ["wf_runs_pool_usage_totals"], "no usage row is read");
 	},
 	HISTORY_FIXTURE_TIMEOUT_MS,
 );

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Shell commands report their result as soon as they exit. Every `bash` call, through a pipe or a terminal (PTY), waited about 250 ms after its command exited, because the task supervisor always waited out its full termination grace before confirming that the command's processes were gone. It now confirms that as soon as they are, so ten trivial commands take about 0.15 s instead of about 2.7 s, and a stopped command whose processes exit on TERM settles at once too. Processes a command leaves running still get TERM, and KILL once the grace ends ([#4268](https://github.com/bastani-inc/atomic/issues/4268)).
 - A message sent with Enter just as the agent's reply finished no longer shows twice in the chat in the default interactive mode, where the session runs in an engine process. When the engine had already finished the turn but the terminal had not yet registered it, the engine started the message as a new turn, and the chat showed it once where it was sent and again below the reply to it. The extra copy also stayed when the chat was redrawn, for example by `/reload`. The model always received it once. Follow-ups sent with Alt+Enter and sessions that run in-process were not affected ([#4272](https://github.com/bastani-inc/atomic/issues/4272))
 
 ## [0.9.70] - 2026-11-03
