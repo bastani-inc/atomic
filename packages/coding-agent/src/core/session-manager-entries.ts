@@ -13,6 +13,7 @@ import {
 	type FileEntry,
 	type LabelEntry,
 	type ModelChangeEntry,
+	type ModelFallbackRecord,
 	type SessionEntry,
 	type SessionEntryBase,
 	type SessionHeader,
@@ -90,12 +91,14 @@ export function createModelChangeEntry(
 	modelId: string,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
+	fallback?: ModelFallbackRecord,
 ): ModelChangeEntry {
 	return {
 		type: "model_change",
 		...entryBase(byId, parentId),
 		provider,
 		modelId,
+		...(fallback === undefined ? {} : { fallback }),
 	};
 }
 

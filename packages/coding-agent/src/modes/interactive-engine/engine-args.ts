@@ -47,6 +47,8 @@ export function buildInteractiveEngineArgs(
 	appendValue(args, "--system-prompt", parsed.systemPrompt);
 	appendValues(args, "--append-system-prompt", parsed.appendSystemPrompt);
 	if (parsed.models) appendValue(args, "--models", parsed.models.join(","));
+	if (parsed.fallbackModels) args.push("--fallback-models", parsed.fallbackModels.join(","));
+	appendValue(args, "--no-fallback", parsed.noFallback);
 	if (parsed.tools) appendValue(args, "--tools", parsed.tools.join(","));
 	if (parsed.excludeTools) appendValue(args, "--exclude-tools", parsed.excludeTools.join(","));
 	appendValue(args, "--no-tools", parsed.noTools);

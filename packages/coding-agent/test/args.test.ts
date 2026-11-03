@@ -196,6 +196,18 @@ describe("parseArgs", () => {
 			assert.deepEqual(parseArgs(["--models", "gpt-4o, ,claude-sonnet,"]).models, ["gpt-4o", "claude-sonnet"]);
 			assert.deepEqual(parseArgs(["--models", ", ,"]).models, []);
 		});
+
+		test("rejects --no-fallback together with --fallback-models (#4223)", () => {
+			const result = parseArgs([
+				"--no-fallback",
+				"--fallback-models",
+				"openai/gpt-5.5:high, anthropic/claude-opus-4-8",
+			]);
+			assert.deepEqual(result.fallbackModels, ["openai/gpt-5.5:high", "anthropic/claude-opus-4-8"]);
+			assert.deepEqual(result.diagnostics, [
+				{ type: "error", message: "--no-fallback cannot be combined with --fallback-models" },
+			]);
+		});
 	});
 
 	// Issue #9045

@@ -27,6 +27,7 @@ export type {
 	FileEntry,
 	LabelEntry,
 	ModelChangeEntry,
+	ModelFallbackRecord,
 	NewSessionOptions,
 	ProjectedSessionEntry,
 	ReadonlySessionManager,

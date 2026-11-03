@@ -11,6 +11,7 @@ import {
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
 	isSafetyRefusalFailure,
+	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
 import { nextRetryDecision } from "./retry-policy.ts";
@@ -92,7 +93,10 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 	// classifier so this decision cannot drift from workflow fallback handling.
 	if (isContentFilterRefusal(message) && fallsBackOnContentFilter.call(this)) return false;
 	if (isSafetyRefusalFailure(message)) return true;
-	return isRetryableSameModelFailure(message);
+	if (isRetryableSameModelFailure(message)) return true;
+	// A failure nothing recognizes is not retried on its own. With a fallback chain it would spend a candidate, so it
+	// gets the same-model retries first: a first unrecognized error never moves the session to another model (#4223).
+	return isUnrecognizedModelFailure(message) && this._fallbackModels.length > 0;
 }
 
 /**
@@ -319,7 +323,13 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 
 		// Keep the failed attempt in raw history while durably omitting it from model projection.
 		await this._omitTrailingAssistantAttempt();
-		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
+		// The change records the model the turn asked for and why it moved on, so a session read later says which
+		// model ran in its place (#4223).
+		await this.sessionManager.appendModelChange(nextModel.provider, nextModel.id, {
+			requested: modelLabel(this._fallbackOriginModel ?? fromModel),
+			from: modelLabel(fromModel),
+			reason: message.errorMessage || "Retryable model error",
+		});
 		_beginFallbackModelScope.call(this);
 		this.agent.state.model = nextModel;
 		const thinkingChanged = await applyFallbackThinkingLevel.call(this, nextLevel);
@@ -351,6 +361,8 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		this._refreshBaseSystemPromptFromActiveTools();
 		this._emitModelChanged(nextModel, fromModel, "fallback");
 		await this._emitModelSelect(nextModel, fromModel, "fallback");
+		// The fallback model is told which model it is.
+		await this._recordSystemPromptForModelSwitch();
 		this._retryAttempt = 0;
 
 		const fallbackGeneration = this._fallbackOriginGeneration;

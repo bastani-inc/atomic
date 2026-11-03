@@ -55,10 +55,22 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 	thinkingLevel: string;
 }
 
+/** Why a model fallback moved a session off the model its turn asked for. */
+export interface ModelFallbackRecord {
+	/** The model the turn was asked to run on, as `provider/model`. */
+	requested: string;
+	/** The model that failed, as `provider/model`. */
+	from: string;
+	/** The failure that moved the session on. */
+	reason: string;
+}
+
 export interface ModelChangeEntry extends SessionEntryBase {
 	type: "model_change";
 	provider: string;
 	modelId: string;
+	/** Present when a model fallback made this change. */
+	fallback?: ModelFallbackRecord;
 }
 
 export interface UsageEntry extends SessionEntryBase {

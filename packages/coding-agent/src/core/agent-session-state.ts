@@ -206,6 +206,33 @@ export function _refreshBaseSystemPromptFromActiveTools(this: AgentSession): voi
 	this._rebuildSystemPrompt(this.getActiveToolNames());
 }
 
+/** The run's system prompt options brought up to date with the session's current model, thinking level and tools. */
+export function _currentRunSystemPromptOptions(this: AgentSession): NormalizedBuildSystemPromptOptions {
+	const runOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+	return normalizeBuildSystemPromptOptions({
+		...runOptions,
+		selectedModel: this.model,
+		selectedThinkingLevel: this.thinkingLevel,
+		selectedTools: this.getActiveToolNames(),
+		toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
+		toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
+	});
+}
+
+/**
+ * Record the system prompt change a model switch between two requests of a run makes, such as a fallback. The next
+ * request is built from the transcript, and a continuation does not prepare a turn first, so without this record the
+ * new model is told it is the old one (#4223).
+ */
+export async function _recordSystemPromptForModelSwitch(this: AgentSession): Promise<void> {
+	const options = this._currentRunSystemPromptOptions();
+	const update = this._preparePromptAndToolLoadout(options);
+	if (this._runSystemPromptOptions) this._runSystemPromptOptions = options;
+	if (!update) return;
+	await this.sessionManager.appendMessage(update);
+	this._refreshFinalizedContext();
+}
+
 /** Diff structured prompt state; executable tool changes are declared by the agent loop. */
 export function _preparePromptAndToolLoadout(
 	this: AgentSession,
@@ -337,4 +364,6 @@ export const agentSessionStateMethods = {
 	_preparePromptAndToolLoadout,
 	_restoreToolsFromTranscript,
 	_refreshBaseSystemPromptFromActiveTools,
+	_currentRunSystemPromptOptions,
+	_recordSystemPromptForModelSwitch,
 };

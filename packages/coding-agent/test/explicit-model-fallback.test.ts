@@ -1,0 +1,332 @@
+/**
+ * A main session started on an explicit `--model` runs only that model and the models named with `--fallback-models`
+ * (#4223). Real CLI option building, real AgentSession retry and fallback machinery, and fake providers that fail the
+ * way real ones do; no network is contacted.
+ */
+
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getCurrentSystemPrompt } from "@bastani/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
+import { afterEach, describe, test } from "vitest";
+import { parseArgs } from "../src/cli/args.js";
+import { ignoredProjectSettingsWarning } from "../src/cli/project-trust.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import {
+	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
+	normalizeModelFailureSignal,
+} from "../src/core/model-fallback-failures.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { InMemorySettingsStorage } from "../src/core/settings-storage.js";
+import { buildSessionOptions } from "../src/main-session-options.js";
+import { createTestResourceLoader } from "./utilities.js";
+
+const REQUESTED = { provider: "acct-a", id: "argon-mock", name: "Argon Mock" };
+const SETTINGS_CHAIN = { provider: "acct-b", id: "opus-mock", name: "Opus Mock" };
+const OPT_IN = { provider: "acct-c", id: "sol-mock", name: "Sol Mock" };
+const MAX_RETRIES = 2;
+
+/** Error texts real providers produced; see #4223 for the cases they come from. */
+const TRANSIENT_FAILURES = {
+	"a 5xx": '500: {"message":"Internal server error","type":"server_error"}',
+	"a stream reset": "terminated",
+	"a stalled stream": "Request timed out.",
+	"a stream that ends early": "Stream ended without finish_reason",
+} as const;
+/** An error with no status or code whose text nothing recognizes. */
+const UNRECOGNIZED_FAILURE = "the provider said something nobody has seen before";
+const CONTENT_FILTER_422 =
+	'github-copilot API error (422): {"message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.","code":"cyber_policy"}';
+/** The same refusal delivered as an error event inside the response stream. */
+const CONTENT_FILTER_IN_STREAM =
+	'reading rate-limited responses stream: reading program fingerprint response stream: reading usage tracking responses stream: reading encrypted response stream: reading from source stream: reading responses stream: reading SSE event: {"error":{"message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.","code":"cyber_policy"}}';
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+	for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
+function usage(): AssistantMessage["usage"] {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+interface Request {
+	model: string;
+	systemPrompt: string;
+}
+
+/** Three accounts. The requested model fails with `failure` every time; the others answer. */
+async function runSession(
+	args: string[],
+	failure: string,
+	settings: {
+		defaultToRequested?: boolean;
+		/** Settings to run with instead of the default ones; `beforePrompt` runs once the session exists. */
+		settingsManager?: SettingsManager;
+		beforePrompt?: () => void;
+	} = {},
+) {
+	const base = getModel("anthropic", "claude-sonnet-4-5")!;
+	const runtime = await ModelRuntime.create({
+		credentials: AuthStorage.inMemory(),
+		modelsPath: null,
+		allowModelNetwork: false,
+	});
+	const requests: Request[] = [];
+	for (const account of [REQUESTED, SETTINGS_CHAIN, OPT_IN]) {
+		const model: Model<"anthropic-messages"> = { ...base, ...account, reasoning: true };
+		runtime.registerProvider(account.provider, {
+			api: base.api,
+			baseUrl: base.baseUrl,
+			apiKey: "fixture-key",
+			models: [model],
+			streamSimple: (requestModel, context) => {
+				requests.push({
+					model: `${requestModel.provider}/${requestModel.id}`,
+					// What the model is told: every system message replayed into the current prompt.
+					systemPrompt: getCurrentSystemPrompt(context.messages),
+				});
+				const failed = account === REQUESTED;
+				const message: AssistantMessage = {
+					role: "assistant",
+					content: failed ? [] : [{ type: "text", text: `answered by ${account.id}` }],
+					api: base.api,
+					provider: account.provider,
+					model: requestModel.id,
+					usage: usage(),
+					stopReason: failed ? "error" : "stop",
+					...(failed ? { errorMessage: failure } : {}),
+					timestamp: Date.now(),
+				};
+				const stream = createAssistantMessageEventStream();
+				if (failed) stream.push({ type: "error", reason: "error", error: message });
+				else stream.push({ type: "done", reason: "stop", message });
+				stream.end(message);
+				return stream;
+			},
+		});
+		cleanups.push(() => runtime.unregisterProvider(account.provider));
+	}
+	// The user-level chain names another family, as in the reports.
+	const settingsManager =
+		settings.settingsManager ??
+		SettingsManager.inMemory({
+			...(settings.defaultToRequested ? { defaultProvider: REQUESTED.provider, defaultModel: REQUESTED.id } : {}),
+			fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
+			retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
+		});
+	const { options, diagnostics } = buildSessionOptions(parseArgs(args), [], false, runtime, settingsManager);
+	assert.deepEqual(diagnostics, []);
+	const sessionManager = SessionManager.inMemory();
+	const { session } = await createAgentSession({
+		...options,
+		cwd: process.cwd(),
+		modelRuntime: runtime,
+		settingsManager,
+		sessionManager,
+		resourceLoader: createTestResourceLoader(),
+		builtins: { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false },
+		tools: ["read"],
+	});
+	cleanups.push(() => session.dispose());
+	settings.beforePrompt?.();
+	await session.prompt("Say which model you are.");
+	const last = session.state.messages.findLast((message) => message.role === "assistant") as AssistantMessage;
+	return { requests, last, sessionManager };
+}
+
+const requestedId = `${REQUESTED.provider}/${REQUESTED.id}`;
+
+describe("an explicit --model session keeps to its own model (#4223)", () => {
+	for (const [kind, failure] of Object.entries(TRANSIENT_FAILURES)) {
+		test(`${kind} is retried on the requested model and never moves to the settings fallbackModels (#4223)`, async () => {
+			const { requests, last } = await runSession(["--model", `${requestedId}:high`], failure);
+
+			assert.deepEqual(
+				requests.map((request) => request.model),
+				Array(1 + MAX_RETRIES).fill(requestedId),
+			);
+			assert.equal(last.stopReason, "error");
+			assert.equal(`${last.provider}/${last.model}`, requestedId);
+		});
+	}
+
+	for (const [kind, refusal] of [
+		["an HTTP 422", CONTENT_FILTER_422],
+		["an error event inside the stream", CONTENT_FILTER_IN_STREAM],
+	] as const) {
+		test(`a content-filter refusal as ${kind} fails on the requested model at once, with no retry and no other model (#4223)`, async () => {
+			const { requests, last } = await runSession(["--model", `${requestedId}:high`], refusal);
+
+			assert.deepEqual(
+				requests.map((request) => request.model),
+				[requestedId],
+			);
+			assert.equal(last.stopReason, "error");
+			assert.match(last.errorMessage ?? "", /cyber_policy/);
+		});
+	}
+
+	test("an unrecognized error fails on the requested model at once without --fallback-models (#4223)", async () => {
+		const { requests, last } = await runSession(["--model", `${requestedId}:high`], UNRECOGNIZED_FAILURE);
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[requestedId],
+		);
+		assert.equal(last.stopReason, "error");
+		assert.equal(last.errorMessage, UNRECOGNIZED_FAILURE);
+	});
+
+	test("with --fallback-models, an unrecognized error is retried on the requested model before the fallback runs (#4223)", async () => {
+		const optIn = `${OPT_IN.provider}/${OPT_IN.id}`;
+		const { requests, last } = await runSession(
+			["--model", `${requestedId}:high`, "--fallback-models", optIn],
+			UNRECOGNIZED_FAILURE,
+		);
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[...Array(1 + MAX_RETRIES).fill(requestedId), optIn],
+		);
+		assert.equal(last.stopReason, "stop");
+	});
+
+	test("--fallback-models opts in: the refusal moves to that model, which is told its own name, and the session records why (#4223)", async () => {
+		const optIn = `${OPT_IN.provider}/${OPT_IN.id}`;
+		const { requests, last, sessionManager } = await runSession(
+			["--model", `${requestedId}:high`, "--fallback-models", optIn],
+			CONTENT_FILTER_422,
+		);
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			[requestedId, optIn],
+		);
+		assert.match(requests[1]!.systemPrompt, /Model name \(used for commit attribution\): Sol Mock/);
+		assert.doesNotMatch(requests[1]!.systemPrompt, /Argon Mock/);
+		assert.equal(last.stopReason, "stop");
+		const fallbackChange = sessionManager
+			.getEntries()
+			.findLast((entry) => entry.type === "model_change" && entry.provider === OPT_IN.provider);
+		assert.ok(fallbackChange && fallbackChange.type === "model_change");
+		assert.equal(fallbackChange.fallback?.requested, requestedId);
+		assert.equal(fallbackChange.fallback?.from, requestedId);
+		assert.match(fallbackChange.fallback?.reason ?? "", /cyber_policy/);
+	});
+
+	test("a session created before its project is trusted follows the project's fallbackModels once trusted (#4223)", async () => {
+		// As an interactive start that asks about trust after it created the session: the user-level chain at first, then
+		// the project's empty list once the user trusts the project.
+		const storage = new InMemorySettingsStorage();
+		storage.withLock("global", () =>
+			JSON.stringify({
+				defaultProvider: REQUESTED.provider,
+				defaultModel: REQUESTED.id,
+				fallbackModels: [`${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`],
+				retry: { enabled: true, maxRetries: MAX_RETRIES, baseDelayMs: 1, maxAgentDelayMs: 1 },
+			}),
+		);
+		storage.withLock("project", () => JSON.stringify({ fallbackModels: [] }));
+		const settingsManager = SettingsManager.fromStorage(storage, { projectTrusted: false });
+		const { requests } = await runSession([], TRANSIENT_FAILURES["a 5xx"], {
+			settingsManager,
+			beforePrompt: () => settingsManager.setProjectTrusted(true),
+		});
+
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			Array(1 + MAX_RETRIES).fill(requestedId),
+		);
+	});
+
+	test("--no-fallback turns the settings fallbackModels off for a session without --model (#4223)", async () => {
+		const settingsChain = `${SETTINGS_CHAIN.provider}/${SETTINGS_CHAIN.id}`;
+		const withChain = await runSession([], TRANSIENT_FAILURES["a 5xx"], { defaultToRequested: true });
+		assert.equal(withChain.requests.at(-1)?.model, settingsChain);
+
+		const { requests } = await runSession(["--no-fallback"], TRANSIENT_FAILURES["a 5xx"], {
+			defaultToRequested: true,
+		});
+		assert.deepEqual(
+			requests.map((request) => request.model),
+			Array(1 + MAX_RETRIES).fill(requestedId),
+		);
+	});
+});
+
+describe("the provider failures behind #4223 are classified explicitly", () => {
+	const failure = (errorMessage: string) => ({ role: "assistant", stopReason: "error", errorMessage });
+
+	test("a stream cut off before its finish reason is a transport failure retried on the same model (#4223)", () => {
+		const truncated = failure(TRANSIENT_FAILURES["a stream that ends early"]);
+		assert.equal(normalizeModelFailureSignal(truncated).kind, "transport_error");
+		assert.equal(isRetryableSameModelFailure(truncated), true);
+		assert.equal(isUnrecognizedModelFailure(truncated), false);
+	});
+
+	test("a cyber_policy refusal is a content-filter refusal, as an HTTP 422 and inside the stream (#4223)", () => {
+		for (const refusal of [CONTENT_FILTER_422, CONTENT_FILTER_IN_STREAM]) {
+			assert.equal(normalizeModelFailureSignal(failure(refusal)).kind, "content_filter");
+			assert.equal(isUnrecognizedModelFailure(failure(refusal)), false);
+		}
+	});
+
+	test("only an error nothing recognizes is unrecognized (#4223)", () => {
+		assert.equal(isUnrecognizedModelFailure(failure(UNRECOGNIZED_FAILURE)), true);
+		assert.equal(isRetryableSameModelFailure(failure(UNRECOGNIZED_FAILURE)), false);
+		for (const transient of Object.values(TRANSIENT_FAILURES)) {
+			assert.equal(isUnrecognizedModelFailure(failure(transient)), false, transient);
+		}
+	});
+});
+
+describe("the warning that an untrusted project's settings are ignored (#4223)", () => {
+	function projectWithSettings(): string {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-ignored-project-settings-"));
+		mkdirSync(join(cwd, ".atomic"));
+		writeFileSync(join(cwd, ".atomic", "settings.json"), JSON.stringify({ fallbackModels: [] }));
+		cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
+		return cwd;
+	}
+
+	test("print, JSON and RPC runs name the ignored file and --approve (#4223)", () => {
+		const cwd = projectWithSettings();
+		for (const appMode of ["print", "json", "rpc"] as const) {
+			const warning = ignoredProjectSettingsWarning(cwd, { trusted: false, appMode, interactiveEngineChild: false });
+			assert.match(
+				warning ?? "",
+				/^Ignoring .*\.atomic[\\/]settings\.json: this project is not trusted\. Pass --approve/,
+			);
+		}
+	});
+
+	test("the interactive engine child, which runs in RPC mode, leaves the warning to the interactive screen (#4223)", () => {
+		const cwd = projectWithSettings();
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: false, appMode: "rpc", interactiveEngineChild: true }),
+			undefined,
+		);
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: false, appMode: "interactive", interactiveEngineChild: false }),
+			undefined,
+		);
+		assert.equal(
+			ignoredProjectSettingsWarning(cwd, { trusted: true, appMode: "print", interactiveEngineChild: false }),
+			undefined,
+		);
+	});
+});

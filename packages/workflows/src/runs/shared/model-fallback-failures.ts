@@ -10,6 +10,7 @@ export {
 	errorMessage,
 	isRetryableModelFailure,
 	isRetryableSameModelFailure,
+	isUnrecognizedModelFailure,
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "@bastani/atomic";

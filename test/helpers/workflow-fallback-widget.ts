@@ -83,6 +83,7 @@ export async function startFallbackWidgetScenario(explicitModel = true) {
 		},
 		sessionManager: { appendModelChange() {}, appendThinkingLevelChange() {} },
 		_refreshBaseSystemPromptFromActiveTools() {},
+		_recordSystemPromptForModelSwitch: async () => undefined,
 		// Synthetic session: no projection to edit, and `state.messages` holds no attempt to omit.
 		_omitTrailingAssistantAttempt: () => false,
 		_emitModelChanged,

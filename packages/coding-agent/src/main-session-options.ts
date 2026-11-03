@@ -81,6 +81,17 @@ export function buildSessionOptions(
 		options.thinkingLevel = parsed.thinking;
 	}
 
+	// Fallback chain. A model named with --model runs as named: it falls back only to the models --fallback-models
+	// names, never to the settings fallbackModels, user or project, as a subagent launched on a named model does
+	// (#4223). --no-fallback turns fallback off for any session. Child sessions inherit this chain.
+	if (parsed.noFallback) {
+		options.fallbackModels = [];
+	} else if (parsed.fallbackModels !== undefined) {
+		options.fallbackModels = [...parsed.fallbackModels];
+	} else if (parsed.model !== undefined) {
+		options.fallbackModels = [];
+	}
+
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.
 	// Undefined means "inherit current session thinking level" during cycling.

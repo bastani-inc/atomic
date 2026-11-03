@@ -27,7 +27,7 @@ import {
 	validateCredentialPrintArgs,
 } from "./cli/credential-print.ts";
 import { listModels } from "./cli/list-models.ts";
-import { createProjectTrustContext } from "./cli/project-trust.ts";
+import { createProjectTrustContext, ignoredProjectSettingsWarning } from "./cli/project-trust.ts";
 import {
 	ENV_OFFLINE,
 	ENV_SESSION_DIR,
@@ -726,6 +726,13 @@ export async function main(argv: string[], options?: MainOptions) {
 										if (trusted && !initialProjectTrusted) {
 											migrateAfterTrust = true;
 										}
+										// Print, JSON and RPC modes cannot ask, so say what an untrusted project loses (#4223).
+										const ignored = ignoredProjectSettingsWarning(cwd, {
+											trusted,
+											appMode,
+											interactiveEngineChild: engineEnv.child === "1",
+										});
+										if (ignored) console.error(chalk.yellow(`Warning: ${ignored}`));
 										return trusted;
 									}
 								: undefined,
@@ -824,6 +831,7 @@ export async function main(argv: string[], options?: MainOptions) {
 					model: sessionOptions.model,
 					thinkingLevel: sessionOptions.thinkingLevel,
 					scopedModels: sessionOptions.scopedModels,
+					fallbackModels: sessionOptions.fallbackModels,
 					tools: sessionOptions.tools,
 					builtins: parsed.noMcp ? { mcp: false } : undefined,
 					excludedTools: resolveExcludedToolsForAppMode(appMode, sessionOptions.excludedTools),
@@ -958,7 +966,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc" && !options?.internalInteractiveHarness) {
-		stdinContent = await readPipedStdin();
+		stdinContent = await readPipedStdin({ hasPrompt: parsed.messages.length > 0 || parsed.fileArgs.length > 0 });
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
 		}
