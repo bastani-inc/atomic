@@ -238,6 +238,22 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	test("states the harness and documentation rules tersely (upstream 705d047c)", () => {
+		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
+		assert.ok(
+			prompt.startsWith(
+				"You are a coding assistant running inside Atomic, a coding agent harness. Help users inspect files, run commands, and modify code.",
+			),
+		);
+		assert.ok(prompt.includes("\n\nAdditional tools may be available."));
+		assert.ok(
+			prompt.includes(
+				"- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.",
+			),
+		);
+		assert.ok(!prompt.includes("Always read Atomic .md files completely"));
+	});
+
 	test("routes bundled extension questions to readable guides under the docs root", () => {
 		const prompt = buildSystemPrompt({ cwd: process.cwd(), contextFiles: [], skills: [] });
 		assert.ok(prompt.includes(`Additional docs: ${getDocsPath()}`));
@@ -310,6 +326,11 @@ describe("buildSystemPrompt", () => {
 			assert.match(prompt, /<available_skills>/);
 			assert.match(prompt, /<name>test-skill<\/name>/);
 			assert.match(prompt, /Use bash to load a skill's file/);
+			assert.ok(
+				prompt.includes(
+					"Resolve relative paths against the skill's directory (parent of SKILL.md). Use absolute paths in tool calls.",
+				),
+			);
 		});
 
 		test("omits skills without read or bash", () => {
