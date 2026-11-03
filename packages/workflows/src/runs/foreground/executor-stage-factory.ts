@@ -220,7 +220,7 @@ export function createWorkflowStageFactory(input: {
 			defaultCwd: input.workflowInvocationCwd,
 			onStartupChange(startup) {
 				// Never add a retired stage to a replacement run with the same identity.
-				const current = input.activeStore.runs().find((run) => run.id === input.runId);
+				const current = input.activeStore.run(input.runId);
 				if (!current?.stages.includes(stageSnapshot)) return;
 				stageSnapshot.startup = startup;
 				input.activeStore.recordStageStart(input.runId, stageSnapshot);

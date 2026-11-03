@@ -98,7 +98,7 @@ export function deleteWorkflowResumeEntry(
 	store: Store = defaultStore,
 ): Promise<DurableWorkflowDeleteOutcome> {
 	return deleteDurableWorkflowIfSafe(requireStoreDurableBackend(store, workflowId), workflowId, (candidateId) => {
-		const run = store.runs().find((candidate) => candidate.id === candidateId);
+		const run = store.run(candidateId);
 		return run !== undefined && run.status !== "completed" && (run.endedAt === undefined || run.status === "paused");
 	});
 }

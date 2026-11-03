@@ -325,7 +325,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		options?: RuntimeDispatchOptions,
 	): Promise<ResumeFailedRunResult> {
 		options?.signal?.throwIfAborted();
-		const source = activeStore.runs().find((run) => run.id === sourceRunId);
+		const source = activeStore.run(sourceRunId);
 		if (source === undefined) {
 			return { ok: false, reason: "run_not_found", message: `run not found: ${sourceRunId}` };
 		}
@@ -348,7 +348,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		if (def === undefined) {
 			return { ok: false, reason: "workflow_not_found", message: `workflow_not_found: ${source.name}` };
 		}
-		const backend = availableRunDurableBackend(activeStore.runs(), sourceRunId) ?? (await ensureReady());
+		const backend = availableRunDurableBackend(activeStore, sourceRunId) ?? (await ensureReady());
 		const resolvedStage = resolveResumeStage(source, backend, stageId);
 		if (!resolvedStage.ok) {
 			return { ok: false, reason: "insufficient_state", message: resolvedStage.message };

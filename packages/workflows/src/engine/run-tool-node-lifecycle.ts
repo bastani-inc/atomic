@@ -38,7 +38,7 @@ export function createToolNodeLifecycle(input: {
 	 * identity, not the id, decides which generation owns the store row. The
 	 * abandoned callback may still settle its own private graph tracker.
 	 */
-	const ownsCurrentRun = (): boolean => store.runs().some((candidate) => candidate === run);
+	const ownsCurrentRun = (): boolean => store.run(run.id) === run;
 	const replayedToolNodeIds = new Set<string>();
 	let pendingFrontier = input.resumeToolNode;
 	const pendingRetries = new Map((input.retryToolNodes ?? []).map((node) => [node.id, node]));
@@ -132,7 +132,7 @@ function isReplayedContinuationNode(
 	nodeId: string,
 ): boolean {
 	if (replayedToolNodeIds.has(nodeId)) return true;
-	const live = store.runs().find((candidate) => candidate === run);
+	const live = store.run(run.id) === run ? run : undefined;
 	return live?.stages.some((stage) => stage.id === nodeId && stage.replayed === true) === true;
 }
 

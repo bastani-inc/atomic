@@ -36,7 +36,6 @@ import {
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
-import { isTerminalStageStatus } from "../shared/store-internal.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
@@ -86,6 +85,7 @@ import {
 	registerPoolJournal,
 } from "./pool-journal.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
+import { endPooledChild, endPooledRun } from "./pooled-run-end.js";
 import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./pooled-stage-handle.js";
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
@@ -1311,20 +1311,7 @@ export class LocalWorkerPool {
 	 */
 	private endFailedChild(work: PoolWork, error: Error): void {
 		const store = this.store;
-		if (store !== undefined)
-			store.batch(() => {
-				const runs = store.runs();
-				const byId = new Map(runs.map((run) => [run.id, run]));
-				const inChild = (run: (typeof runs)[number]): boolean => {
-					for (let current: typeof run | undefined = run; current !== undefined; ) {
-						if (current.id === work.childRunId) return true;
-						current = current.parentRunId === undefined ? undefined : byId.get(current.parentRunId);
-					}
-					return false;
-				};
-				for (const run of runs)
-					if (run.endedAt === undefined && inChild(run)) endPooledRun(store, run, error.message);
-			});
+		if (store !== undefined) store.batch(() => endPooledChild(store, work.childRunId, error.message));
 		if (this.reconnectingViews.size > 0 || this.outboxes.size > 0) this.reconnectStageViews();
 	}
 	/**
@@ -1666,24 +1653,4 @@ export class LocalWorkerPool {
 		}
 		if (failure !== undefined) throw failure;
 	}
-}
-
-/** Asks an SDK caller's `ui` a pooled stage's prompt; custom prompts never reach it. */
-
-/**
- * Ends a pooled run that failed with its pool or on its own (#3996): its unfinished stages fail with the run's
- * error, so the graph counts none of them active and their chats show no worker; finished stages keep their outcome.
- */
-function endPooledRun(store: Store, run: RunSnapshot, error: string): void {
-	const now = Date.now();
-	for (const stage of run.stages)
-		if (!isTerminalStageStatus(stage.status))
-			store.recordStageEnd(run.id, {
-				...stage,
-				status: "failed",
-				endedAt: now,
-				durationMs: stage.startedAt === undefined ? undefined : Math.max(0, now - stage.startedAt),
-				error,
-			});
-	store.recordRunEnd(run.id, "failed", undefined, error);
 }

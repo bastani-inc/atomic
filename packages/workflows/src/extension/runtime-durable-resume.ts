@@ -82,7 +82,7 @@ export interface DurableResumeRuntimeDeps {
 export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): DurableResumeRuntime {
 	const backendRef = deps.backendRef ?? { current: undefined };
 	const selectedBackend = (workflowId?: string): DurableWorkflowBackend => {
-		const backend = workflowId === undefined ? undefined : availableRunDurableBackend(deps.store.runs(), workflowId);
+		const backend = workflowId === undefined ? undefined : availableRunDurableBackend(deps.store, workflowId);
 		if (backend !== undefined) return backend;
 		if (backendRef.current === undefined) throw new DurableBackendNotInitializedError();
 		return backendRef.current;
@@ -106,14 +106,14 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			.runs()
 			.map((run) => run.id)
 			.filter((id) => target === undefined || id === target);
-		for (const id of ids) await (availableRunDurableBackend(deps.store.runs(), id) ?? backend).hydrateWorkflow(id);
+		for (const id of ids) await (availableRunDurableBackend(deps.store, id) ?? backend).hydrateWorkflow(id);
 	};
 	let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
 	return {
 		durableBackend: selectedBackend,
 		async inspectDurableWorkflow(workflowId) {
 			return withRecovery(async () => {
-				const backend = availableRunDurableBackend(deps.store.runs(), workflowId) ?? (await ensureReady());
+				const backend = availableRunDurableBackend(deps.store, workflowId) ?? (await ensureReady());
 				return inspectTargetedDurableWorkflow(backend, workflowId);
 			});
 		},
@@ -122,7 +122,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const backend = await withRecovery(async () => {
-						const backend = availableRunDurableBackend(deps.store.runs(), workflowId) ?? (await ensureReady());
+						const backend = availableRunDurableBackend(deps.store, workflowId) ?? (await ensureReady());
 						options?.signal?.throwIfAborted();
 						// A message queued for an interrupted run before resume changed its journal, so a
 						// catalog read before that write would make the resume claim stale (#3760).
@@ -170,7 +170,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 		async prepareDurableResumable(workflowId) {
 			return withRecovery(async () => {
 				const backend =
-					(workflowId === undefined ? undefined : availableRunDurableBackend(deps.store.runs(), workflowId)) ??
+					(workflowId === undefined ? undefined : availableRunDurableBackend(deps.store, workflowId)) ??
 					(await ensureReady());
 				try {
 					await hydrateStoredWorkflowCandidates(backend, workflowId);
@@ -192,7 +192,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					);
 					for (const run of deps.store.runs())
 						if (!known.has(run.id))
-							await (availableRunDurableBackend(deps.store.runs(), run.id) ?? backend).hydrateWorkflow(run.id);
+							await (availableRunDurableBackend(deps.store, run.id) ?? backend).hydrateWorkflow(run.id);
 					preparedCatalog = catalog.resumable;
 					return catalog;
 				} finally {
@@ -207,9 +207,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					preparedCatalog = (
 						await Promise.all(
 							workflowIds.map((id) =>
-								prepareTargetedDurableResumable(availableRunDurableBackend(deps.store.runs(), id) ?? backend, [
-									id,
-								]),
+								prepareTargetedDurableResumable(availableRunDurableBackend(deps.store, id) ?? backend, [id]),
 							),
 						)
 					).flat();

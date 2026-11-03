@@ -143,7 +143,7 @@ export function makeExecuteWorkflowTool(
 					(action === "resume" &&
 						handle !== undefined &&
 						(await isSdkCrashedRunAdoptable(handle, recoveryCwd, requireStoreDurableBackend(store, id))))) &&
-				!store.runs().some((run) => run.id === id) &&
+				store.run(id) === undefined &&
 				handle !== undefined &&
 				isSdkDurableRunInScope(handle, recoveryCwd)
 			)
@@ -333,7 +333,7 @@ export function makeExecuteWorkflowTool(
 								pi,
 								ctx,
 								id,
-								store.runs().find((run) => run.id === id),
+								store.run(id),
 								undefined,
 								requireStoreDurableBackend(store, id),
 							),

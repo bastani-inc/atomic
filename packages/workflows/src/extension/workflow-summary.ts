@@ -58,7 +58,7 @@ export function createWorkflowSummaryService(options: {
 	const finalized = new Map<string, ReturnType<typeof effectiveRunStatus>>();
 	let disposed = false;
 	const request = (runId: string): void => {
-		const run = options.store.runs().find((entry) => entry.id === runId);
+		const run = options.store.run(runId);
 		const context = contexts.get(runId) ?? options.resolveContext();
 		if (
 			disposed ||

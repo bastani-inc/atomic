@@ -3,6 +3,7 @@ import { test, vi } from "vitest";
 import { createStandaloneRouteOwnership } from "../../packages/workflows/src/runs/foreground/sdk-intercom.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { holdFinishedRuns } from "../helpers/finished-runs.js";
 
 function stage(id: string, fields: Partial<StageSnapshot> = {}): StageSnapshot {
 	return { id, name: id, status: "running", ...fields } as StageSnapshot;
@@ -50,33 +51,71 @@ test("a standalone host owns the routes of runs under its own roots once one of 
 	}
 });
 
-test("asking about every run of a large store reads the store once per store version (#4174)", () => {
+test("ownership never reads the run list, and after a change to one run reads none of the finished runs the store holds (#4174, #4190)", () => {
 	const store = createStore();
+	const finished = holdFinishedRuns(store, 5_000);
 	for (const run of rootWithChild("mine", true)) store.recordRunStart(run);
-	for (let index = 0; index < 5_000; index++) store.recordRunStart(runSnapshot(`finished-${index}`));
 	const ownership = createStandaloneRouteOwnership(store, new Map([["mine", 1]]));
+	const runIds = store.runs().map((run) => run.id);
 	const reads = vi.spyOn(store, "runs");
 	try {
-		// One announcement asks about every run; it used to rebuild the whole run index for each answer.
-		const announce = () =>
-			store
-				.runs()
-				.filter((run) => ownership.owns(run.id))
-				.map((run) => run.id);
+		// An announcement of every route asks about every run. Ownership used to rebuild an index of every run for
+		// each answer (#4174), then once per store version, so each store change cost a pass over the whole store.
 		reads.mockClear();
-		assert.deepEqual(announce(), ["mine", "mine-child"]);
-		assert.equal(reads.mock.calls.length, 2, "the announcement's own read, plus one index build");
+		assert.deepEqual(
+			runIds.filter((runId) => ownership.owns(runId)),
+			["mine", "mine-child"],
+		);
+		assert.equal(reads.mock.calls.length, 0, "answering every run reads no run list");
 
+		// A change to one run of the root: the announcement that follows asks only about the root's own runs.
+		store.recordStageSession("mine-child", "mine-child-agent", { sessionId: "session" });
 		reads.mockClear();
-		announce();
-		assert.equal(reads.mock.calls.length, 1, "an unchanged store is not read again");
-
-		store.recordRunStart(runSnapshot("finished-new"));
-		reads.mockClear();
-		announce();
-		assert.equal(reads.mock.calls.length, 2, "a changed store is indexed once more");
+		finished.reads = 0;
+		assert.deepEqual(
+			["mine", "mine-child"].map((runId) => ownership.owns(runId)),
+			[true, true],
+		);
+		assert.deepEqual([reads.mock.calls.length, finished.reads], [0, 0], "run-list reads and finished-run reads");
 	} finally {
 		reads.mockRestore();
+		ownership.dispose();
+	}
+});
+
+test("ownership follows the next store version after a run is added, its boundary ends or it is removed (#4190)", () => {
+	const store = createStore();
+	const [root, child] = rootWithChild("mine", false);
+	store.recordRunStart(root!);
+	store.recordRunStart(child!);
+	const ownership = createStandaloneRouteOwnership(store, new Map([["mine", 1]]));
+	const owns = (...runIds: string[]) => runIds.map((runId) => ownership.owns(runId));
+	try {
+		assert.deepEqual(owns("mine", "mine-child"), [false, false], "no stage of the root can take deliveries yet");
+
+		store.recordRunStart({
+			...root!,
+			stages: [
+				...root!.stages,
+				stage("late-boundary", { workflowChildRun: { runId: "mine-late" } } as Partial<StageSnapshot>),
+			],
+		});
+		store.recordRunStart(
+			runSnapshot("mine-late", {
+				parentRunId: "mine",
+				parentStageId: "late-boundary",
+				rootRunId: "mine",
+				stages: [stage("late-agent", { pendingStageDeliveryAvailable: true })],
+			}),
+		);
+		assert.deepEqual(owns("mine", "mine-child", "mine-late"), [true, true, true], "an added run activates its root");
+
+		store.recordStageEnd("mine", { ...stage("late-boundary"), status: "failed" });
+		assert.deepEqual(owns("mine", "mine-late"), [true, false], "a failed boundary releases its child");
+
+		assert.equal(store.removeRun("mine-child"), true);
+		assert.deepEqual(owns("mine", "mine-child"), [true, false], "a removed run is no longer the root's");
+	} finally {
 		ownership.dispose();
 	}
 });

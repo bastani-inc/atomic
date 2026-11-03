@@ -80,6 +80,17 @@ export interface RunBlockedMetadata extends RunEndMetadata {
 
 export type StagePromptAnswerSource = "workflow_ui" | "workflow_tool";
 
+/** One change of a store invalidation: the run it changed, outside of which nothing changed. */
+export interface StoreRunChange {
+	readonly runId: string;
+}
+
+/**
+ * Told of each store invalidation. `changes` names the runs it changed when every change was scoped to a run, and
+ * is undefined when any change was not, so anything may have changed.
+ */
+export type StoreInvalidationListener = (changes?: readonly StoreRunChange[]) => void;
+
 export interface PromptAnswerRecord {
 	readonly runId: string;
 	readonly stageId: string;
@@ -113,6 +124,10 @@ export interface Store {
 	runs(): readonly RunSnapshot[];
 	/** The run with this id, found without scanning the other runs. */
 	run(runId: string): RunSnapshot | undefined;
+	/** Where the run stands in `runs()`, found without scanning; undefined when the store does not hold it. */
+	runPosition(runId: string): number | undefined;
+	/** The runs hanging from this run, or from its stage when given, in `runs()` order, found without scanning the other runs. */
+	childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[];
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
@@ -362,7 +377,7 @@ export interface Store {
 	graphRun(runId: string): RunSnapshot | undefined;
 	subscribe(fn: (snap: StoreSnapshot) => void): () => void;
 	/** Subscribe synchronously to store invalidation without constructing a full snapshot. */
-	subscribeInvalidation(fn: () => void): () => void;
+	subscribeInvalidation(fn: StoreInvalidationListener): () => void;
 	/** Apply several mutations with one invalidation: subscribers are notified once, after `update` returns. */
 	batch<T>(update: () => T): T;
 }

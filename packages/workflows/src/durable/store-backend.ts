@@ -32,7 +32,7 @@ export function availableStoreDurableBackend(
 	runId?: string,
 ): DurableWorkflowBackend | undefined {
 	return (
-		(store !== undefined && runId !== undefined ? availableRunDurableBackend(store.runs(), runId) : undefined) ??
+		(store !== undefined && runId !== undefined ? availableRunDurableBackend(store, runId) : undefined) ??
 		(store as BackendStore | undefined)?.[workflowStoreBackend]
 	);
 }

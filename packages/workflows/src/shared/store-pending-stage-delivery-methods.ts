@@ -20,6 +20,7 @@ import { isCompactingBackend, PendingStageTransitionLedger } from "./pending-sta
 import type { StoreContext } from "./store-internal.js";
 import type { Store } from "./store-public-types.js";
 import type { LiveStageMessageValidationResult, PendingStickyStageMessageInput, RunSnapshot } from "./store-types.js";
+import type { RunLookup } from "./workflow-run-ownership.js";
 
 type PendingStageDeliveryStoreMethods = Pick<
 	Store,
@@ -35,6 +36,7 @@ type PendingStageDeliveryStoreMethods = Pick<
 >;
 
 export function createPendingStageDeliveryStoreMethods(context: StoreContext): PendingStageDeliveryStoreMethods {
+	const runs: RunLookup = { run: context.findRun, runs: () => context.state.runs };
 	const ledgers = new PendingStageLedgers();
 	const batches = new PendingStageTransitionBatches(context, ledgers);
 
@@ -70,11 +72,9 @@ export function createPendingStageDeliveryStoreMethods(context: StoreContext): P
 			return await batches.run(input.runId, undefined, async (batch) => {
 				const run = context.findRun(input.runId);
 				if (run === undefined) return undefined;
-				const availableBackend = availableRunDurableBackend(context.state.runs, input.runId) ?? context.backend;
+				const availableBackend = availableRunDurableBackend(runs, input.runId) ?? context.backend;
 				const backend =
-					availableBackend === undefined
-						? undefined
-						: durableBackendForRun(availableBackend, context.state.runs, input.runId);
+					availableBackend === undefined ? undefined : durableBackendForRun(availableBackend, runs, input.runId);
 				const receipt = await backend?.readSettledPendingStageMessage?.(input.runId, input.message.id);
 				const result = queueStageMessage(
 					receipt === undefined ? batch.messages(run) : [...batch.messages(run), receipt],
@@ -437,7 +437,7 @@ class PendingStageTransitionBatch {
 		}
 		if (messages !== run.pendingStageMessages) {
 			run.pendingStageMessages = [...messages];
-			this.context.bumpAndNotify();
+			this.context.bumpAndNotify({ runId: run.id });
 		}
 	}
 
@@ -485,7 +485,7 @@ class PendingStageTransitionBatch {
 		}
 		const live = this.context.findRun(this.runId) ?? run;
 		if (live !== undefined) live.pendingStageMessages = [...published];
-		this.context.bumpAndNotify();
+		this.context.bumpAndNotify({ runId: this.runId });
 	}
 }
 
@@ -508,9 +508,9 @@ async function compactTransition(
 		// Receipt compaction already drops every completed or skipped stage's deliveries, so the
 		// full-list sticky compaction below cannot change the result and is skipped. The ledger
 		// commits only once the batch's final list, which contains this change, is persisted.
-		return await ledger.compact(backend, runId, reconciled, context.state.runs, archiveSettled);
+		return await ledger.compact(backend, runId, reconciled, context.findRun, archiveSettled);
 	}
-	let retained = compactStickyStageMessageDeliveries(reconciled, context.state.runs);
+	let retained = compactStickyStageMessageDeliveries(reconciled, context.findRun);
 	if (archiveSettled !== undefined) retained = await retainPendingStageMessages(retained, archiveSettled);
 	if (run !== undefined) ledgers.reset(run);
 	return { messages: retained };
@@ -529,7 +529,7 @@ function reconcileLive(
 	const recovered = ledgers.for(current).reconcile(backend, runId, messages);
 	if (recovered !== messages) {
 		current.pendingStageMessages = [...recovered];
-		context.bumpAndNotify();
+		context.bumpAndNotify({ runId });
 	}
 }
 

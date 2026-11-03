@@ -71,7 +71,7 @@ export async function openCompletedDurableWorkflow(
 		);
 	}
 
-	const existing = deps.store.runs().find((run) => run.id === resolved.snapshot.id);
+	const existing = deps.store.run(resolved.snapshot.id);
 	if (existing !== undefined && existing.status !== "completed") {
 		return failure(
 			"active",
@@ -82,7 +82,7 @@ export async function openCompletedDurableWorkflow(
 	const snapshot = snapshots.find((run) => run.id === resolved.snapshot.id) ?? resolved.snapshot;
 	deps.beforeRestore?.(snapshots);
 	for (const restored of snapshots) {
-		const previous = deps.store.runs().find((run) => run.id === restored.id);
+		const previous = deps.store.run(restored.id);
 		if (previous !== undefined) deps.store.removeRun(previous.id);
 		deps.store.recordRunStart(restored);
 		registerCompletedChatHandles(restored, deps, selectedStore);

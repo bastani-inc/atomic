@@ -1,6 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { GraphStoreSnapshotBuilder } from "./graph-store-snapshot.js";
-import type { PromptAnswerRecord, RunEndMetadata } from "./store-public-types.js";
+import type { PromptAnswerRecord, RunEndMetadata, StoreInvalidationListener } from "./store-public-types.js";
 import type {
 	PendingPrompt,
 	RunSnapshot,
@@ -49,9 +49,16 @@ export interface StoreState {
 	 * Kept by the store's own mutations; a lookup that finds it out of step with `runs` rebuilds it.
 	 */
 	readonly runPositions: Map<string, number>;
+	/** Ids of the runs by the run and boundary stage they hang from, so a run's children are found without a scan. */
+	readonly childRunIds: Map<string, Map<string | undefined, Set<string>>>;
+	/**
+	 * The parent and stage each run is indexed under in `childRunIds`. Snapshots are stored by reference, so a run's
+	 * own fields may already name a new link when the store replaces, relinks or removes it.
+	 */
+	readonly childRunLinks: Map<string, ChildRunLink>;
 	readonly notices: WorkflowNotice[];
 	readonly listeners: Set<(snap: StoreSnapshot) => void>;
-	readonly invalidationListeners: Set<() => void>;
+	readonly invalidationListeners: Set<StoreInvalidationListener>;
 	readonly resolvers: Map<string, ResolverEntry>;
 	readonly stagePromptAnswers: Map<string, PromptAnswerRecord>;
 	readonly stagePromptDrafts: Map<string, string>;
@@ -74,6 +81,8 @@ export interface StoreContext {
 	findRun(runId: string): RunSnapshot | undefined;
 	/** Position of the run in `state.runs`, or undefined when the store does not hold it. */
 	runPosition(runId: string): number | undefined;
+	childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[];
+	reparentRun(run: RunSnapshot, parentStageId: string): void;
 	/** Adds the run, or replaces the run with its id where it stands. */
 	placeRun(run: RunSnapshot): void;
 	/** Removes the run at `position` of `state.runs`. */
@@ -149,10 +158,17 @@ export function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata):
 	if (metadata.exitReason !== undefined) run.exitReason = metadata.exitReason;
 }
 
+interface ChildRunLink {
+	readonly parentRunId: string;
+	readonly parentStageId: string | undefined;
+}
+
 export function createStoreState(): StoreState {
 	return {
 		runs: [],
 		runPositions: new Map(),
+		childRunIds: new Map(),
+		childRunLinks: new Map(),
 		notices: [],
 		listeners: new Set(),
 		invalidationListeners: new Set(),
@@ -166,9 +182,37 @@ export function createStoreState(): StoreState {
 /** Rebuilds the index from the list; a duplicated id keeps its first position, as a linear `find` would. */
 function reindexRuns(state: StoreState): void {
 	state.runPositions.clear();
+	state.childRunIds.clear();
+	state.childRunLinks.clear();
 	state.runs.forEach((run, position) => {
-		if (!state.runPositions.has(run.id)) state.runPositions.set(run.id, position);
+		if (state.runPositions.has(run.id)) return;
+		state.runPositions.set(run.id, position);
+		indexChildRun(state, run);
 	});
+}
+
+/** Indexes the run under the parent and stage it names now, dropping the link it was indexed under before. */
+function indexChildRun(state: StoreState, run: RunSnapshot): void {
+	unindexChildRun(state, run.id);
+	if (run.parentRunId === undefined) return;
+	const byStage = state.childRunIds.get(run.parentRunId) ?? new Map<string | undefined, Set<string>>();
+	state.childRunIds.set(run.parentRunId, byStage);
+	const ids = byStage.get(run.parentStageId) ?? new Set<string>();
+	byStage.set(run.parentStageId, ids);
+	ids.add(run.id);
+	state.childRunLinks.set(run.id, { parentRunId: run.parentRunId, parentStageId: run.parentStageId });
+}
+
+function unindexChildRun(state: StoreState, runId: string): void {
+	const link = state.childRunLinks.get(runId);
+	if (link === undefined) return;
+	state.childRunLinks.delete(runId);
+	const byStage = state.childRunIds.get(link.parentRunId);
+	const ids = byStage?.get(link.parentStageId);
+	if (byStage === undefined || ids === undefined) return;
+	ids.delete(runId);
+	if (ids.size === 0) byStage.delete(link.parentStageId);
+	if (byStage.size === 0) state.childRunIds.delete(link.parentRunId);
 }
 
 /**
@@ -227,14 +271,16 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 			else batchedChanges?.push(change);
 			return;
 		}
-		observation.capture(change === undefined ? undefined : [change]);
-		publish();
+		const changes = change === undefined ? undefined : [change];
+		observation.capture(changes);
+		publish(changes);
 	}
 
-	function publish(): void {
+	/** `changes` names every run the invalidation changed, or is undefined when a change was not scoped to a run. */
+	function publish(changes: readonly WorkflowObservationChange[] | undefined): void {
 		for (const fn of state.invalidationListeners) {
 			try {
-				fn();
+				fn(changes);
 			} catch {
 				// One observer must not starve later observers or the snapshot channel.
 			}
@@ -267,7 +313,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 				batchedNotification = false;
 				batchedChanges = [];
 				observation.capture(changes);
-				publish();
+				publish(changes);
 			}
 		}
 	}
@@ -281,16 +327,19 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		const position = runPosition(state, run.id);
 		if (position !== undefined) {
 			state.runs[position] = run;
+			indexChildRun(state, run);
 			return;
 		}
 		state.runPositions.set(run.id, state.runs.length);
 		state.runs.push(run);
+		indexChildRun(state, run);
 	}
 
 	function removeRunAt(position: number): void {
 		const [removed] = state.runs.splice(position, 1);
 		if (removed === undefined) return;
 		state.runPositions.delete(removed.id);
+		unindexChildRun(state, removed.id);
 		for (let index = position; index < state.runs.length; index++)
 			state.runPositions.set(state.runs[index]!.id, index);
 	}
@@ -298,6 +347,32 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function clearRuns(): void {
 		state.runs.length = 0;
 		state.runPositions.clear();
+		state.childRunIds.clear();
+		state.childRunLinks.clear();
+	}
+
+	function childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[] {
+		if (state.runPositions.size !== state.runs.length) reindexRuns(state);
+		const byStage = state.childRunIds.get(parentRunId);
+		if (byStage === undefined) return [];
+		const ids =
+			parentStageId === undefined
+				? [...byStage.values()].flatMap((set) => [...set])
+				: [...(byStage.get(parentStageId) ?? [])];
+		return ids
+			.map((id) => findRun(id))
+			.filter(
+				(run): run is RunSnapshot =>
+					run !== undefined &&
+					run.parentRunId === parentRunId &&
+					(parentStageId === undefined || run.parentStageId === parentStageId),
+			)
+			.sort((left, right) => runPosition(state, left.id)! - runPosition(state, right.id)!);
+	}
+
+	function reparentRun(run: RunSnapshot, parentStageId: string): void {
+		run.parentStageId = parentStageId;
+		indexChildRun(state, run);
 	}
 
 	function findStage(run: RunSnapshot, stageId: string): StageSnapshot | undefined {
@@ -360,6 +435,8 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		bumpAndNotify,
 		findRun,
 		runPosition: (runId) => runPosition(state, runId),
+		childRuns,
+		reparentRun,
 		placeRun,
 		removeRunAt,
 		clearRuns,

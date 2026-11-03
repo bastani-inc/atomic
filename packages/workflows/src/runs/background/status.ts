@@ -305,7 +305,7 @@ export async function resumeRun(
 		return {
 			ok: true,
 			runId,
-			snapshot: structuredClone(activeStore.runs().find((candidate) => candidate.id === runId) ?? run),
+			snapshot: structuredClone(activeStore.run(runId) ?? run),
 			resumed: structuredClone([...stages.resumed]),
 			mode: "paused",
 			message:
@@ -375,7 +375,7 @@ export async function resumeRun(
 			const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
 			acknowledgedTargets = acknowledgements.acknowledged;
 			resumed.push(...acknowledgements.resumed);
-			const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
+			const currentRun = activeStore.run(runId);
 			const hasPausedDescendant = workflowHasPausedStages(activeStore, runId);
 			if (
 				acknowledgements.acknowledged > 0 ||
@@ -436,7 +436,7 @@ export async function resumeRun(
 
 	await waitForResumeReconciliation(acknowledgedTargets);
 
-	const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === aggregateRootRunId);
+	const locallyReconciledRoot = activeStore.run(aggregateRootRunId);
 	if (locallyReconciledRoot?.endedAt === undefined && locallyReconciledRoot?.status === "running") {
 		try {
 			const transition = await markDurableResumed(
@@ -457,7 +457,7 @@ export async function resumeRun(
 			partialFailureMessage === undefined ? durableMessage : `${partialFailureMessage} ${durableMessage}`;
 	}
 
-	const current = activeStore.runs().find((candidate) => candidate.id === runId) ?? run;
+	const current = activeStore.run(runId) ?? run;
 	const snapshot = structuredClone(current);
 	const resumedCopy = structuredClone(resumed);
 	if (partialFailureMessage !== undefined) {
@@ -556,7 +556,7 @@ async function pauseRunWithAction(
 ): Promise<PauseResult> {
 	const activeStore = opts?.store ?? defaultStore;
 	const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
-	const run = activeStore.runs().find((candidate) => candidate.id === runId);
+	const run = activeStore.run(runId);
 
 	if (!run) return { ok: false, runId, reason: "not_found" };
 	if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -579,7 +579,7 @@ async function pauseRunWithAction(
 			pooled?.release();
 		}
 		activeStore.recordStagePaused(runId, opts.stageId);
-		const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
+		const currentRun = activeStore.run(runId);
 		const stage = currentRun?.stages.find((candidate) => candidate.id === opts.stageId);
 		const paused = stage === undefined ? [] : [structuredClone(stage)];
 		const stillActive =
@@ -606,7 +606,7 @@ async function pauseRunWithAction(
 			await handle.pause();
 			activeStore.recordStagePaused(controlRunId, handle.stageId);
 			pausedRunIds.add(controlRunId);
-			const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
+			const controlRun = activeStore.run(controlRunId);
 			const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
 			if (stage !== undefined) paused.push(structuredClone(stage));
 		}

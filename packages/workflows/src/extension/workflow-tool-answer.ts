@@ -136,10 +136,7 @@ export async function workflowAnswerAction(
 		return answerResult(target.runId, "", "noop", stage.ok ? "Stage id or name is required." : stage.message);
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const snapshot = store
-		.runs()
-		.find((run) => run.id === stageRunId)
-		?.stages.find((item) => item.id === stage.stageId);
+	const snapshot = store.run(stageRunId)?.stages.find((item) => item.id === stage.stageId);
 	const brokerPrompt = stageUiBroker.peekStagePrompt(stageRunId, stage.stageId);
 	if (brokerPrompt !== undefined && (args.promptId === undefined || args.promptId === brokerPrompt.id)) {
 		if (!hasPayloadProperty(args))
