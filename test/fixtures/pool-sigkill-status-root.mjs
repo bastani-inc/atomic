@@ -17,7 +17,9 @@ const [mode, directory, root, workerCount, failing = "0", finishing = "0"] = pro
 const CHILDREN = Number(workerCount);
 const outcome = (index) =>
 	index < Number(failing) ? "fail" : index < Number(failing) + Number(finishing) ? "finish" : "hold";
-const jiti = createJiti(import.meta.url, { fsCache: false });
+// Transforms cached on disk, keyed by source hash, as packages/workflows/src/workers/local-worker-entry.mjs caches
+// them: loading the workflow sources uncached costs this process about twice the CPU at every start.
+const jiti = createJiti(import.meta.url, { fsCache: true });
 const load = (relative) => jiti.import(fileURLToPath(new URL(relative, import.meta.url)));
 const { workflow } = await load("../../packages/workflows/src/authoring/workflow.ts");
 const { JournalDurableBackend } = await load("../../packages/workflows/src/durable/journal/journal-backend.ts");
