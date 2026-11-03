@@ -75,6 +75,21 @@ test("a serial file (run alone after the rest) leaves its shard fewer parallel f
 	assert.ok(Math.max(...walls) <= 1.1 * Math.min(...walls), `unbalanced shards: ${walls.join(", ")}`);
 });
 
+test("heavy files that each fit in a shard's share spread across the shards instead of piling onto one", () => {
+	// The unit suite's shape on Windows: a dozen files of about a minute, each starting child processes that compete for
+	// the runner's CPUs, among hundreds of short ones. Every shard's workers have minutes of work, so no single heavy
+	// file sets a shard's wall time, and a shard that drew most of them ran them all at once, half again slower.
+	const record: Record<string, number> = {};
+	for (const seconds of [81, 78, 77, 73, 72, 66, 64, 63, 61, 57, 56, 54])
+		record[`test/unit/heavy-${seconds}.test.ts`] = seconds * 1_000;
+	for (let i = 0; i < 400; i++) record[`test/unit/short-${String(i).padStart(3, "0")}.test.ts`] = 3_000;
+	const paths = Object.keys(record);
+	const heavy = [1, 2, 3, 4].map(
+		(index) => shardByDuration(paths, record, index, 4).filter((path) => path.includes("heavy")).length,
+	);
+	assert.deepEqual(heavy, [3, 3, 3, 3]);
+});
+
 /** Structural: each case starts real Vitest instances on a suite's config and globs its files. */
 const REAL_VITEST_TIMEOUT_MS = 60_000;
 
