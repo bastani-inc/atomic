@@ -362,7 +362,8 @@ for (const wiring of ["local", "isolated"] as const) {
 			await waitFor("both messages to be sent", () => getUserTexts(rig.engine).length === 2);
 			await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
 			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
-			assert.deepEqual(getUserTexts(rig.engine).sort(), ["next prompt", "typed first"]);
+			// Like the paused queue, a kept message joins after the next ordinary submission starts the turn.
+			assert.deepEqual(getUserTexts(rig.engine), ["next prompt", "typed first"]);
 		});
 	});
 }
