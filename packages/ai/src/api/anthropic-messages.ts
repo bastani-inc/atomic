@@ -459,12 +459,11 @@ function getAnthropicCompat(model: Model<"anthropic-messages">) {
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsMidConvoToolChanges: model.compat?.supportsMidConvoToolChanges ?? false,
 		// Gateways that drop unknown request fields would silently turn a `continue` into a request
-		// without the earlier conversation, so the default is limited to Anthropic's own endpoint:
-		// the `anthropic` (OAuth or API key) and `anthropic-api` providers.
+		// without the earlier conversation, so the default is limited to the `anthropic` provider on
+		// Anthropic's own endpoint, as upstream. Copilot's endpoint does not accept the threads beta.
 		supportsMessageThreads:
 			model.compat?.supportsMessageThreads ??
-			((model.provider === "anthropic" || model.provider === "anthropic-api") &&
-				model.baseUrl.includes("api.anthropic.com")),
+			(model.provider === "anthropic" && model.baseUrl.includes("api.anthropic.com")),
 	};
 }
 

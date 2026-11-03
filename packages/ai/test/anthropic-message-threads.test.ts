@@ -560,18 +560,26 @@ describe("Anthropic message threads", () => {
 });
 
 describe("Anthropic message threads in Atomic", () => {
-	it("uses threads by default for the anthropic-api provider", async () => {
+	it("does not use threads for a GitHub Copilot Anthropic model, whose endpoint does not accept the threads beta", async () => {
 		const h = harness();
-		const model: Model<"anthropic-messages"> = { ...baseModel, provider: "anthropic-api" };
+		const model: Model<"anthropic-messages"> = {
+			...baseModel,
+			provider: "github-copilot",
+			baseUrl: "https://api.githubcopilot.com",
+		};
 		const messages = [user("first")];
 		await say(h, messages, { model });
 		messages.push(user("second"));
 		await say(h, messages, { model });
-		expect(h.requests.map((request) => threadOf(request)?.type)).toEqual(["create", "continue"]);
-		expect(h.requests[0].betas).toContain(THREADS_BETA);
+		for (const request of h.requests) {
+			expect(request.body).not.toHaveProperty("thread");
+			expect(request.betas).not.toContain(THREADS_BETA);
+		}
+		expect(h.requests[1].body).toHaveProperty("system");
 	});
 
 	it.each<[string, Partial<Model<"anthropic-messages">>]>([
+		["the anthropic-api provider", { provider: "anthropic-api" }],
 		["GitHub Copilot", { provider: "github-copilot", baseUrl: "https://api.githubcopilot.com" }],
 		["another endpoint", { baseUrl: "https://gateway.example.com" }],
 	])("does not use threads for %s unless compat enables them", async (_name, overrides) => {
