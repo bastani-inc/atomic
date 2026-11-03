@@ -148,13 +148,13 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 		event.type === "message_end" && event.message.role === "custom"
 			? markProtectedStreamingCustomMessageConsumed(this, event.message)
 			: false;
-	if (event.type === "message_end") this._messagesAwaitingPersistence.add(event.message);
 
 	const processing = this._agentEventQueue.then(
 		() => this._processAgentEvent(event),
 		() => this._processAgentEvent(event),
 	);
 	this._agentEventQueue = processing;
+	if (event.type === "message_end") this._messagesAwaitingPersistence.set(event.message, processing);
 
 	// Keep queue alive if an event handler fails. Per event, agent-core awaits only
 	// protected persistence and fallback reconciliation; other listener work is

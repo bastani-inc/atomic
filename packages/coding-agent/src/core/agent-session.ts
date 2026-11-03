@@ -193,7 +193,8 @@ class AgentSessionBase {
 	protected readonly _entryIdsByMessage = new WeakMap<object, string>();
 	/** Assistant messages whose actionable turn_end already ran from finishTurn. */
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
-	protected readonly _messagesAwaitingPersistence = new WeakSet<object>();
+	/** Messages whose message_end processing, including their save, has not settled yet. */
+	protected readonly _messagesAwaitingPersistence = new WeakMap<object, Promise<void>>();
 	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
 	/** The reported cause once a message of the current run could not be saved; the run stops (#4226). */
 	protected _persistenceFailure: string | undefined = undefined;
