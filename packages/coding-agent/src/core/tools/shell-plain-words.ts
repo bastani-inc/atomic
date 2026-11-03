@@ -73,7 +73,7 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			continue;
 		}
 		if (dialect === "powershell" && char === "@" && (next === "'" || next === '"')) {
-			const hereString = new RegExp(`^@${next}[ \\t]*\\r?\\n`).exec(text.slice(index));
+			const hereString = /^@['"][ \t]*\r?\n/.exec(text.slice(index));
 			if (hereString) {
 				const close = text.indexOf(`\n${next}@`, index + hereString[0].length - 1);
 				index = close < 0 ? text.length : close + 2;
