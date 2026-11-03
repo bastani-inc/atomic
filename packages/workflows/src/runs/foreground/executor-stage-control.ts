@@ -238,7 +238,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 				runtime.scheduler.ensureReleaseBarrier(runtime.stageId);
 				runtime.state.readinessController?.abort(new Error("atomic-workflows: readiness paused"));
 				await runtime.scheduler.cascadePauseFrom(runtime.stageId);
-				const run = runtime.activeStore.runs().find((candidate) => candidate.id === runtime.runId);
+				const run = runtime.activeStore.run(runtime.runId);
 				const stillActive =
 					run?.stages.some((stage) => stage.status === "running" && stage.id !== runtime.stageId) ?? false;
 				if (!stillActive) runtime.activeStore.recordRunPaused(runtime.runId);

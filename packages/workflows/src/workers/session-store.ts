@@ -17,7 +17,7 @@ export function workerSessionStore(input: {
 	/** Binds a created or replaced session to its stage; appends need no checkpoint. */
 	const checkpoint = (id: string, header: Parameters<SessionStore["create"]>[0]): DurableStageCheckpoint => {
 		const owner = header.workflow;
-		const run = input.store.runs().find((run) => run.id === owner?.runId);
+		const run = owner === undefined ? undefined : input.store.run(owner.runId);
 		const stage = run?.stages.find((stage) => stage.id === owner?.stageId);
 		if (!run || !stage?.replayKey) throw new Error("Pool session has no active stage");
 		const boundary = input.backend

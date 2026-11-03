@@ -181,7 +181,7 @@ export async function handleRunControlCommand(
 			fail(`Run not found: ${target}`);
 			return true;
 		}
-		const run = store.runs().find((candidate) => candidate.id === resolved.runId);
+		const run = store.run(resolved.runId);
 		// `/workflow pause <run> <stage>` holds only that stage, in this process or on a local worker.
 		const positional = tokens.filter((token) => !token.startsWith("--"));
 		const stageTarget = action === "pause" && target === positional[0] ? positional[1] : undefined;
@@ -333,7 +333,7 @@ export async function handleRunControlCommand(
 						fail(`Run not found: ${picked.result.runId}`);
 						return true;
 					}
-					const run = store.runs().find((r) => r.id === resolved.runId);
+					const run = store.run(resolved.runId);
 					await injectWorkflowResumeSummary(
 						deps.pi,
 						ctx,
@@ -406,9 +406,7 @@ export async function handleRunControlCommand(
 				return true;
 			}
 			const localResolution = resolveRunId(target, store);
-			const localBeforePreparation = isResolvedRunId(localResolution)
-				? store.runs().find((run) => run.id === localResolution.runId)
-				: undefined;
+			const localBeforePreparation = isResolvedRunId(localResolution) ? store.run(localResolution.runId) : undefined;
 			const exactBeforePreparation = localBeforePreparation?.id === target ? localBeforePreparation : undefined;
 			const shadow =
 				localBeforePreparation === undefined
@@ -552,7 +550,7 @@ export async function handleRunControlCommand(
 		}
 		const stageId = resolvedStage.stageId;
 		const stageRunId = resolvedStage.runId ?? runId;
-		const run = store.runs().find((r) => r.id === stageRunId);
+		const run = store.run(stageRunId);
 		const hadPausedRunState = run?.status === "paused";
 		const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
 		const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);

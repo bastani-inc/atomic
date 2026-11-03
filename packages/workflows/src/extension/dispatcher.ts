@@ -262,7 +262,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			const admission = await raceWorkflowRequestAbort(launch.wait, opts.signal);
 			if (!admission.started) {
 				const activeStore = opts.store ?? defaultStore;
-				const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);
+				const snapshot = activeStore.run(accepted.runId);
 				if (snapshot?.status === "paused" && snapshot.exitReason === "quit") {
 					return {
 						action: "run",
@@ -301,7 +301,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				}
 				await job.promise;
 				const activeStore = opts.store ?? defaultStore;
-				const snapshot = activeStore.runs().find((run) => run.id === accepted.runId);
+				const snapshot = activeStore.run(accepted.runId);
 				if (!snapshot) {
 					return failedRunResult(
 						accepted.name,

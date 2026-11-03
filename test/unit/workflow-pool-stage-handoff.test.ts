@@ -6,7 +6,11 @@ import { pendingStageMessagesForDurableRun } from "../../packages/workflows/src/
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { bindRunDurableBackend, durableBackendForRun } from "../../packages/workflows/src/durable/run-owner-backend.js";
+import {
+	availableRunDurableBackend,
+	bindRunDurableBackend,
+	durableBackendForRun,
+} from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { PENDING_STAGE_READY_STALL_MS } from "../../packages/workflows/src/runs/foreground/pending-stage-delivery.js";
@@ -16,6 +20,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { asWorkflowInfrastructureError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
 import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
+import { holdFinishedRuns } from "../helpers/finished-runs.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -120,7 +125,7 @@ async function fixture() {
 				{ runId: descriptor.childRunId, stageKey, from, message: message(id), queuedAt: new Date().toISOString() },
 				GROUP,
 				GROUP,
-				durableBackendForRun(backend, store.runs(), descriptor.childRunId)!,
+				durableBackendForRun(backend, store, descriptor.childRunId)!,
 			);
 			assert.equal(result?.ok, true);
 		},
@@ -1643,4 +1648,156 @@ test("the store finds runs by id through additions, replacements, removals and c
 	assert.equal(store.run("b"), undefined);
 	store.recordRunStart(snapshot("e"));
 	assert.equal(store.run("e")?.id, "e");
+});
+
+test("completing a work item reads none of the finished runs the store holds (#4190)", async () => {
+	const f = await fixture();
+	try {
+		const finished = holdFinishedRuns(f.store, 5_000);
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			result: { done: true },
+			stages: [stage("stage", { status: "completed" })],
+			toolNodes: [],
+		} as never);
+		finished.reads = 0;
+		await f.handoff.complete(f.first);
+		assert.equal(finished.reads, 0, `completing one child read finished runs ${finished.reads} times`);
+		const child = f.store.run(descriptor.childRunId)!;
+		assert.equal(child.status, "completed");
+		assert.deepEqual(child.result, { done: true });
+		assert.notEqual(child.endedAt, undefined);
+		assert.notEqual(child.stages[0]?.workerExecution, undefined);
+		assert.equal(f.store.run("finished-4999")?.status, "completed");
+	} finally {
+		await f.close();
+	}
+});
+
+test("completing a work item with nested runs ends them in store order and reads none of the finished runs (#4190)", async () => {
+	const f = await fixture();
+	try {
+		const link = (name: string) => ({ alias: name, workflow: name, runId: `${name}-run` });
+		const nested = (name: string) =>
+			snapshot(`${name}-run`, { parentRunId: descriptor.childRunId, parentStageId: name, rootRunId: ROOT });
+		const terminal = (name: string, pid: number): DurableStageCheckpoint => ({
+			kind: "stage",
+			workflowId: ROOT,
+			checkpointId: `terminal:${name}`,
+			name,
+			replayKey: `${descriptor.scope}:${name}`,
+			startedAt: 0,
+			completedAt: 0,
+			output: { workflow: name, runId: `${name}-run`, status: "completed", exited: false, outputs: { pid } },
+			topology: {
+				version: 1,
+				stageId: name,
+				parentIds: [],
+				sourceOrder: 0,
+				status: "completed",
+				run: { runId: descriptor.childRunId, runName: descriptor.childRunId },
+				boundary: {
+					version: 1,
+					event: "terminal",
+					status: "completed",
+					replayScope: `${descriptor.scope}:${name}`,
+					alias: name,
+					workflow: name,
+					invocationFingerprint: "fingerprint",
+					child: {
+						runId: `${name}-run`,
+						runName: name,
+						parentRunId: descriptor.childRunId,
+						parentStageId: name,
+						rootRunId: ROOT,
+					},
+				},
+			},
+		});
+		const finished = holdFinishedRuns(f.store, 5_000);
+		await f.handoff.publish(f.first, [
+			childRun([
+				stage("first", { workflowChildRun: link("first") }),
+				stage("second", { workflowChildRun: link("second") }),
+			]),
+			nested("second"),
+			nested("first"),
+		]);
+		await f.backend.commitCheckpoint(terminal("first", 1));
+		await f.backend.commitCheckpoint(terminal("second", 2));
+		await f.queue.complete(f.lease, f.first, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			result: { done: true },
+			stages: [stage("first", { status: "completed" }), stage("second", { status: "completed" })],
+			toolNodes: [],
+		} as never);
+		finished.reads = 0;
+		await f.handoff.complete(f.first);
+		assert.equal(finished.reads, 0, `completing one child read finished runs ${finished.reads} times`);
+		assert.deepEqual(
+			["second-run", "first-run", descriptor.childRunId].map((id) => [id, f.store.run(id)?.status]),
+			[
+				["second-run", "completed"],
+				["first-run", "completed"],
+				[descriptor.childRunId, "completed"],
+			],
+		);
+		assert.deepEqual(f.store.run("first-run")?.result, { pid: 1 });
+		assert.deepEqual(f.store.run("second-run")?.result, { pid: 2 });
+		assert.equal(f.store.runPosition(descriptor.childRunId)! < f.store.runPosition("second-run")!, true);
+		assert.equal(f.store.runPosition("second-run")! < f.store.runPosition("first-run")!, true);
+	} finally {
+		await f.close();
+	}
+});
+
+test("queueing, draining and acknowledging a delivery reads none of the finished runs the store holds (#4190)", async () => {
+	const f = await fixture();
+	try {
+		const finished = holdFinishedRuns(f.store, 5_000);
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		finished.reads = 0;
+		await f.queueDirect("stage", "direct-1");
+		await f.queueBroadcast("broadcast-1");
+		const received: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		assert.equal(finished.reads, 0, `one direct and one sticky delivery read finished runs ${finished.reads} times`);
+		assert.deepEqual([...received].sort(), ["broadcast-1", "direct-1"]);
+		assert.equal(f.store.pendingStageMessagesFor(descriptor.childRunId, "stage").length, 0);
+		const sticky = f.store.run(ROOT)?.pendingStageMessages?.find((entry) => entry.id === "broadcast-1");
+		assert.equal(sticky?.deliveryCount, 1);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a durable owner is found by exact id, unique prefix and unknown id the same from a store as from a list (#4190)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		const finished = holdFinishedRuns(f.store, 1_000);
+		const lists = f.store.runs();
+		for (const id of [ROOT, descriptor.childRunId, ROOT.slice(0, 8), "00000000", "unknown-run"])
+			assert.equal(availableRunDurableBackend(f.store, id), availableRunDurableBackend(lists, id), `owner of ${id}`);
+		assert.equal(availableRunDurableBackend(f.store, ROOT.slice(0, 8)), f.backend);
+		assert.equal(availableRunDurableBackend(f.store, "unknown-run"), undefined);
+		finished.reads = 0;
+		assert.equal(availableRunDurableBackend(f.store, descriptor.childRunId), f.backend);
+		assert.notEqual(durableBackendForRun(f.backend, f.store, descriptor.childRunId), undefined);
+		assert.equal(finished.reads, 0, `resolving a durable owner read finished runs ${finished.reads} times`);
+	} finally {
+		await f.close();
+	}
 });

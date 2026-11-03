@@ -6,6 +6,7 @@ import type { WorkflowBoundaryHop } from "../shared/pending-stage-status.js";
 import type { Store } from "../shared/store.js";
 import { resolvePendingStageIdentity } from "../shared/store-pending-stage-delivery-methods.js";
 import type { PendingStageMessage, RunSnapshot } from "../shared/store-types.js";
+import { type RunsById, runsByIdOf } from "../shared/workflow-run-ownership.js";
 import type { WorkerDeliver, WorkerRecipient, WorkerStageDelivery } from "./protocol.js";
 
 export interface PooledStageIdentity {
@@ -28,8 +29,8 @@ export function pooledStageQueuedEntries(
 	stage: PooledStageIdentity,
 ): readonly PendingStageMessage[] {
 	const messages = journal.getWorkflow(root)?.pendingStageMessages ?? [];
-	const runs = store.runs();
-	const run = runs.find((candidate) => candidate.id === stage.runId);
+	const runs = runsByIdOf(store);
+	const run = runs.get(stage.runId);
 	if (run === undefined) return [];
 	const exact = new Set<PendingStageMessage>();
 	for (const key of new Set([stage.stageId, stage.stageName]))
@@ -55,20 +56,20 @@ export function pooledStageQueuedEntries(
 
 /**
  * Boundary hops from the root to a run of a pooled child. The child's own boundary lives in the root run, which
- * the attempt's store does not hold, so its name comes from the boundary's journal record.
+ * the attempt's store does not hold, so its name comes from the boundary's journal record. `runs` finds each run
+ * by id, so the walk reads only the run and its ancestors.
  */
 function pooledStageHops(
 	journal: PooledStageJournal,
-	runs: readonly RunSnapshot[],
+	runs: RunsById,
 	root: string,
 	runId: string,
 ): readonly WorkflowBoundaryHop[] | undefined {
-	const byId = new Map(runs.map((run) => [run.id, run]));
 	const hops: WorkflowBoundaryHop[] = [];
-	let current = byId.get(runId);
+	let current = runs.get(runId);
 	while (current !== undefined && current.parentRunId !== root) {
 		const child: RunSnapshot = current;
-		const parent = child.parentRunId === undefined ? undefined : byId.get(child.parentRunId);
+		const parent = child.parentRunId === undefined ? undefined : runs.get(child.parentRunId);
 		const boundary = parent?.stages.find((stage) => stage.id === child.parentStageId);
 		if (parent === undefined || boundary === undefined) return undefined;
 		hops.unshift({ name: boundary.name, runId: child.id });

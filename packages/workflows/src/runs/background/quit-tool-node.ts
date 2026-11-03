@@ -56,10 +56,7 @@ export async function abortToolNode(
 			error: `atomic-workflows: ctx.tool ${handle.name} abandoned after abort; the callback ignored its abort signal`,
 		});
 	}
-	const cancelled = activeStore
-		.runs()
-		.find((candidate) => candidate.id === runId)
-		?.toolNodes.find((candidate) => candidate.id === nodeId);
+	const cancelled = activeStore.run(runId)?.toolNodes.find((candidate) => candidate.id === nodeId);
 	return {
 		ok: true,
 		runId,

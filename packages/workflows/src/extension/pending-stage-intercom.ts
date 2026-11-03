@@ -22,15 +22,22 @@ import {
 import { type PossibleStageRow, PossibleStageRowsIndex, WorkflowTopologyIndex } from "../shared/possible-stage-rows.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
+import type { StoreRunChange } from "../shared/store-public-types.js";
 import type {
 	PendingStageMessage,
 	PendingStageMessageInput,
 	PendingStageQueueResult,
 	PendingStageSender,
 	PendingStickyStageMessageInput,
+	RunSnapshot,
 	StageSnapshot,
 } from "../shared/store-types.js";
-import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
+import {
+	childRunsInSource,
+	findRunInSource,
+	invocationRunsInSource,
+	type RunSource,
+} from "../shared/workflow-run-ownership.js";
 import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
 import {
 	formatWorkflowStageTarget,
@@ -175,13 +182,147 @@ export function registerPendingStageIntercomBridge(
 		}
 		return index;
 	};
-	const announceRoutes = (): void => {
-		if (disposed) return;
+	/**
+	 * Per root, the ids of the runs that name it as their topology root or their declared root, in store order, as
+	 * the last full announcement saw them. A change that leaves every lineage alone leaves these alone too.
+	 */
+	let rootRunMembers = new Map<string, string[]>();
+	const membersOf = (rootRunId: string): readonly RunSnapshot[] =>
+		(rootRunMembers.get(rootRunId) ?? []).flatMap((runId) => {
+			const run = activeStore.run(runId);
+			return run === undefined ? [] : [run];
+		});
+	const dropRoute = (runId: string): void => {
+		announcedRoutes.delete(runId);
+		routeCompletions.delete(runId);
+		possibleStageRowIndexes.delete(runId);
+	};
+	/**
+	 * Runs whose last route no consumer claimed or whose publication failed. Every announcement used to publish them
+	 * again, whichever run changed; an announcement scoped to changed runs publishes them again too.
+	 */
+	const unpublishedRunIds = new Set<string>();
+	const announceRun = (run: RunSnapshot, rootRunId: string, lookups: RouteLookups): void => {
+		const parentRun = lookups.parentOf(run);
+		const boundary = parentRun?.stages.find((stage) => stage.id === run.parentStageId);
+		const parent =
+			parentRun === undefined || boundary === undefined
+				? undefined
+				: {
+						runId: parentRun.id,
+						stageKeys: [boundary.id, boundary.name].filter(
+							(key) => lookups.childAt(parentRun, key)?.id === run.id,
+						),
+					};
+		let possibleStages: readonly PossibleStageRow[] | undefined;
+		if (run.id === rootRunId && isTerminalRunStatus(run.status)) {
+			// A terminal root publishes no rows; its cached rows and statuses are released, and a resumed
+			// root rebuilds them on its next announcement.
+			possibleStageRowIndexes.delete(rootRunId);
+			possibleStages = [];
+		} else if (run.id === rootRunId) {
+			possibleStages = possibleStageRowsIndex(rootRunId).rows(
+				lookups.rowRuns(rootRunId),
+				run,
+				availableStoreDurableBackend(activeStore, rootRunId),
+				lookups.runs,
+			);
+		}
+		const announcement: PendingStageRouteEvent = {
+			runId: run.id,
+			group: workflowInvocationIntercomGroup(rootRunId),
+			capability: workflowPendingStageRouteCapability(activeStore, run.id),
+			...(parent === undefined ? {} : { parent }),
+			stages: [
+				...run.stages
+					.filter(
+						(stage) =>
+							!isNonAgentStage(stage) &&
+							workflowInvocationOwnsGroup(
+								workflowInvocationIntercomGroup(rootRunId),
+								stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
+							),
+					)
+					.map((stage) => ({
+						stageId: stage.id,
+						stageName: stage.name,
+						target: stageRouteTarget(lookups.runs, rootRunId, run.id, stage.id, lookups.segments),
+						lifecycle: stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
+						// Keep agent identity for alias reactivation even after discovery eligibility ends.
+						routeEligible: stage.pendingStageDeliveryAvailable === true && isAddressableStageStatus(stage.status),
+						group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
+					})),
+				// Known ctx.ui/ctx.tool identities must not become speculative agents.
+				...nonAgentNodes(run).map((node) => ({
+					stageId: node.id,
+					stageName: node.name,
+					target: stageRouteTarget(lookups.runs, rootRunId, run.id, node.id, lookups.segments),
+					lifecycle: "pending",
+					routeEligible: false,
+					recipientPurpose: "control",
+					group: workflowInvocationIntercomGroup(rootRunId),
+				})),
+			],
+			// D7 (slice 4): only the root run's roster registration carries the invocation's
+			// possible-future rows. Presence replaces, so a terminal root publishes `[]` and
+			// the broker drops the rows.
+			...(possibleStages === undefined ? {} : { possibleStages }),
+		};
+		// Compute the signature *before* emitting: the consumer mutates the payload
+		// by attaching `completion`, so a post-emit projection would never match.
+		// Possible-stage rows keep their identity exactly while their content is unchanged.
+		const signature =
+			possibleStages === undefined
+				? JSON.stringify(announcement)
+				: `${JSON.stringify({ ...announcement, possibleStages: undefined })}\u0000${possibleStages.map(rowIdentity).join(",")}`;
+		if (announcedRoutes.get(run.id)?.signature === signature) return;
+		// Different snapshots are never debounced or serialized: A → B → A publishes
+		// all three immediately, even while an earlier completion is outstanding.
+		// Delaying a real change would hide new stages, nested aliases, and terminal
+		// rosters behind a slow acknowledgement.
+		const entry = { signature };
+		announcedRoutes.set(run.id, entry);
+		try {
+			// Intercom may open this session's own broker connection for the route; opened inside the
+			// run's execution, every later inbound message would start host turns inside it once it retires.
+			outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, announcement));
+		} catch (error) {
+			// Never cache a failed emission; the store observer owns the error.
+			if (announcedRoutes.get(run.id) === entry) announcedRoutes.delete(run.id);
+			unpublishedRunIds.add(run.id);
+			const failure = Promise.reject<void>(error);
+			void failure.catch(() => {});
+			routeCompletions.set(run.id, failure);
+			throw error;
+		}
+		// Both the lightweight relay and the direct heavy handler assign this
+		// synchronously. It is observed, never awaited here and never overwritten.
+		const completion = announcement.completion;
+		if (completion === undefined) {
+			// No consumer claimed it: an absent event surface or a not-yet-installed
+			// relay must not make the route look published. Retry next invalidation.
+			announcedRoutes.delete(run.id);
+			routeCompletions.delete(run.id);
+			unpublishedRunIds.add(run.id);
+		} else {
+			routeCompletions.set(run.id, completion);
+			completion.catch(() => {
+				// Identity, not signature: an older rejected A must not evict the
+				// newer A published after A → B → A. Reporting is the relay's job.
+				if (announcedRoutes.get(run.id) !== entry) return;
+				announcedRoutes.delete(run.id);
+				unpublishedRunIds.add(run.id);
+			});
+		}
+	};
+	/** Every run's route, announced after a change not scoped to runs or one that changed a run's lineage. */
+	const announceAllRoutes = (): void => {
+		unpublishedRunIds.clear();
 		const ownedRunIds = new Set<string>();
 		const runs = activeStore.runs();
 		topology.refresh(runs);
 		const runById = new Map(runs.map((run) => [run.id, run]));
-		const childrenByBoundary = new Map<string, ReturnType<Store["runs"]>[number][]>();
+		const childrenByBoundary = new Map<string, RunSnapshot[]>();
 		for (const run of runs) {
 			if (run.parentRunId === undefined || run.parentStageId === undefined) continue;
 			const key = JSON.stringify([run.parentRunId, run.parentStageId]);
@@ -189,122 +330,29 @@ export function registerPendingStageIntercomBridge(
 			children.push(run);
 			childrenByBoundary.set(key, children);
 		}
-		const resolveBoundarySegments = createWorkflowBoundarySegmentsResolver(runs);
+		const lookups: RouteLookups = {
+			runs,
+			parentOf: (run) => (run.parentRunId === undefined ? undefined : runById.get(run.parentRunId)),
+			childAt: (parent, segment) => resolveIndexedChildRun(childrenByBoundary, parent, segment),
+			segments: createWorkflowBoundarySegmentsResolver(runs),
+			rowRuns: () => runs,
+		};
+		const members = new Map<string, string[]>();
 		for (const run of runs) {
+			const rootRunId = topology.rootOf(run.id);
+			for (const root of new Set([rootRunId, run.rootRunId])) {
+				if (root === undefined) continue;
+				const ids = members.get(root);
+				if (ids === undefined) members.set(root, [run.id]);
+				else ids.push(run.id);
+			}
 			// Externally routed (pooled) runs are announced by their coordinator, never from here.
 			if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) continue;
-			const rootRunId = topology.rootOf(run.id);
 			if (rootRunId === undefined) continue;
 			ownedRunIds.add(run.id);
-			const parentRun = run.parentRunId === undefined ? undefined : runById.get(run.parentRunId);
-			const boundary = parentRun?.stages.find((stage) => stage.id === run.parentStageId);
-			const parent =
-				parentRun === undefined || boundary === undefined
-					? undefined
-					: {
-							runId: parentRun.id,
-							stageKeys: [boundary.id, boundary.name].filter(
-								(key) => resolveIndexedChildRun(childrenByBoundary, parentRun, key)?.id === run.id,
-							),
-						};
-			let possibleStages: readonly PossibleStageRow[] | undefined;
-			if (run.id === rootRunId && isTerminalRunStatus(run.status)) {
-				// A terminal root publishes no rows; its cached rows and statuses are released, and a resumed
-				// root rebuilds them on its next announcement.
-				possibleStageRowIndexes.delete(rootRunId);
-				possibleStages = [];
-			} else if (run.id === rootRunId) {
-				possibleStages = possibleStageRowsIndex(rootRunId).rows(
-					runs,
-					run,
-					availableStoreDurableBackend(activeStore, rootRunId),
-				);
-			}
-			const announcement: PendingStageRouteEvent = {
-				runId: run.id,
-				group: workflowInvocationIntercomGroup(rootRunId),
-				capability: workflowPendingStageRouteCapability(activeStore, run.id),
-				...(parent === undefined ? {} : { parent }),
-				stages: [
-					...run.stages
-						.filter(
-							(stage) =>
-								!isNonAgentStage(stage) &&
-								workflowInvocationOwnsGroup(
-									workflowInvocationIntercomGroup(rootRunId),
-									stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
-								),
-						)
-						.map((stage) => ({
-							stageId: stage.id,
-							stageName: stage.name,
-							target: stageRouteTarget(runs, rootRunId, run.id, stage.id, resolveBoundarySegments),
-							lifecycle:
-								stage.sessionId === undefined && stage.sessionFile === undefined ? "pending" : "running",
-							// Keep agent identity for alias reactivation even after discovery eligibility ends.
-							routeEligible:
-								stage.pendingStageDeliveryAvailable === true && isAddressableStageStatus(stage.status),
-							group: stage.intercomGroup ?? workflowInvocationIntercomGroup(rootRunId),
-						})),
-					// Known ctx.ui/ctx.tool identities must not become speculative agents.
-					...nonAgentNodes(run).map((node) => ({
-						stageId: node.id,
-						stageName: node.name,
-						target: stageRouteTarget(runs, rootRunId, run.id, node.id, resolveBoundarySegments),
-						lifecycle: "pending",
-						routeEligible: false,
-						recipientPurpose: "control",
-						group: workflowInvocationIntercomGroup(rootRunId),
-					})),
-				],
-				// D7 (slice 4): only the root run's roster registration carries the invocation's
-				// possible-future rows. Presence replaces, so a terminal root publishes `[]` and
-				// the broker drops the rows.
-				...(possibleStages === undefined ? {} : { possibleStages }),
-			};
-			// Compute the signature *before* emitting: the consumer mutates the payload
-			// by attaching `completion`, so a post-emit projection would never match.
-			// Possible-stage rows keep their identity exactly while their content is unchanged.
-			const signature =
-				possibleStages === undefined
-					? JSON.stringify(announcement)
-					: `${JSON.stringify({ ...announcement, possibleStages: undefined })}\u0000${possibleStages.map(rowIdentity).join(",")}`;
-			if (announcedRoutes.get(run.id)?.signature === signature) continue;
-			// Different snapshots are never debounced or serialized: A → B → A publishes
-			// all three immediately, even while an earlier completion is outstanding.
-			// Delaying a real change would hide new stages, nested aliases, and terminal
-			// rosters behind a slow acknowledgement.
-			const entry = { signature };
-			announcedRoutes.set(run.id, entry);
-			try {
-				// Intercom may open this session's own broker connection for the route; opened inside the
-				// run's execution, every later inbound message would start host turns inside it once it retires.
-				outsideWorkflowExecutions(() => pi.events?.emit?.(PENDING_STAGE_ROUTE_EVENT, announcement));
-			} catch (error) {
-				// Never cache a failed emission; the store observer owns the error.
-				if (announcedRoutes.get(run.id) === entry) announcedRoutes.delete(run.id);
-				const failure = Promise.reject<void>(error);
-				void failure.catch(() => {});
-				routeCompletions.set(run.id, failure);
-				throw error;
-			}
-			// Both the lightweight relay and the direct heavy handler assign this
-			// synchronously. It is observed, never awaited here and never overwritten.
-			const completion = announcement.completion;
-			if (completion === undefined) {
-				// No consumer claimed it: an absent event surface or a not-yet-installed
-				// relay must not make the route look published. Retry next invalidation.
-				announcedRoutes.delete(run.id);
-				routeCompletions.delete(run.id);
-			} else {
-				routeCompletions.set(run.id, completion);
-				completion.catch(() => {
-					// Identity, not signature: an older rejected A must not evict the
-					// newer A published after A → B → A. Reporting is the relay's job.
-					if (announcedRoutes.get(run.id) === entry) announcedRoutes.delete(run.id);
-				});
-			}
+			announceRun(run, rootRunId, lookups);
 		}
+		rootRunMembers = members;
 		// Drop claims for runs with no currently resolvable durable owner, so a removed
 		// and re-added run re-announces instead of inheriting a stale claim.
 		for (const runId of announcedRoutes.keys()) {
@@ -316,12 +364,64 @@ export function registerPendingStageIntercomBridge(
 		for (const rootRunId of possibleStageRowIndexes.keys()) {
 			if (!ownedRunIds.has(rootRunId)) possibleStageRowIndexes.delete(rootRunId);
 		}
+	};
+	/**
+	 * The routes a change to these runs can alter, found by id: every run of each invocation a changed run belongs to
+	 * or names as its declared root. Valid only while no run's lineage changed, so every other route still holds.
+	 */
+	const announceChangedRoutes = (changed: ReadonlySet<string>): void => {
+		const retried = [...unpublishedRunIds];
+		unpublishedRunIds.clear();
+		const roots = new Set<string>();
+		for (const runId of [...changed, ...retried])
+			for (const root of [topology.rootOf(runId), activeStore.run(runId)?.rootRunId])
+				if (root !== undefined && rootRunMembers.has(root)) roots.add(root);
+		const segments = new Map<string, readonly string[] | undefined>();
+		const lookups: RouteLookups = {
+			runs: activeStore,
+			parentOf: (run) => (run.parentRunId === undefined ? undefined : activeStore.run(run.parentRunId)),
+			childAt: (parent, segment) => resolveChildRun(activeStore, parent, segment),
+			segments: (runId) => {
+				if (!segments.has(runId)) segments.set(runId, workflowBoundarySegments(activeStore, runId));
+				return segments.get(runId);
+			},
+			rowRuns: membersOf,
+		};
+		const position = (runId: string) => activeStore.runPosition(runId) ?? Number.MAX_SAFE_INTEGER;
+		for (const rootRunId of [...roots].sort((left, right) => position(left) - position(right))) {
+			for (const run of membersOf(rootRunId)) {
+				if (topology.rootOf(run.id) !== rootRunId) continue;
+				if (externalRunRouteOwner(activeStore, run.id) !== undefined || !ownsRun(run.id)) dropRoute(run.id);
+				else announceRun(run, rootRunId, lookups);
+			}
+		}
+	};
+	/** Runs a sweep last found with settlement work; a scoped sweep looks at them again. */
+	const unsettledRunIds = new Set<string>();
+	const sweep = async (changed: ReadonlySet<string> | undefined): Promise<void> => {
+		const runIds = changed === undefined ? undefined : new Set([...changed, ...unsettledRunIds]);
+		const found = new Set<string>();
+		try {
+			await settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable, ownsRun, runIds, (runId) =>
+				found.add(runId),
+			);
+		} finally {
+			if (runIds === undefined) unsettledRunIds.clear();
+			else for (const runId of runIds) unsettledRunIds.delete(runId);
+			for (const runId of found) if (hasSettlementWork(activeStore.run(runId))) unsettledRunIds.add(runId);
+		}
+	};
+	/**
+	 * Announces the routes the changed runs can alter and sweeps those runs, or, when `changed` is undefined or a
+	 * changed run's lineage moved, announces every route and sweeps every run.
+	 */
+	const announceRoutes = (changed: ReadonlySet<string> | undefined): void => {
+		if (disposed) return;
+		const scope = changed !== undefined && topology.holds(activeStore, changed) ? changed : undefined;
+		if (scope === undefined) announceAllRoutes();
+		else announceChangedRoutes(scope);
 		sweepPromise = sweepPromise
-			.then(() =>
-				outsideWorkflowExecutions(() =>
-					settleUndeliverablePendingStageMessages(activeStore, notifyUndeliverable, ownsRun),
-				),
-			)
+			.then(() => outsideWorkflowExecutions(() => sweep(scope)))
 			.then(() => undefined)
 			.catch((error: Error) =>
 				reportWarning(`atomic-workflows: pending stage delivery sweep failed: ${error.message}`),
@@ -331,12 +431,22 @@ export function registerPendingStageIntercomBridge(
 	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
 	let announcedAt = Number.NEGATIVE_INFINITY;
 	let announcementCost = 0;
-	const announceNow = (): void => {
+	/** Runs changed since the last announcement; undefined once a change was not scoped to runs. */
+	let changedRunIds: Set<string> | undefined = new Set();
+	const announceNow = (everything = false): void => {
 		if (announcementTimer !== undefined) clearTimeout(announcementTimer);
 		announcementTimer = undefined;
 		announcementPending = false;
+		const changed = everything ? undefined : changedRunIds;
+		changedRunIds = new Set();
 		const started = performance.now();
-		announceRoutes();
+		try {
+			announceRoutes(changed);
+		} catch (error) {
+			// The changes this announcement did not finish are unknown; the next one announces every route.
+			changedRunIds = undefined;
+			throw error;
+		}
 		announcedAt = performance.now();
 		announcementCost = announcedAt - started;
 	};
@@ -358,11 +468,15 @@ export function registerPendingStageIntercomBridge(
 			}
 		}
 	};
-	// Each announcement rebuilds every owned run's route, so store invalidations are batched: a burst becomes one
-	// announcement after a short window, stretched when needed so announcing stays under a fixed share of the
-	// event loop. Readiness, flush and refresh announce a pending batch first.
-	const scheduleAnnouncement = (): void => {
-		if (disposed || announcementTimer !== undefined) return;
+	// Store invalidations are batched: a burst becomes one announcement after a short window, stretched when needed
+	// so announcing stays under a fixed share of the event loop. The batch carries the runs its invalidations named,
+	// so a change to one run announces only its invocation's routes. Readiness, flush and refresh announce a pending
+	// batch first.
+	const scheduleAnnouncement = (changes?: readonly StoreRunChange[]): void => {
+		if (disposed) return;
+		if (changes === undefined) changedRunIds = undefined;
+		else if (changedRunIds !== undefined) for (const change of changes) changedRunIds.add(change.runId);
+		if (announcementTimer !== undefined) return;
 		const idle = announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
 		const wait = Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now());
 		announcementPending = true;
@@ -370,18 +484,17 @@ export function registerPendingStageIntercomBridge(
 		announcementTimer.unref?.();
 	};
 	const unsubscribeStore = activeStore.subscribeInvalidation(scheduleAnnouncement);
-	announceNow();
+	announceNow(true);
 	pi.on?.("session_start", () => {
 		announcedRoutes.clear();
-		announceNow();
+		announceNow(true);
 	});
 	const routePendingStageMessage = (payload: unknown): void => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
-		const runs = activeStore.runs();
 		const parsedTarget = parseWorkflowStageTarget(payload.target);
 		if (parsedTarget === undefined) return;
 		if (!ownsRun(parsedTarget.rootRunId)) return;
-		if (parsedTarget.kind === "path" && isMaterializedNonAgentTarget(runs, parsedTarget)) {
+		if (parsedTarget.kind === "path" && isMaterializedNonAgentTarget(activeStore, parsedTarget)) {
 			payload.handled = true;
 			payload.completion = Promise.resolve({
 				outcome: "refused",
@@ -389,15 +502,15 @@ export function registerPendingStageIntercomBridge(
 			});
 			return;
 		}
-		const destination = resolveMaterializedStage(runs, payload.target);
+		const destination = resolveMaterializedStage(activeStore, payload.target);
 		if (destination === undefined) {
 			// Slice 3 (D3/D4): an unresolved target (future stage, glob, or `**`) is accepted
 			// speculatively as a sticky entry in the root run's durable bucket.
 			if (payload.live === true) return;
-			const rootRun = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			const rootRun = activeStore.run(parsedTarget.rootRunId);
 			if (rootRun === undefined) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, runs, rootRun, payload, parsedTarget).then(
+			payload.completion = deliverStickyTarget(activeStore, rootRun, payload, parsedTarget).then(
 				(value) => {
 					return value;
 				},
@@ -407,7 +520,7 @@ export function registerPendingStageIntercomBridge(
 			);
 			return;
 		}
-		const rootRunId = durableRootRunIdForRun(runs, destination.run.id);
+		const rootRunId = durableRootRunIdForRun(activeStore, destination.run.id);
 		if (rootRunId === undefined) return;
 		const resolvedEvent = {
 			...payload,
@@ -429,7 +542,7 @@ export function registerPendingStageIntercomBridge(
 				result.outcome === "forward"
 					? {
 							outcome: "forward" as const,
-							target: stageRouteTarget(runs, rootRunId, destination.run.id, stage.id),
+							target: stageRouteTarget(activeStore, rootRunId, destination.run.id, stage.id),
 						}
 					: result,
 			);
@@ -442,10 +555,10 @@ export function registerPendingStageIntercomBridge(
 			// a resolved-but-terminal stage keep today's unknown-target refusal — only
 			// future/pattern targets classify as pending_stage_ask_unsupported.
 			if (payload.message.expectsReply === true) return;
-			const stickyRoot = runs.find((candidate) => candidate.id === parsedTarget.rootRunId);
+			const stickyRoot = activeStore.run(parsedTarget.rootRunId);
 			if (stickyRoot === undefined || isTerminalRunStatus(stickyRoot.status)) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, runs, stickyRoot, payload, parsedTarget);
+			payload.completion = deliverStickyTarget(activeStore, stickyRoot, payload, parsedTarget);
 			return;
 		}
 		payload.handled = true;
@@ -492,8 +605,20 @@ export function registerPendingStageIntercomBridge(
 			await Promise.allSettled(routeCompletions.values());
 			await sweepPromise;
 		},
-		refresh: announceNow,
+		/** Announces every route, as after a change of which runs the bridge owns. */
+		refresh: () => announceNow(true),
 	});
+}
+
+/** What a run's route announcement reads besides the run, from a pass over every run or by id. */
+interface RouteLookups {
+	readonly runs: RunSource;
+	readonly parentOf: (run: RunSnapshot) => RunSnapshot | undefined;
+	/** The one child run a parent's boundary stage, named by id or name, leads to. */
+	readonly childAt: (parent: RunSnapshot, segment: string) => RunSnapshot | undefined;
+	readonly segments: WorkflowBoundarySegmentsResolver;
+	/** The runs that name the root as their topology root or declared root, in store order. */
+	readonly rowRuns: (rootRunId: string) => readonly RunSnapshot[];
 }
 
 /**
@@ -503,7 +628,7 @@ export function registerPendingStageIntercomBridge(
  * roster announcement target, which is what the broker registers live aliases from.
  */
 function stageRouteTarget(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	rootRunId: string,
 	runId: string,
 	stageId: string,
@@ -552,7 +677,7 @@ function nonAgentNodes(run: ReturnType<Store["runs"]>[number]): { readonly id: s
 	];
 }
 
-function isMaterializedNonAgentTarget(runs: ReturnType<Store["runs"]>, target: WorkflowStageTarget): boolean {
+function isMaterializedNonAgentTarget(runs: RunSource, target: WorkflowStageTarget): boolean {
 	const run = resolveMaterializedRun(runs, target);
 	if (run === undefined) return false;
 	const stageKey = target.segments.at(-1);
@@ -579,25 +704,23 @@ function resolveIndexedChildRun(
 }
 
 function resolveChildRun(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	parent: ReturnType<Store["runs"]>[number],
 	segment: string,
 ): ReturnType<Store["runs"]>[number] | undefined {
 	const boundariesById = parent.stages.filter((stage) => stage.id === segment);
 	const boundaries =
 		boundariesById.length > 0 ? boundariesById : parent.stages.filter((stage) => stage.name === segment);
-	const children = boundaries.flatMap((boundary) =>
-		runs.filter((candidate) => candidate.parentRunId === parent.id && candidate.parentStageId === boundary.id),
-	);
+	const children = boundaries.flatMap((boundary) => childRunsInSource(runs, parent.id, boundary.id));
 	return children.length === 1 ? children[0] : undefined;
 }
 
 function resolveMaterializedRun(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	parsed: WorkflowStageTarget,
 ): ReturnType<Store["runs"]>[number] | undefined {
 	if (parsed.kind !== "path") return undefined;
-	const rootRun = runs.find((candidate) => candidate.id === parsed.rootRunId);
+	const rootRun = findRunInSource(runs, parsed.rootRunId);
 	if (rootRun === undefined) return undefined;
 	let run: ReturnType<Store["runs"]>[number] = rootRun;
 	for (const segment of parsed.segments.slice(0, -1)) {
@@ -605,11 +728,9 @@ function resolveMaterializedRun(
 		// `workflow:<root>/<grandchildRunId>/<stageId>`, so match on the parsed invocation root
 		// rather than requiring a direct child of the previous hop. Run ids win over boundary
 		// stage names of the same spelling.
-		const runById = runs.filter(
-			(candidate) => candidate.id === segment && durableRootRunIdForRun(runs, candidate.id) === parsed.rootRunId,
-		);
-		if (runById.length === 1) {
-			run = runById[0]!;
+		const runById = findRunInSource(runs, segment);
+		if (runById !== undefined && durableRootRunIdForRun(runs, runById.id) === parsed.rootRunId) {
+			run = runById;
 			continue;
 		}
 		const child = resolveChildRun(runs, run, segment);
@@ -620,7 +741,7 @@ function resolveMaterializedRun(
 }
 
 function resolveMaterializedStage(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	target: string,
 ):
 	| {
@@ -702,7 +823,7 @@ async function queueAndPersist(
 		queuedAt: new Date().toISOString(),
 	};
 	const rootBackend = requireStoreDurableBackend(activeStore, event.runId);
-	const backend = durableBackendForRun(rootBackend, activeStore.runs(), event.runId);
+	const backend = durableBackendForRun(rootBackend, activeStore, event.runId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	// The broker has already authorized the immutable registration identity.
 	// Preserve the sender identity in the durable entry, but use its current
@@ -750,7 +871,6 @@ async function queueAndPersist(
  */
 async function deliverStickyTarget(
 	activeStore: Store,
-	runs: ReturnType<Store["runs"]>,
 	rootRun: ReturnType<Store["runs"]>[number],
 	event: PendingStageMessageEvent & {
 		readonly from: PendingStageSender;
@@ -778,16 +898,16 @@ async function deliverStickyTarget(
 			reason: `Workflow run ${rootRunId} terminated with status ${rootRun.status} before any stage matching ${event.target} started`,
 		};
 	}
-	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
+	const liveMatches = matchingLiveStages(activeStore, rootRunId, parsedTarget.segments);
 	// The static scan cannot see inside dynamically loaded (pooled) children, so a target that
 	// matches a materialized live or pending stage is known even when the scan misses it.
 	const notInKnownSet =
 		targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? []) ||
 		liveMatches.length > 0 ||
-		matchingLiveStages(runs, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
+		matchingLiveStages(activeStore, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
 			? undefined
 			: true;
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = pendingStageSenderGroup(event, runGroup);
 	const request: PendingStickyStageMessageInput = {
@@ -885,15 +1005,14 @@ function isStickyLiveDeliveredEvent(value: unknown): value is StickyLiveDelivere
 async function recordConfirmedStickyDeliveries(activeStore: Store, event: StickyLiveDeliveredEvent): Promise<boolean> {
 	const parsedTarget = parseWorkflowStageTarget(event.target);
 	if (parsedTarget === undefined) return false;
-	const runs = activeStore.runs();
 	const rootRunId = parsedTarget.rootRunId;
-	const rootRun = runs.find((candidate) => candidate.id === rootRunId);
+	const rootRun = activeStore.run(rootRunId);
 	const entry = rootRun?.pendingStageMessages?.find(
 		(candidate) => candidate.sticky === true && candidate.message.id === event.messageId,
 	);
 	if (rootRun === undefined || entry === undefined) return false;
 	const delivered = new Set(event.deliveredTargets);
-	const records = matchingLiveStages(runs, rootRunId, parsedTarget.segments)
+	const records = matchingLiveStages(activeStore, rootRunId, parsedTarget.segments)
 		.filter((match) => delivered.has(match.target))
 		.map((match) => ({
 			runId: match.run.id,
@@ -903,7 +1022,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 			admission: "transport" as const,
 		}));
 	if (records.length === 0) return false;
-	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), runs, rootRunId);
+	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return false;
 	const unconfirmedRecords = [];
 	for (const record of records) {
@@ -935,7 +1054,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
  * `includePending` also returns addressable stages that have no session yet.
  */
 function matchingLiveStages(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	rootRunId: string,
 	patternSegments: readonly string[],
 	options: { readonly includePending?: boolean } = {},
@@ -949,10 +1068,8 @@ function matchingLiveStages(
 		readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
 		readonly target: string;
 	}[] = [];
-	const runById = new Map(runs.map((run) => [run.id, run]));
 	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
-	for (const run of runs) {
-		if (reciprocalWorkflowRootRunId(runById, run.id) !== rootRunId) continue;
+	for (const run of invocationRunsInSource(runs, rootRunId)) {
 		const hops = hopsFor(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
@@ -1044,24 +1161,66 @@ function needsUndeliverableSettlement(run: ReturnType<Store["runs"]>[number], en
 	);
 }
 
-/** Settle queued messages whose destination can no longer enter the pre-start lifecycle window. */
+/** Whether a queued message of the run can no longer start, or an undeliverable one still owes its sender a notice. */
+function hasSettlementWork(run: RunSnapshot | undefined): boolean {
+	return run?.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry)) === true;
+}
+
+/**
+ * Settle queued messages whose destination can no longer enter the pre-start lifecycle window. `runIds` limits the
+ * sweep to those runs, found by id; without it every run is read. `onSettlementWork` hears of each run found with
+ * settlement work, owned or not, before any is settled.
+ */
 export async function settleUndeliverablePendingStageMessages(
 	activeStore: Store,
 	notify: (entry: PendingStageMessage, reason: string, notificationId: string) => Promise<boolean>,
 	ownsRun: (runId: string) => boolean = () => true,
+	runIds?: Iterable<string>,
+	onSettlementWork?: (runId: string) => void,
 ): Promise<number> {
+	if (runIds !== undefined) {
+		const position = (run: RunSnapshot) => activeStore.runPosition(run.id) ?? Number.MAX_SAFE_INTEGER;
+		const candidates = [...new Set(runIds)]
+			.flatMap((runId) => {
+				const run = activeStore.run(runId);
+				return run !== undefined && hasSettlementWork(run) ? [run] : [];
+			})
+			.sort((left, right) => position(left) - position(right));
+		for (const run of candidates) onSettlementWork?.(run.id);
+		const owned = candidates.filter((run) => ownsRun(run.id));
+		if (owned.length === 0) return 0;
+		// Ownership limits the runs a durable owner resolves through, as the full sweep's list of owned runs does.
+		const ownedRuns: RunSource = {
+			run: (runId) => {
+				const run = activeStore.run(runId);
+				return run !== undefined && ownsRun(run.id) ? run : undefined;
+			},
+			runs: () => activeStore.runs().filter((run) => ownsRun(run.id)),
+		};
+		return settleRuns(activeStore, owned, ownedRuns, notify);
+	}
 	// Ownership resolves a run's root through every run, so it is asked only once a run has settlement work:
 	// asking it of every run on each sweep made a wide fan-out's sweeps quadratic in its width.
 	const all = activeStore.runs();
-	const pending = (run: ReturnType<Store["runs"]>[number]) =>
-		run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry)) === true;
-	if (!all.some((run) => pending(run) && ownsRun(run.id))) return 0;
+	const candidates = all.filter(hasSettlementWork);
+	for (const run of candidates) onSettlementWork?.(run.id);
+	if (!candidates.some((run) => ownsRun(run.id))) return 0;
 	const runs = all.filter((run) => ownsRun(run.id));
+	return settleRuns(activeStore, runs, runs, notify);
+}
+
+/** Settles each run's messages; `owners` holds the runs a durable owner may be resolved through. */
+async function settleRuns(
+	activeStore: Store,
+	runs: readonly RunSnapshot[],
+	owners: RunSource,
+	notify: (entry: PendingStageMessage, reason: string, notificationId: string) => Promise<boolean>,
+): Promise<number> {
 	let settled = 0;
 	for (const run of runs) {
 		// Retained/partial runs with no settlement work need no durable owner.
-		if (!run.pendingStageMessages?.some((entry) => needsUndeliverableSettlement(run, entry))) continue;
-		const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, run.id), runs, run.id);
+		if (!hasSettlementWork(run)) continue;
+		const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, run.id), owners, run.id);
 		if (backend === undefined) {
 			throw new Error(`atomic-workflows: workflow run ${run.id} has no durable owner for pending-stage settlement`);
 		}
@@ -1088,7 +1247,7 @@ export async function settleUndeliverablePendingStageMessages(
 				) {
 					settled += 1;
 				}
-				const currentRun = activeStore.runs().find((candidate) => candidate.id === run.id);
+				const currentRun = activeStore.run(run.id);
 				const currentEntry = currentRun?.pendingStageMessages?.find(
 					(candidate) => candidate.stageKey === entry.stageKey && candidate.id === entry.id,
 				);

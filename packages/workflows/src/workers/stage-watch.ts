@@ -397,10 +397,7 @@ export class WorkerStageWatches {
 		const prompts = this.options.prompts?.();
 		if (held?.workId !== command.attempt.workId || held.generation !== command.attempt.generation || !prompts)
 			return { refusal: "StaleAttempt" };
-		const stage = prompts.store
-			.runs()
-			.find((run) => run.id === command.runId)
-			?.stages.find((candidate) => candidate.id === command.stageId);
+		const stage = prompts.store.run(command.runId)?.stages.find((candidate) => candidate.id === command.stageId);
 		// A stage this attempt has not recreated yet has no prompt pending here; only a finished stage is
 		// gone for good (#4022). The root holds an answer refused for the former for the prompt asked again.
 		if (stage === undefined) return { refusal: "PromptNotPending" };

@@ -321,7 +321,7 @@ export function createWorkflowPendingStageDelivery(
 					entries.map(async (entry) => {
 						const backend = durableBackendForRun(
 							requireStoreDurableBackend(activeStore, entry.runId),
-							activeStore.runs(),
+							activeStore,
 							entry.runId,
 						);
 						return (
@@ -398,11 +398,10 @@ async function deliverPendingStageMessages(
 			...stickyEntries,
 		].map((entry) => entry.id),
 	);
-	const runs = activeStore.runs();
 	// Sticky entries live in the ROOT run's bucket, so they are appended explicitly rather
 	// than discovered in the stage's own run bucket.
 	const entries = [
-		...(runs.find((run) => run.id === runId)?.pendingStageMessages ?? [])
+		...(activeStore.run(runId)?.pendingStageMessages ?? [])
 			.map((entry, index) => ({ entry, index }))
 			.filter(({ entry }) => candidateIds.has(entry.id) && entry.sticky !== true),
 		...stickyEntries.map((entry) => ({ entry, index: Number.MAX_SAFE_INTEGER })),
@@ -411,7 +410,7 @@ async function deliverPendingStageMessages(
 		.sort((left, right) => left.order - right.order || left.index - right.index)
 		.map(({ entry }) => entry);
 	const rootBackend = requireStoreDurableBackend(activeStore, runId);
-	const backend = durableBackendForRun(rootBackend, runs, runId);
+	const backend = durableBackendForRun(rootBackend, activeStore, runId);
 	if (backend === undefined) {
 		throw new Error(`atomic-workflows: workflow run ${runId} has no durable owner for pending-stage delivery`);
 	}
@@ -435,8 +434,7 @@ async function deliverPendingStageMessages(
 			};
 			const hasStickyReceipt = async (): Promise<boolean> =>
 				(activeStore
-					.runs()
-					.find((run) => run.id === entry.runId)
+					.run(entry.runId)
 					?.pendingStageMessages?.find((candidate) => candidate.id === entry.id)
 					?.deliveries?.some(
 						(delivery) =>
@@ -446,7 +444,7 @@ async function deliverPendingStageMessages(
 								(delivery.sessionId === recipient.sessionId && delivery.admission === "context")),
 					) ??
 					false) ||
-				(await durableBackendForRun(rootBackend, activeStore.runs(), entry.runId)?.hasPendingStageDeliveryReceipt?.(
+				(await durableBackendForRun(rootBackend, activeStore, entry.runId)?.hasPendingStageDeliveryReceipt?.(
 					entry.runId,
 					entry.id,
 					stickyReceipt,
@@ -455,7 +453,7 @@ async function deliverPendingStageMessages(
 			// append still in flight (a slow pooled session write, #3980), and redelivering an already-receipted entry
 			// would duplicate it and could only fail, since its receipt is already recorded.
 			if (entry.sticky === true && (await hasStickyReceipt())) {
-				const entryBackend = durableBackendForRun(rootBackend, activeStore.runs(), entry.runId);
+				const entryBackend = durableBackendForRun(rootBackend, activeStore, entry.runId);
 				if (entryBackend !== undefined) {
 					await commit(() =>
 						activeStore.recordPendingStageMessageDeliveries(
@@ -474,7 +472,7 @@ async function deliverPendingStageMessages(
 			if (entry.sticky === true) {
 				// D3: sticky entries stay queued for future matching stages; only this
 				// stage's exactly-once delivery record is written.
-				const entryBackend = durableBackendForRun(rootBackend, activeStore.runs(), entry.runId);
+				const entryBackend = durableBackendForRun(rootBackend, activeStore, entry.runId);
 				if (entryBackend === undefined) {
 					throw new Error(
 						`atomic-workflows: workflow run ${entry.runId} has no durable owner for sticky pending-stage delivery`,
@@ -529,18 +527,17 @@ function stickyPendingStageEntriesForStage(
 	/** Messages that stay this stage's after it ended, because its session already received them. */
 	receivedByEndedStage: readonly string[] = [],
 ): readonly PendingStageMessage[] {
-	const runs = activeStore.runs();
-	const rootRunId = durableRootRunIdForRun(runs, runId);
+	const rootRunId = durableRootRunIdForRun(activeStore, runId);
 	if (rootRunId === undefined) return [];
-	const rootRun = runs.find((run) => run.id === rootRunId);
+	const rootRun = activeStore.run(rootRunId);
 	if (rootRun === undefined) return [];
-	const stage = runs.find((run) => run.id === runId)?.stages.find((candidate) => candidate.id === stageId);
+	const stage = activeStore.run(runId)?.stages.find((candidate) => candidate.id === stageId);
 	const ended = stage?.status === "completed" || stage?.status === "skipped";
 	if (ended && receivedByEndedStage.length === 0) return [];
 	// Hops keep both depth-faithful spellings per ancestor (boundary-stage name or
 	// materialized child-run id, D5/D8 clarification), so a sticky target addressed
 	// through a materialized run id matches the same future stage as the name form.
-	const hops = workflowBoundaryHops(runs, runId);
+	const hops = workflowBoundaryHops(activeStore, runId);
 	if (hops === undefined) return [];
 	return (rootRun.pendingStageMessages ?? []).filter((entry) => {
 		if (

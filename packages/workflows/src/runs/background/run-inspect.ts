@@ -105,7 +105,7 @@ export function inspectRun(
 	opts?: { store?: Store; now?: number; toolControlRegistry?: ToolControlRegistry },
 ): InspectRunResult {
 	const activeStore = opts?.store ?? defaultStore;
-	const candidate = activeStore.runs().find((r) => r.id === runId);
+	const candidate = activeStore.run(runId);
 
 	if (!candidate) {
 		return { ok: false, runId, reason: "not_found" };

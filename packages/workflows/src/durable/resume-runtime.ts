@@ -62,7 +62,7 @@ export interface ResumeDurableDeps {
 function resumeBackend(deps: ResumeDurableDeps, workflowId?: string): DurableWorkflowBackend {
 	const store = deps.baseRunOpts.store ?? currentWorkflowStore();
 	return (
-		(workflowId === undefined ? undefined : availableRunDurableBackend(store.runs(), workflowId)) ??
+		(workflowId === undefined ? undefined : availableRunDurableBackend(store, workflowId)) ??
 		deps.durableBackend ??
 		requireStoreDurableBackend(store, workflowId)
 	);
@@ -344,8 +344,7 @@ async function resumeDurableWorkflowClaimed(
 		failureDisposition: handle.failureDisposition,
 		failedToolNodeId: handle.failedToolNodeId,
 	};
-	const sourceSnapshot =
-		toolContinuation?.source ?? deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
+	const sourceSnapshot = toolContinuation?.source ?? deps.baseRunOpts.store?.run(resolved.workflowId);
 	let adoptedClaimUpdatedAt: number | undefined;
 	const rollbackStartup = async (onRestored?: () => void): Promise<boolean> => {
 		if (adopting) {
@@ -440,7 +439,7 @@ async function resumeDurableWorkflowClaimed(
 					(message.includes("insufficient_state: replay topology mismatch") ||
 						message.includes("insufficient_state: replay topology ambiguous"))
 				) {
-					const current = deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId);
+					const current = deps.baseRunOpts.store?.run(resolved.workflowId);
 					// Do not undo a concurrent terminal control decision.
 					if (current?.status === "failed" && current.error === message) {
 						await backend.commitWorkflowStatus(
@@ -451,7 +450,7 @@ async function resumeDurableWorkflowClaimed(
 							sourceFailure,
 						);
 						if (
-							deps.baseRunOpts.store?.runs().find((run) => run.id === resolved.workflowId) === current &&
+							deps.baseRunOpts.store?.run(resolved.workflowId) === current &&
 							current.status === "failed" &&
 							current.error === message
 						) {
@@ -475,7 +474,7 @@ async function resumeDurableWorkflowClaimed(
 	deps.onRunAccepted?.(accepted.runId);
 	const admission = await launch.wait;
 	if (!admission.started) {
-		const snapshot = deps.baseRunOpts.store?.runs().find((run) => run.id === accepted.runId);
+		const snapshot = deps.baseRunOpts.store?.run(accepted.runId);
 		const error = workflowStartupFailureMessage(
 			admission,
 			snapshot?.error,
@@ -513,7 +512,8 @@ function foreignRunningResult(name: string, workflowId: string): ResumeDurableRe
 }
 
 function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["store"]): ResumeDurableResult {
-	const here = store?.runs().some((r) => r.id === workflowId && r.endedAt === undefined) === true;
+	const current = store?.run(workflowId);
+	const here = current !== undefined && current.endedAt === undefined;
 	return {
 		ok: false,
 		reason: "not_resumable",
@@ -531,7 +531,8 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
  */
 function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: string): boolean {
 	if (store === undefined) return false;
-	return store.runs().some((r) => r.id === workflowId && r.endedAt === undefined && r.exitReason !== "quit");
+	const run = store.run(workflowId);
+	return run !== undefined && run.endedAt === undefined && run.exitReason !== "quit";
 }
 
 /** Remove local snapshots that do not exist in the journal. */

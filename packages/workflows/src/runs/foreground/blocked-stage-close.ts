@@ -8,7 +8,7 @@ import { isTerminalRunStatus } from "../../shared/store-internal.js";
  */
 export function closeBlockedStageForGoodWhenRunEnds(store: Store, runId: string, close: () => Promise<void>): void {
 	const unsubscribe = store.subscribe(() => {
-		const run = store.runs().find((candidate) => candidate.id === runId);
+		const run = store.run(runId);
 		if (run && (!isTerminalRunStatus(run.status) || run.resumable === true)) return;
 		unsubscribe();
 		if (run) void close().catch(() => {});

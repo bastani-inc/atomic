@@ -177,10 +177,7 @@ class WorkerStageUiBroker extends StageUiBroker {
 		sessionId?: string,
 		humanInput?: StageQuestionnaireInput,
 	): Promise<T> {
-		const stage = this.workerStore
-			.runs()
-			.find((run) => run.id === runId)
-			?.stages.find((candidate) => candidate.id === stageId);
+		const stage = this.workerStore.run(runId)?.stages.find((candidate) => candidate.id === stageId);
 		if (stage?.promptFootprint?.kind === "custom") return Promise.reject(new Error(POOLED_CUSTOM_PROMPT_UNAVAILABLE));
 		return super.requestCustomUi<T>(runId, stageId, factory, options, signal, sessionId, humanInput);
 	}
