@@ -32,7 +32,13 @@ const ENGINE_EXIT_TIMEOUT_MS = 20_000;
 const ENGINE_EXIT_POLL_MS = 20;
 
 /**
- * A `--require` module that records the pid of the node process it is loaded into.
+ * A `--require` module that records the pid of every node process it is loaded into.
+ *
+ * A headless Node `--mode rpc` CLI relaunches itself with a larger heap and passes its `execArgv` through
+ * (`relaunchWithHeap`), so the preload runs twice: in the launcher the shell started, then in the engine the launcher
+ * spawned. Both processes have the project directory as their working directory, and the launcher outlives the engine
+ * by the time it takes to see the engine's exit and quit. Each process therefore appends its own line instead of
+ * overwriting a shared one, which would record only whichever started last.
  *
  * `client.stop()` ends the process the client spawned, which behind a shell is the shell, not the engine: on Windows,
  * Git Bash's `exec` and cmd.exe's `/c` leave the shell running as node's parent. `stop()` then waits only a bounded
@@ -42,7 +48,7 @@ const ENGINE_EXIT_POLL_MS = 20;
 function recordEnginePid(directory: string): { preload: string; pidFile: string } {
 	const preload = join(directory, "record-engine-pid.cjs");
 	const pidFile = join(directory, "engine.pid");
-	writeFileSync(preload, `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`);
+	writeFileSync(preload, `require("node:fs").appendFileSync(${JSON.stringify(pidFile)}, process.pid + "\\n");\n`);
 	return { preload, pidFile };
 }
 
@@ -55,26 +61,31 @@ function isRunning(pid: number): boolean {
 	}
 }
 
-/** Resolves once the engine whose pid `recordEnginePid` captured has exited and released its working directory. */
+/**
+ * Resolves once every process `recordEnginePid` captured (the launcher and the engine it relaunched) has exited and
+ * released its working directory.
+ */
 async function waitForEngineExit(pidFile: string): Promise<void> {
-	let pid: number;
+	let pids: number[];
 	try {
-		pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+		pids = readFileSync(pidFile, "utf8").split("\n").filter(Boolean).map(Number);
 	} catch {
 		// The engine never started, so nothing holds the project directory.
 		return;
 	}
-	// Each session of a test starts its own engine; never read this one's pid for the next.
+	// Each session of a test starts its own engine; never read this one's pids for the next.
 	rmSync(pidFile, { force: true });
 	const deadline = performance.now() + ENGINE_EXIT_TIMEOUT_MS;
-	while (isRunning(pid)) {
+	for (let running = pids.filter(isRunning); running.length > 0; running = running.filter(isRunning)) {
 		if (performance.now() > deadline) {
-			try {
-				process.kill(pid, "SIGKILL");
-			} catch {
-				// It exited just now; the deadline still passed.
+			for (const pid of running) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// It exited just now; the deadline still passed.
+				}
 			}
-			throw new Error(`engine ${pid} still running ${ENGINE_EXIT_TIMEOUT_MS} ms after client.stop()`);
+			throw new Error(`engine ${running.join(", ")} still running ${ENGINE_EXIT_TIMEOUT_MS} ms after client.stop()`);
 		}
 		await sleep(ENGINE_EXIT_POLL_MS);
 	}
