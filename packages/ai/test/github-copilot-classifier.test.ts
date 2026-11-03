@@ -39,13 +39,50 @@ describe("GitHub Copilot classifier", () => {
 						urls.push(String(input));
 						const headers = new Headers(init?.headers);
 						assert.ok(headers.get("editor-version"));
-						assert.equal(headers.get("copilot-integration-id"), "vscode-chat");
+						assert.equal(headers.get("copilot-integration-id"), oauth ? "vscode-chat" : "copilot-developer-cli");
 						return Response.json({ answers: { approved: { type: "noul", noul: 0.8 } } });
 					},
 				},
 			);
 			assert.deepEqual(urls, [`https://api.${oauth ? "enterprise" : "individual"}.githubcopilot.com/v1/systemone`]);
-			assert.deepEqual(result.answers.approved, { type: "bool", probability: 0.8 });
+			assert.deepEqual(result.answers.approved, { type: "bool", probability: 0.8 }, JSON.stringify(result));
+		});
+	}
+
+	for (const requestOverride of [false, true]) {
+		it(`preserves ${requestOverride ? "request" : "model"} identity headers with a raw token`, async () => {
+			const models = builtinModels();
+			const model = models.getModelOfType("classifier", "github-copilot", "microsoft-decision-1");
+			assert.ok(model);
+			await models.classify(
+				{
+					...model,
+					headers: {
+						...model.headers,
+						"Copilot-Integration-Id": "custom-model",
+						"Editor-Version": "custom-editor",
+					},
+				},
+				{
+					state: {},
+					questions: {
+						approved: { type: "bool", instructions: "Approval?", criteria: { true: "Yes", false: "No" } },
+					},
+				},
+				{
+					apiKey: "secret",
+					...(requestOverride ? { headers: { "Copilot-Integration-Id": "custom-request" } } : {}),
+					fetch: async (_input, init) => {
+						const headers = new Headers(init?.headers);
+						assert.equal(
+							headers.get("copilot-integration-id"),
+							requestOverride ? "custom-request" : "custom-model",
+						);
+						assert.equal(headers.get("editor-version"), "custom-editor");
+						return Response.json({ answers: { approved: { type: "noul", noul: 0.8 } } });
+					},
+				},
+			);
 		});
 	}
 

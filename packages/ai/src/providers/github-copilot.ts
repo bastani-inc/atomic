@@ -1,15 +1,21 @@
 import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
-import { COPILOT_API_VERSION, COPILOT_HEADERS, copilotClientHeaders } from "../api/github-copilot-headers.ts";
+import {
+	COPILOT_API_VERSION,
+	COPILOT_HEADERS,
+	copilotClientHeaders,
+	preserveCopilotIntegrationHeader,
+} from "../api/github-copilot-headers.js";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
-import { typesafeSystemOneApi } from "../api/typesafe-system-one.lazy.ts";
+import { typesafeSystemOneApi } from "../api/typesafe-system-one.lazy.js";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadGitHubCopilotOAuth } from "../auth/oauth/load.ts";
 import type { OAuthCredential } from "../auth/types.ts";
 import { createProvider, type Provider, type RefreshModelsContext } from "../models.ts";
 import type { AnyModel, Api, Model, ProviderClassifier } from "../types.ts";
+import { providerHeadersToRecord } from "../utils/headers.js";
 import { isModelType } from "../utils/model-operations.ts";
-import { GITHUB_COPILOT_CLASSIFIER_MODELS, GITHUB_COPILOT_MODELS } from "./github-copilot.models.ts";
+import { GITHUB_COPILOT_CLASSIFIER_MODELS, GITHUB_COPILOT_MODELS } from "./github-copilot.models.js";
 import {
 	GITHUB_COPILOT_INDIVIDUAL_BASE_URL as GITHUB_COPILOT_BASE_URL,
 	parseGitHubCopilotAccountModelLists,
@@ -261,8 +267,29 @@ export async function discoverGitHubCopilotModels(
 /** Copilot's account endpoint has no version prefix, but System One requires it. */
 function copilotSystemOne(classifier: ProviderClassifier): ProviderClassifier {
 	return {
-		classify: (model, context, options) =>
-			classifier.classify({ ...model, baseUrl: `${model.baseUrl.replace(/\/+$/u, "")}/v1` }, context, options),
+		classify: (model, context, options) => {
+			const defaults = copilotClientHeaders(options?.apiKey ?? "");
+			const integration = { "Copilot-Integration-Id": defaults["Copilot-Integration-Id"]! };
+			return classifier.classify(
+				{
+					...model,
+					baseUrl: `${model.baseUrl.replace(/\/+$/u, "")}/v1`,
+					headers: providerHeadersToRecord(
+						defaults,
+						model.headers,
+						preserveCopilotIntegrationHeader(model.headers, integration),
+					),
+				},
+				context,
+				{
+					...options,
+					headers: providerHeadersToRecord(
+						options?.headers,
+						preserveCopilotIntegrationHeader(options?.headers, integration),
+					),
+				},
+			);
+		},
 	};
 }
 

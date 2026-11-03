@@ -26,6 +26,10 @@ function runProbe(action: string): ProbeResult {
 				if (targets.has(specifier)) {
 					loaded.push(specifier);
 				}
+				// Production compiles these ESM specifiers; this probe imports the TypeScript source.
+				if (specifier.startsWith(".") && specifier.endsWith(".js") && context.parentURL?.startsWith(${JSON.stringify(new URL("../src/", import.meta.url).href)})) {
+					return nextResolve(specifier.slice(0, -3) + ".ts", context);
+				}
 				return nextResolve(specifier, context);
 			},
 		});
