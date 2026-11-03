@@ -355,6 +355,8 @@ export class InteractiveModeBase {
 	changelogMarkdown: string | undefined = undefined;
 
 	startupNoticesShown = false;
+	/** Startup What's New Markdown, redrawn when startup notices are requested again after extensions load. */
+	startupChangelogComponent: Component | undefined = undefined;
 	/** Last model-catalog warning already shown, so the deferred re-read only speaks on a change. */
 	reportedModelCatalogWarning: string | undefined;
 	startupNoticesPrepared = false;

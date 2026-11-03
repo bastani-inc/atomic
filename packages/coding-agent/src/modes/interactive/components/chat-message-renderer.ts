@@ -53,8 +53,8 @@ export type ChatMessageEntry =
 	  }
 	| { role: "tool"; kind: "bashExecution"; message: BashExecutionMessage; isPartial?: boolean }
 	| { role: "user"; kind: "user"; text: string; messageId?: string; timestamp?: string }
-	| { role: "custom"; kind: "custom"; message: CustomMessage<unknown> }
-	| { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage }
+	| { role: "custom"; kind: "custom"; message: CustomMessage<unknown>; messageId?: string; timestamp?: string }
+	| { role: "summary"; kind: "branchSummary"; message: BranchSummaryMessage; messageId?: string; timestamp?: string }
 	| { role: "system"; kind: "system"; text: string };
 export interface ChatMessageRenderOptions {
 	ui: Pick<TUI, "requestRender">;
@@ -154,12 +154,29 @@ export function chatEntriesFromAgentMessages(
 			case "bashExecution":
 				entries.push({ role: "tool", kind: "bashExecution", message });
 				break;
-			case "custom":
-				if (message.display) entries.push({ role: "custom", kind: "custom", message });
+			case "custom": {
+				const meta = messageMeta?.get(message);
+				if (message.display)
+					entries.push({
+						role: "custom",
+						kind: "custom",
+						message,
+						messageId: meta?.id,
+						timestamp: meta?.timestamp,
+					});
 				break;
-			case "branchSummary":
-				entries.push({ role: "summary", kind: "branchSummary", message });
+			}
+			case "branchSummary": {
+				const meta = messageMeta?.get(message);
+				entries.push({
+					role: "summary",
+					kind: "branchSummary",
+					message,
+					messageId: meta?.id,
+					timestamp: meta?.timestamp,
+				});
 				break;
+			}
 			case "system":
 				// System messages carry prompt sections, not chat content; rendering
 				// them printed a bare dim "system" line in workflow stage chats.
@@ -588,6 +605,9 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.outputPad ?? 1,
 				options.renderLatex,
+				options.markdownTransformers,
+				messageEntry.messageId,
+				messageEntry.timestamp,
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
@@ -598,6 +618,9 @@ export function renderChatMessageEntry(entry: ChatMessageEntry, options: ChatMes
 				markdownTheme,
 				options.renderLatex,
 				options.outputPad,
+				options.markdownTransformers,
+				messageEntry.messageId,
+				messageEntry.timestamp,
 			);
 			component.setExpanded(options.toolOutputExpanded ?? false);
 			return component;
@@ -636,7 +659,15 @@ function userMessageComponent(
 			timestamp,
 		);
 	const container = new SkillMessageContainer();
-	const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme, renderLatex, outputPad);
+	const skillComponent = new SkillInvocationMessageComponent(
+		skillBlock,
+		markdownTheme,
+		renderLatex,
+		outputPad,
+		markdownTransformers,
+		messageId,
+		timestamp,
+	);
 	skillComponent.setExpanded(expanded);
 	container.addChild(skillComponent);
 	if (skillBlock.userMessage) {

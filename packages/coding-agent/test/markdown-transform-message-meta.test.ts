@@ -155,4 +155,62 @@ describe("markdown transformer message identity (pi 64627838)", () => {
 			{ messageType: "assistant", messageId: "a1", timestamp: "2025-01-15T10:31:00.000Z" },
 		]);
 	});
+
+	test("persisted custom messages and branch summaries attach their entry's id and timestamp", () => {
+		initTheme("dark");
+		const captured: CapturedContext[] = [];
+		const rendered: ChatMessageEntry[] = [];
+		const mode = {
+			resetTranscriptSelection: () => undefined,
+			pendingTools: new Map(),
+			deferredRenderedUserInputs: [],
+			deferredRenderedUserInputComponents: new Map(),
+			chatContainer: new Container(),
+			settingsManager: { getShowCacheMissNotices: () => false },
+			session: {
+				modelRuntime: { getModel: () => undefined },
+				extensionRunner: { getEntryRenderer: () => undefined },
+			},
+			ui: { requestRender: () => undefined },
+			addRenderedChatEntry: (chatEntry: ChatMessageEntry) => {
+				rendered.push(chatEntry);
+				renderChatMessageEntry(chatEntry, {
+					ui: { requestRender: () => undefined },
+					cwd: process.cwd(),
+					toolOutputExpanded: true,
+					markdownTransformers: [capturingTransformer(captured)],
+				}).render(80);
+				return new Text(chatEntry.kind, 0, 0);
+			},
+			addCustomEntryToChat: () => undefined,
+			renderDeferredUserInput: () => undefined,
+		};
+		const renderSessionEntries = Reflect.get(InteractiveMode.prototype, "renderSessionEntries") as (
+			this: typeof mode,
+			entries: SessionEntry[],
+		) => void;
+
+		renderSessionEntries.call(mode, [
+			entry("c1", "2025-01-15T10:30:00.000Z", {
+				type: "custom_message",
+				customType: "note",
+				content: "custom body",
+				display: true,
+			}),
+			entry("b1", "2025-01-15T10:31:00.000Z", {
+				type: "branch_summary",
+				fromId: "c1",
+				summary: "summary body",
+			}),
+		]);
+
+		assert.deepEqual(
+			rendered.map((chatEntry) => chatEntry.kind),
+			["custom", "branchSummary"],
+		);
+		assert.deepEqual(captured, [
+			{ messageType: "custom", messageId: "c1", timestamp: "2025-01-15T10:30:00.000Z" },
+			{ messageType: "summary", messageId: "b1", timestamp: "2025-01-15T10:31:00.000Z" },
+		]);
+	});
 });

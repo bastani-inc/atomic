@@ -49,8 +49,17 @@ export interface MessageRenderOptions extends KeybindingHints {
 	outputPad: number;
 }
 
+/**
+ * Markdown surface a transformer runs on.
+ * - `user`, `assistant`, `assistant-thinking`: transcript messages (the default types of a transformer)
+ * - `custom`: custom messages without a custom renderer, and expanded skill blocks (their content, without Atomic's header)
+ * - `summary`: expanded branch summaries (the summary, without Atomic's header)
+ * - `changelog`: Atomic's changelog ("What's New" at startup and `/changelog`)
+ */
+export type MarkdownMessageType = "user" | "assistant" | "assistant-thinking" | "custom" | "summary" | "changelog";
+
 export interface MarkdownTransformContext {
-	messageType: "user" | "assistant" | "assistant-thinking";
+	messageType: MarkdownMessageType;
 	isStreaming: boolean;
 	availableWidth: number;
 	/** Persisted session-entry id. Undefined for live messages or live rendering; available when rendering from persisted session entries. */
@@ -60,6 +69,17 @@ export interface MarkdownTransformContext {
 }
 
 export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
+
+export interface MarkdownTransformerOptions {
+	/** Surfaces the transformer runs on. Default: `["user", "assistant", "assistant-thinking"]`. */
+	messageTypes?: readonly MarkdownMessageType[];
+}
+
+/** A registered Markdown transformer and the surfaces it runs on. */
+export interface MarkdownTransformerRegistration {
+	transformer: MarkdownTransformer;
+	messageTypes: ReadonlySet<MarkdownMessageType>;
+}
 
 export interface EntryRenderOptions extends KeybindingHints {
 	expanded: boolean;

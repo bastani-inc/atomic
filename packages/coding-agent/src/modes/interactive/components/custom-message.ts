@@ -1,12 +1,13 @@
 import type { TextContent } from "@bastani/pi-ai/compat";
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
-import type { MessageRenderer } from "../../../core/extensions/types.ts";
+import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensions/types.ts";
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
+import { createMarkdownTransform } from "./markdown-transform.ts";
 import { completionNoticeFromDetails, TaskCompletionMessage } from "./task-completion-message.js";
 import { heartbeatDetailsFrom, TaskHeartbeatMessage } from "./task-heartbeat-message.js";
 
@@ -35,6 +36,9 @@ export class CustomMessageComponent extends Container {
 	private _expanded = false;
 	private outputPad: number;
 	private renderLatex: boolean;
+	private markdownTransformers: readonly MarkdownTransformer[];
+	private messageId?: string;
+	private timestamp?: string;
 
 	constructor(
 		message: CustomMessage<unknown>,
@@ -42,6 +46,9 @@ export class CustomMessageComponent extends Container {
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		outputPad = 1,
 		renderLatex = true,
+		markdownTransformers: readonly MarkdownTransformer[] = [],
+		messageId?: string,
+		timestamp?: string,
 	) {
 		super();
 		this.message = message;
@@ -49,6 +56,9 @@ export class CustomMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.outputPad = outputPad;
 		this.renderLatex = renderLatex;
+		this.markdownTransformers = markdownTransformers;
+		this.messageId = messageId;
+		this.timestamp = timestamp;
 
 		// Create box with purple background (used for default rendering)
 		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -172,7 +182,16 @@ export class CustomMessageComponent extends Container {
 				{
 					color: (text: string) => theme.fg("customMessageText", text),
 				},
-				{ renderLatex: this.renderLatex },
+				{
+					transform: createMarkdownTransform(
+						"custom",
+						() => false,
+						this.markdownTransformers,
+						this.messageId,
+						this.timestamp,
+					),
+					renderLatex: this.renderLatex,
+				},
 			),
 		);
 	}

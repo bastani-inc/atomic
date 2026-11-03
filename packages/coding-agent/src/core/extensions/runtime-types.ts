@@ -15,7 +15,7 @@ import type { CompactOptions, ContextUsage, ExtensionContext, ReplacedSessionCon
 import type { McpServerRegistry } from "./mcp-server-registry.ts";
 import type {
 	EntryRenderer,
-	MarkdownTransformer,
+	MarkdownTransformerRegistration,
 	MessageRenderer,
 	SendMessageOptions,
 	SendMessagesOptions,
@@ -272,7 +272,7 @@ export interface Extension {
 	tools: Map<string, RegisteredTool>;
 	messageRenderers: Map<string, MessageRenderer>;
 	toolRenderers?: ToolRendererResolver[];
-	markdownTransformer?: MarkdownTransformer;
+	markdownTransformer?: MarkdownTransformerRegistration;
 	entryRenderers: Map<string, EntryRenderer>;
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;

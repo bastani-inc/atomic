@@ -62,6 +62,7 @@ import type {
 import type {
 	EntryRenderer,
 	MarkdownTransformer,
+	MarkdownTransformerOptions,
 	MessageRenderer,
 	SendMessageOptions,
 	SendMessagesOptions,
@@ -276,8 +277,11 @@ export interface ExtensionAPI {
 	/** Register a custom renderer for CustomMessageEntry. */
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 
-	/** Register a transformer for user and assistant Markdown before Atomic renders it in the interactive transcript. */
-	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
+	/**
+	 * Register a transformer for Markdown before Atomic renders it in interactive mode. By default it runs on user,
+	 * assistant and thinking Markdown; `options.messageTypes` selects the surfaces instead.
+	 */
+	registerMarkdownTransformer(transformer: MarkdownTransformer, options?: MarkdownTransformerOptions): void;
 	/** Register a custom renderer for a persistent CustomEntry. */
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
 

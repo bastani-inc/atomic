@@ -11,6 +11,7 @@ import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runti
 import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
+import { createMarkdownTransform } from "./components/markdown-transform.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
@@ -29,6 +30,7 @@ import {
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
 	hasTrustRequiringProjectResources,
+	Markdown,
 	type Message,
 	type PersistedMessageMeta,
 	parseSkillBlock,
@@ -233,6 +235,22 @@ InteractiveModeBase.prototype.getMarkdownTransformers = function (this: Interact
 	return [this.mermaidMarkdownTransformer, ...extensionTransformers];
 };
 
+/**
+ * Markdown of a changelog that runs the Markdown transformers registered for the `changelog` type. Transformers are
+ * looked up on each render, so a notice shown before deferred extensions load uses them once it is invalidated.
+ */
+InteractiveModeBase.prototype.createChangelogMarkdown = function (
+	this: InteractiveModeBase,
+	markdown: string,
+	paddingX: number,
+	paddingY: number,
+): Markdown {
+	return new Markdown(markdown, paddingX, paddingY, this.getMarkdownThemeWithSettings(), undefined, {
+		transform: (text, width) =>
+			createMarkdownTransform("changelog", () => false, this.getMarkdownTransformers())(text, width),
+	});
+};
+
 InteractiveModeBase.prototype.chatMessageRenderOptions = function (
 	this: InteractiveModeBase,
 ): ChatMessageRenderOptions {
@@ -379,6 +397,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 								this.getMarkdownThemeWithSettings(),
 								this.outputPad,
 								this.settingsManager.getLatexRenderingEnabled(),
+								markdownTransformers,
 							);
 				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
@@ -392,6 +411,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 				this.getMarkdownThemeWithSettings(),
 				this.settingsManager.getLatexRenderingEnabled(),
 				this.outputPad,
+				markdownTransformers,
 			);
 			component.setExpanded(this.toolOutputExpanded);
 			this.chatContainer.addChild(component);
@@ -411,6 +431,7 @@ InteractiveModeBase.prototype.addMessageToChat = function (
 						this.getMarkdownThemeWithSettings(),
 						this.settingsManager.getLatexRenderingEnabled(),
 						this.outputPad,
+						markdownTransformers,
 					);
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
