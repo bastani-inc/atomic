@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.9.70] - 2026-11-03
+
+Alt+Up no longer loses or duplicates a queued message in the default interactive mode, and internal URL expansion in `bash` and `powershell` is now conservative about where it replaces a URL with a path.
+
+- **Alt+Up restores what the engine removed:** a message queued less than one engine round trip before the key press is no longer lost, and a message the engine already took into its turn no longer comes back to the editor ([#4259](https://github.com/bastani-inc/atomic/pull/4259))
+- **Safer internal URL expansion:** `bash` and `powershell` replace an internal URL such as `local://` with its quoted path only in a plain shell word. In arithmetic, array subscripts, comments, PowerShell typographic quotes and similar positions, the command now runs unchanged ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+- **minimatch 11.0.4:** fixes a glob pattern amplification advisory. Atomic's own patterns were not exposed ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+
+### Fixed
+
+- Alt+Up no longer loses or duplicates a queued message in the default interactive mode, where the session runs in an engine process. A message the engine queued less than one round trip before the key press, such as a steering or follow-up message or one an extension command sends, was restored from the host's older copy of the queue while the engine cleared its own, so it ended up in neither the editor nor the queue. A message the engine had already taken into its turn could also come back to the editor and run as well. The host now restores exactly what the engine removed, followed by the messages only the editor holds, in the order they were typed. If the engine cannot be reached, nothing is removed and an error is shown. The RPC `clear_queue` response already listed the removed messages, so RPC clients are unaffected ([#4257](https://github.com/bastani-inc/atomic/issues/4257))
+- `bash` and `powershell` now expand an internal URL such as `local://` or `artifact://` only where the shell reads the quoted path that replaces it as one literal word. A URL in arithmetic (`((…))`, `$[…]`), an array subscript or compound array assignment, a comment, or directly after a character such as `$` or `[`, and in PowerShell inside typographic quotes (`‘…’`, `“…”`), a block comment (`<#…#>`) or after the stop-parsing token `--%`, now runs unchanged. In those positions the shell could read characters of the resolved path, such as a project directory name containing shell syntax, as code. Pass the filesystem path there instead ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+- Updated the bundled `minimatch` dependency to 11.0.4, which fixes a pattern amplification that could stall a process compiling a crafted glob at `optimizationLevel` 2 ([GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)). Atomic's model scope and resource filter patterns use the default optimization level, so they were not exposed, and they match the same paths and models as before ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+
+## [0.9.70-alpha.1] - 2026-11-03
+
+Alt+Up no longer loses or duplicates a queued message in the default interactive mode, and internal URL expansion in `bash` and `powershell` is now conservative about where it replaces a URL with a path.
+
+- **Alt+Up restores what the engine removed:** a message queued less than one engine round trip before the key press is no longer lost, and a message the engine already took into its turn no longer comes back to the editor ([#4259](https://github.com/bastani-inc/atomic/pull/4259))
+- **Safer internal URL expansion:** `bash` and `powershell` replace an internal URL such as `local://` with its quoted path only in a plain shell word. In arithmetic, array subscripts, comments, PowerShell typographic quotes and similar positions, the command now runs unchanged ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+- **minimatch 11.0.4:** fixes a glob pattern amplification advisory. Atomic's own patterns were not exposed ([#4260](https://github.com/bastani-inc/atomic/pull/4260))
+
 ### Fixed
 
 - Alt+Up no longer loses or duplicates a queued message in the default interactive mode, where the session runs in an engine process. A message the engine queued less than one round trip before the key press, such as a steering or follow-up message or one an extension command sends, was restored from the host's older copy of the queue while the engine cleared its own, so it ended up in neither the editor nor the queue. A message the engine had already taken into its turn could also come back to the editor and run as well. The host now restores exactly what the engine removed, followed by the messages only the editor holds, in the order they were typed. If the engine cannot be reached, nothing is removed and an error is shown. The RPC `clear_queue` response already listed the removed messages, so RPC clients are unaffected ([#4257](https://github.com/bastani-inc/atomic/issues/4257))
