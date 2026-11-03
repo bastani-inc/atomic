@@ -812,16 +812,16 @@ describe("RPC shutdown triggers", () => {
 		const { runtimeHost, exitSpy, finishDispose, cleanup } = await startWithSlowDispose();
 		try {
 			process.stdin.emit("end");
-			await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
+			await vi.waitFor(() => assert.equal(vi.mocked(runtimeHost.dispose).mock.calls.length, 1));
 			// Without a listener, a real SIGTERM would kill the process mid-dispose.
-			expect(process.listenerCount("SIGTERM")).toBe(1);
+			assert.equal(process.listenerCount("SIGTERM"), 1);
 			process.emit("SIGTERM");
 			await sleep(10);
-			expect(exitSpy).not.toHaveBeenCalled();
+			assert.equal(exitSpy.mock.calls.length, 0);
 
 			finishDispose();
-			await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(0));
-			expect(exitSpy).toHaveBeenCalledTimes(1);
+			await vi.waitFor(() => assert.deepEqual(exitSpy.mock.calls, [[0]]));
+			assert.equal(exitSpy.mock.calls.length, 1);
 		} finally {
 			await cleanup();
 		}
@@ -831,15 +831,15 @@ describe("RPC shutdown triggers", () => {
 		const { runtimeHost, exitSpy, finishDispose, cleanup } = await startWithSlowDispose();
 		try {
 			process.emit("SIGTERM");
-			await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
+			await vi.waitFor(() => assert.equal(vi.mocked(runtimeHost.dispose).mock.calls.length, 1));
 			process.stdin.emit("end");
 			await sleep(10);
-			expect(exitSpy).not.toHaveBeenCalled();
+			assert.equal(exitSpy.mock.calls.length, 0);
 
 			finishDispose();
-			await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(143));
-			expect(exitSpy).toHaveBeenCalledTimes(1);
-			expect(runtimeHost.dispose).toHaveBeenCalledTimes(1);
+			await vi.waitFor(() => assert.deepEqual(exitSpy.mock.calls, [[143]]));
+			assert.equal(exitSpy.mock.calls.length, 1);
+			assert.equal(vi.mocked(runtimeHost.dispose).mock.calls.length, 1);
 		} finally {
 			await cleanup();
 		}
@@ -849,11 +849,11 @@ describe("RPC shutdown triggers", () => {
 		const { runtimeHost, exitSpy, cleanup } = await startWithSlowDispose();
 		try {
 			process.stdin.emit("end");
-			await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
+			await vi.waitFor(() => assert.equal(vi.mocked(runtimeHost.dispose).mock.calls.length, 1));
 			process.emit("SIGTERM");
 			process.emit("SIGTERM");
-			expect(exitSpy).toHaveBeenCalledTimes(1);
-			expect(exitSpy).toHaveBeenCalledWith(143);
+			assert.equal(exitSpy.mock.calls.length, 1);
+			assert.deepEqual(exitSpy.mock.calls, [[143]]);
 		} finally {
 			await cleanup();
 		}

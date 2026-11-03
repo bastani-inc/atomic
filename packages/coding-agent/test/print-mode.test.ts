@@ -726,19 +726,19 @@ describe("runPrintMode", () => {
 			mode: "text",
 			initialMessage: "Say done",
 		});
-		await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
-		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore + 1);
+		await vi.waitFor(() => assert.equal(runtimeHost.dispose.mock.calls.length, 1));
+		assert.equal(process.listenerCount("SIGTERM"), listenersBefore + 1);
 
 		process.emit("SIGTERM");
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(exitSpy).not.toHaveBeenCalled();
-		expect(runtimeHost.dispose).toHaveBeenCalledTimes(1);
+		assert.equal(exitSpy.mock.calls.length, 0);
+		assert.equal(runtimeHost.dispose.mock.calls.length, 1);
 
 		process.emit("SIGTERM");
-		expect(exitSpy).toHaveBeenCalledWith(143);
+		assert.deepEqual(exitSpy.mock.calls, [[143]]);
 
 		finishDispose();
 		await run;
-		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore);
+		assert.equal(process.listenerCount("SIGTERM"), listenersBefore);
 	});
 });
