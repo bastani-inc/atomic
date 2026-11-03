@@ -12,6 +12,7 @@
 
 ### Added
 
+- Added `github-copilot/microsoft-decision-1` for text classification in codemode, using Copilot OAuth or an API key (upstream [#11679](https://github.com/earendil-works/pi/pull/11679)).
 - GitHub Copilot discovers models from the account's `/models` catalog, so models the account offers but the built-in catalog lacks appear in `/model`, `--list-models` and workflow catalogs. It works with OAuth and API-key credentials, and the list is cached in `models-store.json` for offline startup. A discovered model keeps the exact advertised ID as its ID and name, is marked `discovered: true`, and can be adjusted with `modelOverrides`; built-in entries keep their curated metadata.
 - `atomic update` lists each updated package with its npm version or git commit change, for example `npm:foo 1.2.0 -> 1.3.0`, and prints `Packages are already up to date` only when it checked the packages and nothing warned: after a warning it says no packages were updated, and in offline mode it says package updates were skipped. `PackageManager.update()` reports each changed package as a new `result` progress event whose `message` holds that line (upstream [#11707](https://github.com/earendil-works/pi/pull/11707), [#11711](https://github.com/earendil-works/pi/pull/11711))
 
