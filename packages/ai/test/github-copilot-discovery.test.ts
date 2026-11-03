@@ -150,7 +150,42 @@ describe("GitHub Copilot account model discovery", () => {
 			supportsLongCacheRetention: false,
 		});
 		assert.deepEqual(discovered("example-model").compat, { supportsLongCacheRetention: false });
-		assert.equal(discovered("example-messages-model").compat, undefined);
+	});
+
+	it("sends the selected effort to a Messages model the list marks as adaptive", async () => {
+		let request: Request | undefined;
+		await streamSimple(
+			discovered("example-messages-model"),
+			{ messages: [{ role: "user", content: "test", timestamp: 0 }] },
+			{
+				apiKey: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+				reasoning: "medium",
+				fetch: async (input, init) => {
+					request = input instanceof Request ? input : new Request(input, init);
+					return Response.json({ type: "error", error: { type: "invalid_request_error", message: "stop" } }, { status: 400 });
+				},
+			},
+		).result();
+		assert(request);
+		const payload = JSON.parse(await request.text()) as {
+			model: string;
+			thinking?: { type: string; budget_tokens?: number };
+			output_config?: { effort?: string };
+		};
+		assert.equal(payload.model, "example-messages-model");
+		assert.equal(payload.thinking?.type, "adaptive");
+		assert.equal(payload.thinking?.budget_tokens, undefined);
+		assert.equal(payload.output_config?.effort, "medium");
+	});
+
+	it("keeps budget-based thinking for a Messages model the list does not mark as adaptive", () => {
+		const supports = { tool_calls: true, reasoning_effort: ["low", "medium", "high"] };
+		const raw = withEntry("example-messages-model", {
+			capabilities: { type: "chat", family: "example-messages-model", supports, limits: {} },
+		});
+		const model = discover(raw).find((candidate) => candidate.id === "example-messages-model");
+		assert.equal(model?.api, "anthropic-messages");
+		assert.equal(model?.compat, undefined);
 	});
 
 	it("reads limits, image input and reasoning efforts from the entry", () => {
@@ -192,14 +227,24 @@ describe("GitHub Copilot account model discovery", () => {
 		assert.equal(model.name, "example-model-fast");
 		assert.equal(model.api, discovered("example-model").api);
 
-		const linkedToCatalog = discover(withEntry("example-static-model-fast", { capabilities: familyOf("example-static-model") }));
-		const fast = linkedToCatalog.find((candidate) => candidate.id === "example-static-model-fast");
-		assert.deepEqual(fast?.fastRoute, {
+		const fast = linkedToCatalog();
+		assert.deepEqual(fast.fastRoute, {
 			baseModelId: "example-static-model",
 			upstreamModelId: "example-static-model-fast",
 		});
-		assert.equal(fast?.contextWindow, staticModel.contextWindow);
-		assert.equal(fast?.name, "example-static-model-fast");
+		assert.equal(fast.name, "example-static-model-fast");
+	});
+
+	it("describes a linked fast entry by its own row, not its base's", () => {
+		// The curated base differs from the fast entry's row in limits, image input and efforts.
+		const fast = linkedToCatalog();
+		assert.equal(fast.api, "openai-responses");
+		assert.equal(fast.contextWindow, 1_050_000);
+		assert.equal(fast.maxTokens, 128_000);
+		assert.deepEqual(fast.input, ["text", "image"]);
+		assert.equal(fast.thinkingLevelMap?.xhigh, "xhigh");
+		assert.deepEqual(fast.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+		assert.equal(fast.discovered, true);
 	});
 
 	it("rejects a response without a model list", () => {
@@ -207,10 +252,10 @@ describe("GitHub Copilot account model discovery", () => {
 	});
 
 	it("sends a discovered fast model upstream under its exact ID without a 24-hour cache request", async () => {
-		for (const id of ["example-static-model-fast", "example-model-fast"]) {
+		for (const model of [discovered("example-static-model-fast"), discovered("example-model-fast"), linkedToCatalog()]) {
 			let request: Request | undefined;
 			await streamSimple(
-				discovered(id),
+				model,
 				{ messages: [{ role: "user", content: "test", timestamp: 0 }] },
 				{
 					apiKey: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
@@ -230,13 +275,21 @@ describe("GitHub Copilot account model discovery", () => {
 				service_tier?: string;
 				prompt_cache_retention?: string;
 			};
-			assert.equal(payload.model, id);
+			assert.equal(payload.model, model.id);
 			assert.equal(payload.service_tier, undefined);
 			// Some Copilot models reject a 24-hour cache request, and the account's list cannot say which.
-			assert.equal(payload.prompt_cache_retention, undefined);
+			assert.equal(payload.prompt_cache_retention, undefined, model.id);
 		}
 	});
 });
+
+/** The recorded fast entry whose family names the curated catalog model as its base. */
+function linkedToCatalog(): Model<Api> {
+	const raw = withEntry("example-static-model-fast", { capabilities: familyOf("example-static-model") });
+	const fast = discover(raw).find((candidate) => candidate.id === "example-static-model-fast");
+	if (!fast) throw new Error("Expected example-static-model-fast to be discovered");
+	return fast;
+}
 
 function familyOf(family: string): Record<string, unknown> {
 	const entry = recordedModels.data.find((candidate) => candidate.id === "example-static-model-fast");
@@ -316,22 +369,20 @@ describe("GitHub Copilot availability of discovered models", () => {
 		);
 	});
 
-	it("offers a login the fast IDs it lists, picker entries or not, and only those", () => {
+	it("offers a login every discovered model, even one its saved lists predate", () => {
+		// The saved lists are renewed only with the token; the refresh that discovered these models read the
+		// account's list later.
 		const login = {
 			type: "oauth" as const,
 			access: "copilot-test",
 			refresh: "unused",
 			expires: 0,
-			availableModelIds: ["example-model"],
-			fastModelIds: ["example-model-fast", "example-static-model-fast"],
+			availableModelIds: [],
+			fastModelIds: [],
 		};
 		assert.deepEqual(
 			provider.filterModels?.([ordinary, fast, unlinkedFast], login)?.map((model) => model.id),
 			["example-model", "example-model-fast", "example-static-model-fast"],
-		);
-		assert.deepEqual(
-			provider.filterModels?.([ordinary, fast, unlinkedFast], { ...login, fastModelIds: [] })?.map((model) => model.id),
-			["example-model"],
 		);
 	});
 });

@@ -1,20 +1,21 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential } from "@bastani/pi-ai";
 import { GITHUB_COPILOT_MODELS } from "@bastani/pi-ai/providers/github-copilot.models";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.js";
 import {
 	findInitialModel,
 	resolveCliModel,
 	resolveModelScope,
 	restoreModelFromSession,
-} from "../src/core/model-resolver.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+} from "../src/core/model-resolver.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 const PROVIDER = "github-copilot";
 const API_KEY: Credential = { type: "api_key", key: "github_pat_example_token" };
@@ -113,7 +114,7 @@ async function discover(credential: Credential, modelsJson?: Record<string, unkn
 	stubNetwork();
 	const modelRuntime = await runtime(credential, modelsJson);
 	const result = await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
-	expect(result.errors.get(PROVIDER)).toBeUndefined();
+	assert.equal(result.errors.get(PROVIDER), undefined);
 	vi.restoreAllMocks();
 	return modelRuntime;
 }
@@ -137,26 +138,34 @@ async function availableIds(modelRuntime: ModelRuntime): Promise<string[]> {
 	return (await modelRuntime.getAvailable(PROVIDER)).map((model) => model.id);
 }
 
+function assertIncludesAll(actual: readonly string[], expected: readonly string[]): void {
+	for (const id of expected) assert.ok(actual.includes(id), `${id} missing from ${actual.join(", ")}`);
+}
+
+function assertMentions(message: string | undefined, text: string): void {
+	assert.ok(message?.includes(text), `${JSON.stringify(message)} does not mention ${JSON.stringify(text)}`);
+}
+
 describe("GitHub Copilot models discovered from the account's list", () => {
 	it("reads an API key's list from its routed host and offers each model under its exact ID", async () => {
 		const modelRuntime = await discover(API_KEY);
 
-		expect(modelListUrls).toEqual(["https://api.githubcopilot.com/models"]);
-		expect(modelListAuthorizations).toEqual([`Bearer ${API_KEY.type === "api_key" ? API_KEY.key : ""}`]);
-		expect(await availableIds(modelRuntime)).toEqual(expect.arrayContaining(ACCOUNT_IDS));
+		assert.deepEqual(modelListUrls, ["https://api.githubcopilot.com/models"]);
+		assert.deepEqual(modelListAuthorizations, [`Bearer ${API_KEY.type === "api_key" ? API_KEY.key : ""}`]);
+		assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
 		for (const id of ACCOUNT_IDS) {
 			const model = modelRuntime.getModel(PROVIDER, id);
-			expect(model?.name).toBe(id);
-			expect(model?.discovered).toBe(true);
+			assert.equal(model?.name, id);
+			assert.equal(model?.discovered, true);
 		}
-		expect(modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID)?.discovered).toBeUndefined();
+		assert.equal(modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID)?.discovered, undefined);
 	});
 
 	it("keeps a fast model the list does not link to a base as an ordinary model", async () => {
 		const modelRuntime = await discover(API_KEY);
 
-		expect(modelRuntime.getModel(PROVIDER, "example-model-fast")?.fastRoute).toBeUndefined();
-		expect(modelRuntime.getModel(PROVIDER, "example-linked-model-fast")?.fastRoute).toEqual({
+		assert.equal(modelRuntime.getModel(PROVIDER, "example-model-fast")?.fastRoute, undefined);
+		assert.deepEqual(modelRuntime.getModel(PROVIDER, "example-linked-model-fast")?.fastRoute, {
 			baseModelId: "example-model",
 			upstreamModelId: "example-linked-model-fast",
 		});
@@ -166,14 +175,29 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		const unlisted = `${CATALOG_MODEL_ID}-fast`;
 		const modelRuntime = await discover(oauthLogin(["example-linked-model-fast", "example-model-fast", unlisted]));
 
-		expect(modelListUrls).toEqual(["https://api.individual.githubcopilot.com/models"]);
-		expect(modelListAuthorizations).toEqual([`Bearer ${OAUTH_ACCESS}`]);
-		const available = await availableIds(modelRuntime);
-		expect(available).toEqual(expect.arrayContaining(ACCOUNT_IDS));
-		expect(modelRuntime.getModel(PROVIDER, unlisted)).toBeUndefined();
+		assert.deepEqual(modelListUrls, ["https://api.individual.githubcopilot.com/models"]);
+		assert.deepEqual(modelListAuthorizations, [`Bearer ${OAUTH_ACCESS}`]);
+		assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
+		assert.equal(modelRuntime.getModel(PROVIDER, unlisted), undefined);
 		for (const id of modelRuntime.getModels(PROVIDER).map((model) => model.id)) {
-			expect(id in GITHUB_COPILOT_MODELS || ACCOUNT_IDS.includes(id), id).toBe(true);
+			assert.ok(id in GITHUB_COPILOT_MODELS || ACCOUNT_IDS.includes(id), id);
 		}
+	});
+
+	it("offers what a refresh discovers to an OAuth login whose saved lists predate it", async () => {
+		// The token is still valid, so the refresh reads the account's list without renewing the login.
+		const staleLogin: Credential = {
+			type: "oauth",
+			access: OAUTH_ACCESS,
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			availableModelIds: [CATALOG_MODEL_ID],
+			fastModelIds: [],
+		};
+		const modelRuntime = await discover(staleLogin);
+
+		assert.deepEqual(modelListUrls, ["https://api.individual.githubcopilot.com/models"]);
+		assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
 	});
 
 	it("restores the discovered models at startup without the network", async () => {
@@ -182,9 +206,9 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 
 		const restarted = await runtime(API_KEY);
 
-		expect(restarted.getModel(PROVIDER, "example-model-fast")?.discovered).toBe(true);
-		expect(await availableIds(restarted)).toEqual(expect.arrayContaining(ACCOUNT_IDS));
-		expect(fetchSpy).not.toHaveBeenCalled();
+		assert.equal(restarted.getModel(PROVIDER, "example-model-fast")?.discovered, true);
+		assertIncludesAll(await availableIds(restarted), ACCOUNT_IDS);
+		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
 	it("applies modelOverrides to a discovered model", async () => {
@@ -203,10 +227,10 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		});
 
 		const model = (await modelRuntime.getAvailable(PROVIDER)).find((entry) => entry.id === "example-model");
-		expect(model?.contextWindow).toBe(12_345);
-		expect(model?.maxTokens).toBe(2_048);
-		expect(model?.compat).toEqual({ supportsLongCacheRetention: true });
-		expect(model?.discovered).toBe(true);
+		assert.equal(model?.contextWindow, 12_345);
+		assert.equal(model?.maxTokens, 2_048);
+		assert.deepEqual(model?.compat, { supportsLongCacheRetention: true });
+		assert.equal(model?.discovered, true);
 	});
 });
 
@@ -228,23 +252,26 @@ describe("saved GitHub Copilot fast model selections", () => {
 			defaultModelId: SAVED_ID,
 			modelRuntime,
 		});
-		expect(initial.model?.id).toBe(SAVED_ID);
-		expect(initial.fallbackMessage).toBeUndefined();
+		assert.equal(initial.model?.id, SAVED_ID);
+		assert.equal(initial.fallbackMessage, undefined);
 
 		const restored = await restoreModelFromSession(PROVIDER, SAVED_ID, undefined, false, modelRuntime);
-		expect(restored.model?.id).toBe(SAVED_ID);
-		expect(restored.fallbackMessage).toBeUndefined();
+		assert.equal(restored.model?.id, SAVED_ID);
+		assert.equal(restored.fallbackMessage, undefined);
 
 		const cli = resolveCliModel({ cliModel: `${PROVIDER}/${SAVED_ID}`, modelRuntime });
-		expect(cli.model?.id).toBe(SAVED_ID);
-		expect(cli.warning).toBeUndefined();
+		assert.equal(cli.model?.id, SAVED_ID);
+		assert.equal(cli.warning, undefined);
 
 		const scoped = await resolveModelScope([`${PROVIDER}/${SAVED_ID}`], modelRuntime);
-		expect(scoped.map((entry) => entry.model.id)).toEqual([SAVED_ID]);
+		assert.deepEqual(
+			scoped.map((entry) => entry.model.id),
+			[SAVED_ID],
+		);
 
 		const resumed = await resumeSession(modelRuntime, SAVED_ID);
-		expect(resumed.session.model?.id).toBe(SAVED_ID);
-		expect(resumed.modelFallbackMessage).toBeUndefined();
+		assert.equal(resumed.session.model?.id, SAVED_ID);
+		assert.equal(resumed.modelFallbackMessage, undefined);
 		resumed.session.dispose();
 	});
 
@@ -262,23 +289,23 @@ describe("saved GitHub Copilot fast model selections", () => {
 			defaultModelId: SAVED_ID,
 			modelRuntime,
 		});
-		expect(initial.model).toBeUndefined();
-		expect(initial.fallbackReason).toBe("configured-provider-unsupported");
-		expect(initial.fallbackMessage).toContain(`${PROVIDER}/${SAVED_ID}`);
-		expect(initial.fallbackMessage).toContain("update --models");
+		assert.equal(initial.model, undefined);
+		assert.equal(initial.fallbackReason, "configured-provider-unsupported");
+		assertMentions(initial.fallbackMessage, `${PROVIDER}/${SAVED_ID}`);
+		assertMentions(initial.fallbackMessage, "update --models");
 
-		expect(modelRuntime.canRestoreUnknownModel(PROVIDER, SAVED_ID)).toBe(false);
+		assert.equal(modelRuntime.canRestoreUnknownModel(PROVIDER, SAVED_ID), false);
 		const restored = await restoreModelFromSession(PROVIDER, SAVED_ID, undefined, false, modelRuntime);
-		expect(restored.model?.id).not.toBe(SAVED_ID);
-		expect(restored.fallbackMessage).toContain(`Could not restore model ${PROVIDER}/${SAVED_ID}`);
-		expect(restored.fallbackMessage).toContain("update --models");
+		assert.notEqual(restored.model?.id, SAVED_ID);
+		assertMentions(restored.fallbackMessage, `Could not restore model ${PROVIDER}/${SAVED_ID}`);
+		assertMentions(restored.fallbackMessage, "update --models");
 
 		// The reason blocks prompts (print mode exits with the message) instead of switching models.
 		const resumed = await resumeSession(modelRuntime, SAVED_ID);
-		expect(resumed.session.model?.id).not.toBe(SAVED_ID);
-		expect(resumed.modelFallbackReason).toBe("configured-provider-unsupported");
-		expect(resumed.modelFallbackMessage).toContain(`Could not restore model ${PROVIDER}/${SAVED_ID}`);
-		expect(resumed.modelFallbackMessage).toContain("update --models");
+		assert.notEqual(resumed.session.model?.id, SAVED_ID);
+		assert.equal(resumed.modelFallbackReason, "configured-provider-unsupported");
+		assertMentions(resumed.modelFallbackMessage, `Could not restore model ${PROVIDER}/${SAVED_ID}`);
+		assertMentions(resumed.modelFallbackMessage, "update --models");
 		resumed.session.dispose();
 	});
 });

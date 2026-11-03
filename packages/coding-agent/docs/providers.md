@@ -171,12 +171,12 @@ Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, 
 Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. A model found this way:
 
 - keeps the exact ID the account advertises as both its ID and its name, and is sent upstream unchanged
-- is marked `discovered: true` in the catalog; its limits, image input and reasoning efforts come from the account's list, and `modelOverrides` adjusts them like any other model
+- is marked `discovered: true` in the catalog; its limits, image input, reasoning efforts and adaptive thinking come from the account's list, and `modelOverrides` adjusts them like any other model
 - does not request 24-hour prompt-cache retention, because some Copilot models reject it and the list does not say which; set `compat.supportsLongCacheRetention` in `modelOverrides` for one that accepts it
 - never replaces a bundled entry with the same ID, which keeps its curated metadata
 - is skipped when the account disables its policy, hides it from the model picker, or does not list tool-call support
 
-A Copilot fast model appears only when the account's list advertises its exact ID. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. If the configured default model, or the fast model of a resumed session, is a Copilot model that is not cached yet, Atomic stops with a message instead of switching models; run `atomic update --models` once with network access.
+A Copilot fast model appears only when the account's list advertises its exact ID, and like any discovered model it takes its limits and capabilities from its own entry. It is an ordinary model unless the list names its base model in the entry's `family` field, in which case it pairs with that base as its fast variant. A model the latest refresh discovered stays available to an OAuth login even when the model lists saved with the login are older. If the configured default model, or the fast model of a resumed session, is a Copilot model that is not cached yet, Atomic stops with a message instead of switching models; run `atomic update --models` once with network access.
 
 #### Endpoint routing for personal access tokens
 

@@ -95,9 +95,14 @@ function accountModelEntries(raw: unknown): AccountModelEntry[] {
 
 /**
  * The account's list does not say which models accept a 24-hour prompt cache, and some models reject
- * the request, so a discovered OpenAI-style model never asks for one.
+ * the request, so a discovered OpenAI-style model never asks for one. A Messages model the list marks
+ * as adaptive receives the selected effort instead of a thinking budget.
  */
-function discoveredCompat(api: GitHubCopilotApi, reasoning: boolean): Model<Api>["compat"] {
+function discoveredCompat(
+	api: GitHubCopilotApi,
+	reasoning: boolean,
+	supports: Record<string, unknown> | undefined,
+): Model<Api>["compat"] {
 	if (api === "openai-completions") {
 		return {
 			supportsStore: false,
@@ -106,7 +111,10 @@ function discoveredCompat(api: GitHubCopilotApi, reasoning: boolean): Model<Api>
 			supportsLongCacheRetention: false,
 		};
 	}
-	return api === "openai-responses" ? { supportsLongCacheRetention: false } : undefined;
+	if (api === "anthropic-messages") {
+		return supports?.adaptive_thinking === true ? { forceAdaptiveThinking: true } : undefined;
+	}
+	return { supportsLongCacheRetention: false };
 }
 
 function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
@@ -116,7 +124,7 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 	const rawEfforts = entry.supports?.reasoning_effort;
 	const efforts = Array.isArray(rawEfforts) ? rawEfforts.filter((effort): effort is string => typeof effort === "string") : [];
 	const reasoning = efforts.length > 0;
-	const compat = discoveredCompat(api, reasoning);
+	const compat = discoveredCompat(api, reasoning, entry.supports);
 	return {
 		id: entry.id,
 		name: entry.id,
@@ -146,39 +154,31 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
  * upstream unchanged. An entry is skipped when it is not a chat model, does not support tool calls,
  * has a disabled policy, or is already in the catalog, whose curated entry always wins. An ordinary
  * entry is also skipped when the account hides it from the model picker. A fast entry is offered
- * whenever the account lists it, as Copilot's fast entitlement does; it carries fast route metadata
- * only when its `capabilities.family` names another model in the catalog, which then becomes its
- * base. Otherwise it is an ordinary model.
+ * whenever the account lists it, as Copilot's fast entitlement does, and like every other entry is
+ * described by its own row. It carries fast route metadata only when its `capabilities.family`
+ * names another model in the catalog, which then becomes its base. Otherwise it is an ordinary model.
  */
 export function parseGitHubCopilotDiscoveredModels(raw: unknown, catalog: readonly AnyModel[]): Model<Api>[] {
-	const known = new Map<string, Model<Api>>();
-	for (const model of catalog) if (isModelType(model, "chat")) known.set(model.id, model);
+	const known = new Set<string>();
+	for (const model of catalog) if (isModelType(model, "chat")) known.add(model.id);
 	const entries = accountModelEntries(raw).filter((entry) => !known.has(entry.id));
-	const ordinary = new Map<string, Model<Api>>();
+	const ordinary = new Set<string>();
+	const models = new Map<string, Model<Api>>();
 	for (const entry of entries) {
-		if (entry.id.endsWith(GITHUB_COPILOT_FAST_ID_SUFFIX) || entry.pickerDisabled) continue;
+		const isFast = entry.id.endsWith(GITHUB_COPILOT_FAST_ID_SUFFIX);
+		if (!isFast && entry.pickerDisabled) continue;
 		const model = discoveredModel(entry);
-		if (model) ordinary.set(entry.id, model);
+		if (!model) continue;
+		models.set(entry.id, model);
+		if (!isFast) ordinary.add(entry.id);
 	}
 	return entries.flatMap((entry): Model<Api>[] => {
-		const model = ordinary.get(entry.id);
-		if (model) return [model];
-		if (!entry.id.endsWith(GITHUB_COPILOT_FAST_ID_SUFFIX)) return [];
+		const model = models.get(entry.id);
+		if (!model) return [];
+		if (ordinary.has(entry.id)) return [model];
 		const baseId = entry.family !== entry.id ? entry.family : undefined;
-		const base = baseId === undefined ? undefined : (known.get(baseId) ?? ordinary.get(baseId));
-		if (base) {
-			return [
-				{
-					...base,
-					id: entry.id,
-					name: entry.id,
-					fastRoute: { baseModelId: base.id, upstreamModelId: entry.id },
-					discovered: true,
-				},
-			];
-		}
-		const fast = discoveredModel(entry);
-		return fast ? [fast] : [];
+		if (baseId === undefined || !(known.has(baseId) || ordinary.has(baseId))) return [model];
+		return [{ ...model, fastRoute: { baseModelId: baseId, upstreamModelId: entry.id } }];
 	});
 }
 
@@ -242,11 +242,14 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 			const entitledFastModelIds = advertisedModelIds(oauth?.fastModelIds);
 			const availableModelIds = advertisedModelIds(oauth?.availableModelIds);
 			return models.filter((model) => {
+				// A discovered model comes from the account's own model list, read with this credential at the
+				// last catalog refresh. The login's saved lists are read from that same list only when its token
+				// is renewed, so they can predate the refresh and must not hide what it found.
+				if (model.discovered === true) return true;
 				// A fast ID the login lists is entitled whether or not it is a picker entry.
 				if (entitledFastModelIds?.has(model.id) === true) return true;
 				// Fast-ness comes from the explicit route metadata, never from the `-fast` suffix. A login that
-				// lists its fast IDs offers only those; without such a list (an API key), the account's own
-				// model list already decided which fast models exist.
+				// lists its fast IDs offers only those.
 				if (model.fastRoute !== undefined) return entitledFastModelIds === undefined;
 				// A login without a stored model list (an older login) keeps the catalog so it is never left
 				// with no models; `Models.refresh()` with network access re-reads the list once (see
