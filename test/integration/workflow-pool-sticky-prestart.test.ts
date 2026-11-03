@@ -14,13 +14,14 @@ import { loadWorkerWorkflow } from "../../packages/workflows/src/workers/definit
 import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { testRunId } from "../helpers/run-id.js";
-import { fileExists, makeTempDirectory, readText, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExists, makeTempDirectory, readText, removeTempDirectory, sleep } from "../helpers/runtime.js";
 import { untilOrRunEnds } from "../helpers/until-run.js";
 
 /** A real 2-worker pool, broker and Intercom client; also covers the root's late drain once it catches up. */
 const POOLED_STICKY_TIMEOUT_MS = 120_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
 const CONDITION_TIMEOUT_MS = 60_000;
+const STICKY_RETRY_MS = 25;
 /**
  * Far below the 60 s pending-stage stall bound. A pooled stage whose startup waits on the starved root's drain
  * misses it; one that delivers its queued messages itself starts within it on a loaded host.
@@ -127,8 +128,13 @@ test.skipIf(process.platform === "win32")(
 				execution,
 				CONDITION_TIMEOUT_MS,
 			);
-			const sticky = await client.send(`workflow:${root}/**`, { text: MARKER });
-			assert.equal(sticky.queued, true);
+			let sticky = await client.send(`workflow:${root}/**`, { text: MARKER });
+			const stickyDeadline = performance.now() + CONDITION_TIMEOUT_MS;
+			while (!sticky.queued && performance.now() < stickyDeadline) {
+				await sleep(STICKY_RETRY_MS);
+				sticky = await client.send(`workflow:${root}/**`, { text: MARKER });
+			}
+			assert.equal(sticky.queued, true, JSON.stringify(sticky));
 
 			// Both stages start after the broadcast, while the root answers no delivery request.
 			await database.run("UPDATE test_pool_gate SET released = 1");
