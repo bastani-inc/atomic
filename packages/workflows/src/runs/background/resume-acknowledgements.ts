@@ -24,7 +24,7 @@ function targetStage(store: Store, target: ResumeAcknowledgementTarget): StageSn
 }
 
 function targetIsActuallyPaused(store: Store, target: ResumeAcknowledgementTarget): boolean {
-	const run = store.runs().find((candidate) => candidate.id === target.controlRunId);
+	const run = store.run(target.controlRunId);
 	const stage = targetStage(store, target);
 	if (run?.endedAt !== undefined || stage?.endedAt !== undefined) return false;
 	return (
@@ -51,7 +51,7 @@ export async function settleResumeAcknowledgements(
 	const resumedRunIds = new Set<string>();
 	settled.forEach((result, index) => {
 		const target = attempted[index]!;
-		const controlRun = store.runs().find((candidate) => candidate.id === target.controlRunId);
+		const controlRun = store.run(target.controlRunId);
 		const controlVisiblyRunning =
 			target.handle.status === "running" ||
 			target.handle.status === "pending" ||

@@ -30,7 +30,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	let opts = callerOpts;
 	const store = opts.store === undefined || opts.store === defaultStore ? currentWorkflowStore() : opts.store;
 	const sourceRunId = opts.continuation?.source.id ?? opts.runId;
-	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store.runs(), sourceRunId);
+	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store, sourceRunId);
 	const preset =
 		opts.journal === undefined
 			? (opts.durableBackend ?? ownedBackend ?? availableStoreDurableBackendOverride(store))

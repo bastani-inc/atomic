@@ -98,6 +98,10 @@ export function makeStore(snap: StoreSnapshot): Store {
 	return {
 		runs: () => snap.runs as RunSnapshot[],
 		run: (runId) => (snap.runs as RunSnapshot[]).find((candidate) => candidate.id === runId),
+		runPosition: (runId) => {
+			const position = (snap.runs as RunSnapshot[]).findIndex((candidate) => candidate.id === runId);
+			return position < 0 ? undefined : position;
+		},
 		notices: () => [],
 		activeRunId: () => snap.runs[0]?.id ?? null,
 		recordRunStart: () => {},

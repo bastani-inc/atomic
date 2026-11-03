@@ -558,7 +558,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			...(restoredAuthorExit && isWorkflowExitTerminalStatus(status) ? { exited: true } : {}),
 			...(typeof exitReason === "string" ? { exitReason } : {}),
 		});
-		const restoredRun = store.runs().find((run) => run.id === runId);
+		const restoredRun = store.run(runId);
 		if (restoredRun !== undefined && (restoredEndedAt !== undefined || restoredDurationMs !== undefined)) {
 			Object.assign(restoredRun, {
 				...(restoredEndedAt !== undefined ? { endedAt: restoredEndedAt } : {}),

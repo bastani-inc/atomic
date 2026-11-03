@@ -333,7 +333,7 @@ export function makeExecuteWorkflowTool(
 								pi,
 								ctx,
 								id,
-								store.runs().find((run) => run.id === id),
+								store.run(id),
 								undefined,
 								requireStoreDurableBackend(store, id),
 							),

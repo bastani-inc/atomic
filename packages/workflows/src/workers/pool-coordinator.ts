@@ -342,7 +342,7 @@ class PooledRoutes {
 		this.mirror.batch(() => {
 			for (const id of attempt.runs) {
 				rotateWorkflowPendingStageRouteCapability(this.mirror, id);
-				const run = this.mirror.runs().find((candidate) => candidate.id === id);
+				const run = this.mirror.run(id);
 				if (run?.stages.some(isLiveStage) !== true) continue;
 				this.mirror.recordRunStart({
 					...run,

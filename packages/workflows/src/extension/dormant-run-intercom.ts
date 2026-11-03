@@ -274,7 +274,7 @@ export function registerDormantRunIntercomRoutes(
 		// over. A run that ended, or left the store, restores nothing more.
 		for (const runId of [...subagentHolds.keys()]) {
 			if (dormant.has(runId)) continue;
-			const resumed = activeStore.runs().find((run) => run.id === runId);
+			const resumed = activeStore.run(runId);
 			if (resumed === undefined || isTerminalRunStatus(resumed.status)) releaseSubagents(runId);
 		}
 	});

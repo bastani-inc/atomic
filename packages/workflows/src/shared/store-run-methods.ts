@@ -21,6 +21,7 @@ type RunStoreMethods = Pick<
 	Store,
 	| "runs"
 	| "run"
+	| "runPosition"
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
@@ -54,6 +55,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		run(runId: string): RunSnapshot | undefined {
 			return context.findRun(runId);
+		},
+
+		runPosition(runId: string): number | undefined {
+			return context.runPosition(runId);
 		},
 		notices(): readonly WorkflowNotice[] {
 			return state.notices;

@@ -151,7 +151,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	const preset =
 		opts.durableBackend ??
 		(opts.journal === undefined
-			? (availableRunDurableBackend(activeStore.runs(), opts.continuation?.source.id ?? runId) ??
+			? (availableRunDurableBackend(activeStore, opts.continuation?.source.id ?? runId) ??
 				availableStoreDurableBackendOverride(activeStore))
 			: undefined);
 	const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));
@@ -210,7 +210,7 @@ async function executeRun(
 		opts.rootBudget === undefined &&
 		opts.continuation === undefined &&
 		opts.runId !== undefined
-			? activeStore.runs().find((candidate) => candidate.id === runId)
+			? activeStore.run(runId)
 			: undefined;
 	const continuedBudget = opts.continuation?.source.budget ?? priorRun?.budget;
 	const runBudget = opts.budget === undefined ? continuedBudget : { ...(continuedBudget ?? {}), ...opts.budget };
@@ -775,7 +775,7 @@ async function executeRun(
 		return recorded;
 	};
 	const durableIntercomGroup = (replayKey: string, stageId: string | undefined): string | undefined => {
-		const stages = activeStore.runs().find((candidate) => candidate.id === runId)?.stages ?? [];
+		const stages = activeStore.run(runId)?.stages ?? [];
 		return stages.find((stage) => (stageId !== undefined && stage.id === stageId) || stage.replayKey === replayKey)
 			?.intercomGroup;
 	};

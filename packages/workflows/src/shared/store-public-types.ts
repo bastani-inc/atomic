@@ -113,6 +113,8 @@ export interface Store {
 	runs(): readonly RunSnapshot[];
 	/** The run with this id, found without scanning the other runs. */
 	run(runId: string): RunSnapshot | undefined;
+	/** Where the run stands in `runs()`, found without scanning; undefined when the store does not hold it. */
+	runPosition(runId: string): number | undefined;
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;

@@ -197,6 +197,10 @@ const snap: StoreSnapshot = { runs: run ? [run] : [], notices: [], version: 1 };
 const store: Store = {
 	runs: () => snap.runs as RunSnapshot[],
 	run: (runId) => (snap.runs as RunSnapshot[]).find((candidate) => candidate.id === runId),
+	runPosition: (runId) => {
+		const position = (snap.runs as RunSnapshot[]).findIndex((candidate) => candidate.id === runId);
+		return position < 0 ? undefined : position;
+	},
 	notices: () => [],
 	activeRunId: () => run?.id ?? null,
 	recordRunStart: () => {},

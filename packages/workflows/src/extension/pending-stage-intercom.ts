@@ -1088,7 +1088,7 @@ export async function settleUndeliverablePendingStageMessages(
 				) {
 					settled += 1;
 				}
-				const currentRun = activeStore.runs().find((candidate) => candidate.id === run.id);
+				const currentRun = activeStore.run(run.id);
 				const currentEntry = currentRun?.pendingStageMessages?.find(
 					(candidate) => candidate.stageKey === entry.stageKey && candidate.id === entry.id,
 				);

@@ -203,7 +203,7 @@ export function createDurableCachedStageRecorder(input: {
 							),
 						});
 			for (const childRun of cachedDescendants ?? []) {
-				const existingRun = input.store.runs().find((candidate) => candidate.id === childRun.id);
+				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =
 					childRun.id === cachedChildRunId &&
 					childRun.parentRunId === input.run.id &&
@@ -246,7 +246,7 @@ export function reconcileCachedDirectChildParentStage(input: {
 	readonly checkpointChildRunId: string;
 	readonly boundary: StageSnapshot;
 }): boolean {
-	const existingRun = input.store.runs().find((run) => run.id === input.checkpointChildRunId);
+	const existingRun = input.store.run(input.checkpointChildRunId);
 	if (existingRun === undefined) return false;
 	const runById = new Map(input.store.runs().map((run) => [run.id, run]));
 	const storedParentRun = runById.get(input.parentRun.id);

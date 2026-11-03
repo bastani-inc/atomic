@@ -16,10 +16,7 @@ export function authoritativeWorkflowChildRunId(stage: StageSnapshot | undefined
  * links. Omitted root ids are compatible unknown metadata; present root ids
  * must agree with the reached top-level run.
  */
-export function reciprocalWorkflowRootRunId(
-	runById: ReadonlyMap<string, RunSnapshot>,
-	runId: string,
-): string | undefined {
+export function reciprocalWorkflowRootRunId(runById: RunsById, runId: string): string | undefined {
 	const visited = new Set<string>();
 	const declaredRoots: string[] = [];
 	let current = runById.get(runId);
@@ -46,6 +43,35 @@ export function reciprocalWorkflowRootRunId(
 	}
 
 	return undefined;
+}
+
+/** Runs by id without a scan; a `Store` is one. */
+export interface RunLookup {
+	run(runId: string): RunSnapshot | undefined;
+	runs(): readonly RunSnapshot[];
+}
+
+/** A list of runs, scanned as given, or a lookup that finds each run by id. */
+export type RunSource = readonly RunSnapshot[] | RunLookup;
+
+export type RunsById = Pick<ReadonlyMap<string, RunSnapshot>, "get">;
+
+function isRunLookup(source: RunSource): source is RunLookup {
+	return "run" in source;
+}
+
+export function runsInSource(source: RunSource): readonly RunSnapshot[] {
+	return isRunLookup(source) ? source.runs() : source;
+}
+
+/** The first run with this id: a lookup is asked, a list is scanned. */
+export function findRunInSource(source: RunSource, runId: string): RunSnapshot | undefined {
+	return isRunLookup(source) ? source.run(runId) : source.find((run) => run.id === runId);
+}
+
+/** Runs by id; a lookup answers each `get` itself, so nothing is built per call. */
+export function runsByIdOf(source: RunSource): RunsById {
+	return isRunLookup(source) ? { get: (runId) => source.run(runId) } : new Map(source.map((run) => [run.id, run]));
 }
 
 /**

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Completing a pooled child and delivering Intercom messages to a stage no longer scan every run the workflow store holds. Each now finds the runs it needs by id, so a long-lived host with thousands of finished runs no longer spends main-thread time proportional to its history on every child completion or message delivery ([#4190](https://github.com/bastani-inc/atomic/issues/4190))
+
 ## [0.9.68] - 2026-11-03
 
 An explicit `--model` now runs as named instead of silently switching to another model family, and `atomic -p` no longer hangs when stdin is an open pipe that never sends anything.

@@ -1,6 +1,7 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StageStatus } from "./store-types.js";
+import { type RunSource, type RunsById, runsByIdOf } from "./workflow-run-ownership.js";
 import { matchStagePathSegments } from "./workflow-stage-path-matching.js";
 import { formatWorkflowStageTarget } from "./workflow-stage-target.js";
 
@@ -123,11 +124,8 @@ export interface WorkflowBoundaryHop {
  * segment to be "the boundary-stage name (or its materialized run id at that same
  * depth)" (D5). `undefined` when the lineage is broken. `[]` for the root run.
  */
-export function workflowBoundaryHops(
-	runs: readonly RunSnapshot[],
-	runId: string,
-): readonly WorkflowBoundaryHop[] | undefined {
-	return boundaryHopsFrom(new Map(runs.map((run) => [run.id, run])), runId);
+export function workflowBoundaryHops(runs: RunSource, runId: string): readonly WorkflowBoundaryHop[] | undefined {
+	return boundaryHopsFrom(runsByIdOf(runs), runId);
 }
 
 /**
@@ -148,10 +146,7 @@ export function createWorkflowBoundaryHopsResolver(
 	};
 }
 
-function boundaryHopsFrom(
-	runById: ReadonlyMap<string, RunSnapshot>,
-	runId: string,
-): readonly WorkflowBoundaryHop[] | undefined {
+function boundaryHopsFrom(runById: RunsById, runId: string): readonly WorkflowBoundaryHop[] | undefined {
 	const hops: WorkflowBoundaryHop[] = [];
 	let current = runById.get(runId);
 	while (current !== undefined && current.parentRunId !== undefined) {

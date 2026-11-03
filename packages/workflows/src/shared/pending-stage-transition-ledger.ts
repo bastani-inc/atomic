@@ -65,10 +65,10 @@ export class PendingStageTransitionLedger {
 		backend: CompactingBackend,
 		runId: string,
 		messages: readonly PendingStageMessage[],
-		runs: readonly RunSnapshot[],
+		findRun: (runId: string) => RunSnapshot | undefined,
 		archiveSettled: ((entry: PendingStageMessage) => Promise<void>) | undefined,
 	): Promise<CompactedTransition> {
-		const stageStatus = createStageStatusLookup(runs);
+		const stageStatus = createStageStatusLookup(findRun);
 		const endedStages: (readonly [string, string])[] = [];
 		const dirty = new Set<PendingStageMessage>();
 		for (const [deliveryRunId, byStage] of this.stages) {
@@ -176,15 +176,8 @@ export function isCompactingBackend(backend: DurableWorkflowBackend): backend is
 type StageStatusLookup = (runId: string, stageId: string) => string | undefined;
 
 /** Stage status by run and stage id, with the first run and stage of each id winning as `find` would. */
-function createStageStatusLookup(runs: readonly RunSnapshot[]): StageStatusLookup {
-	let runById: Map<string, RunSnapshot> | undefined;
-	return (runId, stageId) => {
-		if (runById === undefined) {
-			runById = new Map();
-			for (const run of runs) if (!runById.has(run.id)) runById.set(run.id, run);
-		}
-		return runById.get(runId)?.stages.find((stage) => stage.id === stageId)?.status;
-	};
+function createStageStatusLookup(findRun: (runId: string) => RunSnapshot | undefined): StageStatusLookup {
+	return (runId, stageId) => findRun(runId)?.stages.find((stage) => stage.id === stageId)?.status;
 }
 
 function isEndedStageStatus(status: string | undefined): boolean {

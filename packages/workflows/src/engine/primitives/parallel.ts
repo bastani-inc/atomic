@@ -51,7 +51,7 @@ export function createParallelPrimitive(input: {
 				?.stages.map((stage) => stage.id) ?? [],
 		);
 		const everyStepCompleted = (): boolean => {
-			const run = input.runtime.activeStore.runs().find((candidate) => candidate.id === input.runtime.runId);
+			const run = input.runtime.activeStore.run(input.runtime.runId);
 			if (run === undefined) return false;
 			const completed = run.stages.filter(
 				(stage) =>
