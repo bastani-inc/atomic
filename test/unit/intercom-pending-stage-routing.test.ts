@@ -29,7 +29,8 @@ const CHILD_RUN_ID = "5bd82a35-c563-4f60-9a74-3546832210a8";
 const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
 const EXPENSIVE_ROUTE_ANNOUNCEMENT_MS = 10;
-const ROUTE_BATCH_SETTLE_MS = 60;
+/** Bound on waiting for a batched route announcement; one that lands returns at once. */
+const ROUTE_PUBLICATION_DEADLINE_MS = 10_000;
 
 const tempDirs: string[] = [];
 
@@ -830,9 +831,24 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	// run, so tool events, attachment toggles, and notices each cost a broker round trip
 	// whose `listSessions()` barrier can expire on its own 5s timer.
 	const turn = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
-	/** Store invalidations publish in batches; this outlasts one batch window. */
-	const routesPublished = (): Promise<void> =>
-		new Promise<void>((resolve) => setTimeout(resolve, ROUTE_BATCH_SETTLE_MS));
+	/**
+	 * Waits until the batched announcements have published `count` routes. A batch has no fixed length: after an
+	 * expensive announcement the bridge holds the next one until four times that announcement's wall time has passed,
+	 * so on a loaded runner a route change can land well after one 25 ms window.
+	 */
+	const routesPublished = async (routes: { readonly length: number }, count: number): Promise<void> =>
+		await vi.waitFor(() => assert.ok(routes.length >= count, `${routes.length} of ${count} routes published`), {
+			timeout: ROUTE_PUBLICATION_DEADLINE_MS,
+			interval: 5,
+		});
+	/**
+	 * The idle point for "not republished": a stage asking for route readiness makes the bridge announce its pending
+	 * batch now, so every store change so far has been announced or deduplicated when this returns.
+	 */
+	const announcePendingRoutes = (store: Store): void => {
+		// Only the announcement matters; disposing the bridge later releases this readiness wait.
+		void workflowPendingStageRouteReady(store, RUN_ID)?.completion.catch(() => {});
+	};
 	/** Observable route payload, without the acknowledgement the consumer attaches. */
 	const routeData = (payload: Record<string, unknown>): Record<string, unknown> =>
 		Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "completion"));
@@ -870,17 +886,17 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		// 1,000 attachment toggles leave the route projection identical. Before the fix
 		// this measured 1,001 announcements — one broker directory request each.
 		toggleAttachment(store, 1000);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 1);
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
 		claims[0]?.resolve();
 		await turn();
 		toggleAttachment(store, 1000);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 1);
 		// A genuine routing change is never debounced behind the acknowledged claim.
 		store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
-		await routesPublished();
+		await routesPublished(routes, 2);
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routes[1]?.stages, runningReviewerStages);
 		dispose();
@@ -895,12 +911,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
-		await routesPublished();
+		await routesPublished(routes, 2);
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routeData(routes[1]!), routeData(routes[0]!));
 		// The retry is claimed, so the unchanged route stops republishing again.
 		toggleAttachment(store, 2);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 2);
 		dispose();
 	});
@@ -915,19 +931,19 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		assert.deepEqual(routes[0]?.stages, pendingReviewerStages);
 		// B publishes in the next batch even though A is still unacknowledged.
 		store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
-		await routesPublished();
+		await routesPublished(routes, 2);
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routes[1]?.stages, runningReviewerStages);
 		// A again, from the pre-session snapshot of the same run.
 		store.removeRun(RUN_ID);
 		store.recordRunStart(initialRun);
-		await routesPublished();
+		await routesPublished(routes, 3);
 		assert.equal(routes.length, 3);
 		assert.deepEqual(routeData(routes[2]!), routeData(routes[0]!));
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 3);
 		dispose();
 	});
@@ -944,12 +960,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		// Nobody claimed the initial emission, so it is not proof of publication.
 		acknowledging = true;
 		toggleAttachment(store, 1);
-		await routesPublished();
+		await routesPublished(routes, 2);
 		assert.equal(routes.length, 2);
 		assert.deepEqual(routeData(routes[1]!), routeData(routes[0]!));
 		assert.deepEqual(routes[1]?.stages, pendingReviewerStages);
 		toggleAttachment(store, 2);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 2);
 		dispose();
 	});
@@ -969,7 +985,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		claims[0]?.reject(new Error("relay failed"));
 		await turn();
 		toggleAttachment(store, 1);
-		await routesPublished();
+		announcePendingRoutes(store);
 		assert.equal(routes.length, 2);
 		replacement();
 	});
@@ -990,7 +1006,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			assert.equal(routes.length, 1);
 			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
 			assert.equal(routes.length, 1, "the change must not re-announce every run synchronously");
-			await new Promise((resolve) => setTimeout(resolve, EXPENSIVE_ROUTE_ANNOUNCEMENT_MS * 10));
+			await routesPublished(routes, 2);
 			assert.equal(routes.length, 2);
 			assert.deepEqual(routes[1]?.stages, runningReviewerStages);
 		} finally {
@@ -1017,8 +1033,12 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	test("a batched announcement after its session closed stops the bridge instead of throwing from a timer", async () => {
 		const routes: Record<string, unknown>[] = [];
 		let closed = false;
+		let closedAnnouncements = 0;
 		const { store, dispose } = await harness((payload) => {
-			if (closed) throw Object.assign(new Error("SessionClosed"), { code: "SessionClosed" });
+			if (closed) {
+				closedAnnouncements += 1;
+				throw Object.assign(new Error("SessionClosed"), { code: "SessionClosed" });
+			}
 			routes.push(payload);
 		});
 		const uncaught: unknown[] = [];
@@ -1027,11 +1047,15 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		try {
 			closed = true;
 			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "reviewer-session" });
-			await routesPublished();
+			// The batch's timer meets the closed session; an escaped error is recorded synchronously as it throws.
+			await vi.waitFor(() => assert.equal(closedAnnouncements, 1), {
+				timeout: ROUTE_PUBLICATION_DEADLINE_MS,
+				interval: 5,
+			});
 			assert.deepEqual(uncaught, []);
 			closed = false;
 			store.recordStageSession(RUN_ID, "reviewer-id", { sessionId: "another-session" });
-			await routesPublished();
+			announcePendingRoutes(store);
 			assert.equal(routes.length, 1, "a bridge whose session closed publishes nothing further");
 		} finally {
 			process.removeListener("uncaughtException", recordUncaught);
@@ -1488,7 +1512,8 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 			return payload.completion === undefined ? undefined : await payload.completion;
 		};
 		const routePayload = async () => {
-			await new Promise((resolve) => setTimeout(resolve, ROUTE_BATCH_SETTLE_MS));
+			// The bridge's flush announces the pending batch and waits for its sweep, rather than outwaiting its timer.
+			await dispose.flush();
 			const routes = emitted.filter(({ event }) => event === "atomic:workflow-pending-stage-route");
 			return routes.at(-1)?.payload;
 		};
