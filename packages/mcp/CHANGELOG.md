@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.71] - 2026-11-03
+
 ### Fixed
 
 - Streamable HTTP JSON replies now respect the configured message-size limit, and oversized HTTP error bodies are cancelled after reading a bounded excerpt (upstream [#11749](https://github.com/earendil-works/pi/pull/11749))
+- Closing a stdio MCP server whose main process already exited now still stops the children it started. On Linux and macOS a server can exit while a child it started keeps running and holds its output pipes; `close()` returned early, skipped the process-group cleanup, never fired the close event, and the child also survived Atomic exiting. If a process outside the server's process group still holds the pipes after the kill, `close()` stops waiting for it a second later (upstream [#11724](https://github.com/earendil-works/pi/pull/11724))
+- A Streamable HTTP response, or the notification stream, whose SSE event exceeds the message-size limit is now cancelled instead of left open. If the server kept the response open, for example with heartbeats, the failed request held its HTTP connection until the server ended it or the client closed (upstream [#11729](https://github.com/earendil-works/pi/issues/11729))
 
+## [0.9.71-alpha.1] - 2026-11-03
+
+### Fixed
+
+- Streamable HTTP JSON replies now respect the configured message-size limit, and oversized HTTP error bodies are cancelled after reading a bounded excerpt (upstream [#11749](https://github.com/earendil-works/pi/pull/11749))
 - Closing a stdio MCP server whose main process already exited now still stops the children it started. On Linux and macOS a server can exit while a child it started keeps running and holds its output pipes; `close()` returned early, skipped the process-group cleanup, never fired the close event, and the child also survived Atomic exiting. If a process outside the server's process group still holds the pipes after the kill, `close()` stops waiting for it a second later (upstream [#11724](https://github.com/earendil-works/pi/pull/11724))
 - A Streamable HTTP response, or the notification stream, whose SSE event exceeds the message-size limit is now cancelled instead of left open. If the server kept the response open, for example with heartbeats, the failed request held its HTTP connection until the server ended it or the client closed (upstream [#11729](https://github.com/earendil-works/pi/issues/11729))
 
