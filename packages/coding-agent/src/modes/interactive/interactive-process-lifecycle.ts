@@ -5,6 +5,7 @@ import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mod
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
+import { handOffCompactionQueue } from "./interactive-queueing.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
@@ -281,6 +282,8 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 		if (this.isExtensionCommand(text)) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
+			// Messages the command sends must follow the ones already typed (#4251).
+			if (this.compactionActive) handOffCompactionQueue(this);
 			await dispatch(() => this.session.prompt(text));
 		} else {
 			this.queueCompactionMessage(text, "followUp");

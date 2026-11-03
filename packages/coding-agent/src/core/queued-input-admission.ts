@@ -76,3 +76,8 @@ export function reserveQueuedInputAdmission(
 export function runInputHook<T>(hook: () => Promise<T>): Promise<T> {
 	return insideInputHook.run(true, hook);
 }
+
+/** Whether the caller runs inside an input hook, which may await the input it submits. */
+export function isInsideInputHook(): boolean {
+	return insideInputHook.getStore() === true;
+}

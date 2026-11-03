@@ -22,6 +22,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
+import { handOffCompactionQueue } from "./interactive-queueing.ts";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.addTuiInputListener(() =>
@@ -434,6 +435,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				if (this.isExtensionCommand(text)) {
 					this.editor.addToHistory?.(text);
 					this.editor.setText("");
+					// Messages the command sends must follow the ones already typed (#4251).
+					if (this.compactionActive) handOffCompactionQueue(this);
 					await this.session.prompt(text);
 				} else {
 					this.queueCompactionMessage(text, "steer");

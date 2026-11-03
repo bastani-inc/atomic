@@ -698,6 +698,8 @@ interface PromptOptions {
 - `true` when the prompt was accepted, queued, or handled immediately. The second argument says which: `"handled"` if an extension command or input handler consumed it, `"queued"` if it was queued during a run, or `"started"` if it started a run
 - `false` when prompt preflight rejected before acceptance
 
+A prompt that arrives while the session compacts waits until compaction ends, so its `preflightResult` fires then. If `clearQueue()` returns the waiting prompt first, it reports `"handled"` and nothing is sent.
+
 It fires before `prompt()` resolves. `prompt()` still resolves only after the full accepted run finishes, including retries. Failures after acceptance are reported through the normal event and message stream, not through `preflightResult(false)`.
 
 The `prompt()` method handles prompt templates, extension commands, and message sending:

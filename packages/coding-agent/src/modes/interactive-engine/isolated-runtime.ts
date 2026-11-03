@@ -992,6 +992,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.followUpMessages = [...pendingClear.snapshot.followUp];
 	}
 
+	/**
+	 * Show input the host hands to the engine during compaction as pending at once (#4251). The engine registers it
+	 * when its prompt arrives, and the queue update that follows replaces this local view, so Alt+Up in between still
+	 * gets the text back. The returned function withdraws the entry if the engine refused the input before any queue
+	 * update replaced the view.
+	 */
+	showForwardedInput(text: string, lane: "steer" | "followUp"): () => void {
+		(lane === "followUp" ? this.followUpMessages : this.steeringMessages).push(text);
+		const generation = this.queueUpdateGeneration;
+		return () => {
+			if (this.queueUpdateGeneration !== generation) return;
+			const queue = lane === "followUp" ? this.followUpMessages : this.steeringMessages;
+			const index = queue.lastIndexOf(text);
+			if (index !== -1) queue.splice(index, 1);
+		};
+	}
+
 	private async resetUnpersistedSessionView(): Promise<void> {
 		const session = super.session;
 		const manager = await SessionManager.create(

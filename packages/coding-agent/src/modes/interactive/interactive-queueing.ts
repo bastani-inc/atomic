@@ -1,8 +1,13 @@
 import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
+
+/** Typing order of messages handed to the session, so one it refuses returns to its own place. */
+const handOffOrder = new WeakMap<CompactionQueuedMessage, number>();
+let nextHandOff = 0;
 
 InteractiveModeBase.prototype.getAllQueuedMessages = function (this: InteractiveModeBase): {
 	steering: string[];
@@ -172,6 +177,53 @@ function returnCompactionMessage(mode: InteractiveModeBase, message: CompactionQ
 	mode.compactionSendFailed = true;
 	mode.updatePendingMessagesDisplay();
 	showCompactionQueueError(mode, error);
+}
+
+function returnHandedOffMessage(mode: InteractiveModeBase, message: CompactionQueuedMessage, error: unknown): void {
+	const rank = handOffOrder.get(message) ?? -1;
+	const queue = mode.compactionQueuedMessages;
+	const index = queue.findIndex((queued) => (handOffOrder.get(queued) ?? Number.POSITIVE_INFINITY) > rank);
+	mode.compactionQueuedMessages =
+		index === -1 ? [...queue, message] : [...queue.slice(0, index), message, ...queue.slice(index)];
+	mode.compactionSendFailed = true;
+	mode.updatePendingMessagesDisplay();
+	showCompactionQueueError(mode, error);
+}
+
+/**
+ * Hand the editor's held messages to the session before an extension command runs during compaction (#4251).
+ * The session registers input as it arrives and holds it until compaction ends, so a message the command sends
+ * goes out after them, in typing order. The session lists them as pending, and its clearQueue() returns them for
+ * Alt+Up and Ctrl+C. A message the session refuses returns to the editor queue.
+ */
+export function handOffCompactionQueue(mode: InteractiveModeBase): void {
+	const messages = mode.compactionQueuedMessages;
+	if (messages.length === 0) return;
+	mode.compactionQueuedMessages = [];
+	for (const message of messages) {
+		handOffOrder.set(message, nextHandOff++);
+		const withdraw =
+			mode.runtimeHost instanceof IsolatedInteractiveRuntime
+				? mode.runtimeHost.showForwardedInput(message.text, message.mode)
+				: undefined;
+		let accepted = false;
+		void mode.session
+			.prompt(message.text, {
+				streamingBehavior: message.mode,
+				preflightResult: (success) => {
+					accepted = success;
+				},
+			})
+			.catch((error: unknown) => {
+				if (accepted || isRpcRequestAcceptedFailure(error)) {
+					showCompactionQueueError(mode, error);
+					return;
+				}
+				withdraw?.();
+				returnHandedOffMessage(mode, message, error);
+			});
+	}
+	mode.updatePendingMessagesDisplay();
 }
 
 /**

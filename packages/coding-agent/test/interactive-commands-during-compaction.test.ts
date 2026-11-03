@@ -11,6 +11,7 @@ import {
 	createRig,
 	DUPLICATE_DELIVERY_SETTLE_MS,
 	type Rig,
+	type RigOptions,
 	releaseOpenGates,
 	sleep,
 	type Wiring,
@@ -104,8 +105,13 @@ function attachCompactionEventHandler(rig: Rig): void {
 	});
 }
 
-async function createCompactingRig(wiring: Wiring, invocations: string[]): Promise<Rig> {
+async function createCompactingRig(
+	wiring: Wiring,
+	invocations: string[],
+	options: Pick<RigOptions, "models" | "settings"> = {},
+): Promise<Rig> {
 	const rig = await createRig(wiring, "quiet", {
+		...options,
 		extensions: [workflowCommand(invocations), messageCommands(invocations)],
 	});
 	rigs.push(rig);
@@ -164,10 +170,12 @@ for (const wiring of ["local", "isolated"] as const) {
 				assert.equal(rig.host.session.isCompacting, true, "compaction must still be running");
 				assert.deepEqual(invocations, ["connect", "status"]);
 				assert.equal(settingsOpened, 1);
-				assert.deepEqual(rig.host.compactionQueuedMessages, [
-					{ text: "first prompt", mode: "steer" },
-					{ text: "second prompt", mode: "steer" },
-				]);
+				// The extension command took the message typed before it into the session's hold, in order.
+				assert.deepEqual(rig.host.compactionQueuedMessages, [{ text: "second prompt", mode: "steer" }]);
+				assert.deepEqual(rig.host.getAllQueuedMessages(), {
+					steering: ["first prompt", "second prompt"],
+					followUp: [],
+				});
 				assert.deepEqual(getUserTexts(rig.engine), []);
 
 				// The compaction_end handler releases the held prompts; nothing flushes them by hand.
@@ -177,6 +185,69 @@ for (const wiring of ["local", "isolated"] as const) {
 					isDeepEqual(getUserTexts(rig.engine), ["first prompt", "second prompt"]),
 				);
 				assert.deepEqual(rig.host.compactionQueuedMessages, []);
+			});
+
+			test("sends a message typed before a message-sending command ahead of the command's message (#4251)", async () => {
+				const invocations: string[] = [];
+				const rig = await createCompactingRig(wiring, invocations);
+				const releaseCompaction = holdCompaction(rig);
+				const compaction = startCompaction(rig, kind);
+				await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+				await submit("typed first");
+				await submit("/ask sent by the command");
+				await submit("typed last");
+				await waitFor("every held message to show as pending", () =>
+					isDeepEqual(rig.host.getAllQueuedMessages().steering, [
+						"typed first",
+						"sent by the command",
+						"typed last",
+					]),
+				);
+				assert.equal(providerRequests(rig), 0, "no provider request may start during compaction");
+
+				releaseCompaction();
+				await compaction;
+				await waitFor("the held messages to be sent in typing order", () =>
+					isDeepEqual(getUserTexts(rig.engine), ["typed first", "sent by the command", "typed last"]),
+				);
+				await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+				assert.deepEqual(getUserTexts(rig.engine), ["typed first", "sent by the command", "typed last"]);
+				assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
+			});
+
+			test("returns held messages to the editor on Alt+Up and sends none of them (#4251)", async () => {
+				const invocations: string[] = [];
+				const rig = await createCompactingRig(wiring, invocations);
+				const releaseCompaction = holdCompaction(rig);
+				const compaction = startCompaction(rig, kind);
+				await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+				const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+				await submit("typed first");
+				await submit("/ask sent by the command");
+				await waitFor("both held messages to show as pending", () =>
+					isDeepEqual(rig.host.getAllQueuedMessages().steering, ["typed first", "sent by the command"]),
+				);
+
+				assert.equal(rig.host.restoreQueuedMessagesToEditor(), 2);
+				const restored = rig.host.editor.getText();
+				assert.ok(restored.includes("typed first"), restored);
+				assert.ok(restored.includes("sent by the command"), restored);
+				assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
+				await waitFor("the session to give the held messages back", () =>
+					isDeepEqual(rig.engine.session.getSteeringMessages(), []),
+				);
+
+				releaseCompaction();
+				await compaction;
+				await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+				await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+				assert.equal(providerRequests(rig), 0);
+				assert.deepEqual(getUserTexts(rig.engine), []);
+				assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
 			});
 
 			test("holds messages an extension command sends until compaction ends, then sends each once (#4251)", async () => {
@@ -209,6 +280,48 @@ for (const wiring of ["local", "isolated"] as const) {
 			});
 		});
 	}
+}
+
+for (const wiring of ["local", "isolated"] as const) {
+	describe(`${wiring} host during automatic compaction at the end of a turn`, () => {
+		test("sends held messages in typing order while the turn's run is still open (#4251)", async () => {
+			const invocations: string[] = [];
+			// Every reply crosses the compaction threshold, so compaction starts as the first turn ends.
+			const rig = await createCompactingRig(wiring, invocations, {
+				models: [{ id: "small-window", contextWindow: 1000 }],
+				settings: { compaction: { enabled: true, reserveTokens: 990 } },
+			});
+			const releaseCompaction = holdCompaction(rig);
+			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+			await submit("start a turn");
+			await waitFor("compaction to start at the end of the turn", () => rig.host.session.isCompacting);
+			const requestsBefore = providerRequests(rig);
+
+			await submit("typed first");
+			await submit("/ask sent by the command");
+			await submit("typed last");
+			await waitFor("every held message to show as pending", () =>
+				isDeepEqual(rig.host.getAllQueuedMessages().steering, ["typed first", "sent by the command", "typed last"]),
+			);
+			assert.equal(providerRequests(rig), requestsBefore, "no provider request may start during compaction");
+
+			releaseCompaction();
+			await waitFor("the held messages to be sent in typing order", () =>
+				isDeepEqual(getUserTexts(rig.engine), ["start a turn", "typed first", "sent by the command", "typed last"]),
+			);
+			await waitFor(
+				"the session to settle",
+				() => !rig.engine.session.isStreaming && !rig.host.session.isCompacting,
+			);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+			assert.deepEqual(getUserTexts(rig.engine), [
+				"start a turn",
+				"typed first",
+				"sent by the command",
+				"typed last",
+			]);
+		});
+	});
 }
 
 describe("engine command catalog", () => {

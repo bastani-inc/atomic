@@ -645,7 +645,7 @@ pi.sendUserMessage("/review src/index.ts", { expandPromptTemplates: true });
 
 - `expandPromptTemplates` - Dispatch extension commands and expand skill commands and prompt templates instead of sending the text literally. Defaults to `false`, so an extension-authored message is sent as-is unless it opts in; an unknown command falls through to a literal send.
 
-When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error. While the session compacts, the message waits and is sent once compaction ends, after messages sent before it; if one of those has started a turn by then, a message without `deliverAs` is delivered as a follow-up.
+When not streaming, the message is sent immediately and triggers a new turn. When streaming without `deliverAs`, throws an error. While the session compacts, the message waits, shows as queued, and is sent once compaction ends, after messages sent before it; if one of those has started a turn by then, a message without `deliverAs` is queued behind it as steering.
 
 See [send-user-message.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/send-user-message.ts) for a complete example.
 
