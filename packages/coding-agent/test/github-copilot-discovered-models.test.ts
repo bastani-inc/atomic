@@ -103,11 +103,18 @@ function blockNetwork() {
 }
 
 async function runtime(credential: Credential, modelsJson?: Record<string, unknown>): Promise<ModelRuntime> {
-	const authPath = join(agentDir, "auth.json");
-	const modelsPath = join(agentDir, "models.json");
-	writeFileSync(authPath, JSON.stringify({ [PROVIDER]: credential }));
-	if (modelsJson) writeFileSync(modelsPath, JSON.stringify(modelsJson));
-	return ModelRuntime.create({ credentials: AuthStorage.create(authPath), modelsPath, allowModelNetwork: false });
+	writeFileSync(join(agentDir, "auth.json"), JSON.stringify({ [PROVIDER]: credential }));
+	if (modelsJson) writeFileSync(join(agentDir, "models.json"), JSON.stringify(modelsJson));
+	return restart();
+}
+
+/** Start a new runtime from the credential and caches already on disk, without the network. */
+async function restart(): Promise<ModelRuntime> {
+	return ModelRuntime.create({
+		credentials: AuthStorage.create(join(agentDir, "auth.json")),
+		modelsPath: join(agentDir, "models.json"),
+		allowModelNetwork: false,
+	});
 }
 
 async function discover(credential: Credential, modelsJson?: Record<string, unknown>): Promise<ModelRuntime> {
@@ -184,7 +191,7 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		}
 	});
 
-	it("offers what a refresh discovers to an OAuth login whose saved lists predate it", async () => {
+	it("offers what a refresh discovers to an OAuth login whose saved lists predate it, also after a restart", async () => {
 		// The token is still valid, so the refresh reads the account's list without renewing the login.
 		const staleLogin: Credential = {
 			type: "oauth",
@@ -198,6 +205,27 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 
 		assert.deepEqual(modelListUrls, ["https://api.individual.githubcopilot.com/models"]);
 		assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
+
+		blockNetwork();
+		assertIncludesAll(await availableIds(await restart()), ACCOUNT_IDS);
+	});
+
+	it("does not offer the models a previous login discovered to a different login", async () => {
+		await discover(oauthLogin(["example-model-fast", "example-linked-model-fast"]));
+		blockNetwork();
+
+		const otherLogin: Credential = {
+			type: "oauth",
+			access: "tid=other;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "other-refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			availableModelIds: [CATALOG_MODEL_ID],
+			fastModelIds: [],
+		};
+		const available = await availableIds(await runtime(otherLogin));
+
+		for (const id of ACCOUNT_IDS) assert.equal(available.includes(id), false, id);
+		assert.ok(available.includes(CATALOG_MODEL_ID));
 	});
 
 	it("restores the discovered models at startup without the network", async () => {

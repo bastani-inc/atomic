@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, it, vi } from "vitest";
 import { streamSimple } from "../src/compat.ts";
-import type { Credential } from "../src/auth/types.ts";
+import type { Credential, OAuthCredential } from "../src/auth/types.ts";
 import type { Provider, RefreshModelsContext } from "../src/models.ts";
 import {
 	discoverGitHubCopilotModels,
@@ -329,6 +329,44 @@ describe("discoverGitHubCopilotModels", () => {
 		assert.equal(requests[0]?.headers.get("Copilot-Integration-Id"), "vscode-chat");
 	});
 
+	it("saves the account's model lists to the OAuth login that read them", async () => {
+		stubModelList(() => Response.json(recordedModels));
+		const login: OAuthCredential = {
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+			availableModelIds: ["example-static-model"],
+			fastModelIds: [],
+		};
+		const updates: Array<(current: OAuthCredential) => OAuthCredential | undefined> = [];
+		await discoverGitHubCopilotModels([staticModel], {
+			...refreshContext(login),
+			updateCredential: async (update) => {
+				updates.push(update);
+			},
+		});
+
+		assert.equal(updates.length, 1);
+		const saved = updates[0]?.(login);
+		assert.deepEqual(saved, {
+			...login,
+			availableModelIds: [
+				"example-static-model",
+				"example-static-model-fast",
+				"example-model",
+				"example-chat-model",
+				"example-reasoning-model",
+				"example-messages-model",
+				"example-legacy-model",
+				"example-unrouted-model",
+			],
+			fastModelIds: ["example-static-model-fast", "example-model-fast"],
+		});
+		// A login whose lists already match is left as it is.
+		assert.equal(saved && updates[0]?.(saved), undefined);
+	});
+
 	it.each([400, 401, 403, 404])("discovers nothing when the host refuses the token's list (%i)", async (status) => {
 		stubModelList(() => new Response("refused", { status }));
 		const models = await discoverGitHubCopilotModels([staticModel], refreshContext({ type: "api_key", key: "k" }));
@@ -369,20 +407,22 @@ describe("GitHub Copilot availability of discovered models", () => {
 		);
 	});
 
-	it("offers a login every discovered model, even one its saved lists predate", () => {
-		// The saved lists are renewed only with the token; the refresh that discovered these models read the
-		// account's list later.
+	it("offers a login the fast IDs it lists, picker entries or not, and only those", () => {
 		const login = {
 			type: "oauth" as const,
 			access: "copilot-test",
 			refresh: "unused",
 			expires: 0,
-			availableModelIds: [],
-			fastModelIds: [],
+			availableModelIds: ["example-model"],
+			fastModelIds: ["example-model-fast", "example-static-model-fast"],
 		};
 		assert.deepEqual(
 			provider.filterModels?.([ordinary, fast, unlinkedFast], login)?.map((model) => model.id),
 			["example-model", "example-model-fast", "example-static-model-fast"],
+		);
+		assert.deepEqual(
+			provider.filterModels?.([ordinary, fast, unlinkedFast], { ...login, fastModelIds: [] })?.map((model) => model.id),
+			["example-model"],
 		);
 	});
 });

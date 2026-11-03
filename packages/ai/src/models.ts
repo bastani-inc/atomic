@@ -121,6 +121,13 @@ export interface RefreshModelsContext {
 	 * outside the provider receiving this context.
 	 */
 	baseUrl?: string;
+	/**
+	 * Network phase with an OAuth credential only: save account data the refresh read with that login,
+	 * such as the model lists its availability filter checks. `update` receives the stored login and
+	 * returns its replacement, or undefined to leave it unchanged. Nothing is written once the store no
+	 * longer holds the token this refresh used, so a renewed login or another account is never changed.
+	 */
+	updateCredential?(update: (current: OAuthCredential) => OAuthCredential | undefined): Promise<void>;
 }
 
 export interface ModelsRefreshOptions {
@@ -600,6 +607,7 @@ class ModelsImpl implements MutableModels {
 		signal: AbortSignal,
 	): Promise<void> {
 		const stored = await this.modelsStore.read(provider.id, { signal });
+		const login = allowNetwork && credential?.type === "oauth" ? credential : undefined;
 		await provider.refreshModels({
 			credential,
 			stored: stored ? withKnownModelTypes(structuredClone(stored)) : undefined,
@@ -608,7 +616,27 @@ class ModelsImpl implements MutableModels {
 			force: allowNetwork ? force : undefined,
 			signal,
 			baseUrl: provider.baseUrl,
+			...(login ? { updateCredential: (update) => this.updateRefreshLogin(provider.id, login, update, signal) } : {}),
 		});
+	}
+
+	/** See `RefreshModelsContext.updateCredential`. */
+	private async updateRefreshLogin(
+		providerId: string,
+		login: OAuthCredential,
+		update: (current: OAuthCredential) => OAuthCredential | undefined,
+		signal: AbortSignal,
+	): Promise<void> {
+		try {
+			await this.credentials.modify(
+				providerId,
+				async (current) => (current?.type === "oauth" && current.access === login.access ? update(current) : undefined),
+				{ signal },
+			);
+		} catch (error) {
+			signal.throwIfAborted();
+			throw new ModelsError("auth", `Credential store modify failed for ${providerId}`, { cause: error });
+		}
 	}
 
 	async refresh(options: ModelsRefreshOptions = {}): Promise<ModelsRefreshResult> {

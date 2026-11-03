@@ -3,7 +3,10 @@
  */
 
 import { COPILOT_API_VERSION, COPILOT_HEADERS } from "../../api/github-copilot-headers.ts";
-import { GITHUB_COPILOT_MODELS } from "../../providers/github-copilot.models.ts";
+import {
+	GITHUB_COPILOT_INDIVIDUAL_BASE_URL,
+	parseGitHubCopilotAccountModelLists,
+} from "../../providers/github-copilot-account.ts";
 import { sleep } from "../../utils/sleep.ts";
 import { OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
@@ -78,59 +81,7 @@ function getGitHubCopilotBaseUrl(token?: string, enterpriseDomain?: string): str
 	}
 	// Fallback for enterprise or if token parsing fails
 	if (enterpriseDomain) return `https://copilot-api.${enterpriseDomain}`;
-	return "https://api.individual.githubcopilot.com";
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
-}
-
-function parseGitHubCopilotModelCatalog(raw: unknown, allowPolicyFallback: boolean) {
-	const data = asRecord(raw)?.data;
-	if (!Array.isArray(data)) {
-		throw new Error("Invalid Copilot models response");
-	}
-
-	const accountModels = data.flatMap((rawItem) => {
-		const item = asRecord(rawItem);
-		const id = item?.id;
-		if (!item || typeof id !== "string") return [];
-
-		const capabilities = asRecord(item.capabilities);
-		const supports = asRecord(capabilities?.supports);
-		if (supports?.tool_calls === false) return [];
-
-		return [
-			{
-				id,
-				pickerEnabled: item.model_picker_enabled === true,
-				policyState: asRecord(item.policy)?.state,
-			},
-		];
-	});
-	const pickerModelIds = accountModels
-		.filter((model) => model.pickerEnabled && model.policyState !== "disabled")
-		.map((model) => model.id);
-	const usePolicyFallback = allowPolicyFallback && pickerModelIds.length === 0;
-	const availableModelIds =
-		pickerModelIds.length > 0 || !allowPolicyFallback
-			? pickerModelIds
-			: accountModels
-					.filter((model) => !model.id.endsWith("-fast") && model.policyState === "enabled")
-					.map((model) => model.id);
-	// Fast siblings are not picker entries: a fast ID the account lists is entitled unless its policy is disabled.
-	const fastModelIds = accountModels
-		.filter((model) => model.id.endsWith("-fast") && model.policyState !== "disabled")
-		.map((model) => model.id);
-	const policyModelIds = accountModels
-		.filter(
-			(model) =>
-				model.policyState === "unconfigured" &&
-				Object.hasOwn(GITHUB_COPILOT_MODELS, model.id) &&
-				(model.pickerEnabled || usePolicyFallback),
-		)
-		.map((model) => model.id);
-	return { availableModelIds, fastModelIds, policyModelIds };
+	return GITHUB_COPILOT_INDIVIDUAL_BASE_URL;
 }
 
 async function fetchWithRateLimitRetry(
@@ -173,9 +124,6 @@ async function fetchGitHubCopilotModels(
 	retryPolicy: { maxRetries: number; maxElapsedMs: number },
 ) {
 	const baseUrl = getGitHubCopilotBaseUrl(copilotToken, enterpriseDomain);
-	// Some Individual accounts return false for every picker flag despite explicit enabled policies.
-	// Limit the fallback to that endpoint so other account types keep strict picker semantics.
-	const allowPolicyFallback = baseUrl === "https://api.individual.githubcopilot.com";
 	const response = await fetchWithRateLimitRetry(
 		`${baseUrl}/models`,
 		{
@@ -192,7 +140,7 @@ async function fetchGitHubCopilotModels(
 	if (!response.ok) {
 		throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
 	}
-	return parseGitHubCopilotModelCatalog(await response.json(), allowPolicyFallback);
+	return parseGitHubCopilotAccountModelLists(await response.json(), baseUrl);
 }
 
 /** `presentedToken` marks a request authenticated by the stored login: a 401 then means that login was revoked. */

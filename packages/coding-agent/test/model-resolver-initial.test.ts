@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import type { Model } from "@bastani/pi-ai/compat";
 import { getBuiltinModels, getBuiltinProviders } from "@bastani/pi-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRegistry } from "../src/core/model-registry.ts";
-import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.ts";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { ModelRegistry } from "../src/core/model-registry.js";
+import { findInitialModel, restoreModelFromSession } from "../src/core/model-resolver.js";
 import { defaultModelPerProvider, findPreferredAvailableModel } from "../src/core/model-resolver-defaults.js";
-import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 const COPILOT_ENV_KEYS = [
 	"COPILOT_API_TARGET",
@@ -362,12 +362,13 @@ describe("default model selection", () => {
 			async (_label, fast, available, id) => {
 				const modelRuntime = await copilotRuntime(fast, available);
 
-				expect(modelRuntime.getModel("github-copilot", id)).toBeUndefined();
-				expect(modelRuntime.canRestoreUnknownModel("github-copilot", id)).toBe(false);
+				assert.equal(modelRuntime.getModel("github-copilot", id), undefined);
+				assert.equal(modelRuntime.canRestoreUnknownModel("github-copilot", id), false);
 				const result = await restoreModelFromSession("github-copilot", id, undefined, false, modelRuntime);
-				expect(result.fallbackMessage).toContain(`Could not restore model github-copilot/${id}`);
-				expect(result.fallbackMessage).toContain("update --models");
-				expect(result.model?.id).not.toBe(id);
+				const message = result.fallbackMessage ?? "";
+				assert.ok(message.includes(`Could not restore model github-copilot/${id}`), message);
+				assert.ok(message.includes("update --models"), message);
+				assert.notEqual(result.model?.id, id);
 			},
 		);
 

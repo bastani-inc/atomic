@@ -9,7 +9,7 @@ import {
 	type Provider,
 } from "@bastani/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { VERSION } from "../src/config.ts";
+import { VERSION } from "../src/config.js";
 import {
 	type DiscoverModels,
 	type PersonalizeCatalog,
@@ -17,8 +17,8 @@ import {
 	withDiscoveredModels,
 	withPersonalizedCatalog,
 	withRemoteCatalog,
-} from "../src/core/remote-catalog-provider.ts";
-import { makeRefreshContext } from "./helpers/refresh-context.ts";
+} from "../src/core/remote-catalog-provider.js";
+import { makeRefreshContext } from "./helpers/refresh-context.js";
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -489,19 +489,22 @@ describe("discovered models provider", () => {
 		const online = discoveringProvider(discover);
 		await online.refreshModels?.(await makeRefreshContext(store, online.id, { credential: { type: "api_key" } }));
 
-		expect(seen).toEqual([["static", "remote"]]);
-		expect(ids(online)).toEqual(["static", "remote", "found"]);
+		assert.deepEqual(seen, [["static", "remote"]]);
+		assert.deepEqual(ids(online), ["static", "remote", "found"]);
 		const saved = await store.read(online.id);
-		expect(saved?.models.map((entry) => entry.id)).toEqual(["remote", "found"]);
-		expect(saved?.lastModified).toBe(2_000);
+		assert.deepEqual(
+			saved?.models.map((entry) => entry.id),
+			["remote", "found"],
+		);
+		assert.equal(saved?.lastModified, 2_000);
 
 		fetchSpy.mockClear();
 		const restarted = discoveringProvider(async () => {
 			throw new Error("not used offline");
 		});
 		await restarted.refreshModels?.(await makeRefreshContext(store, restarted.id, { allowNetwork: false }));
-		expect(ids(restarted)).toEqual(["static", "remote", "found"]);
-		expect(fetchSpy).not.toHaveBeenCalled();
+		assert.deepEqual(ids(restarted), ["static", "remote", "found"]);
+		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
 	it("keeps the catalog entry when a discovered model has the same ID", async () => {
@@ -509,7 +512,7 @@ describe("discovered models provider", () => {
 		const provider = discoveringProvider(async () => [{ ...discoveredModel("static"), name: "Account static" }]);
 		const store = new InMemoryModelsStore();
 		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } }));
-		expect(provider.getModels()).toEqual([model("static")]);
+		assert.deepEqual(provider.getModels(), [model("static")]);
 	});
 
 	it("keeps saved discovered models while the catalog overlay refreshes on its own schedule", async () => {
@@ -523,20 +526,28 @@ describe("discovered models provider", () => {
 		const second = discoveringProvider(async () => [discoveredModel("found"), discoveredModel("newer")]);
 		await second.refreshModels?.(await makeRefreshContext(store, second.id, { credential: { type: "api_key" } }));
 		// The overlay was checked moments ago, so only discovery ran.
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		expect(ids(second)).toEqual(["static", "remote", "found", "newer"]);
-		expect((await store.read(second.id))?.models.map((entry) => entry.id)).toEqual(["remote", "found", "newer"]);
+		assert.equal(fetchSpy.mock.calls.length, 1);
+		assert.deepEqual(ids(second), ["static", "remote", "found", "newer"]);
+		assert.deepEqual(
+			(await store.read(second.id))?.models.map((entry) => entry.id),
+			["remote", "found", "newer"],
+		);
 	});
 
 	it("still discovers when the catalog overlay request fails, then reports that failure", async () => {
 		stubCatalogOverlay(() => new Response("unavailable", { status: 503 }));
 		const store = new InMemoryModelsStore();
 		const provider = discoveringProvider(async () => [discoveredModel("found")]);
-		await expect(
-			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
-		).rejects.toThrow("Model catalog request failed for test-provider: 503");
-		expect(ids(provider)).toEqual(["static", "found"]);
-		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["found"]);
+		const context = await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } });
+		await assert.rejects(
+			async () => provider.refreshModels?.(context),
+			/Model catalog request failed for test-provider: 503/,
+		);
+		assert.deepEqual(ids(provider), ["static", "found"]);
+		assert.deepEqual(
+			(await store.read(provider.id))?.models.map((entry) => entry.id),
+			["found"],
+		);
 	});
 
 	it("keeps the saved discovered models when discovery fails", async () => {
@@ -546,11 +557,13 @@ describe("discovered models provider", () => {
 		const provider = discoveringProvider(async () => {
 			throw new Error("account list unavailable");
 		});
-		await expect(
-			provider.refreshModels?.(await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } })),
-		).rejects.toThrow("account list unavailable");
-		expect(ids(provider)).toEqual(["static", "found"]);
-		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["found"]);
+		const context = await makeRefreshContext(store, provider.id, { credential: { type: "api_key" } });
+		await assert.rejects(async () => provider.refreshModels?.(context), /account list unavailable/);
+		assert.deepEqual(ids(provider), ["static", "found"]);
+		assert.deepEqual(
+			(await store.read(provider.id))?.models.map((entry) => entry.id),
+			["found"],
+		);
 	});
 
 	it("does not discover without the network", async () => {
@@ -558,7 +571,7 @@ describe("discovered models provider", () => {
 		const store = new InMemoryModelsStore();
 		const provider = discoveringProvider(discover);
 		await provider.refreshModels?.(await makeRefreshContext(store, provider.id, { allowNetwork: false }));
-		expect(discover).not.toHaveBeenCalled();
-		expect(ids(provider)).toEqual(["static"]);
+		assert.equal(discover.mock.calls.length, 0);
+		assert.deepEqual(ids(provider), ["static"]);
 	});
 });
