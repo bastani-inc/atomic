@@ -339,16 +339,8 @@ async function executeRun(
 	};
 	if (opts.parentRun === undefined) bindRunDurableBackend(runSnapshot, rootBackend);
 	const usageTree = (): RunUsageTree => {
-		const snapshots = activeStore.runs();
-		const childrenByParent = new Map<string, RunSnapshot[]>();
-		for (const snapshot of snapshots) {
-			if (snapshot.parentRunId === undefined) continue;
-			const children = childrenByParent.get(snapshot.parentRunId) ?? [];
-			children.push(snapshot);
-			childrenByParent.set(snapshot.parentRunId, children);
-		}
 		const build = (run: RunSnapshot): RunUsageTree => {
-			const children = (childrenByParent.get(run.id) ?? []).map(build);
+			const children = activeStore.childRuns(run.id).map(build);
 			return children.length === 0 ? { run } : { run, children };
 		};
 		// #3106: this snapshot replaces the prior same-ID view at admission. Meter

@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
+import { Type } from "typebox";
 import { afterEach, test } from "vitest";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { GraphFrontierTracker } from "../../packages/workflows/src/engine/graph-inference.js";
 import { createToolNodeLifecycle } from "../../packages/workflows/src/engine/run-tool-node-lifecycle.js";
 import { registerPendingStageIntercomBridge } from "../../packages/workflows/src/extension/pending-stage-intercom.js";
 import { registerReleasedStageIntercomRoutes } from "../../packages/workflows/src/extension/released-stage-intercom-route.js";
+import { run as runWorkflow } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import {
+	type AgentSession,
+	type AgentSessionAdapter,
+	assistantMessageWithUsage,
+	makeMockSession,
+} from "./stage-runner-helpers.js";
 
 const ROOT = "4ac72924-c452-4e5f-9e63-2435722109f7";
 const CHILD = "5bd82a35-c563-4f60-9a74-3546832210a8";
@@ -247,4 +256,36 @@ test("announcing a released stage to Intercom reads none of the finished runs th
 		[["released-run", "released-stage", "workflow:released-run"]],
 	);
 	assert.equal(finished.reads, 0, `announcing one released stage read finished runs ${finished.reads} times`);
+});
+
+test("a run under a token budget meters its usage without reading the finished runs the store holds (#4190)", async () => {
+	const messages: AgentSession["messages"] = [];
+	let text = "";
+	const agentSession: AgentSessionAdapter = {
+		async create() {
+			return makeMockSession({
+				messages,
+				async prompt() {
+					text = "metered";
+					messages.push(
+						assistantMessageWithUsage(text, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 }),
+					);
+				},
+				getLastAssistantText: () => text,
+			}).session;
+		},
+	};
+	const definition = workflow({
+		name: "metered-4190",
+		description: "",
+		budget: { maxTokens: 1_000_000 },
+		inputs: {},
+		outputs: { result: Type.String() },
+		run: async (ctx) => ({ result: await ctx.stage("one").prompt("go") }),
+	});
+	const store = createStore();
+	const finished = holdFinishedRuns(store, 5_000);
+	const result = await runWorkflow(definition, {}, { store, adapters: { agentSession } });
+	assert.deepEqual(result.result, { result: "metered" });
+	assert.equal(finished.reads, 0, `metering one run read finished runs ${finished.reads} times`);
 });
