@@ -115,6 +115,8 @@ export interface Store {
 	run(runId: string): RunSnapshot | undefined;
 	/** Where the run stands in `runs()`, found without scanning; undefined when the store does not hold it. */
 	runPosition(runId: string): number | undefined;
+	/** The runs hanging from this run, or from its stage when given, in `runs()` order, found without scanning the other runs. */
+	childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[];
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;

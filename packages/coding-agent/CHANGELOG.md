@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Completing a pooled child, and queueing or draining an Intercom message for a named stage, no longer scan every run in the workflow store. Each finds the runs it needs by id, so a long-lived host with thousands of finished runs no longer spends main-thread time proportional to its history on each child completion or message. A broadcast to a pattern still matches against every live stage ([#4190](https://github.com/bastani-inc/atomic/issues/4190))
+- Completing a pooled child, and routing, queueing or draining an Intercom message for a stage or a pattern, no longer scan every run in the workflow store. Each finds the runs it needs by id or through the run's parent and child links, so a long-lived host with thousands of finished runs no longer spends main-thread time proportional to its history on each child completion or message. A pattern broadcast still matches against every live stage of its own invocation ([#4190](https://github.com/bastani-inc/atomic/issues/4190))
 
 ## [0.9.68] - 2026-11-03
 

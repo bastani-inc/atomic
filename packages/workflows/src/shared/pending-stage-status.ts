@@ -1,7 +1,15 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StageStatus } from "./store-types.js";
-import { type RunSource, type RunsById, runsByIdOf } from "./workflow-run-ownership.js";
+import {
+	childRunsInSource,
+	findRunInSource,
+	isRunLookup,
+	type RunSource,
+	type RunsById,
+	runsByIdOf,
+	runsInSource,
+} from "./workflow-run-ownership.js";
 import { matchStagePathSegments } from "./workflow-stage-path-matching.js";
 import { formatWorkflowStageTarget } from "./workflow-stage-target.js";
 
@@ -45,8 +53,32 @@ export type WorkflowBoundarySegmentsResolver = (runId: string) => readonly strin
  * this child, else that boundary's materialized child-run id. `[]` for the root
  * run; `undefined` when a parent or boundary link is missing from `runs`.
  */
-export function workflowBoundarySegments(runs: readonly RunSnapshot[], runId: string): readonly string[] | undefined {
-	return createWorkflowBoundarySegmentsResolver(runs)(runId);
+export function workflowBoundarySegments(runs: RunSource, runId: string): readonly string[] | undefined {
+	const source = runs;
+	if (!isRunLookup(source) || source.childRuns === undefined)
+		return createWorkflowBoundarySegmentsResolver(runsInSource(source))(runId);
+	const segments: string[] = [];
+	let current = source.run(runId);
+	while (current !== undefined && current.parentRunId !== undefined) {
+		const parent = findRunInSource(source, current.parentRunId);
+		const boundary = parent?.stages.find((stage) => stage.id === current?.parentStageId);
+		if (parent === undefined || boundary === undefined) return undefined;
+		const boundaryName = boundary.name;
+		const byId = parent.stages.filter((stage) => stage.id === boundaryName);
+		const matching = byId.length > 0 ? byId : parent.stages.filter((stage) => stage.name === boundaryName);
+		const children = matching.length === 1 ? childRunsInSource(source, parent.id, matching[0]!.id) : undefined;
+		segments.unshift(
+			boundaryName.length > 0 &&
+				!boundaryName.includes("/") &&
+				!boundaryName.includes("*") &&
+				children?.length === 1 &&
+				children[0]?.id === current.id
+				? boundaryName
+				: current.id,
+		);
+		current = parent;
+	}
+	return current === undefined ? undefined : segments;
 }
 
 /** Build once per roster publication; never retain this resolver across store invalidations. */
@@ -134,9 +166,9 @@ export function workflowBoundaryHops(runs: RunSource, runId: string): readonly W
  * large invocation is linear instead of rebuilding the index per run.
  */
 export function createWorkflowBoundaryHopsResolver(
-	runs: readonly RunSnapshot[],
+	runs: RunSource,
 ): (runId: string) => readonly WorkflowBoundaryHop[] | undefined {
-	const runById = new Map(runs.map((run) => [run.id, run]));
+	const runById = runsByIdOf(runs);
 	const cache = new Map<string, readonly WorkflowBoundaryHop[] | undefined>();
 	return (runId) => {
 		if (cache.has(runId)) return cache.get(runId);

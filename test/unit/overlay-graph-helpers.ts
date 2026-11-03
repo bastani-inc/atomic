@@ -102,6 +102,12 @@ export function makeStore(snap: StoreSnapshot): Store {
 			const position = (snap.runs as RunSnapshot[]).findIndex((candidate) => candidate.id === runId);
 			return position < 0 ? undefined : position;
 		},
+		childRuns: (parentRunId, parentStageId) =>
+			(snap.runs as RunSnapshot[]).filter(
+				(candidate) =>
+					candidate.parentRunId === parentRunId &&
+					(parentStageId === undefined || candidate.parentStageId === parentStageId),
+			),
 		notices: () => [],
 		activeRunId: () => snap.runs[0]?.id ?? null,
 		recordRunStart: () => {},

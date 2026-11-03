@@ -28,14 +28,13 @@ import type {
 	PendingStageQueueResult,
 	PendingStageSender,
 	PendingStickyStageMessageInput,
-	RunSnapshot,
 	StageSnapshot,
 } from "../shared/store-types.js";
 import {
+	childRunsInSource,
 	findRunInSource,
+	invocationRunsInSource,
 	type RunSource,
-	reciprocalWorkflowRootRunId,
-	runsInSource,
 } from "../shared/workflow-run-ownership.js";
 import { targetSegmentsInPossibleStages } from "../shared/workflow-stage-path-matching.js";
 import {
@@ -383,7 +382,6 @@ export function registerPendingStageIntercomBridge(
 	});
 	const routePendingStageMessage = (payload: unknown): void => {
 		if (disposed || !isPendingStageMessageEvent(payload) || payload.handled) return;
-		const runs = activeStore.runs();
 		const parsedTarget = parseWorkflowStageTarget(payload.target);
 		if (parsedTarget === undefined) return;
 		if (!ownsRun(parsedTarget.rootRunId)) return;
@@ -403,7 +401,7 @@ export function registerPendingStageIntercomBridge(
 			const rootRun = activeStore.run(parsedTarget.rootRunId);
 			if (rootRun === undefined) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, runs, rootRun, payload, parsedTarget).then(
+			payload.completion = deliverStickyTarget(activeStore, rootRun, payload, parsedTarget).then(
 				(value) => {
 					return value;
 				},
@@ -435,7 +433,7 @@ export function registerPendingStageIntercomBridge(
 				result.outcome === "forward"
 					? {
 							outcome: "forward" as const,
-							target: stageRouteTarget(runs, rootRunId, destination.run.id, stage.id),
+							target: stageRouteTarget(activeStore, rootRunId, destination.run.id, stage.id),
 						}
 					: result,
 			);
@@ -451,7 +449,7 @@ export function registerPendingStageIntercomBridge(
 			const stickyRoot = activeStore.run(parsedTarget.rootRunId);
 			if (stickyRoot === undefined || isTerminalRunStatus(stickyRoot.status)) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, runs, stickyRoot, payload, parsedTarget);
+			payload.completion = deliverStickyTarget(activeStore, stickyRoot, payload, parsedTarget);
 			return;
 		}
 		payload.handled = true;
@@ -509,7 +507,7 @@ export function registerPendingStageIntercomBridge(
  * roster announcement target, which is what the broker registers live aliases from.
  */
 function stageRouteTarget(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	rootRunId: string,
 	runId: string,
 	stageId: string,
@@ -585,16 +583,14 @@ function resolveIndexedChildRun(
 }
 
 function resolveChildRun(
-	runs: readonly RunSnapshot[],
+	runs: RunSource,
 	parent: ReturnType<Store["runs"]>[number],
 	segment: string,
 ): ReturnType<Store["runs"]>[number] | undefined {
 	const boundariesById = parent.stages.filter((stage) => stage.id === segment);
 	const boundaries =
 		boundariesById.length > 0 ? boundariesById : parent.stages.filter((stage) => stage.name === segment);
-	const children = boundaries.flatMap((boundary) =>
-		runs.filter((candidate) => candidate.parentRunId === parent.id && candidate.parentStageId === boundary.id),
-	);
+	const children = boundaries.flatMap((boundary) => childRunsInSource(runs, parent.id, boundary.id));
 	return children.length === 1 ? children[0] : undefined;
 }
 
@@ -616,7 +612,7 @@ function resolveMaterializedRun(
 			run = runById;
 			continue;
 		}
-		const child = resolveChildRun(runsInSource(runs), run, segment);
+		const child = resolveChildRun(runs, run, segment);
 		if (child === undefined) return undefined;
 		run = child;
 	}
@@ -754,7 +750,6 @@ async function queueAndPersist(
  */
 async function deliverStickyTarget(
 	activeStore: Store,
-	runs: ReturnType<Store["runs"]>,
 	rootRun: ReturnType<Store["runs"]>[number],
 	event: PendingStageMessageEvent & {
 		readonly from: PendingStageSender;
@@ -782,13 +777,13 @@ async function deliverStickyTarget(
 			reason: `Workflow run ${rootRunId} terminated with status ${rootRun.status} before any stage matching ${event.target} started`,
 		};
 	}
-	const liveMatches = matchingLiveStages(runs, rootRunId, parsedTarget.segments);
+	const liveMatches = matchingLiveStages(activeStore, rootRunId, parsedTarget.segments);
 	// The static scan cannot see inside dynamically loaded (pooled) children, so a target that
 	// matches a materialized live or pending stage is known even when the scan misses it.
 	const notInKnownSet =
 		targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? []) ||
 		liveMatches.length > 0 ||
-		matchingLiveStages(runs, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
+		matchingLiveStages(activeStore, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
 			? undefined
 			: true;
 	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
@@ -889,7 +884,6 @@ function isStickyLiveDeliveredEvent(value: unknown): value is StickyLiveDelivere
 async function recordConfirmedStickyDeliveries(activeStore: Store, event: StickyLiveDeliveredEvent): Promise<boolean> {
 	const parsedTarget = parseWorkflowStageTarget(event.target);
 	if (parsedTarget === undefined) return false;
-	const runs = activeStore.runs();
 	const rootRunId = parsedTarget.rootRunId;
 	const rootRun = activeStore.run(rootRunId);
 	const entry = rootRun?.pendingStageMessages?.find(
@@ -897,7 +891,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
 	);
 	if (rootRun === undefined || entry === undefined) return false;
 	const delivered = new Set(event.deliveredTargets);
-	const records = matchingLiveStages(runs, rootRunId, parsedTarget.segments)
+	const records = matchingLiveStages(activeStore, rootRunId, parsedTarget.segments)
 		.filter((match) => delivered.has(match.target))
 		.map((match) => ({
 			runId: match.run.id,
@@ -939,7 +933,7 @@ async function recordConfirmedStickyDeliveries(activeStore: Store, event: Sticky
  * `includePending` also returns addressable stages that have no session yet.
  */
 function matchingLiveStages(
-	runs: ReturnType<Store["runs"]>,
+	runs: RunSource,
 	rootRunId: string,
 	patternSegments: readonly string[],
 	options: { readonly includePending?: boolean } = {},
@@ -953,10 +947,8 @@ function matchingLiveStages(
 		readonly stage: ReturnType<Store["runs"]>[number]["stages"][number];
 		readonly target: string;
 	}[] = [];
-	const runById = new Map(runs.map((run) => [run.id, run]));
 	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
-	for (const run of runs) {
-		if (reciprocalWorkflowRootRunId(runById, run.id) !== rootRunId) continue;
+	for (const run of invocationRunsInSource(runs, rootRunId)) {
 		const hops = hopsFor(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {

@@ -49,6 +49,8 @@ export function reciprocalWorkflowRootRunId(runById: RunsById, runId: string): s
 export interface RunLookup {
 	run(runId: string): RunSnapshot | undefined;
 	runs(): readonly RunSnapshot[];
+	childRuns?(parentRunId: string, parentStageId?: string): readonly RunSnapshot[];
+	runPosition?(runId: string): number | undefined;
 }
 
 /** A list of runs, scanned as given, or a lookup that finds each run by id. */
@@ -56,7 +58,7 @@ export type RunSource = readonly RunSnapshot[] | RunLookup;
 
 export type RunsById = Pick<ReadonlyMap<string, RunSnapshot>, "get">;
 
-function isRunLookup(source: RunSource): source is RunLookup {
+export function isRunLookup(source: RunSource): source is RunLookup {
 	return "run" in source;
 }
 
@@ -108,4 +110,41 @@ export function findSnapshotStage(stages: readonly StageSnapshot[], stageId: str
 	return Object.isFrozen(stages)
 		? index(stages, stageIndexes).get(stageId)
 		: stages.find((stage) => stage.id === stageId);
+}
+
+/** The runs hanging from a run, or from one of its stages: asked of a lookup, scanned for in a list. */
+export function childRunsInSource(
+	source: RunSource,
+	parentRunId: string,
+	parentStageId?: string,
+): readonly RunSnapshot[] {
+	if (isRunLookup(source) && source.childRuns !== undefined) return source.childRuns(parentRunId, parentStageId);
+	return runsInSource(source).filter(
+		(run) => run.parentRunId === parentRunId && (parentStageId === undefined || run.parentStageId === parentStageId),
+	);
+}
+
+/**
+ * The runs of one invocation, in the order the source lists them: the run `rootRunId` and every descendant whose
+ * parent and boundary links are complete and reciprocal back to it. A lookup walks down from the root through its
+ * children, so the cost follows the invocation, not the runs the source holds; a list is filtered as before.
+ */
+export function invocationRunsInSource(source: RunSource, rootRunId: string): readonly RunSnapshot[] {
+	const byId = runsByIdOf(source);
+	const inInvocation = (run: RunSnapshot): boolean => reciprocalWorkflowRootRunId(byId, run.id) === rootRunId;
+	if (!isRunLookup(source) || source.childRuns === undefined || source.runPosition === undefined)
+		return runsInSource(source).filter(inInvocation);
+	const root = source.run(rootRunId);
+	if (root === undefined) return [];
+	const seen = new Set<string>([root.id]);
+	const found: RunSnapshot[] = [root];
+	for (let index = 0; index < found.length; index++)
+		for (const child of source.childRuns(found[index]!.id))
+			if (!seen.has(child.id)) {
+				seen.add(child.id);
+				found.push(child);
+			}
+	return found
+		.filter(inInvocation)
+		.sort((left, right) => source.runPosition!(left.id)! - source.runPosition!(right.id)!);
 }
