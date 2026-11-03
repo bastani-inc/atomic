@@ -832,9 +832,10 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	// whose `listSessions()` barrier can expire on its own 5s timer.
 	const turn = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
 	/**
-	 * Waits until the batched announcements have published `count` routes. A batch has no fixed length: after an
-	 * expensive announcement the bridge holds the next one until four times that announcement's wall time has passed,
-	 * so on a loaded runner a route change can land well after one 25 ms window.
+	 * Waits until the batched announcements have published `count` routes. A batch has no fixed length: once
+	 * announcing is expensive the bridge holds the next one until four times the typical wall time of recent
+	 * announcements has passed, for at most 250 ms, so on a loaded runner a route change can land after more than one
+	 * 25 ms window.
 	 */
 	const routesPublished = async (routes: { readonly length: number }, count: number): Promise<void> =>
 		await vi.waitFor(() => assert.ok(routes.length >= count, `${routes.length} of ${count} routes published`), {
@@ -1012,6 +1013,110 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		} finally {
 			dispose();
 			vi.restoreAllMocks();
+		}
+	});
+
+	/** The bridge batches the route changes of a window into one announcement; Intercom documents it as about 25 ms. */
+	const ROUTE_BATCH_WINDOW_MS = 25;
+	/** The longest a throttled bridge holds a route change back, however slow its announcements were. */
+	const ROUTE_HOLD_CAP_MS = 250;
+	const addPendingStage = (store: Store, name: string): void => {
+		const run = store.runs().find((candidate) => candidate.id === RUN_ID)!;
+		const added = { id: name, name, status: "pending" as const, parentIds: [], toolEvents: [] };
+		store.recordRunStart({ ...run, stages: [...run.stages, { ...added, pendingStageDeliveryAvailable: true }] });
+	};
+	const stageNames = (route: Record<string, unknown> | undefined): string[] =>
+		((route?.stages ?? []) as { stageName: string }[]).map((stage) => stage.stageName);
+	/**
+	 * A host whose clock moves only as the test moves it, so a throttled wait is measured exactly rather than raced.
+	 * Each route announcement takes `announcementMs()` of that clock, as a synchronous announcement takes its own wall
+	 * time, and `elapse` lets the batch timer fire as the clock reaches it.
+	 */
+	const timedRouteHarness = async (routes: Record<string, unknown>[], announcementMs: () => number) => {
+		let now = 1_000;
+		const startedAt = now;
+		vi.spyOn(performance, "now").mockImplementation(() => now);
+		const host = await harness((payload) => {
+			routes.push(payload);
+			now += announcementMs();
+		});
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const elapse = (ms: number): void => {
+			for (let step = 0; step < ms; step += 1) {
+				now += 1;
+				vi.advanceTimersByTime(1);
+			}
+		};
+		const release = (): void => {
+			host.dispose();
+			vi.useRealTimers();
+			vi.restoreAllMocks();
+		};
+		return { ...host, elapse, release, elapsedMs: () => now - startedAt };
+	};
+
+	// Regression for #4264.
+	test("one slow announcement does not stretch the wait for the next route change", async () => {
+		const routes: Record<string, unknown>[] = [];
+		// The announcements cost 1 ms, except the second, which a GC pause or a preempted thread stretches to 200 ms.
+		const costs = [1, 200];
+		const { store, elapse, release } = await timedRouteHarness(routes, () => costs.shift() ?? 1);
+		try {
+			addPendingStage(store, "first");
+			elapse(ROUTE_BATCH_WINDOW_MS);
+			assert.equal(routes.length, 2, "the first change publishes in its own batch window");
+			// Four times the 200 ms outlier would hold this change back for 800 ms.
+			addPendingStage(store, "second");
+			elapse(ROUTE_BATCH_WINDOW_MS);
+			assert.equal(routes.length, 3, "the change after the slow announcement still publishes in one batch window");
+			assert.ok(stageNames(routes[2]).includes("second"), "the published route carries the change");
+		} finally {
+			release();
+		}
+	});
+
+	// Regression for #4264.
+	test("a route change waits at most the cap, however slow the announcements before it were", async () => {
+		const routes: Record<string, unknown>[] = [];
+		// Every announcement takes 200 ms, so no estimate of the typical cost can make the next change look cheap.
+		const { store, elapse, release } = await timedRouteHarness(routes, () => 200);
+		try {
+			for (const name of ["a", "b", "c", "d"]) {
+				addPendingStage(store, name);
+				elapse(ROUTE_HOLD_CAP_MS);
+				assert.ok(stageNames(routes.at(-1)).includes(name), `change ${name} publishes within the cap`);
+			}
+			assert.equal(routes.length, 5);
+			// Slow announcements keep the throttle on: the next change does not publish in its first batch window...
+			addPendingStage(store, "e");
+			elapse(ROUTE_BATCH_WINDOW_MS);
+			assert.equal(routes.length, 5, "a bridge whose announcements are slow still spaces them out");
+			// ...but it is held for the cap, not for four times the 200 ms an announcement takes.
+			elapse(ROUTE_HOLD_CAP_MS - ROUTE_BATCH_WINDOW_MS);
+			assert.equal(routes.length, 6, "change e publishes within the cap");
+			assert.ok(stageNames(routes[5]).includes("e"), "the published route carries the change");
+		} finally {
+			release();
+		}
+	});
+
+	// Pins the purpose of the throttle (#3939) against the fix for #4264.
+	test("repeated expensive announcements keep announcing under about a fifth of the event loop", async () => {
+		const routes: Record<string, unknown>[] = [];
+		const EXPENSIVE_MS = 40;
+		const { store, elapse, release, elapsedMs } = await timedRouteHarness(routes, () => EXPENSIVE_MS);
+		try {
+			// A change every 5 ms for three seconds, each one a different route.
+			for (let change = 0; change < 600; change += 1) {
+				addPendingStage(store, `stage-${change}`);
+				elapse(5);
+			}
+			const announcements = routes.length - 1;
+			const share = (announcements * EXPENSIVE_MS) / elapsedMs();
+			assert.ok(share <= 0.25, `announcing took ${(share * 100).toFixed(0)}% of the event loop`);
+			assert.ok(announcements >= 10, `only ${announcements} announcements in three seconds of changes`);
+		} finally {
+			release();
 		}
 	});
 

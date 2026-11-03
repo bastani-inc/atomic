@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Graph node cards show a stage's model as its raw ID followed by its reasoning level, for example `claude-sonnet-4-5  high`, and stage model notices name the model as `provider/id`. A gateway model ID that contains a slash, such as OpenRouter's `anthropic/claude-sonnet-4-5`, now shows in full on the card instead of losing its first segment ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 
+### Fixed
+
+- A slow route announcement no longer delays the route changes after it by four times its own duration. Once announcing is costly, the pending-stage Intercom bridge spaces its route announcements so that announcing stays within about a fifth of the host's time, but it sized the gap from the wall time of the last announcement alone and set no upper bound, so one announcement stretched by a garbage collection pause or a busy machine held back the next stage aliases, pending-to-running changes and possible-stage rows (a 30 ms stall delayed the next change by 112 ms). The gap now follows the median of the last three announcements, so one slow announcement is ignored, and no route change waits longer than 250 ms for its announcement. Announcements that are repeatedly expensive are still spaced to about a fifth of the host's time ([#4264](https://github.com/bastani-inc/atomic/issues/4264))
+
 ## [0.9.69] - 2026-11-03
 
 ### Added
