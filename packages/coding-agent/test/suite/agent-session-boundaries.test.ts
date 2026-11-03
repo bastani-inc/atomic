@@ -6,6 +6,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../src/core/agent-session-persistent-custom-messages.ts";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/index.ts";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -42,8 +43,11 @@ async function createSavedSession(options: Parameters<typeof createHarness>[0] =
 			await other.appendCustomEntry("other-writer", {});
 		},
 		cleanup: async () => {
-			await harness.cleanup();
-			rmSync(sessionDir, { recursive: true, force: true });
+			try {
+				await harness.cleanup();
+			} finally {
+				rmSync(sessionDir, { recursive: true, force: true });
+			}
 		},
 	};
 }
@@ -656,6 +660,126 @@ describe("AgentSession actionable boundaries", () => {
 		} finally {
 			await saved.cleanup();
 		}
+	});
+
+	// #4254: a custom message saved outside its own message_end append stops the run like any other unsaved message.
+	describe.each([
+		{ continuation: "a terminal response", continueAtBoundary: false },
+		{ continuation: "an explicit boundary continuation", continueAtBoundary: true },
+	])("a custom message that cannot be saved, after $continuation (#4254)", ({ continueAtBoundary }) => {
+		const NOTICE = "late-notice";
+
+		/**
+		 * A saved session whose second writer appends at `writeAt`, after the first reply is saved, so that the custom
+		 * message's save is the run's first failed append. Its first turn_end boundary asks to continue when the case
+		 * says so. `saveAttempts` counts the session's appends of a custom type.
+		 */
+		async function createCustomMessageSession(writeAt: "turn_end" | "hidden turn") {
+			let written = false;
+			let continued = false;
+			const writeOnce = async () => {
+				if (written) return;
+				written = true;
+				await saved.writeAsSecondWriter();
+			};
+			const saved = await createSavedSession({
+				extensionFactories: [
+					(pi) => {
+						pi.on("turn_end", async () => {
+							if (writeAt === "turn_end") await writeOnce();
+							if (!continueAtBoundary || continued) return;
+							continued = true;
+							return { continue: true };
+						});
+						// Extensions see the hidden turn's message_end just before it is saved.
+						pi.on("message_end", async ({ message }) => {
+							if (message.role === "custom" && message.customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE) {
+								if (writeAt === "hidden turn") await writeOnce();
+							}
+						});
+					},
+				],
+			});
+			const sessionManager = saved.harness.sessionManager;
+			const append = sessionManager.appendCustomMessageEntry.bind(sessionManager);
+			const attempts = new Map<string, number>();
+			sessionManager.appendCustomMessageEntry = (customType, ...rest) => {
+				attempts.set(customType, (attempts.get(customType) ?? 0) + 1);
+				return append(customType, ...rest);
+			};
+			return { ...saved, saveAttempts: (customType: string) => attempts.get(customType) ?? 0 };
+		}
+
+		/** Sends the custom message while the first reply streams; prompt() must resolve. */
+		async function promptWithCustomMessage(
+			saved: Awaited<ReturnType<typeof createCustomMessageSession>>,
+			options: { triggerTurn: boolean; persistWhenStreaming?: boolean },
+		): Promise<void> {
+			const session = saved.harness.session;
+			saved.harness.setResponses([
+				async () => {
+					await session.sendCustomMessage(
+						{ customType: NOTICE, content: "the background work finished", display: true },
+						options,
+					);
+					return fauxAssistantMessage("first reply");
+				},
+				fauxAssistantMessage("must not run"),
+			]);
+			await settlesWithin(session.prompt("start"));
+		}
+
+		it("stops the run when the hidden turn of a protected custom message cannot be saved", async () => {
+			const saved = await createCustomMessageSession("hidden turn");
+			try {
+				await promptWithCustomMessage(saved, { triggerTurn: true, persistWhenStreaming: true });
+
+				assert.deepEqual(saved.unsavedRoles(), ["custom"]);
+				assert.equal(saved.harness.faux.state.callCount, 1);
+				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 1, "the run retries no write");
+
+				// #3105: disposal makes one final write of the hidden turn and fails with only its cause.
+				await assert.rejects(settlesWithin(saved.harness.session.dispose()), (error) => {
+					assert.ok(error instanceof AggregateError);
+					assert.equal((error as { code?: unknown }).code, "ShutdownFailed");
+					assert.deepEqual(
+						error.errors.map((component: Error) => (component.cause as Error | undefined)?.name),
+						["SessionConflictError"],
+					);
+					return true;
+				});
+				assert.equal(saved.saveAttempts(PROTECTED_RECONCILIATION_CUSTOM_TYPE), 2);
+				assert.deepEqual(saved.unsavedRoles(), ["custom"], "disposal reports no second error");
+				// The saved card keeps its recovery marker without a saved hidden turn, so a resume replays that turn.
+				const reopened = await SessionManager.open(
+					saved.harness.sessionManager.getSessionFile()!,
+					saved.harness.sessionManager.getSessionDir(),
+				);
+				const customEntries = reopened.getEntries().filter((entry) => entry.type === "custom_message");
+				assert.deepEqual(
+					customEntries.map((entry) => [entry.customType, entry.protectedReconciliation]),
+					[[NOTICE, { delivery: "steer" }]],
+				);
+			} finally {
+				// Disposal's rejection is asserted above; cleanup still removes the fixture.
+				await saved.cleanup().catch(() => {});
+			}
+		});
+
+		it("stops the run when a buffered custom message cannot be saved", async () => {
+			const saved = await createCustomMessageSession("turn_end");
+			try {
+				await promptWithCustomMessage(saved, { triggerTurn: false });
+
+				assert.deepEqual(saved.unsavedRoles(), ["custom"]);
+				assert.equal(saved.harness.faux.state.callCount, 1);
+				assert.equal(saved.saveAttempts(NOTICE), 1, "settlement does not save it again");
+				await settlesWithin(saved.harness.session.dispose());
+				assert.deepEqual(saved.unsavedRoles(), ["custom"]);
+			} finally {
+				await saved.cleanup();
+			}
+		});
 	});
 
 	it("still fails the turn when a session listener throws on the final assistant message_end (#4226)", async () => {

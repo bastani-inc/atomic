@@ -9,7 +9,7 @@ import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
 import type { SqliteDatabase } from "./database.js";
-import { StorageAdapterLoadError } from "./errors.js";
+import { describeStorageError, StorageAdapterLoadError } from "./errors.js";
 import {
 	processSharedStorageSelection,
 	SESSIONS_STORAGE_ENV,
@@ -94,14 +94,7 @@ interface Layer {
 	readonly present: boolean;
 }
 
-/** An error and its direct cause on one line, for status output (a module-resolution "Require stack" is dropped). */
-export function describeStorageError(error: Error | object | string | undefined): string {
-	const firstLine = (text: string): string => text.split("\n", 1)[0]!.trim();
-	if (!(error instanceof Error)) return firstLine(String(error));
-	const message = firstLine(error.message);
-	const cause = error.cause instanceof Error ? firstLine(error.cause.message) : undefined;
-	return cause === undefined || message.includes(cause) ? message : `${message}: ${cause}`;
-}
+export { describeStorageError };
 
 const errorText = describeStorageError;
 

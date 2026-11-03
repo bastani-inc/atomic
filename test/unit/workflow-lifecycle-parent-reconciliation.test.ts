@@ -311,7 +311,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 			"clear at the in-flight boundary must persist one hidden reconciliation entry",
 		);
 	});
-	test("a transient hidden-reconciliation persistence failure retries without duplicating the durable card", async () => {
+	// #4254: like any unsaved message, a failed hidden-reconciliation write stops the run; it is not retried within it.
+	test("a transient hidden-reconciliation persistence failure stops the run, and the next prompt saves it without duplicating the durable card", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: "run-persist-retry",
@@ -359,10 +360,20 @@ describe("workflow lifecycle parent reconciliation", () => {
 			fauxAssistantMessage("Stale until persistence retry."),
 			fauxAssistantMessage("persist-retry corrected."),
 		]);
+		const hiddenEntries = () =>
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.display === false);
 
 		await harness.session.prompt("Wait for persist-retry.");
 
-		assert.equal(hiddenPersistenceAttempts, 2, "the transient failure retries only hidden persistence");
+		assert.equal(hiddenPersistenceAttempts, 1, "the failed hidden write is not retried within the stopped run");
+		assert.equal(harness.faux.state.callCount, 1, "the stopped run sends no further request");
+		assert.equal(hiddenEntries().length, 0);
+
+		await harness.session.prompt("Continue.");
+
+		assert.equal(hiddenPersistenceAttempts, 2, "the next prompt retries only hidden persistence");
 		assert.equal(harness.faux.state.callCount, 2);
 		assert.equal(
 			harness.session.messages.filter(
@@ -372,13 +383,10 @@ describe("workflow lifecycle parent reconciliation", () => {
 		);
 		const customEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "custom_message");
 		assert.equal(customEntries.filter((entry) => entry.customType === LIFECYCLE_NOTICE_CUSTOM_TYPE).length, 1);
-		assert.equal(
-			customEntries.filter((entry) => entry.display === false).length,
-			1,
-			"one hidden reconciliation is durable after retry",
-		);
+		assert.equal(hiddenEntries().length, 1, "one hidden reconciliation is durable after the next prompt");
 	});
-	test("session disposal flushes a consumed reconciliation after repeated transient write failures", async () => {
+	// #4254: the failed write stops the run without a retry within it; disposal's final flush then saves it.
+	test("session disposal saves a consumed reconciliation whose failed write stopped the run", async () => {
 		const store = createStore();
 		store.recordRunStart({
 			id: "run-dispose-retry",
@@ -403,8 +411,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 			details,
 			excludeFromContext,
 		) => {
-			if (customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE && hiddenPersistenceAttempts++ < 2) {
-				throw new Error("repeated transient hidden reconciliation write failure");
+			if (customType === PROTECTED_RECONCILIATION_CUSTOM_TYPE && hiddenPersistenceAttempts++ === 0) {
+				throw new Error("transient hidden reconciliation write failure");
 			}
 			return appendCustomMessageEntry(customType, content, display, details, excludeFromContext);
 		}) as typeof harness.sessionManager.appendCustomMessageEntry;
@@ -443,7 +451,7 @@ describe("workflow lifecycle parent reconciliation", () => {
 		);
 		harness.setResponses([
 			fauxAssistantMessage("This stale response is still proceeding."),
-			fauxAssistantMessage("dispose-retry failed and was reconciled."),
+			fauxAssistantMessage("must not run: the run stopped on the unsaved reconciliation"),
 		]);
 
 		// #3105: terminal disposal owns callback failure reporting while still flushing persistence.
@@ -465,7 +473,8 @@ describe("workflow lifecycle parent reconciliation", () => {
 		await assert.rejects(harness.cleanup(), { code: "ShutdownFailed" });
 
 		assert.equal(disposeScheduled, true);
-		assert.equal(hiddenPersistenceAttempts, 3, "disposal must make a final persistence attempt before state is lost");
+		assert.equal(harness.faux.state.callCount, 1, "the stopped run sends no further request");
+		assert.equal(hiddenPersistenceAttempts, 2, "disposal must make a final persistence attempt before state is lost");
 		const sessionFile = harness.sessionManager.getSessionFile();
 		assert.ok(sessionFile);
 		const reopened = await SessionManager.open(sessionFile, harness.sessionManager.getSessionDir());
