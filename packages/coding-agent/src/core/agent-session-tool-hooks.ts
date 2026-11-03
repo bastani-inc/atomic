@@ -1,7 +1,7 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
-import { isReportedPersistenceFailure } from "./agent-session-events.js";
+import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
@@ -11,11 +11,14 @@ import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ toolCall, args }) => {
 		const runner = this._extensionRunner;
+		// #4226: a tool call of a run with an unsaved message never runs.
+		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;
 		}
 
-		await this._agentEventQueue;
+		await this._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
+		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 
 		try {
 			const result = await runner.emitToolCall({
@@ -206,9 +209,7 @@ async function settleFallbackAfterTurn(
 	if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
 		// A message that could not be saved was already reported where its append failed (#4226);
 		// any other listener failure still fails the turn.
-		await session._agentEventQueue.catch((error: unknown) => {
-			if (!isReportedPersistenceFailure(error)) throw error;
-		});
+		await session._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
 		await session._settleFallbackModelScope();
 	}
 }

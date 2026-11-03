@@ -64,14 +64,64 @@ export function _emitQueueUpdate(this: AgentSession): void {
 
 const consumedQueuedMessageEvents = new WeakSet<object>();
 const reportedPersistenceFailures = new WeakSet<object>();
+/** Sessions whose run was just stopped at its request boundary, with the reported cause (#4226). */
+const pendingPersistenceStops = new WeakMap<object, string>();
+/** Agent-core's synthetic failure replies to those stops. */
+const persistenceStopReplies = new WeakSet<object>();
 
-export function isReportedPersistenceFailure(error: unknown): boolean {
-	return typeof error === "object" && error !== null && reportedPersistenceFailures.has(error);
+/**
+ * For queue barriers inside the agent loop: a message that could not be saved was already reported where its
+ * append failed and stops the run on its own (#4226); any other listener failure still fails the turn.
+ */
+export function rethrowUnlessReportedPersistenceFailure(error: unknown): void {
+	if (typeof error !== "object" || error === null || !reportedPersistenceFailures.has(error)) throw error;
+}
+
+/**
+ * #4226: once a message of the run could not be saved, the run sends no further provider request. Returns the
+ * error to throw from the request boundary; agent-core answers it with a synthetic failure reply, which
+ * {@link consumePersistenceStopReply} keeps out of the session.
+ */
+export function persistenceStopError(session: AgentSession): Error | undefined {
+	const failure = session._persistenceFailure;
+	if (failure === undefined) return undefined;
+	pendingPersistenceStops.set(session, failure);
+	return new Error(failure);
+}
+
+/**
+ * The synthetic reply to a persistence stop is no model reply: it is never saved, shown, retried, or kept in the
+ * transcript. Returns true for each of its events.
+ */
+function consumePersistenceStopReply(session: AgentSession, event: AgentEvent): boolean {
+	if (event.type === "message_start") {
+		const failure = pendingPersistenceStops.get(session);
+		if (failure === undefined || event.message.role !== "assistant") return false;
+		pendingPersistenceStops.delete(session);
+		if ((event.message as AssistantMessage).errorMessage !== failure) return false;
+		persistenceStopReplies.add(event.message);
+		return true;
+	}
+	if (event.type !== "message_update" && event.type !== "message_end" && event.type !== "turn_end") return false;
+	if (!persistenceStopReplies.has(event.message)) return false;
+	if (event.type === "message_end") {
+		// Agent-core appended the reply to its live transcript before notifying listeners.
+		const messages = session.agent.state.messages;
+		const index = messages.lastIndexOf(event.message);
+		if (index >= 0) messages.splice(index, 1);
+	}
+	return true;
 }
 
 /** Internal handler for agent events - shared by subscribe and reconnect */
 
 export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promise<void> | void {
+	// #4226: a session that could not save a message stops the run that hit it; the next run tries again.
+	if (event.type === "agent_start") this._persistenceFailure = undefined;
+	if (consumePersistenceStopReply(this, event)) return;
+	if (event.type === "agent_end" && event.messages.some((message) => persistenceStopReplies.has(message))) {
+		event = { ...event, messages: event.messages.filter((message) => !persistenceStopReplies.has(message)) };
+	}
 	if (event.type === "message_start" && event.message.role === "toolResult")
 		recordNestedToolCalls(this, event.message);
 	else if (event.type === "agent_end") clearNestedToolCalls(this);
@@ -132,7 +182,12 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 }
 
 export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentEvent): void {
-	if (event.type !== "agent_end" || this._retryPromise || this._agentRunAbortRequested) {
+	if (
+		event.type !== "agent_end" ||
+		this._retryPromise ||
+		this._agentRunAbortRequested ||
+		this._persistenceFailure !== undefined
+	) {
 		return;
 	}
 
@@ -251,24 +306,30 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// #4226: an unsaved message has no entry for turn_end to resolve; name the cause here instead.
 			this._messagesWithFailedPersistence.add(event.message);
 			if (typeof error === "object" && error !== null) reportedPersistenceFailures.add(error);
+			// The run stops on its first unsaved message (see persistenceStopError); later failures of the same run
+			// are part of that stop and are not reported again.
+			const failure = `could not persist the ${event.message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`;
+			const firstFailure = this._persistenceFailure === undefined;
+			this._persistenceFailure ??= failure;
 			// #3105: disposal reports failures that interrupt it through its own rejection.
-			if (!this._disposed) {
+			if (firstFailure && !this._disposed) {
 				this._extensionRunner.emitError({
 					extensionPath: "<session>",
 					event: "message_end",
-					error: `could not persist the ${event.message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`,
+					error: failure,
 					stack: error instanceof Error ? error.stack : undefined,
 				});
 			}
 			throw error;
+		} finally {
+			// Context refreshes retain an admitted message until its append settles; an unsaved one then leaves.
+			this._messagesAwaitingPersistence.delete(event.message);
 		}
 		if (entryId) this._entryIdsByMessage.set(event.message, entryId);
 		if (entryId && event.message.role === "custom") {
 			const pendingIndex = this._pendingNextTurnMessages.indexOf(event.message);
 			if (pendingIndex >= 0) this._pendingNextTurnMessages.splice(pendingIndex, 1);
 		}
-		// Context refreshes must retain admitted messages until their async append commits.
-		this._messagesAwaitingPersistence.delete(event.message);
 		this._emit(event);
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
@@ -319,6 +380,18 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// A transient hidden-reconciliation write failure retries independently of
 	// provider/card delivery and can never create another visible lifecycle card.
 	await retryConsumedProtectedStreamingCustomMessages(this);
+
+	// #4226: nothing retries, falls back, compacts, or continues on top of a message that could not be saved.
+	if (event.type === "agent_end" && this._persistenceFailure !== undefined) {
+		this._lastAssistantMessage = undefined;
+		if (this._retryAttempt > 0) {
+			const attempt = this._retryAttempt;
+			this._retryAttempt = 0;
+			this._emit({ type: "auto_retry_end", success: false, attempt, finalError: this._persistenceFailure });
+		}
+		this._resolveRetry();
+		return;
+	}
 
 	// Check auto-retry and auto-compaction after agent completes
 	if (event.type === "agent_end" && this._lastAssistantMessage) {

@@ -11,6 +11,7 @@ import type {
 	SessionRecoveryReport,
 } from "../../core/agent-session-types.js";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
+import type { ExtensionError } from "../../core/extensions/index.js";
 import type { SessionRecoveryReason } from "../../core/extensions/session-events.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import { SessionManager } from "../../core/session-manager.ts";
@@ -54,6 +55,11 @@ import { InteractiveEngineResourceReadinessError } from "./resource-readiness-er
 
 type ResourceExtensionsListener = (extensions: readonly RpcResourceExtension[]) => void;
 type QueueSnapshot = { steering: string[]; followUp: string[] };
+
+/** An extension error of the engine's session, as its RPC binding reports it on the event stream. */
+function isEngineExtensionError(record: unknown): record is { type: "extension_error" } & ExtensionError {
+	return typeof record === "object" && record !== null && (record as { type?: unknown }).type === "extension_error";
+}
 
 function applyPersistedModelDefault(session: AgentSession, model: Model<Api>, alreadyInScope: boolean): void {
 	session.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
@@ -1042,6 +1048,17 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	private observeEvent(event: RpcEvent): void {
 		const session = super.session;
+		// The engine reports its session's extension errors on this stream. They are this host session's errors, and
+		// its error listeners show them; a message the engine could not save is reported only this way (#4226).
+		const record: unknown = event;
+		if (isEngineExtensionError(record)) {
+			session.extensionRunner.emitError({
+				extensionPath: record.extensionPath,
+				event: record.event,
+				error: record.error,
+			});
+			return;
+		}
 		switch (event.type) {
 			case "agent_start":
 				this.streaming = true;

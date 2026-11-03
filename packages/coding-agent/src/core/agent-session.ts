@@ -195,6 +195,8 @@ class AgentSessionBase {
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	protected readonly _messagesAwaitingPersistence = new WeakSet<object>();
 	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
+	/** The reported cause once a message of the current run could not be saved; the run stops (#4226). */
+	protected _persistenceFailure: string | undefined = undefined;
 	/** Interrupted tool calls recovery is running again; their results are pending, not interrupted. */
 	protected readonly _reissuedToolCallIds = new Set<string>();
 	protected _lastAssistantToolResults: AgentMessage[] = [];

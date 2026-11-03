@@ -18,6 +18,62 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
+const PERSISTENCE_ERROR =
+	/^<session> message_end: could not persist the (\w+) message: Session conflict: \S+, expected \d+, actual \d+$/;
+
+/** A session saved to a real JSONL file, with the reported extension errors (#4226). */
+async function createSavedSession(options: Parameters<typeof createHarness>[0] = {}) {
+	const sessionDir = mkdtempSync(join(tmpdir(), "atomic-4226-"));
+	const sessionManager = await SessionManager.create(sessionDir, sessionDir);
+	const harness = await createHarness({ ...options, sessionManager });
+	const errors: string[] = [];
+	await harness.session.bindExtensions({
+		shutdownHandler: () => {},
+		onError: (error) => errors.push(`${error.extensionPath} ${error.event}: ${error.error}`),
+	});
+	return {
+		harness,
+		errors,
+		/** Roles of the messages reported as unsaved; undefined marks any other error. */
+		unsavedRoles: () => errors.map((error) => PERSISTENCE_ERROR.exec(error)?.[1]),
+		/** Append to the session file as a second writer: every later append of this session conflicts. */
+		writeAsSecondWriter: async () => {
+			const other = await SessionManager.open(sessionManager.getSessionFile()!, sessionDir);
+			await other.appendCustomEntry("other-writer", {});
+		},
+		cleanup: async () => {
+			await harness.cleanup();
+			rmSync(sessionDir, { recursive: true, force: true });
+		},
+	};
+}
+
+/** Fails instead of hanging the suite when `promise` never settles. */
+async function settlesWithin<T>(promise: Promise<T>, ms = 5_000): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
+	});
+	try {
+		return await Promise.race([promise, timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function noopTool(run: () => Promise<void> = async () => {}): AgentTool {
+	return {
+		name: "noop",
+		label: "Noop",
+		description: "Noop",
+		parameters: Type.Object({}),
+		execute: async () => {
+			await run();
+			return { content: [{ type: "text", text: "done" }], details: {} };
+		},
+	};
+}
+
 const verbatimDetails: VerbatimCompactionDetails = {
 	strategy: "verbatim-lines",
 	promptVersion: 3,
@@ -461,53 +517,116 @@ describe("AgentSession actionable boundaries", () => {
 		);
 	});
 
-	it("reports why a message could not be saved instead of an unresolved turn_end entry (#4226)", async () => {
-		const tool: AgentTool = {
-			name: "noop",
-			label: "Noop",
-			description: "Noop",
-			parameters: Type.Object({}),
-			execute: async () => ({ content: [{ type: "text", text: "done" }], details: {} }),
-		};
-		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-4226-"));
-		const sessionManager = await SessionManager.create(sessionDir, sessionDir);
-		const harness = await createHarness({
-			sessionManager,
-			tools: [tool],
+	it("stops a prompt whose message cannot be saved and names why, instead of an unresolved turn_end entry (#4226)", async () => {
+		const saved = await createSavedSession({
+			tools: [noopTool()],
 			extensionFactories: [(pi) => pi.on("turn_end", () => {})],
 		});
 		try {
-			const errors: string[] = [];
-			await harness.session.bindExtensions({
-				shutdownHandler: () => {},
-				onError: (error) => errors.push(`${error.extensionPath} ${error.event}: ${error.error}`),
-			});
-			harness.setResponses([
+			saved.harness.setResponses([
 				fauxAssistantMessage("first reply"),
 				fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
 				fauxAssistantMessage("second reply"),
 			]);
-			await harness.session.prompt("first");
-			const otherWriter = await SessionManager.open(sessionManager.getSessionFile()!, sessionDir);
-			await otherWriter.appendCustomEntry("other-writer", {});
+			await saved.harness.session.prompt("first");
+			await saved.writeAsSecondWriter();
 
-			const second = harness.session.prompt("second");
-			await vi.waitFor(() => assert.equal(harness.eventsOfType("agent_end").length, 2));
+			await settlesWithin(saved.harness.session.prompt("second"));
 
-			assert.deepEqual(
-				errors.map(
-					(error) =>
-						/^<session> message_end: could not persist the (\w+) message: Session conflict: \S+, expected \d+, actual \d+$/.exec(
-							error,
-						)?.[1],
-				),
-				["user", "assistant", "toolResult", "assistant"],
-			);
-			await second;
-			assert.equal(getMessageText(harness.session.messages.at(-1)), "second reply");
+			// The prompt's own message is the first append that fails, so the run stops before its provider request.
+			assert.deepEqual(saved.unsavedRoles(), ["user"]);
+			assert.equal(saved.harness.faux.state.callCount, 1);
+			// No synthetic failure reply follows the unsaved message.
+			assert.equal(getMessageText(saved.harness.session.messages.at(-1)), "second");
+			// A context refresh shows the saved transcript; the unsaved message is not appended after it.
+			saved.harness.session.refreshContext();
+			assert.equal(getMessageText(saved.harness.session.messages.at(-1)), "first reply");
 		} finally {
-			await harness.cleanup();
-			rmSync(sessionDir, { recursive: true, force: true });
+			await saved.cleanup();
+		}
+	});
+
+	it("settles prompt() with the save error when a retryable provider error cannot be saved (#4226)", async () => {
+		const saved = await createSavedSession({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } } });
+		try {
+			saved.harness.setResponses([
+				async () => {
+					await saved.writeAsSecondWriter();
+					return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" });
+				},
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.deepEqual(saved.unsavedRoles(), ["assistant"]);
+			// Nothing is retried on top of the unsaved transcript.
+			assert.equal(saved.harness.faux.state.callCount, 1);
+			assert.equal(saved.harness.eventsOfType("auto_retry_start").length, 0);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	it("settles without running the tool when a tool_call extension is active and the tool call cannot be saved (#4226)", async () => {
+		let executed = 0;
+		const saved = await createSavedSession({
+			tools: [
+				noopTool(async () => {
+					executed++;
+				}),
+			],
+			extensionFactories: [(pi) => pi.on("tool_call", () => {})],
+		});
+		try {
+			saved.harness.setResponses([
+				async () => {
+					await saved.writeAsSecondWriter();
+					return fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" });
+				},
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.deepEqual(saved.unsavedRoles(), ["assistant"]);
+			assert.equal(executed, 0);
+			assert.equal(saved.harness.faux.state.callCount, 1);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
+	it("stops a tool loop whose tool result cannot be saved before the next provider request (#4226)", async () => {
+		const saved = await createSavedSession({
+			tools: [
+				noopTool(async () => {
+					// Write once this turn's tool call is saved, so the tool result is the first append that fails.
+					await vi.waitFor(() =>
+						assert.ok(
+							saved.harness.sessionManager
+								.getEntries()
+								.some((entry) => entry.type === "message" && entry.message.role === "assistant"),
+						),
+					);
+					await saved.writeAsSecondWriter();
+				}),
+			],
+		});
+		try {
+			saved.harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.deepEqual(saved.unsavedRoles(), ["toolResult"]);
+			assert.equal(saved.harness.faux.state.callCount, 1);
+			// The run ends on the unsaved tool result; no synthetic failure reply follows it.
+			assert.equal(saved.harness.session.messages.at(-1)?.role, "toolResult");
+		} finally {
+			await saved.cleanup();
 		}
 	});
 
