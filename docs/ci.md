@@ -7,7 +7,7 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 ```text
 Pull request / selected branch push
 └─ test.yml (five concurrent work jobs + one result gate)
-   ├─ unit-tests (Linux, Windows; four shards each): build package -> one unit shard
+   ├─ unit-tests (Linux, Windows; five shards each): build package -> one unit shard
    ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
    ├─ agent-suite (Linux, Windows; three shards each): native bindings -> one pi-ai + coding-agent shard (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
@@ -272,11 +272,11 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to twenty-five work-job instances and three
+Five independent job definitions expand to twenty-seven work-job instances and three
 result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
 serial dependencies between suites. The unit, integration and agent suites are split
-by file across four, four and three jobs per OS (see [Sharded suites](#sharded-suites));
+by file across five, four and three jobs per OS (see [Sharded suites](#sharded-suites));
 no test is removed.
 
 
@@ -300,7 +300,7 @@ Each test job runs one shard of its suites, passing `--shard=<i>/<n>` through np
 
 | Job | Shards per OS | Command |
 | --- | ---: | --- |
-| `unit-tests` | 4 | `npm run test:unit -- --shard=<i>/4` |
+| `unit-tests` | 5 | `npm run test:unit -- --shard=<i>/5` |
 | `integration-tests` | 4 | `npm run test:integration -- --shard=<i>/4` |
 | `agent-suite` | 3 | `npm run test --workspace=@bastani/pi-ai -- --shard=<i>/3`, then the same for `@bastani/atomic` |
 
@@ -310,9 +310,11 @@ The root `vitest.config.ts` and `packages/coding-agent/vitest.config.ts` set `te
 
 The shard counts follow the measured totals. Integration runs four shards per OS. Its pool files start worker processes, so they are CPU-bound and slow down as a shard's 7 workers compete for its 8 vCPUs: in November three Linux shards had 3,300–3,500 worker-seconds of collection and tests between them, about 160 s each if perfectly balanced, and the slowest measured 240–290 s. Some files are long and cannot be split further. On Linux, `workflow-pool-load-gate.test.ts` (about 115–125 s) runs its 150-worker gates one after the other by design. On Windows, the package-install test in `installed-package-node-extensions.test.ts` takes about 95–125 s. Either file alone sets its shard's floor, and four shards bring the other shards' share to about that floor.
 
+Shard times vary more between runner VMs than between shards. In November the same shard's files, assigned the same way, took up to twice as long to import and run from one run to the next (one Linux unit shard: 343, 310 and 513 s of import), so a run's slowest shard is mostly its slowest VM. Balancing evens out the expected work; the shard counts leave room for that spread.
+
 The load gate measures the root's main-thread lag against fixed bounds, so it must not share its runner with other files. Unsharded, it happened to run last and alone. Sharded and longest-first, it started beside about five other pool files, and its p99 lag reached 105.6 ms of its 100 ms bound ([run 40577049870](https://github.com/bastani-inc/atomic/actions/runs/40577049870)). It is now its own Vitest project, `integration-load-gate`, with `sequence.groupOrder: 1`. Vitest runs it after every other integration file of the run or shard has finished. `npm run test:integration` selects both projects, and the sequencer counts the gate's time after its shard's other files rather than beside them.
 
-Unit runs four shards per OS: its 1,094 files need about 540 s on Linux and 610 s on Windows of one runner's 7 workers, and four shards bring each under three minutes. The agent suite runs three: its coding-agent files need about 340 s and 380 s. Neither suite has a file that outlasts its shard's share, now that the longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s; and in November, once they had grown back, `workflow-unhandled-rejection-attribution-concurrency` 157–231 s, `workflow-stop-reason-containment` 146–165 s and `workflow-unhandled-rejection-attribution` 124–147 s on Windows, and `native-command-output-retention` 121 s on Linux). Each Node case in those files starts a child process that loads the workflow engine from source through jiti, about 5 s on Linux and 10 s on Windows, so a file of a dozen cases per runtime outlasts its shard on its own. Their shared helpers are in `test/helpers/`.
+Unit runs five shards per OS: in November its 1,140 files needed 3,300–4,000 worker-seconds of collection and tests on Linux and 4,000–5,700 on Windows, and with four shards the slowest took over three minutes in about half the runs. The agent suite runs three: its coding-agent files need about 340 s and 380 s. Neither suite has a file that outlasts its shard's share, now that the longest unit files are split by case (Windows: `workflow-unhandled-rejection-attribution` 318 s, `workflow-stop-reason-containment` 221 s, `intercom-broker-watchdog` 155 s, `workflow-dropped-ctx-promise-containment` 154 s; and in November, once they had grown back, `workflow-unhandled-rejection-attribution-concurrency` 157–231 s, `workflow-stop-reason-containment` 146–165 s and `workflow-unhandled-rejection-attribution` 124–147 s on Windows, and `native-command-output-retention` 121 s on Linux). Each Node case in those files starts a child process that loads the workflow engine from source through jiti, about 5 s on Linux and 10 s on Windows, so a file of a dozen cases per runtime outlasts its shard on its own. Their shared helpers are in `test/helpers/`.
 
 The pool root fixtures the integration suite starts as processes of their own (`test/fixtures/pool-*-root.mjs`, `public-pool-coordinator.mjs`) load the workflow sources through jiti with its disk cache, as the source worker entry does. Without it, each start took about 5 s of CPU instead of 2.5 s, and a test that crashes and resumes a root starts several.
 
