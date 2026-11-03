@@ -1938,6 +1938,8 @@ type ToolSchemaObject = {
 	properties?: Record<string, unknown>;
 	required?: string[];
 	anyOf?: ToolSchemaObject[];
+	$defs?: unknown;
+	definitions?: unknown;
 };
 
 function projectObjectUnionForAnthropic(
@@ -2012,6 +2014,10 @@ function convertTools(
 			type: "object" as const,
 			properties: projectedUnion?.properties ?? schema.properties ?? {},
 			required: projectedUnion?.required ?? schema.required ?? [],
+			// Keep shared definitions so property $refs still resolve. Other root keywords stay out:
+			// Anthropic rejects root anyOf/oneOf/allOf with a 400.
+			...(schema.$defs === undefined ? {} : { $defs: schema.$defs }),
+			...(schema.definitions === undefined ? {} : { definitions: schema.definitions }),
 		};
 		const inputSchema =
 			strict === true && projectedUnion === undefined

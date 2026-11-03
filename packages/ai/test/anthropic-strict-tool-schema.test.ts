@@ -45,4 +45,28 @@ describe("Anthropic strict tool schemas", () => {
 		}));
 		assert.equal(supportedTool.strict, true);
 	});
+
+	it("keeps root definitions in non-strict schemas so property refs resolve (upstream #9557)", async () => {
+		const settings = { type: "object", properties: { verbose: { type: "boolean" } } };
+		const cases = [
+			{ ref: "#/$defs/Settings", definitions: { $defs: { Settings: settings } } },
+			{ ref: "#/definitions/Settings", definitions: { definitions: { Settings: settings } } },
+		];
+		for (const { ref, definitions } of cases) {
+			const parameters = {
+				type: "object",
+				properties: { settings: { $ref: ref } },
+				required: ["settings"],
+				...definitions,
+			} as unknown as Tool["parameters"];
+			const tool = await captureFirstTool(parameters);
+			assert.equal(tool.strict, undefined);
+			assert.deepEqual(tool.input_schema, {
+				type: "object",
+				properties: { settings: { $ref: ref } },
+				required: ["settings"],
+				...definitions,
+			});
+		}
+	});
 });

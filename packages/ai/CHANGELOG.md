@@ -16,6 +16,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
+- Anthropic non-strict tool schemas keep the root `$defs` and `definitions`, so property `$ref`s resolve. Before, Claude could send a JSON string where an object was expected, and some Anthropic-compatible gateways rejected the request. Root `anyOf`/`oneOf`/`allOf` are still left out because Anthropic rejects them (upstream [#9557](https://github.com/earendil-works/pi/issues/9557))
 - OpenCode Go and Zen Claude 5.5 models, Opus 5 and Fable 5.1 now use per-message effort and send `thinking.block_binding: drop_block`, like the Anthropic provider. OpenCode Go Claude Haiku 5.5 failed with a 400 (`Invalid signature in thinking block ... bound to a different conversation`) after the tool list, system prompt or earlier history changed, and kept failing on every retry (upstream [#10954](https://github.com/earendil-works/pi/issues/10954))
 
 ## [0.9.64] - 2026-11-02
