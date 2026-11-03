@@ -14,7 +14,7 @@ import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
-import { type InternalResourceContext, resolveInternalSelector } from "./resource-selectors.ts";
+import { type InternalResourceContext, isInternalUrl, resolveInternalSelector } from "./resource-selectors.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -67,19 +67,36 @@ function formatTimeoutSeconds(timeoutMs: number): string {
 	const seconds = timeoutMs / 1000;
 	return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
 }
+const VIRTUAL_INTERNAL_SCHEMES = ["history", "conflict"] as const;
+function isExistingFile(candidate: string): boolean {
+	try {
+		return statSync(candidate).isFile();
+	} catch {
+		return false;
+	}
+}
 async function resolveFindInternal(input: string, cwd: string, ctx?: InternalResourceContext): Promise<string> {
+	const virtual = VIRTUAL_INTERNAL_SCHEMES.find((scheme) => input.startsWith(`${scheme}://`));
+	if (virtual)
+		throw new Error(`find cannot list ${virtual}:// URLs because they have no filesystem path; use read or search.`);
 	const parsed = splitPathLikeGlob(input);
-	if (!/^[a-z]+:\/\//i.test(parsed.basePath)) return input;
+	if (!isInternalUrl(parsed.basePath)) return input;
+	const attach = (resolved: string): string => {
+		// A glob needs a directory, but a bare skill:// name resolves to the skill's SKILL.md.
+		const base = parsed.glob && isExistingFile(resolved) ? path.dirname(resolved) : resolved;
+		return parsed.glob ? `${base}/${parsed.glob}` : base;
+	};
 	for (const resolve of [
 		ctx?.internalRouter?.resolve,
 		ctx?.internalResourceRouter?.resolve,
 		ctx?.resolveInternalUrl,
 	]) {
 		const resolved = await resolve?.(parsed.basePath);
-		if (typeof resolved === "string") return parsed.glob ? `${resolved}/${parsed.glob}` : resolved;
+		if (typeof resolved === "string") return attach(resolved);
 	}
 	const fallback = resolveInternalSelector(parsed.basePath, cwd);
-	return fallback ? (parsed.glob ? `${fallback}/${parsed.glob}` : fallback) : input;
+	if (fallback) return attach(fallback);
+	return input;
 }
 function isWindowsAbsolutePath(value: string): boolean {
 	return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");

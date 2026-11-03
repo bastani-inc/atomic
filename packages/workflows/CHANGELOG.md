@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The session run control implements the optional `listProjectRuns()`, which lists every top-level run recorded for the current project directory, including runs started with `/workflow` that `listRuns({ includeDurable: true })` leaves out because no model session owns them. `history://workflows` in the coding agent uses it ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+
 ### Fixed
 
 - Under Bun, a retired run's late unhandled rejection no longer fails a replacement run that has the same durable run ID and workflow source, including when it fires more than 30 seconds after the retired run ended. A run that starts within 30 seconds of another execution of its workflow source ending treats an unscoped rejection from that source as ambiguous for its whole lifetime, and the runtime reports it instead of attributing it to the replacement ([#4192](https://github.com/bastani-inc/atomic/issues/4192))

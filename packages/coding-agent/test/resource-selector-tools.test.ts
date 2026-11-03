@@ -177,7 +177,7 @@ describe("resource selector tools", () => {
 		const internalOutput = textOutput(
 			await createSearchToolDefinition(testDir).execute(
 				"internal-verbose-comment-search",
-				{ pattern, paths: "memory://note" },
+				{ pattern, paths: "history://note" },
 				undefined,
 				undefined,
 				ctx,
@@ -782,7 +782,7 @@ describe("resource selector tools", () => {
 		const internalOutput = textOutput(
 			await createSearchToolDefinition(testDir).execute(
 				"search-internal-multiline",
-				{ pattern: "foo\\nbar", paths: "memory://multi" },
+				{ pattern: "foo\\nbar", paths: "history://multi" },
 				undefined,
 				undefined,
 				ctx as never,
@@ -1493,7 +1493,7 @@ describe("resource selector tools", () => {
 		const output = textOutput(
 			await createSearchToolDefinition(testDir).execute(
 				"resource-long-line",
-				{ paths: "memory://note", pattern: "needle" },
+				{ paths: "history://note", pattern: "needle" },
 				undefined,
 				undefined,
 				ctx as never,
@@ -1504,12 +1504,12 @@ describe("resource selector tools", () => {
 	});
 
 	it("applies line selectors to internal resource URLs", async () => {
-		const resources = new Map<string, string>([["memory://note", "one\ntwo\nthree"]]);
+		const resources = new Map<string, string>([["history://note", "one\ntwo\nthree"]]);
 		const ctx: InternalResourceContext = { internalRouter: { read: (url) => resources.get(url) ?? "" } };
 		const output = textOutput(
 			await createReadToolDefinition(testDir).execute(
 				"memory-read",
-				{ path: "memory://note:2-2" },
+				{ path: "history://note:2-2" },
 				undefined,
 				undefined,
 				ctx as never,

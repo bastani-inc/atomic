@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
+import { readConflictUrl } from "./conflict-registry.ts";
 import { loadNativeSearchBinding } from "./search-native.ts";
+import { plainShellWordMask } from "./shell-plain-words.ts";
 
 export interface ArchiveSelector {
 	archivePath: string;
@@ -20,15 +22,44 @@ export interface SqliteSelector {
 	schema?: boolean;
 	sampleRows?: number;
 }
+/** A request to search one internal resource, for routers that search without materializing it first. */
+export interface InternalSearchRequest {
+	pattern: string;
+	ignoreCase: boolean;
+	literal: boolean;
+	contextBefore: number;
+	contextAfter: number;
+}
 export interface InternalResourceRouter {
 	read?: (url: string) => string | Buffer | undefined | Promise<string | Buffer | undefined>;
 	write?: (url: string, content: string) => void | Promise<void>;
 	resolve?: (url: string) => string | undefined | Promise<string | undefined>;
+	/** Search a resource that is too large to read whole; `undefined` leaves the URL to `read`. */
+	search?: (url: string, request: InternalSearchRequest) => string | undefined | Promise<string | undefined>;
 }
 export interface InternalResourceContext {
 	internalRouter?: InternalResourceRouter;
 	internalResourceRouter?: InternalResourceRouter;
 	resolveInternalUrl?: (url: string) => string | undefined | Promise<string | undefined>;
+}
+
+/**
+ * Every scheme that `read`, `search`, `write`, `find` and `bash` treat as an internal URL. Each one has a resolver in
+ * this package; a URL with any other scheme is ordinary text.
+ */
+export const INTERNAL_URL_SCHEMES = ["skill", "local", "artifact", "conflict", "history"] as const;
+export type InternalUrlScheme = (typeof INTERNAL_URL_SCHEMES)[number];
+const INTERNAL_URL_PREFIX = new RegExp(`^(?:${INTERNAL_URL_SCHEMES.join("|")}):\\/\\/`);
+const URL_LIKE_PREFIX = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** Schemes with a resolver but no writer: `write` refuses them with an explicit error. */
+const READ_ONLY_INTERNAL_SCHEMES: readonly InternalUrlScheme[] = ["skill", "artifact", "history"];
+
+export function isInternalUrl(value: string): boolean {
+	return INTERNAL_URL_PREFIX.test(value);
+}
+/** Whether `value` is shaped like a URL, whether or not Atomic resolves its scheme. */
+export function isUrlLike(value: string): boolean {
+	return URL_LIKE_PREFIX.test(value);
 }
 type SqliteValue = string | number | boolean | null;
 interface SqliteQuery {
@@ -560,7 +591,7 @@ function normalizeSearchPattern(pattern: string, ignoreCase: boolean): { pattern
 	return { pattern, flags: [...flags].join("") };
 }
 
-function searchTextSelectorLines(
+export function searchTextSelectorLines(
 	label: string,
 	text: string,
 	pattern: string,
@@ -656,6 +687,23 @@ export function searchArchiveSelector(
 	return out.join("\n");
 }
 
+/** One router from several: each operation goes to the first router that handles the URL. */
+export function composeInternalRouters(...routers: readonly InternalResourceRouter[]): InternalResourceRouter {
+	const first = async <R>(
+		attempt: (router: InternalResourceRouter) => R | undefined | Promise<R | undefined>,
+	): Promise<R | undefined> => {
+		for (const router of routers) {
+			const result = await attempt(router);
+			if (result !== undefined) return result;
+		}
+		return undefined;
+	};
+	return {
+		read: (url) => first((router) => router.read?.(url)),
+		resolve: (url) => first((router) => router.resolve?.(url)),
+		search: (url, request) => first((router) => router.search?.(url, request)),
+	};
+}
 function routerFromContext(context?: InternalResourceContext): InternalResourceRouter | undefined {
 	return context?.internalRouter ?? context?.internalResourceRouter;
 }
@@ -730,6 +778,7 @@ export async function readInternalSelector(
 	const routed = await router?.read?.(value);
 	if (typeof routed === "string") return routed;
 	if (Buffer.isBuffer(routed)) return routed.toString("utf8");
+	if (value.startsWith("conflict://")) return readConflictUrl(value, cwd);
 	const resolved = await resolveViaRouter(value, cwd, context);
 	if (!resolved || !existsSync(resolved))
 		throw new Error(`Internal resource not found or no session router supports it: ${value}`);
@@ -746,6 +795,8 @@ export async function writeInternalSelector(
 		await router.write(value, content);
 		return;
 	}
+	const scheme = READ_ONLY_INTERNAL_SCHEMES.find((candidate) => value.startsWith(`${candidate}://`));
+	if (scheme) throw new Error(`${scheme}:// resources are read-only: ${value}`);
 	const resolved = await resolveViaRouter(value, cwd, context);
 	if (!resolved) throw new Error(`Unsupported writable internal resource without a session router: ${value}`);
 	mkdirSync(dirname(resolved), { recursive: true });
@@ -761,6 +812,14 @@ export async function searchInternalSelector(
 	contextBefore = 1,
 	contextAfter = 3,
 ): Promise<string> {
+	const searched = await routerFromContext(context)?.search?.(value, {
+		pattern,
+		ignoreCase,
+		literal,
+		contextBefore,
+		contextAfter,
+	});
+	if (typeof searched === "string") return searched;
 	return searchTextSelectorLines(
 		value,
 		await readInternalSelector(value, cwd, context),
@@ -777,6 +836,14 @@ function shellQuote(value: string, dialect: "posix" | "powershell"): string {
 		? `'${value.replace(/['\u2018-\u201b]/g, "$&$&")}'`
 		: `'${value.replace(/'/g, `'\\''`)}'`;
 }
+const SHELL_INTERNAL_URL = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$)]+/gi;
+const PLAIN_SHELL_INTERNAL_URL = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$();&|<>]+/gi;
+/**
+ * Replaces internal URLs with the paths they resolve to. With `quote` the text is shell code: only URLs that sit
+ * wholly in plain shell words are replaced, and each path is shell-quoted. Quoted strings, heredoc bodies, comments,
+ * escapes and substitutions that merely mention a scheme run unchanged. Without `quote` the text is a plain value
+ * such as a `cwd` or an environment variable.
+ */
 export async function expandShellInternalUrls(
 	text: string,
 	cwd: string,
@@ -784,23 +851,27 @@ export async function expandShellInternalUrls(
 	quote = false,
 	dialect: "posix" | "powershell" = "posix",
 ): Promise<string> {
-	const pattern = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$)]+/gi;
+	const mask = quote ? plainShellWordMask(text, dialect) : undefined;
+	const candidates = [...text.matchAll(quote ? PLAIN_SHELL_INTERNAL_URL : SHELL_INTERNAL_URL)].filter(
+		(match) =>
+			isInternalUrl(match[0]) &&
+			(mask === undefined || mask.subarray(match.index, match.index + match[0].length).every(Boolean)),
+	);
 	const replacements = new Map<string, string>();
-	for (const match of new Set(text.match(pattern) ?? [])) {
-		const resolved = await resolveViaRouter(match, cwd, context);
-		if (!resolved) continue;
-		// This is deliberately not a Bash parser. Only expand in plain shell
-		// words: quotes, escapes, substitutions and heredocs change how inserted
-		// quotes are interpreted. Leave arbitrary shell syntax without URLs alone.
-		if (quote && !/^[a-zA-Z0-9_ ./:%+=,@~;|&\t-]*$/.test(text)) {
-			throw new Error(
-				"Internal URL shell expansion requires plain unquoted words; use a filesystem path for quotes, substitutions, escapes or heredocs.",
-			);
-		}
-		replacements.set(match, quote ? shellQuote(resolved, dialect) : resolved);
+	for (const url of new Set(candidates.map((match) => match[0]))) {
+		const resolved = await resolveViaRouter(url, cwd, context);
+		if (resolved) replacements.set(url, quote ? shellQuote(resolved, dialect) : resolved);
+	}
+	let expanded = "";
+	let copied = 0;
+	for (const match of candidates) {
+		const replacement = replacements.get(match[0]);
+		if (replacement === undefined) continue;
+		expanded += text.slice(copied, match.index) + replacement;
+		copied = match.index + match[0].length;
 	}
 	// Replace original occurrences only; never reinterpret a router's result.
-	return text.replace(pattern, (match) => replacements.get(match) ?? match);
+	return expanded + text.slice(copied);
 }
 
 const ROW_COUNT_PROBE_CAP = 50_000;

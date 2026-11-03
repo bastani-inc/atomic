@@ -148,6 +148,21 @@ You can search, navigate, or cancel while the picker loads sessions. Closing it 
 
 Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. Use `/workflow resume <runId>` or the workflow tool's resume/status actions to inspect and continue a workflow run and its stages. A workflow stage session can also be opened directly by passing its session ID to `--session`.
 
+## Recalling earlier work
+
+The agent can look back at this project's earlier sessions and workflow runs, even in a fresh session, through `history://` URLs that `read` and `search` accept. They go through the configured session store and workflow journal, so they work the same for the default SQLite store, JSONL directories, memory and custom stores.
+
+| URL | Result |
+| --- | --- |
+| `history://sessions` | Recent sessions, newest first, with message counts and the first message or name. `?limit=N` shows more. |
+| `history://sessions/<id>` | One session's transcript. Add `:N-M` to read a line range. |
+| `history://workflows` | Recent workflow runs, newest first. |
+| `history://workflows/<runId>` | One run: inputs, stages with links to their session transcripts, result and error. |
+
+`search` with `history://sessions`, `history://workflows` or `history://` finds text in the most recent records and labels each match with a URL and line number that `read` can open. A multi-session search skips the current session and covers the newest 25 sessions unless you add `?limit=N`.
+
+By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started. `history://` is read-only.
+
 ## Naming Sessions
 
 Use `/name <name>` to set a human-readable session name:

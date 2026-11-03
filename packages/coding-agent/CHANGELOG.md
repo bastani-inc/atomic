@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+
+- `read` and `search` accept `history://` URLs for the current project's past sessions and workflow runs, so the agent can recall earlier work in a fresh session. `history://sessions` and `history://workflows` list recent records, `history://sessions/<id>` and `history://workflows/<runId>` open one (with `:N-M` line ranges), and `search` over `history://` finds text across them. They read through the configured session store and workflow journal, so they work with the default SQLite store, JSONL directories, memory and custom SDK stores alike. Other projects' sessions appear only with `?project=all` or `?project=<dir>`. ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+- `WorkflowRunControl` has an optional `listProjectRuns()` that lists every top-level run recorded for the current project directory, including runs the user started with `/workflow` that `listRuns({ includeDurable: true })` leaves out because no model session owns them. The bundled workflows extension implements it, and `history://workflows` uses it ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+- `read` and `search` accept `conflict://*`, `conflict://<id>` and `conflict://<id>/ours|theirs|base` to show merge conflict regions with the same ids `write` resolves ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+
+### Changed
+
+- `read`, `search`, `write`, `find` and `bash` now share one list of internal URL schemes: `skill://`, `local://`, `artifact://`, `conflict://` and `history://`. The other schemes the old lists named (`omp://`, `agent://`, `issue://`, `memory://`, `pr://`, `rule://`, `mcp://`, `vault://`) were never implemented; `read`, `search` and `write` now report them as unsupported, and `bash` leaves them as text ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+- Writing to a `skill://`, `artifact://` or `history://` URL now fails with a read-only error instead of an unsupported-resource error (for `skill://`, it used to overwrite an existing skill's `SKILL.md`) ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+
+### Fixed
+
+- `bash` no longer rejects a whole command when quoted text merely mentions an internal scheme, such as a `gh issue comment --body "…`local://`…"`. Internal URLs expand only in plain shell words; URLs inside quotes, heredocs, comments, escapes and command substitutions run unchanged ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+- `find` with a glob under a bare `skill://<name>` now searches the skill's directory instead of failing with "Search path must be a directory" ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+
+### Removed
+
+- The unimplemented `omp://`, `agent://`, `issue://`, `memory://`, `pr://`, `rule://`, `mcp://` and `vault://` internal URL schemes ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+
 ## [0.9.68] - 2026-11-03
 
 An explicit `--model` now runs as named instead of silently switching to another model family, and `atomic -p` no longer hangs when stdin is an open pipe that never sends anything.

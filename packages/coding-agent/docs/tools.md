@@ -456,7 +456,7 @@ Foreground results include `timeoutSeconds`, `requestedTimeoutSeconds`, `wallTim
 
 Atomic checks the original command, internal-URL-expanded command, configured-prefix forms, and `spawnHook` rewrites. When structured `cwd` is omitted, it also checks a form with a leading `cd path && command` or `cd path; command` removed. This lets interceptors route by effective working directory without overriding explicit `cwd`.
 
-Shell internal-URL expansion is intentionally conservative: commands containing a resolved URL must use only plain unquoted words, spaces/tabs, and basic `;`, `|`, or `&` operators. For example, `printf %s local://notes.txt` is supported and the resolved path is shell-quoted automatically, including paths containing spaces or shell metacharacters. Quotes anywhere in such a command, substitutions, escapes, newlines, redirections and heredocs are rejected before execution; use a filesystem path instead for those forms. Commands without resolved internal URLs retain normal shell syntax. URL expansion in structured `cwd` and `env` values is unchanged.
+Shell internal-URL expansion only touches URLs that stand in plain shell words. For example, `printf %s local://notes.txt` is supported and the resolved path is shell-quoted automatically, including paths containing spaces or shell metacharacters. A URL inside quotes, a heredoc body, a comment, an escape or a command substitution is left exactly as written, so text that merely mentions a scheme, such as a quoted `gh issue comment` body, runs unchanged; use a filesystem path where a quoted argument must be a resolved path. Only `skill://`, `local://` and `artifact://` resolve to filesystem paths, and URLs of other schemes are ordinary text. URL expansion in structured `cwd` and `env` values is unchanged.
 
 The `powershell` tool uses PowerShell single-quoted literals for resolved paths, doubling both ASCII apostrophes and PowerShell's smart single-quote delimiters (U+2018–U+201B). Bash keeps POSIX quoting, including when Bash runs on Windows. SDK adapters using `createBashToolDefinition` with custom PowerShell operations can set `shellDialect: "powershell"` for generated path literals; this option does not select the executable or rewrite deliberate shell code.
 
@@ -513,11 +513,15 @@ Directory reads show a depth-2 tree sorted by most-recent modification time, wit
 
 `read` and `search` accept selectors such as `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, and `https://example.test/page:5-8`. Bounded reads include one leading and three trailing context lines. Use `:raw` for unformatted content. Out-of-range selectors report that the range is beyond EOF.
 
-`read`, `write`, and `search` support:
+`read` and `search` support the following, and `write` supports all of them except `skill://`, `artifact://` and `history://`:
 
 - Local zip/jar/tar/tgz/gzip archive members without a Python dependency. Member names may include `raw`, `conflicts`, `1`, `L1`, or `raw:notes.txt`.
 - SQLite table and row selectors, with `limit`, `offset`, `where`, `order`, `schema`, and `sampleRows` query parameters.
-- `skill://` and source-backed `local://` selectors. Editable hashline labels and snapshots use the underlying filesystem path.
+- `skill://` (read and search only; edit a skill file by its path) and source-backed `local://` selectors. Editable hashline labels and snapshots use the underlying filesystem path.
+- `artifact://<id>` for saved tool output (read-only), and `conflict://` for merge conflicts under the working directory.
+- `history://` for the current project's past sessions and workflow runs (read-only), through whichever session store and workflow journal are configured. See [Recalling earlier work](/sessions#recalling-earlier-work).
+
+These are the only internal URL schemes. `read`, `search`, `write`, `find` and `bash` share one list, and any other `scheme://` is not an Atomic resource: `read`, `search` and `write` report it as unsupported and `bash` leaves it as text. `find` accepts the schemes that resolve to filesystem paths (`skill://`, `local://`, `artifact://`).
 
 Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. SQLite writes return source-path metadata.
 
@@ -531,7 +535,7 @@ Workspace-scoped selectors reject lexical and symlink escapes outside the worksp
 
 ### Conflict resolution and file writes
 
-`conflict://<id>` and `conflict://*` writes replace conflict marker regions, expand `@ours`, `@theirs`, and `@base`, and return fresh hashline headers. Scoped sides such as `conflict://1/ours` are read-only.
+`conflict://<id>` and `conflict://*` writes replace conflict marker regions, expand `@ours`, `@theirs`, and `@base`, and return fresh hashline headers. Scoped sides such as `conflict://1/ours` are read-only. `read` and `search` accept the same URLs: `conflict://*` lists every conflict region under the working directory, `conflict://<id>` shows one with its ours, theirs and base sides, and `conflict://<id>/ours` (or `theirs`, `base`) returns just that side. The ids match the ones `write` resolves.
 
 Plain `write` refuses to overwrite files with generated-file markers near the top. Writes containing a shebang make the file executable and report `madeExecutable`.
 
