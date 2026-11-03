@@ -108,6 +108,10 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeContainer.addChild(this.treeList);
 	}
 
+	get capturesViewportInput(): boolean {
+		return this.labelInput === null;
+	}
+
 	handleInput(keyData: string): boolean {
 		if (this.labelPending) return true;
 		if (this.labelInput) {

@@ -38,3 +38,23 @@ describe("MCP manager status screen", () => {
 		view.handleInput(ESCAPE);
 	});
 });
+
+describe("MCP manager menu", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	test("captures fullscreen viewport keys only while a menu list is shown (upstream #7629)", async () => {
+		const view = new McpManagerView(tui, theme, new KeybindingsManager());
+		const items = Array.from({ length: 20 }, (_, index) => ({ value: `server-${index}`, label: `server-${index}` }));
+		const result = view.menu(() => ({ title: "MCP servers", items, confirmLabel: "open", cancelLabel: "close" }));
+		assert.equal(view.capturesViewportInput, true);
+
+		view.handleInput("\x1b[6~"); // PageDown
+		view.handleInput("\r");
+		assert.equal(await result, "server-12");
+
+		view.status("Sign in to issues", "Connecting…");
+		assert.equal(view.capturesViewportInput, false);
+	});
+});

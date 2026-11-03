@@ -5,7 +5,29 @@ import { McpClient, StdioTransport } from "../../src/extensions/mcp/client/index
 
 const fixture = fileURLToPath(new URL("./fixtures/stdio-server.mjs", import.meta.url));
 const stubborn = fileURLToPath(new URL("./fixtures/stubborn-server.mjs", import.meta.url));
+const exitingParent = fileURLToPath(new URL("./fixtures/exiting-parent-server.mjs", import.meta.url));
+const escapedChild = fileURLToPath(new URL("./fixtures/escaped-child-server.mjs", import.meta.url));
+/** These tests start and kill real process trees, which can take seconds on a loaded runner. */
+const PROCESS_TREE_TEST_TIMEOUT_MS = 10_000;
 const PROCESS_TREE_EXIT_WAIT_MS = 5_000;
+
+function isAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() > deadline) return false;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return true;
+}
 
 describe("StdioTransport", () => {
 	it("connects to a newline-delimited MCP server and captures stderr", async () => {
@@ -69,4 +91,75 @@ describe("StdioTransport", () => {
 			await client.close();
 		}
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"kills children still holding the pipes after the server process exited (upstream #11724)",
+		async () => {
+			const transport = new StdioTransport({
+				command: process.execPath,
+				args: [exitingParent],
+				closeTimeoutMs: 100,
+			});
+			let closeEvents = 0;
+			transport.onClose(() => closeEvents++);
+			await transport.start();
+			const serverPid = transport.pid as number;
+			let helper: number | undefined;
+			await waitFor(() => {
+				const match = /helper (\d+)/.exec(transport.stderr);
+				if (match) helper = Number(match[1]);
+				return helper !== undefined;
+			});
+			assert.equal(typeof helper, "number");
+			assert.equal(await waitFor(() => !isAlive(serverPid)), true);
+			try {
+				assert.equal(isAlive(helper as number), true);
+
+				await transport.close();
+				assert.equal(await waitFor(() => !isAlive(helper as number)), true);
+				assert.equal(closeEvents, 1);
+			} finally {
+				try {
+					process.kill(helper as number, "SIGKILL");
+				} catch {}
+			}
+		},
+		PROCESS_TREE_TEST_TIMEOUT_MS,
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"finishes closing when a child outside the server's process group holds the pipes",
+		async () => {
+			const transport = new StdioTransport({
+				command: process.execPath,
+				args: [escapedChild],
+				closeTimeoutMs: 100,
+			});
+			let closeEvents = 0;
+			transport.onClose(() => closeEvents++);
+			let helper: number | undefined;
+			try {
+				await transport.start();
+				await waitFor(() => {
+					const match = /helper (\d+)/.exec(transport.stderr);
+					if (match) helper = Number(match[1]);
+					return helper !== undefined;
+				});
+				assert.equal(typeof helper, "number");
+				const closed = await Promise.race([
+					transport.close().then(() => true),
+					new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+				]);
+				assert.equal(closed, true);
+				assert.equal(closeEvents, 1);
+			} finally {
+				if (helper !== undefined) {
+					try {
+						process.kill(helper, "SIGKILL");
+					} catch {}
+				}
+			}
+		},
+		PROCESS_TREE_TEST_TIMEOUT_MS,
+	);
 });

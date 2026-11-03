@@ -53,7 +53,7 @@ interface TuiAltScreenMouseInternals {
 
 /** pi-tui 0.84.2 keeps its overlay-deferral predicate private (tui-alt-screen.d.ts:84). */
 interface TuiAltScreenViewportDeferral {
-	shouldDeferViewportInputToOverlay?(): boolean;
+	shouldDeferViewportInput?(): boolean;
 }
 
 interface TuiAltScreenScrollToEndIndicatorInternals {
@@ -359,17 +359,18 @@ class AtomicTuiAltScreen extends TuiAltScreen {
 			);
 			return copied;
 		};
-		// pi-tui 0.84.2 added `shouldDeferViewportInputToOverlay()`, which drops
-		// viewport keys and wheel reports while an overlay holds focus (upstream
-		// #7894). Atomic's gate offers that input to the focused overlay first and
+		// pi-tui 0.84.2 added `shouldDeferViewportInputToOverlay()` (renamed
+		// `shouldDeferViewportInput()` in 1.5.0, which also defers for a focused
+		// component that sets `capturesViewportInput`), which drops viewport keys
+		// and wheel reports while an overlay holds focus (upstream #7894). Atomic's gate offers that input to the focused overlay first and
 		// replays only what the overlay declined (#2378 / PR #2381); pi-tui then
 		// defers the replay a second time and the transcript freezes behind an
 		// open dialog. Suppress the native answer for the replay alone. Input the
 		// gate never routed through the overlay keeps pi-tui's routing and its
 		// own deferral.
 		const deferral = this as unknown as TuiAltScreenViewportDeferral;
-		const deferToOverlay = deferral.shouldDeferViewportInputToOverlay?.bind(this);
-		deferral.shouldDeferViewportInputToOverlay = () => !viewportInputReplays.has(this) && deferToOverlay?.() === true;
+		const deferViewportInput = deferral.shouldDeferViewportInput?.bind(this);
+		deferral.shouldDeferViewportInput = () => !viewportInputReplays.has(this) && deferViewportInput?.() === true;
 
 		// pi-tui 0.85 owns the jump-to-end indicator, but its hit test runs before Atomic's
 		// focused-overlay input gate. Let the gate offer that press to the overlay first.

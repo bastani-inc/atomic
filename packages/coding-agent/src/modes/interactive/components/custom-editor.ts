@@ -213,6 +213,16 @@ export class CustomEditor extends Editor {
 			return true;
 		}
 
+		// Selection page keys move an open autocomplete menu before app actions run.
+		// This lets users bind Ctrl+V even though it pastes images by default.
+		if (
+			this.isShowingAutocomplete() &&
+			(this.keybindings.matches(data, "tui.select.pageUp") || this.keybindings.matches(data, "tui.select.pageDown"))
+		) {
+			super.handleInput(data);
+			return true;
+		}
+
 		// Explicit Image Paste keybinding, or macOS Native Paste (image-only Cmd+V
 		// as empty bracketed paste or Kitty-protocol super+v).
 		const isPasteImageSignal =

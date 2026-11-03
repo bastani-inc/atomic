@@ -64,6 +64,32 @@ describe("model selector", () => {
 		selector.dispose();
 	});
 
+	it("moves by one page with remapped selection page keys (upstream #7629)", async () => {
+		setKeybindings(new KeybindingsManager({ "tui.select.pageUp": "alt+v", "tui.select.pageDown": "ctrl+v" }));
+		harness = await createHarness({
+			models: Array.from({ length: 12 }, (_, index) => ({ id: `model-${String(index).padStart(2, "0")}` })),
+		});
+		const onSelect = vi.fn();
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			undefined,
+			harness.settingsManager,
+			harness.session.modelRuntime,
+			[],
+			onSelect,
+			() => {},
+		);
+		assert.equal(selector.capturesViewportInput, true);
+
+		selector.handleInput("\x16"); // Ctrl+V
+		selector.handleInput("\x16");
+		selector.handleInput("\x1bv"); // Alt+V
+		selector.handleInput("\r");
+
+		assert.equal(onSelect.mock.calls[0]?.[0]?.id, "model-01");
+		selector.dispose();
+	});
+
 	it("labels each model with its raw ID and the level selecting it applies (#4269)", async () => {
 		harness = await createHarness({
 			models: [

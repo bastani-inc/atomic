@@ -113,7 +113,7 @@ Hold Alt while using the mouse wheel to scroll five times as far in fullscreen m
 
 Drag with the primary button to select characters, double-click for a word or path, and triple-click for a line. Changing focus or clicking elsewhere clears the selection.
 
-While the main editor has focus, fullscreen transcript bindings take precedence. `home` and `end` stay with the editor; `ctrl+home` and `ctrl+end` jump to the transcript top and bottom. `pageUp` and `pageDown` control the transcript, while their `ctrl` variants control the editor.
+While the main editor has focus, fullscreen transcript bindings take precedence. `home` and `end` stay with the editor; `ctrl+home` and `ctrl+end` jump to the transcript top and bottom. `pageUp` and `pageDown` control the transcript, while their `ctrl` variants control the editor. While an overlay or a scrollable list such as autocomplete, `/settings`, or the model selector has focus, the scrolling actions go to it instead of the transcript, so `tui.select.pageUp` and `tui.select.pageDown` move the list selection.
 
 | Key | Editor action | Fullscreen action |
 |-----|---------------|------------------|

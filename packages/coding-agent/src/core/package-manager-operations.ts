@@ -5,6 +5,7 @@ import { GIT_UPDATE_CONCURRENCY, UPDATE_CHECK_CONCURRENCY } from "./package-mana
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import {
 	getExistingGitInstallPath,
+	getInstalledGitHead,
 	gitHasAvailableUpdate,
 	installGit,
 	removeGit,
@@ -164,8 +165,8 @@ async function updateConfiguredSources(
 	const npmCheckResults = await runWithConcurrency(npmCheckTasks, UPDATE_CHECK_CONCURRENCY);
 	const userNpmUpdates: NpmUpdateTarget[] = [];
 	const projectNpmUpdates: NpmUpdateTarget[] = [];
-	for (const result of npmCheckResults) {
-		if (!result.shouldUpdate) continue;
+	const npmUpdates = npmCheckResults.filter((result) => result.shouldUpdate);
+	for (const result of npmUpdates) {
 		if (result.entry.scope === "user") userNpmUpdates.push(result.entry);
 		else projectNpmUpdates.push(result.entry);
 	}
@@ -173,17 +174,58 @@ async function updateConfiguredSources(
 	const tasks: Promise<void>[] = [];
 	if (userNpmUpdates.length > 0) tasks.push(updateNpmBatch(context, userNpmUpdates, "user"));
 	if (projectNpmUpdates.length > 0) tasks.push(updateNpmBatch(context, projectNpmUpdates, "project"));
+	const gitUpdates: UpdatedPackage[] = [];
 	if (gitCandidates.length > 0) {
 		const gitTasks = gitCandidates.map(
 			(entry) => async () =>
 				withProgress(context, "update", entry.source, `Updating ${entry.source}...`, async () => {
+					const from = await getInstalledGitHead(context, entry.parsed, entry.scope);
 					if (context.driver) await context.driver.updateGit(entry.parsed, entry.scope);
 					else await updateGit(context, entry.parsed, entry.scope);
+					const to = await getInstalledGitHead(context, entry.parsed, entry.scope);
+					if (from !== to) gitUpdates.push({ source: entry.source, type: "git", scope: entry.scope, from, to });
 				}),
 		);
 		tasks.push(runWithConcurrency(gitTasks, GIT_UPDATE_CONCURRENCY).then(() => {}));
 	}
-	await Promise.all(tasks);
+	// Report what changed even when another package's update failed, then rethrow the first failure.
+	const failure = (await Promise.allSettled(tasks)).find((result) => result.status === "rejected");
+
+	const updated: UpdatedPackage[] = [];
+	for (const { entry } of npmUpdates) {
+		const installedPath = getManagedNpmInstallPath(context, entry.parsed, entry.scope);
+		const to = existsSync(installedPath) ? getInstalledNpmVersion(installedPath) : undefined;
+		if (to !== entry.installedVersion) {
+			updated.push({ source: entry.source, type: "npm", scope: entry.scope, from: entry.installedVersion, to });
+		}
+	}
+	// Keep git results in configured order, independent of completion order.
+	for (const entry of gitCandidates) {
+		const update = gitUpdates.find((u) => u.source === entry.source && u.scope === entry.scope);
+		if (update) updated.push(update);
+	}
+	// Report each changed package, e.g. "npm:foo 1.2.0 -> 1.3.0".
+	for (const pkg of updated) {
+		const format = (value: string | undefined) =>
+			value === undefined ? "(none)" : pkg.type === "git" ? value.slice(0, 7) : value;
+		const scope = pkg.scope === "project" ? " (project)" : "";
+		emitProgress(context, {
+			type: "result",
+			action: "update",
+			source: pkg.source,
+			message: `${pkg.source}${scope} ${format(pkg.from)} -> ${format(pkg.to)}`,
+		});
+	}
+	if (failure) throw failure.reason;
+}
+
+/** A configured package whose installed npm version or git commit changed during update(). */
+interface UpdatedPackage extends ConfiguredUpdateSource {
+	type: "npm" | "git";
+	/** npm version or git commit before the update; undefined if it was not installed. */
+	from?: string;
+	/** npm version or git commit after the update. */
+	to?: string;
 }
 
 async function shouldUpdateNpmSource(

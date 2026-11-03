@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -380,6 +381,76 @@ if(args.includes("install")) process.exit(23);
 			);
 			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain("Ran atomic-wrapper");
 			expect(process.exitCode).toBe(1);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	/** Install `npm:fake-package` at `installedVersion` with an npm whose registry reports `registryVersion`. */
+	function prepareNpmPackage(installedVersion: string, registryVersion: string, installedAfter?: string): void {
+		const installedPath = join(agentDir, "npm", "node_modules", "fake-package");
+		mkdirSync(installedPath, { recursive: true });
+		writeFileSync(
+			join(installedPath, "package.json"),
+			JSON.stringify({ name: "fake-package", version: installedVersion }),
+		);
+		// `npm view` reports `registryVersion`; `npm install` writes `installedAfter`, or leaves the package unchanged.
+		const fakeNpmPath = join(tempDir, "fake-update-npm.cjs");
+		writeFileSync(
+			fakeNpmPath,
+			[
+				`if (process.argv.includes("view")) console.log(${JSON.stringify(JSON.stringify(registryVersion))});`,
+				installedAfter
+					? `else if (process.argv.includes("install")) require("node:fs").writeFileSync(${JSON.stringify(join(installedPath, "package.json"))}, ${JSON.stringify(JSON.stringify({ name: "fake-package", version: installedAfter }))});`
+					: "",
+			].join("\n"),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ packages: ["npm:fake-package"], npmCommand: [originalExecPath, fakeNpmPath] }),
+		);
+	}
+
+	it("lists each updated package with its version change (upstream #11707)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0", "1.3.0");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(process.stdout, "write").mockImplementation(_createWriteMock((callback) => callback?.()));
+
+		assert.equal(await main(["update", "--extensions"]), undefined);
+
+		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+		assert.ok(stdout.includes("Updated 1 package:"), stdout);
+		assert.ok(stdout.includes("  npm:fake-package 1.2.0 -> 1.3.0"), stdout);
+	});
+
+	it("does not report packages as up to date when npm left an older version installed (upstream #11711)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stdoutSpy = vi
+			.spyOn(process.stdout, "write")
+			.mockImplementation(_createWriteMock((callback) => callback?.()));
+
+		assert.equal(await main(["update", "--extensions"]), undefined);
+
+		const progress = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+		assert.ok(progress.includes("npm:fake-package is still 1.2.0 (registry reports 1.3.0)"), progress);
+		assert.ok(stdout.includes("No packages were updated, see the warnings above"), stdout);
+		assert.ok(!stdout.includes("up to date"));
+	});
+
+	it("does not report packages as up to date in offline mode (upstream #11711)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0");
+		// main() writes both variables in offline mode; stubbing them lets the test restore them.
+		vi.stubEnv("ATOMIC_OFFLINE", "1");
+		vi.stubEnv("ATOMIC_SKIP_VERSION_CHECK", "1");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			assert.equal(await main(["update", "--extensions"]), undefined);
+
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			assert.ok(stdout.includes("Skipped package updates (offline mode)"), stdout);
+			assert.ok(!stdout.includes("up to date"));
 		} finally {
 			vi.unstubAllEnvs();
 		}

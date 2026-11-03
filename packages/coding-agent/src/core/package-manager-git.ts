@@ -8,7 +8,7 @@ import { NETWORK_TIMEOUT_MS } from "./package-manager-constants.ts";
 import { isOfflineModeEnabled } from "./package-manager-env.ts";
 import { ensureGitIgnore, getGitDependencyInstallArgs, runNpmCommand } from "./package-manager-npm.ts";
 import { getBaseDirsForScope, getGitInstallPath, getGitInstallRoot } from "./package-manager-paths.ts";
-import { withProgress } from "./package-manager-progress.ts";
+import { emitProgress, withProgress } from "./package-manager-progress.ts";
 import type {
 	GitUpdateTargetInfo,
 	PackageLocationContext,
@@ -112,16 +112,27 @@ async function cleanAndInstallGitDependencies(
 	targetDir: string,
 	markerPath: string,
 ): Promise<void> {
+	// Clean untracked files (extensions should be pristine). On Windows, files loaded by
+	// another process (e.g. a native module of this extension in another session) cannot
+	// be deleted, so git clean fails. Still install dependencies for the new commit, but keep
+	// the marker so the next update retries the clean.
+	let cleaned = true;
 	try {
 		await runGitProcess(context, "git", ["clean", "-fdx"], { cwd: targetDir });
 	} catch (error) {
-		await repairMissingGitDependencies(context, targetDir).catch(() => {});
-		throw error;
+		cleaned = false;
+		const reason = error instanceof Error ? error.message : String(error);
+		emitProgress(context, {
+			type: "progress",
+			action: "update",
+			source: targetDir,
+			message: `Could not remove all untracked files in ${targetDir} (${reason}). Files may be in use by another ${APP_NAME} session; close it and run the update again.`,
+		});
 	}
 	if (existsSync(join(targetDir, "package.json"))) {
 		await runNpmCommand(context, getGitDependencyInstallArgs(context), { cwd: targetDir });
 	}
-	rmSync(markerPath, { force: true });
+	if (cleaned) rmSync(markerPath, { force: true });
 }
 
 export async function installGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
@@ -170,6 +181,25 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 		rmSync(targetDir, { recursive: true, force: true });
 		pruneEmptyGitParents(targetDir, gitRoot);
 		throw error;
+	}
+}
+
+/** The checked-out commit of an installed git package, or undefined when it is not installed or unreadable. */
+export async function getInstalledGitHead(
+	context: PackageManagerContext,
+	source: GitSource,
+	scope: SourceScope,
+): Promise<string | undefined> {
+	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
+	if (!existsSync(targetDir)) return undefined;
+	try {
+		const head = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+			cwd: targetDir,
+			timeoutMs: NETWORK_TIMEOUT_MS,
+		});
+		return head.trim() || undefined;
+	} catch {
+		return undefined;
 	}
 }
 

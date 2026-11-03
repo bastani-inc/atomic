@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	type Api,
 	type AssistantMessage,
@@ -337,5 +338,51 @@ describe("branch summarization with archival compaction entries", () => {
 		expect(promptInput).toContain(deletedEntrySentinel);
 		expect(promptInput).toContain(deletedBlockSentinel);
 		expect(promptInput).toContain(retainedBlockSentinel);
+	});
+});
+
+describe("branch summarization input", () => {
+	it("applies context edits to branch entries (upstream #11680)", () => {
+		const ts = (n: number) => new Date(n).toISOString();
+		const branch: SessionEntry[] = [
+			{ type: "message", id: "u1", parentId: null, timestamp: ts(1), message: user("Investigate login") },
+			{
+				type: "message",
+				id: "failed",
+				parentId: "u1",
+				timestamp: ts(2),
+				message: { ...assistantBlocks([{ type: "text", text: "FAILED_ATTEMPT" }]), stopReason: "error" },
+			},
+			{
+				type: "context_edit",
+				id: "e1",
+				parentId: "failed",
+				timestamp: ts(3),
+				targetId: "failed",
+				replacement: null,
+			},
+			{
+				type: "message",
+				id: "ok",
+				parentId: "e1",
+				timestamp: ts(4),
+				message: assistantBlocks([{ type: "text", text: "ORIGINAL_TEXT" }]),
+			},
+			{
+				type: "context_edit",
+				id: "e2",
+				parentId: "ok",
+				timestamp: ts(5),
+				targetId: "ok",
+				replacement: { content: "REPLACED_TEXT" },
+			},
+		];
+
+		const serialized = JSON.stringify(prepareBranchEntries(branch).messages);
+
+		assert.ok(serialized.includes("Investigate login"));
+		assert.ok(!serialized.includes("FAILED_ATTEMPT"));
+		assert.ok(!serialized.includes("ORIGINAL_TEXT"));
+		assert.ok(serialized.includes("REPLACED_TEXT"));
 	});
 });

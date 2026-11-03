@@ -17,7 +17,8 @@ import type { Api, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/comp
 import { completeSimple } from "@bastani/pi-ai/compat";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
-import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
+import type { ContextEditEntry, ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
+import { applyContextEdit } from "../session-manager-history.ts";
 import { estimateTokens } from "./compaction.ts";
 import { resolvePlannerRequest } from "./range-planner.js";
 import {
@@ -160,7 +161,12 @@ export function collectEntriesForBranchSummary(
  * Extract AgentMessage from a session entry.
  * Similar to getMessageFromEntry in compaction.ts, with legacy compaction entries kept inert.
  */
-function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
+function getMessageFromEntry(entry: SessionEntry, edit?: ContextEditEntry): AgentMessage | undefined {
+	const message = getRawMessageFromEntry(entry);
+	return message && edit ? applyContextEdit([message], edit)[0] : message;
+}
+
+function getRawMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	switch (entry.type) {
 		case "message":
 			// Skip tool results - context is in assistant's tool call
@@ -237,10 +243,16 @@ export function prepareBranchEntries(
 		}
 	}
 
+	// Context edits hide or replace earlier entries in model context; honor the latest edit per target.
+	const edits = new Map<string, ContextEditEntry>();
+	for (const entry of filteredEntries) {
+		if (entry.type === "context_edit") edits.set(entry.targetId, entry);
+	}
+
 	// Second pass: walk from newest to oldest, adding messages until token budget
 	for (let i = filteredEntries.length - 1; i >= 0; i--) {
 		const entry = filteredEntries[i];
-		const message = getMessageFromEntry(entry);
+		const message = getMessageFromEntry(entry, edits.get(entry.id));
 		if (!message) continue;
 
 		// Extract file ops from assistant messages (tool calls)

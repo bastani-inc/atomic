@@ -1,4 +1,13 @@
-import { Container, type Focusable, fuzzyFilter, Input, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
+import {
+	Container,
+	type Focusable,
+	fuzzyFilter,
+	getSelectPageIndex,
+	Input,
+	Spacer,
+	Text,
+	type TUI,
+} from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { HuggingFaceModel } from "./huggingface.js";
@@ -8,7 +17,11 @@ function compactCount(value: number): string {
 	if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`;
 	return String(value);
 }
+
+const SEARCH_MAX_VISIBLE = 10;
+
 export class HuggingFaceSearch extends Container implements Focusable {
+	readonly capturesViewportInput: boolean = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
 	private readonly keybindings: KeybindingsManager;
@@ -60,12 +73,14 @@ export class HuggingFaceSearch extends Container implements Focusable {
 
 	private updateResults(): void {
 		this.resultsContainer.clear();
-		const maxVisible = 10;
 		const start = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredResults.length - maxVisible),
+			Math.min(
+				this.selectedIndex - Math.floor(SEARCH_MAX_VISIBLE / 2),
+				this.filteredResults.length - SEARCH_MAX_VISIBLE,
+			),
 		);
-		const end = Math.min(start + maxVisible, this.filteredResults.length);
+		const end = Math.min(start + SEARCH_MAX_VISIBLE, this.filteredResults.length);
 		for (let index = start; index < end; index++) {
 			const model = this.filteredResults[index];
 			if (!model) continue;
@@ -166,6 +181,20 @@ export class HuggingFaceSearch extends Container implements Focusable {
 		if (this.keybindings.matches(data, "tui.select.down")) {
 			if (this.filteredResults.length > 0) {
 				this.selectedIndex = this.selectedIndex === this.filteredResults.length - 1 ? 0 : this.selectedIndex + 1;
+				this.updateResults();
+			}
+			return true;
+		}
+		const pageIndex = getSelectPageIndex(
+			this.keybindings,
+			data,
+			this.selectedIndex,
+			this.filteredResults.length,
+			SEARCH_MAX_VISIBLE,
+		);
+		if (pageIndex !== undefined) {
+			if (this.filteredResults.length > 0) {
+				this.selectedIndex = pageIndex;
 				this.updateResults();
 			}
 			return true;

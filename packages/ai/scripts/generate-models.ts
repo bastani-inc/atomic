@@ -820,7 +820,9 @@ function supportsOpenAiMax(model: Model<Api>): boolean {
 	);
 }
 
-const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS = new Set(["anthropic", "openrouter"]);
+// OpenCode Zen and Go forward per-message effort and `thinking.block_binding`. Without
+// `drop_block`, Go rejects replayed thinking after the system prompt or tools change.
+const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS = new Set(["anthropic", "openrouter", "opencode", "opencode-go"]);
 // OpenRouter rejects `configuration_update` system messages on Opus 5 ("Mid-conversation
 // reasoning effort (configuration_update) is not supported on anthropic/claude-opus-5-20260723")
 // while accepting them on Fable 5.1, so gate that model there.

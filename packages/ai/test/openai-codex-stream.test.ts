@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,8 +28,9 @@ afterEach(() => {
 	}
 	closeOpenAICodexWebSocketSessions();
 	resetOpenAICodexWebSocketDebugStats();
-	vi.useRealTimers();
+	// Restore spies first: a spy on the fake setTimeout would otherwise put it back after useRealTimers().
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 function mockToken(accountId = "acc_test"): string {
@@ -2236,20 +2238,35 @@ describe("openai-codex streaming", () => {
 		await request("session-a", "account-b");
 		await request("session-b", "account-a");
 		assert.equal(sockets.length, 3);
-		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+		assert.deepEqual(
+			sockets.map((socket) => socket.readyState),
+			[1, 1, 1],
+		);
 
 		closeOpenAICodexWebSocketSessions("");
-		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+		assert.deepEqual(
+			sockets.map((socket) => socket.readyState),
+			[1, 1, 1],
+		);
 		await request("session-a", "account-a");
 		await request("session-b", "account-a");
 		assert.equal(sockets.length, 3);
 
 		closeOpenAICodexWebSocketSessions("missing-session");
-		assert.deepEqual(sockets.map((socket) => socket.readyState), [1, 1, 1]);
+		assert.deepEqual(
+			sockets.map((socket) => socket.readyState),
+			[1, 1, 1],
+		);
 		closeOpenAICodexWebSocketSessions("session-a");
-		assert.deepEqual(sockets.map((socket) => socket.readyState), [3, 3, 1]);
+		assert.deepEqual(
+			sockets.map((socket) => socket.readyState),
+			[3, 3, 1],
+		);
 		closeOpenAICodexWebSocketSessions();
-		assert.deepEqual(sockets.map((socket) => socket.readyState), [3, 3, 3]);
+		assert.deepEqual(
+			sockets.map((socket) => socket.readyState),
+			[3, 3, 3],
+		);
 	});
 
 	it("closes one-shot websockets when cacheRetention is none", async () => {
@@ -3434,5 +3451,53 @@ describe("openai-codex streaming", () => {
 		const result = await resultPromise;
 		expect(result.content.find((content) => content.type === "text")?.text).toBe("Hello");
 		expect(codexRequests).toBe(4);
+	});
+});
+
+describe("openai-codex SSE retry backoff", () => {
+	it("removes SSE retry backoff abort listeners after the retry succeeds (upstream #11708)", async () => {
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		let calls = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL) => {
+				const url = typeof input === "string" ? input : input.toString();
+				if (url !== "https://chatgpt.com/backend-api/codex/responses")
+					return new Response("not found", { status: 404 });
+				calls++;
+				if (calls <= 3) {
+					return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+						status: 429,
+						headers: { "retry-after": "0" },
+					});
+				}
+				return new Response(buildSSEPayload({ status: "completed", includeDone: true }), {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}),
+		);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const controller = new AbortController();
+		const result = await streamOpenAICodexResponses(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }] }),
+			{ apiKey: mockToken(), transport: "sse", maxRetries: 3, signal: controller.signal },
+		).result();
+
+		assert.equal(result.stopReason, "stop");
+		assert.equal(calls, 4);
+		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 	});
 });

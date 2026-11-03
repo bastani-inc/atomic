@@ -6,6 +6,7 @@
  * - Force-pushed remotes gracefully (currently fails, fix needed)
  */
 
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -158,8 +159,13 @@ describe("DefaultPackageManager git update", () => {
 				}
 			};
 
+			const updated: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "result" && event.action === "update" && event.message) updated.push(event.message);
+			});
 			await packageManager.update();
 
+			assert.deepEqual(updated, []);
 			expect(executedCommands).toContain(
 				"git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
 			);
@@ -173,14 +179,20 @@ describe("DefaultPackageManager git update", () => {
 		it("should update to latest commit when remote has new commits", async () => {
 			setupRemoteAndInstall();
 			expect(getFileContent(installedDir, "extension.ts")).toBe("// v1");
+			const oldCommit = getCurrentCommit(installedDir);
 
 			// Add a new commit to remote
 			const newCommit = createCommit(remoteDir, "extension.ts", "// v2", "Second commit");
 
-			// Update via package manager (no args = uses settings)
+			// Update via package manager (no args = uses settings); each changed package is reported (upstream #11707)
+			const updated: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "result" && event.action === "update" && event.message) updated.push(event.message);
+			});
 			await packageManager.update();
 
 			// Verify update succeeded
+			assert.deepEqual(updated, [`${gitSource} ${oldCommit.slice(0, 7)} -> ${newCommit.slice(0, 7)}`]);
 			expect(getCurrentCommit(installedDir)).toBe(newCommit);
 			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2");
 		});

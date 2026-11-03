@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONFIG_DIR_NAME } from "../src/config.ts";
-import { DefaultPackageManager, type ResolvedResource } from "../src/core/package-manager.ts";
+import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 function normalizeForMatch(value: string): string {
@@ -130,9 +130,23 @@ describe("DefaultPackageManager", () => {
 
 			const internals = packageManager as object as PackageManagerInternals;
 			const runCommandCaptureSpy = vi.spyOn(internals, "runCommandCapture").mockResolvedValue('["1.0.0","1.2.0"]');
-			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
+			const runCommandSpy = vi.spyOn(internals, "runCommand").mockImplementation(async () => {
+				writeFileSync(join(installedPath, "package.json"), JSON.stringify({ name: "example", version: "1.2.0" }));
+			});
+			const events: ProgressEvent[] = [];
+			packageManager.setProgressCallback((event) => events.push(event));
 
 			await packageManager.update("npm:example");
+
+			// The changed package is a separate result event, so each start still has exactly one complete (upstream #11707).
+			assert.deepEqual(
+				events.map((event) => [event.type, event.source, event.message]),
+				[
+					["start", "npm:example@^1.0.0", "Updating npm:example@^1.0.0..."],
+					["complete", "npm:example@^1.0.0", undefined],
+					["result", "npm:example@^1.0.0", "npm:example@^1.0.0 (project) 1.0.0 -> 1.2.0"],
+				],
+			);
 
 			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
 				"npm",
@@ -152,6 +166,31 @@ describe("DefaultPackageManager", () => {
 				],
 				undefined,
 			]);
+		});
+
+		it("reports the packages that changed even when another package update fails", async () => {
+			const projectPath = join(tempDir, CONFIG_DIR_NAME, "npm", "node_modules", "example");
+			mkdirSync(projectPath, { recursive: true });
+			writeFileSync(join(projectPath, "package.json"), JSON.stringify({ name: "example", version: "1.0.0" }));
+			const userPath = join(agentDir, "npm", "node_modules", "other");
+			mkdirSync(userPath, { recursive: true });
+			writeFileSync(join(userPath, "package.json"), JSON.stringify({ name: "other", version: "1.0.0" }));
+			settingsManager.setProjectPackages(["npm:example"]);
+			settingsManager.setPackages(["npm:other"]);
+
+			const internals = packageManager as object as PackageManagerInternals;
+			vi.spyOn(internals, "runCommandCapture").mockResolvedValue('"2.0.0"');
+			vi.spyOn(internals, "runCommand").mockImplementation(async (_command, args) => {
+				if (args.includes("other@latest")) throw new Error("npm install failed");
+				writeFileSync(join(projectPath, "package.json"), JSON.stringify({ name: "example", version: "2.0.0" }));
+			});
+			const updated: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "result" && event.action === "update" && event.message) updated.push(event.message);
+			});
+
+			await assert.rejects(packageManager.update(), /npm install failed/);
+			assert.deepEqual(updated, ["npm:example (project) 1.0.0 -> 2.0.0"]);
 		});
 
 		it("should update npm dist-tag packages using the configured tag spec", async () => {
@@ -198,7 +237,13 @@ describe("DefaultPackageManager", () => {
 				.mockResolvedValue('["1.0.0","1.3.1","1.0.2"]');
 			const runCommandSpy = vi.spyOn(internals, "runCommand").mockResolvedValue(undefined);
 
+			const updated: string[] = [];
+			packageManager.setProgressCallback((event) => {
+				if (event.type === "result" && event.action === "update" && event.message) updated.push(event.message);
+			});
 			await packageManager.update("npm:example");
+
+			assert.deepEqual(updated, []);
 
 			expect(runCommandCaptureSpy).toHaveBeenCalledWith(
 				"npm",

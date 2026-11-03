@@ -14,6 +14,13 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - `github-copilot` availability keeps fast-route models for a credential without a fast list, such as an API key, because only the account's own model list adds them. A login that lists its fast IDs offers each listed ID even when it is not a picker entry. A network refresh that reads the account's list also saves its model lists to the OAuth login that read it, so a model the refresh discovers is offered at once, while the login's lists still decide for every model, so models another login discovered are not offered.
 
+### Fixed
+
+- OpenAI Codex SSE retries no longer leave an `abort` listener on the caller's signal after each completed backoff (upstream [#11708](https://github.com/earendil-works/pi/issues/11708))
+- The default output limit now leaves 15% of the estimated input unused (at least 4096 tokens), so OpenRouter, which counts the input with its own tokenizer and rejects input plus `max_tokens` above the window, no longer rejects models whose output limit is close to the window with a 400 that was then treated as a context overflow. When that margin would leave less than 32768 tokens of output, only the fixed 4096 margin is kept and output is capped at 32768 (upstream [#10497](https://github.com/earendil-works/pi/issues/10497))
+- Anthropic non-strict tool schemas keep the root `$defs` and `definitions`, so property `$ref`s resolve. Before, Claude could send a JSON string where an object was expected, and some Anthropic-compatible gateways rejected the request. Root `anyOf`/`oneOf`/`allOf` are still left out because Anthropic rejects them (upstream [#9557](https://github.com/earendil-works/pi/issues/9557))
+- OpenCode Go and Zen Claude 5.5 models, Opus 5 and Fable 5.1 now use per-message effort and send `thinking.block_binding: drop_block`, like the Anthropic provider. OpenCode Go Claude Haiku 5.5 failed with a 400 (`Invalid signature in thinking block ... bound to a different conversation`) after the tool list, system prompt or earlier history changed, and kept failing on every retry (upstream [#10954](https://github.com/earendil-works/pi/issues/10954))
+
 ## [0.9.64] - 2026-11-02
 
 ### Added

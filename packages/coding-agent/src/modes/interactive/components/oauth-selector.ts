@@ -3,6 +3,7 @@ import {
 	type Focusable,
 	fuzzyFilter,
 	getKeybindings,
+	getSelectPageIndex,
 	Input,
 	Spacer,
 	TruncatedText,
@@ -27,10 +28,13 @@ export function formatAuthSelectorProviderType(
 	return subscription === false ? "account" : "subscription";
 }
 
+const MAX_VISIBLE = 8;
+
 /**
  * Component that renders an auth provider selector
  */
 export class OAuthSelectorComponent extends Container implements Focusable {
+	readonly capturesViewportInput: boolean = true;
 	private searchInput: Input;
 
 	// Focusable implementation - propagate to search input for IME cursor positioning
@@ -116,12 +120,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private updateList(): void {
 		this.listContainer.clear();
 
-		const maxVisible = 8;
 		const startIndex = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredProviders.length - maxVisible),
+			Math.min(this.selectedIndex - Math.floor(MAX_VISIBLE / 2), this.filteredProviders.length - MAX_VISIBLE),
 		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredProviders.length);
+		const endIndex = Math.min(startIndex + MAX_VISIBLE, this.filteredProviders.length);
 
 		for (let i = startIndex; i < endIndex; i++) {
 			const provider = this.filteredProviders[i];
@@ -193,6 +196,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 	handleInput(keyData: string): boolean {
 		const kb = getKeybindings();
+		const pageIndex = getSelectPageIndex(kb, keyData, this.selectedIndex, this.filteredProviders.length, MAX_VISIBLE);
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			if (this.filteredProviders.length === 0) return true;
@@ -203,6 +207,12 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		else if (kb.matches(keyData, "tui.select.down")) {
 			if (this.filteredProviders.length === 0) return true;
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
+			this.updateList();
+		}
+		// Page up/down
+		else if (pageIndex !== undefined) {
+			if (this.filteredProviders.length === 0) return true;
+			this.selectedIndex = pageIndex;
 			this.updateList();
 		}
 		// Enter

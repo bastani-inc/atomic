@@ -120,6 +120,25 @@ describe("consumeSseStream", () => {
 		);
 		assert.ok(sent < 100);
 	});
+
+	it("cancels the stream when an event exceeds the limit (upstream #11729)", async () => {
+		const encoder = new TextEncoder();
+		let cancelled = false;
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				// The server keeps the response open after the oversized event.
+				controller.enqueue(encoder.encode(`data: ${"x".repeat(512)}\n\n`));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		await assert.rejects(
+			consumeSseStream(stream, { maxEventBytes: 128, onEvent: () => {} }),
+			/MCP SSE event exceeds 128 bytes/,
+		);
+		assert.equal(cancelled, true);
+	});
 });
 
 describe("StreamableHttpTransport", () => {

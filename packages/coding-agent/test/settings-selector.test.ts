@@ -9,6 +9,7 @@ import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
+import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
@@ -425,4 +426,24 @@ test("compaction picker preserves unavailable IDs, cancels without saving and re
 	menu.handleInput?.("\x1b");
 	assert.deepEqual(selected, []);
 	assert.equal(config.compactionModel, "missing/model");
+});
+
+test("pages a searchable submenu with selection page keys (upstream #7629)", () => {
+	setKeybindings(new KeybindingsManager());
+	const onSelect = vi.fn();
+	const submenu = new SelectSubmenu(
+		"Theme",
+		"",
+		Array.from({ length: 20 }, (_, index) => ({ value: `theme-${index}`, label: `theme-${index}` })),
+		"theme-0",
+		onSelect,
+		() => {},
+		undefined,
+		true,
+	);
+
+	submenu.handleInput("\x1b[6~"); // PageDown
+	submenu.handleInput("\r");
+
+	assert.deepEqual(onSelect.mock.calls, [["theme-10"]]);
 });

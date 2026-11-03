@@ -110,8 +110,8 @@ export function isFullscreenTranscriptScrollAction(data: string, keybindings: Ke
  * disable pi-tui's application-owned transcript selection path.
  *
  * **Who owns viewport keys while an overlay is focused.** pi-tui 0.84.2 added
- * `shouldDeferViewportInputToOverlay()` (upstream #7894) and answers "the
- * overlay". Atomic answers "the overlay first, the transcript with whatever it
+ * `shouldDeferViewportInputToOverlay()` (upstream #7894; `shouldDeferViewportInput()`
+ * since pi-tui 1.5.0) and answers "the overlay". Atomic answers "the overlay first, the transcript with whatever it
  * declines" (#2378 / PR #2381): the actions in `FULLSCREEN_VIEWPORT_ACTIONS`
  * and wheel reports are offered to the focused overlay, and
  * `AtomicTuiAltScreen` replays what it does not consume into pi-tui's viewport
