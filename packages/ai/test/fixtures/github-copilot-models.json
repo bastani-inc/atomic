@@ -1,0 +1,796 @@
+{
+	"data": [
+		{
+			"capabilities": {
+				"family": "example-static-model",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-static-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "medium",
+			"name": "Example Static Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/responses",
+				"ws:/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-static-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-static-model-fast",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-static-model-fast",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "high",
+			"name": "Example Static Model Fast",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/responses",
+				"ws:/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-static-model-fast"
+		},
+		{
+			"capabilities": {
+				"family": "example-family",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": true,
+			"supported_endpoints": [
+				"/chat/completions",
+				"/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-model",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-model-fast",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": false,
+			"model_picker_price_category": "low",
+			"name": "Example Model Fast",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": true,
+			"supported_endpoints": [
+				"/chat/completions",
+				"/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-model-fast"
+		},
+		{
+			"capabilities": {
+				"family": "example-chat-model",
+				"limits": {
+					"max_context_window_tokens": 1048576,
+					"max_output_tokens": 65536,
+					"max_prompt_tokens": 983040,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 10,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/heic",
+							"image/heif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high"
+					],
+					"streaming": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-chat-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "versatile",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Chat Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/chat/completions",
+				"/interactions"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-chat-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-reasoning-model",
+				"limits": {
+					"max_context_window_tokens": 1000000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 872000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"none",
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-reasoning-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "lightweight",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Reasoning Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/responses",
+				"ws:/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-reasoning-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-messages-model",
+				"limits": {
+					"max_context_window_tokens": 1000000,
+					"max_non_streaming_output_tokens": 16000,
+					"max_output_tokens": 64000,
+					"max_prompt_tokens": 936000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"adaptive_thinking": true,
+					"max_thinking_budget": 32000,
+					"min_thinking_budget": 1024,
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-messages-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "high",
+			"name": "Example Messages Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/v1/messages",
+				"/chat/completions"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-messages-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-legacy-model",
+				"limits": {
+					"max_context_window_tokens": 128000,
+					"max_output_tokens": 4096,
+					"max_prompt_tokens": 64000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"streaming": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-legacy-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_enabled": true,
+			"model_picker_price_category": "medium",
+			"name": "Example Legacy Model",
+			"object": "model",
+			"preview": false,
+			"vendor": "Example Vendor",
+			"version": "example-legacy-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-family",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-disabled-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Disabled Model",
+			"object": "model",
+			"policy": {
+				"state": "disabled",
+				"terms": ""
+			},
+			"preview": true,
+			"supported_endpoints": [
+				"/chat/completions",
+				"/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-disabled-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-static-model",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-disabled-model-fast",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "high",
+			"name": "Example Disabled Model Fast",
+			"object": "model",
+			"policy": {
+				"state": "disabled",
+				"terms": ""
+			},
+			"preview": false,
+			"supported_endpoints": [
+				"/responses",
+				"ws:/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-disabled-model-fast"
+		},
+		{
+			"capabilities": {
+				"family": "example-hidden-model",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"none",
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-hidden-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_enabled": false,
+			"model_picker_price_category": "low",
+			"name": "Example Hidden Model",
+			"object": "model",
+			"preview": false,
+			"supported_endpoints": [
+				"/responses",
+				"ws:/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-hidden-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-family",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": false,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-toolless-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Toolless Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": true,
+			"supported_endpoints": [
+				"/chat/completions",
+				"/responses"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-toolless-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-family",
+				"limits": {
+					"max_context_window_tokens": 1050000,
+					"max_output_tokens": 128000,
+					"max_prompt_tokens": 922000,
+					"vision": {
+						"max_prompt_image_size": 3145728,
+						"max_prompt_images": 1,
+						"supported_media_types": [
+							"image/jpeg",
+							"image/png",
+							"image/webp",
+							"image/gif",
+							"application/pdf"
+						]
+					}
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"parallel_tool_calls": true,
+					"reasoning_effort": [
+						"low",
+						"medium",
+						"high",
+						"xhigh",
+						"max"
+					],
+					"streaming": true,
+					"structured_outputs": true,
+					"tool_calls": true,
+					"vision": true
+				},
+				"tokenizer": "o200k_base",
+				"type": "chat"
+			},
+			"id": "example-unrouted-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_category": "powerful",
+			"model_picker_enabled": true,
+			"model_picker_price_category": "low",
+			"name": "Example Unrouted Model",
+			"object": "model",
+			"policy": {
+				"state": "enabled",
+				"terms": ""
+			},
+			"preview": true,
+			"supported_endpoints": [
+				"/v1/decisions"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-unrouted-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-embedding-model",
+				"limits": {
+					"max_inputs": 512
+				},
+				"object": "model_capabilities",
+				"supports": {
+					"dimensions": true
+				},
+				"tokenizer": "cl100k_base",
+				"type": "embeddings"
+			},
+			"id": "example-embedding-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_enabled": false,
+			"name": "Example Embedding Model",
+			"object": "model",
+			"preview": false,
+			"vendor": "Example Vendor",
+			"version": "example-embedding-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-image-model",
+				"limits": {
+					"max_prompt_tokens": 32000
+				},
+				"object": "model_capabilities",
+				"supports": {},
+				"tokenizer": "o200k_base",
+				"type": "image"
+			},
+			"id": "example-image-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_enabled": false,
+			"model_picker_price_category": "high",
+			"name": "Example Image Model",
+			"object": "model",
+			"preview": true,
+			"supported_endpoints": [
+				"/v1/images/generations",
+				"/v1/images/edits"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-image-model"
+		},
+		{
+			"capabilities": {
+				"family": "example-decision-model",
+				"object": "model_capabilities",
+				"supports": {},
+				"tokenizer": "o200k_base",
+				"type": "decisions"
+			},
+			"id": "example-decision-model",
+			"is_chat_default": false,
+			"is_chat_fallback": false,
+			"model_picker_enabled": false,
+			"model_picker_price_category": "low",
+			"name": "Example Decision Model",
+			"object": "model",
+			"preview": true,
+			"supported_endpoints": [
+				"/v1/systemone"
+			],
+			"vendor": "Example Vendor",
+			"version": "example-decision-model"
+		}
+	],
+	"object": "list"
+}

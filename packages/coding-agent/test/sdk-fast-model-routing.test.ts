@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
@@ -415,16 +415,25 @@ describe("createAgentSession fast model routing", () => {
 		assert.equal(captured.message.model, "gpt-5.6-sol-fast");
 	});
 
-	it("persists and restores an exact Copilot -fast model ID across sessions", async () => {
-		const baseModelId = "gpt-5.6-sol";
-		const fastModelId = `${baseModelId}-fast`;
+	it("persists and restores an exact Copilot fast model ID from the cached account list across sessions", async () => {
+		const fastModelId = "example-model-fast";
+		const discovered: Model<Api> = {
+			...createModel("github-copilot", "openai-responses"),
+			id: fastModelId,
+			name: fastModelId,
+			discovered: true,
+		};
+		writeFileSync(
+			join(agentDir, "models-store.json"),
+			JSON.stringify({ "github-copilot": { models: [discovered], checkedAt: Date.now() } }),
+		);
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("github-copilot", async () => ({
 			type: "oauth",
 			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
 			refresh: "test-refresh-token",
 			expires: Number.MAX_SAFE_INTEGER,
-			availableModelIds: [baseModelId],
+			availableModelIds: [],
 			fastModelIds: [fastModelId],
 		}));
 		const modelRuntime = await ModelRuntime.create({
@@ -432,11 +441,11 @@ describe("createAgentSession fast model routing", () => {
 			modelsPath: join(agentDir, "models.json"),
 			allowModelNetwork: false,
 		});
-		// The derived fast variant is a real selectable model resolvable by its canonical ID.
+		// The cached account list makes the advertised ID a real selectable model, with no derived route.
 		const model = modelRuntime.getModel("github-copilot", fastModelId);
 		assert.ok(model);
 		assert.equal(model.id, fastModelId);
-		assert.deepEqual(model.fastRoute, { baseModelId, upstreamModelId: fastModelId });
+		assert.equal(model.fastRoute, undefined);
 		const sessionManager = SessionManager.inMemory(cwd);
 		const requestBodies: Record<string, unknown>[] = [];
 		vi.stubGlobal(
@@ -473,7 +482,7 @@ describe("createAgentSession fast model routing", () => {
 		});
 		try {
 			assert.equal(resumed.session.model?.id, fastModelId);
-			assert.deepEqual(resumed.session.model?.fastRoute, { baseModelId, upstreamModelId: fastModelId });
+			assert.equal(resumed.session.model?.fastRoute, undefined);
 			await resumed.session.prompt("second turn");
 			assert.deepEqual(
 				requestBodies.map((body) => body.model),

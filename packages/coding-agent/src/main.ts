@@ -52,12 +52,7 @@ import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
-import {
-	findInitialModel,
-	resolveModelScope,
-	resolveModelScopeWithDiagnostics,
-	resolveRestoredModelReference,
-} from "./core/model-resolver.ts";
+import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
@@ -91,6 +86,7 @@ import {
 	computeStartupInputCaptureEnabled,
 	computeStartupTrustPromptPossible,
 	formatScopedModelList,
+	resolveDeferredStartupModel,
 } from "./main-deferred-startup.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
 import { runFirstTimeSetup } from "./main-first-time-setup.ts";
@@ -872,25 +868,13 @@ export async function main(argv: string[], options?: MainOptions) {
 							settingsManager,
 						);
 						finalServices.diagnostics.push(...finalSelection.diagnostics);
-						let finalModel = finalSelection.options.model;
-						if (!finalModel && existingSession.messages.length > 0 && existingSession.model) {
-							finalModel = await resolveRestoredModelReference(
-								existingSession.model.provider,
-								existingSession.model.modelId,
-								modelRuntime,
-							);
-						}
-						finalModel ??= (
-							await findInitialModel({
-								scopedModels: [],
-								isContinuing: existingSession.messages.length > 0,
-								defaultProvider: settingsManager.getDefaultProvider(),
-								defaultModelId: settingsManager.getDefaultModel(),
-								defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-								modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
-								modelRuntime,
-							})
-						).model;
+						const finalModel = await resolveDeferredStartupModel({
+							selected: finalSelection.options.model,
+							isContinuing: existingSession.messages.length > 0,
+							savedModel: existingSession.model,
+							settingsManager,
+							modelRuntime,
+						});
 						if (parsed.apiKey && finalModel)
 							await applyCliRuntimeApiKey(
 								modelRuntime,

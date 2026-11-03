@@ -56,6 +56,27 @@ export function preserveCopilotIntegrationHeader(
 	);
 }
 
+/** Client identity headers every GitHub Copilot request carries. */
+export const COPILOT_HEADERS = {
+	"User-Agent": "GitHubCopilotChat/0.35.0",
+	"Editor-Version": "vscode/1.107.0",
+	"Editor-Plugin-Version": "copilot-chat/0.35.0",
+	"Copilot-Integration-Id": "vscode-chat",
+} as const;
+
+/** API version for reading the account's model list. */
+export const COPILOT_API_VERSION = "2026-06-01";
+
+/** Integration ID GitHub Copilot expects with a raw GitHub token. */
+const RAW_TOKEN_INTEGRATION_ID = "copilot-developer-cli";
+
+/** Identity headers for a request outside a conversation, such as reading the account's model list. */
+export function copilotClientHeaders(apiKey: string): Record<string, string> {
+	return isRawCopilotToken(apiKey)
+		? { ...COPILOT_HEADERS, "Copilot-Integration-Id": RAW_TOKEN_INTEGRATION_ID }
+		: { ...COPILOT_HEADERS };
+}
+
 export function buildCopilotDynamicHeaders(params: {
 	messages: Message[];
 	hasImages: boolean;
@@ -71,7 +92,7 @@ export function buildCopilotDynamicHeaders(params: {
 	}
 
 	if (isRawCopilotToken(params.apiKey)) {
-		headers["Copilot-Integration-Id"] = "copilot-developer-cli";
+		headers["Copilot-Integration-Id"] = RAW_TOKEN_INTEGRATION_ID;
 	}
 
 	return headers;

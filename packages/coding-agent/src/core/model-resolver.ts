@@ -4,7 +4,12 @@
 
 export { resolveCliModel } from "./model-resolver-cli.ts";
 export { defaultModelPerProvider } from "./model-resolver-defaults.ts";
-export { findInitialModel, resolveRestoredModelReference, restoreModelFromSession } from "./model-resolver-initial.ts";
+export {
+	findInitialModel,
+	resolveRestoredModelReference,
+	restoreModelFromSession,
+	uncachedCopilotModelHint,
+} from "./model-resolver-initial.ts";
 export type {
 	ModelReferenceRequest,
 	ModelReferenceResult,

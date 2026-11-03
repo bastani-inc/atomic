@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- `github-copilot` discovers models from the account's `/models` list. `discoverGitHubCopilotModels(catalog, context)` reads the list with the effective OAuth or API-key credential and returns the chat models the catalog lacks, each under its exact advertised ID as both ID and name and marked `discovered: true`; `parseGitHubCopilotDiscoveredModels(response, catalog)` applies the same rules to a response. It returns `undefined`, not an empty list, when the list cannot be read (no usable credential, or a 400, 401, 403 or 404 response), so a caller keeps the models it found before. Entries with a disabled policy, hidden from the model picker, without tool-call support, or already in the catalog are skipped, so curated entries keep their metadata. Every entry, fast entries included, takes its API, limits, image input and reasoning efforts from its own row, and a Messages entry that advertises adaptive thinking gets `compat.forceAdaptiveThinking`, so the selected effort is sent. A fast entry carries fast route metadata only when its `family` names another model.
+- `Model.discovered` marks a model found in the account's own model list rather than in the built-in catalog.
+- `RefreshModelsContext.updateCredential` lets a provider's network refresh save account data it read, such as the model lists an availability filter checks, to the OAuth login the refresh used. Nothing is written once the store holds a different token, so a renewed login or another account is never changed.
+
+### Changed
+
+- `github-copilot` availability keeps fast-route models for a credential without a fast list, such as an API key, because only the account's own model list adds them. A login that lists its fast IDs offers each listed ID even when it is not a picker entry. A network refresh that reads the account's list also saves its model lists to the OAuth login that read it, so a model the refresh discovers is offered at once, while the login's lists still decide for every model, so models another login discovered are not offered.
+
 ## [0.9.64] - 2026-11-02
 
 ### Added

@@ -205,14 +205,14 @@ describe("extension OAuth credentials stay in sync with auth.json", () => {
 		assert.deepEqual(copilotAvailable(runtime), ["claude-sonnet-5"]);
 	});
 
-	test("publishes the entitled fast models of a first login saved by another process (#3620)", async () => {
+	test("derives no fast model from the fast list of a login saved by another process (#3620)", async () => {
 		const runtime = await sessionRuntime();
 		assert.deepEqual(copilotAvailable(runtime), []);
 
 		await saveRestrictedCopilotLogin({ fastModelIds: ["claude-opus-4.8-fast"] });
 
 		assert.equal(runtime.hasConfiguredAuth("github-copilot"), true);
-		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8", "claude-opus-4.8-fast"]);
+		assert.deepEqual(copilotAvailable(runtime), ["claude-opus-4.8"]);
 	});
 
 	test("an OAuth token rotation saved by another process keeps catalog passes shareable (#3620)", async () => {
