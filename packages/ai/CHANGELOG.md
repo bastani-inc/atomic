@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- `github-copilot` models discovered from the account's `/models` list are named by the display name their list entry advertises (for example `Claude Sonnet 4.5`) instead of repeating their ID, and fall back to the ID when the entry has no name. IDs are unchanged, so requests still use the exact advertised ID.
+
 ## [0.9.71] - 2026-11-03
 
 ### Added

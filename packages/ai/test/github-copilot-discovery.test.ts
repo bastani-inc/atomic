@@ -88,11 +88,22 @@ describe("GitHub Copilot account model discovery", () => {
 		for (const model of discover()) assert.ok(recordedIds.includes(model.id), model.id);
 	});
 
-	it("names each discovered model by its raw ID and marks it as discovered", () => {
+	it("names each discovered model by the display name its list entry advertises, keeping the exact ID", () => {
+		const displayNames = new Map(recordedModels.data.map((entry) => [entry.id, entry.name]));
 		for (const model of discover()) {
-			assert.equal(model.name, model.id);
+			assert.equal(model.name, displayNames.get(model.id));
+			assert.notEqual(model.name, model.id);
 			assert.equal(model.discovered, true);
 			assert.equal(model.provider, "github-copilot");
+		}
+		assert.equal(discovered("example-model").name, "Example Model");
+	});
+
+	it("falls back to the exact ID when a list entry advertises no usable display name", () => {
+		for (const name of [undefined, "", "   ", 7]) {
+			const raw = withEntry("example-chat-model", { name });
+			const model = discover(raw).find((candidate) => candidate.id === "example-chat-model");
+			assert.equal(model?.name, "example-chat-model");
 		}
 	});
 
@@ -224,7 +235,7 @@ describe("GitHub Copilot account model discovery", () => {
 	it("routes a fast entry whose family names another model as that model's fast variant", () => {
 		const model = discovered("example-model-fast");
 		assert.deepEqual(model.fastRoute, { baseModelId: "example-model", upstreamModelId: "example-model-fast" });
-		assert.equal(model.name, "example-model-fast");
+		assert.equal(model.name, "Example Model Fast");
 		assert.equal(model.api, discovered("example-model").api);
 
 		const fast = linkedToCatalog();
@@ -232,7 +243,7 @@ describe("GitHub Copilot account model discovery", () => {
 			baseModelId: "example-static-model",
 			upstreamModelId: "example-static-model-fast",
 		});
-		assert.equal(fast.name, "example-static-model-fast");
+		assert.equal(fast.name, "Example Static Model Fast");
 	});
 
 	it("describes a linked fast entry by its own row, not its base's", () => {
