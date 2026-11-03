@@ -59,6 +59,8 @@ atomic update npm:@foo/bar      # update one package
 atomic update --extension npm:@foo/bar
 ```
 
+Package updates list each package that changed, with its npm version or git commit, for example `npm:@foo/bar 1.2.0 -> 1.3.0`. When nothing changed they print `Packages are already up to date`; when a warning was printed instead, for example because npm reinstalled an older version from stale registry metadata, they say that no packages were updated. In offline mode they print that package updates were skipped.
+
 These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall).
 
 Self-update installs an exact advertised package/version, so it cannot drift to a newer registry release during installation. Atomic shows any release note supplied by the update service before installing.

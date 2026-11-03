@@ -184,6 +184,25 @@ export async function installGit(context: PackageManagerContext, source: GitSour
 	}
 }
 
+/** The checked-out commit of an installed git package, or undefined when it is not installed or unreadable. */
+export async function getInstalledGitHead(
+	context: PackageManagerContext,
+	source: GitSource,
+	scope: SourceScope,
+): Promise<string | undefined> {
+	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);
+	if (!existsSync(targetDir)) return undefined;
+	try {
+		const head = await captureGitProcess(context, "git", ["rev-parse", "HEAD"], {
+			cwd: targetDir,
+			timeoutMs: NETWORK_TIMEOUT_MS,
+		});
+		return head.trim() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function updateGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
 	const safeRef = source.ref ? getSafeGitRef(source.ref) : undefined;
 	const targetDir = getExistingGitInstallPath(context, source, scope) ?? getGitInstallPath(context, source, scope);

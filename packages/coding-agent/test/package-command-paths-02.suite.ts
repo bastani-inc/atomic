@@ -385,6 +385,76 @@ if(args.includes("install")) process.exit(23);
 		}
 	});
 
+	/** Install `npm:fake-package` at `installedVersion` with an npm whose registry reports `registryVersion`. */
+	function prepareNpmPackage(installedVersion: string, registryVersion: string, installedAfter?: string): void {
+		const installedPath = join(agentDir, "npm", "node_modules", "fake-package");
+		mkdirSync(installedPath, { recursive: true });
+		writeFileSync(
+			join(installedPath, "package.json"),
+			JSON.stringify({ name: "fake-package", version: installedVersion }),
+		);
+		// `npm view` reports `registryVersion`; `npm install` writes `installedAfter`, or leaves the package unchanged.
+		const fakeNpmPath = join(tempDir, "fake-update-npm.cjs");
+		writeFileSync(
+			fakeNpmPath,
+			[
+				`if (process.argv.includes("view")) console.log(${JSON.stringify(JSON.stringify(registryVersion))});`,
+				installedAfter
+					? `else if (process.argv.includes("install")) require("node:fs").writeFileSync(${JSON.stringify(join(installedPath, "package.json"))}, ${JSON.stringify(JSON.stringify({ name: "fake-package", version: installedAfter }))});`
+					: "",
+			].join("\n"),
+		);
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ packages: ["npm:fake-package"], npmCommand: [originalExecPath, fakeNpmPath] }),
+		);
+	}
+
+	it("lists each updated package with its version change (upstream #11707)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0", "1.3.0");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(process.stdout, "write").mockImplementation(_createWriteMock((callback) => callback?.()));
+
+		await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+
+		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+		expect(stdout).toContain("Updated 1 package:");
+		expect(stdout).toContain("  npm:fake-package 1.2.0 -> 1.3.0");
+	});
+
+	it("does not report packages as up to date when npm left an older version installed (upstream #11711)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stdoutSpy = vi
+			.spyOn(process.stdout, "write")
+			.mockImplementation(_createWriteMock((callback) => callback?.()));
+
+		await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+
+		const progress = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
+		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+		expect(progress).toContain("npm:fake-package is still 1.2.0 (registry reports 1.3.0)");
+		expect(stdout).toContain("No packages were updated, see the warnings above");
+		expect(stdout).not.toContain("up to date");
+	});
+
+	it("does not report packages as up to date in offline mode (upstream #11711)", async () => {
+		prepareNpmPackage("1.2.0", "1.3.0");
+		// main() writes both variables in offline mode; stubbing them lets the test restore them.
+		vi.stubEnv("ATOMIC_OFFLINE", "1");
+		vi.stubEnv("ATOMIC_SKIP_VERSION_CHECK", "1");
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stdout).toContain("Skipped package updates (offline mode)");
+			expect(stdout).not.toContain("up to date");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("suggests the configured source when update input omits the npm prefix", async () => {
 		const settingsPath = join(agentDir, "settings.json");
 		writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:pi-formatter"] }, null, 2));
