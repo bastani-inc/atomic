@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import {
 	type Component,
@@ -403,6 +404,41 @@ describe("pi-tui 0.84.2 overlay viewport deferral", () => {
  * shape that cannot decline anything explicitly. Such an overlay takes the
  * replay route instead.
  */
+describe("pi-tui 1.5.0 capturesViewportInput", () => {
+	/**
+	 * The editor with an open autocomplete menu sets `capturesViewportInput`,
+	 * so PageUp/PageDown move the menu selection instead of the transcript
+	 * (upstream #7629). Atomic's gate lets the focused editor's keys reach
+	 * pi-tui, whose deferral then routes them to the editor.
+	 */
+	test("the focused editor receives PAGE_UP while it captures viewport input, the transcript otherwise", () => {
+		const fixture = createFixture({ mountOverlay: false });
+		try {
+			const received: string[] = [];
+			const editor = Object.assign(fixture.editor, {
+				capturesViewportInput: true,
+				handleInput: (data: string) => {
+					received.push(data);
+				},
+			});
+			const { top, page } = anchorAtEnd(fixture);
+
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			assert.deepEqual(received, [PAGE_UP]);
+			assert.equal(fixture.transcript.scrollTop, top);
+
+			editor.capturesViewportInput = false;
+			fixture.terminal.input(PAGE_UP);
+			fixture.tui.renderNow();
+			assert.deepEqual(received, [PAGE_UP]);
+			assert.equal(top - fixture.transcript.scrollTop, page);
+		} finally {
+			fixture.stop();
+		}
+	});
+});
+
 describe("a focused overlay with no input handler", () => {
 	test("a handler-less focused overlay still pages the transcript", () => {
 		const fixture = createFixture({ mountOverlay: false });

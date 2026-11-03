@@ -14,6 +14,10 @@ import type { SessionScope, SessionsLoader } from "./session-selector-types.ts";
  * Component that renders a session selector
  */
 export class SessionSelectorComponent extends Container implements Focusable {
+	get capturesViewportInput(): boolean {
+		return this.mode !== "rename";
+	}
+
 	handleInput(data: string): boolean {
 		if (this.mode === "rename") {
 			const kb = getKeybindings();

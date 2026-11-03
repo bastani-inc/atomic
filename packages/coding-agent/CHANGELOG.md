@@ -25,6 +25,7 @@
 - Fixed Kitty-protocol F1–F12 shortcuts, including modified function keys, not being recognized, and F13+ keys inserting invisible characters into the editor (from pi-tui 1.5.0)
 - Fixed Kitty images inside padded or colored boxes disappearing once their first row scrolled above the fullscreen viewport (from pi-tui 1.5.0)
 - Fixed deeply nested Markdown blockquotes producing exponentially many lines and hanging or crashing the renderer (from pi-tui 1.5.0)
+- `tui.select.pageUp` and `tui.select.pageDown` now move the selection in the model, scoped models, auth, user message (`/fork`), settings submenu, llama.cpp search and `/mcp` selectors and in editor autocomplete, and PageUp/PageDown reach a focused list instead of scrolling the transcript. An open autocomplete menu takes the page keys before app actions, so binding a page key to Ctrl+V pages the menu instead of pasting an image. Extension components can set `capturesViewportInput` to receive the fullscreen viewport keys while focused (upstream [#7629](https://github.com/earendil-works/pi/issues/7629))
 
 ## [0.9.70] - 2026-11-03
 

@@ -21,6 +21,8 @@ import { HuggingFaceSearch } from "./huggingface-ui.js";
 
 const DOWNLOAD_VALUE = "\0download";
 
+type InputHandler = Pick<Component, "handleInput" | "capturesViewportInput">;
+
 export type LlamaManagerAction = { type: "model"; model: LlamaModelInfo } | { type: "download" } | { type: "close" };
 
 interface ProgressState extends LlamaProgress {
@@ -92,7 +94,7 @@ class LlamaView implements LlamaUi, Focusable {
 	private readonly keybindings: KeybindingsManager;
 	private readonly searchCache = new Map<string, HuggingFaceModel[]>();
 	private content: Container;
-	private inputHandler: { handleInput?(data: string): void } | undefined;
+	private inputHandler: InputHandler | undefined;
 	private inputTarget: Focusable | undefined;
 	private progressPromise: Promise<void> | undefined;
 	private progressResolver: (() => void) | undefined;
@@ -115,11 +117,11 @@ class LlamaView implements LlamaUi, Focusable {
 		if (this.inputTarget) this.inputTarget.focused = value;
 	}
 
-	private setContent(
-		content: Container,
-		inputHandler?: { handleInput?(data: string): void },
-		inputTarget?: Focusable,
-	): void {
+	get capturesViewportInput(): boolean {
+		return this.inputHandler?.capturesViewportInput === true;
+	}
+
+	private setContent(content: Container, inputHandler?: InputHandler, inputTarget?: Focusable): void {
 		if (this.inputTarget) this.inputTarget.focused = false;
 		this.progressPromise = undefined;
 		this.progressResolver = undefined;

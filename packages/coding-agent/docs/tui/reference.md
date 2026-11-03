@@ -15,6 +15,7 @@ interface Component {
   render(width: number): string[];
   handleInput?(data: string): boolean | void;
   wantsKeyRelease?: boolean;
+  capturesViewportInput?: boolean;
   invalidate(): void;
 }
 ```
@@ -24,6 +25,7 @@ interface Component {
 | `render(width)` | Return array of strings (one per line). Each line **must not exceed `width`**. |
 | `handleInput?(data)` | Receive keyboard input when the component has focus. A focused overlay also receives mouse input before the fullscreen viewport. Return `true` when it consumes input; return `false`, `undefined`, or `void` when a matching fullscreen viewport key or overlay mouse event should fall through to viewport handling. Non-overlay focused components leave mouse input with pi-tui so transcript scrolling, scrollbar interaction, and drag selection remain available. |
 | `wantsKeyRelease?` | If true, component receives key release events (Kitty protocol). Default: false. |
+| `capturesViewportInput?` | If true while the component has focus, fullscreen viewport keys such as PageUp/PageDown go to the component instead of scrolling the transcript, as they do for a focused overlay. `SelectList`, `SettingsList` and the editor with open autocomplete set it; a wrapper around one of them can forward it. Default: false. |
 | `invalidate()` | Clear cached render state. Called on theme changes. |
 
 The installed pi-tui type still permits handlers that return `void`; Atomic treats a missing or `undefined` result as unhandled only for a matching fullscreen viewport key or a mouse event deferred to a focused overlay. Components that mutate state for such an input must return `true` so the viewport does not apply it a second time.
