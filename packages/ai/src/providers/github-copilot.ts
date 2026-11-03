@@ -127,6 +127,12 @@ function discoveredCompat(
 	return { supportsLongCacheRetention: false };
 }
 
+/** The display name the account's entry advertises, or its ID when the entry has no usable one. */
+function discoveredName(entry: AccountModelEntry): string {
+	const name = entry.item.name;
+	return typeof name === "string" && name.trim() ? name.trim() : entry.id;
+}
+
 function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 	const api = apiForEndpoints(entry.item.supported_endpoints);
 	if (!api) return undefined;
@@ -139,7 +145,7 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 	const compat = discoveredCompat(api, reasoning, entry.supports);
 	return {
 		id: entry.id,
-		name: entry.id,
+		name: discoveredName(entry),
 		api,
 		provider: "github-copilot",
 		baseUrl: GITHUB_COPILOT_BASE_URL,
@@ -162,10 +168,11 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
  * Turn a GitHub Copilot `GET /models` response into the chat models the catalog lacks, in the
  * order the account lists them.
  *
- * Every model keeps the exact ID the account advertises as both its ID and its name, and is sent
- * upstream unchanged. An entry is skipped when it is not a chat model, does not support tool calls,
- * has a disabled policy, or is already in the catalog, whose curated entry always wins. An ordinary
- * entry is also skipped when the account hides it from the model picker. A fast entry is offered
+ * Every model keeps the exact ID the account advertises, which is sent upstream unchanged, and takes
+ * the entry's display name as its name, or its ID when the entry has none. An entry is skipped when it
+ * is not a chat model, does not support tool calls, has a disabled policy, or is already in the
+ * catalog, whose curated entry always wins. An ordinary entry is also skipped when the account hides
+ * it from the model picker. A fast entry is offered
  * whenever the account lists it, as Copilot's fast entitlement does, and like every other entry is
  * described by its own row. It carries fast route metadata only when its `capabilities.family`
  * names another model in the catalog, which then becomes its base. Otherwise it is an ordinary model.

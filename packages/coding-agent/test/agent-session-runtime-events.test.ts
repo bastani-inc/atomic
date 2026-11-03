@@ -89,6 +89,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			model: faux.getModel(),
 			resourceLoaderOptions: {
 				...(options.eventBus === undefined ? {} : { eventBus: options.eventBus }),
+				// These tests exercise runtime lifecycle events through `extensionFactories`. Loading every
+				// bundled package (workflows, MCP, ...) on each services creation costs seconds of module
+				// transform and extension instantiation and exercises none of the lifecycle behavior; the
+				// mandatory Intercom extension is still restored by the services layer regardless.
+				builtinPackagePaths: [],
 				extensionFactories: [extensionFactory],
 				noSkills: true,
 				noPromptTemplates: true,

@@ -709,4 +709,36 @@ describe("runPrintMode", () => {
 		expect(stdoutChunks.join("")).toBe("");
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
+
+	it("waits for the final disposal when SIGTERM arrives during it, and exits on a repeated SIGTERM", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		let finishDispose = () => {};
+		runtimeHost.dispose.mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					finishDispose = resolve;
+				}),
+		);
+		const listenersBefore = process.listenerCount("SIGTERM");
+
+		const run = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "Say done",
+		});
+		await vi.waitFor(() => assert.equal(runtimeHost.dispose.mock.calls.length, 1));
+		assert.equal(process.listenerCount("SIGTERM"), listenersBefore + 1);
+
+		process.emit("SIGTERM");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(exitSpy.mock.calls.length, 0);
+		assert.equal(runtimeHost.dispose.mock.calls.length, 1);
+
+		process.emit("SIGTERM");
+		assert.deepEqual(exitSpy.mock.calls, [[143]]);
+
+		finishDispose();
+		await run;
+		assert.equal(process.listenerCount("SIGTERM"), listenersBefore);
+	});
 });

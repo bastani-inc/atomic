@@ -170,7 +170,7 @@ Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, 
 
 Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. When a refresh cannot read the list, for example because the host refuses the token, the models cached before stay. A model found this way:
 
-- keeps the exact ID the account advertises as both its ID and its name, and is sent upstream unchanged
+- keeps the exact ID the account advertises, which is sent upstream unchanged, and is named by the display name the account's list gives it (the ID when the list gives none); `/model` shows that name in the selected model's `Model Name` line, and in a dim column beside the ID when it adds words the ID lacks
 - is marked `discovered: true` in the catalog; its limits, image input, reasoning efforts and adaptive thinking come from the account's list, and `modelOverrides` adjusts them like any other model
 - does not request 24-hour prompt-cache retention, because some Copilot models reject it and the list does not say which; set `compat.supportsLongCacheRetention` in `modelOverrides` for one that accepts it
 - never replaces a bundled entry with the same ID, which keeps its curated metadata

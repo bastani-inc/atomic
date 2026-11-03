@@ -156,7 +156,7 @@ function assertMentions(message: string | undefined, text: string): void {
 }
 
 describe("GitHub Copilot models discovered from the account's list", () => {
-	it("reads an API key's list from its routed host and offers each model under its exact ID", async () => {
+	it("reads an API key's list from its routed host and offers each model under its exact ID and display name", async () => {
 		const modelRuntime = await discover(API_KEY);
 
 		assert.deepEqual(modelListUrls, ["https://api.githubcopilot.com/models"]);
@@ -164,7 +164,8 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
 		for (const id of ACCOUNT_IDS) {
 			const model = modelRuntime.getModel(PROVIDER, id);
-			assert.equal(model?.name, id);
+			assert.equal(model?.id, id);
+			assert.equal(model?.name, `Display name of ${id}`);
 			assert.equal(model?.discovered, true);
 		}
 		assert.equal(modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID)?.discovered, undefined);
