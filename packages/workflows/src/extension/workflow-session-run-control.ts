@@ -182,7 +182,11 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 	const target = (runId: string | WorkflowRunAllTarget): Pick<WorkflowToolArgs, "runId" | "all"> =>
 		typeof runId === "string" ? { runId } : { all: true };
 
-	const list = async (filter: WorkflowRunListFilter | undefined, inScope: RunScope): Promise<WorkflowRunSummary[]> => {
+	const list = async (
+		filter: WorkflowRunListFilter | undefined,
+		inScope: RunScope,
+		finished: (catalog: DurableWorkflowCatalogEntries) => DurableWorkflowCatalogEntries["completed"],
+	): Promise<WorkflowRunSummary[]> => {
 		const result = await request({
 			action: "status",
 			...(filter?.status === undefined ? {} : { statusFilter: filter.status }),
@@ -199,8 +203,8 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 			canonicalPaths.set(path, canonical);
 			return canonical;
 		};
-		const entries = [...(catalog?.resumable ?? []), ...(catalog?.completed ?? [])].filter((entry) =>
-			inScope(entry, cwd, canonicalize),
+		const entries = [...(catalog?.resumable ?? []), ...(catalog === undefined ? [] : finished(catalog))].filter(
+			(entry) => inScope(entry, cwd, canonicalize),
 		);
 		const saved = new Map(entries.map((entry) => [entry.workflowId, entry]));
 		const snapshots = new Map(host.store.runs().map((run) => [run.id, run]));
@@ -245,8 +249,9 @@ export function createSessionRunControl(host: SessionRunControlHost): WorkflowRu
 	};
 
 	return {
-		listRuns: (filter) => list(filter, isSdkDurableRunInScope),
-		listProjectRuns: () => list({ includeDurable: true }, isProjectRootRun),
+		listRuns: (filter) => list(filter, isSdkDurableRunInScope, (catalog) => catalog.completed),
+		listProjectRuns: () =>
+			list({ includeDurable: true }, isProjectRootRun, (catalog) => catalog.completedAll ?? catalog.completed),
 		async getRun(runId) {
 			const result = await request({ action: "status", runId });
 			if (result.action !== "statusDetail")

@@ -387,7 +387,7 @@ describe("history:// URLs (#4252)", () => {
 		await expect(router.read?.("history://workflows?project=all")).rejects.toThrow(
 			/Unsupported history query parameter/,
 		);
-		await expect(router.read?.("history://sessions?limit=0")).rejects.toThrow(/positive integer/);
+		await expect(router.read?.("history://sessions?limit=0")).rejects.toThrow(/between 1 and 200/);
 		expect(await router.read?.("skill://x")).toBeUndefined();
 	});
 
@@ -434,5 +434,204 @@ describe("history:// workflows prefer the project listing (#4252)", () => {
 		expect(await read(withProjectListing)).toContain("history://workflows/run-user");
 		expect(await read(base)).not.toContain("run-user");
 		expect(await read(base)).toContain("history://workflows/run-new");
+	});
+});
+
+/** Structural cost: the test writes 230 sessions, and a JSONL store writes one locked file per session. */
+const PAGING_TEST_TIMEOUT_MS = 120_000;
+
+function messageEntry(id: string, message: object, at: number): SessionEntry {
+	return { type: "message", id, parentId: null, timestamp: new Date(at).toISOString(), message } as never;
+}
+
+describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "atomic-history-complete-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	async function opened(workflows?: () => WorkflowRunControl | undefined) {
+		const { store, close } = await backend.open(dir);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => store,
+			workflows: workflows ?? (() => undefined),
+		});
+		const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
+		const read = async (path: string) =>
+			text(await createReadToolDefinition(PROJECT).execute("read", { path }, undefined, undefined, ctx as never));
+		const search = async (pattern: string, paths: string) =>
+			text(
+				await createSearchToolDefinition(PROJECT).execute(
+					"search",
+					{ pattern, paths },
+					undefined,
+					undefined,
+					ctx as never,
+				),
+			);
+		return { store, read, search, close };
+	}
+
+	it("returns every character of long messages, tool results, arguments and commands", async () => {
+		const { store, read, close } = await opened();
+		try {
+			const user = `${"alpha ".repeat(1500)}END-USER`;
+			const assistant = `${"x".repeat(12_000)}END-ASSISTANT`;
+			await store.create(header("long", PROJECT, BASE), [
+				entry("u", user, BASE + 1000),
+				entry("a", assistant, BASE + 2000, "assistant"),
+				messageEntry(
+					"t",
+					{
+						role: "toolResult",
+						toolCallId: "c1",
+						toolName: "bash",
+						content: [{ type: "text", text: `${"r".repeat(3000)}END-TOOL` }],
+						isError: false,
+						timestamp: BASE + 3000,
+					},
+					BASE + 3000,
+				),
+				messageEntry(
+					"c",
+					{
+						role: "assistant",
+						content: [
+							{ type: "toolCall", id: "c1", name: "write", arguments: { body: `${"c".repeat(5000)}END-ARGS` } },
+						],
+						timestamp: BASE + 4000,
+					},
+					BASE + 4000,
+				),
+				messageEntry(
+					"b",
+					{
+						role: "bashExecution",
+						command: `echo ${"k".repeat(900)}END-COMMAND`,
+						output: `${"o".repeat(2500)}END-OUTPUT`,
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						timestamp: BASE + 5000,
+					},
+					BASE + 5000,
+				),
+			]);
+			const lines = (await read("history://sessions/long")).split("\n");
+			for (const marker of ["END-USER", "END-ASSISTANT", "END-TOOL", "END-ARGS", "END-COMMAND", "END-OUTPUT"])
+				expect(
+					lines.some((line) => line.includes(marker)),
+					marker,
+				).toBe(true);
+			expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(4000);
+			const bodyOf = (heading: string): string => {
+				const start = lines.findIndex((line) => line.endsWith(heading));
+				const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
+				return lines.slice(start + 1, end < 0 ? undefined : end).join("");
+			};
+			expect(bodyOf(" user")).toBe(user);
+			expect(bodyOf(" assistant")).toBe(assistant);
+			const last = lines.findIndex((line) => line.includes("END-ASSISTANT")) + 1;
+			expect(await read(`history://sessions/long:${last}-${last}`)).toContain("END-ASSISTANT");
+		} finally {
+			await close();
+		}
+	});
+
+	it(
+		"pages past 200 records and says what each search covered",
+		async () => {
+			const { store, read, search, close } = await opened();
+			try {
+				for (let batch = 0; batch < 230; batch += 23) {
+					await Promise.all(
+						Array.from({ length: 23 }, (_, offset) => {
+							const index = batch + offset;
+							const at = BASE + index * 60_000;
+							return store.create(header(`rec-${index}`, PROJECT, at), [
+								entry(`m${index}`, `record number ${index}`, at + 1000),
+							]);
+						}),
+					);
+				}
+				await expect(read("history://sessions?limit=500")).rejects.toThrow(/between 1 and 200/);
+				const first = await read("history://sessions?limit=200");
+				expect(first).toContain("sessions 1-200 of 230");
+				expect(first).toContain("next page: history://sessions?offset=200&limit=200");
+				expect(first.split("\n").filter((line) => line.startsWith("history://sessions/"))).toHaveLength(200);
+				const second = await read("history://sessions?offset=200&limit=200");
+				expect(second).toContain("sessions 201-230 of 230");
+				expect(second).toContain("history://sessions/rec-0 ");
+				expect(second).not.toContain("next page");
+				expect(await search("record number 229$", "history://sessions")).toContain("history://sessions/rec-229:");
+				const windowed = await search("record number 0$", "history://sessions");
+				expect(windowed).not.toContain("rec-0:");
+				expect(windowed).toContain("searched sessions 1-25 of 230; continue with history://sessions?offset=25");
+				const deep = await search("record number 0$", "history://sessions?offset=200&limit=100");
+				expect(deep).toContain("history://sessions/rec-0:");
+				expect(deep).toContain("searched sessions 201-230 of 230");
+				expect(deep).not.toContain("continue with");
+				expect(await search("record number", "history://sessions?offset=500")).toContain("none of 230");
+			} finally {
+				await close();
+			}
+		},
+		PAGING_TEST_TIMEOUT_MS,
+	);
+
+	it("keeps the project scope on links from a cross-project view", async () => {
+		const { store, read, search, close } = await opened();
+		try {
+			await store.create(header("beta-session", OTHER_PROJECT, BASE), [
+				entry("b1", "secret roadmap for the beta project", BASE + 1000),
+				entry("b2", "second line to narrow", BASE + 2000),
+			]);
+			for (const query of ["?project=all", `?project=${encodeURIComponent(OTHER_PROJECT)}`]) {
+				const row = (await read(`history://sessions${query}`))
+					.split("\n")
+					.find((line) => line.includes("beta-session"))
+					?.split(" | ")[0];
+				assert.ok(row, `listing row for ${query}`);
+				expect(row).toContain(query);
+				expect(await read(row)).toContain("secret roadmap");
+				expect(await read(`${row}:2-3`)).toContain("secret roadmap");
+				const label = (await search("roadmap", `history://sessions${query}`)).match(
+					/(history:\/\/sessions\/beta-session\?project=[^:\s]+):(\d+):/,
+				);
+				assert.ok(label, `search label for ${query}`);
+				expect(await read(`${label[1]}:${label[2]}-${label[2]}`)).toContain("secret roadmap");
+			}
+			const hasLink = await read("history://sessions/beta-session?project=all");
+			expect(hasLink).not.toContain("history://workflows/");
+		} finally {
+			await close();
+		}
+	});
+
+	it("opens a stage session that ran outside the project through the project's run", async () => {
+		const { store, read, close } = await opened(() => customRunControl());
+		try {
+			const stageHeader = (id: string, runId: string) => ({
+				...header(id, "/projects/alpha-worktree", BASE),
+				internal: true as const,
+				workflow: { runId, stageId: "s1", stageName: "build" },
+			});
+			await store.create(stageHeader("recent-session-stage", "run-new"), [
+				entry("s", "stage transcript text", BASE + 1000),
+			]);
+			await store.create(stageHeader("stray-stage", "unknown-run"), [
+				entry("s", "unvouched stage text", BASE + 1000),
+			]);
+			const opened = await read("history://sessions/recent-session-stage");
+			expect(opened).toContain("stage transcript text");
+			expect(opened).toContain("history://workflows/run-new");
+			await expect(read("history://sessions/stray-stage")).rejects.toThrow(/another project/);
+		} finally {
+			await close();
+		}
 	});
 });

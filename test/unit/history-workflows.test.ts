@@ -78,6 +78,24 @@ test("history://workflows reads the workflow store's durable runs for this proje
 			...(root === undefined ? {} : { rootWorkflowId: root }),
 		});
 	}
+	const quiet = testRunId("history-zero-checkpoints");
+	const cancelled = testRunId("history-cancelled");
+	for (const [workflowId, status, objective] of [
+		[quiet, "completed", "Quiet run without checkpoints"],
+		[cancelled, "cancelled", "Cancelled before any step"],
+	] as const) {
+		await backend.commitWorkflowRegistration({
+			workflowId,
+			name: "history-demo",
+			inputs: { objective },
+			createdAt: 1_700_000_000_001,
+			status,
+			completedCheckpoints: 0,
+			label: objective,
+			invocationCwd: process.cwd(),
+			modelOwner: SESSION_ID,
+		});
+	}
 	const router = createHistoryRouter({
 		cwd: process.cwd(),
 		sessionStore: () => undefined,
@@ -94,6 +112,10 @@ test("history://workflows reads the workflow store's durable runs for this proje
 		[here],
 		"listRuns keeps its model-owner scope",
 	);
+	for (const id of [quiet, cancelled]) {
+		assert.match(listing, new RegExp(`history://workflows/${id} `), "a run with no checkpoints is listed");
+		assert.match(String(await router.read?.(`history://workflows/${id}`)), /name: history-demo/);
+	}
 
 	const detail = String(await router.read?.(`history://workflows/${here}`));
 	assert.match(detail, /name: history-demo/);

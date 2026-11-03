@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- The session run control implements the optional `listProjectRuns()`, which lists every top-level run recorded for the current project directory, including runs started with `/workflow` that `listRuns({ includeDurable: true })` leaves out because no model session owns them. `history://workflows` in the coding agent uses it ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
+- The session run control implements the optional `listProjectRuns()`, which lists every top-level run recorded for the current project directory, including runs started with `/workflow` that `listRuns({ includeDurable: true })` leaves out because no model session owns them, and finished or cancelled runs that recorded no checkpoints. The durable catalog's `completedAll` now lists every finished root run for this. `history://workflows` in the coding agent uses it ([#4252](https://github.com/bastani-inc/atomic/issues/4252))
 
 ### Fixed
 

@@ -154,14 +154,16 @@ The agent can look back at this project's earlier sessions and workflow runs, ev
 
 | URL | Result |
 | --- | --- |
-| `history://sessions` | Recent sessions, newest first, with message counts and the first message or name. `?limit=N` shows more. |
-| `history://sessions/<id>` | One session's transcript. Add `:N-M` to read a line range. |
+| `history://sessions` | Recent sessions, newest first, with message counts and the first message or name. `?limit=N` (up to 200) sets the page size and `?offset=N` pages through the rest. |
+| `history://sessions/<id>` | One session's transcript in full. Add `:N-M` to read a line range; a text line longer than 4,000 characters is split so every part can be read. |
 | `history://workflows` | Recent workflow runs, newest first. |
 | `history://workflows/<runId>` | One run: inputs, stages with links to their session transcripts, result and error. |
 
-`search` with `history://sessions`, `history://workflows` or `history://` finds text in the most recent records and labels each match with a URL and line number that `read` can open. A multi-session search skips the current session and covers the newest 25 sessions unless you add `?limit=N`.
+`search` with `history://sessions`, `history://workflows` or `history://` finds text in the most recent records and labels each match with a URL and line number that `read` can open. A multi-record search covers one page, the newest 25 records unless you add `?limit=N` and `?offset=N`, and skips the current session. Its first result says which records it covered and gives the URL that continues the search. A phrase that straddles a split point of a very long line can be missed.
 
-By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started. `history://` is read-only.
+When a view or search covers other projects, its links carry `?project=` so they read back in the same scope. A workflow stage's session opens through its run even when the stage ran in its own directory or worktree.
+
+By default only the current project's history is visible. Other projects' sessions appear only when a sessions URL carries `?project=all` or `?project=<dir>`, which the agent uses only when you ask it to. Workflow history is always limited to the current project and includes runs you started with `/workflow` as well as runs the agent started, including finished runs that recorded no checkpoints and cancelled runs. `history://` is read-only.
 
 ## Naming Sessions
 
