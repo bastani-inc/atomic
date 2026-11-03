@@ -328,6 +328,8 @@ export async function persistProtectedStreamingCustomMessage(
 
 /** Retry only hidden reconciliation persistence; never queue another alias. */
 export async function retryConsumedProtectedStreamingCustomMessages(session: AgentSession): Promise<void> {
+	// #4254: a run stopped on an unsaved message writes nothing more; the next prompt or disposal retries.
+	if (session._persistenceFailure !== undefined) return;
 	for (const entry of [...protectedMessages(session)]) {
 		if (entry.phase !== "persistence-failed") continue;
 		try {

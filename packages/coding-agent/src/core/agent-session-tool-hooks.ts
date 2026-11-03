@@ -1,9 +1,9 @@
 import { getCurrentSystemMessage, type SystemMessage } from "@bastani/pi-ai";
 import type { AgentLoopTurnUpdate, PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import { normalizeToolResultImages } from "../utils/tool-result-images.js";
-import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-events.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getParentToolCallId } from "./agent-session-nested-tools.js";
+import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";

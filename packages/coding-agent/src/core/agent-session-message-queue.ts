@@ -4,6 +4,7 @@ import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./age
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	restoreProtectedStreamingCustomMessages,
@@ -256,15 +257,28 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 
 const pendingCustomMessageDrains = new WeakMap<AgentSession, Promise<void>>();
 
-/** Append context-only custom messages once the current turn's tool results are in history. */
-export function _flushPendingCustomMessages(this: AgentSession): Promise<void> {
+/**
+ * Append context-only custom messages once the current turn's tool results are in history. Within a run, a message
+ * that cannot be saved stops the run like any other unsaved message (#4254): it is reported once and stays buffered
+ * for the next prompt, and the stopped run saves nothing more.
+ */
+export function _flushPendingCustomMessages(this: AgentSession, withinRun = false): Promise<void> {
 	const pending = pendingCustomMessageDrains.get(this);
 	if (pending) return pending;
 	if (this._pendingCustomMessages.length === 0) return Promise.resolve();
+	if (withinRun && this._persistenceFailure !== undefined) return Promise.resolve();
 
 	const drain = (async () => {
 		while (this._pendingCustomMessages.length > 0) {
-			await this._appendCustomMessage(this._pendingCustomMessages[0]);
+			const message = this._pendingCustomMessages[0];
+			try {
+				await this._appendCustomMessage(message);
+			} catch (error) {
+				// A listener that throws after the message was saved is no save failure; it still fails the turn.
+				if (!withinRun || this._entryIdsByMessage.has(message)) throw error;
+				recordPersistenceFailure(this, message, error);
+				return;
+			}
 			this._pendingCustomMessages.shift();
 		}
 	})();

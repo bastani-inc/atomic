@@ -5,6 +5,7 @@ import { abortBash } from "./agent-session-bash.ts";
 import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
+import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
 	isProtectedStreamingCustomMessage,
 	markProtectedStreamingCustomMessageConsumed,
@@ -46,7 +47,6 @@ import {
 	ownedSessionStores,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
-import { describeStorageError } from "./storage/storage-status.js";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
@@ -65,19 +65,10 @@ export function _emitQueueUpdate(this: AgentSession): void {
 }
 
 const consumedQueuedMessageEvents = new WeakSet<object>();
-const reportedPersistenceFailures = new WeakSet<object>();
 /** Sessions whose run was just stopped at its request boundary, with the reported cause (#4226). */
 const pendingPersistenceStops = new WeakMap<object, string>();
 /** Agent-core's synthetic failure replies to those stops. */
 const persistenceStopReplies = new WeakSet<object>();
-
-/**
- * For queue barriers inside the agent loop: a message that could not be saved was already reported where its
- * append failed and stops the run on its own (#4226); any other listener failure still fails the turn.
- */
-export function rethrowUnlessReportedPersistenceFailure(error: unknown): void {
-	if (typeof error !== "object" || error === null || !reportedPersistenceFailures.has(error)) throw error;
-}
 
 /**
  * #4226: once a message of the run could not be saved, the run sends no further provider request. Returns the
@@ -266,15 +257,17 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		if (protectedMessage !== undefined) {
 			try {
 				await persistProtectedStreamingCustomMessage(this, protectedMessage);
-			} catch {
+			} catch (error) {
 				markProtectedStreamingCustomMessagePersistenceFailed(this, protectedMessage);
+				// #4254: its durable card keeps it recoverable, but the run stops like on any unsaved message.
+				recordPersistenceFailure(this, protectedMessage, error);
 			}
 			await retryConsumedProtectedStreamingCustomMessages(this);
 		}
 	}
 	if (event.type === "turn_end") {
 		this._lastAssistantToolResults = event.toolResults;
-		await this._flushPendingCustomMessages();
+		await this._flushPendingCustomMessages(true);
 	}
 
 	// Handle session persistence
@@ -305,23 +298,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 				entryId = await this.sessionManager.appendMessage(event.message);
 			}
 		} catch (error) {
-			// #4226: an unsaved message has no entry for turn_end to resolve; name the cause here instead.
-			this._messagesWithFailedPersistence.add(event.message);
-			if (typeof error === "object" && error !== null) reportedPersistenceFailures.add(error);
-			// The run stops on its first unsaved message (see persistenceStopError); later failures of the same run
-			// are part of that stop and are not reported again.
-			const failure = `could not persist the ${event.message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`;
-			const firstFailure = this._persistenceFailure === undefined;
-			this._persistenceFailure ??= failure;
-			// #3105: disposal reports failures that interrupt it through its own rejection.
-			if (firstFailure && !this._disposed) {
-				this._extensionRunner.emitError({
-					extensionPath: "<session>",
-					event: "message_end",
-					error: failure,
-					stack: error instanceof Error ? error.stack : undefined,
-				});
-			}
+			recordPersistenceFailure(this, event.message, error);
 			throw error;
 		} finally {
 			// Context refreshes retain an admitted message until its append settles; an unsaved one then leaves.
