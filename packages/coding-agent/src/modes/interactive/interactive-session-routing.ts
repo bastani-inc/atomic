@@ -18,6 +18,7 @@ import {
 	TrustSelectorComponent,
 	theme,
 } from "./interactive-mode-deps.ts";
+import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function (this: InteractiveModeBase): Promise<void> {
 	await this.ensureDeferredStartupComplete();
@@ -172,7 +173,11 @@ InteractiveModeBase.prototype.showTreeSelector = async function (
 				}
 
 				if (this.session.isStreaming) {
-					this.restoreQueuedMessagesToEditor();
+					// The clear goes out before the abort. The editor fills when the session answers, so a clear that
+					// stalls or fails cannot hold up the abort.
+					void this.restoreQueuedMessagesToEditor().catch((error: unknown) =>
+						showQueueRestoreFailure(this, error),
+					);
 					await this.session.abort();
 				}
 				if (this.session.isCompacting) {

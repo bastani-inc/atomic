@@ -284,7 +284,7 @@ describe("regular chat paused queued messages", () => {
 		host.defaultEditor.onEscape?.();
 		await abortObserved.promise;
 
-		assert.equal(host.editor.getText(), "plain steering\n\ndraft");
+		await vi.waitFor(() => assert.equal(host.editor.getText(), "plain steering\n\ndraft"));
 		const hold = (harness.session as PauseAwareSession)._activeInterruptQueueHold;
 		assert.equal(hold?.steering.length, 0);
 		assert.equal(hold?.followUp.length, 1);
@@ -339,9 +339,11 @@ describe("regular chat paused queued messages", () => {
 		host.defaultEditor.onEscape?.();
 		await abortObserved.promise;
 
-		assert.equal(
-			host.editor.getText(),
-			"first raw steering\n\nsecond raw steering\n\nfirst raw follow-up\n\nsecond raw follow-up\n\ncurrent draft",
+		await vi.waitFor(() =>
+			assert.equal(
+				host.editor.getText(),
+				"first raw steering\n\nsecond raw steering\n\nfirst raw follow-up\n\nsecond raw follow-up\n\ncurrent draft",
+			),
 		);
 		assert.deepEqual(harness.session.getSteeringMessages(), []);
 		assert.deepEqual(harness.session.getFollowUpMessages(), []);

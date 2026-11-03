@@ -124,7 +124,9 @@ InteractiveModeBase.prototype.setupKeyHandlers = async function (this: Interacti
 		void this.openExternalEditor();
 	});
 	this.defaultEditor.onAction("app.message.followUp", () => this.handleFollowUp());
-	this.defaultEditor.onAction("app.message.dequeue", () => this.handleDequeue());
+	this.defaultEditor.onAction("app.message.dequeue", () => {
+		void this.handleDequeue();
+	});
 	this.defaultEditor.onAction("app.session.new", () => this.handleClearCommand());
 	this.defaultEditor.onAction("app.session.tree", () => this.showTreeSelector());
 	this.defaultEditor.onAction("app.session.fork", () => this.showUserMessageSelector());

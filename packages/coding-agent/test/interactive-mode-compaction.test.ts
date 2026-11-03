@@ -753,10 +753,12 @@ describe("InteractiveMode compaction events", () => {
 			const flush = Reflect.get(InteractiveMode.prototype, "flushCompactionQueue") as (
 				this: typeof mode,
 			) => Promise<void>;
-			const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (this: typeof mode) => {
+			const clearAllQueues = Reflect.get(InteractiveMode.prototype, "clearAllQueues") as (
+				this: typeof mode,
+			) => Promise<{
 				steering: string[];
 				followUp: string[];
-			};
+			}>;
 			return {
 				harness,
 				mode,
@@ -794,7 +796,7 @@ describe("InteractiveMode compaction events", () => {
 			assert.equal(prompt.mock.calls.length, 1);
 			assert.deepEqual(mode.showError.mock.calls, [["Failed to send queued message: send failed"]]);
 			assert.equal(mode.compactionSendFailed, true, "later input queues behind the restored batch");
-			assert.deepEqual(clearAllQueues().steering, ["A", "B", "C", "D"]);
+			assert.deepEqual((await clearAllQueues()).steering, ["A", "B", "C", "D"]);
 			assert.equal(mode.compactionSendFailed, false);
 		} finally {
 			prompt.mockRestore();
