@@ -130,7 +130,11 @@ function queuesBehindOpenRun(session: AgentSession, options: PromptOptions | und
 }
 
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
-	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
+	if (this._activePromptCount === 0 && !this.isStreaming) {
+		this._agentRunAbortRequested = false;
+		// #4226: a new prompt saves again after an earlier run stopped on a message it could not save.
+		this._persistenceFailure = undefined;
+	}
 	this._activePromptCount += 1;
 	try {
 		await promptInternal.call(this, text, options);
@@ -441,7 +445,10 @@ export async function _runAgentPrompt(
 	}
 	// Any run that starts ends the gap before a fresh stage's first prompt (#3919).
 	this._workflowStageAwaitingFirstPrompt = false;
-	if (this._activePromptCount === 0 && !this.isStreaming) this._agentRunAbortRequested = false;
+	if (this._activePromptCount === 0 && !this.isStreaming) {
+		this._agentRunAbortRequested = false;
+		this._persistenceFailure = undefined;
+	}
 	const startingMessages = Array.isArray(messages) ? messages : [messages];
 	const customMessage = !prepared
 		? (customStarter ?? startingMessages.find((message) => message.role === "custom"))
@@ -604,6 +611,8 @@ async function runBeforeSettleContinuations(session: AgentSession): Promise<void
 	if (typeof session._runBeforeSettleBoundary !== "function") return;
 	while (!session._agentRunAbortRequested) {
 		await session._agentEventQueue?.catch(() => {});
+		// #4226: a run that could not save a message is not continued.
+		if (session._persistenceFailure !== undefined) return;
 		if (!(await session._runBeforeSettleBoundary())) return;
 		// An explicit stop or a paused queue keeps the requested continuation pending.
 		if (session._agentRunAbortRequested || session._queuedMessagesPaused || session._stopAfterTurnBlockedContinuation)
@@ -625,7 +634,11 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 		await admission.waitForPendingDeliveries();
 		await session._continueQueuedAgentMessages();
 		if (session._stopAfterTurnBlockedContinuation) session.pauseQueuedMessages();
-	} while (admission.hasPendingDeliveries() || (!session._queuedMessagesPaused && session.agent.hasQueuedMessages()));
+	} while (
+		admission.hasPendingDeliveries() ||
+		// #4226: a child that could not save a message stops; its queued input waits for its next prompt.
+		(!session._queuedMessagesPaused && session._persistenceFailure === undefined && session.agent.hasQueuedMessages())
+	);
 	admission.seal();
 }
 
@@ -663,22 +676,19 @@ function preparePriorityContinuation(session: AgentSession): Promise<void> | und
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
 	const lifetime = sessionLifetime(this);
 	const closing = () => this._disposed || lifetime.aborted || sessionGenerationClosing.has(this);
+	// #4226: nothing continues on top of a message the last run could not save.
+	const stopped = () => this._stopAfterTurnBlockedContinuation || this._persistenceFailure !== undefined;
 	if (closing()) return;
 	await this._agentEventQueue;
 	if (closing()) return;
 	await preparePriorityContinuation(this);
 	if (closing()) return;
 
-	if (
-		!this._agentRunAbortRequested &&
-		!this._stopAfterTurnBlockedContinuation &&
-		!this._queuedMessagesPaused &&
-		this.agent.hasQueuedMessages()
-	) {
+	if (!this._agentRunAbortRequested && !stopped() && !this._queuedMessagesPaused && this.agent.hasQueuedMessages()) {
 		while (
 			!this._agentRunAbortRequested &&
 			!closing() &&
-			!this._stopAfterTurnBlockedContinuation &&
+			!stopped() &&
 			!this._queuedMessagesPaused &&
 			this.agent.hasQueuedMessages()
 		) {
@@ -688,7 +698,7 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 			await preparePriorityContinuation(this);
 		}
 	}
-	if (this._stopAfterTurnBlockedContinuation) return;
+	if (stopped()) return;
 	if (closing()) return;
 
 	await answerAdmittedQueuedMessage(this);

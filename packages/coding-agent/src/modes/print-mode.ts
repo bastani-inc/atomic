@@ -41,6 +41,11 @@ function isCommandExtensionError(error: ExtensionError): boolean {
 	return error.event === "command" || error.extensionPath.startsWith("command:");
 }
 
+/** A message the run could not save to its session (#4226): the run fails, but its answer still prints. */
+function isSessionSaveError(error: ExtensionError): boolean {
+	return error.extensionPath === "<session>" && error.event === "message_end";
+}
+
 function displayableCustomText(message: CustomMessage): string | undefined {
 	if (message.display !== true) return undefined;
 	if (typeof message.content === "string") return message.content;
@@ -192,7 +197,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			},
 			onError: (err) => {
 				const isCommandError = isCommandExtensionError(err);
-				if (isCommandError) exitCode = 1;
+				if (isCommandError || isSessionSaveError(err)) exitCode = 1;
 				activePromptHadCommandError = activePromptHadCommandError || isCommandError;
 				console.error(`Extension error (${err.extensionPath}): ${err.error}`);
 			},
