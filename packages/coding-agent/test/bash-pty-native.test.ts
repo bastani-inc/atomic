@@ -97,24 +97,34 @@ describe("native bash PTY execution", () => {
 			return;
 		}
 		let output = "";
+		let markReady: () => void = () => {};
+		const ready = new Promise<void>((resolve) => {
+			markReady = resolve;
+		});
 		const session = new native.PtySession();
+		// The deadline only bounds a hung session; it is not part of the asserted behavior, so keep it
+		// far above anything a CPU-starved runner needs to start a shell.
 		const resultPromise = session.start(
 			{
-				command: "sleep 0.2; read x; echo got:$x; exit",
+				// The marker is computed so the terminal's echo of the command line cannot satisfy the wait.
+				command: "echo ready-$((1+1)); read x; echo got:$x; exit",
 				cwd: testDir,
 				shell: "/bin/bash",
 				commandTransport: "stdin",
-				timeoutMs: 1500,
+				timeoutMs: 60_000,
 			},
 			(_error, chunk) => {
 				output += chunk;
+				if (output.includes("ready-2")) markReady();
 			},
 		);
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		// Wait for the shell to reach `read` (or for the session to end early) instead of sleeping a fixed time.
+		await Promise.race([ready, resultPromise]);
 		session.write("hello\n");
 		const result = await resultPromise;
 		expect(result.timedOut ?? result.timed_out).not.toBe(true);
 		expect(result.exitCode ?? result.exit_code).toBe(0);
+		// A synthetic EOF/exit fed to stdin would satisfy `read` before "hello" and leave this empty.
 		expect(output).toContain("got:hello");
 	});
 
@@ -192,7 +202,7 @@ describe("native bash PTY execution", () => {
 		if (process.platform === "win32") return;
 		let thrown: unknown;
 		try {
-			await createLocalBashOperations().exec("sleep 2", testDir, { pty: true, timeout: 0.05, onData: () => {} });
+			await createLocalBashOperations().exec("sleep 60", testDir, { pty: true, timeout: 0.05, onData: () => {} });
 		} catch (error) {
 			thrown = error;
 		}
