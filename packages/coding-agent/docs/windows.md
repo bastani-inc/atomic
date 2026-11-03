@@ -62,6 +62,22 @@ PowerShell discovery checks these locations in order:
 
 Paths copied from Git Bash, MSYS2, Cygwin, or WSL are accepted anywhere Atomic resolves a file path. For example, `/c/Users/name/project/file.ts`, `/cygdrive/c/Users/name/project/file.ts`, and `/mnt/c/Users/name/project/file.ts` resolve as the matching Windows drive path.
 
+## Choose a terminal
+
+Windows terminals run Atomic through a console host (conhost). Some bundle an up-to-date copy; others use the older one built into Windows, which has bugs that affect Atomic.
+
+We recommend [Windows Terminal](https://aka.ms/terminal). It always ships an up-to-date conhost.
+
+Last updated: October 2026.
+
+| Terminal | Conhost | Status |
+|---|---|---|
+| [Windows Terminal](https://aka.ms/terminal) | Bundled, current | Recommended |
+| [VS Code](https://code.visualstudio.com), [Tabby](https://tabby.sh), [WezTerm](https://wezterm.org) nightly | Bundled, current | Works |
+| [Alacritty](https://alacritty.org) | Built-in, unless `conpty.dll` and `OpenConsole.exe` from Windows Terminal are next to `alacritty.exe` | Works only with those files |
+| WezTerm 20240203 and older | Bundled, old | [Known issues](#known-issues) |
+| Classic console (`cmd.exe` or PowerShell without Windows Terminal), mintty (Git Bash), ConEmu, Cmder, [Hyper](https://hyper.is), Windows OpenSSH | Built-in | [Known issues](#known-issues) |
+
 ## Interactive Startup
 
 You can type while Atomic finishes startup. Submitting shows the working indicator; Escape cancels a submission still waiting for resources. If loading fails before the prompt is sent, Atomic restores your exact draft and sends no provider request. Use `/reload` to retry resource loading.
@@ -85,3 +101,13 @@ On native Windows, Atomic registers the `powershell` tool by default when PowerS
 PowerShell calls are rendered in the transcript with a `PS>` prompt so they are never mistaken for Bash, and truncated PowerShell output is spilled to its own `atomic-powershell-*` temp file rather than the Bash one.
 
 The package root exports `createPowerShellTool()`, `createPowerShellToolDefinition()`, `createLocalPowerShellOperations()`, their public option/input/detail types, and `getPowerShellConfig()` for SDK integrations. Factory-created tools expose the current `ATOMIC_*` and legacy `PI_*` session snapshot by default; set `exposeSessionEnvironment: false` to opt out. Executing the default local operations remains Windows-only and requires a resolvable PowerShell executable.
+
+## Known issues
+
+These issues come from conhost. Microsoft has fixed them in its source, but has not said when the built-in conhost will get the fixes.
+
+| Issue | Affects | Remedy |
+|---|---|---|
+| Opening the external editor (`Ctrl+G`) crashes the session ([microsoft/terminal#17515](https://github.com/microsoft/terminal/issues/17515)) | Built-in conhost | Use a terminal with a current conhost |
+| Text such as `;0;rgb:0000/0000/0000` appears in the prompt, and BEL opens the external editor | Built-in conhost behind another terminal: mintty, Windows OpenSSH | Use a terminal with a current conhost |
+| Fragments such as `79` or `55` appear in the prompt | WezTerm 20240203 | Use WezTerm nightly |

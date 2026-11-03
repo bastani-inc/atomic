@@ -14,6 +14,7 @@
 - `model_fallback_start` session events carry the optional `fromThinkingLevel` and `toThinkingLevel` of reasoning models, so a fallback that only changes the level can say so. `from` and `to` are unchanged `provider/id` strings ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 - Tightened the default system prompt: a shorter preamble, one line for additional tools, one rule for reading the docs before harness changes, and a shorter rule for resolving skill-relative paths (upstream 705d047c)
 - Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core` and `@earendil-works/pi-codemode` to 1.5.0. For extension code that builds an `AgentTool` directly, `AgentTool` now takes any JSON Schema object as `parameters` and types `params` through `@earendil-works/pi-schema`: TypeBox schemas of the common kinds (String, Number, Integer, Boolean, Null, Literal, Array, Object, Union, Record, Unsafe, Unknown, Any) keep their static type, other kinds such as `Type.Enum`, `Type.Tuple` and `Type.Intersect` give `unknown`. Tools registered through `registerTool()` and `ToolDefinition` are unchanged
+- The Windows guide recommends a terminal by the console host it uses and lists known conhost problems with remedies, and the tmux guide lists the tmux 3.6 color-reply text that can appear in the editor at startup (upstream [#11644](https://github.com/earendil-works/pi/pull/11644), [#11645](https://github.com/earendil-works/pi/pull/11645), [#11647](https://github.com/earendil-works/pi/pull/11647))
 
 ### Fixed
 
