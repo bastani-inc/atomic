@@ -46,7 +46,7 @@ async function createEngine(invocations: string[]): Promise<Harness> {
 	return harness;
 }
 
-function connectInput(harness: Harness, detachCompaction: boolean) {
+function connectInput(harness: Harness, detachCompaction: boolean, beginCommand?: () => () => void) {
 	const records: RpcOutputRecord[] = [];
 	const output = (record: RpcOutputRecord) => {
 		records.push(record);
@@ -59,6 +59,7 @@ function connectInput(harness: Harness, detachCompaction: boolean) {
 		keybindings: KeybindingsManager.create(harness.tempDir),
 		taskInspectorUi: { custom: async () => undefined as never },
 		detachCompaction,
+		beginCommand,
 	});
 	const dispatch = createRpcInputScheduler(
 		createRpcInputLineHandler({
@@ -138,4 +139,27 @@ describe("interactive engine command lane during a manual compaction", () => {
 		await waitFor("both responses", () => input.response("state") !== undefined);
 		assert.deepEqual(input.responseOrder(), ["compact", "state"]);
 	});
+});
+
+test("detached compaction releases shutdown only after its response is written", async () => {
+	const engine = await createEngine([]);
+	let active = 0;
+	let requested = false;
+	let responseAtShutdown: RpcResponse | undefined;
+	const input = connectInput(engine, true, () => {
+		active++;
+		return () => {
+			active--;
+			if (requested && active === 0) responseAtShutdown = input.response("compact");
+		};
+	});
+	input.send({ id: "compact", type: "compact" });
+	await waitFor("compaction to start", () => engine.session.isCompacting);
+	requested = true;
+	assert.equal(active, 1, "detached compaction must keep shutdown pending");
+	assert.equal(responseAtShutdown, undefined);
+	releaseCompaction();
+	await waitFor("shutdown after compact response", () => responseAtShutdown !== undefined);
+	assert.equal(active, 0);
+	assert.equal(responseAtShutdown?.command, "compact");
 });

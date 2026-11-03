@@ -356,11 +356,17 @@ export function createRpcCommandHandler({
 
 			case "compact": {
 				if (detachCompaction) {
-					void session.compact().then(
-						(result) => output(createRpcSuccessResponse(id, "compact", result)),
-						(compactError: unknown) =>
-							output(createRpcErrorResponse(id, "compact", formatRpcErrorMessage(compactError), compactError)),
-					);
+					const finishCommand = beginCommand?.();
+					void session
+						.compact()
+						.then(
+							(result) => output(createRpcSuccessResponse(id, "compact", result)),
+							(compactError: unknown) =>
+								output(
+									createRpcErrorResponse(id, "compact", formatRpcErrorMessage(compactError), compactError),
+								),
+						)
+						.finally(() => finishCommand?.());
 					return undefined;
 				}
 				const result = await session.compact();
