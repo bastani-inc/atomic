@@ -39,6 +39,7 @@ import type {
 	BranchSummaryEntry,
 	ContextEditEntry,
 	FileEntry,
+	ModelFallbackRecord,
 	NewSessionOptions,
 	SessionContext,
 	SessionEntry,
@@ -374,10 +375,13 @@ export class SessionManager {
 		});
 	}
 
-	/** Append a model change as child of current leaf, then advance leaf. Returns entry id. */
-	appendModelChange(provider: string, modelId: string): Promise<string> {
+	/**
+	 * Append a model change as child of current leaf, then advance leaf. Returns entry id. `fallback` records why a model
+	 * fallback made the change.
+	 */
+	appendModelChange(provider: string, modelId: string, fallback?: ModelFallbackRecord): Promise<string> {
 		return this.runMutation(async () => {
-			const entry = createModelChangeEntry(provider, modelId, this.byId, this.leafId);
+			const entry = createModelChangeEntry(provider, modelId, this.byId, this.leafId, fallback);
 			await this._appendEntry(entry);
 			return entry.id;
 		});

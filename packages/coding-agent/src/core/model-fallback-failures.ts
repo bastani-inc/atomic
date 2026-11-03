@@ -429,6 +429,9 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 	// Idle-stream deadline enforced below the HTTP layer by pi-ai's
 	// `withStreamDeadline`, so a stalled stream fails over instead of hanging.
 	/\bstream\s+deadline\s+exceeded\b/i,
+	// A streamed response cut off before its finish reason, as GitHub Copilot's Gemini models do now and then: the
+	// same request normally completes when sent again (#4223).
+	/\bstream\s+ended\s+without\s+finish[_\s-]?reason\b/i,
 ];
 
 // HTTP 402 and explicit quota exhaustion: the account cannot be served again until its quota resets.
@@ -767,19 +770,33 @@ const SAME_MODEL_RETRYABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> 
 	"transport_error",
 ]);
 
-/** True when the same model may be requested again before fallback advances. */
-export function isRetryableSameModelFailure(error: unknown): boolean {
-	if (!isRetryableModelFailure(error)) return false;
-	const signal = normalizeModelFailureSignal(error);
-	if (!SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(signal.kind)) return false;
-	if (
+/**
+ * An assistant error that only its `stopReason` marks as a model failure: no status, code or name, and text that no
+ * pattern recognizes. It may spend a fallback candidate, but it is not retried on the same model on its own.
+ */
+function isUnrecognizedSignal(signal: ModelFallbackFailureSignal): boolean {
+	return (
 		signal.kind === "provider_unavailable" &&
 		signal.source === "assistant_message" &&
 		signal.status === undefined &&
 		signal.code === undefined &&
 		signal.name === undefined &&
 		!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(signal.message))
-	)
-		return false;
-	return true;
+	);
+}
+
+/** True when the same model may be requested again before fallback advances. */
+export function isRetryableSameModelFailure(error: unknown): boolean {
+	if (!isRetryableModelFailure(error)) return false;
+	const signal = normalizeModelFailureSignal(error);
+	return SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(signal.kind) && !isUnrecognizedSignal(signal);
+}
+
+/**
+ * True for a failure that may spend a fallback candidate although nothing recognizes it: an assistant error with no
+ * status, code or name whose text matches no known pattern. A session with a fallback chain retries it on the same
+ * model first, so such an error never switches models on its first occurrence (#4223).
+ */
+export function isUnrecognizedModelFailure(error: unknown): boolean {
+	return isRetryableModelFailure(error) && isUnrecognizedSignal(normalizeModelFailureSignal(error));
 }

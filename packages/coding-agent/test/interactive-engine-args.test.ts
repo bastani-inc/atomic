@@ -27,6 +27,17 @@ for (const disableMcp of [false, true]) {
 	});
 }
 
+test.each([
+	[["--model", "openai/gpt-5.5:high", "--fallback-models", "anthropic/claude-opus-4-8:high"]],
+	[["--no-fallback"]],
+])("interactive engine keeps the run's fallback chain from %j (#4223)", (args) => {
+	const parsed = parseArgs(args);
+	const child = parseArgs(buildInteractiveEngineArgs(parsed, SessionManager.inMemory(), {}));
+	assert.deepEqual(child.fallbackModels, parsed.fallbackModels);
+	assert.equal(child.noFallback, parsed.noFallback);
+	assert.deepEqual(child.diagnostics, []);
+});
+
 test.each(["", "shared-engine-id"])("engine startup resumes ID %j from the selected store", async (id) => {
 	const cwd = mkdtempSync(join(tmpdir(), "engine-args-identity-"));
 	const originalDirectory = join(cwd, "original");
