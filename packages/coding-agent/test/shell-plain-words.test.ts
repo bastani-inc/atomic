@@ -22,6 +22,16 @@ describe("plain shell word mask (#4252)", () => {
 		assert.equal(plainText("echo @'\nbody\n'@\nafter", "powershell"), `echo ${"_".repeat(10)}\nafter`);
 	});
 
+	// The PowerShell tool tests need a real pwsh; these pin the same classification on every platform.
+	it("treats PowerShell typographic quotes, comments, block comments and stop-parsing as non-plain (#241)", () => {
+		assert.equal(plainText("echo \u2018a b\u2019 c", "powershell"), "echo _____ c");
+		assert.equal(plainText('echo \u201ca b" c', "powershell"), "echo _____ c");
+		assert.equal(plainText("echo @\u201c\nbody\n\u201d@\nafter", "powershell"), `echo ${"_".repeat(10)}\nafter`);
+		assert.equal(plainText("echo (a)#b c\nd", "powershell"), "echo (a)____\nd");
+		assert.equal(plainText("<# a\nb #> c", "powershell"), "_________ c");
+		assert.equal(plainText("cmd /c --% type x", "powershell"), "cmd /c __________");
+	});
+
 	it("leaves braces unmarked so a URL beside a brace expansion or group is not a plain word", () => {
 		assert.equal(plainText("echo {a,b} c"), "echo _a,b_ c");
 		assert.equal(plainText("{ cat x ; }"), "_ cat x ; _");

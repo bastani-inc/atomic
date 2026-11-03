@@ -48,6 +48,26 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 		assert.deepEqual(result.content, [{ type: "text", text: output }]);
 	});
 
+	// Code scanning #241: the shell does not apply word quoting in these contexts, so a URL there stays unexpanded.
+	// A failed arithmetic expansion ends the shell, so those cases run in a subshell.
+	it.each([
+		["printf %s $artifact://path", "://path"],
+		["{ (( artifact://path )); } 2>/dev/null; printf %s done", "done"],
+		["{ for (( i=artifact://path; 0; )); do :; done; } 2>/dev/null; printf %s done", "done"],
+		["( printf %s $[ artifact://path ] ) 2>/dev/null; printf %s done", "done"],
+		["( a[ artifact://path ]=1 ) 2>/dev/null; printf %s done", "done"],
+		["( a=( [ artifact://path ]=1 ) ) 2>/dev/null; printf %s done", "done"],
+		["(true)# artifact://path\nprintf %s done", "done"],
+	])("keeps a hostile resolved path out of a context that does not quote it: %s", async (command, output) => {
+		const bash = createBashToolDefinition(cwd);
+		const hazard = join(cwd, "x\\';touch injected;#$(touch injected)`touch injected`\ntouch injected\n#");
+		const result = await bash.execute("unquoted-context", { command }, undefined, undefined, {
+			resolveInternalUrl: () => hazard,
+		});
+		assert.equal(existsSync(join(cwd, "injected")), false, "resolved path ran as shell code");
+		assert.deepEqual(result.content, [{ type: "text", text: output }]);
+	});
+
 	it("lets quoted text mention a scheme while still expanding a plain-word URL (#4252)", async () => {
 		const bash = createBashToolDefinition(cwd);
 		const path = join(cwd, "notes file.txt");
