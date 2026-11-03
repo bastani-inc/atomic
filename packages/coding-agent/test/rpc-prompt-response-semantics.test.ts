@@ -651,3 +651,107 @@ describe("RPC prompt response semantics", () => {
 		}
 	});
 });
+
+describe("RPC extension shutdown requests", () => {
+	afterEach(() => {
+		rpcIo.outputLines = [];
+		rpcIo.lineHandler = undefined;
+		vi.restoreAllMocks();
+	});
+
+	// An async ctx.shutdown() while idle must not wait for another stdin command.
+	it("shuts down an idle session when an extension requests shutdown asynchronously", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+		let requestShutdown: (() => void) | undefined;
+		const { cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						requestShutdown = () => ctx.shutdown();
+					});
+				},
+			]),
+		});
+
+		try {
+			await vi.waitFor(() => assert.ok(requestShutdown));
+			assert.equal(exitSpy.mock.calls.length, 0);
+			requestShutdown!();
+			requestShutdown!();
+			await vi.waitFor(() => assert.deepEqual(exitSpy.mock.calls, [[0]]));
+			assert.equal(exitSpy.mock.calls.length, 1);
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("writes the command response before shutting down for a shutdown requested by an extension command", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			rpcIo.outputLines.push(`${JSON.stringify({ type: "exit" })}\n`);
+		}) as never);
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.registerCommand("quit-now", {
+						handler: async (_args, ctx) => {
+							ctx.shutdown();
+							await sleep(10);
+						},
+					});
+				},
+			]),
+		});
+
+		try {
+			lineHandler(JSON.stringify({ id: "q", type: "prompt", message: "/quit-now" }));
+			await vi.waitFor(() => assert.equal(exitSpy.mock.calls.length, 1));
+			const types = parseOutputLines(rpcIo.outputLines).map((line) => (line.id === "q" ? "response" : line.type));
+			assert.ok(types.indexOf("response") >= 0);
+			assert.ok(types.indexOf("response") < types.indexOf("exit"));
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("waits for a command that arrives before an idle shutdown request is processed", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+			rpcIo.outputLines.push(`${JSON.stringify({ type: "exit" })}\n`);
+		}) as never);
+		let requestShutdown: (() => void) | undefined;
+		const { lineHandler, cleanup } = await startRpcMode({
+			withAuth: false,
+			responseDelayMs: 0,
+			extensionsResult: await createTestExtensionsResult([
+				(pi) => {
+					pi.on("session_start", (_event, ctx) => {
+						requestShutdown = () => ctx.shutdown();
+					});
+					pi.registerCommand("slow", {
+						handler: async () => {
+							await sleep(50);
+						},
+					});
+				},
+			]),
+		});
+
+		try {
+			await vi.waitFor(() => assert.ok(requestShutdown));
+			// The idle check is scheduled for the next tick; the command starts before it runs.
+			requestShutdown!();
+			lineHandler(JSON.stringify({ id: "s", type: "prompt", message: "/slow" }));
+			await vi.waitFor(() => assert.equal(exitSpy.mock.calls.length, 1));
+			const types = parseOutputLines(rpcIo.outputLines).map((line) => (line.id === "s" ? "response" : line.type));
+			assert.deepEqual(
+				types.filter((type) => type === "response" || type === "exit"),
+				["response", "exit"],
+			);
+		} finally {
+			await cleanup();
+		}
+	});
+});

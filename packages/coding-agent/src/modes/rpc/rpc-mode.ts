@@ -93,10 +93,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 
 	let shutdownRequested = false;
 	let shuttingDown = false;
+	let inputReady = false;
+	let activeCommands = 0;
+	// Count detached prompt work as well as input handling so responses precede shutdown.
+	const beginCommand = () => {
+		activeCommands++;
+		return () => {
+			activeCommands--;
+			checkShutdownRequested();
+		};
+	};
 	let detachInput = () => {};
 
 	const requestShutdown = () => {
 		shutdownRequested = true;
+		setImmediate(checkShutdownRequested);
 	};
 
 	const sessionBinding = new RpcSessionBinding({
@@ -105,6 +116,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		pendingExtensionRequests,
 		extensionUICapabilities,
 		requestShutdown,
+		checkShutdownRequested,
 		customUi,
 		renderService,
 		sessionPicker,
@@ -153,6 +165,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		reloadResources: deferInteractiveEngineResources ? loadDeferredResources : undefined,
 		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,
 		detachCompaction: interactiveEngineChild,
+		beginCommand,
 	});
 
 	/**
@@ -198,10 +211,19 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		process.exit(exitCode);
 	}
 
-	const checkShutdownRequested = async (): Promise<void> => {
-		if (!shutdownRequested) return;
-		await shutdown();
-	};
+	// Startup, command completion and agent settlement all retry an extension request.
+	function checkShutdownRequested(): void {
+		if (
+			!shutdownRequested ||
+			shuttingDown ||
+			!inputReady ||
+			activeCommands > 0 ||
+			runtimeHost.session.isStreaming ||
+			runtimeHost.session.isCompacting
+		)
+			return;
+		void shutdown();
+	}
 
 	const registerSignalHandlers = (): void => {
 		const signals: NodeJS.Signals[] = ["SIGTERM"];
@@ -224,6 +246,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
+		beginCommand,
 		// Only the interactive engine host consults this ownership boundary.
 		announceRequestAccepted: interactiveEngineChild
 			? (requestId, command) =>
@@ -270,6 +293,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		markLifecycleTiming("engine-resources-ready");
 		engineLiveness.resourcesReady();
 	}
+	inputReady = true;
+	checkShutdownRequested();
 
 	// Keep process alive forever
 	return new Promise(() => {});

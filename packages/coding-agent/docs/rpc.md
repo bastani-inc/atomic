@@ -9,6 +9,8 @@ RPC mode enables headless operation of the coding agent via a JSON protocol over
 
 **Note for Node.js/TypeScript users**: If you're building a Node.js application, consider using `AgentSession` directly from `@bastani/atomic` instead of spawning a subprocess. See [`src/core/agent-session.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/agent-session.ts) for the API. For a subprocess-based TypeScript client, see [`src/modes/rpc/rpc-client.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts).
 
+An extension can call `ctx.shutdown()` to close an idle RPC session without another client command. Shutdown waits for any active command response and running turn. A request during extension-started compaction outside a turn is processed after the next command or turn once compaction finishes.
+
 ## Where to go next
 
 This page starts RPC mode and walks one client end to end. The rest is split by job:
