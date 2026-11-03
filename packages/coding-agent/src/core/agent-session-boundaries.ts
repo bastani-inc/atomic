@@ -386,7 +386,9 @@ export async function _runBeforeSettleBoundary(this: AgentSession): Promise<bool
 			async (entries) => await this._buildBoundaryContext(entries, "agent_before_settle"),
 		);
 		await this._commitBoundaryDrafts(result.entries);
-		await this._flushPendingCustomMessages();
+		await this._flushPendingCustomMessages(true);
+		// #4254: a buffered custom message that could not be saved ends the run here.
+		if (this._persistenceFailure !== undefined) return false;
 		const finalContext = await this._buildBoundaryContext([], "agent_before_settle");
 		if (this._abortDuringBeforeSettle) return false;
 		const shouldContinue = result.continue || this.agent.hasQueuedMessages();

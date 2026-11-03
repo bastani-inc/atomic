@@ -569,7 +569,8 @@ async function settleAgentRun(session: AgentSession): Promise<void> {
 	session._cacheWarmer?.onAgentSettled();
 	try {
 		await session._agentEventQueue;
-		await session._flushPendingCustomMessages();
+		// #4254: once the run stopped on an unsaved message, settling neither saves again nor rethrows its error.
+		await session._flushPendingCustomMessages(true);
 	} finally {
 		// A failed event or flush must still close and settle the run; otherwise the open-run
 		// marker and active prompt count leak and later interactive messages stay queued forever.

@@ -125,3 +125,12 @@ export class StoragePayloadTooLargeError extends StorageError {
 		this.actualBytes = actualBytes;
 	}
 }
+
+/** An error and its direct cause on one line, for status output (a module-resolution "Require stack" is dropped). */
+export function describeStorageError(error: Error | object | string | undefined): string {
+	const firstLine = (text: string): string => text.split("\n", 1)[0]!.trim();
+	if (!(error instanceof Error)) return firstLine(String(error));
+	const message = firstLine(error.message);
+	const cause = error.cause instanceof Error ? firstLine(error.cause.message) : undefined;
+	return cause === undefined || message.includes(cause) ? message : `${message}: ${cause}`;
+}
