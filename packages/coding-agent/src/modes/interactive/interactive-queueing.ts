@@ -1,4 +1,4 @@
-import type { PromptDisposition } from "../../core/agent-session-types.ts";
+import type { PromptDisposition } from "../../core/agent-session-types.js";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
