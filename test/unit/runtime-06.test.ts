@@ -61,6 +61,13 @@ async function _waitForRunEnded(store: ReturnType<typeof createStore>, runId: st
 	throw new Error(`run ${runId} did not end in time`);
 }
 
+/**
+ * The stage session store writes a session file into the directory, and Windows keeps a just-written file in its
+ * directory for a moment while a scanner or indexer holds it, so the final rmdir answers ENOTEMPTY (hosted
+ * Windows runs 41588804883, 41675234669 and 41703826210). `rm` retries ENOTEMPTY only when it is given retries.
+ */
+const CLEANUP_RETRIES = { maxRetries: 20, retryDelay: 50 } as const;
+
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
@@ -208,7 +215,7 @@ describe("createExtensionRuntime", () => {
 			assert.equal(run.status, "completed");
 			assert.equal(received[0]?.sessionManager?.getSessionDir(), dir);
 		} finally {
-			await rm(dir, { recursive: true, force: true });
+			await rm(dir, { recursive: true, force: true, ...CLEANUP_RETRIES });
 		}
 	});
 });
