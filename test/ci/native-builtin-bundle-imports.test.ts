@@ -34,6 +34,8 @@ function stageBuiltinBuild(fixture: string): string {
 		filter: (path) => !["node_modules", "dist"].includes(basename(path)),
 	});
 	copyFileSync(join(root, "tsconfig.base.json"), join(fixture, "tsconfig.base.json"));
+	mkdirSync(join(fixture, "scripts"));
+	copyFileSync(join(root, "scripts/package-files.mjs"), join(fixture, "scripts/package-files.mjs"));
 	// Dependencies and companion sources are read-only inputs; every build output stays in the copy.
 	symlinkSync(join(root, "node_modules"), join(fixture, "node_modules"), "junction");
 	const packageDependencies = join(root, "packages/coding-agent/node_modules");
