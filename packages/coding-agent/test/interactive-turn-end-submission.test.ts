@@ -9,9 +9,9 @@ import {
 	releaseOpenGates,
 	sleep,
 	waitFor,
-} from "./helpers/busy-submission-rig.ts";
-import { pressAltEnter, showUserMessagesInChat } from "./helpers/interactive-submission-host.ts";
-import { getUserTexts } from "./suite/harness.ts";
+} from "./helpers/busy-submission-rig.js";
+import { pressAltEnter, showUserMessagesInChat } from "./helpers/interactive-submission-host.js";
+import { getUserTexts } from "./suite/harness.js";
 
 const MESSAGE = "sent as the turn ends";
 
