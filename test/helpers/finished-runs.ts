@@ -1,7 +1,15 @@
 import type { Store } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
-const COUNTED_FIELDS = ["id", "endedAt", "stages", "parentRunId", "rootRunId", "status"] as const;
+const COUNTED_FIELDS = [
+	"id",
+	"endedAt",
+	"stages",
+	"parentRunId",
+	"rootRunId",
+	"status",
+	"pendingStageMessages",
+] as const;
 
 /**
  * Fills the store with finished runs that count every read of their fields, as a long-lived host holds them.

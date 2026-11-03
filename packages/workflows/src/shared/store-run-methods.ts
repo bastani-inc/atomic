@@ -12,6 +12,7 @@ import type {
 	RunPauseMetadata,
 	RunResumeMetadata,
 	Store,
+	StoreInvalidationListener,
 } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
 import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
@@ -359,7 +360,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			};
 		},
 
-		subscribeInvalidation(fn: () => void): () => void {
+		subscribeInvalidation(fn: StoreInvalidationListener): () => void {
 			state.invalidationListeners.add(fn);
 			return () => state.invalidationListeners.delete(fn);
 		},

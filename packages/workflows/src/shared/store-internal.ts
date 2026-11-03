@@ -1,6 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { GraphStoreSnapshotBuilder } from "./graph-store-snapshot.js";
-import type { PromptAnswerRecord, RunEndMetadata } from "./store-public-types.js";
+import type { PromptAnswerRecord, RunEndMetadata, StoreInvalidationListener } from "./store-public-types.js";
 import type {
 	PendingPrompt,
 	RunSnapshot,
@@ -58,7 +58,7 @@ export interface StoreState {
 	readonly childRunLinks: Map<string, ChildRunLink>;
 	readonly notices: WorkflowNotice[];
 	readonly listeners: Set<(snap: StoreSnapshot) => void>;
-	readonly invalidationListeners: Set<() => void>;
+	readonly invalidationListeners: Set<StoreInvalidationListener>;
 	readonly resolvers: Map<string, ResolverEntry>;
 	readonly stagePromptAnswers: Map<string, PromptAnswerRecord>;
 	readonly stagePromptDrafts: Map<string, string>;
@@ -271,14 +271,16 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 			else batchedChanges?.push(change);
 			return;
 		}
-		observation.capture(change === undefined ? undefined : [change]);
-		publish();
+		const changes = change === undefined ? undefined : [change];
+		observation.capture(changes);
+		publish(changes);
 	}
 
-	function publish(): void {
+	/** `changes` names every run the invalidation changed, or is undefined when a change was not scoped to a run. */
+	function publish(changes: readonly WorkflowObservationChange[] | undefined): void {
 		for (const fn of state.invalidationListeners) {
 			try {
-				fn();
+				fn(changes);
 			} catch {
 				// One observer must not starve later observers or the snapshot channel.
 			}
@@ -311,7 +313,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 				batchedNotification = false;
 				batchedChanges = [];
 				observation.capture(changes);
-				publish();
+				publish(changes);
 			}
 		}
 	}
