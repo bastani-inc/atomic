@@ -42,6 +42,11 @@ function rowLineNumber(line: string): { lineNumber: number; isMatch: boolean } |
 	return { lineNumber: Number.parseInt(match[1] ?? match[2] ?? "0", 10), isMatch: match[1] !== undefined };
 }
 
+/**
+ * Keeps the matches inside `ranges`, with their context. Line 0 is never a line of the searched text: a resource
+ * reports something about the search itself there (such as the `history://` records it covered and the URL that
+ * continues it), so those rows stay whatever the range.
+ */
 export function filterSearchOutputByLineRange(
 	text: string,
 	ranges: readonly SearchLineRange[] | undefined,
@@ -56,8 +61,8 @@ export function filterSearchOutputByLineRange(
 		const row = rowLineNumber(line);
 		if (row?.isMatch && inSelectedRange(row.lineNumber)) acceptedMatches.push(row.lineNumber);
 	}
-	if (acceptedMatches.length === 0) return "No matches found";
 	const keepLine = (lineNumber: number): boolean =>
+		lineNumber === 0 ||
 		acceptedMatches.some(
 			(matchLine) => lineNumber >= matchLine - contextBefore && lineNumber <= matchLine + contextAfter,
 		);

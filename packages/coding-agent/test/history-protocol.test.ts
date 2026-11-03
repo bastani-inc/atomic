@@ -593,6 +593,26 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 		PAGING_TEST_TIMEOUT_MS,
 	);
 
+	it("keeps what a search covered when it is narrowed to a line range", async () => {
+		const { store, search, close } = await opened();
+		try {
+			for (let index = 0; index < 26; index++) {
+				const at = BASE + index * 60_000;
+				await store.create(header(`ranged-${index}`, PROJECT, at), [
+					entry(`m${index}`, index === 0 ? "the oldest needle" : `record ${index}`, at + 1000),
+				]);
+			}
+			const continuation = "searched sessions 1-25 of 26; continue with history://sessions?offset=25";
+			assertIncludes(await search("needle", "history://sessions:1-5"), continuation);
+			const matched = await search("record", "history://sessions:4-4");
+			assertIncludes(matched, continuation);
+			assert.match(matched, /history:\/\/sessions\/ranged-25:4:/);
+			assertIncludes(await search("needle", "history://sessions?offset=25:1-5"), "history://sessions/ranged-0:4:");
+		} finally {
+			await close();
+		}
+	});
+
 	it("keeps the project scope on links from a cross-project view", async () => {
 		const { store, read, search, close } = await opened();
 		try {
