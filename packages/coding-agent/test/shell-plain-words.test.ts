@@ -28,4 +28,9 @@ describe("plain shell word mask (#4252)", () => {
 		assert.equal(plainText(`echo \${HOME} d`), "echo _______ d");
 		assert.equal(plainText("& { Get-Content x }", "powershell"), "& _ Get-Content x _");
 	});
+
+	it("keeps a substitution open past braces inside it (#4252)", () => {
+		assert.equal(plainText("echo $(a {b,c}; d local://x) e"), `echo ${"_".repeat(23)} e`);
+		assert.equal(plainText("echo $(a {b,c}; d local://x) e", "powershell"), `echo ${"_".repeat(23)} e`);
+	});
 });

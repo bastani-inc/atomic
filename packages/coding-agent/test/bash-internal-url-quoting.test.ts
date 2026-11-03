@@ -29,6 +29,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 	it.each([
 		['printf %s "artifact://path"', "artifact://path"],
 		["printf %s $(printf %s artifact://path)", "artifact://path"],
+		["printf %s $(printf %s {a,b}; printf %s artifact://path)", "abartifact://path"],
 		["printf %s `printf %s artifact://path`", "artifact://path"],
 		["printf %s \\artifact://path", "artifact://path"],
 		["cat <<EOF\nartifact://path\nEOF", "artifact://path\n"],

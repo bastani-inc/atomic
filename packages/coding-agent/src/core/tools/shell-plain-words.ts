@@ -1,6 +1,7 @@
 export type ShellDialect = "posix" | "powershell";
 
-type Nesting = "double" | "substitution" | "backtick";
+/** `paren` is a `$(…)` substitution and `brace` a `${…}` expansion; each ends only at its own closer. */
+type Nesting = "double" | "paren" | "brace" | "backtick";
 
 interface PendingHeredoc {
 	readonly tag: string;
@@ -95,7 +96,7 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			continue;
 		}
 		if (char === "$" && (next === "(" || next === "{")) {
-			nesting.push("substitution");
+			nesting.push(next === "(" ? "paren" : "brace");
 			index++;
 			continue;
 		}
@@ -104,9 +105,11 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			else nesting.push("backtick");
 			continue;
 		}
-		if (top === "substitution") {
-			if (char === ")" || char === "}") nesting.pop();
-			else if (char === "(") nesting.push("substitution");
+		if (top === "paren" || top === "brace") {
+			// Parentheses and braces inside nest, so `$(printf %s {a,b}; …)` stays a substitution after `}`.
+			if (char === (top === "paren" ? ")" : "}")) nesting.pop();
+			else if (char === "(") nesting.push("paren");
+			else if (char === "{") nesting.push("brace");
 			continue;
 		}
 		if (top !== undefined) continue;
