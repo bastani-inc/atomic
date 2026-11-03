@@ -6,7 +6,10 @@ import type { Api, Model } from "@bastani/pi-ai/compat";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { formatNoModelsAvailableMessage } from "../core/auth-guidance.ts";
+import { formatModelLabel, MODEL_LABEL_FIELD_SEPARATOR } from "../core/model-label.ts";
 import type { ModelRuntime } from "../core/model-runtime.js";
+import { type ModelSwitchThinkingSettings, thinkingLevelForModelSwitch } from "../core/model-switch-thinking-level.ts";
+import { getModelSearchText } from "../modes/interactive/model-search.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
@@ -24,9 +27,17 @@ function formatTokenCount(count: number): string {
 }
 
 /**
- * List available models, optionally filtered by search pattern
+ * List available models, optionally filtered by search pattern.
+ *
+ * Each row starts with the model's `provider/id`, a tab, and the level `--model provider/id` starts it at (empty for
+ * a model without reasoning), so a row's first two fields are exactly what `--model provider/id:level` takes
+ * (#4269). Columns are tab-separated for scripts.
  */
-export async function listModels(modelRuntime: ModelRuntime, searchPattern?: string): Promise<void> {
+export async function listModels(
+	modelRuntime: ModelRuntime,
+	searchPattern: string | undefined,
+	settings: ModelSwitchThinkingSettings,
+): Promise<void> {
 	const loadError = modelRuntime.getError();
 	if (loadError) {
 		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));
@@ -43,10 +54,10 @@ export async function listModels(modelRuntime: ModelRuntime, searchPattern?: str
 		return;
 	}
 
-	// Apply fuzzy filter if search pattern provided
+	// Apply fuzzy filter if search pattern provided; a display name still finds its model.
 	let filteredModels: Model<Api>[] = [...models];
 	if (searchPattern) {
-		filteredModels = fuzzyFilter([...models], searchPattern, (m) => `${m.provider} ${m.id}`);
+		filteredModels = fuzzyFilter([...models], searchPattern, getModelSearchText);
 	}
 
 	if (filteredModels.length === 0) {
@@ -61,55 +72,16 @@ export async function listModels(modelRuntime: ModelRuntime, searchPattern?: str
 		return a.id.localeCompare(b.id);
 	});
 
-	// Calculate column widths
-	const rows = filteredModels.map((m) => ({
-		provider: m.provider,
-		model: m.id,
-		context: formatTokenCount(m.contextWindow),
-		maxOut: formatTokenCount(m.maxTokens),
-		thinking: m.reasoning ? "yes" : "no",
-		images: m.input.includes("image") ? "yes" : "no",
-	}));
-
-	const headers = {
-		provider: "provider",
-		model: "model",
-		context: "context",
-		maxOut: "max-out",
-		thinking: "thinking",
-		images: "images",
-	};
-
-	const widths = {
-		provider: Math.max(headers.provider.length, ...rows.map((r) => r.provider.length)),
-		model: Math.max(headers.model.length, ...rows.map((r) => r.model.length)),
-		context: Math.max(headers.context.length, ...rows.map((r) => r.context.length)),
-		maxOut: Math.max(headers.maxOut.length, ...rows.map((r) => r.maxOut.length)),
-		thinking: Math.max(headers.thinking.length, ...rows.map((r) => r.thinking.length)),
-		images: Math.max(headers.images.length, ...rows.map((r) => r.images.length)),
-	};
-
-	// Print header
-	const headerLine = [
-		headers.provider.padEnd(widths.provider),
-		headers.model.padEnd(widths.model),
-		headers.context.padEnd(widths.context),
-		headers.maxOut.padEnd(widths.maxOut),
-		headers.thinking.padEnd(widths.thinking),
-		headers.images.padEnd(widths.images),
-	].join("  ");
-	console.log(headerLine);
-
-	// Print rows
-	for (const row of rows) {
-		const line = [
-			row.provider.padEnd(widths.provider),
-			row.model.padEnd(widths.model),
-			row.context.padEnd(widths.context),
-			row.maxOut.padEnd(widths.maxOut),
-			row.thinking.padEnd(widths.thinking),
-			row.images.padEnd(widths.images),
-		].join("  ");
-		console.log(line);
+	const header = ["model", "level", "context", "max-out", "images"];
+	console.log(header.join(MODEL_LABEL_FIELD_SEPARATOR));
+	for (const model of filteredModels) {
+		const row = [
+			formatModelLabel(model),
+			model.reasoning ? thinkingLevelForModelSwitch(model, { settings }) : "",
+			formatTokenCount(model.contextWindow),
+			formatTokenCount(model.maxTokens),
+			model.input.includes("image") ? "yes" : "no",
+		];
+		console.log(row.join(MODEL_LABEL_FIELD_SEPARATOR));
 	}
 }

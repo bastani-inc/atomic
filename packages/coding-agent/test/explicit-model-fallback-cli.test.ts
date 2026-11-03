@@ -240,11 +240,15 @@ describe("atomic -p with an explicit --model (#4223)", () => {
 			assert.deepEqual(harness.requests, [REQUESTED, OPT_IN]);
 			assert.equal(result.code, 0, result.stderr);
 			assert.match(result.stdout, /sol-mock was told: Model name \(used for commit attribution\): Sol Mock/);
+			// Each model reads as its raw ID and level (#4269).
 			assert.match(
 				result.stderr,
-				new RegExp(`Model fallback: ${REQUESTED} failed, continuing on ${OPT_IN}: .*cyber_policy`),
+				new RegExp(`Model fallback: ${REQUESTED} {2}high failed, continuing on ${OPT_IN} {2}high: .*cyber_policy`),
 			);
-			assert.match(result.stderr, new RegExp(`Model: ran on ${OPT_IN}, not the requested ${REQUESTED}\\.`));
+			assert.match(
+				result.stderr,
+				new RegExp(`Model: ran on ${OPT_IN} {2}high, not the requested ${REQUESTED} {2}high\\.`),
+			);
 			const change = sessionEntries().find((entry) => entry.type === "model_change" && entry.provider === "acct-c");
 			assert.equal(change?.fallback?.requested, REQUESTED);
 			assert.match(change?.fallback?.reason ?? "", /cyber_policy/);

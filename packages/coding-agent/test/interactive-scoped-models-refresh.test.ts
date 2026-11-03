@@ -62,6 +62,8 @@ async function openSelector(initialModels: readonly Model<Api>[], options: OpenS
 		settingsManager: {
 			getEnabledModels: () => configuredPatterns,
 			setEnabledModels,
+			getModelThinkingLevel: () => undefined,
+			getDefaultThinkingLevel: () => undefined,
 		},
 		showSelector: (
 			factory: (done: () => void) => {
@@ -162,7 +164,7 @@ describe("scoped models cache-first refresh", () => {
 		await vi.waitFor(() => {
 			const rendered = stripAnsi(refresh.selector.render(100).join("\n"));
 			expect(rendered).toContain("Model catalogs refreshed.");
-			expect(rendered).toContain("✓ refreshed [cached-provider]");
+			expect(rendered).toContain("✓ cached-provider/refreshed");
 			expect(rendered).toContain("all enabled");
 		});
 		expect(refresh.setEnabledModels).toHaveBeenCalledExactlyOnceWith(undefined);

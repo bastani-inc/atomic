@@ -368,7 +368,7 @@ for (const [isolated, completeOlderFirst] of [
 		const key = "pi-workflows:main-chat-input";
 		const notice = "Main chat needs input — exit graph to answer.";
 		// PR #2926: the footer abbreviates home using native path separators on Windows too.
-		const context = `(openai-codex) gpt-6-astra medium • ${join("~", "Documents/projects/atomic")} (main)`;
+		const context = `openai-codex/gpt-6-astra  medium • ${join("~", "Documents/projects/atomic")} (main)`;
 		let finishFirst = () => {};
 		let finishSecond = () => {};
 		let first: Promise<void> | undefined;

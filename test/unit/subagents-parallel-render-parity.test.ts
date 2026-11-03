@@ -191,7 +191,7 @@ test("parallel result rows keep each child's canonical model ID and thinking met
 			thinking: "low",
 		}),
 	]);
-	assert.match(rendered, /alpha.*openai-codex\/gpt-5\.6-sol-fast · thinking high/);
-	assert.match(rendered, /beta.*claude-sonnet-4 · thinking low/);
+	assert.match(rendered, /alpha.*openai-codex\/gpt-5\.6-sol-fast {2}high/);
+	assert.match(rendered, /beta.*claude-sonnet-4 {2}low/);
 	assert.doesNotMatch(rendered, / · fast(?: ·|\))/u);
 });

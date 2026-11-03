@@ -83,6 +83,8 @@ function openSelector(modelRuntime: ModelRuntime): ModelSelectorComponent {
 			setDefaultModelAndProvider: () => {},
 			getDefaultProvider: () => undefined,
 			getDefaultModel: () => undefined,
+			getModelThinkingLevel: () => undefined,
+			getDefaultThinkingLevel: () => undefined,
 		} as unknown as SettingsManager,
 		modelRuntime,
 		[],

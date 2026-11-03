@@ -6,6 +6,7 @@ import type { SessionStats } from "../../../core/agent-session-types.js";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
@@ -317,15 +318,12 @@ export class FooterComponent implements Component {
 				: undefined;
 		if (sessionName) pwd += ` • ${sessionName}`;
 
-		const modelName = state.model?.id || "no-model";
-		let modelLabel = modelName;
-		if (state.model?.reasoning) {
-			const thinkingLevel = state.thinkingLevel || "off";
-			modelLabel = thinkingLevel === "off" ? modelLabel : `${modelLabel} ${thinkingLevel}`;
-		}
-		if (this.footerData.getAvailableProviderCount() > 1 && state.model) {
-			modelLabel = `(${state.model.provider}) ${modelLabel}`;
-		}
+		const modelLabel = state.model
+			? formatModelLabel(state.model, {
+					thinkingLevel: state.thinkingLevel || "off",
+					omitProvider: this.footerData.getAvailableProviderCount() <= 1,
+				})
+			: "no-model";
 
 		const liveState =
 			this.session.isStreaming && !this.navigationActive() ? this.renderStyle.muted("esc to interrupt") : undefined;

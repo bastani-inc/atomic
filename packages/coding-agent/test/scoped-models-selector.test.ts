@@ -19,7 +19,7 @@ interface ModelState {
 function getMarkerStates(selector: ScopedModelsSelectorComponent, models: ModelState[]): boolean[] {
 	const lines = stripAnsi(selector.render(120).join("\n")).split("\n");
 	return models.map((model) => {
-		const line = lines.find((candidate) => candidate.includes(`${model.id} [`));
+		const line = lines.find((candidate) => candidate.includes(`/${model.id}`));
 		if (!line) throw new Error(`Expected rendered row for ${model.id}`);
 		return line.slice(2).startsWith("✓ ");
 	});
@@ -61,7 +61,7 @@ describe("scoped models selector", () => {
 		return selector;
 	}
 
-	it("shows model names that differ from the ID (pi #5916)", async () => {
+	it("labels models by raw ID, with a differing display name in a dim column (pi #5916, #4269)", async () => {
 		const selector = await createSelector([
 			{ id: "model-a", name: "Model A", enabled: true },
 			{ id: "model-b", name: "Renamed B", enabled: true },
@@ -71,8 +71,28 @@ describe("scoped models selector", () => {
 		const rows = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
 			.map((line) => line.slice(4).trimEnd());
-		assert.ok(rows.includes(`model-a [${provider}]`));
-		assert.ok(rows.includes(`model-b (Renamed B) [${provider}]`));
+		assert.ok(rows.includes(`${provider}/model-a`), rows.join("\n"));
+		assert.ok(rows.includes(`${provider}/model-b  Renamed B`), rows.join("\n"));
+	});
+
+	it("shows the level each model is cycled to after its ID (#4269)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "reasoning-model", name: "Reasoning Model", reasoning: true },
+				{ id: "plain-model", name: "Plain Model", reasoning: false },
+			],
+		});
+		const provider = harness.models[0].provider;
+		const selector = new ScopedModelsSelectorComponent(
+			{ allModels: [...harness.models], enabledModelIds: null, thinkingLevelFor: () => "xhigh" },
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+
+		const rows = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.map((line) => line.slice(4).trimEnd());
+		assert.ok(rows.includes(`${provider}/reasoning-model  xhigh`), rows.join("\n"));
+		assert.ok(rows.includes(`${provider}/plain-model`), rows.join("\n"));
 	});
 
 	it.each(["model-b", "model"])("keeps the model selected when reordering with filter %s (#3657)", async (query) => {
@@ -98,14 +118,14 @@ describe("scoped models selector", () => {
 
 		assert.doesNotThrow(() => selector.handleInput(REORDER_UP));
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]]]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_UP);
 		assert.equal(changes.length, 1);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.deepEqual(changes, [[orderedIds[1], orderedIds[0]], orderedIds]);
-		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ model-b \[/);
+		assert.match(stripAnsi(selector.render(120).join("\n")), /→ ✓ \S+\/model-b *$/m);
 
 		selector.handleInput(REORDER_DOWN);
 		assert.equal(changes.length, 2);
@@ -135,7 +155,7 @@ describe("scoped models selector", () => {
 			selector.handleInput("\x1by");
 			assert.equal(selector.getSearchInput().getValue(), "");
 			assert.ok(selector.render(120).some((line) => line.startsWith(`> ${CURSOR_MARKER}`)));
-			if (list === "populated") assert.match(stripAnsi(selector.render(120).join("\n")), /model-a \[/);
+			if (list === "populated") assert.match(stripAnsi(selector.render(120).join("\n")), /\/model-a *$/m);
 
 			selector.handleInput("ok");
 			assert.equal(selector.getSearchInput().getValue(), "ok");

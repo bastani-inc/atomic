@@ -25,6 +25,7 @@
  *     `Theme` when the overlay mounts.
  */
 
+import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "@bastani/atomic";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import {
 	pooledStageStartingText,
@@ -130,22 +131,24 @@ function durationText(stage: StageSnapshot): string {
 }
 
 /**
- * Compact model label for the card's dedicated model row (~22 cells): the
- * provider prefix is dropped, the thinking level is appended when set (omitted
- * when off). On overflow the model name is truncated first, preserving the
- * canonical `-fast` identity suffix and the complete thinking level.
- * Empty when no model is resolved yet.
+ * Compact model label for the card's dedicated model row (~22 cells): the raw
+ * model ID without its provider, then the thinking level when set (omitted
+ * when off), as every model label reads (#4269). On overflow the model ID is
+ * truncated first, preserving the canonical `-fast` identity suffix and the
+ * complete thinking level. Empty when no model is resolved yet.
  */
 function modelText(stage: StageSnapshot, innerWidth: number): string {
 	const model = stage.model;
 	if (model === undefined || model === "") return "";
-	const slash = model.lastIndexOf("/");
-	const short = slash >= 0 ? model.slice(slash + 1) : model;
 	const level = stage.thinkingLevel;
-	const showLevel = level !== undefined && level !== "" && level !== "off";
-	const suffix = showLevel ? ` · ${level}` : "";
-	const full = `${short}${suffix}`;
+	const full = formatModelLabel(model, {
+		omitProvider: true,
+		thinkingLevel: level === "" || level === "off" ? undefined : level,
+	});
 	if (visibleWidth(full) <= innerWidth) return full;
+	const levelAt = full.indexOf(MODEL_LABEL_SEPARATOR);
+	const short = levelAt < 0 ? full : full.slice(0, levelAt);
+	const suffix = levelAt < 0 ? "" : full.slice(levelAt);
 	// #1859: preserve identity text, without inferring routing from the suffix.
 	const modelSuffix = short.endsWith("-fast") ? "-fast" : "";
 	const name = modelSuffix ? short.slice(0, -modelSuffix.length) : short;

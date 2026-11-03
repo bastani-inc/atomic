@@ -43,6 +43,8 @@ function createSelector(refresh: ModelRuntime["refresh"]): ModelSelectorComponen
 			setDefaultModelAndProvider: () => {},
 			getDefaultProvider: () => undefined,
 			getDefaultModel: () => undefined,
+			getModelThinkingLevel: () => undefined,
+			getDefaultThinkingLevel: () => undefined,
 		} as unknown as SettingsManager,
 		runtime,
 		[],

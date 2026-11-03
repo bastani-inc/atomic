@@ -284,6 +284,12 @@ test("a transient failure can still change reasoning on the same provider/model"
 	assert.equal(session.agent.state.thinkingLevel, "low");
 	assert.ok(events.some((event) => event.type === "model_fallback_start"));
 	assert.ok(events.some((event) => event.type === "session_thinking" && event.level === "low"));
+	// The fallback notice can say which level moved: the model alone reads the same on both sides (#4269).
+	const start = events.find((event) => event.type === "model_fallback_start");
+	assert.deepEqual(
+		[start?.from, start?.fromThinkingLevel, start?.to, start?.toThinkingLevel],
+		["openai/gpt-5-mini", "high", "openai/gpt-5-mini", "low"],
+	);
 });
 
 test("service-based SDK session options include fallbackModels", () => {

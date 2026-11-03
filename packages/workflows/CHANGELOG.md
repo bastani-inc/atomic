@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Graph node cards show a stage's model as its raw ID followed by its reasoning level, for example `claude-sonnet-4-5  high`, and stage model notices name the model as `provider/id`. A gateway model ID that contains a slash, such as OpenRouter's `anthropic/claude-sonnet-4-5`, now shows in full on the card instead of losing its first segment ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
+
 ## [0.9.69] - 2026-11-03
 
 ### Added

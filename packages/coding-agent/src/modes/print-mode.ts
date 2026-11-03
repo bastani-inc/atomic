@@ -12,6 +12,7 @@ import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";
 import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
+import { formatModelLabel } from "../core/model-label.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
@@ -114,6 +115,8 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	let exitCode = 0;
 	/** Whether a model fallback ran during this invocation; only then can its answer come from another model (#4223). */
 	let fellBack = false;
+	/** The model the latest fallback continued on and its level, shown beside it in the ran-on line (#4269). */
+	let fallbackTarget: { model: string; thinkingLevel?: string } | undefined;
 	let suppressFinalOutput = false;
 	let activePromptHadCommandError = false;
 	let session = runtimeHost.session;
@@ -214,10 +217,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 				for (const warning of serviceTierWarnings(event.message)) console.error(`Warning: ${warning}`);
 			} else if (event.type === "model_fallback_start") {
 				fellBack = true;
-				// A fallback is never silent: the answer that follows comes from another model (#4223).
-				console.error(
-					`Model fallback: ${event.from} failed, continuing on ${event.to}: ${singleLine(event.reason)}`,
-				);
+				fallbackTarget = { model: event.to, thinkingLevel: event.toThinkingLevel };
+				// A fallback is never silent: the answer that follows comes from another model (#4223). Each model reads
+				// as its raw ID and level (#4269).
+				const from = formatModelLabel(event.from, { thinkingLevel: event.fromThinkingLevel });
+				const to = formatModelLabel(event.to, { thinkingLevel: event.toThinkingLevel });
+				console.error(`Model fallback: ${from} failed, continuing on ${to}: ${singleLine(event.reason)}`);
 			}
 		});
 	};
@@ -241,7 +246,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		await rebindSession();
 		// The model this run was asked to use, reported beside the one it ran on after a fallback (#4223), and where this
 		// run's messages start, so an answer from an earlier run in a continued session is never judged.
-		const requestedModel = session.model ? `${session.model.provider}/${session.model.id}` : undefined;
+		const requestedLevel = session.model?.reasoning ? session.thinkingLevel : undefined;
+		const requestedModel = session.model
+			? `${session.model.provider}/${session.model.id}${requestedLevel ? `:${requestedLevel}` : ""}`
+			: undefined;
 		const runSession = session;
 		const runStart = session.state.messages.length;
 
@@ -264,10 +272,16 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 						| AssistantMessage
 						| undefined)
 				: undefined;
+		const answerModel = runAnswer === undefined ? undefined : `${runAnswer.provider}/${runAnswer.model}`;
 		const ranOn =
-			runAnswer === undefined
+			answerModel === undefined
 				? undefined
-				: ranOnModelLine({ kind: "agent", model: `${runAnswer.provider}/${runAnswer.model}`, requestedModel });
+				: ranOnModelLine({
+						kind: "agent",
+						model: answerModel,
+						thinking: fallbackTarget?.model === answerModel ? fallbackTarget.thinkingLevel : undefined,
+						requestedModel,
+					});
 		if (ranOn && mode === "text" && !suppressFinalOutput) console.error(ranOn);
 		if (lastAssistantMessage?.stopReason === "length" && mode === "text" && !suppressFinalOutput) {
 			console.error("Response was truncated: the model reached its output token limit.");

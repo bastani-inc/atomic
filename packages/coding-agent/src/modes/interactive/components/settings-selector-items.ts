@@ -2,6 +2,7 @@ import { isModelType } from "@bastani/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getCapabilities, type SettingItem } from "@earendil-works/pi-tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { formatModelLabel } from "../../../core/model-label.ts";
 import { keyDisplayText } from "./keybinding-hints.js";
 import { DEFAULT_PROJECT_TRUST_LABELS } from "./settings-selector-options.ts";
 import { SelectSubmenu, ThemeSubmenu, WarningSettingsSubmenu } from "./settings-selector-submenus.ts";
@@ -297,14 +298,14 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					},
 					...(config.availableClassifierModels ?? []).map((model) => ({
 						value: `${model.provider}/${model.id}`,
-						label: `${model.provider}/${model.id}`,
+						label: formatModelLabel(model),
 						description: model.name,
 					})),
 					...(config.availableDefaultModels ?? [])
 						.filter((model) => isModelType(model, "chat"))
 						.map((model) => ({
 							value: `${model.provider}/${model.id}`,
-							label: `${model.provider}/${model.id}`,
+							label: formatModelLabel(model),
 							description: model.name,
 						})),
 				];
@@ -353,7 +354,7 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					{ value: "", label: "Auto (current model)", description: "Use the current chat model" },
 					...models.map((model) => ({
 						value: `${model.provider}/${model.id}`,
-						label: `${model.provider}/${model.id}`,
+						label: formatModelLabel(model),
 						description:
 							model.provider === "morph" && !config.morphAuthenticated
 								? `${model.name} · requires /login morph`
@@ -410,13 +411,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 					const activeLevel = config.modelThinkingLevels?.[key];
 					const items = available.map((level) => ({
 						value: `${key}\0${level}`,
-						label: `${level === activeLevel ? "✓ " : "  "}${model.id} [${model.provider}]`,
+						label: `${level === activeLevel ? "✓ " : "  "}${formatModelLabel(model)}`,
 						description: `${level}${activeLevel === level ? " · default" : ""}`,
 					}));
 					if (activeLevel !== undefined)
 						items.push({
 							value: `${key}\0`,
-							label: `  ${model.id} [${model.provider}]`,
+							label: `  ${formatModelLabel(model)}`,
 							description: "clear override",
 						});
 					return items;

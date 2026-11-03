@@ -57,15 +57,18 @@ export function launchRequestedModel(
 
 /**
  * `Model: ran on <model>, not the requested <model>.` for a child that ran on another model than its launch asked for,
- * or undefined (#4188).
+ * or undefined (#4188). Each model reads as its raw ID and level (#4269).
  */
 export function resultRanOnLine(result: {
 	readonly model?: string;
+	readonly thinking?: string;
 	readonly requestedModel?: string;
 }): string | undefined {
+	const level = result.model === undefined ? "" : splitKnownThinkingSuffix(result.model).thinkingSuffix.slice(1);
 	return ranOnModelLine({
 		kind: "agent",
 		model: taskRecordModel(result.model),
+		thinking: level || result.thinking,
 		requestedModel: result.requestedModel,
 	});
 }

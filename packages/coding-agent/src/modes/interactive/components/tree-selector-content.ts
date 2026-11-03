@@ -1,3 +1,4 @@
+import { formatModelLabel } from "../../../core/model-label.ts";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
 import { formatReadLineRange } from "../../../core/tools/render-utils.ts";
 import { shortenHomePath } from "../../../utils/paths.ts";
@@ -132,7 +133,7 @@ export function getEntryDisplayText(
 			result = theme.fg("warning", `[branch summary]: `) + normalizeText(entry.summary);
 			break;
 		case "model_change":
-			result = theme.fg("dim", `[model: ${entry.modelId}]`);
+			result = theme.fg("dim", `[model: ${formatModelLabel({ provider: entry.provider, id: entry.modelId })}]`);
 			break;
 		case "thinking_level_change":
 			result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);

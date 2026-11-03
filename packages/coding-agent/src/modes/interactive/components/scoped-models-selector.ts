@@ -9,7 +9,9 @@ import {
 	matchesKey,
 	Spacer,
 	Text,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -80,6 +82,8 @@ export interface ModelsConfig {
 	allModels: readonly Model<Api>[];
 	enabledModelIds: string[] | null;
 	refreshStatus?: string;
+	/** The level a model runs at when cycled to, shown after its ID (#4269). Without it rows show the ID alone. */
+	thinkingLevelFor?: (model: Model<Api>) => string | undefined;
 }
 
 export interface ModelsCallbacks {
@@ -112,11 +116,13 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 	private listContainer: Container;
 	private footerText: Text;
 	private callbacks: ModelsCallbacks;
+	private thinkingLevelFor: ModelsConfig["thinkingLevelFor"];
 	private maxVisible = 8;
 	private refreshStatusText?: Text;
 	constructor(config: ModelsConfig, callbacks: ModelsCallbacks) {
 		super();
 		this.callbacks = callbacks;
+		this.thinkingLevelFor = config.thinkingLevelFor;
 
 		for (const model of config.allModels) {
 			const fullId = `${model.provider}/${model.id}`;
@@ -237,18 +243,27 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filteredItems.length - this.maxVisible),
 		);
 		const endIndex = Math.min(startIndex + this.maxVisible, this.filteredItems.length);
-		for (let i = startIndex; i < endIndex; i++) {
-			const item = this.filteredItems[i]!;
-			const isSelected = i === this.selectedIndex;
+		// Rows show the raw ID and level, exactly what `enabledModels` and `--models` take (#4269); a display name that
+		// adds words the ID lacks follows in a dim column.
+		const rows = this.filteredItems.slice(startIndex, endIndex).map((item) => ({
+			item,
+			label: item.model
+				? formatModelLabel(item.model, { thinkingLevel: this.thinkingLevelFor?.(item.model) })
+				: item.fullId,
+			name: item.model ? getDistinctModelName(item.model) : undefined,
+		}));
+		const labelWidth = Math.max(0, ...rows.map((row) => visibleWidth(row.label)));
+		for (const [offset, { item, label, name }] of rows.entries()) {
+			const isSelected = startIndex + offset === this.selectedIndex;
 			const prefix = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const id = item.model?.id ?? item.fullId;
-			const styledId = item.model ? id : theme.strikethrough(id);
-			const modelText = isSelected ? theme.fg("accent", styledId) : styledId;
-			const name = item.model ? getDistinctModelName(item.model) : undefined;
-			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
-			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
+			const styledLabel = item.model ? label : theme.strikethrough(label);
+			const modelText = isSelected ? theme.fg("accent", styledLabel) : styledLabel;
+			const nameText = name
+				? `${" ".repeat(labelWidth - visibleWidth(label))}${MODEL_LABEL_SEPARATOR}${theme.fg("muted", name)}`
+				: "";
+			const unavailableBadge = item.model ? "" : theme.fg("muted", " [unavailable]");
 			const status = item.model && item.enabled ? theme.fg("accent", "✓ ") : "  ";
-			this.listContainer.addChild(new Text(`${prefix}${status}${modelText}${nameText}${providerBadge}`, 0, 0));
+			this.listContainer.addChild(new Text(`${prefix}${status}${modelText}${nameText}${unavailableBadge}`, 0, 0));
 		}
 
 		// Add scroll indicator if needed

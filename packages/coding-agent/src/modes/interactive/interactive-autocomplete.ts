@@ -1,3 +1,4 @@
+import { formatModelLabel } from "../../core/model-label.ts";
 import { getSkillCatalog } from "../../core/skill-catalog.ts";
 import {
 	getInteractiveEngineRemoteCommandCompletions,
@@ -232,18 +233,19 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function (
 				id: m.id,
 				provider: m.provider,
 				name: m.name,
-				label: `${m.provider}/${m.id}`,
+				label: formatModelLabel(m),
 			}));
 
-			// Fuzzy filter by model ID + provider in either order.
+			// Fuzzy filter by model ID + provider in either order, or by display name.
 			const filtered = fuzzyFilter(items, prefix, getModelSearchText);
 
 			if (filtered.length === 0) return null;
 
+			// The label is the raw provider/id the completion inserts; a display name is secondary metadata (#4269).
 			return filtered.map((item) => ({
 				value: item.label,
-				label: item.id,
-				description: item.provider,
+				label: item.label,
+				...(item.name ? { description: item.name } : {}),
 			}));
 		};
 	}
