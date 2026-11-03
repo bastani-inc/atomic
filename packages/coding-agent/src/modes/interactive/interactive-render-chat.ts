@@ -13,6 +13,7 @@ import { appendBoundedStderr } from "../rpc/rpc-client-process.js";
 import { CustomEntryComponent } from "./components/custom-entry.ts";
 import { createMermaidMarkdownTransformer } from "./components/mermaid.ts";
 import { ThemedText } from "./components/themed-text.js";
+import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type AgentMessage,
@@ -28,6 +29,7 @@ import {
 	CustomMessageComponent,
 	chatEntriesFromAgentMessages,
 	hasTrustRequiringProjectResources,
+	type Message,
 	type PersistedMessageMeta,
 	parseSkillBlock,
 	recordTimeSinceReset,
@@ -152,6 +154,7 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function (
 	const index = this.deferredRenderedUserInputs.indexOf(text);
 	if (index === -1) return false;
 	this.deferredRenderedUserInputs.splice(index, 1);
+	if (this.startedDeferredUserInput === text) this.startedDeferredUserInput = undefined;
 	const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
 	trackedComponents?.shift();
 	if (trackedComponents && trackedComponents.length === 0) {
@@ -165,7 +168,10 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	text: string,
 ): void {
 	const index = this.deferredRenderedUserInputs.indexOf(text);
-	if (index !== -1) this.deferredRenderedUserInputs.splice(index, 1);
+	if (index !== -1) {
+		this.deferredRenderedUserInputs.splice(index, 1);
+		if (this.startedDeferredUserInput === text) this.startedDeferredUserInput = undefined;
+	}
 	const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
 	const componentsToRemove = trackedComponents?.shift();
 	if (trackedComponents && trackedComponents.length === 0) {
@@ -177,6 +183,38 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function (
 	}
 	this.updatePendingMessagesDisplay();
 	this.ui.requestRender();
+};
+
+/**
+ * The session started a run for a submission this host echoed as `text`. The run begins with the submission's message,
+ * as sent: an `input` hook may have rewritten it, so its `message_start` need not match the echo (#4277). An engine's
+ * answer can reach the host after that `message_start`, which the session then showed itself (#4272): if it showed any
+ * message of its own since `shownBefore`, the echo goes. Otherwise the session's next message that matches no echo
+ * takes the echo's place. A run starts only after the one before it showed its message, so an earlier run still
+ * waiting here never got to show it, and its echo stays as it is.
+ */
+InteractiveModeBase.prototype.expectStartedUserInput = function (
+	this: InteractiveModeBase,
+	text: string,
+	shownBefore: number,
+): void {
+	if (!this.deferredRenderedUserInputs.includes(text)) return;
+	if (this.userMessagesShownBySession !== shownBefore) this.discardDeferredRenderedUserInput(text);
+	else this.startedDeferredUserInput = text;
+};
+
+/** Show a user message from the session: in place of its echo, or of the echo of the run it started, or as new. */
+InteractiveModeBase.prototype.showSessionUserMessage = function (this: InteractiveModeBase, message: Message): void {
+	if (this.consumeDeferredRenderedUserInput(this.getUserMessageText(message))) return;
+	const started = this.startedDeferredUserInput;
+	if (started !== undefined) {
+		const echo = this.deferredRenderedUserInputComponents.get(started)?.[0];
+		appendNewChildrenBeforeAttachedChild(this.chatContainer, echo?.[0], () => this.addMessageToChat(message));
+		this.discardDeferredRenderedUserInput(started);
+		return;
+	}
+	this.userMessagesShownBySession += 1;
+	this.addMessageToChat(message);
 };
 
 InteractiveModeBase.prototype.getMarkdownTransformers = function (this: InteractiveModeBase) {

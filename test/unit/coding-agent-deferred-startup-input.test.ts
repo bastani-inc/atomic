@@ -80,6 +80,8 @@ type HandleEventContext = {
 	chatContainer: Container;
 	getUserMessageText: (message: { role: "user"; content: string }) => string;
 	consumeDeferredRenderedUserInput: (text: string) => boolean;
+	userMessagesShownBySession: number;
+	showSessionUserMessage: (message: { role: "user"; content: string }) => void;
 	addMessageToChat: (message: { role: "user"; content: string }) => void;
 	updatePendingMessagesDisplay: () => void;
 	ui: { requestRender: () => void };
@@ -98,6 +100,7 @@ type InteractivePrototype = {
 	setupEditorSubmitHandler(this: SubmitContext): void;
 	completeDeferredStartup(this: DeferredModeContext): Promise<void>;
 	handleEvent(this: HandleEventContext, event: UserMessageStartEvent): Promise<void>;
+	showSessionUserMessage(this: HandleEventContext, message: { role: "user"; content: string }): void;
 	renderDeferredUserInput(this: RenderDeferredContext, text: string): void;
 	discardDeferredRenderedUserInput(this: RenderDeferredContext, text: string): void;
 	showNewVersionNotification(this: StartupNoticeContext, newVersion: string, targetContainer?: Container): void;
@@ -265,6 +268,8 @@ describe("coding-agent deferred startup input", () => {
 			chatContainer,
 			getUserMessageText: (message) => message.content,
 			consumeDeferredRenderedUserInput: () => false,
+			userMessagesShownBySession: 0,
+			showSessionUserMessage: (message) => interactivePrototype.showSessionUserMessage.call(eventContext, message),
 			addMessageToChat: (message) => chatContainer.addChild(new Text(message.content, 0, 0)),
 			updatePendingMessagesDisplay: vi.fn(() => {}),
 			ui: { requestRender: vi.fn(() => {}) },

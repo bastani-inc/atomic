@@ -279,6 +279,8 @@ declare module "./interactive-mode-base.ts" {
 		renderDeferredUserInput(text: string): void;
 		consumeDeferredRenderedUserInput(text: string): boolean;
 		discardDeferredRenderedUserInput(text: string): void;
+		expectStartedUserInput(text: string, shownBefore: number): void;
+		showSessionUserMessage(message: Message): void;
 		ensureDeferredStartupComplete(): Promise<void>;
 		rebuildChatFromMessages(options?: {
 			suppressCompactionBoundary?: VerbatimCompactionResult;

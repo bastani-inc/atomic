@@ -50,11 +50,13 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 			if (!(this.runtimeHost instanceof IsolatedInteractiveRuntime) || !this.isExtensionCommand(userInput)) {
 				await this.session.resumeQueuedMessages();
 			}
+			const shownBefore = this.userMessagesShownBySession;
 			await this.session.prompt(userInput, {
 				streamingBehavior: "steer",
 				preflightResult: (success, disposition) => {
 					refused = !success;
 					if (success && disposition === "queued") this.discardDeferredRenderedUserInput(userInput);
+					if (success && disposition === "started") this.expectStartedUserInput(userInput, shownBefore);
 					if (success) settleDispatch();
 				},
 			});
