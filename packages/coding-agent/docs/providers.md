@@ -168,7 +168,7 @@ Keys, `ANTHROPIC_AUTH_TOKEN`, and custom authorization headers take precedence. 
 
 Copilot includes `github-copilot/gpt-6.1-sol` and `github-copilot/gpt-6-astra`, for example `atomic --model github-copilot/gpt-6.1-sol:high`. Their context windows and reasoning levels are in [OpenAI built-in models](/models/reference#openai-built-in-models). The OAuth account catalog still controls availability, so a listed model does not guarantee that Copilot has enabled it for your account.
 
-Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. A model found this way:
+Atomic reads the account's model list on every network catalog refresh (at interactive startup, from `/model`, and with `atomic update --models`), for OAuth logins and API keys alike, and caches it in `models-store.json`, so later starts, including `atomic -p` and offline runs, need no network. When a refresh cannot read the list, for example because the host refuses the token, the models cached before stay. A model found this way:
 
 - keeps the exact ID the account advertises as both its ID and its name, and is sent upstream unchanged
 - is marked `discovered: true` in the catalog; its limits, image input, reasoning efforts and adaptive thinking come from the account's list, and `modelOverrides` adjusts them like any other model

@@ -297,11 +297,14 @@ export function withPersonalizedCatalog(
 	};
 }
 
-/** Lists the models an account offers that `catalog` lacks. */
+/**
+ * Lists the models an account offers that `catalog` lacks, or undefined when the account's list
+ * could not be read, which keeps the models saved before.
+ */
 export type DiscoverModels = (
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
-) => Promise<readonly AnyModel[]>;
+) => Promise<readonly AnyModel[] | undefined>;
 
 function isDiscoveredModel(model: AnyModel): boolean {
 	return isModelType(model, "chat") && model.discovered === true;
@@ -319,7 +322,8 @@ function withSavedModels(entry: ModelsStoreEntry, saved: readonly AnyModel[]): M
  * Add the models an account offers beyond the provider's catalog. Each network refresh runs the
  * wrapped provider's own refresh first, then `discover`. Discovered models are saved in the
  * provider's stored entry beside the wrapped provider's data, so a later start restores them without
- * the network. The catalog always wins: a discovered ID the catalog also lists is dropped, so a
+ * the network. They are replaced only by a list `discover` read; when it could not read one, the saved
+ * models stay. The catalog always wins: a discovered ID the catalog also lists is dropped, so a
  * curated entry is never replaced.
  */
 export function withDiscoveredModels(provider: Provider, discover: DiscoverModels): Provider {
@@ -368,7 +372,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 			} finally {
 				if (context.allowNetwork && !context.signal.aborted) {
 					const found = await discover(catalogModels(), context);
-					if (!context.signal.aborted) {
+					if (found && !context.signal.aborted) {
 						await context.publish({
 							persist: withSavedModels(catalogEntry ?? { models: [] }, found),
 							update: () => {

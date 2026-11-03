@@ -16,6 +16,7 @@ import { ModelRuntime } from "../src/core/model-runtime.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
+import { resolveDeferredStartupModel } from "../src/main-deferred-startup.js";
 
 const PROVIDER = "github-copilot";
 const API_KEY: Credential = { type: "api_key", key: "github_pat_example_token" };
@@ -83,14 +84,14 @@ afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-function stubNetwork(): void {
+function stubNetwork(modelList: () => Response = () => Response.json(ACCOUNT_MODELS)): void {
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = input instanceof Request ? input : new Request(input, init);
 		if (request.url.startsWith("https://pi.dev/")) return new Response("not found", { status: 404 });
 		if (request.url.endsWith("/models")) {
 			modelListUrls.push(request.url);
 			modelListAuthorizations.push(request.headers.get("Authorization"));
-			return Response.json(ACCOUNT_MODELS);
+			return modelList();
 		}
 		throw new Error(`Unexpected request: ${request.url}`);
 	});
@@ -146,7 +147,8 @@ async function availableIds(modelRuntime: ModelRuntime): Promise<string[]> {
 }
 
 function assertIncludesAll(actual: readonly string[], expected: readonly string[]): void {
-	for (const id of expected) assert.ok(actual.includes(id), `${id} missing from ${actual.join(", ")}`);
+	for (const id of expected)
+		assert.ok(actual.includes(id), `${id} is not among the ${actual.length} available models`);
 }
 
 function assertMentions(message: string | undefined, text: string): void {
@@ -239,6 +241,24 @@ describe("GitHub Copilot models discovered from the account's list", () => {
 		assert.equal(fetchSpy.mock.calls.length, 0);
 	});
 
+	it.each([400, 401, 403, 404])(
+		"keeps the cached models when a later refresh is refused the account's list (%i)",
+		async (status) => {
+			await discover(API_KEY);
+			stubNetwork(() => new Response("refused", { status }));
+			const modelRuntime = await restart();
+
+			const result = await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+
+			assert.equal(result.errors.get(PROVIDER), undefined);
+			assert.deepEqual(modelListUrls.length, 2);
+			assertIncludesAll(await availableIds(modelRuntime), ACCOUNT_IDS);
+			vi.restoreAllMocks();
+			blockNetwork();
+			assertIncludesAll(await availableIds(await restart()), ACCOUNT_IDS);
+		},
+	);
+
 	it("applies modelOverrides to a discovered model", async () => {
 		const modelRuntime = await discover(API_KEY, {
 			providers: {
@@ -301,7 +321,25 @@ describe("saved GitHub Copilot fast model selections", () => {
 		assert.equal(resumed.session.model?.id, SAVED_ID);
 		assert.equal(resumed.modelFallbackMessage, undefined);
 		resumed.session.dispose();
+
+		const deferred = await deferredStartupModel(modelRuntime, SAVED_ID);
+		assert.equal(deferred?.id, SAVED_ID);
 	});
+
+	it.each([
+		["an API key", API_KEY],
+		["an OAuth login", oauthLogin([SAVED_ID])],
+	])(
+		"keep the saved choice through the startup pass deferred for project trust with %s",
+		async (_label, credential) => {
+			blockNetwork();
+			const modelRuntime = await runtime(credential);
+			// The configured default is usable, so only the stop for an uncached model keeps it from replacing the choice.
+			assert.ok(modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID));
+
+			assert.equal(await deferredStartupModel(modelRuntime, SAVED_ID), undefined);
+		},
+	);
 
 	it.each([
 		["an API key", API_KEY],
@@ -337,3 +375,14 @@ describe("saved GitHub Copilot fast model selections", () => {
 		resumed.session.dispose();
 	});
 });
+
+/** The model the startup pass deferred for project trust picks for a session that saved `modelId`. */
+function deferredStartupModel(modelRuntime: ModelRuntime, modelId: string) {
+	return resolveDeferredStartupModel({
+		selected: undefined,
+		isContinuing: true,
+		savedModel: { provider: PROVIDER, modelId },
+		settingsManager: SettingsManager.inMemory({ defaultProvider: PROVIDER, defaultModel: CATALOG_MODEL_ID }),
+		modelRuntime,
+	});
+}

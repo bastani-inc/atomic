@@ -304,7 +304,7 @@ describe("discoverGitHubCopilotModels", () => {
 			refreshContext({ type: "api_key", key: "github-token" }, "https://api.githubcopilot.com/"),
 		);
 
-		assert.equal(models.length, 7);
+		assert.equal(models?.length, 7);
 		assert.equal(requests.length, 1);
 		assert.equal(requests[0]?.url, "https://api.githubcopilot.com/models");
 		assert.equal(requests[0]?.headers.get("Authorization"), "Bearer github-token");
@@ -323,7 +323,7 @@ describe("discoverGitHubCopilotModels", () => {
 			),
 		);
 
-		assert.equal(models.length, 7);
+		assert.equal(models?.length, 7);
 		assert.equal(requests[0]?.url, "https://api.business.githubcopilot.com/models");
 		assert.equal(requests[0]?.headers.get("Authorization"), `Bearer ${access}`);
 		assert.equal(requests[0]?.headers.get("Copilot-Integration-Id"), "vscode-chat");
@@ -367,10 +367,10 @@ describe("discoverGitHubCopilotModels", () => {
 		assert.equal(saved && updates[0]?.(saved), undefined);
 	});
 
-	it.each([400, 401, 403, 404])("discovers nothing when the host refuses the token's list (%i)", async (status) => {
+	it.each([400, 401, 403, 404])("reports no list, not an empty one, when the host refuses the token (%i)", async (status) => {
 		stubModelList(() => new Response("refused", { status }));
 		const models = await discoverGitHubCopilotModels([staticModel], refreshContext({ type: "api_key", key: "k" }));
-		assert.deepEqual(models, []);
+		assert.equal(models, undefined);
 	});
 
 	it("fails on other errors so the cached list is kept", async () => {
@@ -381,14 +381,14 @@ describe("discoverGitHubCopilotModels", () => {
 		);
 	});
 
-	it("needs a credential", async () => {
+	it("reports no list without a credential", async () => {
 		const requests = stubModelList(() => Response.json(recordedModels));
 		const models = await discoverGitHubCopilotModels([staticModel], {
 			publish: async () => true,
 			allowNetwork: true,
 			signal: new AbortController().signal,
 		});
-		assert.deepEqual(models, []);
+		assert.equal(models, undefined);
 		assert.equal(requests.length, 0);
 	});
 });

@@ -224,7 +224,10 @@ async function saveLoginModelLists(context: RefreshModelsContext, raw: unknown, 
  * Read the account's model list with the effective OAuth or API-key credential and return the chat
  * models `catalog` lacks (see {@link parseGitHubCopilotDiscoveredModels}). An OAuth login reads the
  * host its token names; an API key reads the provider's configured host, the one its requests use.
- * When the host does not let the token read the list (400, 401, 403 or 404), nothing is discovered.
+ *
+ * Returns undefined when the list cannot be read: without a usable credential, or when the host
+ * refuses the token (400, 401, 403 or 404). That is not an empty list, so a caller keeps the models it
+ * found before. Other failures throw.
  *
  * An OAuth login's saved model lists, which decide what the login is offered, are renewed from the
  * same response through `context.updateCredential`, so what a refresh discovers is offered at once.
@@ -232,9 +235,9 @@ async function saveLoginModelLists(context: RefreshModelsContext, raw: unknown, 
 export async function discoverGitHubCopilotModels(
 	catalog: readonly AnyModel[],
 	context: RefreshModelsContext,
-): Promise<Model<Api>[]> {
+): Promise<Model<Api>[] | undefined> {
 	const request = await accountModelListRequest(context);
-	if (!request) return [];
+	if (!request) return undefined;
 	const response = await fetch(`${request.baseUrl.replace(/\/+$/, "")}/models`, {
 		headers: {
 			Accept: "application/json",
@@ -244,7 +247,7 @@ export async function discoverGitHubCopilotModels(
 		},
 		signal: AbortSignal.any([context.signal, AbortSignal.timeout(GITHUB_COPILOT_MODELS_TIMEOUT_MS)]),
 	});
-	if ([400, 401, 403, 404].includes(response.status)) return [];
+	if ([400, 401, 403, 404].includes(response.status)) return undefined;
 	if (!response.ok) throw new Error(`GitHub Copilot model list request failed: ${response.status}`);
 	const raw: unknown = await response.json();
 	const models = parseGitHubCopilotDiscoveredModels(raw, catalog);
