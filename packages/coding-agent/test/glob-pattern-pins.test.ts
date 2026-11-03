@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import type { Model } from "@bastani/pi-ai/compat";
-import { describe, expect, it } from "vitest";
-import { resolveModelScopeFromModels } from "../src/core/model-resolver.ts";
-import { applyNamePatterns, applyPatterns } from "../src/core/package-manager-resource-patterns.ts";
+import { describe, it } from "vitest";
+import { resolveModelScopeFromModels } from "../src/core/model-resolver.js";
+import { applyNamePatterns, applyPatterns } from "../src/core/package-manager-resource-patterns.js";
 
 // Pins the glob semantics of the two minimatch call sites, so a minimatch upgrade that changes them fails here.
 
@@ -43,7 +44,7 @@ describe("model scope globs", () => {
 		["openrouter/**", ["openrouter/meta-llama/llama-3.1-8b-instruct"]],
 		["**/llama-*", ["openrouter/meta-llama/llama-3.1-8b-instruct"]],
 	])("%s selects %j", (pattern, expected) => {
-		expect(scope(pattern)).toEqual(expected);
+		assert.deepEqual(scope(pattern), expected);
 	});
 });
 
@@ -97,7 +98,7 @@ describe("resource filter globs", () => {
 			["skills/skill-a/SKILL.md", "skills/nested/skill-b/SKILL.md"],
 		],
 	])("%j selects %j", (patterns, expected) => {
-		expect(select(patterns)).toEqual(expected);
+		assert.deepEqual(select(patterns), expected);
 	});
 
 	it.each([
@@ -109,6 +110,6 @@ describe("resource filter globs", () => {
 			["server-alpha", "server.beta"],
 		],
 	])("names %j select %j", (patterns, expected) => {
-		expect([...applyNamePatterns(["server-alpha", "server.beta", "other"], patterns)]).toEqual(expected);
+		assert.deepEqual([...applyNamePatterns(["server-alpha", "server.beta", "other"], patterns)], expected);
 	});
 });
