@@ -106,6 +106,8 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 	targetContainer: Container = this.chatContainer,
 ): void {
 	if (this.startupNoticesShown) {
+		// Deferred startup asks again after extensions load: redraw What's New with their transformers, don't repeat it.
+		this.startupChangelogComponent?.invalidate();
 		return;
 	}
 	prepareStartupNotices(this);
@@ -131,7 +133,8 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function (
 		} else {
 			targetContainer.addChild(new ThemedText(() => theme.bold(theme.fg("accent", "What's New")), 1, 0));
 			targetContainer.addChild(new Spacer(1));
-			targetContainer.addChild(this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0));
+			this.startupChangelogComponent = this.createChangelogMarkdown(changelogMarkdown.trim(), 1, 0);
+			targetContainer.addChild(this.startupChangelogComponent);
 			targetContainer.addChild(new Spacer(1));
 		}
 		targetContainer.addChild(new DynamicBorder());

@@ -205,6 +205,24 @@ describe("Markdown transformers on the changelog", () => {
 		expect(rendered).not.toContain(":warning:");
 	});
 
+	test("a changelog transformer loaded after the startup notice redraws What's New without repeating it", () => {
+		// Deferred startup shows What's New before extensions load, then shows startup notices again once they have.
+		const extensions: Pick<Extension, "markdownTransformer">[] = [];
+		const host = mode(extensions);
+		host.settingsManager.setMermaidRenderingMode("streaming");
+		const show = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (this: typeof host) => void;
+		show.call(host);
+		expect(stripAnsi(host.chatContainer.render(100).join("\n"))).toContain(":warning: Atomic change");
+
+		extensions.push(extensionWith(replaceShortcodes, ["changelog"]));
+		show.call(host);
+		const rendered = stripAnsi(host.chatContainer.render(100).join("\n"));
+
+		expect(rendered).toContain("⚠ Atomic change");
+		expect(rendered).not.toContain(":warning:");
+		expect(rendered.match(/What's New/g)).toHaveLength(1);
+	});
+
 	test("a changelog transformer runs on /changelog", () => {
 		const rendered = renderChangelogCommand([extensionWith(replaceShortcodes, ["changelog"])]);
 

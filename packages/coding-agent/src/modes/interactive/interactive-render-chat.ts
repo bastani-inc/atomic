@@ -235,7 +235,10 @@ InteractiveModeBase.prototype.getMarkdownTransformers = function (this: Interact
 	return [this.mermaidMarkdownTransformer, ...extensionTransformers];
 };
 
-/** Markdown of a changelog that runs the Markdown transformers registered for the `changelog` type. */
+/**
+ * Markdown of a changelog that runs the Markdown transformers registered for the `changelog` type. Transformers are
+ * looked up on each render, so a notice shown before deferred extensions load uses them once it is invalidated.
+ */
 InteractiveModeBase.prototype.createChangelogMarkdown = function (
 	this: InteractiveModeBase,
 	markdown: string,
@@ -243,7 +246,8 @@ InteractiveModeBase.prototype.createChangelogMarkdown = function (
 	paddingY: number,
 ): Markdown {
 	return new Markdown(markdown, paddingX, paddingY, this.getMarkdownThemeWithSettings(), undefined, {
-		transform: createMarkdownTransform("changelog", () => false, this.getMarkdownTransformers()),
+		transform: (text, width) =>
+			createMarkdownTransform("changelog", () => false, this.getMarkdownTransformers())(text, width),
 	});
 };
 
