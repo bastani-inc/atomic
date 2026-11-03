@@ -103,6 +103,7 @@ In `models.json`, `headers` values must be strings. A `null` suppression marker 
 | `compat.supportsMidConvoSystemMessages` | No | model default | Accept system/developer messages after the conversation starts |
 | `compat.supportsMidConvoToolAdditions` | No | model default | OpenAI Completions: enable Kimi-style tool additions; requires mid-conversation system messages |
 | `compat.supportsMidConvoToolChanges` | No | model default | Anthropic: enable native tool additions/removals; requires mid-conversation system messages |
+| `compat.supportsMessageThreads` | No | `true` for `anthropic` and `anthropic-api` on `api.anthropic.com`, else `false` | Anthropic: use message threads (beta), so each request with a session sends only the new messages; set `true` for gateways that forward the `thread` field |
 
 Current behavior:
 - `/model`, `--list-models`, the interactive footer, status messages, fallback notices, and subagent and workflow labels show a model by its raw `provider/id` (or `id` where the provider is already clear), followed by the reasoning level it runs at, e.g. `anthropic/claude-sonnet-4-5  high`. That is the string `--model provider/id:level` takes.

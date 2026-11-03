@@ -98,6 +98,34 @@ describe("cache warming", () => {
 		assert.deepEqual(warmer.status, { state: "inactive", reason: "cache refresh deadline missed" });
 	});
 
+	it("sends the warm replay with disableContinuation so it keeps the conversation's thread", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		const streamSimple = vi.fn(() => ({
+			result: async () => ({ stopReason: "stop", provider: "anthropic", model: model.id, usage: {} }),
+		}));
+		const warmer = new CacheWarmer(
+			{ streamSimple } as unknown as ConstructorParameters<typeof CacheWarmer>[0],
+			sessionManager(),
+			() => "idle",
+			async () => "warm",
+		);
+		warmer.start({ model, context, options: { cacheRetention: "short", sessionId: "s" } }, () => true);
+		vi.clearAllTimers();
+		const internal = warmer as unknown as { run: object | undefined; refresh: (run: object) => Promise<void> };
+		if (!internal.run) throw new Error("expected an active cache-warming run");
+		// The scheduled refresh time.
+		vi.setSystemTime(270_000);
+		await internal.refresh(internal.run);
+		warmer.cancel();
+
+		assert.equal(streamSimple.mock.calls.length, 1);
+		const options = (streamSimple.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+		assert.equal(options.disableContinuation, true);
+		assert.equal(options.maxTokens, 1);
+		assert.equal(options.sessionId, "s");
+	});
+
 	it("formats an inactive status without leaking economics", () => {
 		assert.equal(
 			formatCacheWarmingStatus({ state: "inactive", reason: "cache warming disabled" }),
