@@ -226,6 +226,10 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 	}
 }
 
+function isSessionClosed(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
+}
+
 function isExtensionCommand(session: AgentSession, text: string): boolean {
 	if (!text.startsWith("/")) return false;
 	const spaceIndex = text.indexOf(" ");
@@ -268,7 +272,17 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const held = registerInputForCompaction(this, text, options, expandPromptTemplates);
 	// The sender learns at once that the session took the input, so an interactive host can stop
 	// showing its own copy: the session lists the input as queued from here on.
-	if (held && this.isCompacting) preflightResult(true, "queued");
+	const acceptedWhileHeld = held !== undefined && this.isCompacting;
+	if (acceptedWhileHeld) preflightResult(true, "queued");
+	// Input accepted while held must not vanish if a later check fails: it stays queued for the next turn.
+	let keptText = text;
+	let keptImages = options?.images;
+	const keepAcceptedInput = async (error: unknown): Promise<void> => {
+		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
+		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
+		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages);
+		else await this._queueSteer(keptText, keptImages);
+	};
 
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
@@ -339,6 +353,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			expandedText = this._expandSkillCommand(expandedText);
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
+		keptText = expandedText;
+		keptImages = currentImages;
 
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;
@@ -514,6 +530,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	} catch (error) {
 		if (preparingRun) this._isPreparingRun = false;
 		preflightResult?.(false);
+		await keepAcceptedInput(error);
 		throw error;
 	} finally {
 		admission.release();
@@ -536,6 +553,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (!dispatched) {
 			dispatched = true;
 			preflightResult?.(false);
+			await keepAcceptedInput(error);
 		}
 		throw error;
 	}

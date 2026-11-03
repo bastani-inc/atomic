@@ -117,6 +117,7 @@ export function createRpcCommandHandler({
 			}
 			case "prompt": {
 				let preflightSucceeded = false;
+				let acceptedAsQueued = false;
 				void (async () => {
 					const pendingResources = waitForResources?.();
 					if (pendingResources) await pendingResources;
@@ -129,6 +130,7 @@ export function createRpcCommandHandler({
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
 								preflightSucceeded = true;
+								acceptedAsQueued = disposition === "queued";
 								output(createRpcSuccessResponse(id, "prompt", { disposition }));
 							}
 						},
@@ -136,6 +138,14 @@ export function createRpcCommandHandler({
 				})().catch((promptError: unknown) => {
 					if (!preflightSucceeded) {
 						output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
+					} else if (acceptedAsQueued) {
+						// Input held during compaction is answered as queued before its turn is prepared. If that
+						// preparation fails, the session keeps the input queued; tell the client why, once (#4251).
+						output({
+							type: "agent_continue_error",
+							source: "post_compaction",
+							errorMessage: `Failed to send queued message: ${formatRpcErrorMessage(promptError)}`,
+						});
 					}
 				});
 				return undefined;

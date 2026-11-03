@@ -101,7 +101,8 @@ function attachCompactionEventHandler(rig: Rig): void {
 		get: () => rig.host.session.isCompacting || Reflect.get(rig.host, "manualCompactionTakeoverPending") === true,
 	});
 	rig.host.session.subscribe(async (event) => {
-		if (event.type === "compaction_start" || event.type === "compaction_end") await handleEvent.call(rig.host, event);
+		if (event.type === "compaction_start" || event.type === "compaction_end" || event.type === "agent_continue_error")
+			await handleEvent.call(rig.host, event);
 	});
 }
 
@@ -320,6 +321,48 @@ for (const wiring of ["local", "isolated"] as const) {
 				"sent by the command",
 				"typed last",
 			]);
+		});
+	});
+}
+
+for (const wiring of ["local", "isolated"] as const) {
+	describe(`${wiring} host when a handed-off message fails after compaction`, () => {
+		test("keeps the message queued, shows the error once and sends it once later (#4251)", async () => {
+			const invocations: string[] = [];
+			const rig = await createCompactingRig(wiring, invocations);
+			const releaseCompaction = holdCompaction(rig);
+			const compaction = startCompaction(rig, "manual");
+			await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+			await submit("typed first");
+			await submit("/workflow connect");
+			await waitFor("the session to hold the handed-off message", () =>
+				isDeepEqual(rig.engine.session.getSteeringMessages(), ["typed first"]),
+			);
+			// Credentials go away (for example /logout) before compaction ends.
+			const auth = vi.spyOn(rig.engine.session.modelRuntime, "hasConfiguredAuth").mockReturnValue(false);
+
+			releaseCompaction();
+			await compaction;
+			const failures = () =>
+				rig.host.notices.filter((notice) => notice.startsWith("error: Failed to send queued message"));
+			await waitFor("the failure to be shown", () => failures().length > 0);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+			assert.equal(failures().length, 1, JSON.stringify(rig.host.notices));
+			assert.match(failures()[0] ?? "", /No API key/);
+			assert.deepEqual(rig.engine.session.getSteeringMessages(), ["typed first"]);
+			await waitFor("the host to list the kept message", () =>
+				rig.host.getAllQueuedMessages().steering.includes("typed first"),
+			);
+			assert.equal(providerRequests(rig), 0);
+
+			auth.mockRestore();
+			await submit("next prompt");
+			await waitFor("both messages to be sent", () => getUserTexts(rig.engine).length === 2);
+			await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+			assert.deepEqual(getUserTexts(rig.engine).sort(), ["next prompt", "typed first"]);
 		});
 	});
 }
