@@ -1,5 +1,5 @@
 import { type KeyId, matchesKey } from "@earendil-works/pi-tui";
-import type { AgentSession } from "../../core/agent-session.js";
+import type { AgentSession, ClearedQueue } from "../../core/agent-session.js";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ResourceOverlap } from "../../core/diagnostics.ts";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
@@ -207,9 +207,7 @@ export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime)
  * the engine by a round trip, so a host that restores the queue to its editor restores this answer rather than
  * its copy (#4257). Returns `undefined` for a session that runs in this process, whose `clearQueue()` is exact.
  */
-export function clearInteractiveEngineQueue(
-	runtime: AgentSessionRuntime,
-): Promise<{ steering: string[]; followUp: string[] }> | undefined {
+export function clearInteractiveEngineQueue(runtime: AgentSessionRuntime): Promise<ClearedQueue> | undefined {
 	return runtime instanceof IsolatedInteractiveRuntime ? runtime.clearEngineQueue() : undefined;
 }
 

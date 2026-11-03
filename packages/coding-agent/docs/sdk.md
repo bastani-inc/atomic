@@ -737,6 +737,8 @@ await session.followUp("After you're done, also do this");
 
 If the session is idle and already has messages when either is called, it starts a turn to deliver the message instead of leaving it queued. On a session with no messages yet, or after a run was stopped with `abort()`, the message stays queued until the next `prompt()`. A `prompt()` call made while that turn runs must pass `streamingBehavior`, or it fails with "Agent is already processing". Both `steer()` and `followUp()` expand file-based prompt templates but error on extension commands (extension commands cannot be queued). They return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
 
+`clearQueue()` removes the queued steering and follow-up messages and returns them. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` holds the same messages, in the same order, as they were submitted: give the user those to send again, so the hooks and expansions run once more and not twice. `typed` is left out when every message was queued as submitted.
+
 `pauseQueuedMessages()` synchronously holds existing raw steering/follow-up entries before an abort boundary. Later context-bearing arrivals also stay queued without starting a provider turn. These include trigger-turn custom messages, batches, interrupts, `sendUserMessage()`, and ordinary `prompt()` calls.
 
 The hold preserves content blocks, optional data, duplicate identities, raw text, message types, and order within each queue kind. Non-trigger custom messages remain history-only and do not start a turn.

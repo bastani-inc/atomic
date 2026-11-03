@@ -1,4 +1,4 @@
-import type { PromptDisposition } from "../../core/agent-session-types.js";
+import type { ClearedQueue, PromptDisposition } from "../../core/agent-session-types.js";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
@@ -59,7 +59,7 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 	const heldSendFailed = this.compactionSendFailed;
 	this.compactionQueuedMessages = [];
 	this.compactionSendFailed = false;
-	let removed: { steering: string[]; followUp: string[] };
+	let removed: ClearedQueue;
 	try {
 		const clearing =
 			clearInteractiveEngineQueue(this.runtimeHost) ?? Promise.resolve(this.session.clearQueue(options));
@@ -73,10 +73,13 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 		this.updatePendingMessagesDisplay();
 		throw error;
 	}
+	// Each message goes back as it was typed, so sending it again runs `input` hooks and expansions once (#4284).
+	// A session from before `typed` was added gives back only the text it queued.
+	const typed = removed.typed ?? removed;
 	// A hand-off the session has not confirmed yet is the session's: it either lists it or reports its refusal.
 	return {
-		steering: [...removed.steering, ...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text)],
-		followUp: [...removed.followUp, ...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text)],
+		steering: [...typed.steering, ...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text)],
+		followUp: [...typed.followUp, ...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text)],
 	};
 };
 
@@ -363,7 +366,8 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 			message,
 			echoed
 				? (disposition) => {
-						if (disposition === "queued") mode.discardDeferredRenderedUserInput(message.text);
+						if (disposition === "queued" || disposition === "handled")
+							mode.discardDeferredRenderedUserInput(message.text);
 						if (disposition === "started") mode.expectStartedUserInput(message.text, shownBefore);
 					}
 				: undefined,

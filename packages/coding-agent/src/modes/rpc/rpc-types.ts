@@ -16,6 +16,7 @@ import type {
 import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
+	ClearedQueue,
 	CompactionReason,
 	PromptDisposition,
 	QueuedInputDisposition,
@@ -379,7 +380,7 @@ export type RpcResponse =
 			type: "response";
 			command: "clear_queue";
 			success: true;
-			data: { steering: string[]; followUp: string[] };
+			data: ClearedQueue;
 	  }
 	| { id?: string; type: "response"; command: "pause_queued_messages"; success: true }
 	| { id?: string; type: "response"; command: "resume_queued_messages"; success: true; data: { released: boolean } }

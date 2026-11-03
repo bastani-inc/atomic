@@ -9,6 +9,7 @@ import {
 	createGate,
 	createRig,
 	DUPLICATE_DELIVERY_SETTLE_MS,
+	type Gate,
 	holdTool,
 	isIdleAfterAnswering,
 	type Rig,
@@ -250,44 +251,158 @@ describe.each(["local", "isolated"] as const)("a message an input hook rewrites 
 		);
 	});
 
-	test("restored with Alt+Up and sent again is shown once, as it was sent (#4277)", async () => {
-		const toolHold = createGate();
-		const { rig, chat } = await createRewritingRig(wiring, { tools: [holdTool(toolHold)] });
-		rig.engine.setResponses([
-			fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
-			fauxAssistantMessage("first answer"),
-			fauxAssistantMessage("answer to the restored message"),
-			fauxAssistantMessage("unexpected extra reply"),
-		]);
+	test.each(["Enter", "Alt+Enter"] as const)(
+		"queued with %s, restored with Alt+Up as typed and sent again, is rewritten once and shown once (#4277, #4284)",
+		async (key) => {
+			const toolHold = createGate();
+			const { rig, chat } = await createRewritingRig(wiring, { tools: [holdTool(toolHold)] });
+			rig.engine.setResponses([
+				fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("answer to the restored message"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+			const queuedIn = (session: {
+				getSteeringMessages(): readonly string[];
+				getFollowUpMessages(): readonly string[];
+			}) => (key === "Enter" ? session.getSteeringMessages() : session.getFollowUpMessages());
 
-		await rig.host.defaultEditor.onSubmit?.("first");
-		await toolHold.entered.promise;
-		await waitFor("the host to see the running turn", () => rig.host.session.isStreaming);
-		await rig.host.defaultEditor.onSubmit?.("queued");
-		await waitFor("the session to queue the message", () => rig.engine.session.getSteeringMessages().length === 1);
-		await waitFor("the host to list the queued message", () => rig.host.getAllQueuedMessages().steering.length === 1);
-		pressAltUp(rig.host);
-		await waitFor("the queued message to return to the editor", () => rig.host.editor.getText() !== "");
+			await rig.host.defaultEditor.onSubmit?.("first");
+			await toolHold.entered.promise;
+			await waitFor("the host to see the running turn", () => rig.host.session.isStreaming);
+			if (key === "Enter") await rig.host.defaultEditor.onSubmit?.("queued");
+			else await pressAltEnter(rig.host, "queued");
+			await waitFor("the session to queue the message", () => queuedIn(rig.engine.session).length === 1);
+			assert.deepEqual(queuedIn(rig.engine.session), [rewritten("queued")]);
+			await waitFor("the host to list the queued message", () => {
+				const queued = rig.host.getAllQueuedMessages();
+				return queued.steering.length + queued.followUp.length === 1;
+			});
+			pressAltUp(rig.host);
+			await waitFor("the queued message to return to the editor", () => rig.host.editor.getText() !== "");
+			await waitFor("the session to give the message back", () => queuedIn(rig.engine.session).length === 0);
+			toolHold.release.resolve();
+			await waitFor(
+				"the turn to finish",
+				() => getUserTexts(rig.engine).length === 1 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			const restored = rig.host.editor.getText();
+			assert.equal(restored, "queued", "Alt+Up must restore the text that was typed, not the hook's output");
+			rig.host.editor.setText("");
+			await rig.host.defaultEditor.onSubmit?.(restored);
+			await waitFor(
+				"the restored message to be answered",
+				() => getUserTexts(rig.engine).length === 2 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			assertShownOnceAsSent(rig, chat, [rewritten("first"), rewritten("queued")]);
+		},
+	);
+});
+
+/**
+ * An `input` hook that handles every message starting with "handled:" itself, so none of them reaches the model. It
+ * holds the message "slow" until `slow` is released, so a test can type while the host waits for it to be dispatched.
+ */
+function handleInput(slow?: Gate): ExtensionFactory {
+	return (pi) => {
+		pi.on("input", async (event) => {
+			if (event.text.startsWith("handled:")) return { action: "handled" };
+			if (event.text === "slow" && slow) {
+				slow.entered.resolve();
+				await slow.release.promise;
+			}
+			return { action: "continue" };
+		});
+	};
+}
+
+async function createHandlingRig(
+	wiring: Wiring,
+	options: Omit<RigOptions, "extensions"> & { slow?: Gate } = {},
+): Promise<{ rig: Rig; chat: () => string[] }> {
+	const rig = await createRig(wiring, "quiet", { ...options, extensions: [handleInput(options.slow)] });
+	rigs.push(rig);
+	const chat = showUserMessagesInChat(rig.host);
+	if (rig.pair) await rig.pair.runtime.waitUntilResourcesReady();
+	return { rig, chat };
+}
+
+describe.each(["local", "isolated"] as const)("a message an input hook handles (%s host)", (wiring) => {
+	test.each(["Enter", "Alt+Enter"] as const)(
+		"sent with %s while idle leaves no echo in the chat (#4285)",
+		async (key) => {
+			const { rig, chat } = await createHandlingRig(wiring);
+			rig.engine.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("unexpected extra reply")]);
+
+			if (key === "Enter") await rig.host.defaultEditor.onSubmit?.("handled: idle");
+			else await pressAltEnter(rig.host, "handled: idle");
+			await waitFor("the hook to handle the message", () => rig.host.promptTurn === undefined);
+			await settle(rig);
+			assert.deepEqual(chat(), [], "the chat must not show a message the hook handled");
+
+			// The next message takes its own place in the chat, not one the handled message left.
+			await rig.host.defaultEditor.onSubmit?.("hello");
+			await waitFor(
+				"the message to be answered",
+				() => getUserTexts(rig.engine).length === 1 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			assertShownOnceAsSent(rig, chat, ["hello"]);
+		},
+	);
+
+	test.each(["Enter", "Alt+Enter"] as const)(
+		"sent with %s while the agent works leaves no echo in the chat (#4285)",
+		async (key) => {
+			const toolHold = createGate();
+			const { rig, chat } = await createHandlingRig(wiring, { tools: [holdTool(toolHold)] });
+			rig.engine.setResponses([
+				fauxAssistantMessage([fauxToolCall("hold", {})], { stopReason: "toolUse" }),
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("unexpected extra reply"),
+			]);
+
+			await rig.host.defaultEditor.onSubmit?.("first");
+			await toolHold.entered.promise;
+			await waitFor("the host to see the running turn", () => rig.host.session.isStreaming);
+			if (key === "Enter") await rig.host.defaultEditor.onSubmit?.("handled: while working");
+			else await pressAltEnter(rig.host, "handled: while working");
+			toolHold.release.resolve();
+			await waitFor(
+				"the turn to finish",
+				() => getUserTexts(rig.engine).length === 1 && isIdleAfterAnswering(rig.engine),
+			);
+			await settle(rig);
+
+			assertShownOnceAsSent(rig, chat, ["first"]);
+		},
+	);
+
+	test("typed while the host waits for a prompt to be dispatched leaves no echo in the chat (#4285)", async () => {
+		const slow = createGate();
+		const { rig, chat } = await createHandlingRig(wiring, { slow });
+		rig.engine.setResponses([fauxAssistantMessage("answer"), fauxAssistantMessage("unexpected extra reply")]);
+
+		await rig.host.defaultEditor.onSubmit?.("slow");
+		await slow.entered.promise;
+		await rig.host.defaultEditor.onSubmit?.("handled: held");
+		assert.deepEqual(rig.host.compactionQueuedMessages, [{ text: "handled: held", mode: "steer" }]);
+		slow.release.resolve();
 		await waitFor(
-			"the session to give the message back",
-			() => rig.engine.session.getSteeringMessages().length === 0,
-		);
-		toolHold.release.resolve();
-		await waitFor(
-			"the turn to finish",
-			() => getUserTexts(rig.engine).length === 1 && isIdleAfterAnswering(rig.engine),
+			"the prompt to be answered and the held message sent",
+			() =>
+				getUserTexts(rig.engine).length === 1 &&
+				isIdleAfterAnswering(rig.engine) &&
+				rig.host.compactionQueuedMessages.length === 0 &&
+				!rig.host.compactionFlushPending,
 		);
 		await settle(rig);
 
-		const restored = rig.host.editor.getText();
-		rig.host.editor.setText("");
-		await rig.host.defaultEditor.onSubmit?.(restored);
-		await waitFor(
-			"the restored message to be answered",
-			() => getUserTexts(rig.engine).length === 2 && isIdleAfterAnswering(rig.engine),
-		);
-		await settle(rig);
-
-		assertShownOnceAsSent(rig, chat, [rewritten("first"), rewritten(restored)]);
+		assertShownOnceAsSent(rig, chat, ["slow"]);
 	});
 });

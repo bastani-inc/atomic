@@ -22,6 +22,7 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 	AgentSessionReloadOptions,
+	ClearedQueue,
 	ClearQueueOptions,
 	DrainedAgentQueues,
 	ExtensionBindings,
@@ -267,8 +268,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
 	): Promise<void>;
 
-	_queueSteer(text: string, images?: ImageContent[]): Promise<void>;
-	_queueFollowUp(text: string, images?: ImageContent[]): Promise<void>;
+	_queueSteer(text: string, images?: ImageContent[], typed?: string): Promise<void>;
+	_queueFollowUp(text: string, images?: ImageContent[], typed?: string): Promise<void>;
 	_throwIfExtensionCommand(text: string): void;
 	sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
@@ -289,7 +290,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	_queueAgentMessage(message: AgentMessage, delivery: "steer" | "followUp" | "interrupt"): void;
 	_drainQueuedAgentMessages(): DrainedAgentQueues;
 	_restoreQueuedAgentMessages(queues: DrainedAgentQueues): void;
-	clearQueue(options?: ClearQueueOptions): { steering: string[]; followUp: string[] };
+	clearQueue(options?: ClearQueueOptions): ClearedQueue;
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
 	abort(): Promise<void>;

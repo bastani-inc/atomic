@@ -15,6 +15,7 @@ import {
 	retryConsumedProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
+import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
@@ -132,6 +133,7 @@ export function _handleAgentEvent(this: AgentSession, event: AgentEvent): Promis
 			const queue = [this._steeringMessages, this._followUpMessages].find((messages) => messages.includes(text));
 			if (queue) {
 				queue.splice(queue.indexOf(text), 1);
+				forgetTypedQueuedText(this, queue === this._steeringMessages ? "steer" : "followUp", text);
 				this._admittedQueuedMessageAwaitingReply = text;
 				consumedQueuedMessageEvents.add(event);
 			}
