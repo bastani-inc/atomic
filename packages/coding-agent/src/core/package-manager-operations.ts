@@ -188,7 +188,8 @@ async function updateConfiguredSources(
 		);
 		tasks.push(runWithConcurrency(gitTasks, GIT_UPDATE_CONCURRENCY).then(() => {}));
 	}
-	await Promise.all(tasks);
+	// Report what changed even when another package's update failed, then rethrow the first failure.
+	const failure = (await Promise.allSettled(tasks)).find((result) => result.status === "rejected");
 
 	const updated: UpdatedPackage[] = [];
 	for (const { entry } of npmUpdates) {
@@ -215,6 +216,7 @@ async function updateConfiguredSources(
 			message: `${pkg.source}${scope} ${format(pkg.from)} -> ${format(pkg.to)}`,
 		});
 	}
+	if (failure) throw failure.reason;
 }
 
 /** A configured package whose installed npm version or git commit changed during update(). */
