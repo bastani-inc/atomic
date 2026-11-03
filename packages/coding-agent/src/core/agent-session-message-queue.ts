@@ -2,6 +2,7 @@ import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import {
@@ -454,8 +455,10 @@ export function clearQueue(
 ): { steering: string[]; followUp: string[] } {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.clearQueue(options);
-	const steering = [...this._steeringMessages];
-	const followUp = [...this._followUpMessages];
+	// Input held while the session compacts goes back to the caller too, and is never sent.
+	const held = cancelHeldInput(this);
+	const steering = [...this._steeringMessages, ...held.steering];
+	const followUp = [...this._followUpMessages, ...held.followUp];
 	this._steeringMessages = [];
 	this._followUpMessages = [];
 	const removed = this._drainQueuedAgentMessages();
@@ -503,12 +506,14 @@ export function clearQueue(
 
 /** Number of pending messages (includes both steering and follow-up) */
 export function getSteeringMessages(this: AgentSession): readonly string[] {
-	return this._steeringMessages;
+	const held = heldInputView(this).steering;
+	return held.length === 0 ? this._steeringMessages : [...this._steeringMessages, ...held];
 }
 
 /** Get pending follow-up messages (read-only) */
 export function getFollowUpMessages(this: AgentSession): readonly string[] {
-	return this._followUpMessages;
+	const held = heldInputView(this).followUp;
+	return held.length === 0 ? this._followUpMessages : [...this._followUpMessages, ...held];
 }
 
 // =========================================================================

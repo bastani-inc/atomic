@@ -4,6 +4,14 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import {
+	earlierHeldInputs,
+	finishHeldInput,
+	type HeldInput,
+	hasHeldInput,
+	registerHeldInput,
+	stopWaiting,
+} from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
 import {
@@ -15,6 +23,7 @@ import { runCallback } from "./callback-activity.ts";
 import type { CustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
+	isInsideInputHook,
 	type QueuedInputAdmission,
 	reserveQueuedInputAdmission,
 	runInputHook,
@@ -129,6 +138,62 @@ function queuesBehindOpenRun(session: AgentSession, options: PromptOptions | und
 	return openRuns.has(session) && options?.streamingBehavior !== undefined && options.source !== "extension";
 }
 
+function compactionSettlement(session: AgentSession): Promise<unknown> | undefined {
+	const pending = [
+		session._manualCompactionPromise,
+		session._autoCompactionCompletion,
+		session._branchSummaryCompletion,
+	].filter((settlement) => settlement !== undefined);
+	return pending.length === 0 ? undefined : Promise.allSettled(pending);
+}
+
+function untilSessionEnds(work: Promise<unknown>, lifetime: AbortSignal): Promise<void> {
+	if (lifetime.aborted) return Promise.resolve();
+	return new Promise<void>((resolve) => {
+		const finish = () => {
+			lifetime.removeEventListener("abort", finish);
+			resolve();
+		};
+		lifetime.addEventListener("abort", finish, { once: true });
+		void work.then(finish, finish);
+	});
+}
+
+/**
+ * Hold input that reaches the session while it compacts (#4251): a turn started now would send the transcript
+ * that compaction is rewriting. The input is registered on entry, so it keeps its arrival order across senders.
+ * Extension commands still run at once and are never registered.
+ */
+function registerInputForCompaction(
+	session: AgentSession,
+	text: string,
+	options: PromptOptions | undefined,
+	expandPromptTemplates: boolean,
+): HeldInput | undefined {
+	if (!session.isCompacting && !hasHeldInput(session)) return undefined;
+	if (expandPromptTemplates && isExtensionCommand(session, text)) return undefined;
+	return registerHeldInput(session, text, options?.streamingBehavior ?? "steer", !isInsideInputHook());
+}
+
+/**
+ * Wait until every input held before this one has started its turn, queued, or failed, and no compaction runs,
+ * or until `clearQueue()` cancels this input or the session ends.
+ */
+async function waitForHeldTurn(session: AgentSession, held: HeldInput, lifetime: AbortSignal): Promise<void> {
+	const until = (work: Promise<unknown>) =>
+		untilSessionEnds(Promise.race([work, held.cancellation.promise]), lifetime);
+	const earlier = earlierHeldInputs(session, held);
+	if (earlier.length > 0) await until(Promise.all(earlier.map((entry) => entry.admitted.promise)));
+	for (
+		let settlement = compactionSettlement(session);
+		session.isCompacting && settlement !== undefined && !held.cancelled && !lifetime.aborted;
+		settlement = compactionSettlement(session)
+	) {
+		await until(settlement);
+	}
+	stopWaiting(session, held);
+}
+
 async function admittedPrompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	if (this._activePromptCount === 0 && !this.isStreaming) {
 		this._agentRunAbortRequested = false;
@@ -161,6 +226,10 @@ async function admittedPrompt(this: AgentSession, text: string, options?: Prompt
 	}
 }
 
+function isSessionClosed(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
+}
+
 function isExtensionCommand(session: AgentSession, text: string): boolean {
 	if (!text.startsWith("/")) return false;
 	const spaceIndex = text.indexOf(" ");
@@ -189,11 +258,31 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
-	const preflightResult = options?.preflightResult;
+	let preflightReported = false;
+	// Reported once: input held while the session compacts is accepted as queued before it is admitted.
+	const preflightResult = (success: boolean, disposition?: PromptDisposition): void => {
+		if (preflightReported) return;
+		preflightReported = true;
+		options?.preflightResult?.(success, disposition);
+	};
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
 	const admission = reserveAdmissionForQueuedPrompt(this, text, options);
+	const held = registerInputForCompaction(this, text, options, expandPromptTemplates);
+	// The sender learns at once that the session took the input, so an interactive host can stop
+	// showing its own copy: the session lists the input as queued from here on.
+	const acceptedWhileHeld = held !== undefined && this.isCompacting;
+	if (acceptedWhileHeld) preflightResult(true, "queued");
+	// Input accepted while held must not vanish if a later check fails: it stays queued for the next turn.
+	let keptText = text;
+	let keptImages = options?.images;
+	const keepAcceptedInput = async (error: unknown): Promise<void> => {
+		if (!acceptedWhileHeld || held.cancelled || isSessionClosed(error)) return;
+		if (this._disposed || lifetime.aborted || sessionGenerationClosing.has(this)) return;
+		if (held.lane === "followUp") await this._queueFollowUp(keptText, keptImages);
+		else await this._queueSteer(keptText, keptImages);
+	};
 
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
@@ -220,6 +309,13 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			const earlierAdmissions = admission.waitForTurn();
 			if (earlierAdmissions) await earlierAdmissions;
 			assertCurrent();
+			// clearQueue() gave held input back to its sender, so it is not queued again.
+			if (held?.cancelled) {
+				workflowDelivery?.delivered?.("handled");
+				preflightResult?.(true, "handled");
+				return;
+			}
+			if (held) stopWaiting(this, held);
 			if (delivery === "followUp") await this._queueFollowUp(text, options?.images);
 			else await this._queueSteer(text, options?.images);
 			workflowDelivery?.delivered?.(delivery);
@@ -257,29 +353,70 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			expandedText = this._expandSkillCommand(expandedText);
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 		}
+		keptText = expandedText;
+		keptImages = currentImages;
 
 		const earlierAdmissions = admission.waitForTurn();
 		if (earlierAdmissions) await earlierAdmissions;
 		assertCurrent();
 
+		let delivery = options;
+		let waited = false;
+		if (held) {
+			const startsTurn =
+				!(this.isStreaming || this._isPreparingRun || this._isBeforeSettle) &&
+				!queuesDuringAgentSettled(this, options) &&
+				!queuesBehindOpenRun(this, options);
+			if (earlierHeldInputs(this, held).length > 0 || (this.isCompacting && startsTurn)) {
+				await waitForHeldTurn(this, held, lifetime);
+				waited = true;
+				// The sender found the session idle. If held input ahead of this one started a turn
+				// meanwhile, this input queues behind it instead of being refused as a second prompt.
+				delivery = { ...options, streamingBehavior: held.lane };
+			} else {
+				stopWaiting(this, held);
+			}
+			// clearQueue() gave the text back, so the input is not sent.
+			if (held.cancelled) {
+				workflowDelivery?.delivered?.("handled");
+				preflightResult?.(true, "handled");
+				return;
+			}
+			assertCurrent();
+			// The queue may have been paused while the input waited. Keep it with the paused
+			// input instead of letting an abort that followed the pause drop it.
+			if (this._queuedMessagesPaused) {
+				if (held.lane === "followUp") await this._queueFollowUp(expandedText, currentImages);
+				else await this._queueSteer(expandedText, currentImages);
+				workflowDelivery?.delivered?.(held.lane);
+				preflightResult?.(true, "queued");
+				return;
+			}
+		}
+
 		// If streaming, queue via steer() or followUp() based on option. The run is still
 		// open while agent_before_settle handlers decide on its continuation, so input sent
 		// from that boundary queues for the continuation instead of starting a second run.
 		const busy = this.isStreaming || this._isPreparingRun || this._isBeforeSettle;
-		const settling = queuesDuringAgentSettled(this, options) || (!busy && queuesBehindOpenRun(this, options));
+		// Held input from every sender queues behind a run that is still open, as earlier held input
+		// with a lane did, so the agent delivers all of it in arrival order.
+		const settling =
+			(waited && (this._isEmittingAgentSettled || openRuns.has(this))) ||
+			queuesDuringAgentSettled(this, delivery) ||
+			(!busy && queuesBehindOpenRun(this, delivery));
 		if (busy || settling) {
-			if (!options?.streamingBehavior) {
+			if (!delivery?.streamingBehavior) {
 				throw new Error(
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
 			const queued =
-				options.streamingBehavior === "followUp"
+				delivery.streamingBehavior === "followUp"
 					? this._queueFollowUp(expandedText, currentImages)
 					: this._queueSteer(expandedText, currentImages);
 			if (settling) deliverQueuedInputIfIdle(this, { userSubmission: true });
 			await queued;
-			workflowDelivery?.delivered?.(options.streamingBehavior);
+			workflowDelivery?.delivered?.(delivery.streamingBehavior);
 			preflightResult?.(true, "queued");
 			return;
 		}
@@ -393,9 +530,12 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	} catch (error) {
 		if (preparingRun) this._isPreparingRun = false;
 		preflightResult?.(false);
+		await keepAcceptedInput(error);
 		throw error;
 	} finally {
 		admission.release();
+		// A started run is now preparing, so held input admitted next queues behind it.
+		if (held) finishHeldInput(this, held);
 	}
 
 	assertCurrent();
@@ -413,6 +553,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		if (!dispatched) {
 			dispatched = true;
 			preflightResult?.(false);
+			await keepAcceptedInput(error);
 		}
 		throw error;
 	}

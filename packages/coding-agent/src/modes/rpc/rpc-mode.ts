@@ -152,6 +152,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		waitForResources: deferInteractiveEngineResources ? () => resourceReadiness.wait() : undefined,
 		reloadResources: deferInteractiveEngineResources ? loadDeferredResources : undefined,
 		shouldRetryResources: deferInteractiveEngineResources ? () => resourceReadiness.needsRetry() : undefined,
+		detachCompaction: interactiveEngineChild,
 	});
 
 	/**

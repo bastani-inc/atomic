@@ -38,6 +38,11 @@ interface RpcCommandHandlerOptions {
 	waitForResources?: () => Promise<void> | undefined;
 	reloadResources?: () => Promise<void>;
 	shouldRetryResources?: () => boolean;
+	/**
+	 * Answer `compact` when it settles without holding the ordered command lane, so an interactive
+	 * host can still run UI and admin commands meanwhile. The host keeps prompts queued itself.
+	 */
+	detachCompaction?: boolean;
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -79,6 +84,7 @@ export function createRpcCommandHandler({
 	waitForResources,
 	reloadResources,
 	shouldRetryResources,
+	detachCompaction,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -111,6 +117,7 @@ export function createRpcCommandHandler({
 			}
 			case "prompt": {
 				let preflightSucceeded = false;
+				let acceptedAsQueued = false;
 				void (async () => {
 					const pendingResources = waitForResources?.();
 					if (pendingResources) await pendingResources;
@@ -123,6 +130,7 @@ export function createRpcCommandHandler({
 						preflightResult: (didSucceed, disposition) => {
 							if (didSucceed) {
 								preflightSucceeded = true;
+								acceptedAsQueued = disposition === "queued";
 								output(createRpcSuccessResponse(id, "prompt", { disposition }));
 							}
 						},
@@ -130,6 +138,14 @@ export function createRpcCommandHandler({
 				})().catch((promptError: unknown) => {
 					if (!preflightSucceeded) {
 						output(createRpcErrorResponse(id, "prompt", formatRpcErrorMessage(promptError), promptError));
+					} else if (acceptedAsQueued) {
+						// Input held during compaction is answered as queued before its turn is prepared. If that
+						// preparation fails, the session keeps the input queued; tell the client why, once (#4251).
+						output({
+							type: "agent_continue_error",
+							source: "post_compaction",
+							errorMessage: `Failed to send queued message: ${formatRpcErrorMessage(promptError)}`,
+						});
 					}
 				});
 				return undefined;
@@ -334,6 +350,14 @@ export function createRpcCommandHandler({
 			}
 
 			case "compact": {
+				if (detachCompaction) {
+					void session.compact().then(
+						(result) => output(createRpcSuccessResponse(id, "compact", result)),
+						(compactError: unknown) =>
+							output(createRpcErrorResponse(id, "compact", formatRpcErrorMessage(compactError), compactError)),
+					);
+					return undefined;
+				}
 				const result = await session.compact();
 				return createRpcSuccessResponse(id, "compact", result);
 			}

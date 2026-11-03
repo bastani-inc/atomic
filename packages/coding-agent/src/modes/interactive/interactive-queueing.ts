@@ -1,20 +1,35 @@
+import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
 
+/** Typing order of messages handed to the session, so one it refuses returns to its own place. */
+const handOffOrder = new WeakMap<CompactionQueuedMessage, number>();
+let nextHandOff = 0;
+/**
+ * Messages handed to the session that it has not confirmed yet. The editor keeps showing and restoring them
+ * until the session reports it took them; from then on the session lists them itself.
+ */
+const unconfirmedHandOffs = new WeakMap<InteractiveModeBase, CompactionQueuedMessage[]>();
+
+function heldByEditor(mode: InteractiveModeBase): CompactionQueuedMessage[] {
+	return [...(unconfirmedHandOffs.get(mode) ?? []), ...mode.compactionQueuedMessages];
+}
+
 InteractiveModeBase.prototype.getAllQueuedMessages = function (this: InteractiveModeBase): {
 	steering: string[];
 	followUp: string[];
 } {
+	const held = heldByEditor(this);
 	return {
 		steering: [
 			...this.session.getSteeringMessages(),
-			...this.compactionQueuedMessages.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
+			...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text),
 		],
 		followUp: [
 			...this.session.getFollowUpMessages(),
-			...this.compactionQueuedMessages.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
+			...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text),
 		],
 	};
 };
@@ -27,12 +42,11 @@ InteractiveModeBase.prototype.clearAllQueues = function (
 	followUp: string[];
 } {
 	const { steering, followUp } = this.session.clearQueue(options);
-	const compactionSteering = this.compactionQueuedMessages
-		.filter((msg) => msg.mode === "steer")
-		.map((msg) => msg.text);
-	const compactionFollowUp = this.compactionQueuedMessages
-		.filter((msg) => msg.mode === "followUp")
-		.map((msg) => msg.text);
+	const held = heldByEditor(this);
+	const compactionSteering = held.filter((msg) => msg.mode === "steer").map((msg) => msg.text);
+	const compactionFollowUp = held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text);
+	// clearQueue() also cancels unconfirmed hand-offs once they reach the session, so none is sent.
+	unconfirmedHandOffs.delete(this);
 	this.compactionQueuedMessages = [];
 	this.compactionSendFailed = false;
 	return {
@@ -110,7 +124,10 @@ InteractiveModeBase.prototype.isExtensionCommand = function (this: InteractiveMo
 
 	const spaceIndex = text.indexOf(" ");
 	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-	return !!extensionRunner.getCommand(commandName);
+	if (extensionRunner.getCommand(commandName)) return true;
+	return getInteractiveEngineRemoteCommands(this.runtimeHost).some(
+		(command) => command.source === "extension" && command.name === commandName,
+	);
 };
 
 InteractiveModeBase.prototype.flushCompactionQueue = async function (
@@ -168,6 +185,63 @@ function returnCompactionMessage(mode: InteractiveModeBase, message: CompactionQ
 	mode.compactionSendFailed = true;
 	mode.updatePendingMessagesDisplay();
 	showCompactionQueueError(mode, error);
+}
+
+function returnHandedOffMessage(mode: InteractiveModeBase, message: CompactionQueuedMessage, error: unknown): void {
+	const rank = handOffOrder.get(message) ?? -1;
+	const queue = mode.compactionQueuedMessages;
+	const index = queue.findIndex((queued) => (handOffOrder.get(queued) ?? Number.POSITIVE_INFINITY) > rank);
+	mode.compactionQueuedMessages =
+		index === -1 ? [...queue, message] : [...queue.slice(0, index), message, ...queue.slice(index)];
+	mode.compactionSendFailed = true;
+	mode.updatePendingMessagesDisplay();
+	showCompactionQueueError(mode, error);
+}
+
+function confirmHandOff(mode: InteractiveModeBase, message: CompactionQueuedMessage): boolean {
+	const pending = unconfirmedHandOffs.get(mode);
+	const index = pending?.indexOf(message) ?? -1;
+	if (!pending || index === -1) return false;
+	pending.splice(index, 1);
+	if (pending.length === 0) unconfirmedHandOffs.delete(mode);
+	mode.updatePendingMessagesDisplay();
+	return true;
+}
+
+/**
+ * Hand the editor's held messages to the session before an extension command runs during compaction (#4251).
+ * The session registers input as it arrives and holds it until compaction ends, so a message the command sends
+ * goes out after them, in typing order. Each message stays shown and restorable here until the session confirms
+ * it took it, and from then on the session lists it as queued and its clearQueue() returns it for Alt+Up and
+ * Ctrl+C. A message the session refuses returns to the editor queue.
+ */
+export function handOffCompactionQueue(mode: InteractiveModeBase): void {
+	const messages = mode.compactionQueuedMessages;
+	if (messages.length === 0) return;
+	mode.compactionQueuedMessages = [];
+	unconfirmedHandOffs.set(mode, [...(unconfirmedHandOffs.get(mode) ?? []), ...messages]);
+	for (const message of messages) {
+		handOffOrder.set(message, nextHandOff++);
+		let accepted = false;
+		void mode.session
+			.prompt(message.text, {
+				streamingBehavior: message.mode,
+				preflightResult: (success) => {
+					accepted = success;
+					if (success) confirmHandOff(mode, message);
+				},
+			})
+			.catch((error: unknown) => {
+				if (accepted || isRpcRequestAcceptedFailure(error)) {
+					confirmHandOff(mode, message);
+					showCompactionQueueError(mode, error);
+					return;
+				}
+				// Alt+Up may already have returned it to the editor; only an unconfirmed message goes back.
+				if (confirmHandOff(mode, message)) returnHandedOffMessage(mode, message, error);
+			});
+	}
+	mode.updatePendingMessagesDisplay();
 }
 
 /**

@@ -2,6 +2,7 @@ import type { AssistantMessage, Message, TextContent } from "@bastani/pi-ai/comp
 import { cleanupSessionResources } from "@bastani/pi-ai/compat";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { abortBash } from "./agent-session-bash.ts";
+import { heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { clearNestedToolCalls, recordNestedToolCalls } from "./agent-session-nested-tools.js";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
@@ -55,10 +56,11 @@ export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 }
 
 export function _emitQueueUpdate(this: AgentSession): void {
+	const held = heldInputView(this);
 	this._emit({
 		type: "queue_update",
-		steering: [...this._steeringMessages],
-		followUp: [...this._followUpMessages],
+		steering: [...this._steeringMessages, ...held.steering],
+		followUp: [...this._followUpMessages, ...held.followUp],
 	});
 }
 
