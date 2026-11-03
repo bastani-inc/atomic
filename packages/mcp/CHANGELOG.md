@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing a stdio MCP server whose main process already exited now still stops the children it started. On Linux and macOS a server can exit while a child it started keeps running and holds its output pipes; `close()` returned early, skipped the process-group cleanup, never fired the close event, and the child also survived Atomic exiting (upstream [#11724](https://github.com/earendil-works/pi/pull/11724))
+
 ## [0.9.44] - 2026-10-25
 
 ### Fixed
