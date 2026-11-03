@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The task supervisor settles a command as soon as its process group is empty instead of always waiting out the 250 ms termination grace after the command exits. It now reaps the exited shell right after sending its group TERM and probes the group: a group with nobody left settles at once, and members still alive get KILL when the grace ends, as before. A stopped command whose processes exit on TERM settles at once too. On Linux 6.9 and later the group is signalled and probed through a pidfd of the shell (`PIDFD_SIGNAL_PROCESS_GROUP`), so a group ID the kernel has since handed to another process can never receive the KILL; elsewhere the KILL goes through `kill(-pgid)` straight after a probe that found the group alive ([#4268](https://github.com/bastani-inc/atomic/issues/4268)).
+
 ## [0.9.67] - 2026-11-02
 
 ### Fixed
