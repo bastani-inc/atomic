@@ -961,6 +961,7 @@ class JournalProjection {
 		return {
 			resumable: this.listResumableWorkflows(),
 			completed: this.listCompletedWorkflows(),
+			completedAll: this.listFinishedRootWorkflows(),
 			inspectableIds: [...this.workflows.values()]
 				.filter((rec) => isRootWorkflow(rec.handle))
 				.map((rec) => rec.handle.workflowId),
@@ -1004,6 +1005,13 @@ class JournalProjection {
 	listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
 		return [...this.workflows.values()]
 			.filter((rec) => isRootWorkflow(rec.handle) && isHistoricalHandle(rec.handle))
+			.map((rec) => toResumableEntry(rec.handle));
+	}
+
+	/** Every root run that reached a terminal status, whatever progress it recorded. */
+	listFinishedRootWorkflows(): readonly ResumableWorkflowEntry[] {
+		return [...this.workflows.values()]
+			.filter((rec) => isRootWorkflow(rec.handle) && isTerminalStatus(rec.handle.status))
 			.map((rec) => toResumableEntry(rec.handle));
 	}
 
@@ -1067,6 +1075,10 @@ class JournalProjection {
 
 function isRootWorkflow(handle: DurableWorkflowHandle): boolean {
 	return handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId;
+}
+
+function isTerminalStatus(status: DurableWorkflowStatus): boolean {
+	return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 function hasResumeProgress(handle: DurableWorkflowHandle): boolean {

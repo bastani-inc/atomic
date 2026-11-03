@@ -13,6 +13,7 @@ import { resolveToCwd } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import {
 	type InternalResourceContext,
+	isInternalUrl,
 	parseArchiveSelector,
 	readArchiveSelector,
 	resolveArchiveSelector,
@@ -40,7 +41,7 @@ const searchSchema = Type.Object(
 			Type.Union([
 				Type.String({
 					description:
-						"File, directory, glob, internal URL, or <file>:<lines> selector to search. Omitted or empty searches the workspace root.",
+						"File, directory, glob, internal URL (skill://, local://, artifact://, conflict://, history://), or <file>:<lines> selector to search. Omitted or empty searches the workspace root.",
 				}),
 				Type.Array(
 					Type.String({
@@ -101,7 +102,7 @@ function searchPathResolvable(value: string, cwd: string): boolean {
 	const sqlite = sqliteSelectorForPath(selector.path, cwd);
 	return (
 		!!sqlite ||
-		/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(selector.path) ||
+		isInternalUrl(selector.path) ||
 		existsSync(resolveToCwd(splitPathLikeGlob(selector.path).basePath, cwd))
 	);
 }
@@ -229,9 +230,7 @@ function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: 
 				return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
 			}
 		}
-		if (
-			/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(selector.path)
-		)
+		if (isInternalUrl(selector.path))
 			return { path: selector.path, lineRanges: selector.lineRanges, internal: selector.path };
 		if (isResourceSelector(selector.path))
 			throw new Error(`Search resource selectors are not supported by this filesystem backend: ${searchPath}`);
@@ -505,7 +504,8 @@ export function createSearchToolDefinition(
 		...grepDefinition,
 		name: "search",
 		label: "search",
-		description: "Search file contents with a regex across files, directories, globs, and internal URLs.",
+		description:
+			"Search file contents with a regex across files, directories, globs, and internal URLs, including history:// for past sessions and workflow runs.",
 		promptSnippet: searchToolSystemPromptContribution.snippet,
 		...experimentalToolSamplingProperty(),
 		parameters: searchSchema,

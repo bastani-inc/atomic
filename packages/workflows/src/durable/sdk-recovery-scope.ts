@@ -13,16 +13,22 @@ export function canonicalDirectory(path: string): string {
 	}
 }
 
-export function isSdkDurableRunInScope<
-	Handle extends Pick<DurableWorkflowHandle, "workflowId" | "invocationCwd" | "modelOwner" | "rootWorkflowId">,
+/** A root run recorded for `cwd`, whoever started it: a model session or the user's own `/workflow` command. */
+export function isProjectRootRun<
+	Handle extends Pick<DurableWorkflowHandle, "workflowId" | "invocationCwd" | "rootWorkflowId">,
 >(handle: Handle, cwd: string | undefined, canonicalize: (path: string) => string = canonicalDirectory): boolean {
 	return (
 		cwd !== undefined &&
 		handle.invocationCwd !== undefined &&
-		handle.modelOwner !== undefined &&
 		(handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId) &&
 		canonicalize(cwd) === canonicalize(handle.invocationCwd)
 	);
+}
+
+export function isSdkDurableRunInScope<
+	Handle extends Pick<DurableWorkflowHandle, "workflowId" | "invocationCwd" | "modelOwner" | "rootWorkflowId">,
+>(handle: Handle, cwd: string | undefined, canonicalize: (path: string) => string = canonicalDirectory): boolean {
+	return handle.modelOwner !== undefined && isProjectRootRun(handle, cwd, canonicalize);
 }
 
 export async function isSdkCrashedRunAdoptable(

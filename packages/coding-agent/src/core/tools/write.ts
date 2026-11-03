@@ -3,17 +3,16 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import {
 	chmod as fsChmod,
 	mkdir as fsMkdir,
-	readdir as fsReaddir,
 	readFile as fsReadFile,
 	stat as fsStat,
 	writeFile as fsWriteFile,
 } from "fs/promises";
-import { dirname, join } from "path";
+import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { type ConflictBlock, getRegisteredConflictBlocks, parseConflictBlocks } from "./conflict-registry.ts";
+import { type ConflictBlock, findConflictBlocks, reconcileConflictBlocks } from "./conflict-registry.ts";
 import {
 	assertPriorSessionObservation,
 	computeLiveState,
@@ -39,6 +38,8 @@ import { resolveToCwd } from "./path-utils.ts";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import {
 	type InternalResourceContext,
+	isInternalUrl,
+	isUrlLike,
 	parseArchiveSelector,
 	parseSqliteSelector,
 	resolveArchiveSelector,
@@ -55,7 +56,7 @@ const writeSchema = Type.Object(
 	{
 		path: Type.String({
 			description:
-				"File path, writable internal resource, archive entry, SQLite row selector, or conflict resolution target.",
+				"File path, writable internal resource (local://), archive entry, SQLite row selector, or conflict resolution target (conflict://).",
 		}),
 		content: Type.String({
 			description:
@@ -116,42 +117,6 @@ export interface WriteOperations {
 	readFile: (absolutePath: string) => Promise<string | undefined>;
 }
 
-async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBlock[]> {
-	const out: ConflictBlock[] = [];
-	async function walk(dir: string): Promise<void> {
-		for (const entry of await fsReaddir(dir, { withFileTypes: true }).catch(() => [])) {
-			if (out.length >= limit || entry.name === ".git" || entry.name === "node_modules") continue;
-			const full = join(dir, entry.name);
-			if (entry.isDirectory()) await walk(full);
-			else if (entry.isFile()) {
-				const text = await fsReadFile(full, "utf8").catch(() => "");
-				if (text.includes("<<<<<<<") && text.includes("=======") && text.includes(">>>>>>>"))
-					out.push(...parseConflictBlocks(full, text));
-			}
-		}
-	}
-	await walk(root);
-	return out;
-}
-/**
- * Reconcile the read-time conflict view (registry, populated by `read
- * …:conflicts`) against the live tree-walk snapshot. A registered block is
- * only trustworthy when the markers still sit at its recorded file+offset —
- * otherwise the file drifted and the id→block mapping would be wrong. When
- * any registered block is still live, resolve ids against the registered
- * ordering (what the agent actually saw); otherwise fall back to the fresh
- * tree walk. This closes the divergent id-space where `conflict://2` could
- * resolve a different block than the read displayed.
- */
-function reconcileConflictBlocks(live: ConflictBlock[], cwd: string): ConflictBlock[] {
-	const registered = getRegisteredConflictBlocks(cwd);
-	if (registered.length === 0) return live;
-	const liveKeys = new Set(live.map((block) => `${block.file}\0${block.start}\0${block.end}`));
-	const registeredLive = registered.filter((block) => liveKeys.has(`${block.file}\0${block.start}\0${block.end}`));
-	// If the registered view no longer matches the live tree at all, the file
-	// changed under us — trust the live walk rather than a stale id mapping.
-	return registeredLive.length > 0 ? registeredLive : live;
-}
 function conflictReplacement(content: string, block: ConflictBlock): string[] {
 	const token = content.trim();
 	if (token === "@ours") return block.ours;
@@ -471,7 +436,9 @@ export function createWriteToolDefinition(
 					details: undefined,
 				};
 			}
-			if (/^[a-z]+:\/\//i.test(path)) {
+			if (isUrlLike(path) && !isInternalUrl(path))
+				throw new Error(`Write resource selectors are not supported by this filesystem backend: ${path}`);
+			if (isInternalUrl(path)) {
 				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, executionCwd) : undefined;
 				if (sourcePath)
 					return createWriteToolDefinition(executionCwd, { ...options, hashlineStore }).execute(

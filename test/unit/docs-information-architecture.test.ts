@@ -1090,7 +1090,7 @@ describe("human-facing tool documentation", () => {
 		for (const slug of diskSlugs) {
 			const text = readFileSync(join(docsDir, pathForSlug(slug)), "utf8");
 			assert.doesNotMatch(text, /oh-my-pi/iu, slug);
-			assert.doesNotMatch(text, /\b(?:artifact|agent|history|issue|pr|rule|mcp|vault):\/\//u, slug);
+			assert.doesNotMatch(text, /\b(?:omp|agent|issue|memory|pr|rule|mcp|vault):\/\//u, slug);
 			assert.doesNotMatch(text, /\]\(\/(?:tools\/edit|mcp)(?:[)#])/u, slug);
 		}
 	});
@@ -1105,6 +1105,8 @@ describe("human-facing tool documentation", () => {
 			"https://mcp.deepwiki.com/mcp",
 			"local://",
 			"skill://",
+			"artifact://",
+			"history://",
 			"conflict://1/ours",
 			"raw:notes.txt",
 		])
