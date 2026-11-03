@@ -1,7 +1,17 @@
 export type ShellDialect = "posix" | "powershell";
 
-/** `paren` is a `$(…)` substitution and `brace` a `${…}` expansion; each ends only at its own closer. */
+/** `paren` is a `$(…)` substitution and `brace` a `${…}` expansion, or a `(`/`{` opened inside one. */
 type Nesting = "double" | "paren" | "brace" | "backtick";
+
+/**
+ * `)` ends the innermost parenthesis together with any brace still open inside it, which can be a literal `{`, as in
+ * `$(printf %s {)`. A `)` with no parenthesis below the open braces is literal text.
+ */
+function closeParen(nesting: Nesting[]): void {
+	let index = nesting.length - 1;
+	while (index >= 0 && nesting[index] === "brace") index--;
+	if (nesting[index] === "paren") nesting.length = index;
+}
 
 interface PendingHeredoc {
 	readonly tag: string;
@@ -106,9 +116,12 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			continue;
 		}
 		if (top === "paren" || top === "brace") {
-			// Parentheses and braces inside nest, so `$(printf %s {a,b}; …)` stays a substitution after `}`.
-			if (char === (top === "paren" ? ")" : "}")) nesting.pop();
-			else if (char === "(") nesting.push("paren");
+			// Parentheses and braces inside nest, so `$(printf %s {a,b}; …)` stays a substitution after `}`; a `}` with
+			// no open brace is literal text.
+			if (char === ")") closeParen(nesting);
+			else if (char === "}") {
+				if (top === "brace") nesting.pop();
+			} else if (char === "(") nesting.push("paren");
 			else if (char === "{") nesting.push("brace");
 			continue;
 		}

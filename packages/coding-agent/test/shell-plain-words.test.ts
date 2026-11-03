@@ -33,4 +33,9 @@ describe("plain shell word mask (#4252)", () => {
 		assert.equal(plainText("echo $(a {b,c}; d local://x) e"), `echo ${"_".repeat(23)} e`);
 		assert.equal(plainText("echo $(a {b,c}; d local://x) e", "powershell"), `echo ${"_".repeat(23)} e`);
 	});
+
+	it("ends a substitution at its ) even when a literal brace inside it stays open (#4252)", () => {
+		assert.equal(plainText("echo $(a {) local://x"), "echo ______ local://x");
+		assert.equal(plainText("echo $(a }) local://x"), "echo ______ local://x");
+	});
 });

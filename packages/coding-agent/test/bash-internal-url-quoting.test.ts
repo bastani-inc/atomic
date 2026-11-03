@@ -59,6 +59,19 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 		assert.deepEqual(result.content, [{ type: "text", text: `see \`local://x\` and skill://y|${path}` }]);
 	});
 
+	it("expands a plain-word URL after a substitution that printed a literal brace (#4252)", async () => {
+		const bash = createBashToolDefinition(cwd);
+		const path = join(cwd, "notes file.txt");
+		const result = await bash.execute(
+			"literal-brace",
+			{ command: "printf '%s|' $(printf %s {); printf %s local://notes" },
+			undefined,
+			undefined,
+			{ resolveInternalUrl: (url) => (url === "local://notes" ? path : undefined) },
+		);
+		assert.deepEqual(result.content, [{ type: "text", text: `{|${path}` }]);
+	});
+
 	it("leaves a URL beside a brace expansion unchanged but expands one inside a brace group (#4252)", async () => {
 		const bash = createBashToolDefinition(cwd);
 		const path = join(cwd, "notes.txt");
