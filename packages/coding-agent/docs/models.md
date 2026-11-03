@@ -27,6 +27,8 @@ For choosing which model to use rather than how to declare one, see [Model selec
 
 Classifier models answer typed questions about JSON state instead of chatting. They do not appear in `/model`. Enable [codemode](/tools#codemode), list them with `models.getAvailableOfType("classifier")`, and call `models.classify(model, { state, questions })`. See [Codemode](/codemode#classify) for question and answer shapes.
 
+GitHub Copilot offers the text-only `github-copilot/microsoft-decision-1` classifier through its System One endpoint. It uses GitHub Copilot OAuth or `COPILOT_GITHUB_TOKEN`, with a 32,768-token context window.
+
 OpenAI's GPT-6 Luna Decisions classifier is `openai-decisions/gpt-6-luna`. It uses the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), which needs an OpenAI API key. It has no `/login` entry of its own and reuses the first key it finds, in this order: a key saved for `openai-api`, a key saved for `openai`, then `OPENAI_API_KEY`. ChatGPT sign-in on `openai` does not work with it and is skipped, so with only a ChatGPT sign-in the classifier stays unavailable until you save an API key with `/login openai-api` or set `OPENAI_API_KEY`. `openai/gpt-6-luna` always means the chat model.
 
 GPT-6 Luna accepts up to 128 image blocks through `images`, alongside the JSON state. Other classifiers reject images unless their catalog input and API support them. Refused answers produce an error result. The endpoint rejects inputs above 922K tokens; very large inputs, currently above roughly 600K tokens, can hit its gateway time limit. These 504 responses are not retried, so reduce the input before trying again.

@@ -2,17 +2,18 @@ import { anthropicMessagesApi } from "../api/anthropic-messages.lazy.ts";
 import { COPILOT_API_VERSION, COPILOT_HEADERS, copilotClientHeaders } from "../api/github-copilot-headers.ts";
 import { openAICompletionsApi } from "../api/openai-completions.lazy.ts";
 import { openAIResponsesApi } from "../api/openai-responses.lazy.ts";
+import { typesafeSystemOneApi } from "../api/typesafe-system-one.lazy.ts";
 import { envApiKeyAuth, lazyOAuth } from "../auth/helpers.ts";
 import { loadGitHubCopilotOAuth } from "../auth/oauth/load.ts";
 import type { OAuthCredential } from "../auth/types.ts";
 import { createProvider, type Provider, type RefreshModelsContext } from "../models.ts";
-import type { AnyModel, Api, Model } from "../types.ts";
+import type { AnyModel, Api, Model, ProviderClassifier } from "../types.ts";
 import { isModelType } from "../utils/model-operations.ts";
+import { GITHUB_COPILOT_CLASSIFIER_MODELS, GITHUB_COPILOT_MODELS } from "./github-copilot.models.ts";
 import {
 	GITHUB_COPILOT_INDIVIDUAL_BASE_URL as GITHUB_COPILOT_BASE_URL,
 	parseGitHubCopilotAccountModelLists,
 } from "./github-copilot-account.ts";
-import { GITHUB_COPILOT_MODELS } from "./github-copilot.models.ts";
 import { THINKING_LEVELS, type ThinkingLevelMap } from "./model-schema.ts";
 
 const GITHUB_COPILOT_MODELS_TIMEOUT_MS = 15_000;
@@ -125,7 +126,9 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
 	if (!api) return undefined;
 	const limits = asRecord(entry.capabilities?.limits);
 	const rawEfforts = entry.supports?.reasoning_effort;
-	const efforts = Array.isArray(rawEfforts) ? rawEfforts.filter((effort): effort is string => typeof effort === "string") : [];
+	const efforts = Array.isArray(rawEfforts)
+		? rawEfforts.filter((effort): effort is string => typeof effort === "string")
+		: [];
 	const reasoning = efforts.length > 0;
 	const compat = discoveredCompat(api, reasoning, entry.supports);
 	return {
@@ -163,7 +166,7 @@ function discoveredModel(entry: AccountModelEntry): Model<Api> | undefined {
  */
 export function parseGitHubCopilotDiscoveredModels(raw: unknown, catalog: readonly AnyModel[]): Model<Api>[] {
 	const known = new Set<string>();
-	for (const model of catalog) if (isModelType(model, "chat")) known.add(model.id);
+	for (const model of catalog) known.add(model.id);
 	const entries = accountModelEntries(raw).filter((entry) => !known.has(entry.id));
 	const ordinary = new Set<string>();
 	const models = new Map<string, Model<Api>>();
@@ -255,8 +258,16 @@ export async function discoverGitHubCopilotModels(
 	return models;
 }
 
-export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai-completions" | "openai-responses"> {
-	return createProvider({
+/** Copilot's account endpoint has no version prefix, but System One requires it. */
+function copilotSystemOne(classifier: ProviderClassifier): ProviderClassifier {
+	return {
+		classify: (model, context, options) =>
+			classifier.classify({ ...model, baseUrl: `${model.baseUrl.replace(/\/+$/u, "")}/v1` }, context, options),
+	};
+}
+
+export function githubCopilotProvider(): Provider<GitHubCopilotApi> {
+	return createProvider<GitHubCopilotApi>({
 		id: "github-copilot",
 		name: "GitHub Copilot",
 		baseUrl: GITHUB_COPILOT_BASE_URL,
@@ -269,12 +280,14 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 				load: loadGitHubCopilotOAuth,
 			}),
 		},
-		models: Object.values(GITHUB_COPILOT_MODELS),
+		models: [...Object.values(GITHUB_COPILOT_MODELS), ...Object.values(GITHUB_COPILOT_CLASSIFIER_MODELS)],
 		filterModels: (models, credential) => {
 			const oauth = credential?.type === "oauth" ? credential : undefined;
 			const entitledFastModelIds = advertisedModelIds(oauth?.fastModelIds);
 			const availableModelIds = advertisedModelIds(oauth?.availableModelIds);
 			return models.filter((model) => {
+				// Picker entitlements list chat models, not classifiers.
+				if (isModelType(model, "classifier")) return true;
 				// The login's saved lists decide for every model, discovered ones included: discovered models are
 				// cached per provider, not per login. A refresh that reads the account's list renews the lists of
 				// the same login (see `discoverGitHubCopilotModels`), so they never predate what it found.
@@ -295,5 +308,6 @@ export function githubCopilotProvider(): Provider<"anthropic-messages" | "openai
 			"openai-completions": openAICompletionsApi(),
 			"openai-responses": openAIResponsesApi(),
 		},
+		classifiers: { "typesafe-system-one": copilotSystemOne(typesafeSystemOneApi()) },
 	});
 }

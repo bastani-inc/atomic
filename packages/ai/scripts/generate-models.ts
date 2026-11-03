@@ -13,6 +13,7 @@ import {
 	CLOUDFLARE_WORKERS_AI_BASE_URL,
 	CLOUDFLARE_WORKERS_AI_REST_BASE_URL,
 } from "../src/api/cloudflare.ts";
+import { COPILOT_HEADERS } from "../src/api/github-copilot-headers.ts";
 import type {
 	AnthropicMessagesCompat,
 	AnyModel,
@@ -3863,6 +3864,18 @@ async function generateModels() {
 		providers[model.provider].image[model.id] ??= model;
 	}
 	const classifierModels: ClassifierModel<ClassifierApi>[] = [
+		{
+			type: "classifier",
+			id: "microsoft-decision-1",
+			name: "Microsoft-Decision-1",
+			api: "typesafe-system-one",
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			input: ["text"],
+			cost: { input: 0.042, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 32768,
+			headers: { ...COPILOT_HEADERS },
+		},
 		...modelsDevClassifierModels,
 		...openRouterCatalog.classifiers,
 		...aiGatewayCatalog.classifiers,
