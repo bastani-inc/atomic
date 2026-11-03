@@ -544,9 +544,11 @@ async function watchHealthyRoutesBesideARefusedRouteKeptInPlace(
 		proxy.toBroker.filter(
 			({ frame }) => frame.type === "register" && String(frame.returnAddress).endsWith(`${ROUTE_PREFIX}${group}`),
 		).length;
-	const attempts = (runId: string): number =>
-		proxy.toBroker.filter(({ frame }) => frame.type === "register_pending_stage_route" && frame.runId === runId)
-			.length;
+	let refusalFramesBefore = 0;
+	const refusalsOf = (runId: string): number =>
+		proxy.toClients
+			.slice(refusalFramesBefore)
+			.filter(({ frame }) => frame.type === "pending_stage_route_refused" && frame.runId === runId).length;
 	const ownConnectionsBefore = proxy.toBroker.filter(({ frame }) => isOwnRouteConnectionRegister(scope, frame)).length;
 	try {
 		await Promise.all(healthy.map((runId) => publish(runId, undefined, group)));
@@ -563,7 +565,7 @@ async function watchHealthyRoutesBesideARefusedRouteKeptInPlace(
 				await sleep(ROSTER_SAMPLE_MS);
 			}
 		})();
-		const refusalFramesBefore = proxy.toClients.length;
+		refusalFramesBefore = proxy.toClients.length;
 		try {
 			for (const runId of refused) {
 				const refusal = await publish(runId, "refused-capability", group).then(
@@ -573,11 +575,8 @@ async function watchHealthyRoutesBesideARefusedRouteKeptInPlace(
 				assert.ok(refusal instanceof Error, "the refused run's publication must fail");
 				assert.equal(refusal.message, "Pending-stage route is not authorized");
 			}
-			const attemptsBefore = new Map(refused.map((runId) => [runId, attempts(runId)]));
-			await waitFor(`${REFUSED_RUN_RETRIES} more attempts of each refused run`, () =>
-				refused.every((runId) => attempts(runId) >= attemptsBefore.get(runId)! + REFUSED_RUN_RETRIES)
-					? true
-					: undefined,
+			await waitFor(`${1 + REFUSED_RUN_RETRIES} refusals of each refused run`, () =>
+				refused.every((runId) => refusalsOf(runId) >= 1 + REFUSED_RUN_RETRIES) ? true : undefined,
 			);
 		} finally {
 			sampling = false;
