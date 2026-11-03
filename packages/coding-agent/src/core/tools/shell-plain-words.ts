@@ -1,17 +1,7 @@
 export type ShellDialect = "posix" | "powershell";
 
-/** `paren` is a `$(…)` substitution and `brace` a `${…}` expansion, or a `(`/`{` opened inside one. */
-type Nesting = "double" | "paren" | "brace" | "backtick";
-
-/**
- * `)` ends the innermost parenthesis together with any brace still open inside it, which can be a literal `{`, as in
- * `$(printf %s {)`. A `)` with no parenthesis below the open braces is literal text.
- */
-function closeParen(nesting: Nesting[]): void {
-	let index = nesting.length - 1;
-	while (index >= 0 && nesting[index] === "brace") index--;
-	if (nesting[index] === "paren") nesting.length = index;
-}
+/** `paren` is a `$(…)` substitution or a `(` inside one, and `param` a `${…}` parameter expansion. */
+type Nesting = "double" | "paren" | "param" | "backtick";
 
 interface PendingHeredoc {
 	readonly tag: string;
@@ -106,7 +96,7 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			continue;
 		}
 		if (char === "$" && (next === "(" || next === "{")) {
-			nesting.push(next === "(" ? "paren" : "brace");
+			nesting.push(next === "(" ? "paren" : "param");
 			index++;
 			continue;
 		}
@@ -115,14 +105,16 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			else nesting.push("backtick");
 			continue;
 		}
-		if (top === "paren" || top === "brace") {
-			// Parentheses and braces inside nest, so `$(printf %s {a,b}; …)` stays a substitution after `}`; a `}` with
-			// no open brace is literal text.
-			if (char === ")") closeParen(nesting);
-			else if (char === "}") {
-				if (top === "brace") nesting.pop();
-			} else if (char === "(") nesting.push("paren");
-			else if (char === "{") nesting.push("brace");
+		if (top === "paren") {
+			// Braces inside a substitution are words or groups of its command, such as `{a,b}` or a literal `{`, and
+			// never end it.
+			if (char === ")") nesting.pop();
+			else if (char === "(") nesting.push("paren");
+			continue;
+		}
+		if (top === "param") {
+			// A parameter expansion ends at its first `}`; parentheses and braces before it are its text.
+			if (char === "}") nesting.pop();
 			continue;
 		}
 		if (top !== undefined) continue;

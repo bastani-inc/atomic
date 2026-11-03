@@ -38,4 +38,9 @@ describe("plain shell word mask (#4252)", () => {
 		assert.equal(plainText("echo $(a {) local://x"), "echo ______ local://x");
 		assert.equal(plainText("echo $(a }) local://x"), "echo ______ local://x");
 	});
+
+	it("ends a parameter expansion only at its closing brace (#4252)", () => {
+		assert.equal(plainText(`echo $(a \${x:-)}; b local://x) e`), `echo ${"_".repeat(25)} e`);
+		assert.equal(plainText(`echo \${x:-(} local://x`), "echo _______ local://x");
+	});
 });
