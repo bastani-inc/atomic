@@ -1055,8 +1055,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		return { ...host, elapse, release, elapsedMs: () => now - startedAt };
 	};
 
-	// Regression for #4264.
-	test("one slow announcement does not stretch the wait for the next route change", async () => {
+	test("one slow announcement does not stretch the wait for the next route change (#4264)", async () => {
 		const routes: Record<string, unknown>[] = [];
 		// The announcements cost 1 ms, except the second, which a GC pause or a preempted thread stretches to 200 ms.
 		const costs = [1, 200];
@@ -1075,8 +1074,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		}
 	});
 
-	// Regression for #4264.
-	test("a route change waits at most the cap, however slow the announcements before it were", async () => {
+	test("a route change waits at most the cap, however slow the announcements before it were (#4264)", async () => {
 		const routes: Record<string, unknown>[] = [];
 		// Every announcement takes 200 ms, so no estimate of the typical cost can make the next change look cheap.
 		const { store, elapse, release } = await timedRouteHarness(routes, () => 200);
@@ -1100,8 +1098,8 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		}
 	});
 
-	// Pins the purpose of the throttle (#3939) against the fix for #4264.
-	test("repeated expensive announcements keep announcing under about a fifth of the event loop", async () => {
+	// Guards what the throttle is for, against the cap and the smoothed estimate that bound it.
+	test("repeated expensive announcements keep announcing under about a fifth of the event loop (#4264)", async () => {
 		const routes: Record<string, unknown>[] = [];
 		const EXPENSIVE_MS = 40;
 		const { store, elapse, release, elapsedMs } = await timedRouteHarness(routes, () => EXPENSIVE_MS);
