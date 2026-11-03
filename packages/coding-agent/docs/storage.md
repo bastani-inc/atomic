@@ -115,6 +115,8 @@ Atomic does not bundle remote database drivers. Install your chosen SQLite-compa
 
 Driver calls may return values or promises. The returned facade follows the rules described above: it queues operations in call order and keeps them outside active transactions, snapshots binary parameters when a call is made, rejects NUL text with `StorageInvalidTextError` before SQL runs, returns safe-range integers as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, and closes the driver once after draining accepted work. A failed driver call rejects with `StorageUnavailableError`, whose `cause` is the driver error with credentials redacted. A failed rollback rejects with `StorageRollbackError`, and callback failures are preserved. Do not fall back to memory after an opening failure.
 
+For a local file that several processes share, switch it to the write-ahead log with `switchToWriteAheadLog(exec, busyTimeoutMs)` from `@bastani/atomic/storage`, passing a call that runs SQL on the database, such as `(sql) => database.exec(sql)`, and the connection's busy timeout. SQLite does not wait for another connection's lock while it changes a file's journal mode, so a plain `PRAGMA journal_mode = WAL` fails at once with `SQLITE_BUSY` while another process writes the file or switches it at the same moment. The helper retries the switch until `busyTimeoutMs` has passed, as other statements wait, and throws any other failure at once.
+
 You can also implement `SqliteDatabase` yourself by following the same rules. Either way, run the [conformance suite](#adapter-conformance) against it.
 
 ### libSQL / Turso example

@@ -19,8 +19,9 @@ import { runtimeRequestsOf } from "./module-graph-walker.js";
  * loads an adapter module. Following those edges would count the whole host, which no ceiling can hold.
  */
 const SETUP_FILE = "test/setup-workflow-durability.ts";
-// Only imports erased by the configured emit and dynamic imports are excluded.
-const MAX_REACHABLE_MODULES = 38;
+// Only imports erased by the configured emit and dynamic imports are excluded. The count includes the storage
+// module's leaf `write-ahead-log.ts`, which imports nothing.
+const MAX_REACHABLE_MODULES = 39;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {
