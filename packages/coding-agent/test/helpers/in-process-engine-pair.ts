@@ -17,6 +17,8 @@ interface PendingRequest {
 class LaggedPipe<T> {
 	private tail: Promise<void> = Promise.resolve();
 	private writes = 0;
+	private held: T[] | undefined;
+	private holdWhen: ((item: T) => boolean) | undefined;
 	get writeCount(): number {
 		return this.writes;
 	}
@@ -34,8 +36,33 @@ class LaggedPipe<T> {
 		} while (seen !== this.writes);
 	}
 
+	/** Keep the first item `matches` accepts, and every item after it, until `release()`. */
+	holdFrom(matches: (item: T) => boolean): void {
+		this.holdWhen = matches;
+	}
+
+	/**
+	 * Deliver the held items in one synchronous pass, after everything written before them. A real reader handles
+	 * every line of one read the same way, before any promise continuation a line resolves can run.
+	 */
+	async release(): Promise<void> {
+		const items = this.held ?? [];
+		this.held = undefined;
+		this.holdWhen = undefined;
+		await this.tail;
+		for (const item of items) this.deliver(item);
+	}
+
 	write(item: T): void {
 		this.writes += 1;
+		if (this.held === undefined && this.holdWhen?.(item)) {
+			this.holdWhen = undefined;
+			this.held = [];
+		}
+		if (this.held !== undefined) {
+			this.held.push(item);
+			return;
+		}
 		const readyAt = Date.now() + this.delayMs();
 		this.tail = this.tail.then(async () => {
 			const wait = readyAt - Date.now();
@@ -80,6 +107,16 @@ class InProcessEngineClient extends RpcClientApi {
 	failCommand(type: RpcCommand["type"], message: string | undefined): void {
 		if (message === undefined) this.failures.delete(type);
 		else this.failures.set(type, message);
+	}
+
+	/** Hold the first record bound for the host that `matches` accepts, and every later one, until released. */
+	holdHostTrafficFrom(matches: (record: RpcResponse | JsonAgentSessionEvent) => boolean): void {
+		this.toHost.holdFrom(matches);
+	}
+
+	/** Let the host read every held record in one pass, as it reads one chunk of the engine's output. */
+	releaseHostTraffic(): Promise<void> {
+		return this.toHost.release();
 	}
 
 	attachEngine(handle: (command: RpcCommand) => Promise<RpcResponse | undefined>): void {
@@ -161,6 +198,12 @@ export interface EngineHostPair {
 	drain: () => Promise<void>;
 	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
 	failCommand: (type: RpcCommand["type"], message: string | undefined) => void;
+	/**
+	 * Hold the first record bound for the host that `matches` accepts, and every later one, so the host lags the engine
+	 * from that record on. `releaseHostTraffic()` then hands them over in one pass, as one read of the engine's output.
+	 */
+	holdHostTrafficFrom: (matches: (record: RpcResponse | JsonAgentSessionEvent) => boolean) => void;
+	releaseHostTraffic: () => Promise<void>;
 	cleanup: () => Promise<void>;
 }
 
@@ -203,6 +246,8 @@ export async function createEngineHostPair(
 		engineOutput: (record) => client.engineOutput(record as RpcResponse),
 		drain: () => client.drain(),
 		failCommand: (type, message) => client.failCommand(type, message),
+		holdHostTrafficFrom: (matches) => client.holdHostTrafficFrom(matches),
+		releaseHostTraffic: () => client.releaseHostTraffic(),
 		setLag: (next) => {
 			if (next.toEngineMs !== undefined) lag.toEngineMs = next.toEngineMs;
 			if (next.toHostMs !== undefined) lag.toHostMs = next.toHostMs;

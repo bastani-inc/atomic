@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A message sent with Enter just as the agent's reply finished no longer shows twice in the chat in the default interactive mode, where the session runs in an engine process. When the engine had already finished the turn but the terminal had not yet registered it, the engine started the message as a new turn, and the chat showed it once where it was sent and again below the reply to it. The extra copy also stayed when the chat was redrawn, for example by `/reload`. The model always received it once. Follow-ups sent with Alt+Enter and sessions that run in-process were not affected ([#4272](https://github.com/bastani-inc/atomic/issues/4272))
+
 ## [0.9.70] - 2026-11-03
 
 Alt+Up no longer loses or duplicates a queued message in the default interactive mode, and internal URL expansion in `bash` and `powershell` is now conservative about where it replaces a URL with a path.
