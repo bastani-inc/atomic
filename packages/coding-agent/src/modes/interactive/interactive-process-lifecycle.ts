@@ -5,7 +5,7 @@ import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mod
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
-import { handOffCompactionQueue } from "./interactive-queueing.ts";
+import { handOffCompactionQueue, showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
@@ -319,9 +319,13 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	}
 };
 
-InteractiveModeBase.prototype.handleDequeue = function (this: InteractiveModeBase): void {
-	const restored = this.restoreQueuedMessagesToEditor();
-	if (restored === 0) {
-		this.showStatus("No queued messages to restore");
+InteractiveModeBase.prototype.handleDequeue = async function (this: InteractiveModeBase): Promise<void> {
+	try {
+		const restored = await this.restoreQueuedMessagesToEditor();
+		if (restored === 0) {
+			this.showStatus("No queued messages to restore");
+		}
+	} catch (error) {
+		showQueueRestoreFailure(this, error);
 	}
 };

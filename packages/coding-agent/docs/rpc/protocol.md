@@ -128,6 +128,8 @@ Response:
 
 Remove queued steering and follow-up messages and return their text.
 
+The response lists exactly the messages this call removed. It includes a message queued after the last `queue_update` the client received, and leaves out one the session already took into a turn. A client that restores the queue to an editor should restore this list, not its own copy of the queue: the copy kept from `queue_update` events trails the session by a round trip.
+
 ```json
 {"type": "clear_queue"}
 ```

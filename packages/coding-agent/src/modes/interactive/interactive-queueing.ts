@@ -1,4 +1,7 @@
-import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
+import {
+	clearInteractiveEngineQueue,
+	getInteractiveEngineRemoteCommands,
+} from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
@@ -8,8 +11,9 @@ import type { CompactionQueuedMessage } from "./interactive-mode-types.ts";
 const handOffOrder = new WeakMap<CompactionQueuedMessage, number>();
 let nextHandOff = 0;
 /**
- * Messages handed to the session that it has not confirmed yet. The editor keeps showing and restoring them
- * until the session reports it took them; from then on the session lists them itself.
+ * Messages handed to the session that it has not confirmed yet. The editor keeps showing them until the session
+ * reports it took them; from then on the session lists them itself. They are the session's from the moment they
+ * are sent, so a restore takes them from the session's own answer and never from this copy.
  */
 const unconfirmedHandOffs = new WeakMap<InteractiveModeBase, CompactionQueuedMessage[]>();
 
@@ -34,24 +38,44 @@ InteractiveModeBase.prototype.getAllQueuedMessages = function (this: Interactive
 	};
 };
 
-InteractiveModeBase.prototype.clearAllQueues = function (
+/**
+ * Take every queued message back from the session and this editor, so the caller can restore them.
+ *
+ * What the session removed is its own answer, not this editor's copy of its queue. An engine child lists its queue
+ * by `queue_update` events that trail it by a round trip, so a message it queued meanwhile is missing from the copy
+ * and one it already took into a turn is still in it (#4257). The messages only this editor holds follow them.
+ * When the session cannot be reached nothing is removed and the held messages stay queued.
+ */
+InteractiveModeBase.prototype.clearAllQueues = async function (
 	this: InteractiveModeBase,
 	options?: { preserveUnprotectedCustomMessages?: boolean },
-): {
+): Promise<{
 	steering: string[];
 	followUp: string[];
-} {
-	const { steering, followUp } = this.session.clearQueue(options);
-	const held = heldByEditor(this);
-	const compactionSteering = held.filter((msg) => msg.mode === "steer").map((msg) => msg.text);
-	const compactionFollowUp = held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text);
-	// clearQueue() also cancels unconfirmed hand-offs once they reach the session, so none is sent.
-	unconfirmedHandOffs.delete(this);
+}> {
+	// Leave the editor queue now, so nothing sends these messages while the session answers.
+	const held = this.compactionQueuedMessages;
+	const heldSendFailed = this.compactionSendFailed;
 	this.compactionQueuedMessages = [];
 	this.compactionSendFailed = false;
+	let removed: { steering: string[]; followUp: string[] };
+	try {
+		const clearing =
+			clearInteractiveEngineQueue(this.runtimeHost) ?? Promise.resolve(this.session.clearQueue(options));
+		this.updatePendingMessagesDisplay();
+		removed = await clearing;
+	} catch (error) {
+		this.compactionQueuedMessages = [...held, ...this.compactionQueuedMessages];
+		// If compaction ended meanwhile, its flush found the queue empty and nothing else will send these. Marked as
+		// unsent, they go out in order ahead of the next submission, as a batch whose first send failed does.
+		this.compactionSendFailed ||= heldSendFailed || (held.length > 0 && !this.compactionActive);
+		this.updatePendingMessagesDisplay();
+		throw error;
+	}
+	// A hand-off the session has not confirmed yet is the session's: it either lists it or reports its refusal.
 	return {
-		steering: [...steering, ...compactionSteering],
-		followUp: [...followUp, ...compactionFollowUp],
+		steering: [...removed.steering, ...held.filter((msg) => msg.mode === "steer").map((msg) => msg.text)],
+		followUp: [...removed.followUp, ...held.filter((msg) => msg.mode === "followUp").map((msg) => msg.text)],
 	};
 };
 
@@ -74,15 +98,15 @@ InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: Int
 	}
 };
 
-InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function (
+InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = async function (
 	this: InteractiveModeBase,
 	options?: {
 		abort?: boolean;
 		currentText?: string;
 		preserveUnprotectedCustomMessages?: boolean;
 	},
-): number {
-	const { steering, followUp } = this.clearAllQueues(options);
+): Promise<number> {
+	const { steering, followUp } = await this.clearAllQueues(options);
 	const allQueued = [...steering, ...followUp];
 	if (allQueued.length === 0) {
 		this.updatePendingMessagesDisplay();
@@ -100,6 +124,11 @@ InteractiveModeBase.prototype.restoreQueuedMessagesToEditor = function (
 	}
 	return allQueued.length;
 };
+
+/** Report a restore the session could not answer; nothing was removed, so every message is still queued. */
+export function showQueueRestoreFailure(mode: InteractiveModeBase, error: unknown): void {
+	mode.showError(`Failed to restore queued messages: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 InteractiveModeBase.prototype.queueCompactionMessage = function (
 	this: InteractiveModeBase,
@@ -211,9 +240,9 @@ function confirmHandOff(mode: InteractiveModeBase, message: CompactionQueuedMess
 /**
  * Hand the editor's held messages to the session before an extension command runs during compaction (#4251).
  * The session registers input as it arrives and holds it until compaction ends, so a message the command sends
- * goes out after them, in typing order. Each message stays shown and restorable here until the session confirms
- * it took it, and from then on the session lists it as queued and its clearQueue() returns it for Alt+Up and
- * Ctrl+C. A message the session refuses returns to the editor queue.
+ * goes out after them, in typing order. Each message stays shown here until the session confirms it took it, and
+ * from then on the session lists it as queued. The session's clearQueue() returns it for Alt+Up and Ctrl+C, also
+ * when the confirmation is still on its way. A message the session refuses returns to the editor queue.
  */
 export function handOffCompactionQueue(mode: InteractiveModeBase): void {
 	const messages = mode.compactionQueuedMessages;

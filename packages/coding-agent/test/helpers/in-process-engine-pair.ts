@@ -16,12 +16,26 @@ interface PendingRequest {
 
 class LaggedPipe<T> {
 	private tail: Promise<void> = Promise.resolve();
+	private writes = 0;
+	get writeCount(): number {
+		return this.writes;
+	}
 	constructor(
 		private readonly deliver: (item: T) => void,
 		private readonly delayMs: () => number,
 	) {}
 
+	/** Resolves once every item written so far, and any written while waiting, has been delivered. */
+	async idle(): Promise<void> {
+		let seen: number;
+		do {
+			seen = this.writes;
+			await this.tail;
+		} while (seen !== this.writes);
+	}
+
 	write(item: T): void {
+		this.writes += 1;
 		const readyAt = Date.now() + this.delayMs();
 		this.tail = this.tail.then(async () => {
 			const wait = readyAt - Date.now();
@@ -38,16 +52,34 @@ class InProcessEngineClient extends RpcClientApi {
 	private nextId = 0;
 	private readonly toEngine: LaggedPipe<RpcCommand>;
 	private readonly toHost: LaggedPipe<RpcResponse | JsonAgentSessionEvent>;
+	private readonly failures = new Map<RpcCommand["type"], string>();
 	private handle: (command: RpcCommand) => Promise<RpcResponse | undefined> = async () => undefined;
 
 	constructor(delays: { toEngineMs: () => number; toHostMs: () => number }) {
 		super();
 		this.toHost = new LaggedPipe((record) => this.receive(record), delays.toHostMs);
 		this.toEngine = new LaggedPipe((command) => {
+			const failure = this.failures.get(command.type);
+			if (failure !== undefined) {
+				this.toHost.write({
+					type: "response",
+					id: command.id,
+					command: command.type,
+					success: false,
+					error: failure,
+				});
+				return;
+			}
 			void this.handle(command).then((response) => {
 				if (response) this.toHost.write(JSON.parse(JSON.stringify(response)));
 			});
 		}, delays.toEngineMs);
+	}
+
+	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
+	failCommand(type: RpcCommand["type"], message: string | undefined): void {
+		if (message === undefined) this.failures.delete(type);
+		else this.failures.set(type, message);
 	}
 
 	attachEngine(handle: (command: RpcCommand) => Promise<RpcResponse | undefined>): void {
@@ -101,6 +133,16 @@ class InProcessEngineClient extends RpcClientApi {
 		return 1;
 	}
 
+	/** Resolves once nothing is in flight in either direction and every handler has run. */
+	async drain(): Promise<void> {
+		for (let quiet = 0; quiet < 2; ) {
+			const writes = this.toEngine.writeCount + this.toHost.writeCount;
+			await Promise.all([this.toEngine.idle(), this.toHost.idle()]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			quiet = writes === this.toEngine.writeCount + this.toHost.writeCount ? quiet + 1 : 0;
+		}
+	}
+
 	async waitForInteractiveEngineResources(): Promise<void> {}
 
 	async waitForInteractiveEngineBound(): Promise<void> {}
@@ -115,6 +157,10 @@ export interface EngineHostPair {
 	/** Write a record to the host as the engine's stdout would. */
 	engineOutput: (record: object) => void;
 	setLag: (lag: { toEngineMs?: number; toHostMs?: number }) => void;
+	/** Wait until nothing is in flight between host and engine and both sides have handled it. */
+	drain: () => Promise<void>;
+	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
+	failCommand: (type: RpcCommand["type"], message: string | undefined) => void;
 	cleanup: () => Promise<void>;
 }
 
@@ -155,6 +201,8 @@ export async function createEngineHostPair(
 		hostHarness,
 		runtime,
 		engineOutput: (record) => client.engineOutput(record as RpcResponse),
+		drain: () => client.drain(),
+		failCommand: (type, message) => client.failCommand(type, message),
 		setLag: (next) => {
 			if (next.toEngineMs !== undefined) lag.toEngineMs = next.toEngineMs;
 			if (next.toHostMs !== undefined) lag.toHostMs = next.toHostMs;

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Alt+Up no longer loses or duplicates a queued message in the default interactive mode, where the session runs in an engine process. A message the engine queued less than one round trip before the key press, such as a steering or follow-up message or one an extension command sends, was restored from the host's older copy of the queue while the engine cleared its own, so it ended up in neither the editor nor the queue. A message the engine had already taken into its turn could also come back to the editor and run as well. The host now restores exactly what the engine removed, followed by the messages only the editor holds, in the order they were typed. If the engine cannot be reached, nothing is removed and an error is shown. The RPC `clear_queue` response already listed the removed messages, so RPC clients are unaffected ([#4257](https://github.com/bastani-inc/atomic/issues/4257))
+
 ## [0.9.69] - 2026-11-03
 
 A fresh session can now look up your earlier sessions and workflow runs through `history://`. UI commands such as `/workflow connect` and `/settings` no longer wait for compaction, and a message that cannot be saved now stops the run with an error instead of failing silently.

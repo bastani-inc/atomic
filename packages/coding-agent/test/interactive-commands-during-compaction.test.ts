@@ -17,6 +17,7 @@ import {
 	type Wiring,
 	waitFor,
 } from "./helpers/busy-submission-rig.js";
+import { pressAltUp } from "./helpers/interactive-submission-host.js";
 import { getUserTexts } from "./suite/harness.js";
 
 type CompactionInternals = {
@@ -233,7 +234,7 @@ for (const wiring of ["local", "isolated"] as const) {
 					isDeepEqual(rig.host.getAllQueuedMessages().steering, ["typed first", "sent by the command"]),
 				);
 
-				assert.equal(rig.host.restoreQueuedMessagesToEditor(), 2);
+				assert.equal(await rig.host.restoreQueuedMessagesToEditor(), 2);
 				const restored = rig.host.editor.getText();
 				assert.ok(restored.includes("typed first"), restored);
 				assert.ok(restored.includes("sent by the command"), restored);
@@ -376,21 +377,21 @@ describe("isolated host hand-off during manual compaction", () => {
 		const compaction = startCompaction(rig, "manual");
 		await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
 
-		let restored: string | undefined;
+		let restoring: Promise<number> | undefined;
 		rig.host.session.subscribe((event) => {
-			if (restored !== undefined || event.type !== "queue_update") return;
+			if (restoring !== undefined || event.type !== "queue_update") return;
 			if (!event.steering.includes("typed A") || event.steering.includes("typed B")) return;
 			// Alt+Up lands after the engine listed A and before it took B.
-			rig.host.restoreQueuedMessagesToEditor();
-			restored = rig.host.editor.getText();
+			restoring = rig.host.restoreQueuedMessagesToEditor();
 		});
 		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
 		await submit("typed A");
 		await submit("typed B");
 		await submit("/workflow connect");
-		await waitFor("Alt+Up between the engine's queue updates", () => restored !== undefined);
-		assert.ok(restored?.includes("typed A"), restored);
-		assert.ok(restored?.includes("typed B"), restored);
+		await waitFor("Alt+Up between the engine's queue updates", () => restoring !== undefined);
+		assert.equal(await restoring, 2);
+		const restored = rig.host.editor.getText();
+		assert.equal(restored, "typed A\n\ntyped B");
 		await waitFor("the engine to give the held messages back", () =>
 			isDeepEqual(rig.engine.session.getSteeringMessages(), []),
 		);
@@ -401,6 +402,149 @@ describe("isolated host hand-off during manual compaction", () => {
 		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
 		assert.equal(providerRequests(rig), 0);
 		assert.deepEqual(getUserTexts(rig.engine), []);
+	});
+});
+
+/** Long enough that the engine's answers are still on their way to the host while the test acts. */
+const ENGINE_TO_HOST_LAG_MS = 150;
+
+/** Let every request and answer between the host and the engine arrive and be handled. */
+async function settleTraffic(rig: Rig): Promise<void> {
+	if (rig.pair) await rig.pair.drain();
+	else await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+}
+
+for (const wiring of ["local", "isolated"] as const) {
+	describe(`${wiring} host restoring a queue held by both the editor and the session during compaction`, () => {
+		test("restores every message in order once, including ones the host has not heard of yet (#4257)", async () => {
+			const invocations: string[] = [];
+			const rig = await createCompactingRig(wiring, invocations);
+			const releaseCompaction = holdCompaction(rig);
+			const compaction = startCompaction(rig, "manual");
+			await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+			rig.pair?.setLag({ toHostMs: ENGINE_TO_HOST_LAG_MS });
+
+			const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+			await submit("typed first");
+			// The commands hand "typed first" to the engine and send their own messages from there.
+			const commands = [submit("/ask sent by the command"), submit("/followup follow-up by the command")];
+			await waitFor("the engine to hold the messages the commands sent", () =>
+				isDeepEqual(
+					[rig.engine.session.getSteeringMessages(), rig.engine.session.getFollowUpMessages()],
+					[["typed first", "sent by the command"], ["follow-up by the command"]],
+				),
+			);
+			await submit("typed last");
+			if (rig.pair) {
+				assert.deepEqual(rig.host.session.getFollowUpMessages(), [], "the host must not have heard of them yet");
+			}
+
+			pressAltUp(rig.host);
+			await settleTraffic(rig);
+			await Promise.all(commands);
+
+			assert.equal(
+				rig.host.editor.getText(),
+				"typed first\n\nsent by the command\n\ntyped last\n\nfollow-up by the command",
+			);
+			assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
+			assert.deepEqual(rig.engine.session.getSteeringMessages(), []);
+			assert.deepEqual(rig.engine.session.getFollowUpMessages(), []);
+
+			releaseCompaction();
+			await compaction;
+			await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+			await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+			assert.equal(providerRequests(rig), 0, "a restored message must not also be sent");
+			assert.deepEqual(getUserTexts(rig.engine), []);
+		});
+	});
+}
+
+describe("isolated host when the engine cannot clear its queue", () => {
+	test("keeps every message queued and reports the failure, then restores them on the next Alt+Up (#4257)", async () => {
+		const invocations: string[] = [];
+		const rig = await createCompactingRig("isolated", invocations);
+		const pair = rig.pair;
+		assert.ok(pair, "isolated rigs have an engine");
+		const releaseCompaction = holdCompaction(rig);
+		const compaction = startCompaction(rig, "manual");
+		await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+		await submit("typed first");
+		await submit("/ask sent by the command");
+		await submit("typed last");
+		const everyMessage = ["typed first", "sent by the command", "typed last"];
+		await waitFor("every message to show as queued", () =>
+			isDeepEqual(rig.host.getAllQueuedMessages().steering, everyMessage),
+		);
+
+		pair.failCommand("clear_queue", "engine unavailable");
+		pressAltUp(rig.host);
+		await settleTraffic(rig);
+
+		assert.equal(rig.host.editor.getText(), "", "nothing may reach the editor while the engine still holds messages");
+		assert.deepEqual(
+			rig.host.notices.filter((notice) => notice.startsWith("error:")),
+			["error: Failed to restore queued messages: engine unavailable"],
+		);
+		assert.deepEqual(rig.host.getAllQueuedMessages().steering, everyMessage);
+		assert.deepEqual(rig.engine.session.getSteeringMessages(), ["typed first", "sent by the command"]);
+
+		pair.failCommand("clear_queue", undefined);
+		pressAltUp(rig.host);
+		await settleTraffic(rig);
+
+		assert.equal(rig.host.editor.getText(), everyMessage.join("\n\n"));
+		assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
+		assert.deepEqual(rig.engine.session.getSteeringMessages(), []);
+
+		releaseCompaction();
+		await compaction;
+		await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+		assert.deepEqual(getUserTexts(rig.engine), []);
+	});
+});
+
+describe("isolated host when compaction ends while Alt+Up waits for the engine", () => {
+	test("sends the messages the editor kept ahead of the next submission after the clear fails (#4257)", async () => {
+		const invocations: string[] = [];
+		const rig = await createCompactingRig("isolated", invocations);
+		const pair = rig.pair;
+		assert.ok(pair, "isolated rigs have an engine");
+		const releaseCompaction = holdCompaction(rig);
+		const compaction = startCompaction(rig, "manual");
+		await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+		await submit("typed first");
+		// The clear is still on its way, and will fail, when compaction ends: the end finds nothing held to send.
+		pair.failCommand("clear_queue", "engine unavailable");
+		pair.setLag({ toEngineMs: 200 });
+		pressAltUp(rig.host);
+		releaseCompaction();
+		await compaction;
+		await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+		await settleTraffic(rig);
+
+		assert.equal(rig.host.editor.getText(), "");
+		assert.deepEqual(
+			rig.host.notices.filter((notice) => notice.startsWith("error: Failed to restore")),
+			["error: Failed to restore queued messages: engine unavailable"],
+		);
+		assert.deepEqual(rig.host.getAllQueuedMessages().steering, ["typed first"]);
+
+		pair.failCommand("clear_queue", undefined);
+		pair.setLag({ toEngineMs: 0 });
+		await submit("next prompt");
+		await waitFor("both messages to be sent", () => getUserTexts(rig.engine).length === 2);
+		await waitFor("the session to settle", () => !rig.engine.session.isStreaming);
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+
+		assert.deepEqual(getUserTexts(rig.engine), ["typed first", "next prompt"]);
+		assert.deepEqual(rig.host.getAllQueuedMessages(), { steering: [], followUp: [] });
 	});
 });
 

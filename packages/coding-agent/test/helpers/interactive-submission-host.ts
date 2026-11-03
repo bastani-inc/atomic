@@ -10,6 +10,8 @@ type Editor = {
 	onChange?: (text: string) => void;
 	onPasteImage?: () => void;
 	onAction: (action: string, handler: () => void) => void;
+	/** Handlers registered through `onAction`, so a test can press a key action as the editor would. */
+	actions: Map<string, () => void>;
 	getText: () => string;
 	setText: (text: string) => void;
 	getExpandedText?: () => string;
@@ -70,6 +72,7 @@ export interface InteractiveSubmissionHost {
 		followUp: string[];
 	};
 	restoreQueuedMessagesToEditor: (options?: { preserveUnprotectedCustomMessages?: boolean }) => number;
+	handleDequeue: () => void;
 	updatePendingMessagesDisplay: () => void;
 	queueCompactionMessage: (text: string, mode: "steer" | "followUp") => void;
 	flushCompactionQueue: (options?: { willRetry?: boolean }) => Promise<void>;
@@ -86,6 +89,7 @@ const BOUND_MODE_METHODS = [
 	"getAllQueuedMessages",
 	"clearAllQueues",
 	"restoreQueuedMessagesToEditor",
+	"handleDequeue",
 	"updatePendingMessagesDisplay",
 	"queueCompactionMessage",
 	"flushCompactionQueue",
@@ -101,8 +105,12 @@ const BOUND_MODE_METHODS = [
 export function createInteractiveSubmissionHost(session: AgentSession): InteractiveSubmissionHost {
 	initTheme("dark");
 	let text = "";
+	const actions = new Map<string, () => void>();
 	const editor: Editor = {
-		onAction() {},
+		onAction: (action, handler) => {
+			actions.set(action, handler);
+		},
+		actions,
 		getText: () => text,
 		setText: (next) => {
 			text = next;
@@ -165,6 +173,7 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 		getAllQueuedMessages: () => ({ steering: [], followUp: [] }),
 		clearAllQueues: () => ({ steering: [], followUp: [] }),
 		restoreQueuedMessagesToEditor: () => 0,
+		handleDequeue() {},
 		updatePendingMessagesDisplay() {},
 		queueCompactionMessage() {},
 		flushCompactionQueue: async () => {},
@@ -186,6 +195,13 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 	host.setupKeyHandlers();
 	host.setupEditorSubmitHandler();
 	return host;
+}
+
+/** Press Alt+Up, which restores the queued messages to the editor. */
+export function pressAltUp(host: InteractiveSubmissionHost): void {
+	const dequeue = host.defaultEditor.actions.get("app.message.dequeue");
+	if (!dequeue) throw new Error("the editor has no dequeue action registered");
+	dequeue();
 }
 
 export function startInteractiveInputLoop(host: InteractiveSubmissionHost): { stop: () => void; done: Promise<void> } {
