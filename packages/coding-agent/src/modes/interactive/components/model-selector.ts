@@ -60,7 +60,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private filteredModels: ModelItem[] = [];
 	private selectedIndex: number = 0;
 	private currentModel?: Model<Api>;
-	private currentThinkingLevel?: ThinkingLevel;
 	private thinkingContext: ModelSwitchThinkingContext;
 	private defaultModelKey?: string;
 	private modelRuntime: ModelRuntime;
@@ -86,14 +85,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		onSelect: (model: Model<Api>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
-		/** The level the current model runs at, shown beside it; other rows show the level selecting them applies. */
+		/**
+		 * The level the current model runs at. Rows show the level selecting each model applies, which a model without a
+		 * saved level inherits from this one while the current model reasons.
+		 */
 		currentThinkingLevel?: ThinkingLevel,
 	) {
 		super();
 
 		this.tui = tui;
 		this.currentModel = currentModel;
-		this.currentThinkingLevel = currentThinkingLevel;
 		this.thinkingContext = {
 			settings: _settingsManager,
 			...(currentThinkingLevel === undefined
@@ -275,13 +276,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.updateList();
 	}
 
-	/** The level a row shows: the current model's own level, else the level selecting the model would apply. */
-	private thinkingLevelFor(model: Model<Api>): ThinkingLevel {
-		if (this.currentThinkingLevel !== undefined && modelsAreEqual(this.currentModel, model))
-			return this.currentThinkingLevel;
-		return thinkingLevelForModelSwitch(model, this.thinkingContext);
-	}
-
 	private updateList(): void {
 		this.listContainer.clear();
 
@@ -292,11 +286,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		);
 		const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
 
-		// Each row is the model's raw ID and level, exactly what `--model provider/id:level` takes (#4269). A display
+		// Each row is the model's raw ID and the level selecting it applies, exactly what `--model provider/id:level`
+		// takes (#4269). That holds for the current model too: selecting it reapplies a saved per-model level. A display
 		// name that adds words the ID lacks follows in a dim column, aligned across the visible rows.
 		const rows = this.filteredModels.slice(startIndex, endIndex).map((item) => ({
 			item,
-			label: formatModelLabel(item.model, { thinkingLevel: this.thinkingLevelFor(item.model) }),
+			label: formatModelLabel(item.model, {
+				thinkingLevel: thinkingLevelForModelSwitch(item.model, this.thinkingContext),
+			}),
 			name: getDistinctModelName({ id: item.id, name: item.model.name }),
 		}));
 		const labelWidth = Math.max(0, ...rows.map((row) => visibleWidth(row.label)));

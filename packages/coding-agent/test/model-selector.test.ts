@@ -91,12 +91,48 @@ describe("model selector", () => {
 		const rows = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
 			.map((line) => line.slice(4).trimEnd());
-		// The current model shows the session's level; another shows its saved level, else the current one it inherits.
+		// Each row shows the level selecting it applies: a saved per-model level, else the current level it inherits.
 		assert.ok(rows.includes(`${provider}/current-model  high`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/saved-level-model  low`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/other-reasoning-model  high`), rows.join("\n"));
 		assert.ok(rows.includes(`${provider}/plain-model`), rows.join("\n"));
 		selector.dispose();
+	});
+
+	it("labels the current model with the level selecting it applies, even over the level it runs at (#4269)", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "other-model", name: "Other Model", reasoning: true },
+			],
+		});
+		const session = harness.session;
+		const currentModel = harness.getModel("current-model")!;
+		await session.setModel(currentModel);
+		await session.setThinkingLevel("high");
+		// A saved override the running session does not use, as after `--model provider/id:high`.
+		harness.settingsManager.setModelThinkingLevel(currentModel.provider, currentModel.id, "low");
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			session.model,
+			harness.settingsManager,
+			session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			session.thinkingLevel,
+		);
+		const row = stripAnsi(selector.render(120).join("\n"))
+			.split("\n")
+			.find((line) => line.startsWith("→ ✓ "))!
+			.slice(4)
+			.trim();
+		selector.dispose();
+
+		await session.setModel(currentModel);
+		assert.equal(row, `${currentModel.provider}/current-model  ${session.thinkingLevel}`);
+		assert.equal(session.thinkingLevel, "low");
 	});
 
 	it("labels a selected model so that --model parses the label back to the same model and level (#4269)", async () => {
