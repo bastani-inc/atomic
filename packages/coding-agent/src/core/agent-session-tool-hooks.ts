@@ -203,7 +203,9 @@ async function settleFallbackAfterTurn(
 			session._isEmptyCompletion?.(turn.message) === true ||
 			session._isSafetyRefusal?.(turn.message) === true);
 	if (!preserveFallbackForFailure && (turn.toolResults.length === 0 || terminatingBatch)) {
-		await session._agentEventQueue;
+		// As at the request boundary, a failed event listener does not fail the turn. A message that
+		// could not be saved was already reported where its append failed (#4226).
+		await session._agentEventQueue.catch(() => {});
 		await session._settleFallbackModelScope();
 	}
 }

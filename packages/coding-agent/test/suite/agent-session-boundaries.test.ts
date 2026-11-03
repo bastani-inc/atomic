@@ -1,8 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/index.ts";
+import { SessionManager } from "../../src/core/session-manager.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -454,6 +458,56 @@ describe("AgentSession actionable boundaries", () => {
 		expect(harness.sessionManager.getEntries()).toContainEqual(
 			expect.objectContaining({ type: "custom", customType: "failure-boundary" }),
 		);
+	});
+
+	it("reports why a message could not be saved instead of an unresolved turn_end entry (#4226)", async () => {
+		const tool: AgentTool = {
+			name: "noop",
+			label: "Noop",
+			description: "Noop",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "done" }], details: {} }),
+		};
+		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-4226-"));
+		const sessionManager = await SessionManager.create(sessionDir, sessionDir);
+		const harness = await createHarness({
+			sessionManager,
+			tools: [tool],
+			extensionFactories: [(pi) => pi.on("turn_end", () => {})],
+		});
+		try {
+			const errors: string[] = [];
+			await harness.session.bindExtensions({
+				shutdownHandler: () => {},
+				onError: (error) => errors.push(`${error.extensionPath} ${error.event}: ${error.error}`),
+			});
+			harness.setResponses([
+				fauxAssistantMessage("first reply"),
+				fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("second reply"),
+			]);
+			await harness.session.prompt("first");
+			const otherWriter = await SessionManager.open(sessionManager.getSessionFile()!, sessionDir);
+			await otherWriter.appendCustomEntry("other-writer", {});
+
+			const second = harness.session.prompt("second");
+			await vi.waitFor(() => expect(harness.eventsOfType("agent_end")).toHaveLength(2));
+
+			expect(errors).toEqual(
+				["user", "assistant", "toolResult", "assistant"].map((role) =>
+					expect.stringMatching(
+						new RegExp(
+							`^<session> message_end: could not persist the ${role} message: Session conflict: \\S+, expected \\d+, actual \\d+$`,
+						),
+					),
+				),
+			);
+			await second;
+			expect(getMessageText(harness.session.messages.at(-1))).toBe("second reply");
+		} finally {
+			await harness.cleanup();
+			rmSync(sessionDir, { recursive: true, force: true });
+		}
 	});
 
 	it("does not compact from usage belonging to a boundary-omitted assistant", async () => {

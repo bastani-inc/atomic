@@ -45,6 +45,7 @@ import {
 	ownedSessionStores,
 } from "./session-lifecycle-work.ts";
 import { assertSettingsWrites, ownedSettingsManagers } from "./settings-write-ownership.ts";
+import { describeStorageError } from "./storage/storage-status.js";
 import { drainTerminalWorkflowSummaries } from "./workflow-summary-lifecycle.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
@@ -217,28 +218,43 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// Handle session persistence
 	if (event.type === "message_end") {
 		let entryId: string | undefined;
-		// Check if this is a custom message from extensions
-		if (event.message.role === "custom") {
-			const admitted = event.message as StageAdmittedCustomMessage;
-			if (protectedMessage === undefined) {
-				entryId = await this.sessionManager.appendCustomMessageEntry(
-					event.message.customType,
-					event.message.content,
-					event.message.display,
-					event.message.details,
-					customMessageExcludesContext(event.message),
-					undefined,
-					admitted.stageAdmissionKey,
-				);
+		try {
+			// Check if this is a custom message from extensions
+			if (event.message.role === "custom") {
+				const admitted = event.message as StageAdmittedCustomMessage;
+				if (protectedMessage === undefined) {
+					entryId = await this.sessionManager.appendCustomMessageEntry(
+						event.message.customType,
+						event.message.content,
+						event.message.display,
+						event.message.details,
+						customMessageExcludesContext(event.message),
+						undefined,
+						admitted.stageAdmissionKey,
+					);
+				}
+			} else if (
+				event.message.role === "system" ||
+				event.message.role === "user" ||
+				event.message.role === "assistant" ||
+				event.message.role === "toolResult"
+			) {
+				// Regular LLM message - persist as SessionMessageEntry
+				entryId = await this.sessionManager.appendMessage(event.message);
 			}
-		} else if (
-			event.message.role === "system" ||
-			event.message.role === "user" ||
-			event.message.role === "assistant" ||
-			event.message.role === "toolResult"
-		) {
-			// Regular LLM message - persist as SessionMessageEntry
-			entryId = await this.sessionManager.appendMessage(event.message);
+		} catch (error) {
+			// #4226: an unsaved message has no entry for turn_end to resolve; name the cause here instead.
+			this._messagesWithFailedPersistence.add(event.message);
+			// #3105: disposal reports failures that interrupt it through its own rejection.
+			if (!this._disposed) {
+				this._extensionRunner.emitError({
+					extensionPath: "<session>",
+					event: "message_end",
+					error: `could not persist the ${event.message.role} message: ${error instanceof Error ? describeStorageError(error) : String(error)}`,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
+			}
+			throw error;
 		}
 		if (entryId) this._entryIdsByMessage.set(event.message, entryId);
 		if (entryId && event.message.role === "custom") {

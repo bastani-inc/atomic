@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A message that cannot be saved to the session now reports why: `could not persist the assistant message: <cause>`, where the cause is, for example, `Session conflict: …` after another process wrote to the same session file, or the file system error behind a failed write. Before, the failure was dropped silently. The only sign was `turn_end could not resolve the persisted assistant entry ID`, repeated for every later reply, and the run then ended as `Model <model> failed: <storage error>` or a prompt never returned. The run now continues and prints its answer. Messages that could not be saved are still missing from the session file ([#4226](https://github.com/bastani-inc/atomic/issues/4226))
+
 ## [0.9.68] - 2026-11-03
 
 An explicit `--model` now runs as named instead of silently switching to another model family, and `atomic -p` no longer hangs when stdin is an open pipe that never sends anything.

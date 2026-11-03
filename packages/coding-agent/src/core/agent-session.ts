@@ -194,6 +194,7 @@ class AgentSessionBase {
 	/** Assistant messages whose actionable turn_end already ran from finishTurn. */
 	protected readonly _boundaryDispatchedMessages = new WeakSet<object>();
 	protected readonly _messagesAwaitingPersistence = new WeakSet<object>();
+	protected readonly _messagesWithFailedPersistence = new WeakSet<object>();
 	/** Interrupted tool calls recovery is running again; their results are pending, not interrupted. */
 	protected readonly _reissuedToolCallIds = new Set<string>();
 	protected _lastAssistantToolResults: AgentMessage[] = [];

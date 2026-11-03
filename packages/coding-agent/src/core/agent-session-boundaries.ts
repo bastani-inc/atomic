@@ -133,6 +133,7 @@ export async function _dispatchTurnEndBoundary(
 	// The boundary resolves persisted entry IDs. From finishTurn, session listeners may
 	// still be persisting this turn; from the serialized event queue they already have.
 	if (awaitPersistence) await this._agentEventQueue.catch(() => {});
+	if (this._messagesWithFailedPersistence.has(message)) return false;
 	const messageEntryId = this._findPersistedMessageEntryId(message);
 	if (!messageEntryId) {
 		this._extensionRunner.emitError({

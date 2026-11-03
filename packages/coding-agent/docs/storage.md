@@ -384,6 +384,8 @@ Session operations can raise `SessionNotFoundError` or `SessionExistsError` with
 
 `SessionFormatVersionError` identifies `path`, `found`, and `supported`; `SessionInvalidTextError` identifies `field` and `reason`, and `SessionInvalidTimestampError` adds `value`. A JSONL append whose rollback also fails raises `JsonlStoragePoisonedError` with `location`, `cause`, and `rollbackCause`; stop using that store and inspect the file before reopening. These failures never silently select another store.
 
+When a running session cannot save a message, Atomic reports `could not persist the <role> message: <cause>`; `-p` prints it on stderr as `Extension error (<session>): …`. The run continues, but each message that fails is missing from the session file. A `Session conflict` cause usually means another process wrote to the same session, for example a second run that continued it with `--continue`.
+
 Journal errors include:
 
 | Error | Fields and response |
