@@ -57,6 +57,44 @@ test("the store finds the runs under a run or one of its stages through addition
 	assert.deepEqual(ids("root", "s1"), ["d"]);
 });
 
+test("a run republished as the same snapshot under another stage or parent is found once, under its new link (#4190)", () => {
+	const store = createStore();
+	const ids = (parent: string, stageId?: string) => store.childRuns(parent, stageId).map((child) => child.id);
+	store.recordRunStart(run("root"));
+	store.recordRunStart(run("other"));
+	const child = run("child", { parentRunId: "root", parentStageId: "a" });
+	store.recordRunStart(child);
+	child.parentStageId = "b";
+	store.recordRunStart(child);
+	assert.deepEqual([ids("root"), ids("root", "a"), ids("root", "b")], [["child"], [], ["child"]]);
+
+	for (let index = 0; index < 1_000; index++) {
+		child.parentStageId = `s${index}`;
+		store.recordRunStart(child);
+	}
+	assert.deepEqual(ids("root"), ["child"], "republished under 1,000 stages");
+	child.parentRunId = "other";
+	store.recordRunStart(child);
+	assert.deepEqual([ids("root"), ids("other"), ids("other", "s999")], [[], ["child"], ["child"]]);
+});
+
+test("removing a run republished as the same snapshot under other stages leaves none of its links behind (#4190)", () => {
+	const store = createStore();
+	const ids = (parent: string, stageId?: string) => store.childRuns(parent, stageId).map((child) => child.id);
+	store.recordRunStart(run("root"));
+	const child = run("child", { parentRunId: "root", parentStageId: "a" });
+	store.recordRunStart(child);
+	for (const stageId of ["b", "c", "d"]) {
+		child.parentStageId = stageId;
+		store.recordRunStart(child);
+	}
+	assert.equal(store.removeRun("child"), true);
+	assert.deepEqual(ids("root"), []);
+	// A link left behind by any earlier publication hands a new run with the same id back once more per link.
+	store.recordRunStart(run("child", { parentRunId: "root", parentStageId: "e" }));
+	assert.deepEqual([ids("root"), ids("root", "e")], [["child"], ["child"]]);
+});
+
 test("the store's child index always equals a filter of its runs, in store order, over random operations (#4190)", () => {
 	const next = sequence(4190);
 	const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!;

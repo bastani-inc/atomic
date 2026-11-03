@@ -51,6 +51,11 @@ export interface StoreState {
 	readonly runPositions: Map<string, number>;
 	/** Ids of the runs by the run and boundary stage they hang from, so a run's children are found without a scan. */
 	readonly childRunIds: Map<string, Map<string | undefined, Set<string>>>;
+	/**
+	 * The parent and stage each run is indexed under in `childRunIds`. Snapshots are stored by reference, so a run's
+	 * own fields may already name a new link when the store replaces, relinks or removes it.
+	 */
+	readonly childRunLinks: Map<string, ChildRunLink>;
 	readonly notices: WorkflowNotice[];
 	readonly listeners: Set<(snap: StoreSnapshot) => void>;
 	readonly invalidationListeners: Set<() => void>;
@@ -153,11 +158,17 @@ export function applyRunEndMetadata(run: RunSnapshot, metadata: RunEndMetadata):
 	if (metadata.exitReason !== undefined) run.exitReason = metadata.exitReason;
 }
 
+interface ChildRunLink {
+	readonly parentRunId: string;
+	readonly parentStageId: string | undefined;
+}
+
 export function createStoreState(): StoreState {
 	return {
 		runs: [],
 		runPositions: new Map(),
 		childRunIds: new Map(),
+		childRunLinks: new Map(),
 		notices: [],
 		listeners: new Set(),
 		invalidationListeners: new Set(),
@@ -172,29 +183,36 @@ export function createStoreState(): StoreState {
 function reindexRuns(state: StoreState): void {
 	state.runPositions.clear();
 	state.childRunIds.clear();
+	state.childRunLinks.clear();
 	state.runs.forEach((run, position) => {
-		if (!state.runPositions.has(run.id)) state.runPositions.set(run.id, position);
+		if (state.runPositions.has(run.id)) return;
+		state.runPositions.set(run.id, position);
 		indexChildRun(state, run);
 	});
 }
 
+/** Indexes the run under the parent and stage it names now, dropping the link it was indexed under before. */
 function indexChildRun(state: StoreState, run: RunSnapshot): void {
+	unindexChildRun(state, run.id);
 	if (run.parentRunId === undefined) return;
 	const byStage = state.childRunIds.get(run.parentRunId) ?? new Map<string | undefined, Set<string>>();
 	state.childRunIds.set(run.parentRunId, byStage);
 	const ids = byStage.get(run.parentStageId) ?? new Set<string>();
 	byStage.set(run.parentStageId, ids);
 	ids.add(run.id);
+	state.childRunLinks.set(run.id, { parentRunId: run.parentRunId, parentStageId: run.parentStageId });
 }
 
-function unindexChildRun(state: StoreState, run: RunSnapshot): void {
-	if (run.parentRunId === undefined) return;
-	const byStage = state.childRunIds.get(run.parentRunId);
-	const ids = byStage?.get(run.parentStageId);
+function unindexChildRun(state: StoreState, runId: string): void {
+	const link = state.childRunLinks.get(runId);
+	if (link === undefined) return;
+	state.childRunLinks.delete(runId);
+	const byStage = state.childRunIds.get(link.parentRunId);
+	const ids = byStage?.get(link.parentStageId);
 	if (byStage === undefined || ids === undefined) return;
-	ids.delete(run.id);
-	if (ids.size === 0) byStage.delete(run.parentStageId);
-	if (byStage.size === 0) state.childRunIds.delete(run.parentRunId);
+	ids.delete(runId);
+	if (ids.size === 0) byStage.delete(link.parentStageId);
+	if (byStage.size === 0) state.childRunIds.delete(link.parentRunId);
 }
 
 /**
@@ -306,7 +324,6 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	function placeRun(run: RunSnapshot): void {
 		const position = runPosition(state, run.id);
 		if (position !== undefined) {
-			unindexChildRun(state, state.runs[position]!);
 			state.runs[position] = run;
 			indexChildRun(state, run);
 			return;
@@ -320,7 +337,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		const [removed] = state.runs.splice(position, 1);
 		if (removed === undefined) return;
 		state.runPositions.delete(removed.id);
-		unindexChildRun(state, removed);
+		unindexChildRun(state, removed.id);
 		for (let index = position; index < state.runs.length; index++)
 			state.runPositions.set(state.runs[index]!.id, index);
 	}
@@ -329,6 +346,7 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 		state.runs.length = 0;
 		state.runPositions.clear();
 		state.childRunIds.clear();
+		state.childRunLinks.clear();
 	}
 
 	function childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[] {
@@ -351,7 +369,6 @@ export function createStoreContext(state: StoreState = createStoreState()): Stor
 	}
 
 	function reparentRun(run: RunSnapshot, parentStageId: string): void {
-		unindexChildRun(state, run);
 		run.parentStageId = parentStageId;
 		indexChildRun(state, run);
 	}
