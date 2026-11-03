@@ -232,6 +232,12 @@ Emitted when the user switches models mid-session.
 {"type":"model_change","id":"d4e5f6g7","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:05:00.000Z","provider":"openai","modelId":"gpt-4o"}
 ```
 
+A model change that a [model fallback](/settings#fallbackmodels) made also has `fallback`. It names the model the turn asked for (`requested`), the model that failed (`from`), and the failure (`reason`):
+
+```json
+{"type":"model_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","provider":"anthropic","modelId":"claude-opus-4-8","fallback":{"requested":"openai/gpt-4o","from":"openai/gpt-4o","reason":"503 Service Unavailable"}}
+```
+
 ### ThinkingLevelChangeEntry
 
 Emitted when the user changes the thinking/reasoning level.

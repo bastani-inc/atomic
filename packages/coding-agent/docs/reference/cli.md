@@ -143,6 +143,8 @@ In print mode, Atomic also reads piped stdin and merges it into the initial prom
 cat README.md | atomic -p "Summarize this text"
 ```
 
+Atomic waits for piped input to end, however slowly it arrives once it has started. A pipe that sends nothing at all, not even its end, is a different case: a script, an agent's shell tool, or another program often starts Atomic with stdin open and never writes to it. If nothing arrives on such a pipe within 2 seconds, a run with a prompt argument (or `@file`) starts without stdin. If input arrives after that, Atomic warns that it was ignored. A run with no prompt argument keeps waiting for stdin, and says so on stderr. Set `ATOMIC_STDIN_TIMEOUT_MS` to change the wait, or to `0` to always wait for the end of piped input.
+
 When a print-mode turn correctly finishes by calling an opt-in terminating structured-output tool created with `createStructuredOutputTool` (for example from an extension, SDK caller, or workflow item with a schema), Atomic ends after that tool result without an extra follow-up assistant turn. Print-mode stdout contains the terminating structured JSON payload, so `atomic -p` remains script-friendly while the same value is also available through the SDK `capture` sink, tool `details`, a configured file sink, or workflow `result.structured`. This also works for custom factory names such as `final_decision`. Non-terminating or unrelated tool results are not printed as the final response.
 
 ## Model Options
@@ -154,7 +156,11 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--api-key <key>` | API key, overriding environment variables. It does not choose between providers that offer the same model |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; model capability mapping still governs availability |
 | `--models <patterns>` | Comma-separated patterns for CTRL+P cycling. A model offered by several providers is added for each, with a warning |
+| `--fallback-models <models>` | Comma-separated `provider/model[:thinking]` IDs this run may fall back to, in order, after a failure the [`fallbackModels`](/settings#fallbackmodels) setting would fall back on. Replaces that setting for this run |
+| `--no-fallback` | Never fall back to another model in this run. Cannot be combined with `--fallback-models` |
 | `--list-models [search]` | List available models |
+
+A model named with `--model` runs as named. It falls back only to the models `--fallback-models` names, never to the `fallbackModels` setting, user or project. In an interactive session this holds for the whole process: after you switch models with `/model` or Ctrl+P, and in sessions you start with `/new` or `/resume`, the session still uses only `--fallback-models`. Start Atomic without `--model` to use the setting. Child sessions that run on the main session's model, such as a subagent that names no model, inherit the same chain. In print mode, a fallback prints `Model fallback: <model> failed, continuing on <fallback>: <reason>` to stderr. If the run's answer came from the fallback, it ends with `Model: ran on <fallback>, not the requested <model>.` A run that fails prints `Model <model> failed: <reason>`.
 
 ## Session Options
 
@@ -289,6 +295,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `ATOMIC_REDUCED_MOTION` | Set to `1` to skip startup choreography and render the ordinary working identity as a static regular accent `∀` without a timer |
 | `ATOMIC_OFFLINE` | Disable automatic network activity, including update checks, package update checks, install/update telemetry, and model catalog refreshes |
 | `ATOMIC_SKIP_VERSION_CHECK` | Skip the Atomic version update check at startup. This prevents the latest-version request |
+| `ATOMIC_STDIN_TIMEOUT_MS` | How long a print-mode run waits, in milliseconds, for anything on a piped stdin before a run with a prompt argument starts without it; default `2000`, at most `2147483647`, `0` waits for the end of piped input (`PI_STDIN_TIMEOUT_MS` is a legacy alias) |
 | `ATOMIC_TELEMETRY` | Override version-adoption pings: `1`/`true`/`yes` or `0`/`false`/`no`. This does not disable update checks (`PI_TELEMETRY` is a legacy alias) |
 | `NODE_COMPILE_CACHE` | Override the directory for Node's persistent compile cache, which Atomic enables automatically on Node >= 22.8 to speed up startup (most noticeable on Windows). Set `NODE_DISABLE_COMPILE_CACHE=1` to opt out |
 | `PI_CACHE_RETENTION` | Prompt-cache retention: `long` (default), `short`, or `none`, subject to provider/model support |
