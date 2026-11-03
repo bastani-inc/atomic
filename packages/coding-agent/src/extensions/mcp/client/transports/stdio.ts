@@ -8,6 +8,8 @@ const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 /** How long a server gets to exit on its own after stdin closes, before it is sent SIGTERM. */
 const STDIN_CLOSE_GRACE_MS = 500;
+/** After SIGKILL, how long the pipes may stay open, held by a process outside the group, before they are destroyed. */
+const PIPE_RELEASE_AFTER_KILL_MS = 1_000;
 const USE_PROCESS_GROUPS = process.platform !== "win32";
 
 /** Process groups of running servers, killed if the host exits without closing them. */
@@ -177,6 +179,17 @@ export class StdioTransport extends TransportEvents implements McpTransport {
 			const grace = Math.min(STDIN_CLOSE_GRACE_MS, closeTimeoutMs);
 			timers.push(setTimeout(() => killProcessTree(child, "SIGTERM"), grace));
 			timers.push(setTimeout(() => killProcessTree(child, "SIGKILL"), grace + closeTimeoutMs));
+			// A process that left the server's group can keep the pipes open after the kill; stop waiting for it.
+			timers.push(
+				setTimeout(
+					() => {
+						child.stdin?.destroy();
+						child.stdout?.destroy();
+						child.stderr?.destroy();
+					},
+					grace + closeTimeoutMs + PIPE_RELEASE_AFTER_KILL_MS,
+				),
+			);
 			child.stdin?.end();
 		});
 	}
