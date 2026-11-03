@@ -130,6 +130,7 @@ export async function createEngineHostPair(
 		getSession: () => engine.session,
 		rebindSession: async () => {},
 		output: (record) => client.engineOutput(record as RpcResponse),
+		detachCompaction: true,
 	});
 	client.attachEngine(handle);
 	const unsubscribe = engine.session.subscribe((event) => client.engineOutput(toJsonEvent(event)));

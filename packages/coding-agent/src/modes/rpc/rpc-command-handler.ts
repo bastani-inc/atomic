@@ -38,6 +38,11 @@ interface RpcCommandHandlerOptions {
 	waitForResources?: () => Promise<void> | undefined;
 	reloadResources?: () => Promise<void>;
 	shouldRetryResources?: () => boolean;
+	/**
+	 * Answer `compact` when it settles without holding the ordered command lane, so an interactive
+	 * host can still run UI and admin commands meanwhile. The host keeps prompts queued itself.
+	 */
+	detachCompaction?: boolean;
 }
 
 function canRunBeforeOptionalResources(command: RpcCommand): boolean {
@@ -79,6 +84,7 @@ export function createRpcCommandHandler({
 	waitForResources,
 	reloadResources,
 	shouldRetryResources,
+	detachCompaction,
 }: RpcCommandHandlerOptions): ManagedRpcCommandHandler {
 	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
 	const providerAuth = new RpcProviderAuth(inputForm, {
@@ -334,6 +340,14 @@ export function createRpcCommandHandler({
 			}
 
 			case "compact": {
+				if (detachCompaction) {
+					void session.compact().then(
+						(result) => output(createRpcSuccessResponse(id, "compact", result)),
+						(compactError: unknown) =>
+							output(createRpcErrorResponse(id, "compact", formatRpcErrorMessage(compactError), compactError)),
+					);
+					return undefined;
+				}
 				const result = await session.compact();
 				return createRpcSuccessResponse(id, "compact", result);
 			}

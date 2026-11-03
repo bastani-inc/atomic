@@ -1,3 +1,4 @@
+import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { combineQueuedMessagesForEditor, Spacer, TruncatedText, theme } from "./interactive-mode-deps.ts";
@@ -110,7 +111,10 @@ InteractiveModeBase.prototype.isExtensionCommand = function (this: InteractiveMo
 
 	const spaceIndex = text.indexOf(" ");
 	const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
-	return !!extensionRunner.getCommand(commandName);
+	if (extensionRunner.getCommand(commandName)) return true;
+	return getInteractiveEngineRemoteCommands(this.runtimeHost).some(
+		(command) => command.source === "extension" && command.name === commandName,
+	);
 };
 
 InteractiveModeBase.prototype.flushCompactionQueue = async function (
