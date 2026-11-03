@@ -986,6 +986,11 @@ export interface Model<TApi extends Api> extends BaseModel<TApi> {
 	 */
 	fastRoute?: ModelFastRoute;
 	/**
+	 * Set on a model the provider found in the account's own model list rather than in its built-in
+	 * catalog. Its metadata comes from that list, so `modelOverrides` can correct it.
+	 */
+	discovered?: boolean;
+	/**
 	 * Service tiers this model advertises. When set, the Codex adapter sends only advertised tiers.
 	 * When unset, the model carries no tier metadata and only Ultrafast is withheld.
 	 */

@@ -32,7 +32,8 @@ import {
 	withMandatoryResourceLoader,
 } from "./mandatory-resource-loader.ts";
 import { convertToLlm, repairOrphanToolResults } from "./messages.ts";
-import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
+import { formatModelLabel } from "./model-label.ts";
+import { findInitialModel, resolveRestoredModelReference, uncachedCopilotModelHint } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
@@ -304,11 +305,17 @@ async function constructAgentSession(
 			modelRuntime,
 		);
 		if (!model) {
-			modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
-			modelFallbackReason = "session-restore";
+			const { provider, modelId } = existingSession.model;
+			const uncachedHint = uncachedCopilotModelHint(provider, modelId, modelRuntime);
+			const label = formatModelLabel({ provider, id: modelId });
+			modelFallbackMessage = uncachedHint
+				? `Could not restore model ${label}: ${uncachedHint}, or choose another model with /model.`
+				: `Could not restore model ${label}`;
+			// A saved Copilot model that is only missing from the cache must not be replaced silently.
+			modelFallbackReason = uncachedHint ? "configured-provider-unsupported" : "session-restore";
 		}
 	}
-	if (!model) {
+	if (!model && modelFallbackReason !== "configured-provider-unsupported") {
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: hasExistingSession,

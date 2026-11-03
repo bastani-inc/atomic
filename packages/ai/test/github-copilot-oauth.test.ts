@@ -276,18 +276,19 @@ describe("GitHub Copilot OAuth device flow", () => {
 		);
 	});
 
-	it("drops fast variants entirely when the credential advertises no fast entitlements", async () => {
+	it("keeps fast models for a credential without a fast list, because the account's own list chose them", async () => {
 		const provider = githubCopilotProvider();
 		const regularModel = provider.getModels()[0];
 		assert.ok(regularModel);
-		const derivedFast = {
+		const listedFast = {
 			...regularModel,
 			id: `${regularModel.id}-fast`,
 			fastRoute: { baseModelId: regularModel.id, upstreamModelId: `${regularModel.id}-fast` },
 		};
-		assert.deepEqual(provider.filterModels?.([regularModel, derivedFast], undefined), [regularModel]);
-		assert.deepEqual(provider.filterModels?.([regularModel, derivedFast], { type: "api_key", key: "token" }), [
+		assert.deepEqual(provider.filterModels?.([regularModel, listedFast], undefined), [regularModel, listedFast]);
+		assert.deepEqual(provider.filterModels?.([regularModel, listedFast], { type: "api_key", key: "token" }), [
 			regularModel,
+			listedFast,
 		]);
 	});
 

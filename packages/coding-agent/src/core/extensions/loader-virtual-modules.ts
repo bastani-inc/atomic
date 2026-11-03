@@ -433,6 +433,7 @@ function getAliases(): Record<string, string> {
 	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@bastani/pi-ai");
 	const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@bastani/pi-ai");
 	const piAiCopilotEnvEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot-env.js", "@bastani/pi-ai");
+	const piAiCopilotEntry = resolveWorkspaceOrImport("ai/dist/providers/github-copilot.js", "@bastani/pi-ai");
 	const piAiOpenRouterEntry = resolveWorkspaceOrImport("ai/dist/providers/openrouter.js", "@bastani/pi-ai");
 	const piAiProviderEnvEntry = resolveWorkspaceOrImport("ai/dist/utils/provider-env.js", "@bastani/pi-ai");
 	const piAiRetryEntry = resolveWorkspaceOrImport("ai/dist/utils/retry.js", "@bastani/pi-ai");
@@ -467,6 +468,7 @@ function getAliases(): Record<string, string> {
 		"@bastani/pi-ai/models": piAiModelsEntry,
 		"@bastani/pi-ai/providers/all": piAiProvidersEntry,
 		"@bastani/pi-ai/providers/github-copilot-env": piAiCopilotEnvEntry,
+		"@bastani/pi-ai/providers/github-copilot": piAiCopilotEntry,
 		"@bastani/pi-ai/providers/openrouter": piAiOpenRouterEntry,
 		"@bastani/pi-ai/providers/compat-schema": piAiCompatSchemaEntry,
 		"@bastani/pi-ai/providers/model-schema": piAiModelSchemaEntry,

@@ -2,8 +2,10 @@ import { normalizeProviderId } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import chalk from "chalk";
+import { APP_NAME } from "../config.js";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { formatModelLabel } from "./model-label.ts";
 import { resolveCliModel } from "./model-resolver-cli.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
@@ -12,6 +14,21 @@ import type { ModelRuntime } from "./model-runtime.js";
 
 const CONFIGURED_DEFAULT_MODEL_UNAVAILABLE_MESSAGE =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
+
+/**
+ * Explain a saved GitHub Copilot model an authenticated catalog lacks. Copilot models beyond the
+ * built-in catalog come from the account's model list, which is cached only after a catalog refresh.
+ */
+export function uncachedCopilotModelHint(
+	provider: string,
+	modelId: string,
+	modelRuntime: Pick<ModelRuntime, "getModel" | "hasConfiguredAuth">,
+): string | undefined {
+	provider = normalizeProviderId(provider);
+	if (provider !== "github-copilot" || modelRuntime.getModel(provider, modelId)) return undefined;
+	if (!modelRuntime.hasConfiguredAuth(provider)) return undefined;
+	return `it is not in the cached GitHub Copilot model list; run "${APP_NAME} update --models" to refresh it`;
+}
 
 async function buildConfiguredProviderFallbackModel(
 	provider: string,
@@ -120,6 +137,15 @@ export async function findInitialModel(options: {
 				fallbackReason: "configured-provider-unsupported",
 			};
 		}
+		const uncachedHint = uncachedCopilotModelHint(defaultProvider, defaultModelId, modelRuntime);
+		if (uncachedHint) {
+			return {
+				model: undefined,
+				thinkingLevel: DEFAULT_THINKING_LEVEL,
+				fallbackMessage: `Configured default model ${formatModelLabel({ provider: defaultProvider, id: defaultModelId })} is unavailable: ${uncachedHint}, or choose another model with /model.`,
+				fallbackReason: "configured-provider-unsupported",
+			};
+		}
 	}
 
 	const availableModels = await [...modelRuntime.getAvailableSnapshot()];
@@ -161,7 +187,9 @@ export async function restoreModelFromSession(
 		return { model: restoredModel, fallbackMessage: undefined };
 	}
 
-	const reason = !exactRestoredModel ? "model no longer exists" : "no auth configured";
+	const reason = exactRestoredModel
+		? "no auth configured"
+		: (uncachedCopilotModelHint(savedProvider, savedModelId, modelRuntime) ?? "model no longer exists");
 
 	if (shouldPrintMessages) {
 		console.error(chalk.yellow(`Warning: Could not restore model ${savedProvider}/${savedModelId} (${reason}).`));

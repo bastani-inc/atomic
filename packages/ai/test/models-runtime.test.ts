@@ -589,6 +589,36 @@ describe("Models runtime", () => {
 		expect(await credentials.read("oauth-dynamic")).toMatchObject({ access: "fresh", refresh: "rotated" });
 	});
 
+	it("lets a network refresh update the login it used, but not a login that replaced it", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const login: OAuthCredential = { type: "oauth", access: "valid", refresh: "refresh", expires: Number.MAX_SAFE_INTEGER };
+		const otherLogin: OAuthCredential = { type: "oauth", access: "other", refresh: "other", expires: Number.MAX_SAFE_INTEGER };
+		await credentials.modify("oauth-dynamic", async () => login);
+		let replaceLoginDuringRefresh = false;
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "oauth-dynamic",
+				auth: { oauth: testOAuth() },
+				refreshModels: async (context) => {
+					if (!context.allowNetwork) {
+						assert.equal(context.updateCredential, undefined);
+						return;
+					}
+					if (replaceLoginDuringRefresh) await credentials.modify("oauth-dynamic", async () => otherLogin);
+					await context.updateCredential?.((current) => ({ ...current, availableModelIds: ["read-by-refresh"] }));
+				},
+			}),
+		);
+
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(await credentials.read("oauth-dynamic"), { ...login, availableModelIds: ["read-by-refresh"] });
+
+		replaceLoginDuringRefresh = true;
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(await credentials.read("oauth-dynamic"), otherLogin);
+	});
+
 	it("completes model refresh after OAuth rotation takes longer than the request deadline (#3429)", async () => {
 		vi.useFakeTimers();
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
