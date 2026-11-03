@@ -601,6 +601,8 @@ describe("Anthropic message threads in Atomic", () => {
 		["the anthropic-api provider", { provider: "anthropic-api" }],
 		["GitHub Copilot", { provider: "github-copilot", baseUrl: "https://api.githubcopilot.com" }],
 		["another endpoint", { baseUrl: "https://gateway.example.com" }],
+		["a gateway with api.anthropic.com in its path", { baseUrl: "https://gateway.example/api.anthropic.com" }],
+		["a gateway host that contains api.anthropic.com", { baseUrl: "https://api.anthropic.com.gateway.example" }],
 	])("does not use threads for %s unless compat enables them", async (_name, overrides) => {
 		const h = harness();
 		const model: Model<"anthropic-messages"> = { ...baseModel, ...overrides };

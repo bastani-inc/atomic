@@ -460,11 +460,20 @@ function getAnthropicCompat(model: Model<"anthropic-messages">) {
 		supportsMidConvoToolChanges: model.compat?.supportsMidConvoToolChanges ?? false,
 		// Gateways that drop unknown request fields would silently turn a `continue` into a request
 		// without the earlier conversation, so the default is limited to the `anthropic` provider on
-		// Anthropic's own endpoint, as upstream. Copilot's endpoint does not accept the threads beta.
+		// Anthropic's own host. Copilot's endpoint does not accept the threads beta.
 		supportsMessageThreads:
 			model.compat?.supportsMessageThreads ??
-			(model.provider === "anthropic" && model.baseUrl.includes("api.anthropic.com")),
+			(model.provider === "anthropic" && isAnthropicApiHost(model.baseUrl)),
 	};
+}
+
+/** Whether `baseUrl` is Anthropic's own API host, compared by parsed hostname (not a substring). */
+function isAnthropicApiHost(baseUrl: string): boolean {
+	try {
+		return new URL(baseUrl).hostname === "api.anthropic.com";
+	} catch {
+		return false;
+	}
 }
 
 /**
