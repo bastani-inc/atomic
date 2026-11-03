@@ -200,7 +200,7 @@ export function runDetached<TInputs extends WorkflowInputValues, TRunInputs exte
 			const preset =
 				opts.durableBackend ??
 				(opts.journal === undefined
-					? (availableRunDurableBackend(store.runs(), opts.continuation?.source.id ?? runId) ??
+					? (availableRunDurableBackend(store, opts.continuation?.source.id ?? runId) ??
 						availableStoreDurableBackendOverride(store))
 					: undefined);
 			const backend = preset ?? (await initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd }));

@@ -18,7 +18,11 @@ import { parseWorkflowChildResult } from "../durable/workflow-child-result.js";
 import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor-types.js";
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
-import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
+import {
+	authoritativeWorkflowChildRunId,
+	type RunsById,
+	reciprocalWorkflowRootRunId,
+} from "../shared/workflow-run-ownership.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
 
 export function durableRunTopology(run: RunSnapshot): DurableStageRunTopology {
@@ -149,8 +153,9 @@ export function createDurableCachedStageRecorder(input: {
 	return {
 		record(name, replayKey, checkpoint, scope): void | Promise<void> {
 			const cachedChildRunId = workflowChildRunId(checkpoint);
-			const runById = new Map(input.store.runs().map((run) => [run.id, run]));
-			if (!runById.has(input.run.id)) runById.set(input.run.id, input.run);
+			const runById: RunsById = {
+				get: (runId) => input.store.run(runId) ?? (runId === input.run.id ? input.run : undefined),
+			};
 			const durableRootId = reciprocalWorkflowRootRunId(runById, input.run.id);
 			const cachedDescendants =
 				cachedChildRunId === undefined || durableRootId === undefined
@@ -182,10 +187,7 @@ export function createDurableCachedStageRecorder(input: {
 						(replaySourceOrders.get(right.id) ?? Number.MAX_SAFE_INTEGER),
 				);
 			}
-			const stage = input.store
-				.runs()
-				.find((run) => run.id === input.run.id)
-				?.stages.find((candidate) => candidate.replayKey === replayKey);
+			const stage = input.store.run(input.run.id)?.stages.find((candidate) => candidate.replayKey === replayKey);
 			const persistence =
 				stage === undefined
 					? undefined
@@ -203,7 +205,7 @@ export function createDurableCachedStageRecorder(input: {
 							),
 						});
 			for (const childRun of cachedDescendants ?? []) {
-				const existingRun = input.store.runs().find((candidate) => candidate.id === childRun.id);
+				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =
 					childRun.id === cachedChildRunId &&
 					childRun.parentRunId === input.run.id &&
@@ -246,17 +248,18 @@ export function reconcileCachedDirectChildParentStage(input: {
 	readonly checkpointChildRunId: string;
 	readonly boundary: StageSnapshot;
 }): boolean {
-	const existingRun = input.store.runs().find((run) => run.id === input.checkpointChildRunId);
+	const existingRun = input.store.run(input.checkpointChildRunId);
 	if (existingRun === undefined) return false;
-	const runById = new Map(input.store.runs().map((run) => [run.id, run]));
-	const storedParentRun = runById.get(input.parentRun.id);
+	const storedParentRun = input.store.run(input.parentRun.id);
 	if (
 		storedParentRun !== undefined &&
 		(storedParentRun.parentRunId !== input.parentRun.parentRunId ||
 			storedParentRun.parentStageId !== input.parentRun.parentStageId)
 	)
 		return false;
-	if (storedParentRun === undefined) runById.set(input.parentRun.id, input.parentRun);
+	const runById: RunsById = {
+		get: (runId) => input.store.run(runId) ?? (runId === input.parentRun.id ? input.parentRun : undefined),
+	};
 	const expectedRootRunId = reciprocalWorkflowRootRunId(runById, input.parentRun.id);
 	if (expectedRootRunId === undefined) return false;
 	const storedBoundary = storedParentRun?.stages.find((stage) => stage.id === input.boundary.id);

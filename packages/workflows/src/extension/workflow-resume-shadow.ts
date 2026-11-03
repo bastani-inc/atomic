@@ -27,7 +27,7 @@ export function classifyDurableResumeShadow(
 	deps: DurableResumeShadowDeps = {},
 ): DurableResumeShadowClassification {
 	const backend =
-		availableRunDurableBackend(store.runs(), run.id) ?? deps.backend ?? requireStoreDurableBackend(store, run.id);
+		availableRunDurableBackend(store, run.id) ?? deps.backend ?? requireStoreDurableBackend(store, run.id);
 	const toolControls = deps.toolControls ?? toolControlRegistry;
 	// Quit may detach an abandoned executor before its finally unregisters the
 	// run control. Only an open admission boundary still represents a live owner;

@@ -67,7 +67,7 @@ export function workflowStageResult(args: WorkflowToolArgs, source?: WorkflowIns
 		};
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const run = activeStore.runs().find((r) => r.id === stageRunId);
+	const run = activeStore.run(stageRunId);
 	const snapshot = run?.stages.find((s) => s.id === stage.stageId);
 	return snapshot
 		? { action: "stage", runId: stageRunId, stage: cloneStage(snapshot) }
@@ -116,7 +116,7 @@ export function workflowTranscriptResult(
 		};
 	}
 	const stageRunId = stage.runId ?? target.runId;
-	const run = activeStore.runs().find((r) => r.id === stageRunId);
+	const run = activeStore.run(stageRunId);
 	const snapshot = run?.stages.find((s) => s.id === stage.stageId);
 	const liveHandle =
 		source?.allowLiveHandles === false

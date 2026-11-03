@@ -12,6 +12,7 @@ import type {
 	RunPauseMetadata,
 	RunResumeMetadata,
 	Store,
+	StoreInvalidationListener,
 } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
 import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
@@ -21,6 +22,8 @@ type RunStoreMethods = Pick<
 	Store,
 	| "runs"
 	| "run"
+	| "runPosition"
+	| "childRuns"
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
@@ -54,6 +57,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 
 		run(runId: string): RunSnapshot | undefined {
 			return context.findRun(runId);
+		},
+
+		runPosition(runId: string): number | undefined {
+			return context.runPosition(runId);
+		},
+
+		childRuns(parentRunId: string, parentStageId?: string): readonly RunSnapshot[] {
+			return context.childRuns(parentRunId, parentStageId);
 		},
 		notices(): readonly WorkflowNotice[] {
 			return state.notices;
@@ -102,7 +113,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 		reconcileRunParentStage(runId: string, expectedParentStageId: string, parentStageId: string): boolean {
 			const run = context.findRun(runId);
 			if (run?.parentStageId !== expectedParentStageId || parentStageId === expectedParentStageId) return false;
-			run.parentStageId = parentStageId;
+			context.reparentRun(run, parentStageId);
 			context.bumpAndNotify();
 			return true;
 		},
@@ -349,7 +360,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			};
 		},
 
-		subscribeInvalidation(fn: () => void): () => void {
+		subscribeInvalidation(fn: StoreInvalidationListener): () => void {
 			state.invalidationListeners.add(fn);
 			return () => state.invalidationListeners.delete(fn);
 		},

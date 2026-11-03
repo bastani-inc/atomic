@@ -28,7 +28,7 @@ export function assertWorkflowInstanceOwner(id: string, ctx: PiExecuteContext, s
 	const assertOne = (runId: string): void => {
 		if (seen.has(runId)) return;
 		seen.add(runId);
-		const local = runs.find((run) => run.id === runId);
+		const local = store.run(runId);
 		const backend = requireStoreDurableBackend(store, runId);
 		const durable = backend.getWorkflow(runId);
 		const modelOwner = durable?.modelOwner ?? local?.modelOwner;

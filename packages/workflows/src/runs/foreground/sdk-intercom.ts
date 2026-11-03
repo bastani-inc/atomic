@@ -3,8 +3,11 @@ import { registerPendingStageIntercomBridge } from "../../extension/pending-stag
 import { workflowInvocationIntercomGroup } from "../../shared/intercom-group.js";
 import { hasWorkflowPendingStageRouteOwner } from "../../shared/pending-stage-route-readiness.js";
 import type { Store } from "../../shared/store.js";
-import type { RunSnapshot } from "../../shared/store-types.js";
-import { reciprocalWorkflowRootRunId } from "../../shared/workflow-run-ownership.js";
+import {
+	invocationRunsInSource,
+	reciprocalWorkflowRootRunId,
+	runsByIdOf,
+} from "../../shared/workflow-run-ownership.js";
 
 type RouteOwner = ReturnType<typeof import("../../../../intercom/workflow-route-owner.js").createWorkflowRouteOwner>;
 interface StandaloneOwner {
@@ -16,45 +19,39 @@ interface StandaloneOwner {
 	}>;
 }
 
-/** Each run's durable root, and the roots with a stage that can take pending deliveries, for one store version. */
-interface RootIndex {
-	readonly rootOf: ReadonlyMap<string, string | undefined>;
-	readonly deliverable: ReadonlySet<string>;
-}
-
-function indexRoots(runs: readonly RunSnapshot[]): RootIndex {
-	const runById = new Map(runs.map((run) => [run.id, run]));
-	const rootOf = new Map<string, string | undefined>();
-	const deliverable = new Set<string>();
-	for (const run of runs) {
-		const root = reciprocalWorkflowRootRunId(runById, run.id);
-		rootOf.set(run.id, root);
-		if (root !== undefined && run.stages.some((stage) => stage.pendingStageDeliveryAvailable === true))
-			deliverable.add(root);
-	}
-	return { rootOf, deliverable };
-}
-
 /**
  * Which runs a standalone host's route bridge announces: runs under a root this host is running, once any run under
- * that root has a stage that can take pending deliveries. The bridge asks about every run on every announcement, so
- * the answer comes from an index built once per store version, not from a pass over the store per question (#4174).
+ * that root has a stage that can take pending deliveries. The bridge asks about every run it announces, so each run's
+ * root and each root's deliverability are looked up by id and kept for the store version: a question reads only the
+ * run, its parents and, before the root is activated, the root's invocation (#4174, #4190).
  */
 export function createStandaloneRouteOwnership(
 	store: Store,
 	roots: ReadonlyMap<string, number>,
 ): { readonly owns: (runId: string) => boolean; readonly dispose: () => void } {
 	const activated = new Set<string>();
-	let index: RootIndex | undefined;
+	const runs = runsByIdOf(store);
+	const rootOf = new Map<string, string | undefined>();
+	const deliverable = new Map<string, boolean>();
 	const dispose = store.subscribeInvalidation(() => {
-		index = undefined;
+		rootOf.clear();
+		deliverable.clear();
 	});
 	return {
 		owns: (runId) => {
-			index ??= indexRoots(store.runs());
-			const root = index.rootOf.get(runId) ?? runId;
+			if (!rootOf.has(runId)) rootOf.set(runId, reciprocalWorkflowRootRunId(runs, runId));
+			const root = rootOf.get(runId) ?? runId;
 			if (!roots.has(root)) return false;
-			if (!activated.has(root) && index.deliverable.has(root)) activated.add(root);
+			if (!activated.has(root)) {
+				let canDeliver = deliverable.get(root);
+				if (canDeliver === undefined) {
+					canDeliver = invocationRunsInSource(store, root).some((run) =>
+						run.stages.some((stage) => stage.pendingStageDeliveryAvailable === true),
+					);
+					deliverable.set(root, canDeliver);
+				}
+				if (canDeliver) activated.add(root);
+			}
 			return activated.has(root);
 		},
 		dispose,

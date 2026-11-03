@@ -24,17 +24,15 @@ export function aggregateWorkflowRootRunId(store: Store, runId: string): string 
 export function workflowHasPausedStages(store: Store, runId: string): boolean {
 	return expandedControlRunIds(store, runId).some(
 		(controlRunId) =>
-			store
-				.runs()
-				.find((run) => run.id === controlRunId)
-				?.stages.some((stage) => stage.status === "paused" || stage.status === "blocked") ?? false,
+			store.run(controlRunId)?.stages.some((stage) => stage.status === "paused" || stage.status === "blocked") ??
+			false,
 	);
 }
 
 /** Whether this workflow boundary or any descendant remains paused. */
 export function workflowHasPausedState(store: Store, runId: string): boolean {
 	return expandedControlRunIds(store, runId).some((controlRunId) => {
-		const run = store.runs().find((candidate) => candidate.id === controlRunId);
+		const run = store.run(controlRunId);
 		return (
 			run?.status === "paused" ||
 			run?.stages.some((stage) => stage.status === "paused" || stage.status === "blocked") === true

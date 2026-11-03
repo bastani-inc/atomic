@@ -39,7 +39,7 @@ function continuationPromptAnswer(store: Store, sourceRun: RunSnapshot, sourceSt
 		const answer = store.getStagePromptAnswer(run.id, stage.id);
 		if (answer !== undefined) return answer;
 		if (!stage.replayed || stage.replayedFromStageId === undefined || run.resumedFromRunId === undefined) break;
-		const parentRun = store.runs().find((candidate) => candidate.id === run.resumedFromRunId);
+		const parentRun = store.run(run.resumedFromRunId);
 		const parentStage = parentRun?.stages.find((candidate) => candidate.id === stage.replayedFromStageId);
 		if (parentRun === undefined || parentStage === undefined) break;
 		run = parentRun;

@@ -12,6 +12,7 @@ import {
 	type PooledStageDeliveryOptions,
 	pooledStageQueuedEntries,
 } from "../../packages/workflows/src/workers/pooled-stage-delivery.js";
+import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { testRunId } from "../helpers/run-id.js";
 
 const ROOT = testRunId("pooled-delivery-root");
@@ -100,6 +101,50 @@ describe("pooled stage queued entries", () => {
 		assert.deepEqual(
 			queued.map((candidate) => candidate.id),
 			["sticky-name-form", "exact", "sticky-id-form", "sticky-everything"],
+		);
+	});
+
+	test("read a nested stage's entries in admission order through its boundaries without reading the other runs the attempt's store holds (#4190)", () => {
+		const real = createStore();
+		const finished = holdFinishedRuns(real, 5_000);
+		const GRAND = testRunId("pooled-delivery-grand");
+		real.recordRunStart({
+			...childRun(),
+			stages: [stage("agent-1", "agent"), stage("inner-boundary", "workflow:inner")],
+		});
+		real.recordRunStart({
+			...childRun(),
+			id: GRAND,
+			name: "inner",
+			stages: [stage("deep-1", "deep")],
+			parentRunId: CHILD,
+			parentStageId: "inner-boundary",
+		});
+		const { store, scans } = countRunListScans(real);
+		finished.reads = 0;
+		const messages = [
+			entry("exact-late", 6, { runId: GRAND, stageKey: "deep" }),
+			sticky("sticky-name-form", 4, `${BOUNDARY_NAME}/workflow:inner/deep`),
+			entry("exact-early", 1, { runId: GRAND, stageKey: "deep-1" }),
+			sticky("sticky-id-form", 2, `${CHILD}/${GRAND}/*`),
+			sticky("sticky-child-stage", 3, `${BOUNDARY_NAME}/agent`),
+			sticky("sticky-other-boundary", 5, `${BOUNDARY_NAME}/workflow:outer/deep`),
+			entry("exact-child-run", 7, { stageKey: "deep" }),
+			sticky("sticky-everything", 8, "**"),
+		];
+		const queued = pooledStageQueuedEntries(journal(messages), store, ROOT, {
+			runId: GRAND,
+			stageId: "deep-1",
+			stageName: "deep",
+		});
+		assert.deepEqual(
+			queued.map((candidate) => candidate.id),
+			["exact-early", "sticky-id-form", "sticky-name-form", "exact-late", "sticky-everything"],
+		);
+		assert.deepEqual(
+			[finished.reads, scans.reads],
+			[0, 0],
+			`finished-run reads and run-list accesses for one drain: ${finished.reads}, ${scans.reads}`,
 		);
 	});
 });

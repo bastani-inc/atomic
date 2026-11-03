@@ -243,24 +243,20 @@ export function recordPendingStageMessageDeliveries(
 
 export function compactStickyStageMessageDeliveries(
 	messages: readonly PendingStageMessage[],
-	runs: readonly {
-		readonly id: string;
-		readonly stages: readonly { readonly id: string; readonly status: string }[];
-	}[],
+	findRun: (runId: string) =>
+		| {
+				readonly stages: readonly { readonly id: string; readonly status: string }[];
+		  }
+		| undefined,
 ): readonly PendingStageMessage[] {
-	const finished = new Set(
-		runs.flatMap((run) =>
-			run.stages
-				.filter((stage) => stage.status === "completed" || stage.status === "skipped")
-				.map((stage) => JSON.stringify([run.id, stage.id])),
-		),
-	);
+	const finished = (runId: string, stageId: string): boolean =>
+		findRun(runId)?.stages.some(
+			(stage) => stage.id === stageId && (stage.status === "completed" || stage.status === "skipped"),
+		) === true;
 	let changed = false;
 	const next = messages.map((entry) => {
 		if (entry.sticky !== true || entry.deliveries === undefined) return entry;
-		const deliveries = entry.deliveries.filter(
-			(delivery) => !finished.has(JSON.stringify([delivery.runId, delivery.stageId])),
-		);
+		const deliveries = entry.deliveries.filter((delivery) => !finished(delivery.runId, delivery.stageId));
 		if (deliveries.length === entry.deliveries.length) return entry;
 		changed = true;
 		return { ...entry, deliveries, deliveryCount: entry.deliveryCount ?? entry.deliveries.length };

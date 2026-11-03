@@ -308,7 +308,7 @@ export function createWorkflowExtensionRuntimeState(
 	/** Whether this exact identity is still pending for a current nonterminal run. */
 	function isWorkflowHeartbeatIdentityOwned(identity: WorkflowHeartbeatIdentity): boolean {
 		const pending = workflowHeartbeatSchedulerState.pending.get(identity.runId);
-		const run = store.runs().find((candidate) => candidate.id === identity.runId);
+		const run = store.run(identity.runId);
 		return pending?.scheduledAt === identity.scheduledAt && run !== undefined && !isWorkflowHeartbeatTerminalRun(run);
 	}
 
