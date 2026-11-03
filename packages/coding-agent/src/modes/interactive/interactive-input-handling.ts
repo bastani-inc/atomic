@@ -460,23 +460,23 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				let accepted = false;
 				// An engine sends its answer to this prompt together with the first events of the turn it started, and
 				// the host handles those events before the answer's callback runs. If the session already showed the
-				// message, echoing it again here would show it twice (#4272).
-				let shownBySession = false;
-				const stopWatching = this.session.subscribe((event) => {
-					if (
-						event.type === "message_start" &&
-						event.message.role === "user" &&
-						this.getUserMessageText(event.message) === text
-					)
-						shownBySession = true;
-				});
+				// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
+				// `input` hook may have rewritten (#4277), so any message it showed meanwhile counts.
+				const shownBefore = this.userMessagesShownBySession;
 				try {
 					await this.session.prompt(text, {
 						streamingBehavior: "steer",
 						preflightResult: (success, disposition) => {
 							accepted = success;
-							if (success && disposition === "started" && !text.startsWith("/") && !shownBySession)
+							if (
+								success &&
+								disposition === "started" &&
+								!text.startsWith("/") &&
+								this.userMessagesShownBySession === shownBefore
+							) {
 								this.renderDeferredUserInput(text);
+								this.expectStartedUserInput(text, shownBefore);
+							}
 						},
 					});
 				} catch (error) {
@@ -487,8 +487,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					}
 					restoreRefusedSubmission(this, error, submittedDraft);
 					return;
-				} finally {
-					stopWatching();
 				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();

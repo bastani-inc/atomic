@@ -216,9 +216,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				);
 				this.ui.requestRender();
 			} else if (event.message.role === "user") {
-				if (!this.consumeDeferredRenderedUserInput(this.getUserMessageText(event.message))) {
-					this.addMessageToChat(event.message);
-				}
+				this.showSessionUserMessage(event.message);
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 			} else if (event.message.role === "assistant") {

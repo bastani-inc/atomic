@@ -62,6 +62,7 @@ type EscapeHost = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise: Promise<void> | undefined;
 	discardDeferredRenderedUserInput: () => void;
+	expectStartedUserInput: () => void;
 	showError: (message: string) => void;
 	isExtensionCommand(text: string): boolean;
 	tuiInputSubscriptions: Set<TuiInputSubscription>;
@@ -137,6 +138,7 @@ function createEscapeHost(session: AgentSession): EscapeHost {
 			return session.extensionRunner.getCommand(commandName) !== undefined;
 		},
 		discardDeferredRenderedUserInput() {},
+		expectStartedUserInput() {},
 		showError(message) {
 			throw new Error(message);
 		},

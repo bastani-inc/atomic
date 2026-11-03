@@ -1,3 +1,4 @@
+import type { PromptDisposition } from "../../core/agent-session-types.ts";
 import {
 	clearInteractiveEngineQueue,
 	getInteractiveEngineRemoteCommands,
@@ -321,7 +322,7 @@ async function startCompactionQueuePrompt(mode: InteractiveModeBase): Promise<bo
 async function promptUntilAccepted(
 	mode: InteractiveModeBase,
 	message: CompactionQueuedMessage,
-	onQueued?: () => void,
+	onAccepted?: (disposition: PromptDisposition | undefined) => void,
 ): Promise<{ error: unknown } | undefined> {
 	let accept!: (accepted: boolean) => void;
 	const accepted = new Promise<boolean>((resolve) => {
@@ -330,7 +331,7 @@ async function promptUntilAccepted(
 	const prompt = mode.session.prompt(message.text, {
 		streamingBehavior: message.mode,
 		preflightResult: (success, disposition) => {
-			if (success && disposition === "queued") onQueued?.();
+			if (success) onAccepted?.(disposition);
 			accept(success);
 		},
 	});
@@ -356,10 +357,16 @@ async function sendHeldInput(mode: InteractiveModeBase): Promise<void> {
 		if (!message) return;
 		const echoed = !message.text.startsWith("/");
 		if (echoed) mode.renderDeferredUserInput(message.text);
+		const shownBefore = mode.userMessagesShownBySession;
 		const refused = await promptUntilAccepted(
 			mode,
 			message,
-			echoed ? () => mode.discardDeferredRenderedUserInput(message.text) : undefined,
+			echoed
+				? (disposition) => {
+						if (disposition === "queued") mode.discardDeferredRenderedUserInput(message.text);
+						if (disposition === "started") mode.expectStartedUserInput(message.text, shownBefore);
+					}
+				: undefined,
 		);
 		if (refused !== undefined) {
 			if (echoed) mode.discardDeferredRenderedUserInput(message.text);
