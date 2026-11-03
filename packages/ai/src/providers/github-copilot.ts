@@ -270,23 +270,16 @@ function copilotSystemOne(classifier: ProviderClassifier): ProviderClassifier {
 		classify: (model, context, options) => {
 			const defaults = copilotClientHeaders(options?.apiKey ?? "");
 			const integration = { "Copilot-Integration-Id": defaults["Copilot-Integration-Id"]! };
+			const headers = providerHeadersToRecord(defaults, model.headers, options?.headers);
 			return classifier.classify(
 				{
 					...model,
 					baseUrl: `${model.baseUrl.replace(/\/+$/u, "")}/v1`,
-					headers: providerHeadersToRecord(
-						defaults,
-						model.headers,
-						preserveCopilotIntegrationHeader(model.headers, integration),
-					),
 				},
 				context,
 				{
 					...options,
-					headers: providerHeadersToRecord(
-						options?.headers,
-						preserveCopilotIntegrationHeader(options?.headers, integration),
-					),
+					headers: providerHeadersToRecord(headers, preserveCopilotIntegrationHeader(headers, integration)),
 				},
 			);
 		},

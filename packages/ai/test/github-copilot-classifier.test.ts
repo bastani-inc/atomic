@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.js";
 import { builtinModels } from "../src/providers/all.js";
-import { parseGitHubCopilotDiscoveredModels } from "../src/providers/github-copilot.js";
+import { githubCopilotProvider, parseGitHubCopilotDiscoveredModels } from "../src/providers/github-copilot.js";
 
 describe("GitHub Copilot classifier", () => {
 	for (const oauth of [false, true]) {
@@ -54,7 +54,9 @@ describe("GitHub Copilot classifier", () => {
 			const models = builtinModels();
 			const model = models.getModelOfType("classifier", "github-copilot", "microsoft-decision-1");
 			assert.ok(model);
-			await models.classify(
+			const provider = githubCopilotProvider();
+			assert.ok(provider.classify);
+			const result = await provider.classify(
 				{
 					...model,
 					headers: {
@@ -83,6 +85,7 @@ describe("GitHub Copilot classifier", () => {
 					},
 				},
 			);
+			assert.equal(result.stopReason, "stop", JSON.stringify(result));
 		});
 	}
 
