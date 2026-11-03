@@ -141,11 +141,17 @@ Response:
   "command": "clear_queue",
   "success": true,
   "data": {
-    "steering": ["Change direction"],
-    "followUp": ["Summarize when finished"]
+    "steering": ["Change direction (rewritten)"],
+    "followUp": ["Summarize when finished"],
+    "typed": {
+      "steering": ["Change direction"],
+      "followUp": ["Summarize when finished"]
+    }
   }
 }
 ```
+
+`steering` and `followUp` list each message as queued, after `input` hooks, skills and prompt templates changed it. `typed` lists the same messages, in the same order, as they were submitted. A client that gives the messages back to the user to send again should restore `typed`, so those steps run once more and not twice. `typed` is left out when every message was queued as submitted, and by sessions from before it was added; restore `steering` and `followUp` then.
 
 To implement interactive Esc behavior, send `clear_queue` before `abort`, then restore the returned text in the client editor. `abort` continues queued messages when they remain in the session.
 

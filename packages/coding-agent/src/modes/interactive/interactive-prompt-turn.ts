@@ -55,7 +55,9 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function (
 				streamingBehavior: "steer",
 				preflightResult: (success, disposition) => {
 					refused = !success;
-					if (success && disposition === "queued") this.discardDeferredRenderedUserInput(userInput);
+					// A queued message is listed as queued, and one an `input` hook handled is not sent at all (#4285).
+					if (success && (disposition === "queued" || disposition === "handled"))
+						this.discardDeferredRenderedUserInput(userInput);
 					if (success && disposition === "started") this.expectStartedUserInput(userInput, shownBefore);
 					if (success) settleDispatch();
 				},

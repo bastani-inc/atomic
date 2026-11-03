@@ -3,6 +3,7 @@ import type { Credential } from "@bastani/pi-ai";
 import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type {
+	ClearedQueue,
 	PromptDisposition,
 	QueuedInputDisposition,
 	SessionRecoveryReport,
@@ -72,7 +73,7 @@ export abstract class RpcClientApi {
 	async abort(): Promise<void> {
 		await this.request({ type: "abort" });
 	}
-	async clearQueue(): Promise<{ steering: string[]; followUp: string[] }> {
+	async clearQueue(): Promise<ClearedQueue> {
 		return this.data(await this.request({ type: "clear_queue" }));
 	}
 	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {

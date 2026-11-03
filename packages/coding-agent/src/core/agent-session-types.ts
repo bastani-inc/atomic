@@ -115,6 +115,22 @@ export interface ClearQueueOptions {
 	preserveUnprotectedCustomMessages?: boolean;
 }
 
+/** Text of queued messages, per lane, in queue order. */
+export interface QueuedTexts {
+	steering: string[];
+	followUp: string[];
+}
+
+/**
+ * What `clearQueue()` removed. `steering` and `followUp` hold each message as queued, after `input` hooks, skills and
+ * prompt templates. `typed` holds the same messages as they were submitted, in the same order, for a caller that gives
+ * them back to the user to send again: sending the queued text would run those steps a second time (#4284). It is
+ * left out when every message was queued as submitted, and by sessions from before it was added.
+ */
+export interface ClearedQueue extends QueuedTexts {
+	typed?: QueuedTexts;
+}
+
 export function drainAgentMessageQueue(queue: PendingAgentMessageQueue | undefined): AgentMessage[] {
 	if (!queue) return [];
 	const drained: AgentMessage[] = [];

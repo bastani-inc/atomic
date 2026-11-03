@@ -5,6 +5,7 @@ import {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { transferProtectedStreamingCustomMessages } from "./agent-session-persistent-custom-messages.ts";
 import { composePauseAbortBoundaries } from "./agent-session-queue-pause.ts";
+import { transferTypedQueuedTexts } from "./agent-session-typed-queue.ts";
 import { priorityHoldCounts } from "./agent-session-types.js";
 
 /** Atomically retire one stage session and prepend all of its delivery ownership to the replacement. */
@@ -42,6 +43,7 @@ export function transferWorkflowStageDeliveriesTo(this: AgentSession, target: ob
 	next._pendingCustomMessages.unshift(...source._pendingCustomMessages.splice(0));
 	next._steeringMessages = [...source._steeringMessages.splice(0), ...next._steeringMessages];
 	next._followUpMessages = [...source._followUpMessages.splice(0), ...next._followUpMessages];
+	transferTypedQueuedTexts(source, next);
 	source._activeInterruptQueueHold = undefined;
 	source._queuedMessagesPaused = false;
 	source._queuedMessagesPauseAbortBoundary = undefined;

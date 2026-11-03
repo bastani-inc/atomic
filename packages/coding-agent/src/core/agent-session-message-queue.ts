@@ -13,7 +13,13 @@ import { waitForCustomMessagePreparation } from "./agent-session-prompt.ts";
 import { abort, pauseQueuedMessages, resumeQueuedMessages } from "./agent-session-queue-pause.ts";
 import { transferWorkflowStageDeliveriesTo } from "./agent-session-transfer.ts";
 import {
+	forgetAllTypedQueuedTexts,
+	forgetTypedQueuedText,
+	rememberTypedQueuedText,
+} from "./agent-session-typed-queue.ts";
+import {
 	type AgentQueueAccess,
+	type ClearedQueue,
 	type ClearQueueOptions,
 	customMessageExcludesContext,
 	type DrainedAgentQueues,
@@ -42,11 +48,21 @@ function serializeInterruptMutation(owner: AgentSession, operation: () => Promis
 	return delivery;
 }
 
-export async function _queueSteer(this: AgentSession, text: string, images?: ImageContent[]): Promise<void> {
+/**
+ * Queue a steering message (already expanded, no extension command check). `typed` is the text that was submitted,
+ * when an `input` hook or an expansion may have changed it; `clearQueue()` gives it back.
+ */
+export async function _queueSteer(
+	this: AgentSession,
+	text: string,
+	images?: ImageContent[],
+	typed?: string,
+): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueSteer(text, images);
+	if (owner !== this) return owner._queueSteer(text, images, typed);
 	this._steeringMessages.push(text);
+	rememberTypedQueuedText(this, "steer", text, typed);
 	this._emitQueueUpdate();
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 	if (images) {
@@ -63,14 +79,19 @@ export async function _queueSteer(this: AgentSession, text: string, images?: Ima
 }
 
 /**
- * Internal: Queue a follow-up message (already expanded, no extension command check).
+ * Internal: Queue a follow-up message (already expanded, no extension command check). `typed` is as for `_queueSteer`.
  */
-
-export async function _queueFollowUp(this: AgentSession, text: string, images?: ImageContent[]): Promise<void> {
+export async function _queueFollowUp(
+	this: AgentSession,
+	text: string,
+	images?: ImageContent[],
+	typed?: string,
+): Promise<void> {
 	assertSessionOpen(this);
 	const owner = resolveWorkflowStageDeliveryTarget(this);
-	if (owner !== this) return owner._queueFollowUp(text, images);
+	if (owner !== this) return owner._queueFollowUp(text, images, typed);
 	this._followUpMessages.push(text);
+	rememberTypedQueuedText(this, "followUp", text, typed);
 	this._emitQueueUpdate();
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 	if (images) {
@@ -449,16 +470,24 @@ export function _restoreQueuedAgentMessages(this: AgentSession, queues: DrainedA
 /**
  * Clear queued text for editor restoration while retaining optional raw custom entries.
  */
-export function clearQueue(
-	this: AgentSession,
-	options?: ClearQueueOptions,
-): { steering: string[]; followUp: string[] } {
+export function clearQueue(this: AgentSession, options?: ClearQueueOptions): ClearedQueue {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.clearQueue(options);
-	// Input held while the session compacts goes back to the caller too, and is never sent.
+	// Input held while the session compacts goes back to the caller too, and is never sent. It is held as typed.
 	const held = cancelHeldInput(this);
 	const steering = [...this._steeringMessages, ...held.steering];
 	const followUp = [...this._followUpMessages, ...held.followUp];
+	const typed = {
+		steering: [...this._steeringMessages.map((text) => forgetTypedQueuedText(this, "steer", text)), ...held.steering],
+		followUp: [
+			...this._followUpMessages.map((text) => forgetTypedQueuedText(this, "followUp", text)),
+			...held.followUp,
+		],
+	};
+	const retyped =
+		typed.steering.some((text, index) => text !== steering[index]) ||
+		typed.followUp.some((text, index) => text !== followUp[index]);
+	forgetAllTypedQueuedTexts(this);
 	this._steeringMessages = [];
 	this._followUpMessages = [];
 	const removed = this._drainQueuedAgentMessages();
@@ -501,7 +530,7 @@ export function clearQueue(
 		this._activeInterruptQueueHold = undefined;
 	}
 	this._emitQueueUpdate();
-	return { steering, followUp };
+	return retyped ? { steering, followUp, typed } : { steering, followUp };
 }
 
 /** Number of pending messages (includes both steering and follow-up) */
