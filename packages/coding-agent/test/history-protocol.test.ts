@@ -2,31 +2,39 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, it } from "vitest";
 import type {
 	WorkflowRunControl,
 	WorkflowRunDetail,
 	WorkflowRunSummary,
-} from "../src/core/extensions/workflow-run-control.ts";
-import type { SessionEntry } from "../src/core/session-manager-types.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.ts";
-import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.ts";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
-import { summarizeSession } from "../src/core/storage/session/session-summary.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+} from "../src/core/extensions/workflow-run-control.js";
+import type { SessionEntry } from "../src/core/session-manager-types.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
+import { summarizeSession } from "../src/core/storage/session/session-summary.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
 import {
 	SESSION_FORMAT_VERSION,
 	type SessionRecordHeader,
 	type SessionSnapshot,
 	type SessionStore,
 	type SessionSummary,
-} from "../src/core/storage/session/types.ts";
-import { createHistoryRouter } from "../src/core/tools/history-protocol.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+} from "../src/core/storage/session/types.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
+import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { createWriteToolDefinition } from "../src/core/tools/write.js";
+
+function assertIncludes(text: string, part: string): void {
+	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
+}
+
+function assertExcludes(text: string, part: string): void {
+	assert.ok(!text.includes(part), `expected no ${JSON.stringify(part)} in:\n${text}`);
+}
 
 // Absolute on every platform, as a session's recorded cwd is; `?project=<dir>` resolves the same way.
 const PROJECT = resolve("/projects/alpha");
@@ -191,15 +199,18 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 			try {
 				const listing = await read("history://sessions");
 				const lines = listing.split("\n").filter((line) => line.startsWith("history://sessions/"));
-				expect(lines.map((line) => line.split(" | ")[0])).toEqual([
-					`history://sessions/${CURRENT_ID}`,
-					"history://sessions/recent-session",
-					"history://sessions/old-session",
-				]);
-				expect(lines[0]).toContain("current session");
-				expect(listing).toContain("investigate the flaky websocket reconnect test");
-				expect(listing).not.toContain("secret roadmap");
-				expect(listing).not.toContain("other-project-session");
+				assert.deepEqual(
+					lines.map((line) => line.split(" | ")[0]),
+					[
+						`history://sessions/${CURRENT_ID}`,
+						"history://sessions/recent-session",
+						"history://sessions/old-session",
+					],
+				);
+				assertIncludes(lines[0], "current session");
+				assertIncludes(listing, "investigate the flaky websocket reconnect test");
+				assertExcludes(listing, "secret roadmap");
+				assertExcludes(listing, "other-project-session");
 			} finally {
 				await close();
 			}
@@ -209,14 +220,14 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 			const { read, close } = await seeded();
 			try {
 				const whole = await read("history://sessions/recent-session");
-				expect(whole).toContain("investigate the flaky websocket reconnect test");
-				expect(whole).toContain("the reconnect backoff resets too early");
+				assertIncludes(whole, "investigate the flaky websocket reconnect test");
+				assertIncludes(whole, "the reconnect backoff resets too early");
 				const lines = whole.split("\n");
 				const line = lines.findIndex((value) => value.includes("backoff resets")) + 1;
 				const narrow = await read(`history://sessions/recent-session:${line}-${line}`);
-				expect(narrow).toContain("the reconnect backoff resets too early");
-				expect(narrow.split("\n").length).toBeLessThan(lines.length);
-				expect(narrow).not.toContain("billing");
+				assertIncludes(narrow, "the reconnect backoff resets too early");
+				assert.ok(narrow.split("\n").length < lines.length);
+				assertExcludes(narrow, "billing");
 			} finally {
 				await close();
 			}
@@ -226,17 +237,17 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 			const { read, search, close } = await seeded();
 			try {
 				const found = await search("backoff", "history://sessions");
-				expect(found).toContain("history://sessions/recent-session");
-				expect(found).toContain("backoff resets too early");
-				expect(found).not.toContain("old-session");
-				expect(await search("secret roadmap", "history://sessions")).toBe("No matches found");
-				expect(await search("what was I working on", "history://sessions")).toBe("No matches found");
+				assertIncludes(found, "history://sessions/recent-session");
+				assertIncludes(found, "backoff resets too early");
+				assertExcludes(found, "old-session");
+				assert.equal(await search("secret roadmap", "history://sessions"), "No matches found");
+				assert.equal(await search("what was I working on", "history://sessions"), "No matches found");
 				const label = found.match(/history:\/\/sessions\/recent-session:(\d+):/);
 				assert.ok(label, "a match carries a line number");
 				const narrow = await read(`history://sessions/recent-session:${label[1]}-${label[1]}`);
-				expect(narrow).toContain("backoff");
-				expect(await search("billing", "history://")).toContain("history://sessions/old-session");
-				expect(await search("reconnect", "history://sessions/recent-session")).toContain("reconnect");
+				assertIncludes(narrow, "backoff");
+				assertIncludes(await search("billing", "history://"), "history://sessions/old-session");
+				assertIncludes(await search("reconnect", "history://sessions/recent-session"), "reconnect");
 			} finally {
 				await close();
 			}
@@ -245,18 +256,14 @@ describe("history:// sessions through any SessionStore (#4252)", () => {
 		it("keeps other projects out unless asked", async () => {
 			const { read, search, close } = await seeded();
 			try {
-				await expect(read("history://sessions/other-project-session")).rejects.toThrow(/another project/);
-				await expect(search("roadmap", "history://sessions/other-project-session")).rejects.toThrow(
-					/another project/,
-				);
-				expect(await read("history://sessions/other-project-session?project=all")).toContain("secret roadmap");
+				await assert.rejects(read("history://sessions/other-project-session"), /another project/);
+				await assert.rejects(search("roadmap", "history://sessions/other-project-session"), /another project/);
+				assertIncludes(await read("history://sessions/other-project-session?project=all"), "secret roadmap");
 				const everywhere = await read("history://sessions?project=all");
-				expect(everywhere).toContain("other-project-session");
-				expect(await read(`history://sessions?project=${OTHER_PROJECT}`)).toContain("other-project-session");
-				expect(await search("roadmap", "history://sessions?project=all")).toContain("secret roadmap");
-				await expect(read("history://sessions/no-such-session")).rejects.toThrow(
-					/Session not found|no such session/,
-				);
+				assertIncludes(everywhere, "other-project-session");
+				assertIncludes(await read(`history://sessions?project=${OTHER_PROJECT}`), "other-project-session");
+				assertIncludes(await search("roadmap", "history://sessions?project=all"), "secret roadmap");
+				await assert.rejects(read("history://sessions/no-such-session"), /Session not found|no such session/);
 			} finally {
 				await close();
 			}
@@ -350,32 +357,32 @@ describe("history:// workflows through a workflow backend Atomic has never seen 
 		const lines = (await read("history://workflows"))
 			.split("\n")
 			.filter((line) => line.startsWith("history://workflows/"));
-		expect(lines.map((line) => line.split(" | ")[0])).toEqual([
-			"history://workflows/run-new",
-			"history://workflows/run-old",
-		]);
-		expect(lines[0]).toContain("ship-release");
+		assert.deepEqual(
+			lines.map((line) => line.split(" | ")[0]),
+			["history://workflows/run-new", "history://workflows/run-old"],
+		);
+		assertIncludes(lines[0], "ship-release");
 	});
 
 	it("reads a run with its stages linked to their sessions, and a unique id prefix", async () => {
 		const detail = await read("history://workflows/run-new");
-		expect(detail).toContain("the 2.0 launch");
-		expect(detail).toContain("history://sessions/recent-session");
-		expect(detail).toContain("release-notes.md");
-		expect(await read("history://workflows/run-n")).toContain("ship-release");
-		await expect(read("history://workflows/run-")).rejects.toThrow(/ambiguous/);
-		await expect(read("history://workflows/elsewhere")).rejects.toThrow(/not found in this project/);
+		assertIncludes(detail, "the 2.0 launch");
+		assertIncludes(detail, "history://sessions/recent-session");
+		assertIncludes(detail, "release-notes.md");
+		assertIncludes(await read("history://workflows/run-n"), "ship-release");
+		await assert.rejects(read("history://workflows/run-"), /ambiguous/);
+		await assert.rejects(read("history://workflows/elsewhere"), /not found in this project/);
 	});
 
 	it("searches runs and reports the run URL with a line number", async () => {
-		expect(await search("unreachable", "history://workflows")).toMatch(/history:\/\/workflows\/run-old:\d+:/);
-		expect(await search("launch", "history://")).toContain("history://workflows/run-new");
+		assert.match(await search("unreachable", "history://workflows"), /history:\/\/workflows\/run-old:\d+:/);
+		assertIncludes(await search("launch", "history://"), "history://workflows/run-new");
 	});
 
 	it("reports unavailable workflow history when no run control is registered", async () => {
 		const bare = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
-		await expect(bare.read?.("history://workflows")).rejects.toThrow(/Workflow history is unavailable/);
-		await expect(bare.read?.("history://sessions")).rejects.toThrow(/Session history is unavailable/);
+		await assert.rejects(async () => bare.read?.("history://workflows"), /Workflow history is unavailable/);
+		await assert.rejects(async () => bare.read?.("history://sessions"), /Session history is unavailable/);
 	});
 });
 
@@ -383,17 +390,18 @@ describe("history:// URLs (#4252)", () => {
 	const router = createHistoryRouter({ cwd: PROJECT, sessionStore: () => undefined, workflows: () => undefined });
 
 	it("describes itself at the root and refuses unknown resources and parameters", async () => {
-		expect(await router.read?.("history://")).toContain("history://sessions");
-		await expect(router.read?.("history://notes")).rejects.toThrow(/Unknown history resource: notes/);
-		await expect(router.read?.("history://workflows?project=all")).rejects.toThrow(
+		assertIncludes(String(await router.read?.("history://")), "history://sessions");
+		await assert.rejects(async () => router.read?.("history://notes"), /Unknown history resource: notes/);
+		await assert.rejects(
+			async () => router.read?.("history://workflows?project=all"),
 			/Unsupported history query parameter/,
 		);
-		await expect(router.read?.("history://sessions?limit=0")).rejects.toThrow(/between 1 and 200/);
-		expect(await router.read?.("skill://x")).toBeUndefined();
+		await assert.rejects(async () => router.read?.("history://sessions?limit=0"), /between 1 and 200/);
+		assert.equal(await router.read?.("skill://x"), undefined);
 	});
 
 	it("is read-only", async () => {
-		await expect(
+		await assert.rejects(
 			createWriteToolDefinition(PROJECT).execute(
 				"write",
 				{ path: "history://sessions", content: "x" },
@@ -403,7 +411,8 @@ describe("history:// URLs (#4252)", () => {
 					cwd: PROJECT,
 				} as never,
 			),
-		).rejects.toThrow(/history:\/\/ resources are read-only/);
+			/history:\/\/ resources are read-only/,
+		);
 	});
 });
 
@@ -432,9 +441,9 @@ describe("history:// workflows prefer the project listing (#4252)", () => {
 					"history://workflows",
 				),
 			);
-		expect(await read(withProjectListing)).toContain("history://workflows/run-user");
-		expect(await read(base)).not.toContain("run-user");
-		expect(await read(base)).toContain("history://workflows/run-new");
+		assertIncludes(await read(withProjectListing), "history://workflows/run-user");
+		assertExcludes(await read(base), "run-user");
+		assertIncludes(await read(base), "history://workflows/run-new");
 	});
 });
 
@@ -524,20 +533,20 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 			]);
 			const lines = (await read("history://sessions/long")).split("\n");
 			for (const marker of ["END-USER", "END-ASSISTANT", "END-TOOL", "END-ARGS", "END-COMMAND", "END-OUTPUT"])
-				expect(
+				assert.ok(
 					lines.some((line) => line.includes(marker)),
 					marker,
-				).toBe(true);
-			expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(4000);
+				);
+			assert.ok(Math.max(...lines.map((line) => line.length)) <= 4000);
 			const bodyOf = (heading: string): string => {
 				const start = lines.findIndex((line) => line.endsWith(heading));
 				const end = lines.findIndex((line, index) => index > start && line.startsWith("## "));
 				return lines.slice(start + 1, end < 0 ? undefined : end).join("");
 			};
-			expect(bodyOf(" user")).toBe(user);
-			expect(bodyOf(" assistant")).toBe(assistant);
+			assert.equal(bodyOf(" user"), user);
+			assert.equal(bodyOf(" assistant"), assistant);
 			const last = lines.findIndex((line) => line.includes("END-ASSISTANT")) + 1;
-			expect(await read(`history://sessions/long:${last}-${last}`)).toContain("END-ASSISTANT");
+			assertIncludes(await read(`history://sessions/long:${last}-${last}`), "END-ASSISTANT");
 		} finally {
 			await close();
 		}
@@ -559,24 +568,24 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 						}),
 					);
 				}
-				await expect(read("history://sessions?limit=500")).rejects.toThrow(/between 1 and 200/);
+				await assert.rejects(read("history://sessions?limit=500"), /between 1 and 200/);
 				const first = await read("history://sessions?limit=200");
-				expect(first).toContain("sessions 1-200 of 230");
-				expect(first).toContain("next page: history://sessions?offset=200&limit=200");
-				expect(first.split("\n").filter((line) => line.startsWith("history://sessions/"))).toHaveLength(200);
+				assertIncludes(first, "sessions 1-200 of 230");
+				assertIncludes(first, "next page: history://sessions?offset=200&limit=200");
+				assert.equal(first.split("\n").filter((line) => line.startsWith("history://sessions/")).length, 200);
 				const second = await read("history://sessions?offset=200&limit=200");
-				expect(second).toContain("sessions 201-230 of 230");
-				expect(second).toContain("history://sessions/rec-0 ");
-				expect(second).not.toContain("next page");
-				expect(await search("record number 229$", "history://sessions")).toContain("history://sessions/rec-229:");
+				assertIncludes(second, "sessions 201-230 of 230");
+				assertIncludes(second, "history://sessions/rec-0 ");
+				assertExcludes(second, "next page");
+				assertIncludes(await search("record number 229$", "history://sessions"), "history://sessions/rec-229:");
 				const windowed = await search("record number 0$", "history://sessions");
-				expect(windowed).not.toContain("rec-0:");
-				expect(windowed).toContain("searched sessions 1-25 of 230; continue with history://sessions?offset=25");
+				assertExcludes(windowed, "rec-0:");
+				assertIncludes(windowed, "searched sessions 1-25 of 230; continue with history://sessions?offset=25");
 				const deep = await search("record number 0$", "history://sessions?offset=200&limit=100");
-				expect(deep).toContain("history://sessions/rec-0:");
-				expect(deep).toContain("searched sessions 201-230 of 230");
-				expect(deep).not.toContain("continue with");
-				expect(await search("record number", "history://sessions?offset=500")).toContain("none of 230");
+				assertIncludes(deep, "history://sessions/rec-0:");
+				assertIncludes(deep, "searched sessions 201-230 of 230");
+				assertExcludes(deep, "continue with");
+				assertIncludes(await search("record number", "history://sessions?offset=500"), "none of 230");
 			} finally {
 				await close();
 			}
@@ -597,17 +606,17 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 					.find((line) => line.includes("beta-session"))
 					?.split(" | ")[0];
 				assert.ok(row, `listing row for ${query}`);
-				expect(row).toContain(query);
-				expect(await read(row)).toContain("secret roadmap");
-				expect(await read(`${row}:2-3`)).toContain("secret roadmap");
+				assertIncludes(row, query);
+				assertIncludes(await read(row), "secret roadmap");
+				assertIncludes(await read(`${row}:2-3`), "secret roadmap");
 				const label = (await search("roadmap", `history://sessions${query}`)).match(
 					/(history:\/\/sessions\/beta-session\?project=[^:\s]+):(\d+):/,
 				);
 				assert.ok(label, `search label for ${query}`);
-				expect(await read(`${label[1]}:${label[2]}-${label[2]}`)).toContain("secret roadmap");
+				assertIncludes(await read(`${label[1]}:${label[2]}-${label[2]}`), "secret roadmap");
 			}
 			const hasLink = await read("history://sessions/beta-session?project=all");
-			expect(hasLink).not.toContain("history://workflows/");
+			assertExcludes(hasLink, "history://workflows/");
 		} finally {
 			await close();
 		}
@@ -628,9 +637,9 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 				entry("s", "unvouched stage text", BASE + 1000),
 			]);
 			const opened = await read("history://sessions/recent-session-stage");
-			expect(opened).toContain("stage transcript text");
-			expect(opened).toContain("history://workflows/run-new");
-			await expect(read("history://sessions/stray-stage")).rejects.toThrow(/another project/);
+			assertIncludes(opened, "stage transcript text");
+			assertIncludes(opened, "history://workflows/run-new");
+			await assert.rejects(read("history://sessions/stray-stage"), /another project/);
 		} finally {
 			await close();
 		}

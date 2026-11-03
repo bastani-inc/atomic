@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { afterEach, beforeEach, describe, it } from "vitest";
+import { createBashToolDefinition } from "../src/core/tools/bash.js";
 
 describe.skipIf(process.platform === "win32")("bash internal URL safety", () => {
 	let cwd: string;
@@ -22,7 +22,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			{ command: "cd . && printf '%s' 'local://x;uname;#'" },
 		]) {
 			const result = await bash.execute("quoted", args);
-			expect(result.content).toEqual([{ type: "text", text: "prefix:local://x;uname;#" }]);
+			assert.deepEqual(result.content, [{ type: "text", text: "prefix:local://x;uname;#" }]);
 		}
 	});
 
@@ -42,7 +42,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 		const result = await bash.execute("hazard", { command }, undefined, undefined, {
 			resolveInternalUrl: () => hazard,
 		});
-		expect(result.content).toEqual([{ type: "text", text: output }]);
+		assert.deepEqual(result.content, [{ type: "text", text: output }]);
 	});
 
 	it("lets quoted text mention a scheme while still expanding a plain-word URL (#4252)", async () => {
@@ -55,7 +55,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			undefined,
 			{ resolveInternalUrl: (url) => (url === "local://notes" ? path : undefined) },
 		);
-		expect(result.content).toEqual([{ type: "text", text: `see \`local://x\` and skill://y|${path}` }]);
+		assert.deepEqual(result.content, [{ type: "text", text: `see \`local://x\` and skill://y|${path}` }]);
 	});
 
 	it("leaves a URL beside a brace expansion unchanged but expands one inside a brace group (#4252)", async () => {
@@ -69,7 +69,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			undefined,
 			{ resolveInternalUrl },
 		);
-		expect(expansion.content).toEqual([{ type: "text", text: "a|local://notes.txt|" }]);
+		assert.deepEqual(expansion.content, [{ type: "text", text: "a|local://notes.txt|" }]);
 		const group = await bash.execute(
 			"brace-group",
 			{ command: "{ printf '%s|' local://notes.txt ; }" },
@@ -77,7 +77,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			undefined,
 			{ resolveInternalUrl },
 		);
-		expect(group.content).toEqual([{ type: "text", text: `${path}|` }]);
+		assert.deepEqual(group.content, [{ type: "text", text: `${path}|` }]);
 	});
 
 	it("treats removed schemes as ordinary text in plain words (#4252)", async () => {
@@ -89,7 +89,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			undefined,
 			{ resolveInternalUrl: () => join(cwd, "resolved") },
 		);
-		expect(result.content).toEqual([
+		assert.deepEqual(result.content, [
 			{ type: "text", text: `omp://x|memory://y|agent://z|${join(cwd, "resolved")}|` },
 		]);
 	});
@@ -102,7 +102,7 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 			{ command: "cd . && printf %s artifact://path" },
 		]) {
 			const result = await bash.execute("bare", args, undefined, undefined, { resolveInternalUrl: () => path });
-			expect(result.content).toEqual([{ type: "text", text: `prefix:${path}` }]);
+			assert.deepEqual(result.content, [{ type: "text", text: `prefix:${path}` }]);
 		}
 	});
 
@@ -144,6 +144,6 @@ describe.skipIf(process.platform === "win32")("bash internal URL safety", () => 
 	it("preserves arbitrary shell syntax without resolved URLs", async () => {
 		const bash = createBashToolDefinition(cwd, { commandPrefix: "VALUE=prefix; export VALUE" });
 		const result = await bash.execute("ordinary", { command: 'printf "%s:" "$VALUE"; printf abc | tr a-z A-Z' });
-		expect(result.content).toEqual([{ type: "text", text: "prefix:ABC" }]);
+		assert.deepEqual(result.content, [{ type: "text", text: "prefix:ABC" }]);
 	});
 });

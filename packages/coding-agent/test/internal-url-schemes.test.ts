@@ -1,25 +1,30 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.ts";
+import { afterEach, beforeEach, describe, it } from "vitest";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import {
 	createArtifactRouter,
 	registerArtifactDir,
 	unregisterArtifactDir,
-} from "../src/core/tools/artifact-protocol.ts";
-import { ArtifactManager, resetArtifactManagerCache } from "../src/core/tools/artifacts.ts";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
-import { createHistoryRouter } from "../src/core/tools/history-protocol.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
+} from "../src/core/tools/artifact-protocol.js";
+import { ArtifactManager, resetArtifactManagerCache } from "../src/core/tools/artifacts.js";
+import { createFindToolDefinition } from "../src/core/tools/find.js";
+import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
 import {
 	composeInternalRouters,
 	INTERNAL_URL_SCHEMES,
 	type InternalResourceContext,
 	isInternalUrl,
-} from "../src/core/tools/resource-selectors.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
+} from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { createWriteToolDefinition } from "../src/core/tools/write.js";
+
+function assertIncludes(text: string, part: string): void {
+	assert.ok(text.includes(part), `expected ${JSON.stringify(part)} in:\n${text}`);
+}
 
 const REMOVED_SCHEMES = ["omp", "agent", "issue", "memory", "pr", "rule", "mcp", "vault"] as const;
 
@@ -65,9 +70,9 @@ describe("internal URL schemes (#4252)", () => {
 		createFindToolDefinition(cwd).execute("find", { paths: [path] }, undefined, undefined, { ...ctx, cwd } as never);
 
 	it("allows exactly the schemes this package resolves", () => {
-		expect([...INTERNAL_URL_SCHEMES].sort()).toEqual(["artifact", "conflict", "history", "local", "skill"]);
-		for (const scheme of INTERNAL_URL_SCHEMES) expect(isInternalUrl(`${scheme}://x`)).toBe(true);
-		for (const scheme of REMOVED_SCHEMES) expect(isInternalUrl(`${scheme}://x`)).toBe(false);
+		assert.deepEqual([...INTERNAL_URL_SCHEMES].sort(), ["artifact", "conflict", "history", "local", "skill"]);
+		for (const scheme of INTERNAL_URL_SCHEMES) assert.ok(isInternalUrl(`${scheme}://x`));
+		for (const scheme of REMOVED_SCHEMES) assert.equal(isInternalUrl(`${scheme}://x`), false);
 	});
 
 	it.each(REMOVED_SCHEMES)(
@@ -80,63 +85,63 @@ describe("internal URL schemes (#4252)", () => {
 					resolve: () => join(cwd, "x"),
 				}),
 			};
-			await expect(read(url)).rejects.toThrow(/not supported/);
-			await expect(search("resolve", url)).rejects.toThrow(/not supported/);
-			await expect(write(url, "x")).rejects.toThrow(/not supported/);
+			await assert.rejects(read(url), /not supported/);
+			await assert.rejects(search("resolve", url), /not supported/);
+			await assert.rejects(write(url, "x"), /not supported/);
 		},
 	);
 
 	it("resolves skill:// for read with a line range, search and find", async () => {
 		mkdirSync(join(cwd, ".agents/skills/demo"), { recursive: true });
 		writeFileSync(join(cwd, ".agents/skills/demo/SKILL.md"), "one\ntwo needle\nthree\nfour\nfive\n");
-		expect(text(await read("skill://demo:2-2"))).toContain("two needle");
-		expect(text(await search("needle", "skill://demo"))).toContain("skill://demo:2:");
-		expect(text(await find("skill://demo/*.md"))).toContain("SKILL.md");
+		assertIncludes(text(await read("skill://demo:2-2")), "two needle");
+		assertIncludes(text(await search("needle", "skill://demo")), "skill://demo:2:");
+		assertIncludes(text(await find("skill://demo/*.md")), "SKILL.md");
 	});
 
 	it("refuses to write skill:// even when the skill exists", async () => {
 		mkdirSync(join(cwd, ".agents/skills/demo"), { recursive: true });
 		writeFileSync(join(cwd, ".agents/skills/demo/SKILL.md"), "keep me\n");
-		await expect(write("skill://demo", "overwritten")).rejects.toThrow(/skill:\/\/ resources are read-only/);
-		expect(readFileSync(join(cwd, ".agents/skills/demo/SKILL.md"), "utf8")).toBe("keep me\n");
+		await assert.rejects(write("skill://demo", "overwritten"), /skill:\/\/ resources are read-only/);
+		assert.equal(readFileSync(join(cwd, ".agents/skills/demo/SKILL.md"), "utf8"), "keep me\n");
 	});
 
 	it("resolves local:// for read, search, find and write", async () => {
 		await write("local://notes/a.txt", "first\nsecond needle\nthird\n");
-		expect(readFileSync(join(cwd, "notes/a.txt"), "utf8")).toContain("second needle");
-		expect(text(await read("local://notes/a.txt:2-2"))).toContain("second needle");
-		expect(text(await search("needle", "local://notes/a.txt"))).toContain("second needle");
-		expect(text(await find("local://notes/*.txt"))).toContain("a.txt");
+		assertIncludes(readFileSync(join(cwd, "notes/a.txt"), "utf8"), "second needle");
+		assertIncludes(text(await read("local://notes/a.txt:2-2")), "second needle");
+		assertIncludes(text(await search("needle", "local://notes/a.txt")), "second needle");
+		assertIncludes(text(await find("local://notes/*.txt")), "a.txt");
 	});
 
 	it("resolves artifact:// for read, search and find, and refuses to write it", async () => {
 		const id = new ArtifactManager(artifactsDir).save("alpha\nbeta needle\ngamma\n", "read");
-		expect(text(await read(`artifact://${id}:2-2`))).toContain("beta needle");
-		expect(text(await search("needle", `artifact://${id}`))).toContain("beta needle");
-		expect(text(await find(`artifact://${id}`))).toContain(`${id}.`);
-		await expect(write(`artifact://${id}`, "x")).rejects.toThrow(/read-only/);
+		assertIncludes(text(await read(`artifact://${id}:2-2`)), "beta needle");
+		assertIncludes(text(await search("needle", `artifact://${id}`)), "beta needle");
+		assertIncludes(text(await find(`artifact://${id}`)), `${id}.`);
+		await assert.rejects(write(`artifact://${id}`, "x"), /read-only/);
 	});
 
 	it("resolves conflict:// for read, search and write", async () => {
 		const file = join(cwd, "merge.txt");
 		writeFileSync(file, "top\n<<<<<<< HEAD\nours line\n=======\ntheirs line\n>>>>>>> branch\nbottom\n");
-		expect(text(await read("conflict://*"))).toContain("# conflict://1 merge.txt:2-6");
-		expect(text(await read("conflict://1"))).toContain("theirs line");
-		expect(text(await read("conflict://1/ours"))).toBe("ours line");
-		expect(text(await read("conflict://1/theirs"))).toBe("theirs line");
-		expect(text(await search("theirs", "conflict://*"))).toContain("conflict://*:");
-		await expect(find("conflict://*")).rejects.toThrow(/find cannot list conflict:\/\/ URLs/);
-		await expect(read("conflict://1/other")).rejects.toThrow(/Unknown conflict side/);
-		await expect(read("conflict://9")).rejects.toThrow(/Conflict id not found/);
+		assertIncludes(text(await read("conflict://*")), "# conflict://1 merge.txt:2-6");
+		assertIncludes(text(await read("conflict://1")), "theirs line");
+		assert.equal(text(await read("conflict://1/ours")), "ours line");
+		assert.equal(text(await read("conflict://1/theirs")), "theirs line");
+		assertIncludes(text(await search("theirs", "conflict://*")), "conflict://*:");
+		await assert.rejects(find("conflict://*"), /find cannot list conflict:\/\/ URLs/);
+		await assert.rejects(read("conflict://1/other"), /Unknown conflict side/);
+		await assert.rejects(read("conflict://9"), /Conflict id not found/);
 		await write("conflict://1", "@theirs\n");
-		expect(readFileSync(file, "utf8")).toBe("top\ntheirs line\nbottom\n");
-		await expect(read("conflict://*")).rejects.toThrow(/No conflict markers/);
+		assert.equal(readFileSync(file, "utf8"), "top\ntheirs line\nbottom\n");
+		await assert.rejects(read("conflict://*"), /No conflict markers/);
 	});
 
 	it("resolves history:// for read and search, and refuses to write or find it", async () => {
-		expect(text(await read("history://"))).toContain("history://sessions");
-		expect(text(await search("sessions", "history://"))).toBe("No matches found");
-		await expect(write("history://sessions", "x")).rejects.toThrow(/read-only/);
-		await expect(find("history://sessions")).rejects.toThrow(/find cannot list history:\/\/ URLs/);
+		assertIncludes(text(await read("history://")), "history://sessions");
+		assert.equal(text(await search("sessions", "history://")), "No matches found");
+		await assert.rejects(write("history://sessions", "x"), /read-only/);
+		await assert.rejects(find("history://sessions"), /find cannot list history:\/\/ URLs/);
 	});
 });
