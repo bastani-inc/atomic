@@ -84,7 +84,7 @@ test("omits the empty-state row when models are available", () => {
 	} as Partial<SettingsConfig>);
 
 	const rendered = render(openPerModelThinkingSubmenu(config, {} as SettingsCallbacks));
-	expect(rendered).toContain("sonnet-5 [anthropic]");
+	expect(rendered).toContain("anthropic/sonnet-5");
 	expect(rendered).not.toContain("No models available");
 });
 
@@ -128,7 +128,7 @@ test("keeps the configured per-model thinking level marked while browsing", () =
 		const row = render(submenu)
 			.split("\n")
 			.map((line) => line.trimEnd())
-			.find((line) => line.includes(`${model.id} [${model.provider}]`) && line.endsWith(level));
+			.find((line) => line.includes(`${model.provider}/${model.id}`) && line.endsWith(level));
 		if (!row) throw new Error(`Expected a rendered row for level ${level}`);
 		return row;
 	};

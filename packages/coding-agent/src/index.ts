@@ -295,6 +295,12 @@ export {
 	modelFailureMessage,
 	normalizeModelFailureSignal,
 } from "./core/model-fallback-failures.ts";
+export {
+	formatModelLabel,
+	MODEL_LABEL_SEPARATOR,
+	type ModelLabelOptions,
+	type ModelLabelSubject,
+} from "./core/model-label.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
 	eligiblePair,

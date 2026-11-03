@@ -63,8 +63,14 @@ async function registerIsolatedTests(): Promise<void> {
 		wrapTextWithAnsi: (text: string) => [text],
 	}));
 
+	// Node cards label stage models with the shared raw-ID label (#4269).
+	const { formatModelLabel, MODEL_LABEL_SEPARATOR } = await import(
+		"../../packages/coding-agent/src/core/model-label.js"
+	);
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
+		formatModelLabel,
+		MODEL_LABEL_SEPARATOR,
 		classifyChatCommand: () => assert.fail("graph overlay checks must not classify stage-chat commands"),
 		createSessionSkillAutocompleteProvider: () =>
 			assert.fail("graph overlay checks must not create skill completion"),

@@ -101,7 +101,7 @@ describe("InteractiveMode startup banner", () => {
 			modelId: "gpt-5.6-sol-fast",
 		});
 
-		expect(rendered).toContain("(openai-codex) gpt-5.6-sol-fast medium");
+		expect(rendered).toContain("openai-codex/gpt-5.6-sol-fast  medium");
 		expect(rendered).not.toContain("gpt-5.6-sol-fast medium fast");
 	});
 
@@ -114,7 +114,7 @@ describe("InteractiveMode startup banner", () => {
 			modelId: "claude-opus-4.8-fast",
 		});
 
-		assert.equal(rendered.includes("(github-copilot) claude-opus-4.8-fast"), true);
+		assert.equal(rendered.includes("github-copilot/claude-opus-4.8-fast"), true);
 	});
 
 	it("keeps the side-by-side layout when the terminal is wide enough", () => {
@@ -150,7 +150,7 @@ describe("InteractiveMode startup banner", () => {
 		}
 		expect(lines.some((line) => line.includes("██████"))).toBe(true);
 		expect(rendered).toContain("Atomic v0.0.0");
-		expect(rendered).toContain("(openai) gpt-5.1-codex");
+		expect(rendered).toContain("openai/gpt-5.1-codex");
 		expect(rendered).toContain("/tmp/project");
 	});
 
@@ -164,7 +164,7 @@ describe("InteractiveMode startup banner", () => {
 
 		expect(rendered).not.toContain("█");
 		expect(rendered).toContain("Atomic v0.0.0");
-		expect(rendered).toContain("(openai) gpt-5.1-codex");
+		expect(rendered).toContain("openai/gpt-5.1-codex");
 		expect(rendered).toContain("/tmp/project");
 	});
 
@@ -203,7 +203,7 @@ describe("InteractiveMode startup banner", () => {
 
 				expect(rendered).not.toMatch(/[█▙▟▛▜░]/);
 				expect(rendered.split("\n")[0]).toBe("∀ Atomic v0.0.0");
-				expect(rendered).toContain("(openai) gpt-5.1-codex");
+				expect(rendered).toContain("openai/gpt-5.1-codex");
 				expect(rendered).toContain("/tmp/project");
 			}
 		});

@@ -71,7 +71,19 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "bash_execution_update"; id?: string; channel: "stdout" | "stderr"; delta: string }
-	| { type: "model_fallback_start"; from: string; to: string; reason: string; attempt: number }
+	| {
+			type: "model_fallback_start";
+			/** `provider/id` of the model that failed. */
+			from: string;
+			/** `provider/id` of the model the turn continues on. */
+			to: string;
+			/** The level `from` ran at, for a reasoning model. */
+			fromThinkingLevel?: ThinkingLevel;
+			/** The level `to` runs at, for a reasoning model. */
+			toThinkingLevel?: ThinkingLevel;
+			reason: string;
+			attempt: number;
+	  }
 	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;

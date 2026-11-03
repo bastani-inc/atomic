@@ -1,6 +1,7 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
+import { formatModelLabel } from "../../core/model-label.ts";
 import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
@@ -535,7 +536,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.ui,
 				(spinner) => theme.fg("warning", spinner),
 				(text) => theme.fg("muted", text),
-				`Falling back from ${event.from} to ${event.to}...`,
+				`Falling back from ${formatModelLabel(event.from, { thinkingLevel: event.fromThinkingLevel })} to ${formatModelLabel(event.to, { thinkingLevel: event.toThinkingLevel })}...`,
 			);
 			this.statusContainer.addChild(this.fallbackLoader);
 			this.ui.requestRender();

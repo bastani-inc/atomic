@@ -1,3 +1,4 @@
+import { formatModelLabel } from "../../core/model-label.ts";
 import { StartupIdentityComponent } from "./components/startup-identity.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -54,9 +55,7 @@ InteractiveModeBase.prototype.cycleModel = async function (
 		} else {
 			this.footer.invalidate();
 			this.updateEditorBorderColor();
-			const thinkingStr =
-				result.model.reasoning && result.thinkingLevel !== "off" ? ` (thinking: ${result.thinkingLevel})` : "";
-			this.showStatus(`Switched to ${result.model.name || result.model.id}${thinkingStr}`);
+			this.showStatus(`Switched to ${formatModelLabel(result.model, { thinkingLevel: result.thinkingLevel })}`);
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(result.model);
 		}
 	} catch (error) {

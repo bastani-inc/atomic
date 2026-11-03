@@ -2,7 +2,8 @@
  * Formatting utilities for display output
  */
 
-import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.js";
+import { formatModelLabel } from "@bastani/atomic";
+import { THINKING_LEVELS } from "./model-info.js";
 import type { Usage } from "./types.js";
 
 /**
@@ -12,15 +13,14 @@ export function formatTokens(n: number): string {
 	return n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
 }
 
+/**
+ * A subagent's model as every model label reads (#4269): its raw `provider/id`, then its level, which a known
+ * `:level` suffix on `model` or else `thinking` gives.
+ */
 export function formatModelThinking(model?: string, thinking?: string): string {
-	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
-	// Keep the full `provider/model` id so subagent lines read exactly like the
-	// main chat's model display; only a known thinking suffix is split off.
-	const displayModel = parsed?.baseModel ?? model;
 	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
-	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
-	const parts = [displayModel, displayThinking ? `thinking ${displayThinking}` : undefined].filter(Boolean);
-	return parts.join(" · ");
+	if (!model) return explicitThinking ? `thinking ${explicitThinking}` : "";
+	return formatModelLabel(model, { thinkingLevel: explicitThinking });
 }
 
 /**

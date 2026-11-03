@@ -32,9 +32,9 @@ describe("subagent explicit fast-model UI labels", () => {
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
 
-		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast · thinking medium/);
+		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast {2}medium/);
 		const expanded = renderSubagentResult(result, { expanded: true }, theme).render(120).join("\n");
-		assert.match(expanded, /openai-codex\/gpt-5\.6-sol-fast · thinking medium/);
+		assert.match(expanded, /openai-codex\/gpt-5\.6-sol-fast {2}medium/);
 		assert.equal(expanded.match(/gpt-5\.6-sol-fast/g)?.length, 1);
 	});
 
@@ -65,7 +65,7 @@ describe("subagent explicit fast-model UI labels", () => {
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
 
-		assert.match(text, /gpt-5\.1-codex · thinking medium/);
+		assert.match(text, /gpt-5\.1-codex {2}medium/);
 		assert.doesNotMatch(text, / · fast/);
 	});
 
@@ -107,8 +107,8 @@ describe("subagent explicit fast-model UI labels", () => {
 		};
 
 		const text = renderSubagentResult(result, { expanded: false }, theme).render(120).join("\n");
-		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast · thinking high/);
-		assert.match(text, /claude-sonnet-4 · thinking low/);
-		assert.doesNotMatch(text, /claude-sonnet-4 · thinking low · fast/);
+		assert.match(text, /openai-codex\/gpt-5\.6-sol-fast {2}high/);
+		assert.match(text, /claude-sonnet-4 {2}low/);
+		assert.doesNotMatch(text, /claude-sonnet-4 {2}low · fast/);
 	});
 });

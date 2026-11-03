@@ -88,7 +88,7 @@ for (const background of [false, true]) {
 					]) {
 						const text = stripVTControlCharacters(component.render(100).join("\n"));
 						assert.match(text, /provider\/fallback/);
-						assert.match(text, /thinking off/);
+						assert.match(text, /provider\/fallback {2}off/);
 						assert.doesNotMatch(text, /provider\/first/);
 					}
 					for (const width of [20, 48, 100])
@@ -102,7 +102,7 @@ for (const background of [false, true]) {
 					);
 					assert.match(
 						stripVTControlCharacters(inspector.renderPicker(100, 24).join("\n")),
-						/provider\/fallback.*thinking off/,
+						/provider\/fallback {2}off/,
 					);
 					inspector.dispose();
 				}

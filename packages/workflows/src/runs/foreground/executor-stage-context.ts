@@ -1,3 +1,4 @@
+import { formatModelLabel } from "@bastani/atomic";
 import type { TrackedStageCaller } from "./executor-stage-call.js";
 import type { LiveStageRuntime, StageContextWithMeta, StageNoticeInput } from "./executor-stage-types.js";
 import type { InternalStageContext } from "./stage-runner.js";
@@ -6,7 +7,10 @@ function noticeValue(value: unknown): string {
 	if (typeof value === "string") return value;
 	if (value === undefined || value === null) return "";
 	if (typeof value === "object") {
-		const candidate = value as { id?: unknown; name?: unknown; label?: unknown };
+		const candidate = value as { provider?: unknown; id?: unknown; name?: unknown; label?: unknown };
+		// A model reads as its raw provider/id, never its display name (#4269).
+		if (typeof candidate.provider === "string" && typeof candidate.id === "string")
+			return formatModelLabel({ provider: candidate.provider, id: candidate.id });
 		if (typeof candidate.id === "string") return candidate.id;
 		if (typeof candidate.name === "string") return candidate.name;
 		if (typeof candidate.label === "string") return candidate.label;

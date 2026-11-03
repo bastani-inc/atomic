@@ -5,19 +5,19 @@ import { formatDuration, formatModelThinking } from "../../packages/subagents/sr
 describe("subagent formatModelThinking", () => {
 	test("renders the canonical fast model identity with no separate fast badge", () => {
 		const label = `codebase-analyzer (${formatModelThinking("openai-codex/gpt-5.6-sol-fast", "medium")})`;
-		assert.equal(label, "codebase-analyzer (openai-codex/gpt-5.6-sol-fast · thinking medium)");
+		assert.equal(label, "codebase-analyzer (openai-codex/gpt-5.6-sol-fast  medium)");
 		assert.doesNotMatch(label, / · fast(?: ·|\))/u);
 	});
 
-	test("keeps the provider prefix so the line matches the main chat model display", () => {
-		assert.equal(formatModelThinking("anthropic/claude-fable-5", "high"), "anthropic/claude-fable-5 · thinking high");
+	test("shows the raw provider/id and its level, like every model label (#4269)", () => {
+		assert.equal(formatModelThinking("anthropic/claude-fable-5", "high"), "anthropic/claude-fable-5  high");
 		assert.equal(formatModelThinking("anthropic/claude-fable-5"), "anthropic/claude-fable-5");
 	});
 
 	test("keeps every segment of a multi-segment routed model id", () => {
 		assert.equal(
 			formatModelThinking("openrouter/anthropic/claude-fable-5:max"),
-			"openrouter/anthropic/claude-fable-5 · thinking max",
+			"openrouter/anthropic/claude-fable-5  max",
 		);
 	});
 

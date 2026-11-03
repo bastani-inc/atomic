@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagent rows, status lines and `Model: ran on …, not the requested …` notices show each model as its raw `provider/id` followed by its reasoning level, `provider/id  high`, instead of `provider/id · thinking high` ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
+
 ## [0.9.61] - 2026-11-02
 
 ### Fixed

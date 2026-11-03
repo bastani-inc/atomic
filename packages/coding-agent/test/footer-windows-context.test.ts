@@ -32,8 +32,8 @@ test("Windows task context preserves native backslashes and the full owner metad
 	try {
 		assert.equal(formatCwdForFooter(cwd, process.env.HOME), "~\\Documents\\projects\\atomic");
 		assert.equal(formatCwdForFooter("D:\\other\\verbatim", process.env.HOME), "D:\\other\\verbatim");
-		const context = `(openai-codex) gpt-6-astra medium • ${join("~", "Documents/projects/atomic")} (main)`;
-		assert.equal(context, "(openai-codex) gpt-6-astra medium • ~\\Documents\\projects\\atomic (main)");
+		const context = `openai-codex/gpt-6-astra  medium • ${join("~", "Documents/projects/atomic")} (main)`;
+		assert.equal(context, "openai-codex/gpt-6-astra  medium • ~\\Documents\\projects\\atomic (main)");
 		assert.deepEqual(footer.render(120), [context, "MCP: 0/1 servers"]);
 	} finally {
 		footer.dispose();

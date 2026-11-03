@@ -35,7 +35,7 @@ for (const explicitModel of [true, false]) {
 		const sibling = () => store.runs()[0]!.stages.find((stage) => stage.name === "sibling")!;
 		const originalSibling = { ...sibling() };
 		try {
-			assert.match(text, /model-a · high/);
+			assert.match(text, /model-a {2}high/);
 			scenario.emit({ type: "thinking_level_changed", level: "low" });
 			scenario.emit({
 				type: "model_fallback_start",
@@ -54,14 +54,14 @@ for (const explicitModel of [true, false]) {
 				const before = invalidations;
 				assert.equal(await scenario.apply(), true);
 				assert.ok(invalidations > before, "applied fallback invalidates the already-mounted graph");
-				assert.match(text, new RegExp(thinking === "off" ? id : `${id} · ${thinking}`));
+				assert.match(text, new RegExp(thinking === "off" ? id : `${id} {2}${thinking}`));
 				if (id !== previous) assert.doesNotMatch(text, new RegExp(previous));
 				else
 					assert.deepEqual(
 						scenario.events.map((event) => event.type),
 						["model_fallback_start", "thinking_level_changed"],
 					);
-				assert.match(text, /unchanged · low/);
+				assert.match(text, /unchanged {2}low/);
 				assert.deepEqual(sibling(), originalSibling);
 				const stage = store.runs()[0]!.stages.find((stage) => stage.name === "affected")!;
 				assert.equal(stage.model, `${provider}/${id}`);
@@ -142,8 +142,8 @@ test("workflow fallback replacements keep explicit model and effort labels throu
 		);
 		assert.equal(result.status, "completed", result.error);
 		assert.deepEqual(attempts, ["openai/model-a", "other/model-b-fast", "openai/model-c"]);
-		assert.match(frames[0]!, /model-a · high/);
-		assert.match(frames[1]!, /model-b-fast · medium/);
+		assert.match(frames[0]!, /model-a {2}high/);
+		assert.match(frames[1]!, /model-b-fast {2}medium/);
 		assert.doesNotMatch(frames[1]!, /model-a/);
 		assert.match(frames[2]!, /model-c/);
 		assert.doesNotMatch(frames[2]!, /model-b-fast/);

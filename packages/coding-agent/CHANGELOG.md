@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Atomic now shows a model by its raw ID followed by the reasoning level it runs at, never by its display name. The ID is exactly what `--model`, `fallbackModels`, `enabledModels` and workflow `model:` fields take. This covers `/model` and its scoped list, the footer, the startup header, the status line after `/model` or Ctrl+P, the per-model thinking settings, the session tree, fallback notices (`Falling back from …`, `Model fallback: …`, `Model: ran on …, not the requested …`), task rows and heartbeats, and subagent and workflow stage labels. A label reads `provider/id  level`, or `id  level` where the provider is already clear, such as the footer with one provider configured. A model without reasoning shows no level. Split on whitespace, a label gives the `provider/id` and `level` that `--model provider/id:level` takes. Display names stay as secondary metadata: `/model` shows a name that adds words the ID lacks in a dim column, and typing a display name in `/model`, its argument completion or `--list-models <search>` still finds the model ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
+- `--list-models` output changed for scripts that parse it. Columns are tab-separated. The `provider` and `model` columns are now one `model` column holding `provider/id`, and the `thinking` yes/no column is now `level`: the reasoning level `--model provider/id` starts that model at, empty for a model without reasoning. The header row is `model`, `level`, `context`, `max-out`, `images` ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
+- `model_fallback_start` session events carry the optional `fromThinkingLevel` and `toThinkingLevel` of reasoning models, so a fallback that only changes the level can say so. `from` and `to` are unchanged `provider/id` strings ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
+
 ## [0.9.70] - 2026-11-03
 
 Alt+Up no longer loses or duplicates a queued message in the default interactive mode, and internal URL expansion in `bash` and `powershell` is now conservative about where it replaces a URL with a path.

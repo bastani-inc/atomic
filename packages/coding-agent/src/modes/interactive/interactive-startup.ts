@@ -1,5 +1,6 @@
 import { ScrollView, VStack } from "@earendil-works/pi-tui";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
+import { formatModelLabel } from "../../core/model-label.ts";
 import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
 import { replaceControlCharacters } from "../../utils/ansi.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -595,13 +596,7 @@ InteractiveModeBase.prototype.formatContextPath = function (this: InteractiveMod
 
 InteractiveModeBase.prototype.getStartupModelLabel = function (this: InteractiveModeBase): string {
 	const model = this.session.state.model;
-	let modelLabel = model?.id ?? "no-model";
-
-	if (model?.reasoning) {
-		modelLabel = `${modelLabel} ${this.session.thinkingLevel || "off"}`;
-	}
-
-	return modelLabel;
+	return model ? formatModelLabel(model, { thinkingLevel: this.session.thinkingLevel || "off" }) : "no-model";
 };
 
 InteractiveModeBase.prototype.getStartupIdentityText = function (
@@ -616,9 +611,7 @@ InteractiveModeBase.prototype.getStartupIdentityText = function (
 	const showMark = supportsAtomicBanner();
 	const wordmark = showMark ? "" : `${atomicWordmark()} `;
 	const title = `${wordmark}${theme.bold(fg("text", appLabel))} ${fg("muted", `v${this.version}`)}`;
-	const model = this.session.state.model;
-	const provider = model ? fg("dim", `(${model.provider})`) : fg("dim", "(no-provider)");
-	const modelLine = `${provider} ${fg("muted", this.getStartupModelLabel())}`;
+	const modelLine = fg("muted", this.getStartupModelLabel());
 	const markLines = showMark ? this.getAtomicAnsiMarkLines(gap) : [];
 	const markWidth = Math.max(0, ...markLines.map(visibleWidth));
 	const showMeta = gap === 0 || (maxWidth !== undefined && maxWidth < markWidth);
