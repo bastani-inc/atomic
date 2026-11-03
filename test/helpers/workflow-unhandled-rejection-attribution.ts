@@ -11,8 +11,8 @@ import { bunExecutable, moduleDir, spawnSyncCollect } from "./runtime.js";
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/workflow-unhandled-rejection-attribution.ts");
 
-/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
-export const REAL_CHILD_TIMEOUT_MS = 120_000;
+/** How long one child process may run: the same bound its test's own explicit budget declares. */
+const CHILD_TIMEOUT_MS = 120_000;
 
 export interface Runtime {
 	readonly name: string;
@@ -50,7 +50,7 @@ export function runFixture(
 	const result = spawnSyncCollect([executable as string, ...runtimeFlags, ...preload, FIXTURE, ...args], {
 		cwd: ROOT,
 		env: { ...process.env, ...env },
-		timeout: REAL_CHILD_TIMEOUT_MS,
+		timeout: CHILD_TIMEOUT_MS,
 	});
 	return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }

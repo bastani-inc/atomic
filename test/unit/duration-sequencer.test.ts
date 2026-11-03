@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { join, relative } from "node:path";
 import { test } from "vitest";
 import { createVitest } from "vitest/node";
-import { parse } from "yaml";
 import { durationDrift, testFileDurations } from "../../scripts/test-file-durations.js";
 import {
 	DurationSequencer,
@@ -95,21 +94,27 @@ const REAL_VITEST_TIMEOUT_MS = 60_000;
 
 const repository = join(import.meta.dirname, "../..");
 
-/** A suite CI shards with the duration sequencer: its job in test.yml and how that job selects the suite's files. */
+/** A suite sharded with the duration sequencer, selected as its CI job selects it. */
 interface ShardedSuite {
-	readonly job: string;
-	/** The Vitest root whose config CI runs, relative to the repository; the repository's own by default. */
+	readonly name: string;
+	/** The Vitest root whose config the suite runs, relative to the repository; the repository's own by default. */
 	readonly root?: string;
 	readonly projects?: readonly string[];
 }
 
 const SHARDED_SUITES: readonly ShardedSuite[] = [
-	{ job: "unit-tests", projects: ["unit"] },
-	{ job: "integration-tests", projects: ["integration", "integration-load-gate"] },
-	{ job: "agent-suite", root: "packages/coding-agent" },
+	{ name: "unit", projects: ["unit"] },
+	{ name: "integration", projects: ["integration", "integration-load-gate"] },
+	{ name: "coding-agent", root: "packages/coding-agent" },
 ];
 
 const INTEGRATION = SHARDED_SUITES[1]!;
+
+/**
+ * Shard counts to split each suite into. CI runs three or four per suite today; every file must run exactly once for
+ * any count, so the check does not follow the workflow's numbers.
+ */
+const SHARD_COUNTS = [2, 3, 4, 5];
 
 async function suiteSpecifications(suite: ShardedSuite, shard: string) {
 	const vitest = await createVitest("test", {
@@ -127,54 +132,44 @@ async function suiteSpecifications(suite: ShardedSuite, shard: string) {
 	}
 }
 
-/** The shard count CI runs a suite's job with: the job's `shard` matrix, which its `--shard=<i>/<n>` must match. */
-async function ciShardCount(job: string): Promise<number> {
-	const workflow = parse(await readText(join(repository, ".github/workflows/test.yml"))) as {
-		jobs: Record<string, { strategy: { matrix: { shard: number[] } }; steps: { run?: string }[] }>;
-	};
-	const { strategy, steps } = workflow.jobs[job]!;
-	const count = strategy.matrix.shard.length;
-	assert.deepEqual(
-		strategy.matrix.shard,
-		Array.from({ length: count }, (_, index) => index + 1),
-	);
-	const sharded = steps.filter((step) => step.run?.includes("--shard="));
-	assert.ok(sharded.length > 0, `${job} passes no --shard`);
-	for (const step of sharded) {
-		for (const [, total] of step.run!.matchAll(/--shard=\$\{\{ matrix\.shard \}\}\/(\d+)/g))
-			assert.equal(Number(total), count, `${job} passes --shard=<i>/${total} but its matrix has ${count} shards`);
-	}
-	return count;
-}
-
 for (const suite of SHARDED_SUITES) {
 	test(
-		`the configured sequencer runs every ${suite.job} file in exactly one of its CI shards`,
+		`the configured sequencer runs every ${suite.name} file in exactly one shard, for any shard count`,
 		async () => {
-			const count = await ciShardCount(suite.job);
-			const shards: string[][] = [];
-			let all: string[] = [];
-			for (let index = 1; index <= count; index++) {
-				const { vitest, specifications } = await suiteSpecifications(suite, `${index}/${count}`);
-				try {
-					const sequencer = new vitest.config.sequence.sequencer(vitest);
-					// The config's own copy of the module, so compare by name rather than by identity.
-					assert.equal(sequencer.constructor.name, DurationSequencer.name);
-					all = specifications.map((specification) => specification.moduleId).sort();
-					shards.push((await sequencer.shard([...specifications])).map((specification) => specification.moduleId));
-				} finally {
-					await vitest.close();
+			for (const count of SHARD_COUNTS) {
+				const shards: string[][] = [];
+				let all: string[] = [];
+				for (let index = 1; index <= count; index++) {
+					const { vitest, specifications } = await suiteSpecifications(suite, `${index}/${count}`);
+					try {
+						const sequencer = new vitest.config.sequence.sequencer(vitest);
+						// The config's own copy of the module, so compare by name rather than by identity.
+						assert.equal(sequencer.constructor.name, DurationSequencer.name);
+						all = specifications.map((specification) => specification.moduleId).sort();
+						shards.push(
+							(await sequencer.shard([...specifications])).map((specification) => specification.moduleId),
+						);
+					} finally {
+						await vitest.close();
+					}
 				}
-			}
-			assert.ok(all.length > count, `${suite.job} globbed no files`);
-			if (suite === INTEGRATION) {
+				assert.ok(all.length > count, `the ${suite.name} suite globbed no files`);
+				if (suite === INTEGRATION) {
+					assert.ok(
+						all.some((file) => file.endsWith("workflow-pool-load-gate.test.ts")),
+						"the load gate is not sharded",
+					);
+				}
 				assert.ok(
-					all.some((file) => file.endsWith("workflow-pool-load-gate.test.ts")),
-					"the load gate is not sharded",
+					shards.every((shard) => shard.length > 0),
+					`a shard of ${count} has no files`,
+				);
+				assert.deepEqual(
+					shards.flat().sort(),
+					all,
+					`with ${count} shards, a file ran in no shard or in more than one`,
 				);
 			}
-			assert.ok(shards.every((shard) => shard.length > 0));
-			assert.deepEqual(shards.flat().sort(), all, "a file ran in no shard or in more than one");
 		},
 		REAL_VITEST_TIMEOUT_MS,
 	);

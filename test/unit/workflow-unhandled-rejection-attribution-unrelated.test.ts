@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import {
-	REAL_CHILD_TIMEOUT_MS,
-	RUNTIMES,
-	report,
-	runFixture,
-} from "../helpers/workflow-unhandled-rejection-attribution.js";
+import { RUNTIMES, report, runFixture } from "../helpers/workflow-unhandled-rejection-attribution.js";
+
+/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
+const REAL_CHILD_TIMEOUT_MS = 120_000;
 
 /**
  * A rejection no live run owns (a caught reason repeated later, an author error after the run's grace period, an

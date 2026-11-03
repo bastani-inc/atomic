@@ -1,11 +1,8 @@
 import { describe, test } from "vitest";
-import {
-	assertStopped,
-	KILLED,
-	REAL_CHILD_TIMEOUT_MS,
-	RUNTIMES,
-	runFixture,
-} from "../helpers/workflow-stop-reason-containment.js";
+import { assertStopped, KILLED, RUNTIMES, runFixture } from "../helpers/workflow-stop-reason-containment.js";
+
+/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
+const REAL_CHILD_TIMEOUT_MS = 120_000;
 
 /**
  * A dropped pool branch's ctx call does not end the process when its run was stopped some other way: by the background

@@ -4,7 +4,10 @@
  * explains the measurement, so the two files' child processes run in parallel.
  */
 import { test } from "vitest";
-import { assertFlat, runBatches, TEST_TIMEOUT_MS } from "../helpers/native-command-output-retention.js";
+import { assertFlat, runBatches } from "../helpers/native-command-output-retention.js";
+
+/** Structural: each test runs one child process, which may take 150 s to run its batches of shell commands. */
+const TEST_TIMEOUT_MS = 180_000;
 
 test.runIf(process.platform !== "win32")(
 	"a process's memory stays flat across closed sessions whose terminal commands printed megabytes (#4215)",

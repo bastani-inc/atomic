@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import {
-	assertStopped,
-	QUIT,
-	REAL_CHILD_TIMEOUT_MS,
-	RUNTIMES,
-	runFixture,
-} from "../helpers/workflow-stop-reason-containment.js";
+import { assertStopped, QUIT, RUNTIMES, runFixture } from "../helpers/workflow-stop-reason-containment.js";
+
+/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
+const REAL_CHILD_TIMEOUT_MS = 120_000;
 
 /** A dropped pool branch's ctx call after `/workflow quit` paused its run does not end the process (#3846). */
 for (const runtime of RUNTIMES) {

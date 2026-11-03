@@ -10,7 +10,6 @@ import {
 	committedWorker,
 	crashAfterFirstStep,
 	observe,
-	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
 	pidAlive,
 	queuedWork,
 	ROOT,
@@ -20,6 +19,9 @@ import {
 	workItems,
 } from "../helpers/public-pool-lifecycle.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+/** Structural: each case starts, crashes and resumes root processes that each fork a pool coordinator and a worker. */
+const PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS = 180_000;
 
 test.skipIf(process.platform === "win32")(
 	"a SIGKILLed public coordinator is replaced by a fresh process that finishes the same root from settings stored on it (#3869)",

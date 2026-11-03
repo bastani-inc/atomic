@@ -9,7 +9,6 @@ import {
 	committedWorker,
 	crashAfterFirstStep,
 	observe,
-	PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS,
 	pidAlive,
 	queuedWork,
 	ROOT,
@@ -19,6 +18,9 @@ import {
 	until,
 } from "../helpers/public-pool-lifecycle.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
+
+/** Structural: each case starts, crashes and resumes root processes that each fork a pool coordinator and a worker. */
+const PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS = 180_000;
 
 /**
  * A crashed public pool root resumes after its workflow's files were edited: an imported helper (with new pool settings)

@@ -3,10 +3,12 @@ import { describe, test } from "vitest";
 import {
 	assertContained,
 	assertExited,
-	REAL_CHILD_TIMEOUT_MS,
 	RUNTIMES,
 	runFixture,
 } from "../helpers/workflow-unhandled-rejection-attribution.js";
+
+/** Structural: each case starts a real Node or Bun child process that loads the workflow engine from source. */
+const REAL_CHILD_TIMEOUT_MS = 120_000;
 
 /**
  * An error from the author's own code in a pool fork (after a ctx call, from a helper module or a fire-and-forget

@@ -11,9 +11,8 @@ const fixture = fileURLToPath(new URL("../fixtures/native-command-output-retenti
 const BATCHES = 5;
 const COMMANDS = 20;
 const BYTES = 1_000_000;
-/** How long the child process may take to run its batches, and each test, which runs one child process. */
+/** How long the child process may take to run its batches. */
 const CHILD_TIMEOUT_MS = 150_000;
-export const TEST_TIMEOUT_MS = 180_000;
 
 interface Batch {
 	readonly owner: number;

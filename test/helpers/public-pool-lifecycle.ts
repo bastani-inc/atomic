@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { decodeStream, readStreamText, sleep, spawnProcess } from "./runtime.js";
 
-export const PUBLIC_POOL_LIFECYCLE_TIMEOUT_MS = 180_000;
 const EVENT_TIMEOUT_MS = 90_000;
 export const STALE_COORDINATOR_AGE_MS = 10 * 60_000;
 export const ROOT = "public-lifecycle-root-run";
