@@ -836,7 +836,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 	 * expensive announcement the bridge holds the next one until four times that announcement's wall time has passed,
 	 * so on a loaded runner a route change can land well after one 25 ms window.
 	 */
-	const routesPublished = async (routes: readonly unknown[], count: number): Promise<void> =>
+	const routesPublished = async (routes: { readonly length: number }, count: number): Promise<void> =>
 		await vi.waitFor(() => assert.ok(routes.length >= count, `${routes.length} of ${count} routes published`), {
 			timeout: ROUTE_PUBLICATION_DEADLINE_MS,
 			interval: 5,
