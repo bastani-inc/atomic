@@ -11,6 +11,11 @@ const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
 /**
  * Component that renders a complete assistant message
  */
+interface MarkdownSlot {
+	kind: "text" | "thinking";
+	markdown: Markdown;
+}
+
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private hideThinkingBlock: boolean;
@@ -24,6 +29,7 @@ export class AssistantMessageComponent extends Container {
 	private renderLatex: boolean;
 	private messageId?: string;
 	private timestamp?: string;
+	private markdownSlots: MarkdownSlot[] = [];
 
 	constructor(
 		message?: AssistantMessage,
@@ -80,6 +86,7 @@ export class AssistantMessageComponent extends Container {
 
 	setOutputPad(padding: number): void {
 		this.outputPad = padding;
+		this.markdownSlots = [];
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
 		}
@@ -102,6 +109,15 @@ export class AssistantMessageComponent extends Container {
 
 		// Clear content container
 		this.contentContainer.clear();
+		const previousSlots = this.markdownSlots;
+		this.markdownSlots = [];
+		const markdownBlock = (kind: MarkdownSlot["kind"], text: string, create: () => Markdown): Markdown => {
+			const slot = previousSlots[this.markdownSlots.length];
+			const markdown = slot?.kind === kind ? slot.markdown : create();
+			markdown.setText(text);
+			this.markdownSlots.push({ kind, markdown });
+			return markdown;
+		};
 
 		// Spacers are added lazily, right before the next visible content block. This puts a blank
 		// line before the first visible block and after each visible thinking run that is followed
@@ -122,16 +138,21 @@ export class AssistantMessageComponent extends Container {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				addVisibleChild(
-					new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
-						transform: createMarkdownTransform(
-							"assistant",
-							this.isStreaming,
-							this.markdownTransformers,
-							this.messageId,
-							this.timestamp,
-						),
-						renderLatex: this.renderLatex,
-					}),
+					markdownBlock(
+						"text",
+						content.text.trim(),
+						() =>
+							new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+								transform: createMarkdownTransform(
+									"assistant",
+									() => this.isStreaming,
+									this.markdownTransformers,
+									this.messageId,
+									this.timestamp,
+								),
+								renderLatex: this.renderLatex,
+							}),
+					),
 				);
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
@@ -151,25 +172,30 @@ export class AssistantMessageComponent extends Container {
 					addVisibleChild(new Text(theme.italic(theme.fg("muted", this.hiddenThinkingLabel)), this.outputPad, 0));
 				} else {
 					addVisibleChild(
-						new Markdown(
+						markdownBlock(
+							"thinking",
 							thinkingBlocks.join("\n\n"),
-							this.outputPad,
-							0,
-							this.markdownTheme,
-							{
-								color: (text: string) => theme.fg("muted", text),
-								italic: true,
-							},
-							{
-								transform: createMarkdownTransform(
-									"assistant-thinking",
-									this.isStreaming,
-									this.markdownTransformers,
-									this.messageId,
-									this.timestamp,
+							() =>
+								new Markdown(
+									thinkingBlocks.join("\n\n"),
+									this.outputPad,
+									0,
+									this.markdownTheme,
+									{
+										color: (text: string) => theme.fg("muted", text),
+										italic: true,
+									},
+									{
+										transform: createMarkdownTransform(
+											"assistant-thinking",
+											() => this.isStreaming,
+											this.markdownTransformers,
+											this.messageId,
+											this.timestamp,
+										),
+										renderLatex: this.renderLatex,
+									},
 								),
-								renderLatex: this.renderLatex,
-							},
 						),
 					);
 				}
