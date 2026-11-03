@@ -3,13 +3,18 @@ export type ShellDialect = "posix" | "powershell";
 /** `paren` is a `$(…)` substitution or a `(` inside one, and `param` a `${…}` parameter expansion. */
 type Nesting = "double" | "paren" | "param" | "backtick";
 
+/** PowerShell delimits strings with typographic quotes too: ‘ ’ ‚ ‛ like `'`, and “ ” „ like `"`. */
+const POWERSHELL_SINGLE_QUOTES = "'\u2018\u2019\u201a\u201b";
+const POWERSHELL_DOUBLE_QUOTES = '"\u201c\u201d\u201e';
+
 interface PendingHeredoc {
 	readonly tag: string;
 	readonly stripTabs: boolean;
 }
 
+/** Whether a word starts at `index`: a shell word ends at whitespace and at every operator character. */
 function isWordBoundary(text: string, index: number): boolean {
-	return index === 0 || /[\s;|&(]/.test(text[index - 1] ?? "");
+	return index === 0 || /[\s;|&()<>]/.test(text[index - 1] ?? "");
 }
 
 function readHeredocTag(text: string, from: number): { tag: string; end: number } | undefined {
@@ -44,19 +49,24 @@ function skipHeredocBodies(text: string, from: number, pending: PendingHeredoc[]
 /**
  * Marks, for each character of `text`, whether it sits in a plain shell word: outside quotes, escapes, command
  * substitutions, heredoc bodies and comments. This is a scanner for that one question, not a shell parser; whatever
- * it cannot classify stays unmarked, so callers leave it unchanged.
+ * it cannot classify stays unmarked, so callers leave it unchanged. Where the shell reads text without word quoting
+ * (arithmetic, array subscripts and compound array assignments in POSIX shells, PowerShell's stop-parsing token)
+ * nothing from there to the end of `text` is plain.
  */
 export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"): Uint8Array {
 	const mask = new Uint8Array(text.length);
-	const escapeChar = dialect === "powershell" ? "`" : "\\";
+	const powershell = dialect === "powershell";
+	const escapeChar = powershell ? "`" : "\\";
+	const singleQuotes = powershell ? POWERSHELL_SINGLE_QUOTES : "'";
+	const doubleQuotes = powershell ? POWERSHELL_DOUBLE_QUOTES : '"';
 	const nesting: Nesting[] = [];
 	const heredocs: PendingHeredoc[] = [];
 	let single = false;
 	for (let index = 0; index < text.length; index++) {
 		const char = text[index] ?? "";
-		const next = text[index + 1];
+		const next = text[index + 1] ?? "";
 		if (single) {
-			if (char === "'") single = false;
+			if (singleQuotes.includes(char)) single = false;
 			continue;
 		}
 		const top = nesting.at(-1);
@@ -64,33 +74,45 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			index++;
 			continue;
 		}
+		if (powershell && top !== "double" && text.startsWith("--%", index)) break;
 		if (char === "\n" && heredocs.length > 0 && top === undefined) {
 			index = skipHeredocBodies(text, index + 1, heredocs.splice(0)) - 1;
 			continue;
 		}
-		if (top !== "double" && char === "#" && isWordBoundary(text, index)) {
+		if (powershell && top !== "double" && char === "<" && next === "#") {
+			const close = text.indexOf("#>", index + 2);
+			if (close < 0) break;
+			index = close + 1;
+			continue;
+		}
+		// PowerShell starts a comment at a `#` after most tokens, not only between words, so every `#` starts one.
+		if (top !== "double" && char === "#" && (powershell || isWordBoundary(text, index))) {
 			while (index < text.length && text[index] !== "\n") index++;
 			index--;
 			continue;
 		}
-		if (dialect === "powershell" && char === "@" && (next === "'" || next === '"')) {
-			const hereString = /^@['"][ \t]*\r?\n/.exec(text.slice(index));
+		if (powershell && char === "@" && next && (singleQuotes.includes(next) || doubleQuotes.includes(next))) {
+			const hereString = /^@.[ \t]*\r?\n/.exec(text.slice(index));
 			if (hereString) {
-				const close = text.indexOf(`\n${next}@`, index + hereString[0].length - 1);
-				index = close < 0 ? text.length : close + 2;
+				// The body ends at a line that starts with a quote of the same kind followed by `@`.
+				const closer = new RegExp(`\\n[${singleQuotes.includes(next) ? singleQuotes : doubleQuotes}]@`, "g");
+				closer.lastIndex = index + hereString[0].length - 1;
+				const close = closer.exec(text);
+				if (!close) break;
+				index = close.index + 2;
 				continue;
 			}
 		}
-		if (char === "'" && top !== "double") {
+		if (singleQuotes.includes(char) && top !== "double") {
 			single = true;
 			continue;
 		}
-		if (char === '"') {
+		if (doubleQuotes.includes(char)) {
 			if (top === "double") nesting.pop();
 			else nesting.push("double");
 			continue;
 		}
-		if (dialect === "posix" && char === "$" && next === "'" && top !== "double") {
+		if (!powershell && char === "$" && next === "'" && top !== "double") {
 			index += 2;
 			while (index < text.length && text[index] !== "'") index += text[index] === "\\" ? 2 : 1;
 			continue;
@@ -100,7 +122,7 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			index++;
 			continue;
 		}
-		if (dialect === "posix" && char === "`") {
+		if (!powershell && char === "`") {
 			if (top === "backtick") nesting.pop();
 			else nesting.push("backtick");
 			continue;
@@ -118,13 +140,24 @@ export function plainShellWordMask(text: string, dialect: ShellDialect = "posix"
 			continue;
 		}
 		if (top !== undefined) continue;
-		if (dialect === "posix" && char === "<" && next === "<" && text[index + 2] !== "<") {
-			const stripTabs = text[index + 2] === "-";
-			const heredoc = readHeredocTag(text, index + (stripTabs ? 3 : 2));
-			if (heredoc) {
-				heredocs.push({ tag: heredoc.tag, stripTabs });
-				index = heredoc.end - 1;
+		if (!powershell) {
+			// `((…))` and `=(…)` hold arithmetic and array subscripts, which expand `$(…)` even inside quotes.
+			if (char === "(" && (next === "(" || text[index - 1] === "=")) break;
+			// Only the test commands `[` and `[[` are words; any other `[` opens a subscript, `$[…]` or a pattern.
+			if (char === "[") {
+				const test = isWordBoundary(text, index) ? /^\[\[?(?=\s)/.exec(text.slice(index)) : null;
+				if (!test) break;
+				index += test[0].length - 1;
 				continue;
+			}
+			if (char === "<" && next === "<" && text[index + 2] !== "<") {
+				const stripTabs = text[index + 2] === "-";
+				const heredoc = readHeredocTag(text, index + (stripTabs ? 3 : 2));
+				if (heredoc) {
+					heredocs.push({ tag: heredoc.tag, stripTabs });
+					index = heredoc.end - 1;
+					continue;
+				}
 			}
 		}
 		// Braces can join a URL to a brace expansion or group, so a token touching one is not a plain word.

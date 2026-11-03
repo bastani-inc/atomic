@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `bash` and `powershell` now expand an internal URL such as `local://` or `artifact://` only where the shell reads the quoted path that replaces it as one literal word. A URL in arithmetic (`((…))`, `$[…]`), an array subscript or compound array assignment, a comment, or directly after a character such as `$` or `[`, and in PowerShell inside typographic quotes (`‘…’`, `“…”`), a block comment (`<#…#>`) or after the stop-parsing token `--%`, now runs unchanged. In those positions the shell could read characters of the resolved path, such as a project directory name containing shell syntax, as code. Pass the filesystem path there instead.
+
 ## [0.9.69] - 2026-11-03
 
 A fresh session can now look up your earlier sessions and workflow runs through `history://`. UI commands such as `/workflow connect` and `/settings` no longer wait for compaction, and a message that cannot be saved now stops the run with an error instead of failing silently.

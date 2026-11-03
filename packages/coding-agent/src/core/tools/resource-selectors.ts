@@ -837,7 +837,9 @@ function shellQuote(value: string, dialect: "posix" | "powershell"): string {
 		: `'${value.replace(/'/g, `'\\''`)}'`;
 }
 const SHELL_INTERNAL_URL = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$)]+/gi;
-const PLAIN_SHELL_INTERNAL_URL = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$();&|<>]+/gi;
+// In shell code a URL must start a word. Glued to `$`, `[`, `@`, a quote or a `#`, the shell may read the
+// replacement as something other than a quoted word, so such a URL stays unexpanded.
+const PLAIN_SHELL_INTERNAL_URL = /(?<=^|[\s;&|(<>=])[a-z][a-z0-9+.-]*:\/\/[^\s'"`$();&|<>]+/gi;
 /**
  * Replaces internal URLs with the paths they resolve to. With `quote` the text is shell code: only URLs that sit
  * wholly in plain shell words are replaced, and each path is shell-quoted. Quoted strings, heredoc bodies, comments,
