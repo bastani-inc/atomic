@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { getDocsPath } from "../src/config.js";
+import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
@@ -411,7 +413,7 @@ describe("buildSystemPrompt", () => {
 			expect(prompt.slice(memory)).not.toContain("Assistant-workflow");
 		});
 
-		test("needs read, mentions search only when it is available, and ships no machine paths", () => {
+		test("needs read, and mentions search only when it is available", () => {
 			const withoutRead = buildSystemPrompt({
 				selectedTools: ["bash"],
 				contextFiles: [],
@@ -435,8 +437,31 @@ describe("buildSystemPrompt", () => {
 			expect(readOnly).toContain("**Session memory**");
 			expect(readOnly).not.toContain("`search` accepts the same URLs");
 			expect(withSearch).toContain("`search` accepts the same URLs");
-			const guidance = withSearch.slice(withSearch.indexOf("**Session memory**"));
-			expect(guidance.slice(0, guidance.indexOf("\n- "))).not.toMatch(/journal\.sqlite|\.atomic\//);
+		});
+
+		test("names where history lives, derived from the agent directory and the project", () => {
+			const agentDir = mkdtempSync(join(tmpdir(), "atomic-prompt-agent-"));
+			const previous = process.env.ATOMIC_CODING_AGENT_DIR;
+			process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
+			try {
+				const project = join(agentDir, "projects", "alpha");
+				const prompt = buildSystemPrompt({ selectedTools: ["read"], contextFiles: [], skills: [], cwd: project });
+				const start = prompt.indexOf("**Session memory**");
+				const guidance = prompt.slice(start, prompt.indexOf("\n- ", start));
+				const workflowsDir = join(dirname(agentDir), "workflows");
+
+				expect(guidance).toContain(join(workflowsDir, "journal.sqlite"));
+				expect(guidance).toContain(getDefaultSessionDirPath(project, agentDir));
+				expect(guidance).toContain(`${join(workflowsDir, "runs")}/<runId>/`);
+				expect(guidance).toContain("`ATOMIC_WORKFLOW_ARTIFACT_DIR` moves them");
+				expect(guidance).toContain("`atomic storage status` shows the store actually in use");
+				expect(guidance.indexOf("history://")).toBeLessThan(guidance.indexOf("journal.sqlite"));
+				expect(guidance).toContain("Only as a fallback");
+			} finally {
+				if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
+				else process.env.ATOMIC_CODING_AGENT_DIR = previous;
+				rmSync(agentDir, { recursive: true, force: true });
+			}
 		});
 	});
 
