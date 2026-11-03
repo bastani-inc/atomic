@@ -9,7 +9,7 @@ import { beforeAll, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
-import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.ts";
+import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
 import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 

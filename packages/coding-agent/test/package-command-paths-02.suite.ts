@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -415,11 +416,11 @@ if(args.includes("install")) process.exit(23);
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(process.stdout, "write").mockImplementation(_createWriteMock((callback) => callback?.()));
 
-		await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+		assert.equal(await main(["update", "--extensions"]), undefined);
 
 		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
-		expect(stdout).toContain("Updated 1 package:");
-		expect(stdout).toContain("  npm:fake-package 1.2.0 -> 1.3.0");
+		assert.ok(stdout.includes("Updated 1 package:"), stdout);
+		assert.ok(stdout.includes("  npm:fake-package 1.2.0 -> 1.3.0"), stdout);
 	});
 
 	it("does not report packages as up to date when npm left an older version installed (upstream #11711)", async () => {
@@ -429,13 +430,13 @@ if(args.includes("install")) process.exit(23);
 			.spyOn(process.stdout, "write")
 			.mockImplementation(_createWriteMock((callback) => callback?.()));
 
-		await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+		assert.equal(await main(["update", "--extensions"]), undefined);
 
 		const progress = stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join("");
 		const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
-		expect(progress).toContain("npm:fake-package is still 1.2.0 (registry reports 1.3.0)");
-		expect(stdout).toContain("No packages were updated, see the warnings above");
-		expect(stdout).not.toContain("up to date");
+		assert.ok(progress.includes("npm:fake-package is still 1.2.0 (registry reports 1.3.0)"), progress);
+		assert.ok(stdout.includes("No packages were updated, see the warnings above"), stdout);
+		assert.ok(!stdout.includes("up to date"));
 	});
 
 	it("does not report packages as up to date in offline mode (upstream #11711)", async () => {
@@ -445,11 +446,11 @@ if(args.includes("install")) process.exit(23);
 		vi.stubEnv("ATOMIC_SKIP_VERSION_CHECK", "1");
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
-			await expect(main(["update", "--extensions"])).resolves.toBeUndefined();
+			assert.equal(await main(["update", "--extensions"]), undefined);
 
 			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stdout).toContain("Skipped package updates (offline mode)");
-			expect(stdout).not.toContain("up to date");
+			assert.ok(stdout.includes("Skipped package updates (offline mode)"), stdout);
+			assert.ok(!stdout.includes("up to date"));
 		} finally {
 			vi.unstubAllEnvs();
 		}

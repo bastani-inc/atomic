@@ -6,6 +6,7 @@
  * - Force-pushed remotes gracefully (currently fails, fix needed)
  */
 
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -164,7 +165,7 @@ describe("DefaultPackageManager git update", () => {
 			});
 			await packageManager.update();
 
-			expect(updated).toEqual([]);
+			assert.deepEqual(updated, []);
 			expect(executedCommands).toContain(
 				"git fetch --prune --no-tags origin +refs/heads/main:refs/remotes/origin/main",
 			);
@@ -191,7 +192,7 @@ describe("DefaultPackageManager git update", () => {
 			await packageManager.update();
 
 			// Verify update succeeded
-			expect(updated).toEqual([`${gitSource} ${oldCommit.slice(0, 7)} -> ${newCommit.slice(0, 7)}`]);
+			assert.deepEqual(updated, [`${gitSource} ${oldCommit.slice(0, 7)} -> ${newCommit.slice(0, 7)}`]);
 			expect(getCurrentCommit(installedDir)).toBe(newCommit);
 			expect(getFileContent(installedDir, "extension.ts")).toBe("// v2");
 		});

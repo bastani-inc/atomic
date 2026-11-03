@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `AgentTool` from `@earendil-works/pi-agent-core` 1.5.0 takes any JSON Schema object as `parameters` and types `params` through `@earendil-works/pi-schema`. Extension code that builds an `AgentTool` directly keeps the static type of TypeBox schemas of the common kinds (String, Number, Integer, Boolean, Null, Literal, Array, Object, Union, Record, Unsafe, Unknown, Any); other kinds such as `Type.Enum`, `Type.Tuple` and `Type.Intersect` now give `params: unknown`, so narrow `params` yourself or use one of the mapped kinds. Tools registered through `registerTool()` and `ToolDefinition` are unchanged
+
 ### Added
 
 - GitHub Copilot discovers models from the account's `/models` catalog, so models the account offers but the built-in catalog lacks appear in `/model`, `--list-models` and workflow catalogs. It works with OAuth and API-key credentials, and the list is cached in `models-store.json` for offline startup. A discovered model keeps the exact advertised ID as its ID and name, is marked `discovered: true`, and can be adjusted with `modelOverrides`; built-in entries keep their curated metadata.
@@ -14,7 +18,7 @@
 - `--list-models` output changed for scripts that parse it. Columns are tab-separated. The `provider` and `model` columns are now one `model` column holding `provider/id`, and the `thinking` yes/no column is now `level`: the reasoning level `--model provider/id` starts that model at, empty for a model without reasoning. The header row is `model`, `level`, `context`, `max-out`, `images` ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 - `model_fallback_start` session events carry the optional `fromThinkingLevel` and `toThinkingLevel` of reasoning models, so a fallback that only changes the level can say so. `from` and `to` are unchanged `provider/id` strings ([#4269](https://github.com/bastani-inc/atomic/issues/4269))
 - Tightened the default system prompt: a shorter preamble, one line for additional tools, one rule for reading the docs before harness changes, and a shorter rule for resolving skill-relative paths (upstream 705d047c)
-- Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core` and `@earendil-works/pi-codemode` to 1.5.0. For extension code that builds an `AgentTool` directly, `AgentTool` now takes any JSON Schema object as `parameters` and types `params` through `@earendil-works/pi-schema`: TypeBox schemas of the common kinds (String, Number, Integer, Boolean, Null, Literal, Array, Object, Union, Record, Unsafe, Unknown, Any) keep their static type, other kinds such as `Type.Enum`, `Type.Tuple` and `Type.Intersect` give `unknown`. Tools registered through `registerTool()` and `ToolDefinition` are unchanged
+- Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core` and `@earendil-works/pi-codemode` to 1.5.0 (see Breaking Changes for the `AgentTool` typing)
 - The Windows guide recommends a terminal by the console host it uses and lists known conhost problems with remedies, and the tmux guide lists the tmux 3.6 color-reply text that can appear in the editor at startup (upstream [#11644](https://github.com/earendil-works/pi/pull/11644), [#11645](https://github.com/earendil-works/pi/pull/11645), [#11647](https://github.com/earendil-works/pi/pull/11647))
 
 ### Fixed
