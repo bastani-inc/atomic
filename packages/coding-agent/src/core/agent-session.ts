@@ -74,6 +74,7 @@ export type {
 	AgentSessionConfig,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	ClearedQueue,
 	CompactionReason,
 	ExtensionBindings,
 	ModelCycleResult,

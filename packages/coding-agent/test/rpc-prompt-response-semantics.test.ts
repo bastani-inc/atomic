@@ -582,7 +582,12 @@ describe("RPC prompt response semantics", () => {
 					type: "response",
 					command: "clear_queue",
 					success: true,
-					data: { steering: type === "steer" ? ["B"] : [], followUp: type === "follow_up" ? ["B"] : [] },
+					data: {
+						steering: type === "steer" ? ["B"] : [],
+						followUp: type === "follow_up" ? ["B"] : [],
+						// The message as typed, for a client that restores it to send again (#4284).
+						typed: { steering: type === "steer" ? ["A"] : [], followUp: type === "follow_up" ? ["A"] : [] },
+					},
 				});
 			});
 		} finally {

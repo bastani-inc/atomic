@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { AuthInteraction } from "@bastani/pi-ai";
 import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentSession, CompactionReason } from "../../core/agent-session.js";
+import type { AgentSession, ClearedQueue, CompactionReason } from "../../core/agent-session.js";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../../core/agent-session-runtime.ts";
 import type {
 	ModelMutationOptions,
@@ -963,13 +963,13 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	 *
 	 * The cached copy empties at once and is restored if the clear fails before any newer `queue_update`.
 	 */
-	clearEngineQueue(): Promise<QueueSnapshot> {
+	clearEngineQueue(): Promise<ClearedQueue> {
 		const { removed } = this.beginQueueClear();
 		return removed;
 	}
 
 	/** Empty the cached queue and ask the engine to clear its own, answering with the engine's removed messages. */
-	private beginQueueClear(): { snapshot: QueueSnapshot; removed: Promise<QueueSnapshot> } {
+	private beginQueueClear(): { snapshot: QueueSnapshot; removed: Promise<ClearedQueue> } {
 		const snapshot: QueueSnapshot = {
 			steering: [...this.steeringMessages],
 			followUp: [...this.followUpMessages],
@@ -985,7 +985,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		this.steeringMessages = [];
 		this.followUpMessages = [];
 		const removed = this.health
-			.trackControlRequest(() => this.client.requestInternal<QueueSnapshot>({ type: "clear_queue" }))
+			.trackControlRequest(() => this.client.requestInternal<ClearedQueue>({ type: "clear_queue" }))
 			.then(
 				(engineRemoved) => {
 					this.settleQueueClear(pendingClear, true);
