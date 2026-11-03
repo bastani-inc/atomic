@@ -597,6 +597,34 @@ describe("AgentSession actionable boundaries", () => {
 		}
 	});
 
+	it("settles without running the tool when no tool_call extension is active and the tool call cannot be saved (#4226)", async () => {
+		let executed = 0;
+		const saved = await createSavedSession({
+			tools: [
+				noopTool(async () => {
+					executed++;
+				}),
+			],
+		});
+		try {
+			saved.harness.setResponses([
+				async () => {
+					await saved.writeAsSecondWriter();
+					return fauxAssistantMessage(fauxToolCall("noop", {}), { stopReason: "toolUse" });
+				},
+				fauxAssistantMessage("must not run"),
+			]);
+
+			await settlesWithin(saved.harness.session.prompt("start"));
+
+			assert.deepEqual(saved.unsavedRoles(), ["assistant"]);
+			assert.equal(executed, 0);
+			assert.equal(saved.harness.faux.state.callCount, 1);
+		} finally {
+			await saved.cleanup();
+		}
+	});
+
 	it("stops a tool loop whose tool result cannot be saved before the next provider request (#4226)", async () => {
 		const saved = await createSavedSession({
 			tools: [

@@ -11,14 +11,12 @@ import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 export function _installAgentToolHooks(this: AgentSession): void {
 	this.agent.beforeToolCall = async ({ toolCall, args }) => {
 		const runner = this._extensionRunner;
-		// #4226: a tool call of a run with an unsaved message never runs.
+		// #4226: a tool call never runs before its assistant message is saved, or once a save of the run failed.
+		await this._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
 		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;
 		}
-
-		await this._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
-		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 
 		try {
 			const result = await runner.emitToolCall({
