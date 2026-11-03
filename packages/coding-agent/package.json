@@ -109,7 +109,7 @@
     "hosted-git-info": "9.0.3",
     "ignore": "7.0.8",
     "jiti": "2.7.0",
-    "linkedom": "^0.18.13",
+    "linkedom": "^0.18.15",
     "lru-cache": "11.5.3",
     "markit-ai": "0.5.3",
     "minimatch": "11.0.4",
