@@ -56,6 +56,20 @@ const PENDING_STAGE_ASK_REFUSAL =
 	"Cannot ask a workflow stage whose session has not initialized. Use send; Atomic will queue the message until the stage session initializes.";
 const ROUTE_ANNOUNCEMENT_BATCH_MS = 25;
 const ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE = 0.2;
+/**
+ * The longest a route change waits for its batch, however slow announcing has been, so that throttling cannot hide a
+ * route change for long. A batch waits four times the cost of an announcement to keep announcing to a fifth of the
+ * event loop; a change to one run of a 1,000-run invocation costs about 30 ms to announce and the same change at 480
+ * runs about 8 ms, which waits 120 ms and 32 ms, so the share holds at those sizes. Only an announcement over
+ * 62.5 ms is held back for less than its share asks.
+ */
+const ROUTE_ANNOUNCEMENT_MAX_WAIT_MS = 250;
+/**
+ * How many recent announcements the wait is sized from. The median of three ignores one slow announcement, such as a
+ * garbage collection pause or a preempted thread, which says nothing about what announcing costs, and follows
+ * two slow announcements in three.
+ */
+const ROUTE_ANNOUNCEMENT_COST_SAMPLES = 3;
 
 interface WorkflowEventSurface {
 	readonly events?: {
@@ -430,7 +444,14 @@ export function registerPendingStageIntercomBridge(
 	let announcementPending = false;
 	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
 	let announcedAt = Number.NEGATIVE_INFINITY;
-	let announcementCost = 0;
+	/** The wall times of the last few announcements, oldest first. */
+	const announcementCosts: number[] = [];
+	/** Their median; an announcement not yet recorded counts as free, so one sample never sets it. */
+	const typicalAnnouncementCost = (): number => {
+		const costs = [...announcementCosts];
+		while (costs.length < ROUTE_ANNOUNCEMENT_COST_SAMPLES) costs.push(0);
+		return costs.sort((left, right) => left - right)[Math.floor(costs.length / 2)] ?? 0;
+	};
 	/** Runs changed since the last announcement; undefined once a change was not scoped to runs. */
 	let changedRunIds: Set<string> | undefined = new Set();
 	const announceNow = (everything = false): void => {
@@ -448,7 +469,8 @@ export function registerPendingStageIntercomBridge(
 			throw error;
 		}
 		announcedAt = performance.now();
-		announcementCost = announcedAt - started;
+		announcementCosts.push(announcedAt - started);
+		if (announcementCosts.length > ROUTE_ANNOUNCEMENT_COST_SAMPLES) announcementCosts.shift();
 	};
 	function announceIfPending(): void {
 		if (announcementPending) announceNow();
@@ -469,16 +491,20 @@ export function registerPendingStageIntercomBridge(
 		}
 	};
 	// Store invalidations are batched: a burst becomes one announcement after a short window, stretched when needed
-	// so announcing stays under a fixed share of the event loop. The batch carries the runs its invalidations named,
-	// so a change to one run announces only its invocation's routes. Readiness, flush and refresh announce a pending
-	// batch first.
+	// so announcing stays under a fixed share of the event loop, by the typical cost of recent announcements and for
+	// at most the cap. The batch carries the runs its invalidations named, so a change to one run announces only its
+	// invocation's routes. Readiness, flush and refresh announce a pending batch first.
 	const scheduleAnnouncement = (changes?: readonly StoreRunChange[]): void => {
 		if (disposed) return;
 		if (changes === undefined) changedRunIds = undefined;
 		else if (changedRunIds !== undefined) for (const change of changes) changedRunIds.add(change.runId);
 		if (announcementTimer !== undefined) return;
-		const idle = announcementCost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - announcementCost;
-		const wait = Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now());
+		const cost = typicalAnnouncementCost();
+		const idle = cost / ROUTE_ANNOUNCEMENT_EVENT_LOOP_SHARE - cost;
+		const wait = Math.min(
+			ROUTE_ANNOUNCEMENT_MAX_WAIT_MS,
+			Math.max(ROUTE_ANNOUNCEMENT_BATCH_MS, announcedAt + idle - performance.now()),
+		);
 		announcementPending = true;
 		announcementTimer = setTimeout(announceBatch, wait);
 		announcementTimer.unref?.();
