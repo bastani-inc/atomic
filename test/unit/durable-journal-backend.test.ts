@@ -1261,7 +1261,12 @@ for (const change of ["late registration", "external deletion"] as const) {
 		const fresh = await open(path);
 		assert.equal(fresh.getWorkflow("run"), undefined);
 		assert.deepEqual(await observer.prepareWorkflowCatalog(), await fresh.prepareWorkflowCatalog());
-		assert.deepEqual(await fresh.prepareWorkflowCatalog(), { resumable: [], completed: [], inspectableIds: [] });
+		assert.deepEqual(await fresh.prepareWorkflowCatalog(), {
+			resumable: [],
+			completed: [],
+			completedAll: [],
+			inspectableIds: [],
+		});
 		const db = new JournalTestDatabase(path);
 		try {
 			for (const table of [JOURNAL_TABLES.runs, JOURNAL_TABLES.events]) {
@@ -1549,7 +1554,12 @@ test("direct deletion clears all cached state when another deletion wins acquisi
 	assert.deepEqual(await observer.journal.listRuns(), []);
 	assert.deepEqual(await entries(observer.journal), []);
 	assert.equal(await observer.journal.leaseState("run"), undefined);
-	assert.deepEqual(await observer.prepareWorkflowCatalog(), { resumable: [], completed: [], inspectableIds: [] });
+	assert.deepEqual(await observer.prepareWorkflowCatalog(), {
+		resumable: [],
+		completed: [],
+		completedAll: [],
+		inspectableIds: [],
+	});
 	assert.equal((await open(path)).getWorkflow("run"), undefined);
 });
 
