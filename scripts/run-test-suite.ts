@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, platform, release, totalmem } from "node:os";
 import { basename, resolve } from "node:path";
+import { recordedDurations, UNKNOWN_FILE_MS } from "../test/helpers/duration-sequencer.js";
 import { spawnProcess } from "../test/helpers/runtime.js";
 import {
 	type BudgetedSample,
@@ -11,6 +12,7 @@ import {
 	resolveDefaultTimeoutMs,
 	WARN_RATIO,
 } from "./test-duration-guard.js";
+import { type DurationDrift, durationDrift, type VitestJsonReport } from "./test-file-durations.js";
 
 interface Options {
 	label: string;
@@ -206,6 +208,43 @@ async function reportDurations(result: RunResult, options: Options, name: string
 	return 0;
 }
 
+/**
+ * Advisory, never a failure: the files of this run whose measured duration strayed far from the record the shards are
+ * balanced by (test/helpers/test-file-durations.json). The sequencer weighs a file the record lacks as unknown and a
+ * file that grew at its old duration, so the shard that draws one runs long until the record is refreshed. A new test
+ * file without a recorded duration is expected; only one far heavier than an unknown file's weight is named.
+ */
+function reportDurationDrift(report: string | undefined, options: Options): void {
+	if (report === undefined) return;
+	let drifted: DurationDrift[];
+	try {
+		drifted = durationDrift(JSON.parse(report) as VitestJsonReport, recordedDurations);
+	} catch {
+		return;
+	}
+	if (drifted.length === 0) return;
+	const seconds = (ms: number) => `${(ms / 1000).toFixed(0)} s`;
+	const recorded = (drift: DurationDrift) =>
+		drift.recordedMs === undefined ? `none (weighed as ${seconds(UNKNOWN_FILE_MS)})` : seconds(drift.recordedMs);
+	const refresh = 'refresh test/helpers/test-file-durations.json from recent CI runs (docs/ci.md, "Sharded suites")';
+	console.error(
+		`::warning title=Stale test durations: ${options.label}::${drifted.length} file(s) took far longer or shorter than the duration record says, so this suite's shards may be unbalanced: ${drifted
+			.slice(0, 5)
+			.map((drift) => `${drift.path} took ${seconds(drift.measuredMs)}, recorded ${recorded(drift)}`)
+			.join("; ")}. To rebalance, ${refresh}.`,
+	);
+	appendSummary(
+		[
+			`### ⚠️ Stale test durations: ${options.label}`,
+			`These files took far longer or shorter than the duration record the shards are balanced by. Advisory; to rebalance, ${refresh}.`,
+			"",
+			"| File | Measured | Recorded |",
+			"|---|---|---|",
+			...drifted.map((drift) => `| ${drift.path} | ${seconds(drift.measuredMs)} | ${recorded(drift)} |`),
+		].join("\n"),
+	);
+}
+
 const options = parseArgs();
 const name = safeName(options.label);
 const logPath = resolve(options.diagnosticsDir, `${name}.log`);
@@ -221,4 +260,5 @@ if (result.code !== 0) {
 	console.error(`\n${debug}\n`);
 }
 const guard = await reportDurations(result, options, name);
+reportDurationDrift(readableReport(result.report), options);
 process.exit(result.code !== 0 ? result.code : guard);

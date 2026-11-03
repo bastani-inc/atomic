@@ -40,7 +40,8 @@ export type FileDurations = Readonly<Record<string, number>>;
 export type DurationRecord = Readonly<Record<"linux" | "win32", FileDurations>>;
 
 const record: DurationRecord = JSON.parse(readFileSync(new URL("./test-file-durations.json", import.meta.url), "utf8"));
-const recordedDurations = process.platform === "win32" ? record.win32 : record.linux;
+/** This OS's recorded durations: the weights this process shards and orders by. */
+export const recordedDurations: FileDurations = process.platform === "win32" ? record.win32 : record.linux;
 
 function weightOf(path: string, durations: FileDurations): number {
 	return (durations[path] ?? UNKNOWN_FILE_MS) + FILE_OVERHEAD_MS;
@@ -50,8 +51,18 @@ function weightOf(path: string, durations: FileDurations): number {
  * The files of shard `index` (1-based) of `count`. A shard's expected wall time is its longest file or its total
  * spread over `SHARD_WORKERS`, whichever is larger, plus its `serial` files one after another: those run alone after
  * the rest (a project with a later `sequence.groupOrder`). Each file, heaviest first, goes to the shard whose expected
- * wall time would be lowest with it (the lighter total on a tie, then the lower-numbered shard). Ties between files
- * break by path, so the result depends only on the set of paths, not on the order they arrive in.
+ * wall time would be lowest with it, then to the least loaded (total over the workers, plus serial files), then to the
+ * lower-numbered shard. Ties between files break by path, so the result depends only on the set of paths, not on the
+ * order they arrive in.
+ *
+ * No assignment finishes before its heaviest file, nor before every shard's balanced share of the suite, so a shard
+ * expected to finish within the larger of the two counts as finishing at it. Without that floor, a heavy file that fit
+ * in any shard's share went to the shard whose longest file was shortest, so one shard drew most of a suite's heavy
+ * files and ran them side by side: they each start child processes, and competing for the runner's CPUs they ran about
+ * half again slower (the Windows unit shard that drew eight of the twelve). And the shard holding a file longer than
+ * every share kept it alone, its other workers idle, while the remaining shards took every process-heavy file between
+ * them (a Windows integration shard of seventeen such files timed a test out). With it, files go to the least loaded
+ * shard in turn until a shard would run past the floor.
  */
 export function shardByDuration(
 	paths: readonly string[],
@@ -65,11 +76,25 @@ export function shardByDuration(
 	);
 	const shards = Array.from({ length: count }, () => ({ paths: [] as string[], total: 0, longest: 0, serial: 0 }));
 	type Shard = (typeof shards)[number];
-	/** The shard's expected wall time with one more file of `weight`. */
+	let parallelTotal = 0;
+	let serialTotal = 0;
+	let heaviest = 0;
+	for (const path of paths) {
+		const weight = weightOf(path, durations);
+		if (serial.has(path)) serialTotal += weight;
+		else parallelTotal += weight;
+		heaviest = Math.max(heaviest, weight);
+	}
+	const floor = Math.max(heaviest, (parallelTotal / SHARD_WORKERS + serialTotal) / count);
+	/** The shard's expected wall time with one more file of `weight`, at least the floor. */
 	const wallWith = (shard: Shard, weight: number, isSerial: boolean) =>
-		isSerial
-			? Math.max(shard.longest, shard.total / SHARD_WORKERS) + shard.serial + weight
-			: Math.max(shard.longest, weight, (shard.total + weight) / SHARD_WORKERS) + shard.serial;
+		Math.max(
+			floor,
+			isSerial
+				? Math.max(shard.longest, shard.total / SHARD_WORKERS) + shard.serial + weight
+				: Math.max(shard.longest, weight, (shard.total + weight) / SHARD_WORKERS) + shard.serial,
+		);
+	const load = (shard: Shard) => shard.total / SHARD_WORKERS + shard.serial;
 	for (const path of ordered) {
 		const weight = weightOf(path, durations);
 		const isSerial = serial.has(path);
@@ -78,7 +103,7 @@ export function shardByDuration(
 			const a = shards[candidate]!;
 			const b = shards[best]!;
 			const difference = wallWith(a, weight, isSerial) - wallWith(b, weight, isSerial);
-			if (difference < 0 || (difference === 0 && a.total + a.serial < b.total + b.serial)) best = candidate;
+			if (difference < 0 || (difference === 0 && load(a) < load(b))) best = candidate;
 		}
 		const shard = shards[best]!;
 		shard.paths.push(path);
