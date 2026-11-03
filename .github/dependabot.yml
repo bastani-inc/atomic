@@ -71,6 +71,7 @@ updates:
           - dependency-name: "typescript"
           - dependency-name: "yaml"
           # pi packages/ai (typebox is also pinned via a root `overrides` entry)
+          - dependency-name: "@earendil-works/pi-schema"
           - dependency-name: "@earendil-works/pi-telemetry"
           - dependency-name: "@anthropic-ai/sdk"
           - dependency-name: "@aws-sdk/client-bedrock-runtime"
