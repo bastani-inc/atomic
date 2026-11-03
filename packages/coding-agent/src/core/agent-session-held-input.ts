@@ -8,6 +8,11 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 export interface HeldInput {
 	readonly text: string;
 	readonly lane: "steer" | "followUp";
+	/**
+	 * Waits for earlier held input. Input sent from inside an input hook does not: the hook may await it, and it
+	 * would otherwise wait for the hook's own message. It still waits for compaction.
+	 */
+	readonly ordered: boolean;
 	/** Shown in the queue view and cancellable until the input stops waiting. */
 	waiting: boolean;
 	/** Set by `clearQueue()`: the text went back to the caller and must not be sent. */
@@ -33,10 +38,16 @@ export function hasHeldInput(session: AgentSession): boolean {
 	return (heldInputs.get(session)?.length ?? 0) > 0;
 }
 
-export function registerHeldInput(session: AgentSession, text: string, lane: "steer" | "followUp"): HeldInput {
+export function registerHeldInput(
+	session: AgentSession,
+	text: string,
+	lane: "steer" | "followUp",
+	ordered: boolean,
+): HeldInput {
 	const entry: HeldInput = {
 		text,
 		lane,
+		ordered,
 		waiting: true,
 		cancelled: false,
 		admitted: Promise.withResolvers<void>(),
@@ -49,7 +60,9 @@ export function registerHeldInput(session: AgentSession, text: string, lane: "st
 	return entry;
 }
 
+/** Held input this one waits for: everything registered before it, unless it is unordered. */
 export function earlierHeldInputs(session: AgentSession, entry: HeldInput): HeldInput[] {
+	if (!entry.ordered) return [];
 	const entries = heldInputs.get(session) ?? [];
 	const index = entries.indexOf(entry);
 	return index <= 0 ? [] : entries.slice(0, index);

@@ -324,6 +324,42 @@ for (const wiring of ["local", "isolated"] as const) {
 	});
 }
 
+describe("isolated host hand-off during manual compaction", () => {
+	test("restores a handed-off message the engine has not listed yet on Alt+Up and sends nothing (#4251)", async () => {
+		const invocations: string[] = [];
+		const rig = await createCompactingRig("isolated", invocations);
+		const releaseCompaction = holdCompaction(rig);
+		const compaction = startCompaction(rig, "manual");
+		await waitFor("the host to observe compaction", () => rig.host.session.isCompacting);
+
+		let restored: string | undefined;
+		rig.host.session.subscribe((event) => {
+			if (restored !== undefined || event.type !== "queue_update") return;
+			if (!event.steering.includes("typed A") || event.steering.includes("typed B")) return;
+			// Alt+Up lands after the engine listed A and before it took B.
+			rig.host.restoreQueuedMessagesToEditor();
+			restored = rig.host.editor.getText();
+		});
+		const submit = (text: string) => rig.host.defaultEditor.onSubmit?.(text);
+		await submit("typed A");
+		await submit("typed B");
+		await submit("/workflow connect");
+		await waitFor("Alt+Up between the engine's queue updates", () => restored !== undefined);
+		assert.ok(restored?.includes("typed A"), restored);
+		assert.ok(restored?.includes("typed B"), restored);
+		await waitFor("the engine to give the held messages back", () =>
+			isDeepEqual(rig.engine.session.getSteeringMessages(), []),
+		);
+
+		releaseCompaction();
+		await compaction;
+		await waitFor("the host to observe the end of compaction", () => !rig.host.session.isCompacting);
+		await sleep(DUPLICATE_DELIVERY_SETTLE_MS);
+		assert.equal(providerRequests(rig), 0);
+		assert.deepEqual(getUserTexts(rig.engine), []);
+	});
+});
+
 describe("engine command catalog", () => {
 	function engineHost(commands: RpcSlashCommand[]): { session: object; runtimeHost: IsolatedInteractiveRuntime } {
 		const runtimeHost = Object.create(IsolatedInteractiveRuntime.prototype) as IsolatedInteractiveRuntime;

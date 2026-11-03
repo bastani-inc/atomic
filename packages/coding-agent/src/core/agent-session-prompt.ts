@@ -170,11 +170,9 @@ function registerInputForCompaction(
 	options: PromptOptions | undefined,
 	expandPromptTemplates: boolean,
 ): HeldInput | undefined {
-	// An input hook may await the input it submits, so that input cannot wait behind the hook's own message.
-	if (isInsideInputHook()) return undefined;
 	if (!session.isCompacting && !hasHeldInput(session)) return undefined;
 	if (expandPromptTemplates && isExtensionCommand(session, text)) return undefined;
-	return registerHeldInput(session, text, options?.streamingBehavior ?? "steer");
+	return registerHeldInput(session, text, options?.streamingBehavior ?? "steer", !isInsideInputHook());
 }
 
 /**
@@ -256,12 +254,21 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) return owner.prompt(text, options);
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
-	const preflightResult = options?.preflightResult;
+	let preflightReported = false;
+	// Reported once: input held while the session compacts is accepted as queued before it is admitted.
+	const preflightResult = (success: boolean, disposition?: PromptDisposition): void => {
+		if (preflightReported) return;
+		preflightReported = true;
+		options?.preflightResult?.(success, disposition);
+	};
 	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 	let preparingRun = false;
 	const admission = reserveAdmissionForQueuedPrompt(this, text, options);
 	const held = registerInputForCompaction(this, text, options, expandPromptTemplates);
+	// The sender learns at once that the session took the input, so an interactive host can stop
+	// showing its own copy: the session lists the input as queued from here on.
+	if (held && this.isCompacting) preflightResult(true, "queued");
 
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
