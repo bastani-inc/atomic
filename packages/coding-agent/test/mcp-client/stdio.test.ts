@@ -137,15 +137,15 @@ describe("StdioTransport", () => {
 			});
 			let closeEvents = 0;
 			transport.onClose(() => closeEvents++);
-			await transport.start();
 			let helper: number | undefined;
-			await waitFor(() => {
-				const match = /helper (\d+)/.exec(transport.stderr);
-				if (match) helper = Number(match[1]);
-				return helper !== undefined;
-			});
-			assert.equal(typeof helper, "number");
 			try {
+				await transport.start();
+				await waitFor(() => {
+					const match = /helper (\d+)/.exec(transport.stderr);
+					if (match) helper = Number(match[1]);
+					return helper !== undefined;
+				});
+				assert.equal(typeof helper, "number");
 				const closed = await Promise.race([
 					transport.close().then(() => true),
 					new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
@@ -153,9 +153,11 @@ describe("StdioTransport", () => {
 				assert.equal(closed, true);
 				assert.equal(closeEvents, 1);
 			} finally {
-				try {
-					process.kill(helper as number, "SIGKILL");
-				} catch {}
+				if (helper !== undefined) {
+					try {
+						process.kill(helper, "SIGKILL");
+					} catch {}
+				}
 			}
 		},
 		PROCESS_TREE_TEST_TIMEOUT_MS,
