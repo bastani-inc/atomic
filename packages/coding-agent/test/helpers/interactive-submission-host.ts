@@ -63,6 +63,8 @@ export interface InteractiveSubmissionHost {
 	ensureDeferredStartupComplete: () => Promise<void>;
 	renderDeferredUserInput: (text: string) => void;
 	discardDeferredRenderedUserInput: (text: string) => void;
+	expectStartedUserInput: (text: string, shownBefore: number) => void;
+	userMessagesShownBySession: number;
 	flushPendingBashComponents: () => void;
 	updateEditorBorderColor: () => void;
 	isExtensionCommand: (text: string) => boolean;
@@ -171,6 +173,8 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 		discardDeferredRenderedUserInput(value) {
 			host.discarded.push(value);
 		},
+		expectStartedUserInput() {},
+		userMessagesShownBySession: 0,
 		flushPendingBashComponents() {},
 		updateEditorBorderColor() {},
 		isExtensionCommand: (value) => Reflect.get(InteractiveMode.prototype, "isExtensionCommand").call(host, value),
@@ -244,6 +248,8 @@ export function showUserMessagesInChat(host: InteractiveSubmissionHost): () => s
 		"renderDeferredUserInput",
 		"consumeDeferredRenderedUserInput",
 		"discardDeferredRenderedUserInput",
+		"expectStartedUserInput",
+		"showSessionUserMessage",
 	] as const) {
 		const method: (this: InteractiveSubmissionHost, ...args: never[]) => unknown = Reflect.get(
 			InteractiveMode.prototype,

@@ -325,6 +325,15 @@ export class InteractiveModeBase {
 
 	deferredRenderedUserInputComponents = new Map<string, Component[][]>();
 
+	/**
+	 * The echo of the submission that started the latest run, until that run shows its message. The run begins with the
+	 * message, which may carry other text than the echo when an `input` hook rewrote it (#4277).
+	 */
+	startedDeferredUserInput: string | undefined = undefined;
+
+	/** Count of user messages the session showed that no echo stood for; see `expectStartedUserInput`. */
+	userMessagesShownBySession = 0;
+
 	loadingAnimation: Loader | AtomicWorkingLoader | undefined = undefined;
 
 	workingMessage: string | undefined = undefined;
