@@ -120,11 +120,26 @@ async function pipelinedWorker(name: string, fault: Fault) {
 					.filter((line) => line !== "")
 					.map((line) => JSON.parse(line) as { readonly label: string; readonly outcome: string })
 			: [];
-	await until("the first commit is in its transaction", () => events.includes("start first-operation"));
-	await until(
-		"the coordinator has scheduled both commit requests",
-		() => scheduled.mock.calls.filter(([lane]) => lane === "commits").length === 2,
-	);
+	/** Closes the pool and removes the run; a cleanup failure never replaces the test's own. */
+	const close = async (failure: Error | undefined) => {
+		hold.resolve();
+		const closed = await Promise.allSettled([pool.close()]);
+		await execution;
+		await backend.close();
+		removeTempDirectory(directory);
+		if (failure !== undefined) throw failure;
+		for (const result of closed) if (result.status === "rejected") throw result.reason;
+	};
+	try {
+		await until("the first commit is in its transaction", () => events.includes("start first-operation"));
+		await until(
+			"the coordinator has scheduled both commit requests",
+			() => scheduled.mock.calls.filter(([lane]) => lane === "commits").length === 2,
+		);
+	} catch (error) {
+		// A setup that never reaches its state releases the held commit and closes the worker and journal before failing.
+		await close(error as Error);
+	}
 	const pid = pool.workerPids[0]!;
 	return {
 		events,
@@ -133,16 +148,7 @@ async function pipelinedWorker(name: string, fault: Fault) {
 		until,
 		receivedReplies,
 		releaseFirst: () => hold.resolve(),
-		/** Closes the pool and removes the run; a cleanup failure never replaces the test's own. */
-		async close(failure: Error | undefined) {
-			hold.resolve();
-			const closed = await Promise.allSettled([pool.close()]);
-			await execution;
-			await backend.close();
-			removeTempDirectory(directory);
-			if (failure !== undefined) throw failure;
-			for (const result of closed) if (result.status === "rejected") throw result.reason;
-		},
+		close,
 	};
 }
 
