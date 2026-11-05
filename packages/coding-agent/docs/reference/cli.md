@@ -64,7 +64,7 @@ atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <d
 | `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
 | `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
 
-`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`, and takes `<provider>` the same way. Environment variables and `models.json` config are unchanged. It exits with status `0` when nothing is stored, so it is safe to repeat. Credentials of an extension provider are removed by provider ID.
+`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`, and takes `<provider>` the same way. Environment variables and `models.json` config are unchanged. For a built-in or `models.json` provider it exits with status `0` when nothing is stored, so it is safe to repeat. Extensions are not loaded, so an extension provider's credentials are removed by its provider ID; once none are stored, that ID is reported as an unknown provider with exit status `1`, like a mistyped name.
 
 `atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider when one is found, credential kind, and any reason. By default, a check never emits credential material.
 

@@ -95,11 +95,15 @@ describe("atomic auth logout", () => {
 		assert.equal(logout.mock.calls.length, 0);
 	});
 
-	test("removes credentials of providers that are not loaded, matched by id", async () => {
-		const { credentials, lines, run } = await setup({ "extension-provider": oauthCredential });
+	test("removes credentials of providers that are not loaded, matched by id, and then no longer knows the id", async () => {
+		const { credentials, lines, errors, run } = await setup({ "extension-provider": oauthCredential });
 		assert.equal(await run(["extension-provider"]), 0);
 		assert.deepEqual(lines, ["Logged out of extension-provider."]);
 		assert.equal(await credentials.read("extension-provider"), undefined);
+
+		// Extensions are not loaded, so a repeat cannot tell the id from a mistyped name.
+		assert.equal(await run(["extension-provider"]), 1);
+		assert.deepEqual(errors, ['Unknown provider "extension-provider".', "Stored credentials: none"]);
 	});
 
 	test("rejects a name shared by several providers and removes only the provider named by its id", async () => {
