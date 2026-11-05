@@ -900,7 +900,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
+Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set queue with a \`notInKnownSet\` warning and settle undeliverable at terminal only if never delivered. Use \`ask\` only on live targets.
 For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
 Usage:

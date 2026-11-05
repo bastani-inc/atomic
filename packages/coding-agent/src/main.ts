@@ -374,6 +374,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		await exitAfterCommand();
 		return;
 	}
+	if (args[0] === "team") {
+		const { runTeamCommand } = await import("./cli/team-command.js");
+		process.exitCode = await runTeamCommand(args.slice(1), { cwd, agentDir });
+		await exitAfterCommand();
+		return;
+	}
 	if (args[0] === "intercom") {
 		const { runIntercomCommand } = await import("./cli/intercom-command.js");
 		process.exitCode = await runIntercomCommand(args.slice(1), { agentDir });
@@ -555,6 +561,10 @@ export async function main(argv: string[], options?: MainOptions) {
 	// starts and is never subject to project trust.
 	setCliStorageSelection(parsed.storage, cwd);
 	selectProcessStorage("journal", agentDir, cwd);
+	if (engineEnv.child !== "1") {
+		const { assertTeamAdapterInstalled } = await import("./core/storage/team.js");
+		await assertTeamAdapterInstalled(agentDir);
+	}
 	// The Intercom broker loads the shared storage adapter in its own process and only logs a failure, so a session
 	// warns when this executable cannot load it. Load-only, concurrent with startup; the engine child leaves it to its host.
 	const globalStorage = bootstrapSettingsManager.getGlobalSettings().storage;

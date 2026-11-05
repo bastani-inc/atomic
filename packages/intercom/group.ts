@@ -94,18 +94,14 @@ interface HomeGroupContext {
 }
 
 /**
- * Resolve a session's static home intercom group with precedence (most specific first):
- * admitted subagentPolicy.intercomGroup > orchestrationContext.intercomGroup >
- * env ATOMIC_INTERCOM_GROUP (also PI_INTERCOM_GROUP legacy) > config.json "group" > "default".
- * Always returns a concrete normalized string.
- *
- * Runtime join entries are deliberately not read here. They are child-inheritance state, not
- * home state, so a reconnect cannot turn the joined group into the destination of `leave`.
+ * The home group a session chose explicitly, with precedence (most specific first): admitted
+ * subagentPolicy.intercomGroup > orchestrationContext.intercomGroup > env ATOMIC_INTERCOM_GROUP (also
+ * PI_INTERCOM_GROUP legacy) > config.json "group". `undefined` when none applies.
  */
-export function resolveHomeGroup(
+export function explicitHomeGroup(
 	config: { group?: string } | undefined,
 	ctx?: HomeGroupContext | null,
-): string {
+): string | undefined {
 	const fromPolicy = ctx?.subagentPolicy?.intercomGroup;
 	if (typeof fromPolicy === "string" && fromPolicy.trim().length > 0) {
 		return normalizeGroup(fromPolicy);
@@ -121,7 +117,23 @@ export function resolveHomeGroup(
 	if (config && typeof config.group === "string" && config.group.trim().length > 0) {
 		return normalizeGroup(config.group);
 	}
-	return DEFAULT_GROUP;
+	return undefined;
+}
+
+/**
+ * Resolve a session's static home intercom group: its {@link explicitHomeGroup}, else the `fallback` group
+ * (the project group while multi-node routing is on), else "default". Always returns a concrete normalized string.
+ * `fallback` runs only when no explicit group applies.
+ *
+ * Runtime join entries are deliberately not read here. They are child-inheritance state, not
+ * home state, so a reconnect cannot turn the joined group into the destination of `leave`.
+ */
+export function resolveHomeGroup(
+	config: { group?: string } | undefined,
+	ctx?: HomeGroupContext | null,
+	fallback?: () => string | undefined,
+): string {
+	return explicitHomeGroup(config, ctx) ?? normalizeGroup(fallback?.());
 }
 
 /**

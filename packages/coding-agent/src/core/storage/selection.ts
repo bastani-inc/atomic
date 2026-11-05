@@ -1,6 +1,17 @@
 import type { SqliteDatabase } from "./database.js";
 import { StorageConfigError } from "./errors.js";
 import type { AdapterOptions, SecretRef, StorageSelection } from "./provider.js";
+import { inMemorySecret } from "./secret.js";
+
+/** The same references, with every `{ value }` secret in the form that serializes as `[redacted]`. */
+function redactInMemorySecrets(secrets: Readonly<Record<string, SecretRef>>): Readonly<Record<string, SecretRef>> {
+	return Object.fromEntries(
+		Object.entries(secrets).map(([name, ref]) => [
+			name,
+			"value" in ref && !Object.hasOwn(ref, "toJSON") ? inMemorySecret(ref.value) : ref,
+		]),
+	);
+}
 
 export interface StorageSettingsSelection {
 	readonly path?: string;
@@ -71,9 +82,13 @@ export function selectStorage(
 			if (value.secrets === null || typeof value.secrets !== "object" || Array.isArray(value.secrets))
 				return invalid("invalid-secrets");
 			for (const ref of Object.values(value.secrets)) {
-				if (ref === null || typeof ref !== "object" || Array.isArray(ref) || "env" in ref === "file" in ref)
-					return invalid("invalid-secret-ref");
-				if ("env" in ref ? typeof ref.env !== "string" : typeof ref.file !== "string")
+				if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return invalid("invalid-secret-ref");
+				const forms = ["env", "file", "value"].filter((key) => key in ref);
+				if (forms.length !== 1) return invalid("invalid-secret-ref");
+				if ("value" in ref) {
+					if (source !== "sdk") return invalid("in-memory-secret-unsupported");
+					if (typeof ref.value !== "string") return invalid("invalid-secret-ref");
+				} else if ("env" in ref ? typeof ref.env !== "string" : typeof ref.file !== "string")
 					return invalid("invalid-secret-ref");
 			}
 		}
@@ -81,7 +96,7 @@ export function selectStorage(
 			kind: "adapter",
 			module: value.adapter,
 			...(value.options === undefined ? {} : { options: value.options }),
-			...(value.secrets === undefined ? {} : { secrets: value.secrets }),
+			...(value.secrets === undefined ? {} : { secrets: redactInMemorySecrets(value.secrets) }),
 			...(value.prefix === undefined ? {} : { prefix: value.prefix }),
 		};
 	}

@@ -9,6 +9,7 @@ import { StorageConfigError, StoragePrefixError } from "./errors.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
 import { selectStorage } from "./selection.js";
+import { environmentTeamProfile, TEAM_PROFILE_ENV } from "./team-profile.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";
@@ -119,10 +120,13 @@ function environmentChoices(agentDir: string) {
 		if (text === undefined) return undefined;
 		return choose(parseSelection(text, schema, "env", field), "env", field, agentDir, defaultPath);
 	};
+	const sharedDefault = join(dirname(agentDir), "storage.sqlite");
+	const team = environmentTeamProfile();
 	return {
 		sessions: read(SESSIONS_STORAGE_ENV, SessionStorageSelectionSchema, domainDefault),
 		journal: read(WORKFLOWS_JOURNAL_ENV, StorageSelectionSchema, domainDefault),
-		shared: read(STORAGE_ENV, StorageSelectionSchema, join(dirname(agentDir), "storage.sqlite")),
+		shared: read(STORAGE_ENV, StorageSelectionSchema, sharedDefault),
+		team: team === undefined ? undefined : choose(team, "env", TEAM_PROFILE_ENV, agentDir, sharedDefault),
 	};
 }
 
@@ -133,7 +137,8 @@ export function validateProcessStorage(agentDir: string): void {
 
 /**
  * The process-level storage selection for one domain: `--storage`/`--storage-file`, then the domain
- * variable or its legacy path variable, then `ATOMIC_STORAGE`. `undefined` leaves the choice to settings.
+ * variable or its legacy path variable, then `ATOMIC_STORAGE`, then the `ATOMIC_PROFILE=ci` team database.
+ * `undefined` leaves the choice to settings.
  * Every set storage variable is validated, whichever one applies.
  */
 export function selectProcessStorage(
@@ -168,7 +173,7 @@ export function selectProcessStorage(
 			throw new StorageConfigError("env", legacyField, "invalid-path");
 		}
 	}
-	return environment.shared;
+	return environment.shared ?? environment.team;
 }
 
 /** Whether the launching process selected this domain's storage, without validating the selection. */
@@ -176,18 +181,31 @@ export function hasProcessStorageSelection(domain: StorageDomain): boolean {
 	return (
 		registry[CLI_SELECTION] !== undefined ||
 		(domain === "sessions"
-			? [SESSIONS_STORAGE_ENV, ENV_SESSION_DIR, STORAGE_ENV]
-			: [WORKFLOWS_JOURNAL_ENV, WORKFLOW_JOURNAL_PATH_ENV, STORAGE_ENV]
+			? [SESSIONS_STORAGE_ENV, ENV_SESSION_DIR, STORAGE_ENV, TEAM_PROFILE_ENV]
+			: [WORKFLOWS_JOURNAL_ENV, WORKFLOW_JOURNAL_PATH_ENV, STORAGE_ENV, TEAM_PROFILE_ENV]
 		).some((name) => environmentValue(name) !== undefined)
 	);
 }
 
 /**
  * The shared `storage` selection this process was launched with, as the `ATOMIC_STORAGE` value a child process it
- * spawns should receive: `--storage`/`--storage-file`, then `ATOMIC_STORAGE`. `undefined` leaves the choice to
- * settings. Validated when it was recorded or when this process started, not again here.
+ * spawns should receive: `--storage`/`--storage-file`, then `ATOMIC_STORAGE`, then the `ATOMIC_PROFILE=ci` team
+ * database, which references its token by variable or file and never copies it. `undefined` leaves the choice to
+ * settings. An invalid team profile throws {@link TeamProfileConfigError}, as it does at startup.
  */
 export function processSharedStorageSelection(): string | undefined {
 	const cli = registry[CLI_SELECTION];
-	return cli === undefined ? environmentValue(STORAGE_ENV) : JSON.stringify(cli.value);
+	if (cli !== undefined) return JSON.stringify(cli.value);
+	const shared = environmentValue(STORAGE_ENV);
+	if (shared !== undefined) return shared;
+	const team = environmentTeamProfile();
+	return team === undefined ? undefined : JSON.stringify(team);
+}
+
+/**
+ * `process.env` with `ATOMIC_STORAGE` set to {@link processSharedStorageSelection}, as the Intercom broker this
+ * process starts receives it: the environment to compare a running broker's storage against.
+ */
+export function processStorageEnvironment(): NodeJS.ProcessEnv {
+	return { ...process.env, [STORAGE_ENV]: processSharedStorageSelection() ?? "" };
 }

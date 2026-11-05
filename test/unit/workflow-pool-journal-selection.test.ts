@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { StorageSelection } from "@bastani/atomic/storage";
+import { inMemorySecret, type StorageSelection } from "@bastani/atomic/storage";
 import { afterEach, test } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -14,6 +14,7 @@ import {
 	decodeSelection,
 	encodeSelection,
 	isLocalPoolJournal,
+	isReopenableSelection,
 	openCoordinationJournal,
 	poolDurableJournal,
 	poolHostId,
@@ -49,6 +50,20 @@ test("an adapter selection reaches another process unchanged, binary and bigint 
 	const text = encodeSelection(selection);
 	assert.deepEqual(decodeSelection(text), selection);
 	assert.doesNotMatch(text, /ACME_SECRET/, "a secret is a reference to the environment or a file, never a value");
+});
+
+test("a selection holding an in-memory token never reaches another process (#4320)", () => {
+	const base = { kind: "adapter", module: "@acme/storage", options: { url: "libsql://db.example" } } as const;
+	assert.equal(isReopenableSelection({ ...base, secrets: { authToken: inMemorySecret("memory-only") } }), false);
+	assert.equal(
+		isReopenableSelection({ ...base, secrets: { other: { env: "A" }, authToken: inMemorySecret("memory-only") } }),
+		false,
+	);
+	assert.equal(isReopenableSelection({ ...base, secrets: { authToken: { env: "ACME_TOKEN" } } }), true);
+	assert.equal(isReopenableSelection(base), true);
+	assert.equal(isReopenableSelection({ kind: "sqlite", path: "j.sqlite" }), true);
+	assert.equal(isReopenableSelection({ kind: "memory" }), false);
+	assert.equal(isReopenableSelection({ kind: "jsonl", dir: "sessions" }), false);
 });
 
 test("a local SQLite selection is sent as an absolute path", () => {

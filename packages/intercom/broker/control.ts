@@ -22,6 +22,7 @@ import { readLiveBrokerNodes } from "./sql-lease-store.js";
  */
 
 export { describeMultiNodeStatus };
+export { projectHomeGroup } from "../project-group.js";
 
 /** How long a control request waits for its answer; a status report may wait up to 2 s for the shared database. */
 export const BROKER_CONTROL_TIMEOUT_MS = 5_000;

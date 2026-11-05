@@ -69,6 +69,8 @@ SDK callers can import `openLibsqlDatabase` from `@bastani/atomic-storage-libsql
 
 ### Joining a machine to a shared database
 
+To share workflow runs and Intercom with a team while your sessions stay on your machine, use `atomic team join` instead: it runs the same checks and token handling, also pins `sessions.storage` to the local store, and restarts the Intercom broker. See [Team and CI setup](/guides/team-setup).
+
 Instead of editing settings by hand, install the adapter and join the database:
 
 ```bash
@@ -83,7 +85,7 @@ atomic storage status
 
 1. reads the token and removes surrounding whitespace; an empty token is an error;
 2. connects with `@bastani/atomic-storage-libsql` and runs `SELECT 1`. It creates no tables and changes no data; sessions, workflow runs, and Intercom brokers create their own tables when they first use the database;
-3. stores the token in a new `~/.atomic/agent/storage-token.<id>` file (in the agent directory under `ATOMIC_CODING_AGENT_DIR`), readable only by you (mode 600). Your input token file and tokens used by previous selections are left as they are;
+3. stores the token in a new `~/.atomic/agent/storage-token.<id>` file (in the agent directory under `ATOMIC_CODING_AGENT_DIR`), readable only by you (mode 600). When the current selection already references such a file holding the same token, that file is kept and reused, so joining again leaves settings unchanged. Your input token file and tokens used by previous selections are left as they are;
 4. writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`, with the adapter, the URL, the token file, and the prefix. Every other setting keeps its value;
 5. lists the environment variables and settings that take precedence over the new selection, and says whether the running Intercom broker still uses its previous one.
 
@@ -314,6 +316,7 @@ A host that starts Atomic processes, for example a supervisor that launches `ato
 | `ATOMIC_STORAGE` | Sessions and workflow runs | Shared `storage` setting |
 | `ATOMIC_SESSIONS_STORAGE` | Sessions only; also accepts `{ "dir": "..." }` | `sessions.storage` |
 | `ATOMIC_WORKFLOWS_JOURNAL` | Workflow runs only | `workflows.journal` |
+| `ATOMIC_PROFILE=ci` with `ATOMIC_TEAM_URL` and `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` (and optionally `ATOMIC_TEAM_PREFIX`) | Sessions, workflow runs, and Intercom on the team database | A `team join` selection, without the local sessions pin |
 
 ```bash
 ATOMIC_STORAGE='{"adapter":"@example/atomic-sqlite","options":{"url":"libsql://team.example"},"secrets":{"authToken":{"env":"TEAM_DB_TOKEN"}},"prefix":"svc_"}' \
@@ -324,17 +327,19 @@ atomic --mode rpc --storage-file /etc/atomic/storage.json
 
 Nothing is written to settings. A process started without these options keeps using its settings, so an interactive `atomic` and an RPC child started with `ATOMIC_STORAGE` in the same account each keep their own sessions and workflow runs, and `/resume` in each lists only its own store. `--storage` and `--storage-file` cannot be combined. The interactive CLI passes its `--storage` selection to its background engine process. Other processes that Atomic starts inherit the environment variables but not the flag.
 
-The Intercom broker an Atomic process starts uses the same selection for multi-node routing: `--storage`, `--storage-file`, or `ATOMIC_STORAGE` from that process outranks the top-level `storage` setting, and a broker started by a process without them reads settings. One broker serves every session in an agent directory, so it keeps the selection of the process that started it until it exits or `atomic intercom restart` replaces it. Project settings never select the broker's storage.
+The Intercom broker an Atomic process starts uses the same selection for multi-node routing: `--storage`, `--storage-file`, `ATOMIC_STORAGE`, or `ATOMIC_PROFILE=ci` from that process outranks the top-level `storage` setting, and a broker started by a process without them reads settings. One broker serves every session in an agent directory, so it keeps the selection of the process that started it until it exits or `atomic intercom restart` replaces it. Project settings never select the broker's storage.
 
 Precedence for each domain, highest first:
 
 | Sessions | Workflow runs |
 |---|---|
 | SDK `sessionStore` | SDK `RunOpts.journal` or `createAgentSession({ journal })` |
+| SDK `createAgentSession({ storage })` | SDK `createAgentSession({ storage })` |
 | `--session-store`, `--no-session`, or `--session-dir` | |
 | `--storage` or `--storage-file` | `--storage` or `--storage-file` |
 | `ATOMIC_SESSIONS_STORAGE` or `ATOMIC_CODING_AGENT_SESSION_DIR` | `ATOMIC_WORKFLOWS_JOURNAL` or `ATOMIC_WORKFLOW_JOURNAL_PATH` |
 | `ATOMIC_STORAGE` | `ATOMIC_STORAGE` |
+| `ATOMIC_PROFILE=ci` | `ATOMIC_PROFILE=ci` |
 | `sessions.storage` setting | `workflows.journal` setting |
 | Shared `storage` setting | Shared `storage` setting |
 | Default SQLite file | Default SQLite file |
@@ -350,7 +355,9 @@ Relative `path`, `dir`, and `secrets.file` values resolve against Atomic home, n
 
 At startup, before any session starts and in every mode including RPC, the CLI validates `--storage` or `--storage-file` and every set `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE`, and `ATOMIC_WORKFLOWS_JOURNAL`, even one that a flag or another variable outranks. `createAgentSession()` validates the same set variables before it creates a session, even when the host supplies `sessionManager` or `sessionStore`. Invalid JSON, a selection that does not match the settings schema, or an unreadable `--storage-file` raises `StorageConfigError` with `source` `"env"` or `"cli"`, a `field` naming the variable or flag, and a `reason` such as `"invalid-json"`, `"invalid-selection"`, or `"unreadable-file"`. A missing `{ "env": ... }` secret reports `"secret-env-missing"` against the selection's variable or flag when the store opens. Atomic never falls back to settings or another store. Errors name the variable or flag, never the selection text or a resolved secret.
 
-These options come from the process that starts Atomic, so they are not subject to [project trust](/security) the way project settings are. An adapter module runs code with Atomic's privileges: select only modules you trust. Pass credentials through `secrets` rather than `options`. Command-line arguments can be visible to other local users, so prefer `--storage-file` or an environment variable when the selection itself is sensitive.
+`ATOMIC_PROFILE=ci` is checked at the same points. Its selection references the token by variable (`{ "env": "ATOMIC_TEAM_TOKEN" }`) or by the token file's absolute path, so child processes, including the Intercom broker, read it themselves. A team variable without `ATOMIC_PROFILE`, or `ATOMIC_PROFILE=ci` without its URL or token, raises `TeamProfileConfigError` (a `StorageConfigError`) with code `"incomplete-profile"` and every missing variable in `missing`; an unknown profile, a bad URL, an unreadable or empty token file, or an invalid prefix raise it with their own codes. When the libSQL adapter cannot be loaded, startup and `createAgentSession()` fail with `TeamProfileError` code `"adapter-not-installed"` before any store opens. See [Team and CI setup](/guides/team-setup#ci-and-swarms).
+
+These options come from the process that starts Atomic, so they are not subject to [project trust](/security) the way project settings are. An adapter module runs code with Atomic's privileges: select only modules you trust. Pass credentials through `secrets` rather than `options`. SDK callers can also hold a token in memory with `{ "value": token }`, which `inMemorySecret(token)` and `teamProfileSelection({ token })` create: it serializes as `[redacted]`, is never written anywhere, and a selection from settings, a flag, or an environment variable that contains one raises `StorageConfigError` (`"in-memory-secret-unsupported"` from settings, `"invalid-selection"` from JSON). Local workflow workers cannot reopen such a selection; use `{ "file" }` or `{ "env" }` for pooled runs. Command-line arguments can be visible to other local users, so prefer `--storage-file` or an environment variable when the selection itself is sensitive.
 
 ## Sharing storage across hosts
 
@@ -365,7 +372,7 @@ With a shared journal:
 
 Selecting the same top-level `storage` on every host, in global settings or with `--storage`, `--storage-file`, or `ATOMIC_STORAGE`, also lets Intercom sessions on different hosts message each other; `sessions.storage` and `workflows.journal` alone do not. Brokers route through the database, so Intercom message bodies are stored there until shortly after they are delivered. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
-The database stores sessions, workflow checkpoints, and, when Intercom brokers share it, Intercom messages and session routing state. To resume a run on another host, that host also needs the same workflow definition and the run's original working directory, including any worktrees and artifacts the run uses. Effects that were not checkpointed may run again after a takeover, so make external effects idempotent. Every checkpoint commits before it is reported, so a remote database adds network latency to each durable `ctx.*` step. Backends may also enforce payload limits that raise `StoragePayloadTooLargeError`.
+The database stores sessions, workflow checkpoints, and, when Intercom brokers share it, Intercom messages and session routing state. Anyone who can read it can read all of that: treat database access as full read access. `atomic team join` keeps each person's sessions out of it by pinning `sessions.storage` to the local store; see [Team and CI setup](/guides/team-setup#security). To resume a run on another host, that host also needs the same workflow definition and the run's original working directory, including any worktrees and artifacts the run uses. Effects that were not checkpointed may run again after a takeover, so make external effects idempotent. Every checkpoint commits before it is reported, so a remote database adds network latency to each durable `ctx.*` step. Backends may also enforce payload limits that raise `StoragePayloadTooLargeError`.
 
 [Local workflow workers](/workflows/operations#local-workflow-workers) work on a shared journal: the workers run on the machine that runs the root and open the same database, and the pool keeps its work queue and leases in a SQLite file on that machine, so a pooled run resumes on the machine where it started.
 
@@ -387,6 +394,8 @@ Use error classes and their fields, not message matching. Configuration and faca
 | `StorageOutcomeUnknownError` | `domain`, `id`, `key`. A driver cannot confirm the write outcome; inspect the keyed record before retrying. |
 | `StoragePayloadTooLargeError` | `limitBytes`, `actualBytes`. Reduce the payload for that backend. |
 | `StorageInvalidTextError` | `parameterIndex`, `reason`. Remove NUL from scalar text bindings or encode the value as JSON/binary. |
+| `TeamProfileConfigError` | A `StorageConfigError` for an invalid team input; `code` equals `reason`. See [Team setup errors](#team-setup-errors). |
+| `TeamProfileError` | A team setup operation failed after its inputs were accepted. See [Team setup errors](#team-setup-errors). |
 
 These storage errors carry a stable `code` and a `hint` with the remedy:
 
@@ -421,6 +430,41 @@ Journal errors include:
 Workflow execution can also fail with `JournalOwnershipError` with `runId` and `holderId`, `JournalBackendClosedError`, `JournalOperationAbortedError` with `runId` and optional `cause`, or `JournalExecutionRetiredError` with `runId`. Stop work after losing ownership or cancellation; do not keep using a closed or retired execution. A local database failure does not justify deleting the shared file, which may hold both session and workflow history.
 
 Session listings accept an `AbortSignal`. Cancellation rejects with the original `signal.reason`, including a custom reason, rather than wrapping it as a storage failure. Callers can compare the caught value to `signal.reason`. With `controller.abort()`, the reason is the standard `AbortError`.
+
+### Team setup errors
+
+`joinTeam()`, `leaveTeam()`, `getTeamProfile()`, `teamProfileSelection()`, `atomic storage join`, `atomic team`, and the `ATOMIC_PROFILE=ci` startup check throw two classes from `@bastani/atomic/storage`. Branch on `code`; the guards `isTeamProfileError()` and `isTeamProfileConfigError()` also recognize errors by `name` and `code` across processes, and `isRetryableTeamProfileError()` checks an error and its causes, up to eight levels. Each message ends with its `hint`, which is also a field. Messages and fields name variables, flags, and files, never a token.
+
+`TeamProfileConfigError` (a `StorageConfigError`; fields `source` (`"sdk"`, `"cli"`, or `"env"`), `field`, `code`, `reason`, `hint`, optional `path` and `missing`; `retryable: false`). Nothing was changed; fix the named input.
+
+| Code | When |
+|---|---|
+| `unknown-profile` | `ATOMIC_PROFILE` or the SDK `profile` is not `ci`. |
+| `incomplete-profile` | A team variable is set without `ATOMIC_PROFILE`, or `ATOMIC_PROFILE=ci` lacks its URL or token. `missing` lists every variable to set. |
+| `missing-url` | No database URL was passed. |
+| `unsupported-url` | The URL is not `libsql://`, `https://`, `wss://`, or `file:`. |
+| `relative-file-url` | A `file:` URL is relative. |
+| `credential-in-url` | The URL contains a user name, password, or `authToken`. |
+| `missing-token` | A non-`file:` URL has no token, or `tokenEnv` names an unset variable. |
+| `conflicting-token` | More than one token source was passed. |
+| `unreadable-token-file` | The token file cannot be read; `path` names it. |
+| `empty-token` | The token, token file, or `tokenEnv` name is empty. |
+| `invalid-prefix` | The prefix does not match the storage prefix rules. |
+| `unknown-command`, `unknown-option`, `missing-value`, `unexpected-argument` | `atomic team` was called with arguments it does not take. |
+
+`TeamProfileError` (fields `code`, `subject`, `hint`, optional `detail` and `cause`, and `retryable`):
+
+| Code | When | What to do |
+|---|---|---|
+| `settings-unreadable` | The settings file cannot be parsed; `subject` names it. Nothing was changed. | Fix the file, then run again. |
+| `adapter-not-installed` | The libSQL adapter cannot be loaded. Nothing was changed. | Run `atomic install npm:@bastani/atomic-storage-libsql`. |
+| `connection-failed` | The database did not answer `SELECT 1`; `retryable: true`. Nothing was changed. | Check the URL, the token, and the network, then retry. |
+| `token-write-failed` | The private token file could not be written. Nothing was changed. | Make the agent directory writable. |
+| `settings-write-failed` | Settings could not be written; the previous selection and its token are kept. | Make the settings file writable. |
+| `broker-restart-failed` | Returned in `broker`, not thrown: settings were saved but the Intercom broker did not restart; `retryable: true`. | Run `atomic intercom restart`. |
+| `token-delete-failed` | `leaveTeam` removed the settings but could not delete the token file. | Delete the file yourself. |
+
+`SHARED_STORAGE_JOIN_HINT` holds the command that joins a machine to the team's database, `atomic team join <url> --token-file <path>`, for hints that point there.
 
 ## Adapter conformance
 

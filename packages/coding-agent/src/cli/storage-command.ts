@@ -4,29 +4,26 @@
  * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
  */
 
-import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
-import { resolvePackageStorageAdapter } from "../core/package-manager-storage-adapters.js";
-import { SettingsManager } from "../core/settings-manager.ts";
-import type { Settings } from "../core/settings-schema.ts";
-import { validateStoragePrefix } from "../core/storage/prefix.js";
-import { loadStorageAdapter } from "../core/storage/provider.js";
-import { selectStorage } from "../core/storage/selection.js";
 import {
 	collectStorageStatus,
 	type DomainStatus,
 	describeStorageError,
-	describeStorageSelection,
 	type StorageStatus,
 } from "../core/storage/storage-status.js";
+import { joinSharedDatabase } from "../core/storage/team.js";
+import { isTeamProfileConfigError, isTeamProfileError } from "../core/storage/team-errors.js";
+import {
+	checkTeamUrl,
+	isFileUrl,
+	LIBSQL_ADAPTER_PACKAGE,
+	missingTeamToken,
+	STORAGE_TOKEN_FILE,
+} from "../core/storage/team-profile.js";
 
-/** The first-party libSQL / Turso adapter package that `atomic storage join` selects. */
-export const LIBSQL_ADAPTER_PACKAGE = "@bastani/atomic-storage-libsql";
-/** Filename prefix for private token files created by `atomic storage join` in the agent directory. */
-export const STORAGE_TOKEN_FILE = "storage-token";
+export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
@@ -57,16 +54,6 @@ export type StorageCommand =
 	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string };
 
 export class StorageCommandError extends Error {}
-
-/** Whether a database URL holds the token itself: userinfo, or the `authToken` query parameter libSQL URLs accept. */
-function carriesCredential(url: string): boolean {
-	try {
-		const { username, password, searchParams } = new URL(url);
-		return username !== "" || password !== "" || searchParams.has("authToken");
-	} catch {
-		return false;
-	}
-}
 
 /** Parse the arguments after `storage`. */
 export function parseStorageCommand(args: readonly string[]): StorageCommand {
@@ -104,25 +91,9 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 				`Usage: ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]`,
 			);
 		}
-		if (!/^(libsql|https?|wss?):\/\/[^/]/.test(url) && !url.startsWith("file:")) {
-			throw new StorageCommandError(
-				`Unsupported database URL "${url}". Use a libsql://, https://, wss://, or file: URL.`,
-			);
-		}
-		if (url.startsWith("file:") && !url.startsWith("file:/")) {
-			throw new StorageCommandError(
-				"Use an absolute file: URL (for example file:///path/to/shared.sqlite), so every working directory uses the same database.",
-			);
-		}
-		if (carriesCredential(url)) {
-			throw new StorageCommandError(
-				"The database URL carries a credential (user name, password, or authToken). Pass the token with --token-file instead, so it is kept in a private file and not in settings.",
-			);
-		}
+		checkTeamUrl(url, "cli");
 		const tokenFile = values.get("--token-file");
-		if (tokenFile === undefined && !url.startsWith("file:")) {
-			throw new StorageCommandError(`--token-file is required for ${url.split(":")[0]}: URLs.`);
-		}
+		if (tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
 		const prefix = values.get("--prefix");
 		return {
 			kind: "join",
@@ -145,7 +116,10 @@ export interface StorageCommandOptions {
 
 const errorText = describeStorageError;
 
-async function loadControl(options: StorageCommandOptions): Promise<IntercomBrokerControl | Error> {
+/** The bundled Intercom package's broker control, or why it could not load. */
+export async function loadBrokerControl(options: {
+	readonly loadControl?: () => Promise<IntercomBrokerControl>;
+}): Promise<IntercomBrokerControl | Error> {
 	try {
 		if (options.loadControl) return await options.loadControl();
 		const { loadIntercomBrokerControl } = await import("../core/intercom-broker-control.js");
@@ -155,7 +129,8 @@ async function loadControl(options: StorageCommandOptions): Promise<IntercomBrok
 	}
 }
 
-function failed(domain: DomainStatus): boolean {
+/** Whether a domain's selection is invalid, its adapter cannot load, or its database did not answer. */
+export function failed(domain: DomainStatus): boolean {
 	return (
 		domain.error !== undefined ||
 		domain.probe?.adapter?.loaded === false ||
@@ -218,7 +193,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				broker.matchesCurrent
 					? "  storage:     matches the selection above"
-					: `  storage:     differs from the selection above${broker.source === "env" ? " (a session started it with ATOMIC_STORAGE or --storage)" : ""}; run \`${APP_NAME} intercom restart\` to use the current one`,
+					: `  storage:     differs from the selection above${broker.source === "env" ? " (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage)" : ""}; run \`${APP_NAME} intercom restart\` to use the current one`,
 			);
 			if (broker.multiNodeLine !== undefined) lines.push(`  multi-node:  ${broker.multiNodeLine}`);
 		}
@@ -228,7 +203,7 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 }
 
 async function status(json: boolean, options: StorageCommandOptions, log: (line: string) => void): Promise<number> {
-	const control = await loadControl(options);
+	const control = await loadBrokerControl(options);
 	const collected = await collectStorageStatus({
 		cwd: options.cwd,
 		agentDir: options.agentDir,
@@ -242,119 +217,25 @@ async function status(json: boolean, options: StorageCommandOptions, log: (line:
 	return result.domains.some(failed) ? 1 : 0;
 }
 
-/** Write `token` to `path` with mode 0600 without leaving a partly written file. */
-function writePrivateFile(path: string, token: string): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporary = `${path}.${process.pid}.tmp`;
-	try {
-		writeFileSync(temporary, token, { mode: 0o600 });
-		chmodSync(temporary, 0o600);
-		renameSync(temporary, path);
-	} catch (error) {
-		rmSync(temporary, { force: true });
-		throw error;
-	}
-}
-
-async function checkConnection(url: string, token: string | undefined, agentDir: string): Promise<void> {
-	const context = { agentDir, domain: "sessions" } as const;
-	const adapter = await loadStorageAdapter(LIBSQL_ADAPTER_PACKAGE, context);
-	if (adapter.openDatabase === undefined) throw new Error(`${LIBSQL_ADAPTER_PACKAGE} has no openDatabase hook`);
-	const database = await adapter.openDatabase({ url, ...(token === undefined ? {} : { authToken: token }) }, context);
-	try {
-		await database.get("SELECT 1 AS ok");
-	} finally {
-		await database.close();
-	}
-}
-
 async function joinStorage(
 	command: Extract<StorageCommand, { kind: "join" }>,
 	options: StorageCommandOptions,
 	log: (...lines: string[]) => void,
 ): Promise<number> {
 	const { agentDir, cwd } = options;
-	if (command.prefix !== undefined) {
-		try {
-			validateStoragePrefix(command.prefix);
-		} catch (error) {
-			throw new StorageCommandError(`Invalid --prefix "${command.prefix}": ${errorText(error as Error)}.`);
-		}
-	}
-	let token: string | undefined;
-	let tokenSource: string | undefined;
-	if (command.tokenFile !== undefined) {
-		tokenSource = resolve(cwd, command.tokenFile);
-		try {
-			token = readFileSync(tokenSource, "utf8").trim();
-		} catch (error) {
-			throw new StorageCommandError(`Cannot read the token file ${tokenSource}: ${errorText(error as Error)}`);
-		}
-		if (token.length === 0) throw new StorageCommandError(`The token file ${tokenSource} is empty.`);
-	}
-	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	const settingsErrors = manager.drainErrors().filter(({ scope }) => scope === "global");
-	if (settingsErrors.length > 0) {
-		throw new StorageCommandError(
-			`Cannot update the global settings: ${settingsErrors.map(({ error }) => error.message).join("; ")}. Fix ${join(agentDir, "settings.json")} first.`,
-		);
-	}
-	// An unreadable settings file looks like one with no packages installed, so report it before the adapter lookup.
-	if ((await resolvePackageStorageAdapter(LIBSQL_ADAPTER_PACKAGE, agentDir)) === undefined) {
-		throw new StorageCommandError(
-			`The libSQL storage adapter is not installed for ${agentDir}. Install it, then run this command again:\n  ${APP_NAME} install npm:${LIBSQL_ADAPTER_PACKAGE}`,
-		);
-	}
-	try {
-		await checkConnection(command.url, token, agentDir);
-	} catch (error) {
-		throw new StorageCommandError(
-			`Could not connect to ${command.url}: ${errorText(error as Error)}. Nothing was changed.`,
-		);
-	}
+	const joined = await joinSharedDatabase({ ...command, agentDir, cwd, pinLocalSessions: false }, "cli");
 	log(`Connected to ${command.url}.`);
-
-	// Never replace a credential referenced by the previous selection or an already-running session.
-	// Publishing settings is the commit point; an unsuccessful join removes only its new token file.
-	const tokenPath = join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`);
-	if (token !== undefined) writePrivateFile(tokenPath, token);
-
-	const previous = manager.getGlobalSettings().storage;
-	const storage: NonNullable<Settings["storage"]> = {
-		adapter: LIBSQL_ADAPTER_PACKAGE,
-		options: { url: command.url },
-		...(token === undefined
-			? {}
-			: { secrets: { authToken: { file: relative(dirname(agentDir), tokenPath).split(sep).join("/") } } }),
-		...(command.prefix === undefined ? {} : { prefix: command.prefix }),
-	};
-	try {
-		manager.setStorage(storage);
-		await manager.flush();
-		const writeErrors = manager.drainErrors();
-		if (writeErrors.length > 0) {
-			throw new StorageCommandError(
-				`Could not write the global settings: ${writeErrors.map(({ error }) => error.message).join("; ")}`,
-			);
-		}
-	} catch (error) {
-		if (token !== undefined) rmSync(tokenPath, { force: true });
-		throw error;
+	if (joined.tokenPath !== undefined) {
+		log(
+			joined.token === "reused"
+				? `Kept the token in ${joined.tokenPath}; it already holds this token.`
+				: `Stored the token in ${joined.tokenPath} (mode 600).`,
+		);
 	}
-	if (token !== undefined) log(`Stored the token in ${tokenPath} (mode 600).`);
 	log(`Set \`storage\` in ${join(agentDir, "settings.json")}; other settings are unchanged.`);
-	if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(storage)) {
-		const described = (() => {
-			try {
-				return describeStorageSelection(selectStorage(previous, "settings", "storage", ""));
-			} catch {
-				return "an invalid selection";
-			}
-		})();
-		log(`It replaces the previous selection: ${described}.`);
-	}
+	if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
 
-	const control = await loadControl(options);
+	const control = await loadBrokerControl(options);
 	let collected: StorageStatus;
 	try {
 		collected = await collectStorageStatus({
@@ -406,7 +287,11 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 			for (const line of lines) log(line);
 		});
 	} catch (caught) {
-		error(caught instanceof StorageCommandError ? caught.message : `Error: ${errorText(caught as Error)}`);
+		error(
+			caught instanceof StorageCommandError || isTeamProfileError(caught) || isTeamProfileConfigError(caught)
+				? caught.message
+				: `Error: ${errorText(caught as Error)}`,
+		);
 		return 1;
 	}
 }

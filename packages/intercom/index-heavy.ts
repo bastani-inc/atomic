@@ -21,9 +21,10 @@ import {
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, type ExtensionAPI, type ExtensionContext, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
 	IntercomClient,
@@ -79,7 +80,9 @@ import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
-import { normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
+import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
+import { getIntercomDirPath } from "./broker/paths.js";
+import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectHomeGroup } from "./project-group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import {
   BROKER_RETIRING_RETRY_WINDOW_MS,
@@ -324,8 +327,18 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       : activeToolName ? `tool:${activeToolName}` : agentRunning ? "thinking" : "idle";
     return config.status ? `${lifecycleStatus} · ${config.status}` : lifecycleStatus;
   }
+  /** Whether this session's broker would route across machines, from the storage selection it would start with. */
+  function multiNodeRouting(): boolean {
+    return multiNodeSelected(dirname(getIntercomDirPath()), processStorageEnvironment());
+  }
+  /** The project group a session in this context joins by default while multi-node routing is on. */
+  function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
+    return () => projectHomeGroup(ctx?.cwd ?? process.cwd(), dirname(getIntercomDirPath()), processStorageEnvironment(), createGitEnvironment());
+  }
   function resolveSessionHomeGroup(): string {
-    return sessionHomeGroup ?? resolveHomeGroup(config, getLiveContext());
+    if (sessionHomeGroup !== null) return sessionHomeGroup;
+    const liveContext = getLiveContext();
+    return resolveHomeGroup(config, liveContext, projectGroupOf(liveContext));
   }
   function currentIntercomGroups(): Set<string> {
     return joinedGroups === null
@@ -1624,10 +1637,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         releaseJoinedGroups();
         sessionHomeGroup = null;
       } else {
-        sessionHomeGroup = resolveHomeGroup(config, value);
+        sessionHomeGroup = resolveHomeGroup(config, value, projectGroupOf(value));
         inboundDeliveries.restore(value.sessionManager.getBranch());
       }
       runtimeContext = value;
+      if (value !== null && explicitHomeGroup(config, value) === DEFAULT_GROUP && multiNodeRouting()) {
+        notifyIfLive(value, DEFAULT_GROUP_WARNING, "warning");
+      }
     },
     setCurrentSessionId: (value) => { currentSessionId = value; },
     setCurrentModel: (value) => { currentModel = value; },
@@ -1725,6 +1741,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
+    multiNodeRouting,
     setJoinedGroups: async (groups) => {
       setJoinedGroups(groups);
       await persistJoinedGroups(groups);

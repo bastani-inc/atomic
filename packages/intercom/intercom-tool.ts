@@ -18,7 +18,8 @@ import {
 import type { ReplyTracker } from "./reply-tracker.js";
 import { awaitSubagentChildRestoration } from "./session-recovery.js";
 import { resolveSessionTarget, resolveSessionTargetId, sessionTargetFailureReason } from "./session-target.js";
-import { normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { DEFAULT_GROUP, normalizeGroup, normalizeGroups, validateRuntimeGroup } from "./group.js";
+import { DEFAULT_GROUP_WARNING } from "./project-group.js";
 import { parseWorkflowStageTarget, withWorkflowStageTargetFinalSegment } from "./workflow-stage-target.js";
 import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
@@ -206,6 +207,8 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   homeGroup(): string;
+  /** Whether the broker routes across machines, so `default` is shared with every teammate's sessions. */
+  multiNodeRouting?(): boolean;
   /** Record the memberships after a `join`/`leave`; settles once they are saved with the session (#4079). */
   setJoinedGroups(groups: readonly string[]): void | Promise<void>;
   clearJoinedGroups(): void | Promise<void>;
@@ -236,7 +239,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Sessions belong to an intercom group and can ONLY message sessions in the same group;
-cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group.
+cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
 remain supported. Workflow-stage targets use
@@ -386,8 +389,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           try {
             const groups = await connectedClient.joinGroup(targetGroup);
             await deps.setJoinedGroups(groups);
+            const warning = targetGroup === DEFAULT_GROUP && deps.multiNodeRouting?.() === true ? `\n${DEFAULT_GROUP_WARNING}` : "";
             return {
-              content: [{ type: "text", text: `Joined intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.` }],
+              content: [{ type: "text", text: `Joined intercom group "${targetGroup}". Memberships: ${groups.join(", ")}.${warning}` }],
               isError: false,
               details: { group: targetGroup, groups },
             };

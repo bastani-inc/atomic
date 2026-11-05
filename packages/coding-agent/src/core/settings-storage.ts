@@ -1,4 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { randomUUID } from "crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
@@ -7,6 +18,51 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { deepMergeSettings } from "./settings-merge.js";
 import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } from "./settings-types.ts";
+
+/** Windows refuses to replace a file another process has open for a moment; rename again before giving up. */
+const RENAME_ATTEMPTS = 10;
+const RENAME_RETRY_MS = 20;
+
+function renameReplacing(from: string, to: string): void {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			renameSync(from, to);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (
+				process.platform !== "win32" ||
+				attempt === RENAME_ATTEMPTS ||
+				!["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
+			) {
+				throw error;
+			}
+			const start = Date.now();
+			while (Date.now() - start < RENAME_RETRY_MS) {
+				// Sleep synchronously, as the settings lock does, so callers stay synchronous.
+			}
+		}
+	}
+}
+
+/**
+ * Replace a settings file so readers and a killed or out-of-space writer only ever leave the old or the new content:
+ * write a sibling temporary file with the same mode, then rename it over the file. A symbolic link stays a link; its
+ * target is replaced.
+ */
+function writeSettingsFile(path: string, content: string): void {
+	const target = existsSync(path) ? realpathSync(path) : path;
+	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
+	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(temporary, content, { encoding: "utf-8", ...(mode === undefined ? {} : { mode }) });
+		if (mode !== undefined) chmodSync(temporary, mode);
+		renameReplacing(temporary, target);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
 
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
@@ -110,7 +166,7 @@ export class FileSettingsStorage implements SettingsStorage {
 					if (!existsSync(path)) writeFileSync(path, "{}", "utf-8");
 					release = this.acquireLockSyncWithRetry(path);
 				}
-				writeFileSync(path, next, "utf-8");
+				writeSettingsFile(path, next);
 			}
 		} finally {
 			if (release) {
@@ -131,7 +187,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			const currentPrimary = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
 			const next = fn(currentPrimary);
 			if (next !== undefined) {
-				writeFileSync(path, next, "utf-8");
+				writeSettingsFile(path, next);
 			}
 		} finally {
 			release();

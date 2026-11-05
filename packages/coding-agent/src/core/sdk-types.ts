@@ -15,7 +15,11 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { RunJournalOption, StorageSelection } from "./storage/provider.js";
+import type { RunJournal } from "./storage/run-journal.js";
 import type { SessionStore } from "./storage/session/types.js";
+
+/** A `createAgentSession({ storage })` selection: a database path, a caller-owned database, memory, or an adapter. */
+export type SessionStorageOption = Exclude<RunJournalOption, RunJournal>;
 
 export type AtomicBuiltin = "workflows" | "subagents" | "mcp" | "web-access" | "intercom";
 
@@ -33,6 +37,12 @@ export interface CreateAgentSessionOptions {
 	 * journal file. The caller closes a database or journal it supplies.
 	 */
 	journal?: RunJournalOption;
+	/**
+	 * Storage for this session's sessions and its `workflow` tool's journal, in the form of the top-level `storage`
+	 * setting, for example the selection `teamProfileSelection()` returns. Outranks process-level selections and
+	 * settings; `sessionStore` and `journal` outrank it for their domain. Intercom keeps the process's selection.
+	 */
+	storage?: SessionStorageOption;
 
 	/** Canonical model/auth runtime. Defaults to agentDir/auth.json and models.json. */
 	modelRuntime?: ModelRuntime;

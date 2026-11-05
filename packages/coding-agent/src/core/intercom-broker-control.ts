@@ -54,6 +54,17 @@ export interface IntercomBrokerControl {
 		options?: { readonly onProgress?: (line: string) => void },
 	): Promise<RestartOutcome>;
 	describeMultiNodeStatus(multiNode: BrokerMultiNodeStatus): string;
+	/**
+	 * The group a session in `cwd` joins when no policy, workflow, `ATOMIC_INTERCOM_GROUP` or Intercom `config.json`
+	 * group applies, while multi-node routing is selected: `project:<owner>/<repo>` from the origin remote, or the
+	 * directory name. `undefined` while multi-node routing is off, where it is `default`.
+	 */
+	projectHomeGroup(
+		cwd: string,
+		agentDir: string,
+		storageEnv: NodeJS.ProcessEnv,
+		gitEnv: NodeJS.ProcessEnv,
+	): string | undefined;
 }
 
 /** Load `broker/control.ts` from the bundled Intercom package, in the npm package and the standalone binary alike. */
