@@ -109,6 +109,20 @@ async function checkTarget(target: string, snapshotId: string | null): Promise<v
 	if (!empty) throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target, reason: "not-empty" });
 }
 
+/** Which of `trees` the object store already holds, asked of Git in one process. */
+async function storedTrees(git: GitRunOptions, trees: readonly string[]): Promise<Set<string>> {
+	const { stdout } = await runGit(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+		...git,
+		input: trees.map((tree) => `${tree}\n`).join(""),
+	});
+	const stored = new Set<string>();
+	for (const line of stdout.toString("utf8").split("\n")) {
+		const [name, type] = line.split(" ");
+		if (type === "tree" && name) stored.add(name);
+	}
+	return stored;
+}
+
 async function hasObject(git: GitRunOptions, object: string): Promise<boolean> {
 	const { exitCode } = await runGit(["cat-file", "-e", object], { ...git, allowExitCodes: [1, 128] });
 	return exitCode === 0;
@@ -527,8 +541,14 @@ async function reconstructTree(
 	scratch: string,
 ): Promise<void> {
 	const indexed: GitRunOptions = { ...git, env: { ...git.env, GIT_INDEX_FILE: join(scratch, "restore-index") } };
-	await runGit(["read-tree", snapshot.head], indexed);
+	const stored = await storedTrees(
+		git,
+		snapshot.chain.map((link) => link.tree),
+	);
+	const resumeAt = snapshot.chain.findLastIndex((link) => stored.has(link.tree)) + 1;
+	await runGit(["read-tree", resumeAt === 0 ? snapshot.head : snapshot.chain[resumeAt - 1]!.tree], indexed);
 	for (const [deltaIndex, link] of snapshot.chain.entries()) {
+		if (deltaIndex < resumeAt) continue;
 		const patch = patches[deltaIndex];
 		let applyFailure: Error | undefined;
 		if (patch) {
