@@ -105,8 +105,8 @@ export interface DurableForkRequest<TDefinition = WorkflowDefinition> extends Fo
 	/** Whether this process is executing the run outside the durable backend's own leases. */
 	readonly isLiveRun?: (runId: string) => boolean;
 	/**
-	 * Called once with the source's recorded handle, after it is read and claimed and before anything is copied or
-	 * written. Throwing refuses the fork; the claim is released and nothing is left behind.
+	 * Called with the source's recorded handle before claiming it and again with its fenced handle before copying or
+	 * writing. Validation must be repeatable. Throwing refuses the fork without copying sessions or creating a run.
 	 */
 	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
 }
@@ -1121,6 +1121,7 @@ export async function forkDurableRun<
 	const journalBackend = forkJournal(backend);
 	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf);
 	request.signal?.throwIfAborted();
+	forkRequest.validateSource?.(preview.handle);
 	const claim = await claimSource(journalBackend, preview.runId, request);
 	const cleanup = new ForkCleanup(preview.runId);
 	let primary: unknown;

@@ -231,18 +231,28 @@ test("the fork action refuses a source run another session owns before copying a
 		);
 		assert.equal(store.run(runId), undefined, "the source run is not in this session's store");
 		const runsBefore = await backend.journal.listRuns();
+		const leaseChecks = vi.spyOn(backend.journal, "leaseState");
+		const takeovers = vi.spyOn(backend.journal, "takeoverExpired");
 		for (const target of [runId, runId.slice(0, 8)]) {
 			const refused = (await execute({ action: "fork", runId: target }, context())) as ForkResult;
-			assert.deepEqual(refused, {
-				action: "fork",
-				runId: "",
-				sourceRunId: target,
-				status: "failed",
-				message: `Fork source not owned: run ${runId} belongs to another session (source-not-owned). Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
-				code: "source-not-owned",
-				hint: `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
-			});
+			assert.deepEqual(
+				{ ...refused, message: undefined },
+				{
+					action: "fork",
+					runId: "",
+					sourceRunId: target,
+					status: "failed",
+					message: undefined,
+					code: "source-not-owned",
+					hint: `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
+				},
+			);
 		}
+		const activeExecution = vi.spyOn(backend, "hasWorkflowExecution").mockReturnValue(true);
+		const busySource = (await execute({ action: "fork", runId }, context())) as ForkResult;
+		assert.equal(busySource.code, "source-not-owned", "foreign callers cannot inspect execution state");
+		assert.equal(activeExecution.mock.calls.length, 0);
+		activeExecution.mockRestore();
 		let activeCaller = "foreign-session";
 		const changingContext: PiExecuteContext = {
 			...context(),
@@ -256,6 +266,8 @@ test("the fork action refuses a source run another session owns before copying a
 		assert.equal(changedCaller.status, "failed", "resource loading cannot change a request's authority");
 		assert.equal(changedCaller.code, "source-not-owned");
 		onResourceLoad = () => undefined;
+		assert.equal(leaseChecks.mock.calls.length, 0, "a refused fork never inspects a lease");
+		assert.equal(takeovers.mock.calls.length, 0, "a refused fork never writes a lease");
 		assert.deepEqual(await backend.journal.listRuns(), runsBefore, "a refused fork writes no run");
 		assert.equal(sessionWrites(), 0, "a refused fork writes no stage conversation");
 		assert.equal(await readText(sourcePath), history);
