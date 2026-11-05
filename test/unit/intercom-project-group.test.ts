@@ -99,19 +99,14 @@ describe("project groups (#4320)", () => {
 	});
 
 	test("Git runs at most twice per repository, never outside one, and a broken repository fails fast (#4320)", () => {
-		const bin = join(root, "bin");
-		mkdirSync(bin);
 		const calls = join(root, "git-calls");
-		const realGit = spawnSync(process.platform === "win32" ? "where" : "which", ["git"], { encoding: "utf8" })
-			.stdout.trim()
-			.split(/\r?\n/)[0]!;
-		const fakeGit = (body: string) => {
-			if (process.platform === "win32") writeFileSync(join(bin, "git.cmd"), `@echo call>>"${calls}"\r\n${body}\r\n`);
-			else writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> "${calls}"\n${body}\n`, { mode: 0o755 });
-		};
-		const counted = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split(/\r?\n/).length : 0);
-		const env = { ...createGitEnvironment(), PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
-		fakeGit(process.platform === "win32" ? `@"${realGit}" %*` : `exec "${realGit}" "$@"`);
+		const counted = () =>
+			existsSync(calls)
+				? readFileSync(calls, "utf8")
+						.split(/\r?\n/)
+						.filter((line) => line.includes("built-in: git ")).length
+				: 0;
+		const env = { ...createGitEnvironment(), GIT_TRACE: calls };
 		const alpha = repository("counted", "https://github.com/acme/counted.git");
 		assert.equal(projectName(alpha, env), "acme/counted");
 		assert.equal(projectName(alpha, env), "acme/counted");
@@ -121,23 +116,42 @@ describe("project groups (#4320)", () => {
 		assert.equal(projectName(outside, { PATH: "" }), "outside");
 		assert.equal(counted(), 2);
 
-		fakeGit(
-			process.platform === "win32"
-				? "@echo fatal: detected dubious ownership 1>&2\r\n@exit /b 128"
-				: 'printf "\\n  fatal: detected dubious ownership\\nmore\\n" >&2\nexit 128',
-		);
-		const broken = repository("broken", "https://github.com/acme/broken.git");
+		let broken: string;
+		let brokenEnv: NodeJS.ProcessEnv = env;
+		let brokenDetail = "fatal: detected dubious ownership";
+		if (process.platform === "win32") {
+			broken = join(root, "broken");
+			mkdirSync(broken);
+			writeFileSync(join(broken, ".git"), "gitdir: missing-git-directory\n");
+			const probe = spawnSync("git", ["-C", broken, "rev-parse", "--show-toplevel"], {
+				env: createGitEnvironment(),
+				encoding: "utf8",
+			});
+			assert.equal(probe.status, 128, probe.stderr);
+			brokenDetail = probe.stderr.trim().split("\n", 1)[0]!;
+			assert.match(brokenDetail, /^fatal: /);
+		} else {
+			const bin = join(root, "bin");
+			mkdirSync(bin);
+			writeFileSync(
+				join(bin, "git"),
+				`#!/bin/sh\necho "trace: built-in: git rev-parse" >> "${calls}"\nprintf "\\n  fatal: detected dubious ownership\\nmore\\n" >&2\nexit 128\n`,
+				{ mode: 0o755 },
+			);
+			broken = repository("broken", "https://github.com/acme/broken.git");
+			brokenEnv = { ...env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+		}
 		assert.throws(
-			() => projectName(broken, env),
+			() => projectName(broken, brokenEnv),
 			(error: Error) => {
 				assert.ok(isProjectGroupError(error));
 				assert.deepEqual(
 					[error.code, error.cwd, error.detail, error.retryable],
-					["git-failed", broken, "fatal: detected dubious ownership", false],
+					["git-failed", broken, brokenDetail, false],
 				);
 				assert.equal(
 					error.message,
-					`Git could not read this repository's origin for its Intercom project group: ${broken} (git-failed): fatal: detected dubious ownership. Run git -C ${broken} rev-parse --show-toplevel to see why and fix the repository, or set ATOMIC_INTERCOM_GROUP to choose this session's group.`,
+					`Git could not read this repository's origin for its Intercom project group: ${broken} (git-failed): ${brokenDetail}. Run git -C ${broken} rev-parse --show-toplevel to see why and fix the repository, or set ATOMIC_INTERCOM_GROUP to choose this session's group.`,
 				);
 				return true;
 			},

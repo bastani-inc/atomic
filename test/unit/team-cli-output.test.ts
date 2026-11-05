@@ -67,6 +67,10 @@ afterEach(async () => {
 	removeTempDirectory(root);
 });
 
+function underRoot(text: string): string {
+	return text.replaceAll(root, "<root>").replace(/<root>\S*/g, (path) => path.replaceAll("\\", "/"));
+}
+
 function control(outcome: RestartOutcome | Error, projectGroup?: string): IntercomBrokerControl {
 	return {
 		queryIntercomBroker: async () => ({ state: "stopped" }),
@@ -97,8 +101,7 @@ async function team(
 		...(broker === undefined ? {} : { loadControl: async () => broker }),
 	});
 	const normalize = (text: string) =>
-		text
-			.replaceAll(root, "<root>")
+		underRoot(text)
 			.replace(/storage-token\.[\da-f-]+/g, "storage-token.<id>")
 			.replace(/answered in \d+ ms/g, "answered in <n> ms");
 	return { code, out: normalize(out.join("\n")), err: normalize(err.join("\n")) };
@@ -152,6 +155,13 @@ describe("atomic team output (#4320)", () => {
 		rejects(
 			["status", "now"],
 			'Invalid team command: arguments after status (unexpected-argument). "atomic team status" takes none. Use "atomic team --help" for usage.',
+		);
+	});
+
+	test("paths under the temp root are named <root> with forward slashes whatever the platform separator (#4320)", () => {
+		assert.equal(
+			underRoot(`Set in ${root}\\agent\\settings.json; kept ${root}/sessions and \\unrelated\\text`),
+			"Set in <root>/agent/settings.json; kept <root>/sessions and \\unrelated\\text",
 		);
 	});
 
@@ -386,8 +396,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 			error: (line) => err.push(line),
 			...(broker === undefined ? {} : { loadControl: async () => broker }),
 		});
-		const normalize = (text: string) =>
-			text.replaceAll(root, "<root>").replace(/storage-token\.[\da-f-]+/g, "storage-token.<id>");
+		const normalize = (text: string) => underRoot(text).replace(/storage-token\.[\da-f-]+/g, "storage-token.<id>");
 		return { code, out: normalize(out.join("\n")), err: normalize(err.join("\n")) };
 	}
 
