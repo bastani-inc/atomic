@@ -42,11 +42,6 @@
 - SDK: `joinTeam()`, `leaveTeam()`, `getTeamProfile()` and `teamProfileSelection()` from `@bastani/atomic/storage`, the `createAgentSession({ storage })` option, in-memory `{ value }` secrets that serialize as `[redacted]`, the typed `TeamProfileError` and `TeamProfileConfigError` with their guards and `serializeTeamError()`/`rehydrateTeamError()` for passing them between processes, and `ProjectGroupError` with `isProjectGroupError()` from `@bastani/atomic` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - A new [Team and CI setup](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/guides/team-setup.md) guide with a GitHub Actions and gh-aw snippet ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 
-### Fixed
-
-- Settings files are written to a temporary file and renamed into place, keeping their mode and symbolic links, so another Atomic process never reads a half-written `settings.json`, and a killed or out-of-space write leaves the previous file intact. A settings file that cannot be replaced, such as a single file mounted into a container, is still written in place ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
-- An invalid `--storage`, `ATOMIC_STORAGE` or `ATOMIC_PROFILE` selection, or a missing libSQL adapter for the CI profile, now stops startup with one `Error:` line and exit code 1 instead of a stack trace ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
-
 ### Changed
 
 - A node-sqlite writers' queue directory (`<file>-writers`) that exists but cannot be read now fails transactions with `StorageWriterQueueUnusableError`, a `StorageUnavailableError` naming the cause, instead of letting them skip the queue unnoticed. A writer that cannot read the queue when it lets go of the lock still commits and reports a `StorageWriterQueueDegradedError` warning ([#4316](https://github.com/bastani-inc/atomic/issues/4316))
@@ -93,6 +88,8 @@
 - When a bash command times out after the shell itself exited, because a background process it started kept writing to its output, the error also reports the shell's exit code and when it exited, instead of only `Command timed out after N seconds` (upstream [#11813](https://github.com/earendil-works/pi/pull/11813))
 - Malformed llama.cpp server URLs and URL-like error details no longer stall credential redaction on long inputs. User names and passwords are still removed before errors are displayed or relayed.
 - The grep tool preserves skipped matches as leading context when `offset` pages past them and avoids repeatedly scanning large leading-context windows. The plan-mode example only clears a completed plan after an affirmative final visible reply, not a negated summary or a claim made only in hidden thinking.
+- Settings files are written to a temporary file and renamed into place, keeping their mode and symbolic links, so another Atomic process never reads a half-written `settings.json`, and a killed or out-of-space write leaves the previous file intact. A settings file that cannot be replaced, such as a single file mounted into a container, is still written in place ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
+- An invalid `--storage`, `ATOMIC_STORAGE` or `ATOMIC_PROFILE` selection, or a missing libSQL adapter for the CI profile, now stops startup with one `Error:` line and exit code 1 instead of a stack trace ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 
 ## [0.9.71] - 2026-11-03
 
