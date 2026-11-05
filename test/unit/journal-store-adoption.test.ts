@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -13,6 +13,7 @@ import {
 	JOURNAL_CONSOLIDATION_HOLDER_PREFIX,
 	JOURNAL_DISCOVERY_LIMIT,
 	JournalCatalog,
+	JournalCatalogError,
 	legacyDefaultJournalPath,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
@@ -332,8 +333,8 @@ test("consolidation leaves a run in place when the catalog moved it meanwhile or
 		Reflect.set(catalog, "moveRun", async () => false);
 		const report = await consolidateJournalStore(catalog);
 		assert.deepEqual(
-			report.runs.map((run) => [run.runId, run.reason]),
-			[["raced", "changed"]],
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["raced", "skipped", "changed"]],
 		);
 		const target = await catalog.homeShard("raced");
 		const copy = new DatabaseSync(target.path, { readOnly: true });
@@ -535,3 +536,187 @@ for (const [label, change] of [
 		assert.deepEqual([lease?.holder_id, lease?.epoch], [null, 2], "the fence was lifted and its epoch kept");
 		source.close();
 	});
+
+/** Appends one more event to each run of the journal at `path`. */
+async function appendEvent(path: string, runIds: readonly string[]): Promise<void> {
+	const sql = await openSqlRunJournal(path);
+	try {
+		for (const runId of runIds) {
+			const held = await sql.acquire(runId, "writer");
+			assert.equal(held.status, "acquired");
+			if (held.status !== "acquired") continue;
+			await sql.append(held.lease, { type: "SummaryRecorded", payload: { runId } }, { key: "second" });
+			await sql.release(held.lease);
+		}
+	} finally {
+		await sql.close();
+	}
+}
+
+test("inspection refuses a file holding only the SQLite header text without its terminator, without opening it (#4325)", async () => {
+	writeFileSync(join(root, "header.sqlite"), "SQLite format 3");
+	const refused = await inspectJournalFile(join(root, "header.sqlite")).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(refused));
+	assert.deepEqual([refused.code, refused.reason, refused.cause], ["not-a-journal", "not-sqlite", undefined]);
+});
+
+test("inspection does not take a meta and an events table without a runs table for a legacy journal (#4325)", async () => {
+	const partial = join(root, "partial.sqlite");
+	raw(partial, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
+	raw(partial, "CREATE TABLE events(run_id TEXT)");
+	raw(partial, "INSERT INTO meta VALUES (1)");
+	const refused = await inspectJournalFile(partial).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(refused));
+	assert.deepEqual([refused.code, refused.reason], ["not-a-journal", "no-journal-tables"]);
+});
+
+test("a discovered journal the catalog fails to register fails the adoption with the catalog's error, not a skip (#4325)", async () => {
+	const referenced = await journal(join(root, "referenced", "journal.sqlite"), [{ runId: "referenced" }]);
+	const start = await journal(join(root, "start", "journal.sqlite"), [{ runId: "start", references: referenced }]);
+	await withCatalog(async (catalog) => {
+		const registerAdopted = catalog.registerAdopted.bind(catalog);
+		const failure = new JournalCatalogError({
+			code: "write-failed",
+			catalogPath: catalog.path,
+			phase: "registering-shard",
+		});
+		Reflect.set(catalog, "registerAdopted", async (path: string, runs: Parameters<typeof registerAdopted>[1]) => {
+			if (path === referenced) throw failure;
+			return registerAdopted(path, runs);
+		});
+		await assert.rejects(adoptJournals(catalog, [start]), (error: Error) => error === failure);
+		assert.equal(
+			(await catalog.discoveries()).some((record) => record.path === referenced),
+			false,
+			"the failure is not recorded as a skip",
+		);
+	});
+});
+
+test("legacy discovery records a new skip reason when the file changed (#4325)", async () => {
+	await withCatalog(async (catalog) => {
+		const legacy = join(root, "legacy.sqlite");
+		writeFileSync(legacy, "plain text, not a database");
+		await discoverLegacyJournal(catalog, legacy);
+		assert.deepEqual(
+			(await catalog.discoveries()).map((record) => [record.path, record.reason]),
+			[[legacy, "not-a-journal"]],
+		);
+		rmSync(legacy);
+		await journal(legacy, []);
+		raw(legacy, "UPDATE wf_meta SET schema_version = 99");
+		await discoverLegacyJournal(catalog, legacy);
+		assert.deepEqual(
+			(await catalog.discoveries()).map((record) => [record.path, record.reason]),
+			[[legacy, "schema-version"]],
+		);
+	});
+});
+
+test("consolidation into a new shard records its schema version once (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "first" }, { runId: "second" }]);
+	await adoptJournals(store, [path]);
+	const report = await consolidateJournalStore(store);
+	assert.deepEqual(
+		report.runs.map((run) => run.outcome),
+		["moved", "moved"],
+	);
+	const located = await withCatalog((catalog) => catalog.locate("first"));
+	assert.equal(located?.shard.kind, "native");
+	const target = new DatabaseSync(located!.shard.path, { readOnly: true });
+	try {
+		assert.deepEqual(
+			target
+				.prepare("SELECT schema_version FROM wf_meta")
+				.all()
+				.map((row) => row.schema_version),
+			[1],
+		);
+	} finally {
+		target.close();
+	}
+});
+
+for (const [label, change] of [
+	[
+		"an extra event",
+		"INSERT INTO wf_events SELECT run_id, seq + 10, epoch, 'third', type, payload, at FROM wf_events WHERE key = 'second'",
+	],
+	["another second event", "UPDATE wf_events SET payload = '\"other\"' WHERE key = 'second'"],
+] as const)
+	test(`consolidation treats a destination copy with ${label} after a matching first one as a conflict (#4325)`, async () => {
+		const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "copy" }]);
+		await appendEvent(path, ["copy"]);
+		await adoptJournals(store, [path]);
+		const target = await withCatalog((catalog) => catalog.homeShard("copy"));
+		await journal(target.path, []);
+		const copy = new DatabaseSync(target.path);
+		copy.exec(`ATTACH DATABASE '${path}' AS source`);
+		for (const table of ["wf_runs", "wf_events"])
+			copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
+		copy.exec(change);
+		copy.close();
+		const report = await consolidateJournalStore(store);
+		assert.deepEqual(
+			report.runs.map((run) => [run.outcome, run.reason]),
+			[["skipped", "conflict"]],
+		);
+	});
+
+for (const [label, takeover] of [
+	["took over", "UPDATE wf_leases SET holder_id = 'resumer' WHERE run_id = 'run'"],
+	["removed", "DELETE FROM wf_leases WHERE run_id = 'run'"],
+] as const)
+	test(`consolidation never deletes a source copy whose fence another process ${label} while it moved (#4325)`, async () => {
+		const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "run" }]);
+		await adoptJournals(store, [path]);
+		await withCatalog(async (catalog) => {
+			const moveRun = catalog.moveRun.bind(catalog);
+			Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+				raw(path, takeover);
+				return moveRun(runId, from, to);
+			});
+			const report = await consolidateJournalStore(catalog);
+			assert.deepEqual(
+				report.runs.map((run) => [run.runId, run.outcome]),
+				[["run", "moved"]],
+			);
+		});
+		const source = new DatabaseSync(path, { readOnly: true });
+		try {
+			assert.deepEqual(
+				source
+					.prepare("SELECT run_id FROM wf_runs")
+					.all()
+					.map((row) => row.run_id),
+				["run"],
+			);
+		} finally {
+			source.close();
+		}
+	});
+
+test.skipIf(process.platform === "win32")(
+	"inspection, adoption and consolidation close every file and database they open (#4325)",
+	async () => {
+		const descriptors = () => readdirSync(existsSync("/proc/self/fd") ? "/proc/self/fd" : "/dev/fd").length;
+		const cycle = async (label: string) => {
+			const files: string[] = [];
+			for (const index of [0, 1])
+				files.push(
+					await journal(join(root, label, `journal-${index}`, "journal.sqlite"), [
+						{ runId: `${label}-${index}-a` },
+						{ runId: `${label}-${index}-b` },
+					]),
+				);
+			await inspectJournalFile(files[0]!);
+			await adoptJournals(store, files);
+			const report = await consolidateJournalStore(store);
+			assert.equal(report.moved, 4);
+		};
+		await cycle("warm");
+		const before = descriptors();
+		await cycle("measured");
+		assert.equal(descriptors(), before);
+	},
+);

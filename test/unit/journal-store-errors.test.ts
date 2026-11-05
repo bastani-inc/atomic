@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+	findJournalStoreError,
 	isJournalAdoptError,
 	isJournalCatalogError,
 	isJournalShardUnavailableError,
@@ -10,6 +11,7 @@ import {
 	JournalShardUnavailableError,
 	JournalStoreError,
 	rehydrateJournalStoreError,
+	type SqliteValue,
 	serializeJournalStoreError,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
@@ -236,6 +238,7 @@ test("the family base keeps a given name and defaults to JournalStoreError; guar
 		assert.equal(isJournalStoreError(value), false, JSON.stringify(value));
 	assert.ok(isJournalStoreError({ name: "x", code: "c", fields: {}, retryable: false }));
 	for (const guard of [isJournalCatalogError, isJournalShardUnavailableError, isJournalAdoptError]) {
+		assert.equal(guard(undefined), false);
 		assert.equal(guard(null), false);
 		assert.equal(guard("text"), false);
 		assert.equal(guard({ name: "JournalCatalogError", code: 7 }), false);
@@ -358,4 +361,40 @@ test("the guards match plain objects of every class by name and code, and only s
 		isRetryableJournalStoreError(new Error("outer", { cause: { name: "Other", code: "x", retryable: true } })),
 		false,
 	);
+});
+
+test("a cause chain is walked through errors only, and a non-retryable store error does not end the search for a retryable one (#4325)", () => {
+	const adoption = new JournalAdoptError({ code: "path-not-found", path: "/x" });
+	assert.equal(isRetryableJournalStoreError(adoption), false);
+	assert.equal(isRetryableJournalStoreError(new Error("outer", { cause: adoption })), false);
+	const busyCatalog = new JournalCatalogError({ code: "write-failed", catalogPath, cause: busy() });
+	assert.equal(
+		isRetryableJournalStoreError(
+			new JournalShardUnavailableError({ code: "shard-missing", shardId: 1, shardPath: "/s", cause: busyCatalog }),
+		),
+		true,
+	);
+	assert.equal(findJournalStoreError(new Error("plain")), undefined);
+	assert.equal(findJournalStoreError("text"), undefined);
+	assert.equal(findJournalStoreError(new Error("outer", { cause: "text" })), undefined);
+	assert.equal(findJournalStoreError(new Error("outer", { cause: adoption })), adoption);
+	const ended = serializeJournalStoreError(
+		new JournalCatalogError({ code: "write-failed", catalogPath, cause: new Error("e", { cause: null }) }),
+	);
+	assert.deepEqual(ended.cause, { name: "Error", message: "e" }, "a null cause ends the chain");
+});
+
+test("a schema version is recorded JSON-safe: numbers and null as they are, other SQLite values as text (#4325)", () => {
+	const recorded = (found: SqliteValue | undefined) => {
+		const catalog = new JournalCatalogError({ code: "schema-version", catalogPath, found, supported: 1 });
+		const adoption = new JournalAdoptError({ code: "schema-version", path: "/j", found, supported: 1 });
+		assert.deepEqual(adoption.fields.found, catalog.fields.found);
+		return [catalog.fields.found, "found" in catalog.fields];
+	};
+	assert.deepEqual(recorded(7), [7, true]);
+	assert.deepEqual(recorded("v7"), ["v7", true]);
+	assert.deepEqual(recorded(null), [null, true]);
+	assert.deepEqual(recorded(7n), ["7", true]);
+	assert.deepEqual(recorded(new Uint8Array([1, 2])), ["1,2", true]);
+	assert.deepEqual(recorded(undefined), [undefined, false]);
 });

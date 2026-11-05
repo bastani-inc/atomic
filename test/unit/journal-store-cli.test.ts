@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { JournalAdoptError } from "@bastani/atomic/storage";
+import { JournalAdoptError, JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
 	formatStorageStatus,
@@ -193,7 +193,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 		status: "skipped",
 		detail: "journal store not created yet; Atomic creates it on first use",
 	});
-	assert.equal(journal.journalStore, undefined);
+	assert.equal("journalStore" in journal, false, "a store not created yet has no catalog to show");
 
 	const kept = join(root, "kept", "journal.sqlite");
 	const lost = join(root, "lost", "journal.sqlite");
@@ -316,4 +316,43 @@ test("status counts the store's own shards apart from adopted journals (#4325)",
 		[journal.journalStore?.shards, journal.journalStore?.adopted, journal.journalStore?.runs],
 		[1, 1, 2],
 	);
+});
+
+test("adopt names the journals it adopted through references; consolidate counts each reason and shows the first failure (#4325)", async () => {
+	const referenced = join(root, "referenced", "journal.sqlite");
+	await journalFile(referenced, [{ id: "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1", status: "failed" }]);
+	const start = join(root, "start", "journal.sqlite");
+	await journalFile(start, [
+		{ id: "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2", status: "running" },
+		{ id: "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3", status: "running" },
+	]);
+	const sql = await openSqlRunJournal(start);
+	await sql.createRun({
+		runId: "d4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4",
+		name: "moved",
+		cwd: "/p",
+		createdAt: 1,
+		status: "failed",
+		storage: { adapter: "node-sqlite", location: referenced },
+	});
+	await sql.close();
+	const gone = join(root, "gone", "journal.sqlite");
+	await journalFile(gone, [{ id: "e5e5e5e5-e5e5-4e5e-8e5e-e5e5e5e5e5e5", status: "failed" }]);
+	assert.deepEqual((await storage(["adopt", start, gone])).out, [
+		`Adopted ${start} in place (shard 1, 3 runs).`,
+		`Adopted ${gone} in place (shard 2, 1 run).`,
+		`Adopted ${referenced}, referenced by runs in ${start}.`,
+	]);
+	rmSync(join(root, "gone"), { recursive: true, force: true });
+	const missing = new JournalShardUnavailableError({ code: "shard-missing", shardId: 2, shardPath: gone });
+	assert.deepEqual(await storage(["consolidate"]), {
+		code: 0,
+		out: [
+			"Moved 2 finished runs into the journal store's shards.",
+			"Left 2 runs in place: unfinished.",
+			"Left 1 run in place: shard-unavailable.",
+			`${missing.message} ${missing.hint}`,
+		],
+		err: [],
+	});
 });

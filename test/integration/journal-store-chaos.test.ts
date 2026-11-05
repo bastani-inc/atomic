@@ -1,7 +1,7 @@
 /**
  * Contention and chaos for the journal store (#4325): many writer processes on one shard and across shards, writers
- * killed while they hold a shard's write lock, a catalog writer killed mid-transaction, a lock holder stopped with
- * SIGSTOP, a full disk, and clock skew on lease renewal. After each, no checkpoint is lost or written twice, every
+ * killed while they hold a shard's write lock, a catalog writer killed mid-transaction or stalled past a connection's
+ * lock wait, a lock holder stopped with SIGSTOP, a full disk, and clock skew on lease renewal. After each, no checkpoint is lost or written twice, every
  * shard and the catalog pass `PRAGMA integrity_check`, and no writer waited longer than the connection's lock wait.
  */
 import assert from "node:assert/strict";
@@ -28,6 +28,7 @@ import {
 	readStreamText,
 	removeTempDirectory,
 	type SpawnedProcess,
+	sleep,
 	spawnProcess,
 } from "../helpers/runtime.js";
 
@@ -50,6 +51,10 @@ function sqliteCodes(error: unknown): number[] {
 }
 /** Writer processes each load the workflow journal from source under Bun before their first append. */
 const CHAOS_SCENARIO_TIMEOUT_MS = 180_000;
+/** A catalog lock held with no commit for longer than a journal connection's lock wait, which fails a journal write. */
+const STALLED_CATALOG_HOLDER_MS = WRITER_WAIT_BOUND_MS + 2_000;
+/** The stalled holder's time, plus starting the holder process and the placement after it. */
+const STALLED_CATALOG_TIMEOUT_MS = STALLED_CATALOG_HOLDER_MS + 60_000;
 
 let directory: string;
 let store: string;
@@ -310,6 +315,37 @@ test(
 		}
 	},
 	CHAOS_SCENARIO_TIMEOUT_MS,
+);
+
+test(
+	"a catalog placement waits out a catalog writer stalled past a connection's lock wait, and completes once it is killed (#4325)",
+	async () => {
+		const catalog = await JournalCatalog.open(store);
+		try {
+			const holder = await holdLock("catalog", join(store, "catalog.sqlite"));
+			const started = Date.now();
+			const placing = catalog.place({ runId: testRunId("chaos-catalog-patient"), status: "running" }).then(
+				(placed) => ({ placed, at: Date.now() }),
+				(error: Error) => error,
+			);
+			await sleep(STALLED_CATALOG_HOLDER_MS);
+			holder.kill("SIGKILL");
+			await holder.exited;
+			const outcome = await placing;
+			assert.ok(!(outcome instanceof Error), String(outcome));
+			assert.equal(outcome.placed.placed, true);
+			assert.ok(outcome.at - started >= STALLED_CATALOG_HOLDER_MS, "the placement waited for the stalled writer");
+			assert.equal(
+				await catalog.locate("killed-placement"),
+				undefined,
+				"the stalled writer's placement rolled back",
+			);
+		} finally {
+			await catalog.close();
+		}
+		assertIntact(join(store, "catalog.sqlite"));
+	},
+	STALLED_CATALOG_TIMEOUT_MS,
 );
 
 test.skipIf(process.platform === "win32")(

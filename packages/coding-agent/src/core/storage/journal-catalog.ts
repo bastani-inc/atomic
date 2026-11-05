@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { attachCleanupCause } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import {
 	JournalAdoptError,
@@ -107,7 +108,7 @@ export function nativeShardFile(id: number): string {
 
 /** Whether a status means the run will not write again unless it is resumed. */
 export function isFinishedJournalStatus(status: string | undefined): boolean {
-	return status !== undefined && (JOURNAL_FINISHED_STATUSES as readonly string[]).includes(status);
+	return (JOURNAL_FINISHED_STATUSES as readonly (string | undefined)[]).includes(status);
 }
 
 /**
@@ -147,17 +148,17 @@ export class JournalCatalog {
 		try {
 			await catalog.write("opening", (tx) => catalog.createSchema(tx));
 		} catch (error) {
-			await database.close().catch((cleanupCause: Error) => {
-				Object.defineProperty(error as object, "cleanupCause", { value: cleanupCause, configurable: true });
-			});
-			if (error instanceof JournalCatalogError && error.code === "write-failed")
-				throw new JournalCatalogError({
-					code: "catalog-unavailable",
-					catalogPath: path,
-					phase: "opening",
-					cause: error.cause as StorageFailureCause,
-				});
-			throw error;
+			const failure =
+				error instanceof JournalCatalogError && error.code === "write-failed"
+					? new JournalCatalogError({
+							code: "catalog-unavailable",
+							catalogPath: path,
+							phase: "opening",
+							cause: error.cause as StorageFailureCause,
+						})
+					: error;
+			await database.close().catch((cleanupCause: unknown) => attachCleanupCause(failure, cleanupCause));
+			throw failure;
 		}
 		return catalog;
 	}
@@ -174,15 +175,13 @@ export class JournalCatalog {
 				rule: `catalog_meta has ${versions.length} rows`,
 			});
 		if (versions.length === 0) await tx.run("INSERT INTO catalog_meta VALUES (?)", JOURNAL_CATALOG_SCHEMA_VERSION);
-		else if (versions[0]!.schema_version !== JOURNAL_CATALOG_SCHEMA_VERSION) {
-			const found = versions[0]!.schema_version;
+		else if (versions[0]!.schema_version !== JOURNAL_CATALOG_SCHEMA_VERSION)
 			throw new JournalCatalogError({
 				code: "schema-version",
 				catalogPath: this.path,
-				found: typeof found === "number" || typeof found === "string" || found === null ? found : String(found),
+				found: versions[0]!.schema_version,
 				supported: JOURNAL_CATALOG_SCHEMA_VERSION,
 			});
-		}
 		await tx.exec(`
 			CREATE TABLE IF NOT EXISTS catalog_shards(
 				id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,

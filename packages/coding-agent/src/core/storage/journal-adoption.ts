@@ -2,14 +2,20 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import type { StorageFailureCause } from "./errors.js";
-import { isJournalAdoptError, JournalAdoptError, JournalCatalogError, JournalShardUnavailableError } from "./errors.js";
+import {
+	isJournalAdoptError,
+	JournalAdoptError,
+	type JournalAdoptErrorCode,
+	JournalCatalogError,
+	JournalShardUnavailableError,
+} from "./errors.js";
 import {
 	isFinishedJournalStatus,
 	JournalCatalog,
 	type JournalCatalogRunHeader,
-	type JournalDiscoveryRecord,
 	type JournalShardRecord,
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -65,13 +71,14 @@ async function adoptionFile(path: string): Promise<string> {
 
 async function hasSqliteHeader(path: string): Promise<boolean> {
 	const handle = await open(path, "r");
-	try {
-		const buffer = Buffer.alloc(SQLITE_HEADER.length);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-		return bytesRead === buffer.length && buffer.toString("latin1") === SQLITE_HEADER;
-	} finally {
-		await handle.close();
-	}
+	return withCleanup(
+		async () => {
+			const buffer = Buffer.alloc(SQLITE_HEADER.length);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+			return bytesRead === buffer.length && buffer.toString("latin1") === SQLITE_HEADER;
+		},
+		() => handle.close(),
+	);
 }
 
 async function tableNames(executor: SqliteExecutor): Promise<ReadonlySet<string>> {
@@ -122,56 +129,54 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 			cause: cause as StorageFailureCause,
 		});
 	}
-	try {
-		const names = await tableNames(database);
-		if (names.has("catalog_shards"))
-			throw new JournalAdoptError({ code: "not-a-journal", path: file, reason: "store-catalog" });
-		const current = names.has(TABLES.meta) && names.has(TABLES.runs);
-		const legacy = names.has("meta") && names.has(LEGACY_RUNS) && names.has("events");
-		if (!current && !legacy)
-			throw new JournalAdoptError({ code: "not-a-journal", path: file, reason: "no-journal-tables" });
-		const versions = await database.all<SqliteRow & { schema_version: SqliteValue }>(
-			`SELECT schema_version FROM ${current ? TABLES.meta : "meta"}`,
-		);
-		const found = versions[0]?.schema_version;
-		if (versions.length !== 1 || found !== RUN_JOURNAL_SCHEMA_VERSION)
-			throw new JournalAdoptError({
-				code: "schema-version",
-				path: file,
-				found:
-					typeof found === "number" || typeof found === "string"
-						? found
-						: found === undefined
-							? null
-							: String(found),
-				supported: RUN_JOURNAL_SCHEMA_VERSION,
-			});
-		const rows = current
-			? await database.all<
-					SqliteRow & { run_id: string; name: string; cwd: string; status: string; header_json: string }
-				>(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
-			: [];
-		const references = new Set<string>();
-		for (const row of rows) {
-			const referenced = referencedJournal(row.header_json, file);
-			if (referenced !== undefined) references.add(referenced);
-		}
-		return {
-			path: file,
-			runs: rows.map((row) => ({ runId: row.run_id, name: row.name, cwd: row.cwd, status: row.status })),
-			references: [...references],
-		};
-	} catch (cause) {
-		if (cause instanceof JournalAdoptError) throw cause;
-		throw new JournalAdoptError({
-			code: "not-a-journal",
-			path: file,
-			reason: "not-sqlite",
-			cause: cause as StorageFailureCause,
-		});
-	} finally {
-		await database.close();
-	}
+	return withCleanup(
+		async () => {
+			try {
+				const names = await tableNames(database);
+				if (names.has("catalog_shards"))
+					throw new JournalAdoptError({ code: "not-a-journal", path: file, reason: "store-catalog" });
+				const current = names.has(TABLES.meta) && names.has(TABLES.runs);
+				const legacy = names.has("meta") && names.has(LEGACY_RUNS) && names.has("events");
+				if (!current && !legacy)
+					throw new JournalAdoptError({ code: "not-a-journal", path: file, reason: "no-journal-tables" });
+				const versions = await database.all<SqliteRow & { schema_version: SqliteValue }>(
+					`SELECT schema_version FROM ${current ? TABLES.meta : "meta"}`,
+				);
+				const found = versions[0]?.schema_version;
+				if (versions.length !== 1 || found !== RUN_JOURNAL_SCHEMA_VERSION)
+					throw new JournalAdoptError({
+						code: "schema-version",
+						path: file,
+						found: found ?? null,
+						supported: RUN_JOURNAL_SCHEMA_VERSION,
+					});
+				const rows = current
+					? await database.all<
+							SqliteRow & { run_id: string; name: string; cwd: string; status: string; header_json: string }
+						>(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
+					: [];
+				const references = new Set<string>();
+				for (const row of rows) {
+					const referenced = referencedJournal(row.header_json, file);
+					if (referenced !== undefined) references.add(referenced);
+				}
+				return {
+					path: file,
+					runs: rows.map((row) => ({ runId: row.run_id, name: row.name, cwd: row.cwd, status: row.status })),
+					references: [...references],
+				};
+			} catch (cause) {
+				if (cause instanceof JournalAdoptError) throw cause;
+				throw new JournalAdoptError({
+					code: "not-a-journal",
+					path: file,
+					reason: "not-sqlite",
+					cause: cause as StorageFailureCause,
+				});
+			}
+		},
+		() => database.close(),
+	);
 }
 
 export interface JournalAdoptionOutcome {
@@ -183,10 +188,28 @@ export interface JournalAdoptionOutcome {
 	readonly runs: number;
 }
 
+type DiscoveredJournal =
+	| {
+			readonly path: string;
+			readonly referencedBy: string;
+			readonly outcome: "adopted" | "already-registered";
+			readonly reason?: undefined;
+	  }
+	| {
+			readonly path: string;
+			readonly referencedBy: string;
+			readonly outcome: "skipped";
+			/** The code of the `JournalAdoptError` adopting it raised. */
+			readonly reason: JournalAdoptErrorCode;
+	  };
+
+/** A journal found through the runs of an adopted journal, which it names: adopted, or skipped with the reason. */
+export type JournalDiscovered = DiscoveredJournal & { readonly checkedAt: number };
+
 export interface JournalAdoptionReport {
 	readonly adopted: readonly JournalAdoptionOutcome[];
 	/** Journals found through the runs of adopted journals, adopted or skipped with the reason. */
-	readonly discovered: readonly JournalDiscoveryRecord[];
+	readonly discovered: readonly JournalDiscovered[];
 }
 
 export interface JournalAdoptionOptions {
@@ -197,11 +220,10 @@ export interface JournalAdoptionOptions {
 async function withCatalog<T>(store: string | JournalCatalog, body: (catalog: JournalCatalog) => Promise<T>) {
 	if (typeof store !== "string") return body(store);
 	const catalog = await JournalCatalog.open(store);
-	try {
-		return await body(catalog);
-	} finally {
-		await catalog.close();
-	}
+	return withCleanup(
+		() => body(catalog),
+		() => catalog.close(),
+	);
 }
 
 async function register(catalog: JournalCatalog, inspection: JournalFileInspection): Promise<JournalAdoptionOutcome> {
@@ -213,19 +235,18 @@ async function register(catalog: JournalCatalog, inspection: JournalFileInspecti
 async function discover(
 	catalog: JournalCatalog,
 	start: readonly JournalFileInspection[],
-): Promise<JournalDiscoveryRecord[]> {
-	const records: JournalDiscoveryRecord[] = [];
+): Promise<JournalDiscovered[]> {
+	const records: JournalDiscovered[] = [];
 	const registered = new Set((await catalog.shards()).map((shard) => resolve(shard.path)));
-	const visited = new Set(start.map((inspection) => inspection.path));
+	const visited = new Set<string>();
 	const queue = start.flatMap((inspection) =>
 		inspection.references.map((reference) => ({ reference, from: inspection.path })),
 	);
-	while (queue.length > 0 && visited.size < JOURNAL_DISCOVERY_LIMIT + start.length) {
+	while (queue.length > 0 && visited.size < JOURNAL_DISCOVERY_LIMIT) {
 		const { reference, from } = queue.shift()!;
-		if (visited.has(reference)) continue;
+		if (visited.has(reference) || registered.has(reference)) continue;
 		visited.add(reference);
-		if (registered.has(reference)) continue;
-		let record: Omit<JournalDiscoveryRecord, "checkedAt">;
+		let record: DiscoveredJournal;
 		try {
 			const inspection = await inspectJournalFile(reference);
 			const outcome = await register(catalog, inspection);
@@ -319,15 +340,25 @@ export type JournalConsolidationSkip =
 	| "changed"
 	| "shard-unavailable";
 
-export interface JournalConsolidationRun {
-	readonly runId: string;
-	readonly from: number;
-	readonly to?: number;
-	readonly outcome: "moved" | "skipped";
-	readonly reason?: JournalConsolidationSkip;
-	/** The typed error behind `conflict` or `shard-unavailable`. */
-	readonly error?: JournalCatalogError | JournalShardUnavailableError;
-}
+/** One run a consolidation considered: moved from shard `from` to shard `to`, or left where it is with the reason. */
+export type JournalConsolidationRun =
+	| {
+			readonly runId: string;
+			readonly from: number;
+			readonly to: number;
+			readonly outcome: "moved";
+			readonly reason?: undefined;
+			readonly error?: undefined;
+	  }
+	| {
+			readonly runId: string;
+			readonly from: number;
+			readonly to?: number;
+			readonly outcome: "skipped";
+			readonly reason: JournalConsolidationSkip;
+			/** The typed error behind `conflict` or `shard-unavailable`. */
+			readonly error?: JournalCatalogError | JournalShardUnavailableError;
+	  };
 
 export interface JournalConsolidationReport {
 	readonly moved: number;
@@ -533,34 +564,36 @@ export async function consolidateJournalStore(store: string | JournalCatalog): P
 			}
 			return database;
 		};
-		try {
-			for (const shard of shards.filter((candidate) => candidate.kind === "adopted")) {
-				let source: SqliteDatabase;
-				try {
-					source = await openShardFile(shard);
-				} catch (error) {
-					if (!(error instanceof JournalShardUnavailableError)) throw error;
-					for (const run of await catalog.runs({ shard: shard.id }))
-						results.push({
-							runId: run.runId,
-							from: shard.id,
-							outcome: "skipped",
-							reason: "shard-unavailable",
-							error,
-						});
-					continue;
+		await withCleanup(
+			async () => {
+				for (const shard of shards.filter((candidate) => candidate.kind === "adopted")) {
+					let source: SqliteDatabase;
+					try {
+						source = await openShardFile(shard);
+					} catch (error) {
+						if (!(error instanceof JournalShardUnavailableError)) throw error;
+						for (const run of await catalog.runs({ shard: shard.id }))
+							results.push({
+								runId: run.runId,
+								from: shard.id,
+								outcome: "skipped",
+								reason: "shard-unavailable",
+								error,
+							});
+						continue;
+					}
+					await withCleanup(
+						async () => {
+							await finishInterruptedMoves(catalog, source, owners, shard.id, target);
+							for (const run of await catalog.runs({ shard: shard.id }))
+								results.push(await moveOne(catalog, source, shard, run.runId, holder, target));
+						},
+						() => source.close(),
+					);
 				}
-				try {
-					await finishInterruptedMoves(catalog, source, owners, shard.id, target);
-					for (const run of await catalog.runs({ shard: shard.id }))
-						results.push(await moveOne(catalog, source, shard, run.runId, holder, target));
-				} finally {
-					await source.close();
-				}
-			}
-		} finally {
-			await Promise.all([...targets.values()].map((database) => database.close()));
-		}
+			},
+			() => closeEach(targets.values()),
+		);
 		const moved = results.filter((run) => run.outcome === "moved").length;
 		return { moved, skipped: results.length - moved, runs: results };
 	});

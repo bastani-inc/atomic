@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic";
+import { type StorageInputSelection, selectsDefaultJournalStore } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { RunOpts } from "../../packages/workflows/src/authoring.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
@@ -290,3 +291,12 @@ for (const source of ["sdk", "workflows.journal", "storage"] as const) {
 		});
 	}
 }
+
+test("only a journal selection that names no store of its own means the journal store (#4325)", () => {
+	for (const value of [undefined, null, "journal.sqlite", 5, true, []])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), false, JSON.stringify(value));
+	for (const value of [{}, { path: "" }, { path: undefined }, { prefix: undefined }, { memory: false }])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), true, JSON.stringify(value));
+	for (const value of [{ path: "journal.sqlite" }, { prefix: "p_" }, { memory: true }, { dir: "journals" }])
+		assert.equal(selectsDefaultJournalStore(value as StorageInputSelection), false, JSON.stringify(value));
+});

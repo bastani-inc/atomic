@@ -4,13 +4,18 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
 	adoptJournals,
+	consolidateJournalStore,
 	isJournalCatalogError,
 	JournalCatalog,
+	JournalCatalogError,
 	openNodeSqliteDatabase,
 	type SqliteDatabase,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
-import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
+import {
+	isShardedRunJournal,
+	ShardedRunJournal,
+} from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import {
 	JournalClosedError,
@@ -198,6 +203,13 @@ test("shards without the optional change tracking still list, version and tail (
 	assert.ok((JSON.parse(await journal.changeToken()) as string[]).includes("untracked"));
 	assert.deepEqual(await journal.runVersions(), new Map([["plain", { seq: 0, at: 0 }]]));
 	assert.equal(await journal.snapshotTail("plain"), undefined);
+	const elsewhere = { ...journal.shardOf("plain")!, id: 999 };
+	Reflect.get(journal, "located").set("plain", elsewhere);
+	assert.equal(
+		await journal.snapshotTail("plain"),
+		undefined,
+		"a run found again on another shard is tailed only if that shard can",
+	);
 });
 
 test("the catalog records a status only for a status change that was appended (#4325)", async () => {
@@ -230,6 +242,17 @@ test("the catalog records a status only for a status change that was appended (#
 		{ event: { type: "SummaryRecorded", payload: null }, context },
 	]);
 	assert.equal(await status(), "paused", "a rejected status change records nothing");
+	await journal.appendMany(lease, [
+		{ event: { type: "SummaryRecorded", payload: null }, context },
+		{ event: { type: "StatusChanged", payload: { status: "failed" } }, key: "status", context },
+	]);
+	assert.equal(await status(), "paused", "a status change that already exists records nothing, last in its batch");
+	await journal.appendMany(lease, [
+		{ event: { type: "StatusChanged", payload: { status: "completed" } }, key: "done", context },
+		{ event: { type: "SummaryRecorded", payload: null }, context },
+	]);
+	assert.equal(await status(), "completed", "an appended status change is recorded, whatever follows it");
+	assert.deepEqual(journal.catalogBacklog(), { pending: 0 });
 });
 
 test("close waits for operations in flight, closes every shard and the catalog, and reports a failed close (#4325)", async () => {
@@ -320,4 +343,144 @@ test("a store whose legacy journal cannot be registered fails to open and closes
 		(await reopened.listRuns()).map((run) => run.runId),
 		["legacy-run"],
 	);
+});
+
+test("a journal store is recognized from another loaded copy of the workflows runtime by its registered brand (#4325)", async () => {
+	const journal = await open();
+	assert.ok(isShardedRunJournal(journal));
+	const brand = Symbol.for("@bastani/workflows/sharded-run-journal");
+	assert.ok(isShardedRunJournal({ [brand]: true } as unknown as RunJournal));
+	assert.equal(isShardedRunJournal(await openSqlRunJournal(join(root, "plain.sqlite"))), false);
+});
+
+test("looking up a run the catalog does not list opens no native shard (#4325)", async () => {
+	const journal = await open();
+	await start(journal, "one");
+	await start(journal, "two");
+	const opened: string[] = [];
+	const fresh = await open(async (path) => {
+		opened.push(path);
+		return openSqlRunJournal(path);
+	});
+	assert.equal(await fresh.getRun("unknown"), undefined);
+	assert.deepEqual(opened, []);
+});
+
+test("a run another store deleted reads as absent where this store still had it located (#4325)", async () => {
+	const journal = await open();
+	const lease = await start(journal, "deleted");
+	const record = journal.shardOf("deleted")!;
+	const other = await open();
+	await other.deleteOwnedRun(lease);
+	const located = Reflect.get(journal, "located") as Map<string, typeof record>;
+	assert.equal(await journal.getRun("deleted"), undefined);
+	located.set("deleted", record);
+	assert.equal(await journal.snapshotTail("deleted"), undefined);
+	located.set("deleted", record);
+	const entries = [];
+	for await (const entry of journal.read("deleted")) entries.push(entry);
+	assert.deepEqual(entries, []);
+});
+
+test("a status the catalog failed to record stays owed while an earlier one completes (#4325)", async () => {
+	const journal = await open();
+	const lease = await start(journal, "raced");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const setStatus = catalog.setStatus.bind(catalog);
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	let calls = 0;
+	Reflect.set(catalog, "setStatus", async (runId: string, status: string) => {
+		if (++calls === 1) {
+			entered.resolve();
+			await release.promise;
+			return setStatus(runId, status);
+		}
+		throw new JournalCatalogError({
+			code: "write-failed",
+			catalogPath: catalog.path,
+			phase: "recording-status",
+			runId,
+		});
+	});
+	const first = journal.append(lease, { type: "StatusChanged", payload: { status: "paused" } });
+	await entered.promise;
+	await journal.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	release.resolve();
+	await first;
+	assert.equal(journal.catalogBacklog().pending, 1, "the later status is still owed to the catalog");
+});
+
+test("a read a consolidation interrupts yields each entry once (#4325)", async () => {
+	const legacy = join(root, "old", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	const seed = await openSqlRunJournal(legacy);
+	const lease = await start(seed, "moving");
+	await seed.append(lease, { type: "RunStarted", payload: { snapshot: 1 } });
+	await seed.append(lease, { type: "SummaryRecorded", payload: null });
+	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await seed.release(lease);
+	await seed.close();
+	await adoptJournals(store, [legacy]);
+	const journal = await open();
+	const seen: number[] = [];
+	for await (const entry of journal.read("moving")) {
+		seen.push(entry.seq);
+		if (seen.length === 1) assert.equal((await consolidateJournalStore(store)).moved, 1);
+	}
+	assert.deepEqual(seen, [1, 2, 3]);
+});
+
+test("a failed open keeps its error and attaches the catalog's failed close; several failed closes are all reported (#4325)", async () => {
+	const legacy = join(root, "journal.sqlite");
+	const seed = await openSqlRunJournal(legacy);
+	await seed.createRun({ runId: "legacy-run", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await seed.close();
+	await (await JournalCatalog.open(store)).close();
+	const database = new DatabaseSync(join(store, "catalog.sqlite"));
+	database.exec("CREATE TRIGGER refuse BEFORE INSERT ON catalog_shards BEGIN SELECT RAISE(ABORT, 'refused'); END");
+	database.close();
+	const closeFailure = new Error("catalog close failed");
+	const close = JournalCatalog.prototype.close;
+	const restore = () => {
+		JournalCatalog.prototype.close = close;
+	};
+	JournalCatalog.prototype.close = async function (this: JournalCatalog) {
+		restore();
+		await close.call(this);
+		throw closeFailure;
+	};
+	try {
+		await assert.rejects(
+			ShardedRunJournal.open({
+				directory: store,
+				openShard: (path) => openSqlRunJournal(path),
+				legacyJournal: legacy,
+			}),
+			(error: Error & { cleanupCause?: unknown }) =>
+				isJournalCatalogError(error) && error.code === "write-failed" && error.cleanupCause === closeFailure,
+		);
+	} finally {
+		restore();
+	}
+
+	const failing = await ShardedRunJournal.open({
+		directory: join(root, "other"),
+		openShard: async (path) => {
+			const shard = await openSqlRunJournal(path);
+			const closeShard = shard.close.bind(shard);
+			shard.close = async () => {
+				await closeShard();
+				throw new Error(`close failed: ${path}`);
+			};
+			return shard;
+		},
+	});
+	await start(failing, "x");
+	await start(failing, "y");
+	await assert.rejects(failing.close(), (error: Error) => {
+		assert.ok(error instanceof AggregateError);
+		assert.equal(error.errors.length, 2);
+		return true;
+	});
 });

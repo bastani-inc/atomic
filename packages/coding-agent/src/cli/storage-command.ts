@@ -466,7 +466,7 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 /** A note when this directory's workflow runs use another journal than the journal store `adopt` writes to. */
 function storeSelectionNote(options: StorageCommandOptions, directory: string): string | undefined {
 	const selection = effectiveJournalSelection(options.cwd, options.agentDir);
-	if (selection.kind === "sharded" && resolve(selection.dir) === resolve(directory)) return undefined;
+	if (selection.kind === "sharded") return undefined;
 	return `Note: workflow runs here use ${describeStorageSelection(selection)}, so they see the journal store ${directory} only once that selection is removed.`;
 }
 
@@ -491,8 +491,8 @@ async function adopt(
 	for (const record of report.discovered) {
 		log(
 			record.outcome === "skipped"
-				? `Skipped ${record.path}, referenced by runs in ${record.referencedBy ?? "an adopted journal"} (${record.reason ?? "unknown"}).`
-				: `Adopted ${record.path}, referenced by runs in ${record.referencedBy ?? "an adopted journal"}.`,
+				? `Skipped ${record.path}, referenced by runs in ${record.referencedBy} (${record.reason}).`
+				: `Adopted ${record.path}, referenced by runs in ${record.referencedBy}.`,
 		);
 	}
 	const note = storeSelectionNote(options, directory);
@@ -506,11 +506,10 @@ async function consolidate(options: StorageCommandOptions, log: (line: string) =
 	log(`Moved ${report.moved} finished run${report.moved === 1 ? "" : "s"} into the journal store's shards.`);
 	const reasons = new Map<string, number>();
 	for (const run of report.runs)
-		if (run.outcome === "skipped")
-			reasons.set(run.reason ?? "unknown", (reasons.get(run.reason ?? "unknown") ?? 0) + 1);
+		if (run.outcome === "skipped") reasons.set(run.reason, (reasons.get(run.reason) ?? 0) + 1);
 	for (const [reason, count] of reasons) log(`Left ${count} run${count === 1 ? "" : "s"} in place: ${reason}.`);
 	const failed = report.runs.find((run) => run.error !== undefined)?.error;
-	if (failed !== undefined) log(`${failed.message} ${failed.hint ?? ""}`.trim());
+	if (failed !== undefined) log(`${failed.message} ${failed.hint}`);
 	const note = storeSelectionNote(options, directory);
 	if (note !== undefined) log(note);
 	return 0;

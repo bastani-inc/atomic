@@ -15,6 +15,7 @@ import {
 	storageSelectionKey,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { openSelectedRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -421,12 +422,17 @@ test("the provider opens the journal store only for a journal, keyed by its reso
 	for (const dir of ["", 5 as unknown as string])
 		await assert.rejects(provider.openRunJournal({ kind: "sharded", dir }, context), (error: Error) => {
 			assert.ok(error instanceof StorageConfigError);
-			assert.deepEqual([error.field, error.reason], ["dir", "invalid-dir"]);
+			assert.deepEqual([error.source, error.field, error.reason], ["sdk", "dir", "invalid-dir"]);
 			return true;
 		});
 	await assert.rejects(provider.openSessionStore({ kind: "sharded", dir: store }, context), (error: Error) => {
 		assert.ok(error instanceof StorageConfigError);
-		assert.deepEqual([error.field, error.reason], ["dir", "adapter-domain-unsupported"]);
+		assert.deepEqual([error.source, error.field, error.reason], ["sdk", "dir", "adapter-domain-unsupported"]);
+		return true;
+	});
+	await assert.rejects(provider.openRunJournal(null as never, context), (error: Error) => {
+		assert.ok(error instanceof StorageConfigError);
+		assert.deepEqual([error.source, error.reason], ["sdk", "selection-object-required"]);
 		return true;
 	});
 	const seen: [string, string][] = [];
@@ -474,7 +480,8 @@ test("run-not-found names the storage searched and whether it is local only, for
 		const database = await backendOver(await openSelectedRunJournal({ kind: "database", database: caller }, root));
 		const direct = await backendOver(new MemoryRunJournal());
 		const sharded = await backendOver(await openSelectedRunJournal({ kind: "sharded", dir: store }, root));
-		const rows = [sqlite, memory, adapter, database, direct, sharded].map((backend) => {
+		const elsewhere = {} as DurableWorkflowBackend;
+		const rows = [sqlite, memory, adapter, database, direct, sharded, elsewhere].map((backend) => {
 			const error = durableRunNotFoundError(backend, "r");
 			return [
 				error.fields.selection,
@@ -490,6 +497,7 @@ test("run-not-found names the storage searched and whether it is local only, for
 			["caller-owned database node-sqlite", join(root, "caller.sqlite"), true, true],
 			["this session's workflow store", "", true, true],
 			[`journal store ${store}`, join(store, "catalog.sqlite"), true, true],
+			["this session's workflow store", "", true, true],
 		]);
 		const error = durableRunNotFoundError(sharded, "r");
 		assert.equal(formatRunNotFound(error), `${error.message}\n${error.hint}`);

@@ -91,7 +91,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	const workflows = options.settings?.workflows;
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const value = journal !== undefined ? journal : options.settings?.storage;
-	if (value === undefined || (journal !== undefined && selectsDefaultJournalStore(journal))) return defaultStore;
+	if (value === undefined || selectsDefaultJournalStore(journal)) return defaultStore;
 	const selection = selectStorage(
 		value,
 		"settings",

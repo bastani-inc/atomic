@@ -455,6 +455,11 @@ function compact(fields: Readonly<Record<string, JournalStoreFieldValue | undefi
 	return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as JournalStoreFields;
 }
 
+/** A schema version as a JSON-safe field: a number or null as it is, any other value SQLite stores as its text. */
+function schemaVersionField(found: SqliteValue | undefined): string | number | null | undefined {
+	return found === undefined || found === null || typeof found === "number" ? found : String(found);
+}
+
 export interface JournalCatalogErrorInit {
 	readonly code: JournalCatalogErrorCode;
 	readonly catalogPath: string;
@@ -462,8 +467,8 @@ export interface JournalCatalogErrorInit {
 	readonly runId?: string;
 	readonly shardId?: number;
 	readonly shardPath?: string;
-	/** `schema-version`: the version found in the catalog. */
-	readonly found?: string | number | null;
+	/** `schema-version`: the version found in the catalog; null when it has none. */
+	readonly found?: SqliteValue;
 	/** `schema-version`: the version this Atomic supports. */
 	readonly supported?: number;
 	/** `corrupt`: which consistency rule the catalog breaks. */
@@ -541,7 +546,7 @@ export class JournalCatalogError extends JournalStoreError {
 				runId: init.runId,
 				shardId: init.shardId,
 				shardPath: init.shardPath,
-				found: init.found,
+				found: schemaVersionField(init.found),
 				supported: init.supported,
 				rule: init.rule,
 				selection: init.selection,
@@ -607,7 +612,8 @@ export interface JournalAdoptErrorInit {
 	readonly runId?: string;
 	/** `run-conflict`: where the store already has the run. */
 	readonly existingPath?: string;
-	readonly found?: string | number | null;
+	/** `schema-version`: the version found in the journal; null when it has none. */
+	readonly found?: SqliteValue;
 	readonly supported?: number;
 	readonly cause?: StorageFailureCause | Error;
 }
@@ -659,7 +665,7 @@ export class JournalAdoptError extends JournalStoreError {
 				reason: init.reason,
 				runId: init.runId,
 				existingPath: init.existingPath,
-				found: init.found,
+				found: schemaVersionField(init.found),
 				supported: init.supported,
 				detail: causeDetail(init.cause) ?? undefined,
 			}),
@@ -674,11 +680,10 @@ export class JournalAdoptError extends JournalStoreError {
 function hasCode<Code extends string>(value: unknown, name: string, codes: readonly Code[]): boolean {
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as { name?: unknown; code?: unknown };
-	return candidate.name === name && typeof candidate.code === "string" && codes.includes(candidate.code as Code);
+	return candidate.name === name && codes.includes(candidate.code as Code);
 }
 
 export function isJournalStoreError(value: unknown): value is JournalStoreError {
-	if (value instanceof JournalStoreError) return true;
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as { name?: unknown; code?: unknown; fields?: unknown; retryable?: unknown };
 	return (
@@ -708,9 +713,10 @@ export function isJournalAdoptError(value: unknown): value is JournalAdoptError 
 /** The first journal store error in `error`'s cause chain, looking at most eight causes deep. */
 export function findJournalStoreError(error: unknown): JournalStoreError | undefined {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
 		if (isJournalStoreError(current)) return current;
-		current = current instanceof Error ? current.cause : undefined;
+		if (!(current instanceof Error)) return undefined;
+		current = current.cause;
 	}
 	return undefined;
 }
@@ -728,9 +734,10 @@ export function isRetryableStorageError(error: unknown): boolean {
 /** Whether anything in `error`'s cause chain is a journal store error a caller may retry. */
 export function isRetryableJournalStoreError(error: unknown): boolean {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
-		if (isJournalStoreError(current) && current.retryable === true) return true;
-		current = current instanceof Error ? current.cause : undefined;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+		if (isJournalStoreError(current) && current.retryable) return true;
+		if (!(current instanceof Error)) return false;
+		current = current.cause;
 	}
 	return false;
 }

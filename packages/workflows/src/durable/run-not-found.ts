@@ -25,14 +25,17 @@ function describe(selection: StorageSelection): string {
  */
 export function durableRunNotFoundError(backend: DurableWorkflowBackend, runId: string): JournalCatalogError {
 	const journal = backend instanceof JournalDurableBackend ? backend.journal : undefined;
-	const selection = journal === undefined ? undefined : runJournalOrigin(journal)?.selection;
-	const location =
-		journal !== undefined && isShardedRunJournal(journal)
-			? journal.catalogPath
-			: (journal as { readonly path?: string } | undefined)?.path;
+	if (journal === undefined) return runNotFound(runId, "", undefined);
+	const location = isShardedRunJournal(journal)
+		? journal.catalogPath
+		: ((journal as { readonly path?: string }).path ?? "");
+	return runNotFound(runId, location, runJournalOrigin(journal)?.selection);
+}
+
+function runNotFound(runId: string, catalogPath: string, selection: StorageSelection | undefined): JournalCatalogError {
 	return new JournalCatalogError({
 		code: "run-not-found",
-		catalogPath: location ?? "",
+		catalogPath,
 		runId,
 		selection: selection === undefined ? "this session's workflow store" : describe(selection),
 		localOnly: selection?.kind !== "adapter",

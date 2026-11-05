@@ -43,7 +43,7 @@ async function readJournalStoreStatus(catalog: SqliteDatabase, directory: string
 		catalog: join(directory, JOURNAL_CATALOG_FILE),
 		shards: shards.length - adopted.length,
 		adopted: adopted.length,
-		runs: Number(runs?.count ?? 0),
+		runs: Number(runs!.count),
 		missing: adopted.filter((shard) => !existsSync(shard.path)).map((shard) => shard.path),
 		skipped: skipped.map((record) => ({ path: record.path, reason: record.reason })),
 	};
@@ -328,7 +328,7 @@ function selectJournal(agentDir: string, settings: Settings): StorageSelection {
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
 	const journal = journalSetting(settings);
 	const value = journal ?? settings.storage;
-	if (value === undefined || (journal !== undefined && selectsDefaultJournalStore(journal)))
+	if (value === undefined || selectsDefaultJournalStore(journal))
 		return { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
 	const selection = selectStorage(
 		value,

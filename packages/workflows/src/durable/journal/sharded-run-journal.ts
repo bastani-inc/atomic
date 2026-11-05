@@ -53,13 +53,11 @@ export interface ShardedRunJournalCatalogBacklog {
  * as the failure to serialize it.
  */
 function detached<T extends RunHeader | RunEvent["payload"]>(value: T): T | { readonly unserializable: Error } {
-	let text: string | undefined;
 	try {
-		text = serializeJson(value);
+		return JSON.parse(serializeJson(value)) as T;
 	} catch (cause) {
 		return { unserializable: cause as Error };
 	}
-	return text === undefined ? value : (JSON.parse(text) as T);
 }
 
 function unserializable<T>(value: T | { readonly unserializable: Error }): value is { readonly unserializable: Error } {
@@ -75,7 +73,7 @@ function recordedPayload(payload: RunEvent["payload"]): RunEvent["payload"] {
 }
 
 function byRunId(left: { runId: string }, right: { runId: string }): number {
-	return left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0;
+	return left.runId < right.runId ? -1 : 1;
 }
 
 /**
@@ -110,7 +108,9 @@ export class ShardedRunJournal implements RunJournal {
 			if (options.legacyJournal !== undefined && options.legacyJournal !== false)
 				await discoverLegacyJournal(catalog, options.legacyJournal);
 		} catch (error) {
-			await catalog.close();
+			await catalog.close().catch((cleanupCause: unknown) => {
+				Object.defineProperty(error as object, "cleanupCause", { value: cleanupCause, configurable: true });
+			});
 			throw error;
 		}
 		return new ShardedRunJournal(catalog.directory, catalog, options.openShard);
@@ -194,11 +194,9 @@ export class ShardedRunJournal implements RunJournal {
 		}
 		for (const record of await this.catalog.shards()) {
 			if (record.kind !== "adopted") continue;
-			const journal = await this.listable(record);
-			const run = await journal?.getRun(runId);
-			if (journal === undefined || run === undefined) continue;
-			const owner = await this.catalog.index(record.id, run);
-			const shard = owner === record.id ? record : await this.catalog.shard(owner);
+			const run = await (await this.listable(record))?.getRun(runId);
+			if (run === undefined) continue;
+			const shard = await this.catalog.shard(await this.catalog.index(record.id, run));
 			if (shard === undefined) return undefined;
 			this.located.set(runId, shard);
 			return { record: shard, journal: await this.shardJournal(shard, runId) };
@@ -216,11 +214,13 @@ export class ShardedRunJournal implements RunJournal {
 	}
 
 	/** A cached location can go stale when a consolidation moved a finished run: look it up again, once. */
-	private async relocated(runId: string): Promise<RunJournal | undefined> {
-		const before = this.located.get(runId);
+	private async relocated(
+		runId: string,
+		before: JournalShardRecord,
+	): Promise<{ record: JournalShardRecord; journal: RunJournal } | undefined> {
 		this.located.delete(runId);
 		const now = await this.locate(runId);
-		return now !== undefined && now.record.id !== before?.id ? now.journal : undefined;
+		return now !== undefined && now.record.id !== before.id ? now : undefined;
 	}
 
 	/**
@@ -282,10 +282,9 @@ export class ShardedRunJournal implements RunJournal {
 		this.statusFailure = undefined;
 	}
 
+	/** The status a status change carries; the shard has already refused one whose status is not text. */
 	private statusOf(event: RunEvent): string | undefined {
-		if (event.type !== RUN_EVENT_TYPES.statusChanged) return undefined;
-		const status = (event.payload as { status?: unknown }).status;
-		return typeof status === "string" ? status : undefined;
+		return event.type === RUN_EVENT_TYPES.statusChanged ? (event.payload as { status?: string }).status : undefined;
 	}
 
 	async createRun(header: RunHeader): Promise<"created" | "exists"> {
@@ -317,7 +316,7 @@ export class ShardedRunJournal implements RunJournal {
 			if (located === undefined) return undefined;
 			const run = await located.journal.getRun(runId);
 			if (run !== undefined) return run;
-			return (await this.relocated(runId))?.getRun(runId);
+			return (await this.relocated(runId, located.record))?.journal.getRun(runId);
 		});
 	}
 
@@ -390,7 +389,7 @@ export class ShardedRunJournal implements RunJournal {
 			if (located === undefined) return undefined;
 			const tail = await located.journal.snapshotTail?.(runId);
 			if (tail !== undefined) return tail;
-			return (await this.relocated(runId))?.snapshotTail?.(runId);
+			return (await this.relocated(runId, located.record))?.journal.snapshotTail?.(runId);
 		});
 	}
 
@@ -500,17 +499,16 @@ export class ShardedRunJournal implements RunJournal {
 	async *read(runId: string, fromSeq?: number): AsyncIterable<JournalEntry> {
 		this.assertOpen();
 		validateText("runId", runId);
-		const located = await this.operation(() => this.locate(runId));
-		if (located === undefined) return;
-		let journal: RunJournal | undefined = located.journal;
+		let current = await this.operation(() => this.locate(runId));
 		let yielded = false;
-		while (journal !== undefined) {
-			for await (const entry of journal.read(runId, fromSeq)) {
+		while (current !== undefined) {
+			for await (const entry of current.journal.read(runId, fromSeq)) {
 				this.assertOpen();
 				yielded = true;
 				yield entry;
 			}
-			journal = yielded ? undefined : await this.operation(() => this.relocated(runId));
+			const from = current.record;
+			current = yielded ? undefined : await this.operation(() => this.relocated(runId, from));
 		}
 	}
 
@@ -552,8 +550,10 @@ export class ShardedRunJournal implements RunJournal {
 				const journals = await Promise.allSettled([...this.shardJournals.values()]);
 				const closing = journals.flatMap((opened) => (opened.status === "fulfilled" ? [opened.value.close()] : []));
 				const results = await Promise.allSettled([...closing, this.catalog.close()]);
-				const failed = results.find((result) => result.status === "rejected");
-				if (failed?.status === "rejected") throw failed.reason;
+				const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+				if (failures.length > 1)
+					throw new AggregateError(failures, `${failures.length} journal store databases failed to close`);
+				if (failures.length === 1) throw failures[0];
 			});
 		}
 		return this.closePromise;

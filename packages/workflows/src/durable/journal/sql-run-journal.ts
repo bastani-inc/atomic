@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
-	assertStorageSchemaVersion,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -9,7 +8,6 @@ import {
 	type SqliteValue,
 	type StorageDescriptor,
 	type StorageFailureCause,
-	StorageSchemaVersionError,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import {
@@ -131,12 +129,7 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	private static assertSchemaVersion(found: SqliteValue): void {
-		try {
-			assertStorageSchemaVersion("journal", found, JOURNAL_SCHEMA_VERSION);
-		} catch (error) {
-			if (error instanceof StorageSchemaVersionError) throw new JournalSchemaVersionError(error.found);
-			throw error;
-		}
+		if (found !== JOURNAL_SCHEMA_VERSION) throw new JournalSchemaVersionError(found);
 	}
 
 	private static async initialize(database: SqliteDatabase, t: Tables): Promise<void> {

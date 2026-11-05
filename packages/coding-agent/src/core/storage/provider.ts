@@ -338,7 +338,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 	async openRunJournal(selection: StorageSelection, context: StorageOpenContext): Promise<RunJournal> {
 		const journals = this.journals;
 		if (!journals) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");
-		if (selection !== null && typeof selection === "object" && selection.kind === "sharded") {
+		if (selection?.kind === "sharded") {
 			if (typeof selection.dir !== "string" || selection.dir.length === 0)
 				throw new StorageConfigError("sdk", "dir", "invalid-dir");
 			if (!journals.store) throw new StorageConfigError("sdk", "journal", "adapter-domain-unsupported");

@@ -18,7 +18,7 @@ export type StorageInputSelection =
  * Whether a journal selection names no store of its own (`{}`, or an empty `path`), so it means the default journal:
  * the local journal store. A `prefix` alone still selects tables in the legacy single file, as it always did.
  */
-export function selectsDefaultJournalStore(value: StorageInputSelection): boolean {
+export function selectsDefaultJournalStore(value: StorageInputSelection | undefined): boolean {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const keys = Object.entries(value)
 		.filter(([key, entry]) => entry !== undefined && !(key === "memory" && entry === false))
