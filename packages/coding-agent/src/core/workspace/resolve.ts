@@ -543,6 +543,14 @@ async function removeIncompleteWorktree(
 			fields,
 		});
 	if (state.kind === "interrupted") {
+		const head = await readState(join(state.adminDir, "HEAD"));
+		const added = typeof head === "string" ? /^ref: refs\/heads\/(.+)$/m.exec(head)?.[1] : undefined;
+		if (added !== branch)
+			throw new WorkspaceBindingError({
+				code: "wrong-branch",
+				reason: "different-branch",
+				fields: { repo, worktree: path, expected: branch, actual: added ?? "an unknown branch" },
+			});
 		const adder = await runningAddition(repository, path, state.adminDir);
 		if (adder !== undefined) return { fields, adder };
 	}

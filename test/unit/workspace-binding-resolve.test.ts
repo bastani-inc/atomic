@@ -36,7 +36,10 @@ import {
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
-import { WORKSPACE_PROCESS_STOP_GRACE_MS } from "../../packages/coding-agent/src/core/workspace/process.ts";
+import {
+	runWorkspaceProcess,
+	WORKSPACE_PROCESS_STOP_GRACE_MS,
+} from "../../packages/coding-agent/src/core/workspace/process.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import {
 	setWorktreeAdditionWait,
@@ -983,6 +986,29 @@ describe("workspace git runner (#3109)", () => {
 		},
 	);
 
+	// POSIX: the helper runs under sh and leaves the process group running after the main process exits.
+	test.skipIf(process.platform === "win32")(
+		"a helper that ignores SIGTERM and lets go of the output is killed before a stopped call fails (#3109)",
+		async () => {
+			const helperFile = join(dirs.root, "helper.pid");
+			const error = await rejection(
+				runWorkspaceProcess({
+					path: "sh",
+					args: [
+						"-c",
+						`(trap '' TERM; exec </dev/null >/dev/null 2>&1; exec sleep 30) & echo $! > '${helperFile}'; exec sleep 30`,
+					],
+					cwd: dirs.root,
+					env: process.env,
+					timeoutMs: 300,
+					timeoutError: (elapsedMs) => new Error(`timed out after ${elapsedMs} ms`),
+				}),
+			);
+			assert.match(String(error), /timed out after/);
+			assert.equal(processAlive(Number(readFileSync(helperFile, "utf-8"))), false, "the helper was killed too");
+		},
+	);
+
 	test.skipIf(process.platform === "win32")(
 		"a git that will not stop is killed with everything it started once the grace is over (#3109)",
 		async () => {
@@ -1762,6 +1788,24 @@ describe("interrupted worktree additions (#3109)", () => {
 			`Workspace worktree is incomplete: ${path} was left by an interrupted checkout (${adminDir} is locked: initializing) (incomplete-worktree). Remove it with git -C ${root} worktree remove --force --force ${path} and git -C ${root} worktree prune, or delete the directory if git no longer lists it, then bind again.`,
 		);
 		assert.equal(existsSync(join(adminDir, "locked")), true, "left for the user to inspect");
+	});
+
+	test("an interrupted addition of another branch at the requested path is refused, not removed (#3109)", async () => {
+		const repo = createRepository(dirs.root, "other-branch-cut");
+		const path = join(dirs.root, "shared-path");
+		const adminDir = interruptedWorktree(repo, path, "feat/a", WORKTREE_ADDING_REASON, { checkedOut: true });
+		recordExitedAdder(repo, path);
+		writeFileSync(join(path, "notes.txt"), "work on a\n");
+		const { result: error, commands } = await countGitCommands(() =>
+			rejection(resolveWorkspace(workspace({ repo, branch: "feat/b", worktree: path }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "wrong-branch");
+		assert.equal(error.reason, "different-branch");
+		assert.deepEqual(error.fields, { repo, worktree: path, expected: "feat/b", actual: "feat/a" });
+		assert.equal(countOf(commands, "worktree", "remove"), 0, "nothing was removed");
+		assert.equal(readFileSync(join(path, "notes.txt"), "utf-8"), "work on a\n");
+		assert.equal(existsSync(join(adminDir, "locked")), true);
 	});
 
 	test("an addition Atomic interrupted at a caller's path is never handed out, so it is added again (#3109)", async () => {

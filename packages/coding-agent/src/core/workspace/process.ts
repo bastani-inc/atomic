@@ -44,6 +44,17 @@ function terminate(child: ChildProcess): void {
 	}
 }
 
+/** Whether a process of the group `pid` leads still runs. Windows has no process groups; its tree is killed at once. */
+function groupRunning(pid: number): boolean {
+	if (!OWN_PROCESS_GROUP) return false;
+	try {
+		process.kill(-pid, 0);
+		return true;
+	} catch (error) {
+		return errnoCode(error) === "EPERM";
+	}
+}
+
 /**
  * Run a process to its end. Cancellation and timeouts stop it with everything it started and wait for it to exit, or
  * kill its group after a grace, before the call fails, so nothing it started outlives the call; cancellation rejects
@@ -96,17 +107,31 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 				else resolvePromise({ kind: "not-started", error });
 			});
 		});
+		/**
+		 * A stopped run fails once its process and every process of its group are gone. A helper that ignores SIGTERM and
+		 * let go of the output streams keeps the group, so the grace's group kill stays armed for it.
+		 */
+		const settleWhenStopped = (): void => {
+			if (child.exitCode === null && child.signalCode === null) return;
+			if (groupRunning(child.pid!)) return;
+			settle(stopped!);
+		};
+		child.on("exit", () => {
+			if (stopped !== undefined) settleWhenStopped();
+		});
 		child.on("close", (code) => {
-			settle(() => {
-				if (stopped !== undefined) stopped();
-				else
-					resolvePromise({
-						kind: "exited",
-						stdout: Buffer.concat(stdout).toString("utf-8"),
-						stderr: Buffer.concat(stderr).toString("utf-8"),
-						status: code,
-					});
-			});
+			if (stopped !== undefined) {
+				settleWhenStopped();
+				return;
+			}
+			settle(() =>
+				resolvePromise({
+					kind: "exited",
+					stdout: Buffer.concat(stdout).toString("utf-8"),
+					stderr: Buffer.concat(stderr).toString("utf-8"),
+					status: code,
+				}),
+			);
 		});
 		if (child.pid !== undefined && run.onSpawn !== undefined) {
 			try {
