@@ -52,7 +52,6 @@ export class SessionStartBudget {
 	private stepStartedAt = this.startedAt;
 	private lastTurnAt = this.startedAt;
 	private turns = 0;
-	private turnTotalMs = 0;
 	private longestTurnMs = 0;
 
 	constructor(subject: string, timeoutMs: number, step: SessionStartStep) {
@@ -93,7 +92,6 @@ export class SessionStartBudget {
 		const turnMs = now - this.lastTurnAt;
 		this.lastTurnAt = now;
 		this.turns += 1;
-		this.turnTotalMs += turnMs;
 		this.longestTurnMs = Math.max(this.longestTurnMs, turnMs);
 	}
 
@@ -101,7 +99,7 @@ export class SessionStartBudget {
 		const now = performance.now();
 		const eventLoop: SessionStartEventLoopSample = {
 			turns: this.turns,
-			meanTurnMs: Math.round(this.turns > 0 ? this.turnTotalMs / this.turns : now - this.startedAt),
+			meanTurnMs: Math.round((now - this.startedAt) / (this.turns + 1)),
 			maxTurnMs: Math.round(Math.max(this.longestTurnMs, now - this.lastTurnAt)),
 		};
 		const stepElapsedMs = Math.round(now - this.stepStartedAt);

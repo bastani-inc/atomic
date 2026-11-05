@@ -149,6 +149,27 @@ describe("SessionStartBudget (#4319)", () => {
 		assert.deepEqual(expiry(budget).eventLoop, { turns: 0, meanTurnMs: 50, maxTurnMs: 50 });
 	});
 
+	test.each(["creating-session", "dispatching-task", "awaiting-admission"] as const)(
+		"includes the final blocked interval after a probe while %s",
+		(step) => {
+			const startedAt = performance.now();
+			const budget = new SessionStartBudget("child", 150, step);
+			vi.advanceTimersByTime(START_PROBE_INTERVAL_MS);
+			const clock = vi.spyOn(performance, "now").mockReturnValue(startedAt + 1_000);
+			try {
+				vi.advanceTimersByTime(50);
+				const error = expiry(budget);
+				assert.deepEqual(error.eventLoop, { turns: 1, meanTurnMs: 500, maxTurnMs: 900 });
+				assert.equal(error.phase, step === "awaiting-admission" ? "admission" : "event-loop");
+				assert.equal(error.step, step);
+				assert.equal(error.elapsedMs, 1_000);
+			} finally {
+				clock.mockRestore();
+				budget.end();
+			}
+		},
+	);
+
 	test("never fires once ended, whatever steps follow", () => {
 		const budget = new SessionStartBudget("child", 100, "opening-session");
 		budget.end();
