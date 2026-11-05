@@ -36,6 +36,7 @@ import {
 	joinSharedDatabase,
 	leaveTeamWith,
 	selectTeamProfile,
+	storageFingerprint,
 } from "../../packages/coding-agent/src/core/storage/team.js";
 import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
@@ -91,6 +92,10 @@ function writeSettings(settings: object): void {
 
 function saved(): Record<string, object> {
 	return JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+}
+
+function recorded(storage: Parameters<typeof storageFingerprint>[0]): { teamJoin: { storage: string } } {
+	return { teamJoin: { storage: storageFingerprint(storage) } };
 }
 
 function tokenFiles(): string[] {
@@ -495,7 +500,7 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 		];
 		for (const [storage, removed, kept] of cases) {
 			writeFileSync(tokenPath, "t");
-			writeSettings({ theme: "dark", ...(storage === undefined ? {} : { storage }) });
+			writeSettings({ theme: "dark", ...(storage === undefined ? {} : { storage, ...recorded(storage as never) }) });
 			const left = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 			assert.deepEqual(
 				[left.removed, left.kept],
@@ -503,10 +508,10 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 				JSON.stringify(storage),
 			);
 			assert.equal(left.broker === undefined, removed.length === 0, JSON.stringify(storage));
-			assert.deepEqual(Object.keys(saved()), removed.length === 0 ? ["theme", "storage"] : ["theme"]);
+			assert.deepEqual(Object.keys(saved()), removed.length === 0 ? ["theme", "storage", "teamJoin"] : ["theme"]);
 		}
 		writeFileSync(tokenPath, "t");
-		writeSettings({ storage: joined, sessions: { storage: { path: "mine.sqlite" } } });
+		writeSettings({ storage: joined, ...recorded(joined), sessions: { storage: { path: "mine.sqlite" } } });
 		const pinKept = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 		assert.deepEqual(
 			[pinKept.removed, pinKept.kept],
@@ -560,19 +565,24 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 		];
 		for (const reference of references) {
 			writeFileSync(tokenPath, "t");
-			writeSettings({ storage: join_, ...reference });
+			writeSettings({ storage: join_, ...recorded(join_), ...reference });
 			const left = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 			assert.deepEqual([left.deletedTokenFiles, left.keptTokenFiles], [[], [tokenPath]], JSON.stringify(reference));
 		}
 		writeFileSync(tokenPath, "t");
-		writeSettings({ storage: join_, sessions: { storage: { dir: "sessions" } }, workflows: ["./flows"] });
+		writeSettings({
+			storage: join_,
+			...recorded(join_),
+			sessions: { storage: { dir: "sessions" } },
+			workflows: ["./flows"],
+		});
 		mkdirSync(join(project, ".atomic"), { recursive: true });
 		writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ workflows: { journal: join_ } }));
 		new ProjectTrustStore(agentDir).set(project, true);
 		const projectReference = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 		assert.deepEqual(projectReference.keptTokenFiles, [tokenPath]);
 		writeFileSync(join(project, ".atomic", "settings.json"), "{}");
-		writeSettings({ storage: join_ });
+		writeSettings({ storage: join_, ...recorded(join_) });
 		const deleted = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 		assert.deepEqual([deleted.deletedTokenFiles, deleted.keptTokenFiles], [[tokenPath], []]);
 		assert.deepEqual(tokenFiles(), []);
@@ -826,7 +836,7 @@ describe("result shapes and edge paths (#4320)", () => {
 			options: { url: "libsql://team.example" },
 			secrets: { authToken: { file: "agent/storage-token.gone" } },
 		};
-		writeSettings({ storage });
+		writeSettings({ storage, ...recorded(storage) });
 		const gone = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
 		assert.deepEqual(gone.deletedTokenFiles, [join(agentDir, "storage-token.gone")]);
 		writeSettings({ sessions: { storage: LOCAL_SESSIONS_STORAGE } });

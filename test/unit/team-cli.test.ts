@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -145,6 +145,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 			const saved = savedSettings();
 			const reference = (saved.storage as { secrets: { authToken: { file: string } } }).secrets.authToken.file;
 			assert.match(reference, /^agent\/storage-token\.[\da-f-]+$/);
+			assert.match((saved.teamJoin as { storage: string }).storage, /^sha256:[\da-f]{64}$/);
 			assert.deepEqual(saved, {
 				...UNRELATED,
 				packages: [packageRoot],
@@ -155,6 +156,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 					prefix: "team_",
 				},
 				sessions: { storage: LOCAL_SESSIONS_STORAGE },
+				teamJoin: saved.teamJoin,
 			});
 			const tokenPath = resolve(root, reference);
 			assert.equal(readFileSync(tokenPath, "utf8"), "team-secret-token");
@@ -530,27 +532,26 @@ describe("atomic team join, status and leave (#4320)", () => {
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);
 
-	test("leave reports a token file it cannot delete after removing the team settings (#4320)", async () => {
-		const tokenDirectory = join(agentDir, `${STORAGE_TOKEN_FILE}.not-a-file`);
-		mkdirSync(tokenDirectory);
-		writeFileSync(join(tokenDirectory, "inside"), "x");
-		writeSettings({
-			storage: {
-				adapter: LIBSQL_ADAPTER_PACKAGE,
-				options: { url: "libsql://team.example.turso.io" },
-				secrets: { authToken: { file: `agent/${STORAGE_TOKEN_FILE}.not-a-file` } },
-			},
-			sessions: { storage: LOCAL_SESSIONS_STORAGE },
-		});
-		const failure = await leaveTeam({ agentDir, cwd: project }).then(
-			() => assert.fail("left without reporting the token file"),
-			(error: Error) => error,
-		);
-		assert.ok(isTeamProfileError(failure));
-		assert.deepEqual([failure.code, failure.subject], ["token-delete-failed", tokenDirectory]);
-		assert.equal(failure.hint, "The team settings were removed. Delete the token file yourself.");
-		assert.deepEqual(savedSettings(), {});
-	});
+	test(
+		"leave reports a token file it cannot delete after removing the team settings (#4320)",
+		async () => {
+			writeSettings({ packages: [packageRoot] });
+			const joined = await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project });
+			assert.ok(joined.tokenPath);
+			rmSync(joined.tokenPath);
+			mkdirSync(joined.tokenPath);
+			writeFileSync(join(joined.tokenPath, "inside"), "x");
+			const failure = await leaveTeam({ agentDir, cwd: project }).then(
+				() => assert.fail("left without reporting the token file"),
+				(error: Error) => error,
+			);
+			assert.ok(isTeamProfileError(failure));
+			assert.deepEqual([failure.code, failure.subject], ["token-delete-failed", joined.tokenPath]);
+			assert.equal(failure.hint, "The team settings were removed. Delete the token file yourself.");
+			assert.deepEqual(savedSettings(), { packages: [packageRoot] });
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
 
 	test("team arguments are checked before anything runs (#4320)", async () => {
 		const cases: [string[], string, string][] = [

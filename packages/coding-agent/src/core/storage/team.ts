@@ -4,7 +4,7 @@
  * (`getTeamProfile`), and the shared-database join that `atomic storage join` and `atomic team join` both run.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -16,7 +16,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { getAgentDir, getProjectConfigPaths } from "../../config.js";
+import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
@@ -185,7 +185,7 @@ function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const failure = manager.drainErrors().find(({ scope }) => scope === "global");
 	if (failure !== undefined) {
-		const settingsPath = settingsPathOf(agentDir);
+		const settingsPath = failure.path ?? settingsPathOf(agentDir);
 		if (isLocked(failure.error)) throw lockedError(settingsPath, failure.error, "Nothing was changed.");
 		throw unreadableSettingsError(settingsPath, failure.error);
 	}
@@ -419,7 +419,10 @@ export async function joinSharedDatabase(
 			...(prefix === undefined ? {} : { prefix }),
 		};
 		const next: Settings = { ...settings, storage };
-		if (options.pinLocalSessions) next.sessions = { ...settings.sessions, storage: LOCAL_SESSIONS_STORAGE };
+		if (options.pinLocalSessions) {
+			next.sessions = { ...settings.sessions, storage: LOCAL_SESSIONS_STORAGE };
+			next.teamJoin = { storage: storageFingerprint(storage) };
+		}
 		try {
 			writeSettingsFile(settingsPath, JSON.stringify(next, null, 2));
 		} catch (error) {
@@ -551,9 +554,29 @@ export function joinTeam(options: JoinTeamOptions): Promise<TeamJoinResult> {
 	return joinTeamWith(options, "sdk");
 }
 
-/** Whether `storage` is exactly the selection a join writes for this agent directory. */
-function isJoinedStorage(storage: StorageSettingsSelection | undefined, agentDir: string): boolean {
-	if (storage === undefined || storage.adapter !== LIBSQL_ADAPTER_PACKAGE) return false;
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>)
+			.filter(([, entry]) => entry !== undefined)
+			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+		return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+export function storageFingerprint(storage: StorageSettingsSelection): string {
+	return `sha256:${createHash("sha256").update(canonicalJson(storage)).digest("hex")}`;
+}
+
+/** Whether `storage` is exactly the selection the last team join recorded, for this agent directory. */
+function isJoinedStorage(
+	storage: StorageSettingsSelection | undefined,
+	record: Settings["teamJoin"],
+	agentDir: string,
+): boolean {
+	if (storage === undefined || record?.storage !== storageFingerprint(storage)) return false;
+	if (storage.adapter !== LIBSQL_ADAPTER_PACKAGE) return false;
 	const keys = Object.keys(storage).filter((key) => key !== "prefix" && key !== "secrets");
 	if (keys.length !== 2 || !keys.includes("adapter") || !keys.includes("options")) return false;
 	const options = storage.options ?? {};
@@ -608,6 +631,20 @@ function readIndependentProjectSettings(cwd: string, settingsPath: string): Sett
 	return merged;
 }
 
+function readIndependentGlobalSettings(agentDir: string, settingsPath: string): Settings {
+	const paths = agentDir === getAgentDir() ? getAgentConfigPaths("settings.json") : [settingsPath];
+	let merged: Settings = {};
+	for (const path of paths.reverse()) {
+		if (!existsSync(path) || isSameFile(settingsPath, path)) continue;
+		try {
+			merged = deepMergeSettings(merged, parseJsonFileContent(readFileSync(path, "utf-8")) as Settings);
+		} catch (error) {
+			throw unreadableSettingsError(path, error as Error);
+		}
+	}
+	return merged;
+}
+
 function readProjectSettings(cwd: string, agentDir: string): Settings {
 	const projectPath = projectSettingsPathOf(cwd);
 	const storage = new FileSettingsStorage(cwd, agentDir, {
@@ -643,14 +680,17 @@ export async function leaveTeamWith(
 		const project = isSameFile(settingsPath, projectSettingsPathOf(cwd))
 			? readIndependentProjectSettings(cwd, settingsPath)
 			: readProjectSettings(cwd, agentDir);
+		const inherited = readIndependentGlobalSettings(agentDir, settingsPath);
 		const storage: StorageSettingsSelection | undefined = global.storage;
 		const removed: TeamSettingKey[] = [];
 		const kept: TeamKeptSetting[] = [];
-		if (isJoinedStorage(storage, agentDir)) removed.push("storage");
+		if (isJoinedStorage(storage, global.teamJoin, agentDir)) removed.push("storage");
 		else if (storage !== undefined) kept.push({ key: "storage", reason: "changed" });
 		const pin = global.sessions?.storage;
 		const storageRemains =
-			(storage !== undefined && !removed.includes("storage")) || (trusted && project.storage !== undefined);
+			(storage !== undefined && !removed.includes("storage")) ||
+			inherited.storage !== undefined ||
+			(trusted && project.storage !== undefined);
 		if (isLocalSessionsPin(pin)) {
 			if (storageRemains) kept.push({ key: "sessions.storage", reason: "storage-remains" });
 			else removed.push("sessions.storage");
@@ -660,6 +700,7 @@ export async function leaveTeamWith(
 		const tokenPath = removed.includes("storage") ? secretFilePath(storage?.secrets?.authToken, agentDir) : undefined;
 		const next: Settings = { ...global };
 		if (removed.includes("storage")) delete next.storage;
+		if (next.storage === undefined) delete next.teamJoin;
 		if (removed.includes("sessions.storage")) {
 			const { storage: _pin, ...sessions } = { ...global.sessions };
 			if (Object.keys(sessions).length === 0) delete next.sessions;
@@ -674,8 +715,8 @@ export async function leaveTeamWith(
 		const keptTokenFiles: string[] = [];
 		let tokenFailure: TeamProfileError | undefined;
 		if (tokenPath !== undefined) {
-			if ([...referencedTokenFiles(next, agentDir), ...referencedTokenFiles(project, agentDir)].includes(tokenPath))
-				keptTokenFiles.push(tokenPath);
+			const references = [next, inherited, project].flatMap((settings) => referencedTokenFiles(settings, agentDir));
+			if (references.includes(tokenPath)) keptTokenFiles.push(tokenPath);
 			else {
 				try {
 					rmSync(tokenPath, { force: true });

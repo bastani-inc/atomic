@@ -28,7 +28,7 @@ atomic team join libsql://<db>.turso.io --token-file ~/team-token
 `atomic team join <url> [--token-file <path>] [--prefix <prefix>]` checks everything before it changes anything: the URL, the token, the prefix, your global settings, the installed adapter, and a `SELECT 1` on the database, which must answer within 15 seconds. If any check fails, nothing is written. Then it:
 
 1. stores the token in a private file in the agent directory (mode 600). Running the command again with the same token reuses that file;
-2. writes two keys of `~/.atomic/agent/settings.json` in one update: `storage`, set to the team database, and `sessions.storage`, set to the local default store (`{ "path": "workflows/journal.sqlite" }`), so your transcripts stay on your machine. If `sessions.storage` held another store, the command says which one it replaced. Every other setting keeps its value;
+2. writes three keys of `~/.atomic/agent/settings.json` in one update: `storage`, set to the team database; `sessions.storage`, set to the local default store (`{ "path": "workflows/journal.sqlite" }`), so your transcripts stay on your machine; and `teamJoin`, a managed record of the `storage` value it wrote, which `atomic team leave` uses to tell your edits from the join's own value. Leave `teamJoin` as it is. If `sessions.storage` held another store, the command says which one it replaced. Every other setting keeps its value;
 3. restarts the Intercom broker so it routes through the team database;
 4. prints the profile, the Intercom group of the current project, and the same report as `atomic storage status`.
 
@@ -46,7 +46,7 @@ atomic team leave           # back to the individual layout
 
 `atomic team status` exits 1 when a selection is invalid, the adapter cannot load, or the database does not answer.
 
-`atomic team leave` removes `storage` and `sessions.storage` only when they still hold what `team join` wrote. A value you changed yourself stays in place, and the command says so. If another global or trusted project `storage` selection remains, `sessions.storage` stays too, so your sessions do not move to that store. It deletes the token file unless another setting still references it, and restarts the Intercom broker. Running it again changes nothing.
+`atomic team leave` removes `storage` and `teamJoin` only when `storage` is exactly the value that `team join` wrote (it matches the `teamJoin` record), and `sessions.storage` only while it is still the local pin. Any change you made, even to the URL or the prefix alone, keeps `storage` and its token file untouched, and the command says so. A `storage` written by an earlier build, which has no `teamJoin` record, is kept the same way: run `atomic team join` again once to record it. If another `storage` selection remains, `sessions.storage` stays too, so your sessions do not move to that store. That covers a `storage` you changed, a trusted project's `storage`, and, when you use the default agent directory, a `storage` in the legacy `~/.pi/agent/settings.json` that Atomic also reads. The command deletes the token file unless another setting, including those files, still references it, and restarts the Intercom broker. Running it again changes nothing.
 
 If the global or project settings cannot be read, fix them before leaving. The command keeps settings and token files unchanged rather than deleting a token whose references it cannot check.
 

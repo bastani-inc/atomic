@@ -35,6 +35,20 @@
         }
       }
     },
+    "teamJoin": {
+      "type": "object",
+      "required": [
+        "storage"
+      ],
+      "properties": {
+        "storage": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Fingerprint of the `storage` selection that `atomic team join` wrote."
+        }
+      },
+      "description": "Managed team join record; leave unchanged."
+    },
     "lastChangelogVersion": {
       "type": "string"
     },

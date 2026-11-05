@@ -453,9 +453,12 @@ describe("team join and leave when the settings change after their preflight (#4
 
 			const joined = await joinTeamDatabase();
 
-			assert.deepEqual(JSON.parse(settingsText()), {
+			const saved = JSON.parse(settingsText());
+			assert.match(saved.teamJoin.storage, /^sha256:[\da-f]{64}$/);
+			assert.deepEqual(saved, {
 				storage: joined.storage,
 				sessions: { storage: LOCAL_SESSIONS_STORAGE },
+				teamJoin: saved.teamJoin,
 			});
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
