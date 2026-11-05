@@ -1,9 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { ProjectTrustStore } from "../../src/core/trust-manager.ts";
 import { runMcpCommand } from "../../src/extensions/mcp/cli.ts";
+import { startOAuthMcpServer } from "./native-oauth-server.ts";
 
 const FIXTURE = resolve(import.meta.dirname, "./fixtures/stdio-server.mjs");
 
@@ -14,7 +16,12 @@ describe("pi mcp", () => {
 		while (dirs.length > 0) rmSync(dirs.pop() ?? "", { recursive: true, force: true });
 	});
 
-	async function run(args: string[], servers: Record<string, unknown> | undefined, dir?: string) {
+	async function run(
+		args: string[],
+		servers: Record<string, unknown> | undefined,
+		dir?: string,
+		providerToken?: (provider: string) => Promise<string | undefined>,
+	) {
 		const agentDir = dir ?? mkdtempSync(join(tmpdir(), "pi-mcp-command-"));
 		if (!dir) dirs.push(agentDir);
 		if (servers) writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: servers }));
@@ -22,6 +29,7 @@ describe("pi mcp", () => {
 		const exitCode = await runMcpCommand(args, {
 			cwd: agentDir,
 			agentDir,
+			providerToken,
 			log: (line) => output.push(line),
 			error: (line) => output.push(line),
 		});
@@ -87,6 +95,137 @@ describe("pi mcp", () => {
 		expect((await run(["login", "fixtures"], servers)).output).toBe(
 			'No MCP server named "fixtures". Did you mean "fixture"? Configured: fixture, broken, parked.',
 		);
+	});
+
+	it("sends the token of the provider named by auth.provider (pi 4d72d05b)", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const radius = { radius: { url: server.url, auth: { provider: "radius" } } };
+			const token = server.issueAccessToken();
+			const requested: string[] = [];
+			const signedIn = await run(["list"], radius, undefined, async (provider) => {
+				requested.push(provider);
+				return token;
+			});
+			expect(signedIn).toMatchObject({ exitCode: 0, output: expect.stringContaining("radius: connected, 1 tool") });
+			expect(requested).toContain("radius");
+
+			// Without the provider's credentials the hint names the provider's /login, not `atomic mcp login`.
+			const signedOut = await run(["list"], radius, undefined, async () => undefined);
+			expect(signedOut.exitCode).toBe(1);
+			expect(signedOut.output).toContain("radius: needs sign-in (codemode, global)");
+			expect(signedOut.output).toContain("  sign in with: /login radius in atomic");
+
+			for (const command of ["login", "logout"]) {
+				expect(await run([command, "radius"], radius)).toMatchObject({
+					exitCode: 1,
+					output: `MCP server "radius" uses the credentials of provider "radius". Run /${command} radius in atomic.`,
+				});
+			}
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("reads the provider token from the agent directory's credentials when none is injected", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-command-"));
+			dirs.push(agentDir);
+			writeFileSync(
+				join(agentDir, "auth.json"),
+				JSON.stringify({ anthropic: { type: "api_key", key: server.issueAccessToken() } }),
+			);
+			const issues = { issues: { url: server.url, auth: { provider: "anthropic" } } };
+
+			const result = await run(["list"], issues, agentDir);
+
+			expect(result).toMatchObject({ exitCode: 0, output: expect.stringContaining("issues: connected, 1 tool") });
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("creates the model runtime once, on the first provider token request, for the agent directory", async () => {
+		const server = await startOAuthMcpServer();
+		const create = vi.spyOn(ModelRuntime, "create");
+		try {
+			const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-command-"));
+			dirs.push(agentDir);
+			const provider = { url: server.url, auth: { provider: "anthropic" } };
+
+			await run(["list"], { fixture: { command: process.execPath, args: [FIXTURE] } }, agentDir);
+			expect(create).not.toHaveBeenCalled();
+
+			await run(["list"], { first: provider, second: provider }, agentDir);
+			expect(create).toHaveBeenCalledTimes(1);
+			expect(create).toHaveBeenCalledWith({
+				authPath: join(agentDir, "auth.json"),
+				modelsPath: join(agentDir, "models.json"),
+				refreshOnCreate: false,
+			});
+		} finally {
+			create.mockRestore();
+			await server.close();
+		}
+	});
+
+	it("logs why the provider credentials could not be read and then needs sign-in", async () => {
+		const server = await startOAuthMcpServer();
+		const create = ModelRuntime.create.bind(ModelRuntime);
+		const spy = vi.spyOn(ModelRuntime, "create").mockImplementation(async (options) => {
+			const runtime = await create(options);
+			vi.spyOn(runtime, "getAuth").mockImplementation(async () => {
+				throw new Error("refresh failed");
+			});
+			return runtime;
+		});
+		try {
+			const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-command-"));
+			dirs.push(agentDir);
+
+			const result = await run(["list"], { issues: { url: server.url, auth: { provider: "anthropic" } } }, agentDir);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.output).toContain("  sign in with: /login anthropic in atomic");
+			expect(readFileSync(join(agentDir, "mcp.log"), "utf8")).toContain(
+				"[anthropic] warning Could not read the anthropic credentials: refresh failed",
+			);
+		} finally {
+			spy.mockRestore();
+			await server.close();
+		}
+	});
+
+	it("needs sign-in without a warning when the provider has no stored credentials", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const agentDir = mkdtempSync(join(tmpdir(), "pi-mcp-command-"));
+			dirs.push(agentDir);
+
+			const result = await run(["list"], { issues: { url: server.url, auth: { provider: "anthropic" } } }, agentDir);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.output).toContain("issues: needs sign-in (codemode, global)");
+			expect(result.output).toContain("  sign in with: /login anthropic in atomic");
+			const logPath = join(agentDir, "mcp.log");
+			expect(existsSync(logPath) ? readFileSync(logPath, "utf8") : "").not.toContain("Could not read");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("points a server that uses OAuth to mcp login when it needs sign-in", async () => {
+		const server = await startOAuthMcpServer();
+		try {
+			const result = await run(["list"], { issues: { url: server.url } });
+
+			expect(result.exitCode).toBe(1);
+			expect(result.output).toContain("issues: needs sign-in (codemode, global)");
+			expect(result.output).toContain("  sign in with: atomic mcp login issues");
+		} finally {
+			await server.close();
+		}
 	});
 
 	it("reports options as typed", async () => {

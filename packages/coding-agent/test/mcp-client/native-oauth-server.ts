@@ -156,6 +156,8 @@ export async function startOAuthMcpServer(options: { iss?: string } = {}) {
 		/** Requests to stalled paths, still open unless the client gave up. */
 		stalled,
 		/** Simulates access token expiry. */
+		/** A valid access token issued without a sign-in, like one of a provider login. */
+		issueAccessToken: () => issueTokens().access_token,
 		expireAccessTokens: () => validTokens.clear(),
 		close: () =>
 			new Promise<void>((resolve) => {
