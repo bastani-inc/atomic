@@ -28,6 +28,20 @@ describe("agent shell git PATH (#4322)", () => {
 		chmodSync(path, 0o755);
 	}
 
+	function writeProvisionedGit(): void {
+		const executable = join(gitBinDir, isWindows ? "git.exe" : "git");
+		if (isWindows) {
+			const source = join(tempDir, "git-version.ts");
+			writeFileSync(source, 'process.stdout.write("git version 2.56.0\\n");\n');
+			mkdirSync(gitBinDir, { recursive: true });
+			const built = spawnSync(BUN_EXECUTABLE, ["build", "--compile", source, "--outfile", executable], {
+				env: { ...process.env, PATH: ORIGINAL_PATH },
+				encoding: "utf8",
+			});
+			assert.equal(built.status, 0, `${built.stderr}${built.stdout}`);
+		} else writeExecutable(executable, '#!/bin/sh\necho "git version 2.56.0"\n');
+	}
+
 	beforeEach(async () => {
 		tempDir = mkdtempSync(join(tmpdir(), "atomic-shell-git-"));
 		binDir = join(tempDir, "agent", "bin");
@@ -47,17 +61,7 @@ describe("agent shell git PATH (#4322)", () => {
 	});
 
 	it("puts the provisioned git first, with its environment, when no git is on PATH", () => {
-		const executable = join(gitBinDir, isWindows ? "git.exe" : "git");
-		if (isWindows) {
-			const source = join(tempDir, "git-version.ts");
-			writeFileSync(source, 'process.stdout.write("git version 2.56.0\\n");\n');
-			mkdirSync(gitBinDir, { recursive: true });
-			const built = spawnSync(BUN_EXECUTABLE, ["build", "--compile", source, "--outfile", executable], {
-				env: { ...process.env, PATH: ORIGINAL_PATH },
-				encoding: "utf8",
-			});
-			assert.equal(built.status, 0, `${built.stderr}${built.stdout}`);
-		} else writeExecutable(executable, '#!/bin/sh\necho "git version 2.56.0"\n');
+		writeProvisionedGit();
 		const env = getShellEnv();
 		assert.equal(pathOf(env), [gitBinDir, binDir, emptyDir].join(delimiter));
 		const architectureDirectory =
@@ -68,6 +72,32 @@ describe("agent shell git PATH (#4322)", () => {
 				? join(binDir, "git", architectureDirectory, "libexec", "git-core")
 				: join(binDir, "git", "libexec", "git-core"),
 		);
+	});
+
+	it("keeps non-git commands usable when selected git metadata is unreadable", async () => {
+		writeProvisionedGit();
+		mkdirSync(join(binDir, "git", "releases", "selected"), { recursive: true });
+		const env = getShellEnv();
+		assert.equal(pathOf(env), [binDir, emptyDir].join(delimiter));
+		assert.equal(env.GIT_EXEC_PATH, undefined);
+		const command = spawnSync(process.execPath, ["-e", 'process.stdout.write("ordinary command")'], {
+			env,
+			encoding: "utf8",
+		});
+		assert.equal(command.status, 0, command.stderr);
+		assert.equal(command.stdout, "ordinary command");
+		const tools = await import("../src/utils/tools-manager.js");
+		const errors = await import("../src/utils/git-errors.js");
+		const status = tools.getGitStatus();
+		assert.equal(status.source, "unavailable");
+		if (status.source === "unavailable") {
+			const error = errors.rehydrateGitProvisionError(status.error);
+			assert.ok(error instanceof errors.GitUnavailableError);
+			assert.equal(error.code, "install-failed");
+			assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "verify");
+			assert.equal((error.cause as NodeJS.ErrnoException).code, "EISDIR");
+			assert.ok(error.hint.length > 0);
+		}
 	});
 
 	it("leaves PATH to the user's git, even an old one", () => {

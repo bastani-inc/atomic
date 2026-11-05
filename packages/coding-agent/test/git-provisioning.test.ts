@@ -2066,7 +2066,7 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 
 	it("reports a release selection that cannot be switched, keeping the complete release unselected", async () => {
 		const fake = healthy();
-		serveArchive(fake.bytes);
+		const fetchMock = serveArchive(fake.bytes);
 		mkdirSync(join(installDir, "broken"), { recursive: true });
 		const selection = join(installDir, "releases", "selected");
 		const denied = Object.assign(new Error("EACCES: rename selection"), { code: "EACCES" });
@@ -2099,9 +2099,10 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		mocks.rmSync.mockImplementation(actualRm);
 		const git = await provision({ release: fake.release });
 		const published = basename(dirname(dirname(git.path)));
-		assert.notEqual(published, unselected);
+		assert.equal(published, unselected);
 		assert.equal(readFileSync(selection, "utf-8"), published);
 		assert.ok(existsSync(provisionedExecutable(join(installDir, "releases", unselected!))));
+		assert.equal(fetchMock.mock.calls.length, 1);
 	});
 
 	it("keeps a staging directory whose owner is alive but not ours, and one that only resembles staging", async () => {
@@ -2273,7 +2274,7 @@ describe("git install command on this machine (#4322)", () => {
 			return provision({ release: fake.release });
 		}
 
-		it("records the release it installed from, and installs it again only when the pin changes", async () => {
+		it("downloads each pinned release once and reuses retained releases when pins alternate", async () => {
 			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
 			const fetchMock = serveArchive(first.bytes);
 			const installed = await installAs(first);
@@ -2294,6 +2295,14 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(fetchMock.mock.calls.length, 2);
 			assert.equal((await installAs(first)).path, installed.path);
 			assert.equal(fetchMock.mock.calls.length, 2);
+			const third = releaseFor(first.bytes, undefined, "v2.56.0-4");
+			const thirdInstall = await installAs(third);
+			assert.equal(fetchMock.mock.calls.length, 3);
+			const retainedBefore = readdirSync(join(installDir, "releases")).sort();
+			assert.equal((await installAs(rebuild)).path, rebuilt.path);
+			assert.equal((await installAs(third)).path, thirdInstall.path);
+			assert.equal(fetchMock.mock.calls.length, 3);
+			assert.deepEqual(readdirSync(join(installDir, "releases")).sort(), retainedBefore);
 			assert.deepEqual(leftovers(), []);
 		});
 

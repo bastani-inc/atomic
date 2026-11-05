@@ -16,7 +16,7 @@ import {
 } from "fs";
 import { writeFile } from "fs/promises";
 import { arch, hostname, platform } from "os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import lockfile from "proper-lockfile";
 import { setTimeout as delay } from "timers/promises";
 import { ENV_OFFLINE, getBinDir, getEnvValue, VERSION } from "../config.js";
@@ -915,6 +915,30 @@ function findCurrentGit(target: GitDistributionTarget): ProvisionedGit | undefin
 	return undefined;
 }
 
+function findRetainedGit(target: GitDistributionTarget): ProvisionedGit | undefined {
+	let names: string[];
+	try {
+		names = readdirSync(gitReleasesDir());
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT" || errnoCode(error) === "ENOTDIR") return undefined;
+		throw installFailed(
+			"verify",
+			target,
+			currentGitLayout(),
+			error,
+			"the retained Git releases directory must be readable",
+		);
+	}
+	for (const name of names) {
+		if (!GIT_RELEASE_NAME.test(name)) continue;
+		const layout = currentGitLayout(join(gitReleasesDir(), name));
+		if (!isCurrentRelease(layout, target)) continue;
+		const version = probeProvisionedGit(layout);
+		if (version !== undefined) return { layout, version };
+	}
+	return undefined;
+}
+
 /** The working install of the pinned release, else the newest working install of another release. */
 function findProvisionedGit(target: GitTargetResolution): ProvisionedGit | undefined {
 	if (!target.supported) return undefined;
@@ -1192,10 +1216,16 @@ export function getGitShellEnvironment(
 	baseEnv: NodeJS.ProcessEnv,
 ): { readonly pathEntry: string; readonly env: Record<string, string> } | undefined {
 	if (findSystemGit(pathValueOf(baseEnv), getGitInstallDir(), platform()) !== undefined) return undefined;
-	const provisioned = findProvisionedGit(currentGitTarget());
-	if (provisioned === undefined) return undefined;
-	const { layout } = provisioned;
-	return { pathEntry: layout.shellPathEntry, env: portableGitEnv(layout, baseEnv) };
+	try {
+		const provisioned = findProvisionedGit(currentGitTarget());
+		if (provisioned === undefined) return undefined;
+		const { layout } = provisioned;
+		return { pathEntry: layout.shellPathEntry, env: portableGitEnv(layout, baseEnv) };
+	} catch (error) {
+		if (!isGitProvisionError(error)) throw error;
+		lastProvisionFailure = error;
+		return undefined;
+	}
 }
 
 interface SharedGitProvision {
@@ -1581,6 +1611,23 @@ async function verifyGitDistribution(
 
 type Publication = { readonly winner: ProvisionedGit } | { readonly published: GitDistributionLayout };
 
+function selectGitRelease(name: string, target: GitDistributionTarget, layout: GitDistributionLayout): void {
+	const selected = join(gitReleasesDir(), GIT_SELECTED_RELEASE);
+	const pendingSelection = `${selected}.${name}`;
+	try {
+		writeFileSync(pendingSelection, name);
+		renameSync(pendingSelection, selected);
+	} catch (error) {
+		const failure = installFailed("promote", target, layout, error);
+		try {
+			rmSync(pendingSelection, { force: true });
+		} catch (cleanupError) {
+			attachGitCleanupFailure(failure, cleanupError);
+		}
+		throw failure;
+	}
+}
+
 /**
  * Publish the staged distribution with one rename, never moving or removing a published release: paths and
  * environments resolved from it stay usable. The first install becomes `getGitInstallDir()`. A current install
@@ -1608,20 +1655,7 @@ function publishGitDistribution(
 	} catch (error) {
 		throw installFailed("promote", target, layout, error);
 	}
-	const selected = join(gitReleasesDir(), GIT_SELECTED_RELEASE);
-	const pendingSelection = `${selected}.${name}`;
-	try {
-		writeFileSync(pendingSelection, name);
-		renameSync(pendingSelection, selected);
-	} catch (error) {
-		const failure = installFailed("promote", target, layout, error);
-		try {
-			rmSync(pendingSelection, { force: true });
-		} catch (cleanupError) {
-			attachGitCleanupFailure(failure, cleanupError);
-		}
-		throw failure;
-	}
+	selectGitRelease(name, target, layout);
 	return { published: release };
 }
 
@@ -1651,6 +1685,12 @@ async function installGitDistribution(
 	try {
 		const existing = findCurrentGit(target);
 		if (existing !== undefined) return existing;
+		const retained = findRetainedGit(target);
+		if (retained !== undefined) {
+			signal.throwIfAborted();
+			selectGitRelease(basename(retained.layout.root), target, layout);
+			return retained;
+		}
 		return await installUnderLock(target, layout, system, signal, emit);
 	} catch (error) {
 		primary = error;
