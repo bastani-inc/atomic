@@ -838,8 +838,10 @@ describe("background compaction waits in the next-turn hook (counted, #4330)", (
 		assert.ok(firstAnswer);
 		await harness.session.navigateTree(firstAnswer.id);
 		const waits = countHookQueueWaits(harness);
+		const stateEvents = backgroundStates(harness).length;
 
 		await harness.session.prompt("work");
+		assert.equal(backgroundStates(harness).length, stateEvents, "leaving a result behind reports nothing");
 		assert.deepEqual(waits, [0, 0], "no tool turn waits for saves when nothing can be applied");
 		assert.equal(harness.session._backgroundCompaction.announcedResultEntryId, undefined);
 		assert.equal(compactionEntries(harness.sessionManager).length, 0);
@@ -992,6 +994,23 @@ describe("background compaction scheduling edges (#4330)", () => {
 		const [boundary] = compactionEntries(harness.sessionManager);
 		assert.equal(boundary.parentId, probeId);
 		assert.equal(harness.eventsOfType("compaction_end").at(-1)?.midTurn, true);
+	});
+
+	test("a result that a queued save invalidates while the commit waits is discarded instead of applied", async () => {
+		const { harness, planner } = await readyHarness();
+		const target = planner.calls[0].branchIds.find((id) => {
+			const entry = harness.sessionManager.getEntry(id);
+			return entry?.type === "message" && entry.message.role === "user";
+		}) as string;
+		harness.session._agentEventQueue = new Promise<void>((resolve) => {
+			setTimeout(async () => {
+				await harness.sessionManager.appendContextEdit(target, { content: "edited" });
+				resolve();
+			}, 5);
+		});
+		assert.equal(await harness.session._runBackgroundCompactionBoundary(true, true), false);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(harness.eventsOfType("background_compaction").at(-1)?.discarded?.fields.reason, "context-edited");
 	});
 
 	test("a commit reports session_compact with the threshold reason", async () => {
@@ -1756,6 +1775,7 @@ describe("background compaction commit failures (#4330)", () => {
 		const attempts = failCommits(harness, 1);
 		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
 		assert.equal(attempts.count, 1);
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined, "held back by the backoff");
 		await harness.sessionManager.appendCompaction(
 			"[User]: newer",
 			null,

@@ -85,9 +85,12 @@ type TaskOutcome =
  */
 export class BackgroundCompactionRuntime {
 	task: RunningBackgroundCompaction | undefined;
+	/** The last failure of a task or of applying its result; history is unchanged. */
 	failure:
-		| { readonly error: BackgroundCompactionError; readonly upToEntryId?: string; readonly startedAt?: string }
+		| { readonly error: BackgroundCompactionError; readonly upToEntryId: string; readonly startedAt: string }
 		| undefined;
+	/** The invalid-setting error last reported, so the same one is reported only once. */
+	reportedConfigError: BackgroundCompactionConfigError | undefined;
 	consecutiveFailures = 0;
 	nextAttemptAt = 0;
 	/** The stored result last announced as ready, so a later discard of it is reported once. */
@@ -128,20 +131,19 @@ function configuredBackgroundSettings(
 	}
 }
 
-function sameConfigError(left: BackgroundCompactionError | undefined, right: BackgroundCompactionConfigError): boolean {
-	return isBackgroundCompactionConfigError(left) && left.message === right.message;
-}
-
 /**
  * The background settings Atomic uses. While a setting is invalid, background compaction is off with the default
- * threshold, and the typed config error is recorded once as the failure reason.
+ * threshold, and the typed config error is reported once.
  */
 function effectiveBackgroundSettings(session: AgentSession): { background: boolean; thresholdPercent: number } {
 	const configured = configuredBackgroundSettings(session);
-	if (!isBackgroundCompactionConfigError(configured)) return configured;
 	const runtime = runtimeOf(session);
-	if (!sameConfigError(runtime.failure?.error, configured)) {
-		runtime.failure = { error: configured };
+	if (!isBackgroundCompactionConfigError(configured)) {
+		runtime.reportedConfigError = undefined;
+		return configured;
+	}
+	if (runtime.reportedConfigError?.message !== configured.message) {
+		runtime.reportedConfigError = configured;
 		emitBackgroundCompactionState(session);
 	}
 	return { background: false, thresholdPercent: DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT };
@@ -167,20 +169,19 @@ function stateKey(session: AgentSession): string {
 }
 
 /**
- * Write a setting that decides whether background compaction runs, then bring the runtime in line: record or
- * clear an invalid-setting failure, and while background compaction is off cancel a running task and forget
- * task failures and their backoff, so turning it on again starts fresh. Reports the state once if it changed.
+ * Write a setting that decides whether background compaction runs, then bring the runtime in line: while
+ * background compaction is off, cancel a running task and forget task failures and their backoff, so turning it
+ * on again starts fresh. Reports the state once if it changed.
  */
 export function _writeBackgroundCompactionSetting(this: AgentSession, write: () => void): void {
 	const before = stateKey(this);
 	settingsWriteOwner.run(this, write);
 	const runtime = runtimeOf(this);
 	const configured = configuredBackgroundSettings(this);
-	if (isBackgroundCompactionConfigError(configured)) runtime.failure = { error: configured };
-	else if (isBackgroundCompactionConfigError(runtime.failure?.error)) runtime.failure = undefined;
+	runtime.reportedConfigError = isBackgroundCompactionConfigError(configured) ? configured : undefined;
 	if (!backgroundCompactionOn(this)) {
 		this._abortBackgroundCompaction();
-		if (!isBackgroundCompactionConfigError(runtime.failure?.error)) runtime.failure = undefined;
+		runtime.failure = undefined;
 		runtime.consecutiveFailures = 0;
 		runtime.nextAttemptAt = 0;
 	}
@@ -197,25 +198,19 @@ export function backgroundCompactionState(session: AgentSession): BackgroundComp
 	if (runtime.task) {
 		return { state: "running", upToEntryId: runtime.task.upToEntryId, startedAt: runtime.task.startedAt };
 	}
-	const failure = runtime.failure;
-	if (!backgroundCompactionOn(session)) {
-		return isBackgroundCompactionConfigError(failure?.error)
-			? { state: "failed", error: failure.error }
-			: IDLE_BACKGROUND_COMPACTION_STATE;
-	}
+	const configured = configuredBackgroundSettings(session);
+	if (isBackgroundCompactionConfigError(configured)) return { state: "failed", error: configured };
+	if (!configured.background || !session.settingsManager.getCompactionEnabled())
+		return IDLE_BACKGROUND_COMPACTION_STATE;
 	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
+	const failure = runtime.failure;
 	const error = failure?.error;
 	const failedResultEntryId = isBackgroundCompactionCommitError(error) ? error.resultEntryId : undefined;
 	if (ready && failedResultEntryId !== ready.entry.id) {
 		return { state: "ready", upToEntryId: ready.record.upToEntryId, startedAt: ready.record.startedAt };
 	}
 	if (failure && (ready || failedResultEntryId === undefined)) {
-		return {
-			state: "failed",
-			...(failure.upToEntryId === undefined ? {} : { upToEntryId: failure.upToEntryId }),
-			...(failure.startedAt === undefined ? {} : { startedAt: failure.startedAt }),
-			error: failure.error,
-		};
+		return { state: "failed", upToEntryId: failure.upToEntryId, startedAt: failure.startedAt, error: failure.error };
 	}
 	return IDLE_BACKGROUND_COMPACTION_STATE;
 }
@@ -483,9 +478,8 @@ function settleBranch(session: AgentSession): { branch: SessionEntry[]; ready: R
 	const branch = session.sessionManager.getBranch();
 	const ready = selectReadyBackgroundCompaction(branch);
 	releaseStaleCommitFailure(runtime, ready);
-	const announced = runtime.announcedResultEntryId;
-	const outcome = announced === undefined ? undefined : announcedResultOutcome(branch, announced);
-	if (outcome !== undefined && outcome.kind !== "committable") {
+	const outcome = announcedResultOutcome(branch, runtime.announcedResultEntryId);
+	if (outcome.kind !== "committable") {
 		runtime.announcedResultEntryId = undefined;
 		if (outcome.kind === "discarded") emitBackgroundCompactionState(session, outcome.error);
 	}

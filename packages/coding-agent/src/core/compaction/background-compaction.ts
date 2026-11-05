@@ -288,9 +288,13 @@ export type AnnouncedResultOutcome =
 	/** The result is not on this branch, for example after `/tree` navigation. It is not discarded. */
 	| { readonly kind: "not-on-branch" };
 
-export function announcedResultOutcome(branch: readonly SessionEntry[], resultEntryId: string): AnnouncedResultOutcome {
+/** `resultEntryId` is undefined when no result was announced, which is never on any branch. */
+export function announcedResultOutcome(
+	branch: readonly SessionEntry[],
+	resultEntryId: string | undefined,
+): AnnouncedResultOutcome {
 	const indexById = indexBranch(branch);
-	const resultIndex = indexById.get(resultEntryId);
+	const resultIndex = (indexById as ReadonlyMap<string | undefined, number>).get(resultEntryId);
 	if (resultIndex === undefined) return { kind: "not-on-branch" };
 	const reason = backgroundCompactionDiscardReason(branch, resultIndex, indexById);
 	if (reason === undefined) return { kind: "committable" };
