@@ -74,6 +74,52 @@ const calling = (...calls: Array<[string, Record<string, string>]>) =>
 		{ stopReason: "toolUse" },
 	);
 
+/** Counts the Git commands snapshot code runs from now until the test ends. */
+function countGitCommands(): () => number {
+	let count = 0;
+	const executable = sandbox.executable;
+	const previous = setWorktreeSnapshotGit(async () => {
+		count++;
+		return executable;
+	});
+	cleanups.push(() => {
+		setWorktreeSnapshotGit(previous);
+	});
+	return () => count;
+}
+
+describe("turns the recorder itself declines", () => {
+	test("a turn of an in-memory session records nothing, reports nothing and runs no Git command", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const manager = SessionManager.inMemory(clone);
+		const unavailable: WorktreeSnapshotUnavailable[] = [];
+		const recorder = new SessionWorktreeSnapshotRecorder({
+			sessionManager: manager,
+			cwd: () => clone,
+			settings: () => DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			declaresWrites: () => false,
+			onUnavailable: (reason) => unavailable.push(reason),
+		});
+		const commands = countGitCommands();
+		await recorder.recordTurn(calling(["write", { path: join(clone, "a.txt"), content: "a" }]));
+		assert.equal(commands(), 0);
+		assert.deepEqual(unavailable, []);
+		assert.equal(snapshotEntries(manager).length, 0);
+	});
+
+	test("a turn of a persisted session with snapshots disabled runs no Git command", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const { manager, recorder, unavailable } = await recorderFor(clone, {
+			settings: { ...DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, enabled: false },
+		});
+		const commands = countGitCommands();
+		await recorder.recordTurn(calling(["write", { path: join(clone, "a.txt"), content: "a" }]));
+		assert.equal(commands(), 0);
+		assert.deepEqual(unavailable, []);
+		assert.equal(snapshotEntries(manager).length, 0);
+	});
+});
+
 describe("which tool calls make a turn record", () => {
 	test("a turn of only text records nothing, whatever the host says about tool names", async () => {
 		const { clone } = await sandbox.remoteWithClone();
