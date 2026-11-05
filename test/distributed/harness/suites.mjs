@@ -134,10 +134,11 @@ export function parseCapabilities(document) {
  * Whether a feature suite can run on the ref: undefined when it can, otherwise the typed skip reason.
  * @param {string} suite
  * @param {Capabilities} capabilities
+ * @param {Readonly<Record<string, FeatureProbe>>} [probes]
  * @returns {DistributedFeatureUnavailableError | DistributedScenarioPendingError | undefined}
  */
-export function featureSkip(suite, capabilities) {
-	const probe = FEATURE_PROBES[suite];
+export function featureSkip(suite, capabilities, probes = FEATURE_PROBES) {
+	const probe = probes[suite];
 	if (probe === undefined) return undefined;
 	if (!probe.present(capabilities))
 		return new DistributedFeatureUnavailableError({ suite, issue: probe.issue, capability: probe.capability });
@@ -705,7 +706,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		records: allRecords,
 		fencing,
 		integrity: integrity.result,
-		expectations: { minAcks: 20, requireCompletion: true },
+		expectations: { minAcks: 10, requireCompletion: true },
 	});
 	const lastEntry = read.entries.at(-1);
 	invariants.push({

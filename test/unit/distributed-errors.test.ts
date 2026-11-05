@@ -512,3 +512,105 @@ test("the security gate and invariant checks produce their typed failures", () =
 		actual: ["bad"],
 	});
 });
+
+test("each error renders its message from its fields", () => {
+	const messages = samples().map(([error]) => error.message);
+	assert.deepEqual(messages, [
+		"Invalid distributed-test configuration: cli --nodes is invalid-value (invalid-config). Set --nodes to a positive integer.",
+		"Distributed test prerequisites are missing: az login (missing-prerequisite). Fix: az login.",
+		"az op failed with exit 1 (command-failed). Inspect the redacted az output in the run log and rerun the step.",
+		"p timed out after 2 ms (budget 1 ms) (timeout). Check the target's reachability and raise the p budget only if the step is legitimately slow.",
+		"Provisioning r failed during s (provision-failed). The run tears down what it created; check quota and region capacity, then rerun.",
+		"The security gate found 1 violation(s): c (security-check-failed). No scenario ran and the run was torn down; fix the network or database configuration named in the violations.",
+		"Chaos profile oom could not observe on t (fault-failed). Check the target's kernel and tool support recorded in the environment facts.",
+		"Invariant i failed in s (invariant-violated). Compare expected and actual in the evidence report; this is a finding against the ref under test.",
+		"Suite s needs c from #1, which the ref under test does not provide (feature-unavailable). Run the suite against a ref that contains #1.",
+		"Suite s found c from #1, but its scenarios are not written yet (scenario-pending). Add the s scenarios in test/distributed/harness/suites.mjs together with #1.",
+		"Teardown of run r left 1 resource(s) and 0 failure(s) (teardown-incomplete). Rerun `node test/distributed/sweep.mjs --run-id r` after fixing the failures.",
+	]);
+	assert.equal(
+		new DistributedCommandError({
+			tool: "ssh",
+			operation: "o",
+			exitCode: null,
+			signal: "SIGKILL",
+		}).message.startsWith("ssh o failed with signal SIGKILL (command-failed)."),
+		true,
+	);
+	assert.deepEqual(new DistributedCommandError({ tool: "ssh", operation: "o", exitCode: 2, signal: null }).fields, {
+		tool: "ssh",
+		operation: "o",
+		exitCode: 2,
+		signal: null,
+		detail: "",
+	});
+	assert.deepEqual(new DistributedFaultError({ profile: "oom", stage: "apply", target: "n1" }).fields, {
+		profile: "oom",
+		stage: "apply",
+		target: "n1",
+		detail: "",
+	});
+	assert.deepEqual(new DistributedScenarioPendingError({ suite: "s", issue: "#1", capability: "c" }).fields, {
+		suite: "s",
+		issue: "#1",
+		capability: "c",
+	});
+	assert.equal(
+		new DistributedPrerequisiteError({
+			missing: [
+				{ what: "a", why: "w", fix: "f" },
+				{ what: "b", why: "w", fix: "g" },
+			],
+		}).message.startsWith("Distributed test prerequisites are missing: a, b "),
+		true,
+	);
+	const base = new DistributedTestError({ code: "custom", summary: "Something failed" });
+	assert.equal(base.name, "DistributedTestError");
+	assert.equal(base.message, "Something failed (custom).");
+	assert.ok(!Object.hasOwn(base, "cause"));
+	assert.deepEqual(base.fields, {});
+	assert.equal(base.hint, undefined);
+	assert.equal(new DistributedTestError({ code: "c", summary: "s", cause: 0 }).cause, 0);
+});
+
+test("guards and helpers tolerate primitives and null causes", () => {
+	assert.equal(
+		isRetryableDistributedError(
+			Object.assign(new DistributedProvisionError({ step: "s", resource: "r" }), { cause: null }),
+		),
+		false,
+	);
+	assert.equal(isCancellation("AbortError"), false);
+	assert.equal(attachCleanupFailure(null, new Error("x")), null);
+	const primary = new Error("p");
+	attachCleanupFailure(primary, "cleanup");
+	assert.deepEqual(Object.getOwnPropertyDescriptor(primary, "cleanupCause"), {
+		value: "cleanup",
+		enumerable: false,
+		writable: true,
+		configurable: true,
+	});
+	assert.deepEqual(serializeDistributedError(Object.assign(new Error("m"), { fields: null })).fields, {});
+	const back = rehydrateDistributedError({
+		name: "DistributedProvisionError",
+		code: "provision-failed",
+		message: "m",
+		retryable: false,
+		fields: {},
+		cause: { name: "Error", code: "unclassified", message: "c", retryable: false, fields: {} },
+	});
+	assert.deepEqual(Object.getOwnPropertyDescriptor(back, "message"), {
+		value: "m",
+		writable: true,
+		configurable: true,
+		enumerable: true,
+	});
+	assert.deepEqual(Object.getOwnPropertyDescriptor(back, "stack"), {
+		value: "DistributedProvisionError: m",
+		writable: true,
+		configurable: true,
+		enumerable: false,
+	});
+	const cause = Object.getOwnPropertyDescriptor(back, "cause");
+	assert.deepEqual([cause?.writable, cause?.configurable, cause?.enumerable], [true, true, false]);
+});

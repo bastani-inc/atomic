@@ -441,3 +441,94 @@ test("cancellation during teardown propagates as cancellation", async () => {
 		(error) => error === abort,
 	);
 });
+
+test("teardown sends exact commands, ignores non-string listings and measures its deadline from the start", async () => {
+	const { az, calls } = fakeAz([
+		[
+			"network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].name",
+			() => [7, null, `${RUN}-a`],
+		],
+		["group exists", () => true],
+		["resource list", () => [`/leftover`]],
+	]);
+	let clock = 1_000_000;
+	const result = await teardownRun({
+		az,
+		runId: RUN,
+		resourceGroup: `${RUN}-rg`,
+		control,
+		knownPeerings: [],
+		sleep: async (ms: number) => {
+			clock += ms;
+		},
+		now: () => clock,
+		deadlineMs: 40_000,
+		pollMs: 20_000,
+	});
+	assert.deepEqual(calls[1].args, [
+		"network",
+		"vnet",
+		"peering",
+		"delete",
+		"--resource-group",
+		"control-rg",
+		"--vnet-name",
+		"control-vnet",
+		"--name",
+		`${RUN}-a`,
+	]);
+	assert.deepEqual(calls[2].args, ["group", "exists", "--name", `${RUN}-rg`]);
+	assert.equal(calls.filter((call) => call.operation === "absence query: tagged resources").length, 3);
+	assert.deepEqual(result.remaining, ["/leftover"]);
+	const notAList = fakeAz([
+		["group exists", () => false],
+		["network vnet list", () => "unexpected"],
+	]);
+	const odd = await teardownRun({
+		az: notAList.az,
+		runId: RUN,
+		resourceGroup: `${RUN}-rg`,
+		control,
+		knownPeerings: [],
+		...timing(),
+		deadlineMs: 0,
+		pollMs: 1,
+	});
+	assert.equal(odd.ok, false);
+	assert.deepEqual(odd.remaining, ["unexpected"]);
+	const empty = fakeAz([
+		["group exists", () => false],
+		["network vnet list", () => ({ value: [] })],
+	]);
+	const shaped = await teardownRun({
+		az: empty.az,
+		runId: RUN,
+		resourceGroup: `${RUN}-rg`,
+		control,
+		knownPeerings: [],
+		...timing(),
+		deadlineMs: 0,
+		pollMs: 1,
+	});
+	assert.equal(shaped.ok, false);
+	assert.deepEqual(shaped.error?.fields.remaining, ['{"value":[]}', "query failed: test VNets (both peering sides)"]);
+});
+
+test("remaining names prefer ids, then string names, then JSON", () => {
+	assert.deepEqual(remainingFromQueries([{ result: [{ name: 5 }, { id: 3, name: "n" }] }]), ['{"name":5}', "n"]);
+});
+
+test("expiry parsing is anchored and force without a run id never touches unexpired resources", () => {
+	for (const bad of ["x2026-11-05T11:00:00Z", "2026-11-05T11:00:00Zx"])
+		assert.equal(classifyExpiry(tagged("g", RUN, bad), NOW).kind, "malformed-expiry", bad);
+	const plan = planSweep({
+		groups: [],
+		resources: [{ id: "/r/fresh", name: "f", resourceGroup: "shared", tags: runTags(RUN, "2026-11-07T00:00:00Z") }],
+		controlPeerings: [],
+		existingGroups: [],
+		now: NOW,
+		force: true,
+	});
+	assert.deepEqual(plan.resources, []);
+	assert.deepEqual(plan.kept, [{ subject: "/r/fresh", reason: "unexpired", runId: RUN }]);
+});

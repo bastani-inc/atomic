@@ -300,9 +300,9 @@ export const isDistributedScenarioPendingError = guard("DistributedScenarioPendi
  */
 export function isRetryableDistributedError(error) {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
 		if (isDistributedTestError(current) && current.retryable === true) return true;
-		current = typeof current === "object" ? Reflect.get(current, "cause") : undefined;
+		current = Reflect.get(current, "cause");
 	}
 	return false;
 }

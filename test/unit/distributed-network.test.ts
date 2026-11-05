@@ -353,3 +353,90 @@ test("requires the Internet deny and overrides of the implicit allows", () => {
 		["internet-deny"],
 	);
 });
+
+test("CIDR edge cases: a /0 mask, overlap at the far edge", () => {
+	assert.deepEqual(parseCidr("10.1.2.3/0"), { base: 0, bits: 0 });
+	assert.ok(cidrsOverlap("10.60.0.0/16", "10.60.255.255/32"));
+	assert.ok(cidrsOverlap("10.60.255.255/32", "10.60.0.0/16"));
+});
+
+test("effective-rule evaluation follows priority, access and exact allowlist entries", () => {
+	const allowAt = (name: string, source: string, priority: number, port = "22") => ({
+		name: `securityRules/${name}`,
+		priority,
+		access: "Allow",
+		direction: "Inbound",
+		protocol: "Tcp",
+		sourceAddressPrefix: source,
+		destinationPortRange: port,
+	});
+	const lateInternetDeny = {
+		name: "securityRules/late-deny",
+		priority: 4090,
+		access: "Deny",
+		direction: "Inbound",
+		protocol: "All",
+		sourceAddressPrefix: "Internet",
+		destinationPortRange: "0-65535",
+	};
+	assert.deepEqual(evaluateEffectiveRules("nic", [lateInternetDeny, ...effective()], allowed), []);
+	assert.deepEqual(evaluateEffectiveRules("nic", effective([allowAt("same", "10.60.0.0/16", 100)]), allowed), []);
+	const noVnetDeny = effective([allowAt("vnet-allow", "VirtualNetwork", 300)]).filter(
+		(rule) => rule.name !== "securityRules/deny-vnet-in",
+	);
+	assert.deepEqual(
+		evaluateEffectiveRules("nic", noVnetDeny, allowed).map((v) => v.check),
+		["unlisted-source", "implicit-allow"],
+	);
+	const tiedDeny = effective().map((rule) =>
+		rule.name === "securityRules/deny-vnet-in" ? { ...rule, priority: 65000 } : rule,
+	);
+	assert.equal(evaluateEffectiveRules("nic", tiedDeny, allowed)[0]?.check, "implicit-allow");
+	assert.deepEqual(
+		evaluateEffectiveRules("nic", effective([allowAt("tag", "AzureCloud", 300)]), [...allowed, "AzureCloud"]),
+		[],
+	);
+	assert.deepEqual(
+		evaluateEffectiveRules("nic", effective([allowAt("tag", "AzureCloud", 300)]), allowed).map((v) => v.check),
+		["unlisted-source"],
+	);
+	const partialPorts = effective().map((rule) =>
+		rule.name === "securityRules/deny-internet-in"
+			? { ...rule, destinationPortRange: undefined, destinationPortRanges: ["22", "*"] }
+			: rule,
+	);
+	assert.deepEqual(evaluateEffectiveRules("nic", partialPorts, allowed), []);
+	const portsOnly = effective().map((rule) =>
+		rule.name === "securityRules/deny-internet-in"
+			? { ...rule, destinationPortRange: undefined, destinationPortRanges: undefined }
+			: rule,
+	);
+	assert.equal(evaluateEffectiveRules("nic", portsOnly, allowed)[0]?.check, "internet-deny");
+});
+
+test("rule order in the input does not matter, and only denies can shadow an implicit allow", () => {
+	const lateInternetDeny = {
+		name: "securityRules/late-deny",
+		priority: 4090,
+		access: "Deny",
+		direction: "Inbound",
+		protocol: "All",
+		sourceAddressPrefix: "Internet",
+		destinationPortRange: "0-65535",
+	};
+	assert.deepEqual(evaluateEffectiveRules("nic", [...effective(), lateInternetDeny], allowed), []);
+	const broadVnetAllow = {
+		name: "securityRules/vnet-all",
+		priority: 300,
+		access: "Allow",
+		direction: "Inbound",
+		protocol: "All",
+		sourceAddressPrefix: "VirtualNetwork",
+		destinationPortRange: "0-65535",
+	};
+	const withoutDeny = effective([broadVnetAllow]).filter((rule) => rule.name !== "securityRules/deny-vnet-in");
+	assert.deepEqual(
+		evaluateEffectiveRules("nic", withoutDeny, allowed).map((v) => v.check),
+		["unlisted-source", "implicit-allow"],
+	);
+});

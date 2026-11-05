@@ -65,9 +65,10 @@ export function runIdOfName(name) {
  * @returns {Expiry}
  */
 export function classifyExpiry(item, now) {
-	const runId = item.tags?.[RUN_TAG];
-	if (runId === undefined || !RUN_ID_PATTERN.test(runId)) return { kind: "foreign" };
-	const expiresAt = item.tags?.[EXPIRY_TAG];
+	const tags = item.tags ?? {};
+	const runId = tags[RUN_TAG];
+	if (!RUN_ID_PATTERN.test(String(runId))) return { kind: "foreign" };
+	const expiresAt = tags[EXPIRY_TAG];
 	if (expiresAt === undefined) return { kind: "missing-expiry", runId };
 	const instant = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(expiresAt)
 		? Date.parse(expiresAt)

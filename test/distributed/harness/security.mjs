@@ -34,17 +34,15 @@ export function bindViolations(sockets, { privateIp, gatewayPort, replicationPor
  * @param {readonly SecurityCheck[]} checks
  */
 export function gateVerdict(checks) {
-	const failed = checks.filter((check) => !check.passed);
+	const violations = checks
+		.filter((check) => !check.passed)
+		.map((check) => ({
+			check: check.name,
+			subject: check.subject,
+			detail: (JSON.stringify(check.observed) ?? "").slice(0, 300),
+		}));
 	if (checks.length === 0)
-		failed.push({ name: "gate-ran", subject: "security gate", passed: false, observed: "no checks recorded" });
-	if (failed.length > 0) {
-		throw new DistributedSecurityError({
-			violations: failed.map((check) => ({
-				check: check.name,
-				subject: check.subject,
-				detail: (JSON.stringify(check.observed) ?? "").slice(0, 300),
-			})),
-		});
-	}
+		violations.push({ check: "gate-ran", subject: "security gate", detail: "no checks recorded" });
+	if (violations.length > 0) throw new DistributedSecurityError({ violations });
 	return { passed: true, checks: [...checks] };
 }

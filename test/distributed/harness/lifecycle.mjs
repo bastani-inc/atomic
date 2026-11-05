@@ -52,11 +52,10 @@ export async function runLifecycle({ steps, scenarios, teardown, provisioned, ke
 	}
 	try {
 		outcome.teardown = await teardown();
-		if (!outcome.teardown.ok && outcome.error !== undefined)
-			attachCleanupFailure(outcome.error, outcome.teardown.error);
+		if (!outcome.teardown.ok) attachCleanupFailure(outcome.error, outcome.teardown.error);
 	} catch (error) {
 		outcome.teardown = { ok: false, error };
-		if (outcome.error !== undefined) attachCleanupFailure(outcome.error, error);
+		attachCleanupFailure(outcome.error, error);
 	}
 	return outcome;
 }

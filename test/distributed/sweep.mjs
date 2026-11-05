@@ -149,7 +149,7 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 		controlPeerings,
 		existingGroups,
 		now,
-		...(runId === undefined ? {} : { onlyRunId: runId }),
+		onlyRunId: runId,
 		force,
 	});
 	log(

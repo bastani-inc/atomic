@@ -79,8 +79,8 @@ export function checkJournalInvariants({ entries, records, fencing, integrity, e
 	results.push({
 		name: "no-duplicate-checkpoints",
 		passed: duplicates.length === 0,
-		expected: 0,
-		actual: duplicates.length,
+		expected: { duplicates: 0 },
+		actual: { duplicates: duplicates.length, firstDuplicate: duplicates[0] ?? null },
 	});
 	const indexes = journal
 		.map((entry) => entry.index)
@@ -178,7 +178,7 @@ export function latencyStats(records, { from, to }) {
 		.map((record) => /** @type {number} */ (record.ms))
 		.sort((a, b) => a - b);
 	if (values.length === 0) return { count: 0, median: null, p10: null, p90: null };
-	const at = (/** @type {number} */ q) => values[Math.min(values.length - 1, Math.floor(q * values.length))];
+	const at = (/** @type {number} */ q) => values[Math.floor(q * values.length)];
 	return { count: values.length, median: at(0.5), p10: at(0.1), p90: at(0.9) };
 }
 

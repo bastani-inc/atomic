@@ -546,3 +546,295 @@ test("the control network comes from the environment, with every missing variabl
 		});
 	}
 });
+
+test("configuration errors carry the exact expectation and the offending value", () => {
+	const fields = (action: () => unknown) => configError(action).fields;
+	assert.deepEqual(
+		fields(() => parseRunArgs(["--ref"])),
+		{ source: "cli", field: "--ref", reason: "missing-value", expected: "a value after the flag", actual: null },
+	);
+	assert.deepEqual(
+		fields(() => options([])),
+		{
+			source: "cli",
+			field: "--ref",
+			reason: "required",
+			expected: "a commit SHA or branch name on origin",
+			actual: null,
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--suite", "x"])),
+		{
+			source: "cli",
+			field: "--suite",
+			reason: "unknown-name",
+			expected: `all or one of ${Object.keys(SUITES).join(", ")}`,
+			actual: "x",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--regions", "a,"])),
+		{
+			source: "cli",
+			field: "--regions",
+			reason: "invalid-value",
+			expected: "a comma-separated list of Azure region names",
+			actual: "a,",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--chaos", "quake"])),
+		{
+			source: "cli",
+			field: "--chaos",
+			reason: "unknown-name",
+			expected: `smoke, none, or profiles from ${CHAOS_PROFILES.join(", ")} separated by commas`,
+			actual: "quake",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--seed", "-2"])),
+		{
+			source: "cli",
+			field: "--seed",
+			reason: "invalid-value",
+			expected: "an integer from 0 to 4294967295",
+			actual: "-2",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--ttl-hours", "0"])),
+		{
+			source: "cli",
+			field: "--ttl-hours",
+			reason: "invalid-value",
+			expected: "a positive number of hours",
+			actual: "0",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--db-storage", "hdd"])),
+		{
+			source: "cli",
+			field: "--db-storage",
+			reason: "invalid-value",
+			expected: "premium-ssd or local-nvme",
+			actual: "hdd",
+		},
+	);
+	assert.deepEqual(
+		fields(() => options(["--ref", "m", "--db-region", ""])),
+		{ source: "cli", field: "--db-region", reason: "invalid-value", expected: "an Azure region name", actual: "" },
+	);
+	for (const valid of ["1.5", "12", "12.25"])
+		assert.equal(options(["--ref", "m", "--ttl-hours", valid]).ttlHours, Number(valid));
+	for (const invalid of ["1.", "x1", "1x", ".5", "1.5.5"])
+		assert.equal(fields(() => options(["--ref", "m", "--ttl-hours", invalid])).actual, invalid);
+	assert.deepEqual(SUITES, {
+		smoke: "#4331",
+		"multi-node-resume": "#4329",
+		"cross-host-pools": "#4310",
+		"shard-contention": "#4325",
+		"idle-density": "#4309/#4326",
+		"subscription-flood": "#4311",
+		"fork-under-load": "#4321",
+		"restore-cold": "#4245",
+		"team-ci": "#4320",
+		"pool-scale": "#4312",
+		compaction: "#4330",
+	});
+});
+
+test("topology errors carry the exact expectation and the offending value", () => {
+	const broken = (mutate: (copy: Record<string, any>) => void) => {
+		const copy = structuredClone(topologyJson);
+		mutate(copy);
+		return configError(() => parseTopology(copy)).fields;
+	};
+	const topology = (field: string, expected: string, actual: unknown, reason = "invalid-value") => ({
+		source: "topology",
+		field,
+		reason,
+		expected,
+		actual,
+	});
+	assert.deepEqual(
+		broken((c) => (c.image = 3)),
+		topology("image", "a non-empty string", "3"),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.image),
+		topology("image", "a non-empty string", null, "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.database.gatewayPort = 0)),
+		topology("database.gatewayPort", "an integer from 1 to 65535", "0"),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.database.gatewayPort),
+		topology("database.gatewayPort", "an integer from 1 to 65535", null, "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.node = "v1")),
+		topology("node", "an object", '"v1"'),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.node),
+		topology("node", "an object", null, "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.regions = [""])),
+		topology("regions", "a non-empty array of non-empty strings", '[""]'),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.regions),
+		topology("regions", "a non-empty array of non-empty strings", null, "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.nodes[0].secondaryNic = 1)),
+		topology("nodes[0].secondaryNic", "a boolean", "1"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.schemaVersion = 2)),
+		topology("schemaVersion", "1", "2"),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.schemaVersion),
+		topology("schemaVersion", "1", "null"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.database.storage = "tape")),
+		topology("database.storage", "premium-ssd or local-nvme", "tape"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.ttlHours = -1)),
+		topology("ttlHours", "a positive number of hours", "-1"),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.ttlHours),
+		topology("ttlHours", "a positive number of hours", "null", "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.nodes = {})),
+		topology("nodes", "a non-empty array of node templates", "{}"),
+	);
+	assert.deepEqual(
+		broken((c) => delete c.nodes),
+		topology("nodes", "a non-empty array of node templates", "null", "required"),
+	);
+	assert.deepEqual(
+		broken((c) => (c.nodes = [7])),
+		topology("nodes[0]", "an object", "7"),
+	);
+	assert.deepEqual(configError(() => parseTopology(null)).fields, topology("(root)", "a JSON object", "null"));
+	const noNic = structuredClone(topologyJson);
+	delete noNic.nodes[2].secondaryNic;
+	assert.equal(parseTopology(noNic).nodes[2].secondaryNic, false);
+});
+
+test("the controller subnet must be an IPv4 CIDR", () => {
+	const env = {
+		ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP: "control-rg",
+		ATOMIC_DISTRIBUTED_CONTROL_VNET: "control-vnet",
+	};
+	for (const valid of ["10.0.123.0/24", "192.168.1.0/8"])
+		assert.equal(parseControlEnv({ ...env, ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX: valid }).sshSourcePrefix, valid);
+	for (const invalid of ["x10.0.1.0/24", "10.0.1.0/24x", "10.0.1.1234/24"]) {
+		assert.equal(
+			configError(() => parseControlEnv({ ...env, ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX: invalid })).fields.actual,
+			invalid,
+		);
+	}
+	assert.throws(
+		() => parseControlEnv({}),
+		(error) => {
+			assert.deepEqual(Reflect.get(error as object, "fields").missing, [
+				{
+					what: "ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP",
+					why: "test VNets are peered to the controller's VNet and accept SSH only from its subnet",
+					fix: "export ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP=<the resource group of the controller's VNet, for example control-rg>",
+				},
+				{
+					what: "ATOMIC_DISTRIBUTED_CONTROL_VNET",
+					why: "test VNets are peered to the controller's VNet and accept SSH only from its subnet",
+					fix: "export ATOMIC_DISTRIBUTED_CONTROL_VNET=<the name of the controller's VNet, for example control-vnet>",
+				},
+				{
+					what: "ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX",
+					why: "test VNets are peered to the controller's VNet and accept SSH only from its subnet",
+					fix: "export ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX=<the CIDR of the controller's subnet, for example 10.0.1.0/24>",
+				},
+			]);
+			return true;
+		},
+	);
+});
+
+test("every nested topology field is reported by its full path", () => {
+	const fieldOf = (mutate: (copy: Record<string, any>) => void) => {
+		const copy = structuredClone(topologyJson);
+		mutate(copy);
+		return configError(() => parseTopology(copy)).fields.field;
+	};
+	assert.equal(
+		fieldOf((c) => delete c.database),
+		"database",
+	);
+	assert.equal(
+		fieldOf((c) => (c.node = null)),
+		"node",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.adminUser),
+		"adminUser",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.storage),
+		"database.storage",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.version),
+		"database.version",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.image),
+		"database.image",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.primary.region),
+		"database.primary.region",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.primary.size),
+		"database.primary.size",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.replica.region),
+		"database.replica.region",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.replica.size),
+		"database.replica.size",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.replica),
+		"database.replica",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.database.localNvmeSize),
+		"database.localNvmeSize",
+	);
+	assert.equal(
+		fieldOf((c) => delete c.extraNode.size),
+		"extraNode.size",
+	);
+	assert.equal(
+		fieldOf((c) => (c.ttlHours = "6")),
+		"ttlHours",
+	);
+	assert.equal(
+		fieldOf((c) => (c.database.gatewayPort = "8443")),
+		"database.gatewayPort",
+	);
+});

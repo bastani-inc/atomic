@@ -53,11 +53,17 @@ export function runCommand(context, tool, args, options) {
 	const started = performance.now();
 	logLine(context, `$ ${tool} ${args.join(" ")}  # ${operation}`);
 	return new Promise((resolve, reject) => {
-		const child = spawn(tool, args, {
-			stdio: ["pipe", "pipe", "pipe"],
-			env: process.env,
-			...(cwd === undefined ? {} : { cwd }),
-		});
+		const child = spawn(tool, args, { cwd, detached: true });
+		const killGroup = () => {
+			try {
+				process.kill(-(/** @type {number} */ (child.pid)), "SIGKILL");
+			} catch (error) {
+				logLine(
+					context,
+					`kill of ${tool} ${operation} found no process group: ${Reflect.get(/** @type {object} */ (error), "code")}`,
+				);
+			}
+		};
 		/** @type {Buffer[]} */
 		const stdout = [];
 		/** @type {Buffer[]} */
@@ -71,11 +77,11 @@ export function runCommand(context, tool, args, options) {
 				timeoutMs,
 				elapsedMs: Math.round(performance.now() - started),
 			});
-			child.kill("SIGKILL");
+			killGroup();
 		}, timeoutMs);
-		const onAbort = () => {
-			interruption = signal?.reason;
-			child.kill("SIGKILL");
+		const onAbort = (/** @type {Event} */ event) => {
+			interruption = /** @type {AbortSignal} */ (event.target).reason;
+			killGroup();
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 		child.stdout.on("data", (chunk) => stdout.push(chunk));

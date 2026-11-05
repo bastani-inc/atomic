@@ -149,10 +149,9 @@ export function iptablesRules(tag, kind, { dbIp, port }) {
 export function parseCounters(text) {
 	/** @type {Record<string, number>} */
 	const counts = {};
-	for (const line of text.trim().split("\n")) {
-		const [chain, packets] = line.trim().split(/\s+/);
-		if (chain !== undefined && packets !== undefined && /^\d+$/.test(packets))
-			counts[chain] = (counts[chain] ?? 0) + Number(packets);
+	for (const line of text.split("\n")) {
+		const match = /^\s*(\S+)\s+(\d+)\s*$/.exec(line);
+		if (match !== null) counts[match[1]] = (counts[match[1]] ?? 0) + Number(match[2]);
 	}
 	return counts;
 }
@@ -245,8 +244,12 @@ export function profileCoverage(results, selected) {
 	});
 }
 
-/** Every profile the CLI accepts has a spec, and nothing else does. */
-export function catalogIsComplete() {
-	const specified = Object.keys(PROFILE_SPECS);
-	return specified.length === CHAOS_PROFILES.length && CHAOS_PROFILES.every((profile) => specified.includes(profile));
+/**
+ * Whether every profile the CLI accepts has a spec, and nothing else does.
+ * @param {Readonly<Record<string, ProfileSpec>>} [specs]
+ * @param {readonly string[]} [profiles]
+ */
+export function catalogIsComplete(specs = PROFILE_SPECS, profiles = CHAOS_PROFILES) {
+	const specified = Object.keys(specs);
+	return specified.length === profiles.length && profiles.every((profile) => specified.includes(profile));
 }

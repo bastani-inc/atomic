@@ -177,3 +177,26 @@ test("the seeded PRNG replays the same choices", () => {
 	assert.throws(() => createRandom(1).pick([]), RangeError);
 	assert.equal(createRandom(2 ** 32 + 5).next(), createRandom(5).next());
 });
+
+test("counter, netem and catalog parsing edge cases", () => {
+	assert.deepEqual(parseCounters("\n  INPUT    12  \nOUTPUT 3x\nOUTPUT\nFORWARD 4 extra\n"), { INPUT: 12 });
+	assert.throws(() => netemParameters("partition", 1), {
+		name: "RangeError",
+		message: "partition is not a netem profile",
+	});
+	assert.deepEqual(parseNetemStats(" Sent 9 bytes 2 pkt (dropped 56, overlimits 0 requeues 0)"), {
+		bytes: 9,
+		packets: 2,
+		dropped: 56,
+	});
+	const spec = { layer: "network" as const, mechanism: "m", effect: "e", recovery: "r" };
+	assert.equal(catalogIsComplete({ a: spec, b: spec }, ["a", "b"]), true);
+	assert.equal(catalogIsComplete({ a: spec }, ["a", "b"]), false);
+	assert.equal(catalogIsComplete({ a: spec, c: spec }, ["a", "b"]), false);
+	assert.equal(catalogIsComplete({ a: spec, b: spec, c: spec }, ["a", "b"]), false);
+	assert.throws(() => createRandom(1).pick([]), { name: "RangeError", message: "pick needs at least one item" });
+});
+
+test("counter lines must start with the chain name", () => {
+	assert.deepEqual(parseCounters("junk OUTPUT 5\nINPUT 2"), { INPUT: 2 });
+});

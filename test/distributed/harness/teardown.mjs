@@ -142,13 +142,11 @@ export async function teardownRun({
 		);
 	}
 	const started = now();
-	/** @type {QueryRecord[]} */
-	let queries = [];
-	/** @type {unknown[]} */
-	let queryErrors = [];
-	for (;;) {
-		queries = [];
-		queryErrors = [];
+	const probe = async () => {
+		/** @type {QueryRecord[]} */
+		const queries = [];
+		/** @type {unknown[]} */
+		const queryErrors = [];
 		for (const query of absenceQueries({ runId, resourceGroup, control })) {
 			const command = `az ${query.args.map((arg) => (/[\s[\]?'=]/.test(arg) ? `"${arg}"` : arg)).join(" ")}`;
 			try {
@@ -165,14 +163,17 @@ export async function teardownRun({
 				queryErrors.push(error);
 			}
 		}
-		const clean = queries.every((query) => query.ok && query.result.length === 0);
-		if (clean || now() - started >= deadlineMs) break;
+		return { queries, queryErrors };
+	};
+	let { queries, queryErrors } = await probe();
+	while (!queries.every((query) => query.ok && query.result.length === 0) && now() - started < deadlineMs) {
 		await sleep(pollMs);
+		({ queries, queryErrors } = await probe());
 	}
 	errors.push(...queryErrors);
 	const remaining = remainingFromQueries(queries);
 	const failedQueries = queries.filter((query) => !query.ok).map((query) => `query failed: ${query.label}`);
-	const ok = remaining.length === 0 && failedQueries.length === 0 && errors.length === 0;
+	const ok = remaining.length === 0 && errors.length === 0;
 	return {
 		ok,
 		steps,

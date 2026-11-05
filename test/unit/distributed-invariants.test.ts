@@ -150,7 +150,7 @@ test("detects duplicates, gaps, sequence and epoch regressions", () => {
 	duplicate.entries.push({ ...entry(5, 2, 3) });
 	const dup = byName(checkJournalInvariants(duplicate));
 	assert.equal(dup["no-duplicate-checkpoints"].passed, false);
-	assert.equal(dup["no-duplicate-checkpoints"].actual, 1);
+	assert.deepEqual(dup["no-duplicate-checkpoints"].actual, { duplicates: 1, firstDuplicate: "cp-000003" });
 	const gap = healthy();
 	gap.entries = [entry(1, 1, 0), entry(2, 1, 2)];
 	gap.records = [ack(1, 1, 0), ack(2, 1, 2), { event: "done" }];
@@ -259,5 +259,163 @@ test("counts at-least-once replays and summarizes latency in a window", () => {
 		median: 3,
 		p10: 3,
 		p90: 3,
+	});
+});
+
+test("every invariant states its expected and actual values exactly", () => {
+	assert.deepEqual(checkJournalInvariants(healthy()), [
+		{
+			name: "evidence-complete",
+			passed: true,
+			expected: { journalRead: true, writerRecords: true, integrity: true, minAcks: 4 },
+			actual: { journalRead: true, writerRecords: true, integrity: true, acks: 5 },
+		},
+		{
+			name: "acknowledged-checkpoints-present",
+			passed: true,
+			expected: { missing: 0, mismatched: 0, acknowledged: 4 },
+			actual: { missing: 0, mismatched: 0, acknowledged: 4, firstMissing: null },
+		},
+		{
+			name: "no-duplicate-checkpoints",
+			passed: true,
+			expected: { duplicates: 0 },
+			actual: { duplicates: 0, firstDuplicate: null },
+		},
+		{
+			name: "no-lost-checkpoints",
+			passed: true,
+			expected: { gaps: 0 },
+			actual: { gaps: 0, checkpoints: 4, last: 3 },
+		},
+		{ name: "sequence-strictly-increasing", passed: true, expected: 0, actual: 0 },
+		{
+			name: "lease-fencing-holds",
+			passed: true,
+			expected: { epochRegressions: 0 },
+			actual: { epochRegressions: 0, epochs: [1, 2] },
+		},
+		{
+			name: "stale-writers-rejected",
+			passed: true,
+			expected: { probes: 1, rejected: 1 },
+			actual: { probes: 1, rejected: 1 },
+		},
+		{ name: "journal-integrity", passed: true, expected: ["ok"], actual: ["ok"] },
+		{
+			name: "failures-are-typed",
+			passed: true,
+			expected: { untyped: 0 },
+			actual: { untyped: 0, names: ["StorageUnavailableError"] },
+		},
+		{
+			name: "recovered-without-intervention",
+			passed: true,
+			expected: "a writer completed after the last fault",
+			actual: "completed",
+		},
+	]);
+});
+
+test("edge cases: keyless records, unordered indexes, probes without errors", () => {
+	const keyless = healthy();
+	keyless.records = [
+		...keyless.records,
+		{ event: "ack", index: 9, seq: 9, epoch: 2, status: "appended", digest: "x" } as never,
+	];
+	assert.deepEqual(byName(checkJournalInvariants(keyless))["acknowledged-checkpoints-present"].actual, {
+		missing: 1,
+		mismatched: 0,
+		acknowledged: 5,
+		firstMissing: "",
+	});
+	const twoKeyless = healthy();
+	twoKeyless.entries = [
+		...twoKeyless.entries,
+		{ seq: 5, epoch: 2, key: null, index: null, digest: null, type: "StatusChanged" },
+		{ seq: 6, epoch: 2, key: null, index: null, digest: null, type: "StatusChanged" },
+	];
+	assert.equal(byName(checkJournalInvariants(twoKeyless))["no-duplicate-checkpoints"].passed, true);
+	const unordered = healthy();
+	unordered.entries = [entry(1, 1, 1), entry(2, 1, 0), entry(3, 2, 3), entry(4, 2, 2)];
+	unordered.records = [];
+	unordered.expectations.minAcks = 0;
+	assert.deepEqual(byName(checkJournalInvariants(unordered))["no-lost-checkpoints"].actual, {
+		gaps: 0,
+		checkpoints: 4,
+		last: 3,
+	});
+	const tens = healthy();
+	tens.entries = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].reverse().map((index, position) => entry(position + 1, 1, index));
+	assert.deepEqual(byName(checkJournalInvariants(tens))["no-lost-checkpoints"].actual, {
+		gaps: 0,
+		checkpoints: 11,
+		last: 10,
+	});
+	const bare = healthy();
+	bare.fencing = [{ holder: "w1", epoch: 1, outcome: "rejected" }];
+	assert.equal(byName(checkJournalInvariants(bare))["stale-writers-rejected"].passed, false);
+	const accepted = healthy();
+	accepted.fencing = [{ holder: "w1", epoch: 1, outcome: "appended", error: { name: "StaleLeaseError" } }];
+	assert.equal(byName(checkJournalInvariants(accepted))["stale-writers-rejected"].passed, false);
+	const corrupt = healthy();
+	corrupt.integrity = ["row 3 missing from index"];
+	assert.deepEqual(byName(checkJournalInvariants(corrupt))["journal-integrity"].actual, ["row 3 missing from index"]);
+	const unnamed = healthy();
+	unnamed.records = [...unnamed.records, { event: "error", error: {} as never }];
+	assert.deepEqual(byName(checkJournalInvariants(unnamed))["failures-are-typed"].actual, {
+		untyped: 0,
+		names: ["StorageUnavailableError", ""],
+	});
+	const noRecords = byName(checkJournalInvariants({ ...healthy(), records: undefined }));
+	assert.deepEqual(noRecords["failures-are-typed"].actual, { untyped: 0, names: [] });
+	assert.equal(noRecords["recovered-without-intervention"].passed, false);
+});
+
+test("latency statistics sort their inputs and ignore unusable records", () => {
+	const shuffled = [50, 10, 40, 20, 30].map((ms, index) => ({ event: "ack", ms, at: index }));
+	assert.deepEqual(latencyStats(shuffled, { from: 0, to: 10 }), { count: 5, median: 30, p10: 10, p90: 50 });
+	assert.deepEqual(
+		latencyStats(
+			[
+				{ event: "ack", ms: 5, at: 1 },
+				{ event: "ack", ms: "7" as never, at: 1 },
+				{ event: "ack", ms: 9, at: "1" as never },
+			],
+			{ from: 0, to: 10 },
+		),
+		{
+			count: 1,
+			median: 5,
+			p10: 5,
+			p90: 5,
+		},
+	);
+});
+
+test("missing writer records or journal entries are reported, never filled in", () => {
+	const noRecords = checkJournalInvariants({
+		...healthy(),
+		records: undefined,
+		expectations: { minAcks: 0, requireCompletion: false },
+	});
+	assert.equal(noRecords[0].passed, false);
+	const noEntries = byName(checkJournalInvariants({ ...healthy(), entries: undefined }));
+	assert.deepEqual(noEntries["no-lost-checkpoints"].actual, { gaps: 0, checkpoints: 0, last: null });
+	assert.deepEqual(noEntries["no-duplicate-checkpoints"].actual, { duplicates: 0, firstDuplicate: null });
+	const emptyKey = healthy();
+	emptyKey.entries = [
+		...emptyKey.entries,
+		{ seq: 9, epoch: 2, key: "", index: null, digest: "stored", type: "CheckpointRecorded" },
+	];
+	emptyKey.records = [
+		...emptyKey.records,
+		{ event: "ack", seq: 9, epoch: 2, status: "appended", digest: "acknowledged" } as never,
+	];
+	assert.deepEqual(byName(checkJournalInvariants(emptyKey))["acknowledged-checkpoints-present"].actual, {
+		missing: 0,
+		mismatched: 1,
+		acknowledged: 5,
+		firstMissing: null,
 	});
 });

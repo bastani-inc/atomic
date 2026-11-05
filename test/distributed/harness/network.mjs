@@ -61,16 +61,14 @@ export function cidrWithin(inner, outer) {
 export function allocateAddressSpaces(regions, used, pool) {
 	/** @type {Map<string, string>} */
 	const allocated = new Map();
-	const taken = [...used];
 	let octet = pool.firstSecondOctet;
 	for (const region of regions) {
 		if (allocated.has(region)) continue;
-		while (octet <= pool.lastSecondOctet && taken.some((prefix) => cidrsOverlap(`10.${octet}.0.0/16`, prefix)))
+		while (octet <= pool.lastSecondOctet && used.some((prefix) => cidrsOverlap(`10.${octet}.0.0/16`, prefix)))
 			octet++;
 		if (octet > pool.lastSecondOctet) return undefined;
 		const prefix = `10.${octet}.0.0/16`;
 		allocated.set(region, prefix);
-		taken.push(prefix);
 		octet++;
 	}
 	return allocated;
@@ -197,7 +195,7 @@ export function subnetRules({
  * @typedef {{ check: string, subject: string, detail: string }} Violation
  */
 
-const PUBLIC_SOURCES = new Set(["*", "Internet", "0.0.0.0/0", "Any"]);
+const PUBLIC_SOURCES = new Set(["*", "Internet", "Any"]);
 
 /**
  * @param {EffectiveRule} rule
@@ -214,22 +212,12 @@ function sourcesOf(rule) {
 /**
  * @param {EffectiveRule} rule
  */
-function portsOf(rule) {
-	return [
-		...(rule.destinationPortRanges ?? []),
-		...(rule.destinationPortRange === undefined || rule.destinationPortRange === ""
-			? []
-			: [rule.destinationPortRange]),
-	];
-}
-
-/**
- * @param {EffectiveRule} rule
- */
 function coversAllTraffic(rule) {
 	return (
 		(rule.protocol === "All" || rule.protocol === "*") &&
-		portsOf(rule).some((port) => port === "*" || port === "0-65535")
+		[rule.destinationPortRange, ...(rule.destinationPortRanges ?? [])].some(
+			(port) => port === "*" || port === "0-65535",
+		)
 	);
 }
 
@@ -287,7 +275,7 @@ export function evaluateEffectiveRules(nic, rules, allowedSources) {
 					coversAllTraffic(deny),
 			);
 		if (isDefaultRule(rule)) {
-			const tag = sources[0] ?? "";
+			const tag = rule.name === "defaultSecurityRules/AllowVnetInBound" ? "VirtualNetwork" : "AzureLoadBalancer";
 			if (!shadowedBy(tag))
 				violations.push({
 					check: "implicit-allow",

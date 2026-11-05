@@ -193,7 +193,7 @@ function stringAt(object, key, path) {
 		throw topologyError(
 			`${path}${key}`,
 			"a non-empty string",
-			value === undefined ? null : JSON.stringify(value),
+			JSON.stringify(value),
 			value === undefined ? "required" : "invalid-value",
 		);
 	}
@@ -209,15 +209,15 @@ function stringAt(object, key, path) {
  */
 function integerAt(object, key, path, min, max) {
 	const value = object[key];
-	if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+	if (!Number.isInteger(value) || /** @type {number} */ (value) < min || /** @type {number} */ (value) > max) {
 		throw topologyError(
 			`${path}${key}`,
 			`an integer from ${min} to ${max}`,
-			value === undefined ? null : JSON.stringify(value),
+			JSON.stringify(value),
 			value === undefined ? "required" : "invalid-value",
 		);
 	}
-	return value;
+	return /** @type {number} */ (value);
 }
 
 /**
@@ -231,7 +231,7 @@ function objectAt(object, key, path) {
 		throw topologyError(
 			`${path}${key}`,
 			"an object",
-			value === undefined ? null : JSON.stringify(value),
+			JSON.stringify(value),
 			value === undefined ? "required" : "invalid-value",
 		);
 	}
@@ -249,7 +249,7 @@ function stringsAt(object, key, path) {
 		throw topologyError(
 			`${path}${key}`,
 			"a non-empty array of non-empty strings",
-			value === undefined ? null : JSON.stringify(value),
+			JSON.stringify(value),
 			value === undefined ? "required" : "invalid-value",
 		);
 	}
@@ -286,6 +286,8 @@ export function parseTopology(json) {
 	const pool = objectAt(root, "addressPool", "");
 	const node = objectAt(root, "node", "");
 	const database = objectAt(root, "database", "");
+	const primary = objectAt(database, "primary", "database.");
+	const replica = objectAt(database, "replica", "database.");
 	const firstSecondOctet = integerAt(pool, "firstSecondOctet", "addressPool.", 60, 255);
 	const lastSecondOctet = integerAt(pool, "lastSecondOctet", "addressPool.", firstSecondOctet, 255);
 	const storage = stringAt(database, "storage", "database.");
@@ -324,12 +326,12 @@ export function parseTopology(json) {
 			storage,
 			dataDiskGb: integerAt(database, "dataDiskGb", "database.", 4, 32767),
 			primary: {
-				region: stringAt(objectAt(database, "primary", "database."), "region", "database.primary."),
-				size: stringAt(objectAt(database, "primary", "database."), "size", "database.primary."),
+				region: stringAt(primary, "region", "database.primary."),
+				size: stringAt(primary, "size", "database.primary."),
 			},
 			replica: {
-				region: stringAt(objectAt(database, "replica", "database."), "region", "database.replica."),
-				size: stringAt(objectAt(database, "replica", "database."), "size", "database.replica."),
+				region: stringAt(replica, "region", "database.replica."),
+				size: stringAt(replica, "size", "database.replica."),
 			},
 			localNvmeSize: stringAt(database, "localNvmeSize", "database."),
 		},
@@ -387,8 +389,8 @@ export function resolveRunOptions(args, topology, { randomSeed, replay = {} }) {
 	if (!/^[1-9]\d*$/.test(nodesText)) throw cliError("--nodes", "a positive integer", nodesText);
 	const regionsText = args.regions ?? replay.regions;
 	const regions = regionsText === undefined ? [...topology.regions] : regionsText.split(",");
-	if (regions.some((region) => region === ""))
-		throw cliError("--regions", "a comma-separated list of Azure region names", regionsText ?? "");
+	if (regionsText !== undefined && regions.some((region) => region === ""))
+		throw cliError("--regions", "a comma-separated list of Azure region names", regionsText);
 	const chaosSelection = args.chaos ?? replay.chaos ?? "smoke";
 	/** @type {string[]} */
 	let chaos;

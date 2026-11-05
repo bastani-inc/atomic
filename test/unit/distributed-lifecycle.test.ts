@@ -651,3 +651,629 @@ test("the sweeper re-reads tags, deletes only expired runs and proves their abse
 		/not logged in/,
 	);
 });
+
+test("each feature probe names its issue, its capability and the exact interface it looks for", () => {
+	assert.deepEqual(
+		Object.fromEntries(
+			Object.entries(FEATURE_PROBES).map(([suite, probe]) => [suite, [probe.issue, probe.capability]]),
+		),
+		{
+			"multi-node-resume": ["#4329", "export WorkspaceError"],
+			"cross-host-pools": ["#4310", "export WorkerPlacementError"],
+			"shard-contention": ["#4325", "export JournalShardUnavailableError"],
+			"idle-density": ["#4309/#4326", "AgentSessionRuntime.rehydrate"],
+			"subscription-flood": ["#4311", "export SubscriptionError"],
+			"fork-under-load": ["#4321", "export forkRun"],
+			"restore-cold": ["#4245", "export GitProvisionError"],
+			"team-ci": ["#4320", "export TeamProfileError"],
+			"pool-scale": ["#4312", "export createRegistry (local worker pools)"],
+			compaction: ["#4330", "AgentSession.awaitBackgroundCompaction"],
+		},
+	);
+	const exports: Record<string, string> = {
+		"multi-node-resume": "WorkspaceError",
+		"cross-host-pools": "WorkerPlacementError",
+		"shard-contention": "JournalShardUnavailableError",
+		"subscription-flood": "SubscriptionError",
+		"fork-under-load": "forkRun",
+		"restore-cold": "GitProvisionError",
+		"team-ci": "TeamProfileError",
+		"pool-scale": "createRegistry",
+	};
+	for (const [suite, name] of Object.entries(exports)) {
+		assert.equal(FEATURE_PROBES[suite].present(capabilities({ workflows: [name] })), true, suite);
+		assert.equal(FEATURE_PROBES[suite].present(capabilities({ atomic: [name] })), true, suite);
+		assert.equal(FEATURE_PROBES[suite].present(capabilities({ workflows: [`${name}x`] })), false, suite);
+	}
+	const implemented = { custom: { issue: "#9", capability: "c", present: () => true, implemented: true } };
+	assert.equal(featureSkip("custom", capabilities(), implemented), undefined);
+	assert.deepEqual(
+		featureSkip("custom", capabilities(), { custom: { ...implemented.custom, implemented: false } })?.fields,
+		{ suite: "custom", issue: "#9", capability: "c" },
+	);
+	assert.equal(parseCapabilities({ workflows: ["a", 1], atomic: [], members: {} }), undefined);
+	assert.equal(parseCapabilities({ workflows: [], atomic: [], members: { x: ["a"], y: [1] } }), undefined);
+});
+
+test("the manifest dedupes by kind, name and scope, and every change is flushed", () => {
+	const dir = mkdtempSync(join(tmpdir(), "adt-manifest-2-"));
+	const data = {
+		runId: "r",
+		resourceGroup: "g",
+		expiresAt: "e",
+		subscription: "s",
+		control: { resourceGroup: "c", vnet: "v" },
+		entries: [],
+	};
+	const manifest = new Manifest(dir, data);
+	assert.deepEqual(Manifest.load(dir).data.entries, []);
+	assert.equal(readFileSync(join(dir, "manifest.json"), "utf8"), `${JSON.stringify(data, null, "\t")}\n`);
+	manifest.plan("nic", "n", "g");
+	manifest.plan("vm", "n", "g");
+	manifest.plan("nic", "m", "g");
+	manifest.plan("nic", "n", "h");
+	manifest.mark("nic", "n", "h", "created");
+	assert.deepEqual(Manifest.load(dir).data.entries, [
+		{ kind: "nic", name: "n", scope: "g", state: "planned" },
+		{ kind: "vm", name: "n", scope: "g", state: "planned" },
+		{ kind: "nic", name: "m", scope: "g", state: "planned" },
+		{ kind: "nic", name: "n", scope: "h", state: "created" },
+	]);
+	manifest.mark("vm", "n", "g", "deleted");
+	assert.equal(Manifest.load(dir).data.entries[1].state, "deleted");
+});
+
+test("an empty gate reports exactly why it failed, and a kept teardown leaves no cleanup marker", async () => {
+	assert.throws(
+		() => gateVerdict([]),
+		(error) => {
+			assert.deepEqual(Reflect.get(error as object, "fields"), {
+				violations: [{ check: "gate-ran", subject: "security gate", detail: "no checks recorded" }],
+			});
+			return true;
+		},
+	);
+	const primary = new Error("scenario");
+	await runLifecycle({
+		steps: [],
+		scenarios: async () => Promise.reject(primary),
+		teardown: async () => ({ ok: true }),
+		provisioned: () => true,
+		keep: false,
+	});
+	assert.equal(Object.getOwnPropertyDescriptor(primary, "cleanupCause"), undefined);
+});
+
+test("run and suite status follow any failed suite, coverage gap, invariant or fault", () => {
+	const base = { cancelled: false, error: undefined, coverage: [{ status: "exercised" }], teardownOk: true };
+	assert.equal(
+		overallStatus({
+			...base,
+			suites: [
+				{ name: "a", issue: "#1", status: "passed" },
+				{ name: "b", issue: "#2", status: "failed" },
+			],
+		}),
+		"failed",
+	);
+	assert.equal(
+		overallStatus({ ...base, suites: [], coverage: [{ status: "exercised" }, { status: "incomplete" }] }),
+		"failed",
+	);
+	assert.equal(
+		overallStatus({ ...base, suites: [], coverage: [{ status: "exercised" }, { status: "missing" }] }),
+		"failed",
+	);
+	assert.equal(
+		suiteStatus(
+			[
+				{ name: "a", passed: true, expected: 1, actual: 1 },
+				{ name: "b", passed: false, expected: 1, actual: 2 },
+			],
+			[],
+		),
+		"failed",
+	);
+	assert.equal(
+		suiteStatus([{ name: "a", passed: true, expected: 1, actual: 1 }], [{}, { error: new Error("x") }]),
+		"failed",
+	);
+});
+
+test("the Markdown report renders every section exactly", () => {
+	const fixture = {
+		runId: "adt2611050230-beef",
+		status: "failed",
+		replay: {
+			ref: "main",
+			sha: "a".repeat(40),
+			suite: "smoke",
+			chaos: "partition",
+			nodes: 3,
+			regions: ["eastus2", "westus3"],
+			seed: 7,
+			prng: "mulberry32/v1",
+			artifactDigest: "d",
+			dbStorage: "premium-ssd",
+		},
+		paths: { json: "/out/report.json" },
+		error: { name: "DistributedProvisionError", code: "provision-failed", message: "boom" },
+		topology: { vms: [{ name: "n1", kind: "node", roles: ["large"], region: "eastus2", size: "s" }] },
+		security: { passed: true, checks: [{ name: "zero-public-ips", subject: "n1", passed: true, observed: [] }] },
+		suites: [
+			{
+				name: "smoke",
+				issue: "#4331",
+				status: "failed",
+				invariants: [{ name: "journal-integrity", passed: false, expected: ["ok"], actual: ["bad"] }],
+				faults: [
+					{
+						profile: "partition",
+						target: "n1",
+						effectObserved: true,
+						recovered: false,
+						observed: { drops: 3 },
+						timeline: [{ at: 5, event: "applied" }],
+					},
+					{
+						profile: "sigkill",
+						target: "n2",
+						effectObserved: false,
+						recovered: false,
+						error: { message: "could\nnot" },
+						timeline: [],
+					},
+					{ profile: "loss", target: "n2", effectObserved: false, recovered: false },
+				],
+			},
+			{
+				name: "compaction",
+				issue: "#4330",
+				status: "skipped",
+				reason: { code: "feature-unavailable", message: "missing" },
+			},
+		],
+		coverage: [
+			{ profile: "partition", status: "incomplete" },
+			{ profile: "sigkill", status: "incomplete" },
+			{ profile: "oom", status: "missing" },
+		],
+		teardown: { ok: true, queries: [{ command: "az group list", ok: true, result: [] }] },
+		durations: { total: 1 },
+	};
+
+	assert.deepEqual(renderMarkdown(fixture).split("\n"), [
+		"# Distributed test run adt2611050230-beef",
+		"",
+		"Status: **failed**",
+		"",
+		"- Ref: `main` → `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`",
+		'- Suite: `smoke`, chaos: `partition`, nodes: 3, regions: ["eastus2","westus3"]',
+		"- Seed: 7 (mulberry32/v1); replay with `node test/distributed/run.mjs --replay /out/report.json`",
+		"- Artifact SHA-256: `d`",
+		"- Database storage: premium-ssd",
+		"",
+		"## Failure",
+		"",
+		"`DistributedProvisionError` (`provision-failed`): boom",
+		"",
+		"## Topology",
+		"",
+		"| VM | Kind | Roles | Region | Size | Private IP |",
+		"| --- | --- | --- | --- | --- | --- |",
+		'| n1 | node | ["large"] | eastus2 | s |  |',
+		"",
+		"## Security gate",
+		"",
+		"Result: **passed**",
+		"",
+		"| Check | Subject | Passed | Observed |",
+		"| --- | --- | --- | --- |",
+		"| zero-public-ips | n1 | yes | [] |",
+		"",
+		"## Suites",
+		"",
+		"| Suite | Issue | Status | Reason |",
+		"| --- | --- | --- | --- |",
+		"| smoke | #4331 | failed |  |",
+		"| compaction | #4330 | skipped | `feature-unavailable`: missing |",
+		"",
+		"## Chaos coverage",
+		"",
+		"| Profile | Status | Target | Effect observed | Recovered | Observed |",
+		"| --- | --- | --- | --- | --- | --- |",
+		'| partition | incomplete | n1 | true | false | {"drops":3} |',
+		"| sigkill | incomplete | n2 | false | false | could not |",
+		"| oom | missing |  |  |  |  |",
+		"",
+		"## Invariants",
+		"",
+		"| Invariant | Passed | Expected | Actual |",
+		"| --- | --- | --- | --- |",
+		'| journal-integrity | **no** | ["ok"] | ["bad"] |',
+		"",
+		"## Metrics",
+		"",
+		"```json",
+		"{",
+		'  "smoke": {},',
+		'  "compaction": {}',
+		"}",
+		"```",
+		"",
+		"## Fault timeline",
+		"",
+		"| ms | Profile | Event |",
+		"| --- | --- | --- |",
+		"| 5 | partition | applied |",
+		"",
+		"## Teardown",
+		"",
+		"Result: **zero resources left**",
+		"",
+		"- `az group list` → []",
+		"",
+		"## Phase durations (ms)",
+		"",
+		"```json",
+		"{",
+		'  "total": 1',
+		"}",
+		"```",
+		"",
+	]);
+	assert.deepEqual(
+		renderMarkdown({ runId: "r", status: "cancelled", nvmeSkip: { code: "encryption-at-host-unavailable" } }).split(
+			"\n",
+		),
+		[
+			"# Distributed test run r",
+			"",
+			"Status: **cancelled**",
+			"",
+			"- Ref: `undefined` → `unresolved`",
+			"- Suite: `undefined`, chaos: `undefined`, nodes: undefined, regions: ",
+			"- Seed: undefined (undefined); replay with `node test/distributed/run.mjs --replay report.json`",
+			"- Artifact SHA-256: `none`",
+			"- Database storage: undefined (local NVMe skipped: encryption-at-host-unavailable)",
+			"",
+			"## Topology",
+			"",
+			"| VM | Kind | Roles | Region | Size | Private IP |",
+			"| --- | --- | --- | --- | --- | --- |",
+			"",
+			"## Security gate",
+			"",
+			"Result: **not run**",
+			"",
+			"| Check | Subject | Passed | Observed |",
+			"| --- | --- | --- | --- |",
+			"",
+			"## Suites",
+			"",
+			"| Suite | Issue | Status | Reason |",
+			"| --- | --- | --- | --- |",
+			"",
+			"## Chaos coverage",
+			"",
+			"| Profile | Status | Target | Effect observed | Recovered | Observed |",
+			"| --- | --- | --- | --- | --- | --- |",
+			"",
+			"## Invariants",
+			"",
+			"| Invariant | Passed | Expected | Actual |",
+			"| --- | --- | --- | --- |",
+			"",
+			"## Metrics",
+			"",
+			"```json",
+			"{}",
+			"```",
+			"",
+			"## Fault timeline",
+			"",
+			"| ms | Profile | Event |",
+			"| --- | --- | --- |",
+			"",
+			"## Teardown",
+			"",
+			"Result: **not run**",
+			"",
+			"",
+			"## Phase durations (ms)",
+			"",
+			"```json",
+			"{}",
+			"```",
+			"",
+		],
+	);
+	const dir = mkdtempSync(join(tmpdir(), "adt-report-modes-"));
+	const paths = writeReport(dir, { runId: "r", status: "passed" }, []);
+	assert.equal(statSync(paths.markdown).mode & 0o777, 0o600);
+	assert.equal(
+		readFileSync(paths.json, "utf8"),
+		`${JSON.stringify({ runId: "r", status: "passed", paths }, null, "\t")}\n`,
+	);
+});
+
+test("the sweeper sends exact queries, survives empty listings and hands teardown the run's own peerings", async () => {
+	const control = { resourceGroup: "control-rg", vnet: "control-vnet" };
+	const run = "adt2611050230-0001";
+	const other = "adt2611050230-0002";
+	const calls: string[][] = [];
+	let resourcePolls = 0;
+	const az = async (args: readonly string[]) => {
+		calls.push([...args]);
+		const line = args.join(" ");
+		if (line.startsWith("group list --query [?tags.")) return [{ id: "/g", name: `${run}-rg` }];
+		if (line.startsWith(`group show --name ${run}-rg`))
+			return {
+				id: "/g",
+				name: `${run}-rg`,
+				tags: { "atomic-distributed-test": run, "atomic-distributed-test-expiry": "2026-11-05T00:00:00Z" },
+			};
+		if (
+			line === "resource list --tag atomic-distributed-test --query [].{id:id,name:name,resourceGroup:resourceGroup}"
+		)
+			return null;
+		if (
+			line ===
+			"network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].{name:name}"
+		)
+			return [{ name: `${run}-eastus2-from-control` }, { name: `${other}-eastus2-from-control` }];
+		if (line === "group list --query [].name") return null;
+		if (line === "network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].name")
+			throw new Error("throttled");
+		if (line.startsWith(`resource list --tag atomic-distributed-test=${run}`))
+			return ++resourcePolls < 3 ? ["/late"] : [];
+		if (line.startsWith("group exists")) return false;
+		return [];
+	};
+	let clock = 5_000_000;
+	const result = await sweep({
+		az,
+		control,
+		now: new Date("2026-11-05T12:00:00Z"),
+		runId: run,
+		force: false,
+		dryRun: false,
+		sleep: async (ms: number) => {
+			clock += ms;
+		},
+		clock: () => clock,
+		log: () => {},
+	});
+	assert.deepEqual(calls.slice(0, 5), [
+		["group", "list", "--query", '[?tags."atomic-distributed-test" != null].{id:id,name:name}'],
+		["group", "show", "--name", `${run}-rg`, "--query", "{id:id,name:name,tags:tags}"],
+		[
+			"resource",
+			"list",
+			"--tag",
+			"atomic-distributed-test",
+			"--query",
+			"[].{id:id,name:name,resourceGroup:resourceGroup}",
+		],
+		[
+			"network",
+			"vnet",
+			"peering",
+			"list",
+			"--resource-group",
+			"control-rg",
+			"--vnet-name",
+			"control-vnet",
+			"--query",
+			"[].{name:name}",
+		],
+		["group", "list", "--query", "[].name"],
+	]);
+	assert.deepEqual(result.plan.controlPeerings, [{ name: `${run}-eastus2-from-control`, runId: run }]);
+	assert.ok(
+		calls.some(
+			(args) =>
+				args.join(" ") ===
+				`network vnet peering delete --resource-group control-rg --vnet-name control-vnet --name ${run}-eastus2-from-control`,
+		),
+	);
+	assert.ok(!calls.some((args) => args.includes(`${other}-eastus2-from-control`) && args.includes("delete")));
+	assert.equal(resourcePolls, 3);
+	assert.equal(result.runs.length, 1);
+	assert.equal(result.runs[0].runId, run);
+	assert.equal(result.runs[0].ok, false);
+	assert.equal(result.runs[0].error?.code, "teardown-incomplete");
+	const deletes: string[][] = [];
+	const straggler = await sweep({
+		az: async (args: readonly string[]) => {
+			const line = args.join(" ");
+			if (line.startsWith("resource list --tag atomic-distributed-test --query"))
+				return [{ id: "/s", name: "s", resourceGroup: "shared" }];
+			if (line.startsWith("resource show --ids /s"))
+				return { "atomic-distributed-test": other, "atomic-distributed-test-expiry": "2026-11-04T00:00:00Z" };
+			if (args[1] === "delete") deletes.push([...args]);
+			if (line.startsWith("group exists")) return false;
+			return [];
+		},
+		control,
+		now: new Date("2026-11-05T12:00:00Z"),
+		force: false,
+		dryRun: false,
+		sleep: async () => {},
+		clock: () => 0,
+		log: () => {},
+	});
+	assert.deepEqual(deletes, [["resource", "delete", "--ids", "/s"]]);
+	assert.deepEqual(straggler.runs, [{ runId: other, ok: true, remaining: [], queries: straggler.runs[0].queries }]);
+	assert.ok(!Object.hasOwn(straggler.runs[0], "error"));
+});
+
+test("sweeper flag errors carry their exact expectation", () => {
+	const fields = (argv: string[]) => {
+		try {
+			parseSweepArgs(argv);
+		} catch (error) {
+			return Reflect.get(error as object, "fields");
+		}
+		assert.fail("expected a configuration error");
+	};
+	assert.deepEqual(fields(["--now"]), {
+		source: "cli",
+		field: "--now",
+		reason: "missing-value",
+		expected: "a value after the flag",
+		actual: null,
+	});
+	assert.deepEqual(fields(["--run-id", "x"]), {
+		source: "cli",
+		field: "--run-id",
+		reason: "invalid-value",
+		expected: "a run id like adt2611050230-beef",
+		actual: "x",
+	});
+	assert.deepEqual(fields(["--now", "x"]), {
+		source: "cli",
+		field: "--now",
+		reason: "invalid-value",
+		expected: "an ISO-8601 instant",
+		actual: "x",
+	});
+	assert.deepEqual(fields(["--x"]), {
+		source: "cli",
+		field: "--x",
+		reason: "unknown-flag",
+		expected: "--dry-run, --run-id, --force or --now",
+		actual: "--x",
+	});
+	assert.deepEqual(fields(["--force"]), {
+		source: "cli",
+		field: "--force",
+		reason: "invalid-value",
+		expected: "--force only together with --run-id",
+		actual: "--force",
+	});
+});
+
+test("the sweeper names every az operation, tolerates empty listings and tears each run down with its own peerings", async () => {
+	const control = { resourceGroup: "control-rg", vnet: "control-vnet" };
+	const first = "adt2611050230-0001";
+	const second = "adt2611050230-0002";
+	const calls: { args: string[]; operation: string }[] = [];
+	const expired = (name: string, run: string) => ({
+		id: `/${name}`,
+		name,
+		tags: { "atomic-distributed-test": run, "atomic-distributed-test-expiry": "2026-11-05T00:00:00Z" },
+	});
+	const az = async (args: readonly string[], operation: string) => {
+		calls.push({ args: [...args], operation });
+		const line = args.join(" ");
+		if (line.startsWith("group list --query [?tags."))
+			return [
+				{ id: "/a", name: `${first}-rg` },
+				{ id: "/b", name: `${second}-rg` },
+			];
+		if (line.startsWith(`group show --name ${first}-rg`)) return expired(`${first}-rg`, first);
+		if (line.startsWith(`group show --name ${second}-rg`)) return expired(`${second}-rg`, second);
+		if (line.startsWith("resource list --tag atomic-distributed-test --query"))
+			return [{ id: "/s", name: "s", resourceGroup: "shared" }];
+		if (line.startsWith("resource show --ids /s")) return null;
+		if (
+			line ===
+			"network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].{name:name}"
+		)
+			return [{ name: `${first}-x-from-control` }, { name: `${second}-x-from-control` }];
+		if (line === "network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].name")
+			throw new Error("throttled");
+		if (line.startsWith("group exists")) return false;
+		return [];
+	};
+	await sweep({
+		az,
+		control,
+		now: new Date("2026-11-05T12:00:00Z"),
+		force: false,
+		dryRun: false,
+		sleep: async () => {},
+		clock: () => 0,
+		log: () => {},
+	});
+	assert.deepEqual(calls.slice(0, 7), [
+		{
+			args: ["group", "list", "--query", '[?tags."atomic-distributed-test" != null].{id:id,name:name}'],
+			operation: "list tagged groups",
+		},
+		{
+			args: ["group", "show", "--name", `${first}-rg`, "--query", "{id:id,name:name,tags:tags}"],
+			operation: `read tags of ${first}-rg`,
+		},
+		{
+			args: ["group", "show", "--name", `${second}-rg`, "--query", "{id:id,name:name,tags:tags}"],
+			operation: `read tags of ${second}-rg`,
+		},
+		{
+			args: [
+				"resource",
+				"list",
+				"--tag",
+				"atomic-distributed-test",
+				"--query",
+				"[].{id:id,name:name,resourceGroup:resourceGroup}",
+			],
+			operation: "list tagged resources",
+		},
+		{ args: ["resource", "show", "--ids", "/s", "--query", "tags"], operation: "read tags of s" },
+		{
+			args: [
+				"network",
+				"vnet",
+				"peering",
+				"list",
+				"--resource-group",
+				"control-rg",
+				"--vnet-name",
+				"control-vnet",
+				"--query",
+				"[].{name:name}",
+			],
+			operation: "list control peerings",
+		},
+		{ args: ["group", "list", "--query", "[].name"], operation: "list resource groups" },
+	]);
+	const peeringDeletes = calls.filter((call) => call.args[3] === "delete").map((call) => call.args.at(-1));
+	assert.deepEqual(peeringDeletes, [`${first}-x-from-control`, `${second}-x-from-control`]);
+	const quiet: string[] = [];
+	await sweep({
+		az: async (args: readonly string[]) => {
+			quiet.push(args.slice(0, 2).join(" "));
+			return null;
+		},
+		control,
+		now: new Date(),
+		force: false,
+		dryRun: true,
+		sleep: async () => {},
+		clock: () => 0,
+		log: () => {},
+	});
+	assert.deepEqual(quiet, ["group list", "resource list", "network vnet", "group list"]);
+});
+
+test("manifest updates find the entry by kind, name and scope together", () => {
+	const dir = mkdtempSync(join(tmpdir(), "adt-manifest-3-"));
+	const manifest = new Manifest(dir, {
+		runId: "r",
+		resourceGroup: "g",
+		expiresAt: "e",
+		subscription: "s",
+		control: { resourceGroup: "c", vnet: "v" },
+		entries: [],
+	});
+	manifest.plan("nic", "first", "g");
+	manifest.plan("nic", "second", "g");
+	manifest.mark("nic", "second", "g", "created");
+	assert.deepEqual(
+		Manifest.load(dir).data.entries.map((entry) => entry.state),
+		["planned", "created"],
+	);
+	assert.equal(parseCapabilities({ workflows: ["a", 1], atomic: ["x"], members: {} }), undefined);
+});
