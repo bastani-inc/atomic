@@ -710,6 +710,7 @@ impl Actor {
 					}
 					// The outcome is known, so the result settles now: only cleanup is late (#4338).
 					let result = command_result(runner, command, status, read_failure.clone(), None);
+					command.output.lock().unwrap().settle();
 					let _ = self.runner_outcome(runner, result);
 					let _ = self.acknowledge_cleanup(
 						runner,
@@ -2243,6 +2244,7 @@ mod tests {
 		let holder = Holder::read(&dir);
 		let group = command.process_group.load(Ordering::Acquire);
 		let settled = settled_record(&actor, &owner);
+		let spool_closed = command.output.lock().unwrap().file.is_none();
 		let holding = unsafe { libc::kill(holder.0, 0) } == 0;
 		actor.begin_close(&owner).unwrap();
 		let closing = actor.close_receipt(&owner);
@@ -2261,6 +2263,7 @@ mod tests {
 			other => panic!("the command did not complete: {other:?}"),
 		}
 		assert_eq!(std::fs::read(&command.output.lock().unwrap().path).unwrap(), b"done");
+		assert!(spool_closed, "settled output must not hold its spool open during quarantine");
 		assert!(holding, "the result must settle while the holder still holds the pipe");
 		assert_eq!(
 			settled.cleanup,
