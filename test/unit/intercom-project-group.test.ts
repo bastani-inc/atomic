@@ -430,6 +430,14 @@ describe("a session's home group (#4320)", () => {
 	});
 });
 
+test("a process that has not warned yet writes the headless warning on its first call (#4320)", async () => {
+	vi.resetModules();
+	const fresh = await import("../../packages/intercom/project-group.js");
+	const lines: string[] = [];
+	fresh.warnDefaultGroupWithoutUi((line) => lines.push(line));
+	assert.deepEqual(lines, [`Warning: ${DEFAULT_GROUP_WARNING}`]);
+});
+
 test("the headless warning writes one labelled line, then nothing until reset (#4320)", () => {
 	const lines: string[] = [];
 	warnDefaultGroupWithoutUi((line) => lines.push(line));
