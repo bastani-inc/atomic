@@ -162,3 +162,63 @@ test("a timeout is a retryable team error carrying its deadline, elapsed time an
 	);
 	assert.equal(isTeamProfileError({ name: "TeamProfileTimeoutError", code: "connection-timeout" }), true);
 });
+
+test("the code lists, summaries and usage prefixes are the documented ones (#4320)", () => {
+	assert.deepEqual(
+		[...TEAM_PROFILE_ERROR_CODES],
+		[
+			"settings-unreadable",
+			"adapter-not-installed",
+			"connection-failed",
+			"connection-timeout",
+			"token-write-failed",
+			"settings-write-failed",
+			"settings-locked",
+			"broker-restart-failed",
+			"token-delete-failed",
+		],
+	);
+	assert.deepEqual(
+		[...TEAM_PROFILE_CONFIG_ERROR_CODES],
+		[
+			"unknown-profile",
+			"incomplete-profile",
+			"missing-url",
+			"unsupported-url",
+			"relative-file-url",
+			"credential-in-url",
+			"missing-token",
+			"conflicting-token",
+			"unreadable-token-file",
+			"empty-token",
+			"invalid-prefix",
+			"unknown-command",
+			"unknown-option",
+			"missing-value",
+			"unexpected-argument",
+		],
+	);
+	const summaries = Object.fromEntries(
+		[...TEAM_PROFILE_ERROR_CODES].map((code) => [
+			code,
+			new TeamProfileError(code, { subject: "s", hint: "h" }).message.replace(": s (", " (").split(" (")[0],
+		]),
+	);
+	assert.deepEqual(summaries, {
+		"settings-unreadable": "Cannot update the global settings",
+		"adapter-not-installed": "The libSQL storage adapter is not installed",
+		"connection-failed": "Could not connect to the team database",
+		"connection-timeout": "The team database did not answer in time",
+		"token-write-failed": "Could not store the database token",
+		"settings-write-failed": "Could not write the global settings",
+		"settings-locked": "Another process is writing the global settings",
+		"broker-restart-failed": "Could not restart the Intercom broker",
+		"token-delete-failed": "Could not delete the token file",
+	});
+	const usage = [...TEAM_PROFILE_CONFIG_ERROR_CODES].filter((code) =>
+		new TeamProfileConfigError(code, { source: "cli", field: "f", hint: "h" }).message.startsWith(
+			"Invalid team command:",
+		),
+	);
+	assert.deepEqual(usage, ["unknown-command", "unknown-option", "missing-value", "unexpected-argument"]);
+});

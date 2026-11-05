@@ -20,9 +20,14 @@ import {
 	processSharedStorageSelection,
 	processStorageEnvironment,
 	selectProcessStorage,
+	setCliStorageSelection,
 	validateProcessStorage,
 } from "../../packages/coding-agent/src/core/storage/process-selection.js";
-import { StorageProvider, storageSelectionKey } from "../../packages/coding-agent/src/core/storage/provider.js";
+import {
+	resolveAdapterOptions,
+	StorageProvider,
+	storageSelectionKey,
+} from "../../packages/coding-agent/src/core/storage/provider.js";
 import {
 	environmentTeamProfile,
 	getTeamProfile,
@@ -444,5 +449,49 @@ describe("teamProfileSelection (#4320)", () => {
 		assert.match(fromStorage.hint, /^The storage selection opens the team database through it\./);
 		assert.equal(opens.mock.calls.length + loads.mock.calls.length, 0);
 		assert.deepEqual(readdirSync(agentDir), []);
+	});
+
+	test("an in-memory secret reaches the adapter's options, and secret order never changes the connection key (#4320)", async () => {
+		const options = await resolveAdapterOptions(
+			{
+				kind: "adapter",
+				module: "x",
+				options: { url: "libsql://db" },
+				secrets: { authToken: inMemorySecret("resolved") },
+			},
+			{ agentDir, domain: "sessions" },
+		);
+		assert.deepEqual({ ...options }, { url: "libsql://db", authToken: "resolved" });
+		const ordered = storageSelectionKey(
+			{ kind: "adapter", module: "x", secrets: { a: { env: "A" }, b: { env: "B" } } },
+			agentDir,
+		);
+		const reversed = storageSelectionKey(
+			{ kind: "adapter", module: "x", secrets: { b: { env: "B" }, a: { env: "A" } } },
+			agentDir,
+		);
+		assert.equal(ordered, reversed);
+		assert.notEqual(
+			ordered,
+			storageSelectionKey({ kind: "adapter", module: "x", secrets: { a: { env: "B" }, b: { env: "A" } } }, agentDir),
+		);
+	});
+
+	test("a --storage flag outranks the CI profile for the broker too (#4320)", () => {
+		ciProfile({ ATOMIC_TEAM_URL: TEAM_URL, ATOMIC_TEAM_TOKEN: "t" });
+		setCliStorageSelection(
+			{ flag: "--storage", value: JSON.stringify({ path: join(root, "flag.sqlite") }) },
+			project,
+		);
+		try {
+			assert.deepEqual(JSON.parse(processSharedStorageSelection() ?? "null"), { path: join(root, "flag.sqlite") });
+			assert.equal(processStorageEnvironment().ATOMIC_STORAGE, JSON.stringify({ path: join(root, "flag.sqlite") }));
+		} finally {
+			setCliStorageSelection(undefined);
+		}
+		vi.stubEnv("ATOMIC_PROFILE", "");
+		vi.stubEnv("ATOMIC_TEAM_URL", "");
+		vi.stubEnv("ATOMIC_TEAM_TOKEN", "");
+		assert.equal(processStorageEnvironment().ATOMIC_STORAGE, "");
 	});
 });

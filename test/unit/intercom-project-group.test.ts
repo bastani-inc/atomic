@@ -9,6 +9,7 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { DEFAULT_GROUP, explicitHomeGroup, resolveHomeGroup } from "../../packages/intercom/group.js";
 import intercomHeavy from "../../packages/intercom/index-heavy.js";
+import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import {
 	DEFAULT_GROUP_WARNING,
 	gitInstallCommand,
@@ -19,6 +20,7 @@ import {
 	projectName,
 	remoteRepositoryPath,
 } from "../../packages/intercom/project-group.js";
+import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
@@ -120,7 +122,7 @@ describe("project groups (#4320)", () => {
 		fakeGit(
 			process.platform === "win32"
 				? "@echo fatal: detected dubious ownership 1>&2\r\n@exit /b 128"
-				: 'echo "fatal: detected dubious ownership" >&2\nexit 128',
+				: 'printf "\\n  fatal: detected dubious ownership\\nmore\\n" >&2\nexit 128',
 		);
 		const broken = repository("broken", "https://github.com/acme/broken.git");
 		assert.throws(
@@ -217,7 +219,7 @@ function sessionContext(cwd: string, notices: string[]): ExtensionContext {
 		hasUI: true,
 		cwd,
 		isIdle: () => true,
-		ui: { notify: (message: string) => notices.push(message), setStatus() {} },
+		ui: { notify: (message: string, level: string) => notices.push(`${level}: ${message}`), setStatus() {} },
 		sessionManager: { getSessionId: () => "project-group-session", getBranch: () => [], getEntries: () => [] },
 	} as unknown as ExtensionContext;
 }
@@ -314,6 +316,57 @@ describe("a session's home group (#4320)", () => {
 		await named.run({ action: "status" }, ctx);
 		await named.fire("session_shutdown", "quit", ctx);
 		assert.deepEqual(registrations, [["default"], ["reviewers"]]);
-		assert.deepEqual(notices, [DEFAULT_GROUP_WARNING]);
+		assert.deepEqual(notices, [`warning: ${DEFAULT_GROUP_WARNING}`]);
 	});
+});
+
+describe("joining a group directly (#4320)", () => {
+	function tool(multiNodeRouting?: () => boolean) {
+		const tools = new Map<string, IntercomTool>();
+		const client = { joinGroup: async (group: string) => ["project:acme/alpha", group] };
+		registerIntercomTool(
+			{
+				registerTool: (registered: IntercomTool) => tools.set(registered.name, registered),
+				async appendEntry() {},
+			} as never,
+			{
+				ensureConnected: async () => client,
+				syncPresenceIdentity() {},
+				beginReplyWait: () => ({}),
+				confirmSend: false,
+				homeGroup: () => "project:acme/alpha",
+				setJoinedGroups() {},
+				clearJoinedGroups() {},
+				replyTracker: new ReplyTracker(),
+				...(multiNodeRouting === undefined ? {} : { multiNodeRouting }),
+			} as never,
+		);
+		return (group: string) =>
+			tools.get("intercom")!.execute("join", { action: "join", group }, undefined, undefined, {
+				sessionManager: { getSessionId: () => "s" },
+				hasUI: false,
+			} as never);
+	}
+
+	test("warns about default only while multi-node routing is on, and never without the dependency (#4320)", async () => {
+		const plain = (group: string) => ({
+			type: "text",
+			text: `Joined intercom group "${group}". Memberships: project:acme/alpha, ${group}.`,
+		});
+		assert.deepEqual((await tool()("default")).content, [plain("default")]);
+		assert.deepEqual((await tool(() => false)("default")).content, [plain("default")]);
+		assert.deepEqual((await tool(() => true)("reviewers")).content, [plain("reviewers")]);
+		assert.deepEqual((await tool(() => true)("default")).content, [
+			{ type: "text", text: `${plain("default").text}\n${DEFAULT_GROUP_WARNING}` },
+		]);
+	});
+});
+
+test("remote URL forms that only differ in case, scheme characters or a .git inside the name (#4320)", () => {
+	assert.equal(remoteRepositoryPath("HTTPS://GitHub.com/acme/alpha.git"), "acme/alpha");
+	assert.equal(remoteRepositoryPath("git+ssh://git@github.com/acme/alpha.git"), "acme/alpha");
+	assert.equal(remoteRepositoryPath("https://github.com/acme/site.github.io"), "acme/site.github.io");
+	assert.equal(remoteRepositoryPath("https://github.com/acme/alpha.git.backup.git"), "acme/alpha.git.backup");
+	assert.equal(remoteRepositoryPath("x https://host/acme/alpha"), "host/acme/alpha");
+	assert.equal(remoteRepositoryPath("/srv/a:b/repo.git"), "srv/a:b/repo");
 });

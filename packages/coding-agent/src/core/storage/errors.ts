@@ -688,7 +688,7 @@ export class TeamProfileError extends StorageError {
 	readonly code: TeamProfileErrorCode;
 	readonly subject: string;
 	readonly hint: string;
-	readonly detail?: string;
+	declare readonly detail?: string;
 	/** Whether the same call can succeed later without a change on the caller's side. */
 	readonly retryable: boolean;
 
@@ -754,8 +754,8 @@ export class TeamProfileConfigError extends StorageConfigError {
 	declare readonly source: "sdk" | "cli" | "env";
 	readonly code: TeamProfileConfigErrorCode;
 	readonly hint: string;
-	readonly path?: string;
-	readonly missing?: readonly string[];
+	declare readonly path?: string;
+	declare readonly missing?: readonly string[];
 	readonly retryable = false;
 
 	constructor(code: TeamProfileConfigErrorCode, fields: TeamProfileConfigErrorFields) {

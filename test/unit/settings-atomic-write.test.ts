@@ -37,6 +37,19 @@ test("a settings file is replaced whole, keeps its mode, and leaves no temporary
 	assert.deepEqual(readdirSync(root), ["settings.json"]);
 });
 
+test.skipIf(!posix)("group-writable settings keep their mode even under a umask that would strip it (#4320)", () => {
+	const path = join(root, "settings.json");
+	writeFileSync(path, "{}");
+	chmodSync(path, 0o664);
+	const previous = process.umask(0o022);
+	try {
+		writeSettingsFile(path, '{"shared":true}');
+	} finally {
+		process.umask(previous);
+	}
+	assert.equal(statSync(path).mode & 0o777, 0o664);
+});
+
 test.skipIf(!posix)("a symbolic link stays a link and its target is replaced (#4320)", () => {
 	const dotfiles = join(root, "dotfiles");
 	mkdirSync(dotfiles);
@@ -76,8 +89,18 @@ test("on Windows a rename blocked by another handle is retried, and anything els
 		};
 	};
 	const transient = failing(["EPERM", "EBUSY", "EACCES"]);
-	renameReplacing("a", "b", "win32", transient.rename);
+	const times: number[] = [];
+	renameReplacing("a", "b", "win32", (from, to) => {
+		times.push(Date.now());
+		transient.rename(from, to);
+	});
 	assert.equal(transient.calls.length, 4);
+	for (let index = 1; index < times.length; index++) {
+		assert.ok(
+			times[index]! - times[index - 1]! >= 19,
+			`retry ${index} waited ${times[index]! - times[index - 1]!} ms`,
+		);
+	}
 
 	const permanent = failing(Array.from({ length: 12 }, () => "EPERM"));
 	assert.throws(() => renameReplacing("a", "b", "win32", permanent.rename), { code: "EPERM" });
