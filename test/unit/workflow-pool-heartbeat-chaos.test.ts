@@ -34,6 +34,12 @@ function sqliteErrorCode(error: unknown): number | undefined {
 	return undefined;
 }
 
+test("closing a heartbeat simulation releases its caller-owned SQLite connection (#4313)", async () => {
+	const pool = await simulatedPool(1, LEASE_MS);
+	await pool.close();
+	assert.equal(pool.connection.isOpen, false);
+});
+
 test(
 	"heartbeats answered two intervals late neither overlap, burst nor let a lease lapse (#4313)",
 	async () => {

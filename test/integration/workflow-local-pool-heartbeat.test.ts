@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import type { PoolCoordinationStats } from "../../packages/workflows/src/shared/store-types.js";
+import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { sleep } from "../helpers/runtime.js";
 import { fixture, SINGLE_POOL, THREE_WORKERS, waitUntil } from "../helpers/workflow-local-pool-lifecycle.js";
 
@@ -74,35 +75,40 @@ const LONG_STOP_MS = 3 * LEASE_MS;
 test(
 	"a worker stopped within its lease keeps its child, and one stopped past it is replaced (#4313)",
 	async () => {
-		const f = await fixture("root", undefined, {
-			leaseMs: LEASE_MS,
-			heartbeatMs: HEARTBEAT_MS,
-			runBudgetMs: THREE_WORKERS.waitMs,
-		});
+		const suspender = await createProcessSuspender();
 		try {
-			await f.finishing();
-			const queue = await f.ready();
-			const [held] = await queue.inspect("root");
-			const [pid] = f.pool.workerPids;
-			assert.ok(pid !== undefined && held !== undefined);
-			process.kill(pid, "SIGSTOP");
-			await sleep(SHORT_STOP_MS);
-			process.kill(pid, "SIGCONT");
-			await sleep(2 * HEARTBEAT_MS);
-			const [kept] = await queue.inspect("root");
-			assert.equal(kept?.generation, held.generation, "a short stop kept the attempt");
-			assert.equal(kept?.state, "leased");
-			assert.deepEqual(f.pool.workerPids, [pid], "and the worker");
+			const f = await fixture("root", undefined, {
+				leaseMs: LEASE_MS,
+				heartbeatMs: HEARTBEAT_MS,
+				runBudgetMs: THREE_WORKERS.waitMs,
+			});
+			try {
+				await f.finishing();
+				const queue = await f.ready();
+				const [held] = await queue.inspect("root");
+				const [pid] = f.pool.workerPids;
+				assert.ok(pid !== undefined && held !== undefined);
+				await suspender.suspend(pid);
+				await sleep(SHORT_STOP_MS);
+				await suspender.resume(pid);
+				await sleep(2 * HEARTBEAT_MS);
+				const [kept] = await queue.inspect("root");
+				assert.equal(kept?.generation, held.generation, "a short stop kept the attempt");
+				assert.equal(kept?.state, "leased");
+				assert.deepEqual(f.pool.workerPids, [pid], "and the worker");
 
-			process.kill(pid, "SIGSTOP");
-			await sleep(LONG_STOP_MS);
-			await waitUntil(async () => !f.pool.workerPids.includes(pid), f.budget);
-			await waitUntil(async () => (await queue.inspect("root"))[0]!.generation > held.generation, f.budget);
-			await f.release();
-			assert.equal((await f.running).status, "completed", "the child replayed on the replacement");
+				await suspender.suspend(pid);
+				await sleep(LONG_STOP_MS);
+				await waitUntil(async () => !f.pool.workerPids.includes(pid), f.budget);
+				await waitUntil(async () => (await queue.inspect("root"))[0]!.generation > held.generation, f.budget);
+				await f.release();
+				assert.equal((await f.running).status, "completed", "the child replayed on the replacement");
+			} finally {
+				await f.release();
+				await f.close();
+			}
 		} finally {
-			await f.release();
-			await f.close();
+			await suspender.close();
 		}
 	},
 	THREE_WORKERS.timeoutMs,

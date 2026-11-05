@@ -16,6 +16,7 @@ import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/s
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
+import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const LEASE_MS = 60_000;
@@ -84,6 +85,7 @@ async function holdHeartbeat(f: Awaited<ReturnType<typeof journalFixture>>): Pro
 }
 
 async function killed(holder: ChildProcess): Promise<void> {
+	if (holder.exitCode !== null || holder.signalCode !== null) return;
 	const exited = once(holder, "exit");
 	holder.kill("SIGKILL");
 	await exited;
@@ -93,9 +95,10 @@ test(
 	"a heartbeat killed mid-transaction leaves neither its renewal nor its usage behind (#4313)",
 	async () => {
 		const f = await journalFixture();
+		let holder: ChildProcess | undefined;
 		try {
 			const before = await f.current();
-			const holder = await holdHeartbeat(f);
+			holder = await holdHeartbeat(f);
 			await killed(holder);
 			assert.deepEqual(await f.current(), before, "the killed heartbeat renewed nothing");
 			assert.deepEqual(await f.usage.total("root"), zero, "and recorded no usage");
@@ -108,6 +111,7 @@ test(
 			assert.ok(beat.work.renewedAt >= before.renewedAt, "the next heartbeat renews the attempt");
 			assert.deepEqual(beat.recorded, reports[0]!.usage, "and records the usage once");
 		} finally {
+			if (holder) await killed(holder);
 			await f.close();
 		}
 	},
@@ -117,26 +121,37 @@ test(
 test(
 	"a heartbeat stopped while it holds the write lock delays the next one, which commits once the lock is free (#4313)",
 	async () => {
-		const f = await journalFixture();
+		const suspender = await createProcessSuspender();
 		try {
-			const before = await f.current();
-			const holder = await holdHeartbeat(f);
-			holder.kill("SIGSTOP");
-			let committed = false;
-			const waiting = f.queue
-				.heartbeat(f.lease, f.attempt, LEASE_MS, f.usage.recording(f.lease, f.attempt, reports))
-				.finally(() => {
-					committed = true;
-				});
-			await sleep(BLOCKED_OBSERVATION_MS);
-			assert.equal(committed, false, "the next heartbeat waits for the stopped process's write lock");
-			await killed(holder);
-			const beat = await waiting;
-			assert.ok(beat.work.expiresAt >= before.expiresAt, "it renews the attempt once the lock is free");
-			assert.deepEqual(await f.usage.total("root"), reports[0]!.usage, "the stopped heartbeat's usage never landed");
-			assert.deepEqual(await f.current(), beat.work);
+			const f = await journalFixture();
+			let holder: ChildProcess | undefined;
+			try {
+				const before = await f.current();
+				holder = await holdHeartbeat(f);
+				await suspender.suspend(holder.pid!);
+				let committed = false;
+				const waiting = f.queue
+					.heartbeat(f.lease, f.attempt, LEASE_MS, f.usage.recording(f.lease, f.attempt, reports))
+					.finally(() => {
+						committed = true;
+					});
+				await sleep(BLOCKED_OBSERVATION_MS);
+				assert.equal(committed, false, "the next heartbeat waits for the stopped process's write lock");
+				await killed(holder);
+				const beat = await waiting;
+				assert.ok(beat.work.expiresAt >= before.expiresAt, "it renews the attempt once the lock is free");
+				assert.deepEqual(
+					await f.usage.total("root"),
+					reports[0]!.usage,
+					"the stopped heartbeat's usage never landed",
+				);
+				assert.deepEqual(await f.current(), beat.work);
+			} finally {
+				if (holder) await killed(holder);
+				await f.close();
+			}
 		} finally {
-			await f.close();
+			await suspender.close();
 		}
 	},
 	HOLDER_PROCESS_TIMEOUT_MS,

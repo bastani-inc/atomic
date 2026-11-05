@@ -215,6 +215,7 @@ export async function simulatedPool(workers: number, leaseMs: number): Promise<S
 			vi.useRealTimers();
 			await journal.close();
 			await database.close();
+			connection.close();
 			removeTempDirectory(directory);
 		},
 	};
