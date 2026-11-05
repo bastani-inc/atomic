@@ -124,25 +124,28 @@ test("userDatabase that is not the run's journal file is refused with the reason
 			assert.ok(isWorkflowAdmissionConfigError(error), String(error));
 			return [error.code, error.reason, error.userDatabase, error.journalPath, error.source];
 		};
-		const viaRun = (userDatabase: string | undefined) => () =>
-			run(
-				definition,
-				{},
-				{
-					durableBackend: backend,
-					store: createStore(),
-					admission: { userLimits: { session: 2 }, ...(userDatabase === undefined ? {} : { userDatabase }) },
-				},
-			);
+		const direct = (target: SqlRunJournal, userDatabase: string | undefined) => () =>
+			SqlResourceAdmission.open(target, {
+				root: "root",
+				holder: "holder",
+				userLimits: { session: 2 },
+				...(userDatabase === undefined ? {} : { userDatabase }),
+			});
 		const elsewhere = join(directory, "elsewhere.sqlite");
-		assert.deepEqual(await refusal(viaRun(elsewhere)), [
+		assert.deepEqual(await refusal(direct(backend.journal as SqlRunJournal, elsewhere)), [
 			"user-database-mismatch",
 			"other-file",
 			elsewhere,
 			path,
 			"sdk",
 		]);
-		assert.deepEqual(await refusal(viaRun(undefined)), ["user-database-mismatch", "missing", undefined, path, "sdk"]);
+		assert.deepEqual(await refusal(direct(backend.journal as SqlRunJournal, undefined)), [
+			"user-database-mismatch",
+			"missing",
+			undefined,
+			path,
+			"sdk",
+		]);
 		assert.deepEqual(
 			await refusal(() =>
 				SqlResourceAdmission.open(memory, {
@@ -269,3 +272,41 @@ test("a run_not_found result without a typed error is rethrown without a cause (
 	assert.ok(rejected instanceof WorkflowRunNotFoundError);
 	assert.equal(rejected.cause, undefined);
 });
+
+test.skipIf(process.platform === "win32")(
+	"a run whose userDatabase is not its journal file is refused before it starts, naming the source (#4325)",
+	async () => {
+		const path = join(directory, "journal.sqlite");
+		const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
+		try {
+			const refused = async (host: boolean) => {
+				const error = await run(
+					definition,
+					{},
+					{
+						durableBackend: backend,
+						store: createStore(),
+						admission: { userLimits: { session: 2 }, userDatabase: join(directory, "elsewhere.sqlite") },
+						...(host ? { [hostWorkerBindings]: true } : {}),
+					},
+				).catch((caught: Error) => caught);
+				assert.ok(isWorkflowAdmissionConfigError(error), String(error));
+				return [error.code, error.reason, error.source, error.field];
+			};
+			assert.deepEqual(await refused(false), [
+				"user-database-mismatch",
+				"other-file",
+				"sdk",
+				"admission.userLimits",
+			]);
+			assert.deepEqual(await refused(true), [
+				"user-database-mismatch",
+				"other-file",
+				"settings",
+				"workflows.admission.userLimits",
+			]);
+		} finally {
+			await backend.close();
+		}
+	},
+);
