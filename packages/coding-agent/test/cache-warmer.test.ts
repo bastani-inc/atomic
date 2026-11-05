@@ -4,10 +4,11 @@ import { afterEach, describe, it, vi } from "vitest";
 import {
 	CacheWarmer,
 	formatCacheWarmingStatus,
+	formatCacheWarmingUsage,
 	getCacheWarmingDelayMs,
 	isReplayable,
 } from "../src/core/cache-warmer.js";
-import type { SessionEntry } from "../src/core/session-manager.js";
+import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
 
 const model = {
 	id: "claude-sonnet-4-5",
@@ -131,5 +132,31 @@ describe("cache warming", () => {
 			formatCacheWarmingStatus({ state: "inactive", reason: "cache warming disabled" }),
 			"Inactive (cache warming disabled)",
 		);
+	});
+
+	it("formats the total cost of one or more cache warms", async () => {
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 98_024,
+			cacheWrite: 0,
+			totalTokens: 98_026,
+			cost: { input: 0.00004, output: 0.00005, cacheRead: 0.02940725, cacheWrite: 0, total: 0.02949725 },
+		};
+		const entry = await SessionManager.inMemory().appendUsage(
+			"cache_warm",
+			model.provider,
+			model.id,
+			usage,
+			"extension override",
+		);
+		assert.equal(
+			formatCacheWarmingUsage(entry.usage.cost.total, entry.note),
+			"Cache warmed (extension override): $0.029497",
+		);
+		assert.equal(formatCacheWarmingUsage(0.013 + 0.0165), "Cache warmed: $0.0295");
+		assert.equal(formatCacheWarmingUsage(0.12, ""), "Cache warmed: $0.120");
+		assert.equal(formatCacheWarmingUsage(1.5, "manual"), "Cache warmed (manual): $1.500");
+		assert.equal(formatCacheWarmingUsage(0.123045), "Cache warmed: $0.123045");
 	});
 });
