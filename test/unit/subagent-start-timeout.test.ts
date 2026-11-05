@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk-types.js";
@@ -226,7 +226,7 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 	/** A child-only extension, written after the parent loaded its own, that holds `point` until released. */
 	const stallChildAt = (
 		point: StallPoint,
-		options: { readonly untilReleased?: boolean } = {},
+		releaseAfterMs?: number,
 	): {
 		readonly reached: () => boolean;
 		readonly release: () => void;
@@ -241,11 +241,12 @@ async function startFixture(options: { readonly parentAdmission?: ResourceAdmiss
 		const held = new Promise<void>((resolve) => {
 			release = () => resolve();
 		});
-		const timer = options.untilReleased ? undefined : setTimeout(release, STALL_MS);
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		globals[STALL_HOOK] = (at) => {
 			if (at === "session_shutdown") shutdownVisited();
 			if (at !== point) return undefined;
 			reached = true;
+			if (releaseAfterMs !== undefined && timer === undefined) timer = setTimeout(release, releaseAfterMs);
 			return held;
 		};
 		cleanups.push(() => {
@@ -399,7 +400,7 @@ for (const point of ["input", "before_agent_start"] as const) {
 		`a child whose ${point} handler never settles reports its start timeout without waiting for cleanup (#4319)`,
 		async () => {
 			const fixture = await startFixture();
-			const stall = fixture.stallChildAt(point, { untilReleased: true });
+			const stall = fixture.stallChildAt(point);
 			const outcome = await Promise.race([
 				fixture.launch(`start-never-settles-${point}`, STALL_START_BUDGET_MS),
 				sleep(STALL_START_BUDGET_MS + TIMEOUT_REPORT_GRACE_MS).then(() => "hung" as const),
@@ -424,7 +425,7 @@ test(
 	"a child's disposal failing after its start timeout leaves the timeout as the error and keeps the failure as its cleanupCause (#4319)",
 	async () => {
 		const fixture = await startFixture();
-		const stall = fixture.stallChildAt("input", { untilReleased: true });
+		const stall = fixture.stallChildAt("input");
 		const attempts: Promise<AttemptOutcome>[] = [];
 		const startAttempt = SubagentControlRuntime.prototype.startAttempt;
 		SubagentControlRuntime.prototype.startAttempt = function (...args) {
@@ -570,7 +571,14 @@ test(
 	"a child that waited for its permit and then stalled setting up names setup, with the wait among its steps (#4319)",
 	async () => {
 		const fixture = await startFixture({ parentAdmission: new DelayedAdmission(ADMISSION_DELAY_MS) });
-		const stall = fixture.stallChildAt("session_start");
+		let stall: ReturnType<typeof fixture.stallChildAt>;
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			stall = fixture.stallChildAt("session_start");
+			vi.advanceTimersByTime(STALL_MS);
+		} finally {
+			vi.useRealTimers();
+		}
 		const result = await fixture.launch("start-admitted-then-stalled", STALL_START_BUDGET_MS);
 		stall.release();
 
@@ -593,7 +601,7 @@ test(
 		const first = await fixture.launch("start-resumed");
 		assert.equal(first.status, "ok", JSON.stringify(first));
 		assert.ok(first.sessionFile);
-		const stall = fixture.stallChildAt("session_recovery_restore");
+		const stall = fixture.stallChildAt("session_recovery_restore", STALL_MS);
 		const result = await fixture.launch("start-resumed", STALL_START_BUDGET_MS, {
 			sessionManager: await SessionManager.open(first.sessionFile),
 			resumeSession: true,
