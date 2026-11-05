@@ -1,15 +1,14 @@
 /**
  * Counting benchmark and chaos runs for #4315 (cause C of #4312): one pool worker's requests to its coordinator used
- * to run strictly one after another, so every request of an agent step waited behind the lease renewal, control poll
- * and usage report its heartbeat kept in flight.
+ * to run strictly one after another, so every request of an agent step waited behind its worker's heartbeat.
  *
  * 300 simulated workers (test/helpers/pool-request-rounds.ts) each claim a pooled child of one root and run agent
  * steps through the real pool coordinator, in this process, against a real SQLite journal. The test holds every pool
  * journal call and runs them in rounds, one group commit of a loaded journal each, so the counts below are exact and
  * independent of the host: rounds per agent step, journal transactions, and the order each worker's commits applied
  * in. It then reads back every session and usage row the workers wrote. The chaos runs repeat it with a slow journal
- * whose calls finish out of order, with a journal clock that lags the coordinator's, and with usage reports refused
- * as on a full disk.
+ * whose calls finish out of order, with a journal clock that lags the coordinator's, and with heartbeats refused
+ * as on a full disk. Simulated workers continue after refusals to exercise coordinator scheduling, not worker recovery.
  *
  * The measured numbers are printed on every run. Under an agent shell, add `--reporter=default`.
  */
@@ -92,12 +91,10 @@ const IDLE_ROUNDS_LIMIT = 200;
 const IDLE_POLL_MS = 10;
 /** Longest delay a slow journal gives one call before it runs, in milliseconds. */
 const SLOW_SYNC_MAX_MS = 4;
-/** The usage report, among each work's reports while the journal is held, that a full disk refuses. */
+/** The heartbeat, among each work's heartbeats while the journal is held, that a full disk refuses. */
 const REFUSED_REPORT = 1;
 /**
- * The admission check, among each work's checks while the journal is held, that a late root renewal refuses. The second
- * step's runs in a round where the worker's heartbeat polls control rather than renewing its lease, so the renewal the
- * refusal makes is its own.
+ * The admission check, among each work's checks while the journal is held, that a late root renewal refuses.
  */
 const LATE_ADMISSION = 1;
 /** Structural: a root with 300 pooled children, their workers' attachment, then every journal round of their steps. */
@@ -109,7 +106,7 @@ interface Scenario {
 	readonly slowSync?: () => number;
 	/** How far the journal's clock lags the coordinator's: every work lease it grants looks that much spent. */
 	readonly clockLagMs?: number;
-	/** Usage reports refuse as on a full disk, each work's {@link REFUSED_REPORT}th while the journal is held. */
+	/** Heartbeats refuse as on a full disk, each work's {@link REFUSED_REPORT}th while the journal is held. */
 	readonly diskFull?: boolean;
 	/** The root renews its own lease late once: each work's {@link LATE_ADMISSION}th admission check is refused for it. */
 	readonly lateRoot?: boolean;
@@ -197,15 +194,22 @@ function holdPoolJournal(
 		);
 	});
 	const reports = new Map<string, number>();
-	const report = SqlPoolUsage.prototype.report;
-	vi.spyOn(SqlPoolUsage.prototype, "report").mockImplementation(function (this: SqlPoolUsage, lease, work, usage) {
+	const heartbeat = SqlPoolQueue.prototype.heartbeat;
+	vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+		this: SqlPoolQueue,
+		lease,
+		work,
+		duration,
+		record,
+	) {
 		const ordinal = measuring() ? (reports.get(work.id) ?? 0) : -1;
 		if (ordinal >= 0) reports.set(work.id, ordinal + 1);
-		return rounds.through("report", () =>
+		const beat = await rounds.through("heartbeat", () =>
 			scenario.diskFull === true && ordinal === REFUSED_REPORT
 				? Promise.reject(diskFull(path))
-				: report.call(this, lease, work, usage),
+				: heartbeat.call(this, lease, work, duration, record),
 		);
+		return { ...beat, work: lag(beat.work) };
 	});
 	const total = SqlPoolUsage.prototype.total;
 	vi.spyOn(SqlPoolUsage.prototype, "total").mockImplementation(function (this: SqlPoolUsage, root) {
@@ -397,9 +401,9 @@ test(
 		);
 		for (const worker of outcome.workers)
 			assert.equal(
-				outcome.extensions.get(worker.work!.id)?.length,
-				worker.renewals,
-				"only the heartbeat's renewals extend a lease that is not half spent",
+				outcome.extensions.get(worker.work!.id)?.length ?? 0,
+				0,
+				"coalesced heartbeats renew fresh leases without a separate extension",
 			);
 	},
 	PIPELINED_POOL_TIMEOUT_MS,
@@ -457,7 +461,7 @@ test(
 );
 
 test(
-	"a usage report refused by a full disk fails only that report: 300 workers' heartbeats and agent steps go on (#4315)",
+	"a heartbeat refused by a full disk releases its lane so 300 simulated workers' later requests still run (#4315)",
 	async () => {
 		const outcome = await runPipelinedPool({ name: "disk-full", diskFull: true });
 		for (const worker of outcome.workers) {
@@ -465,7 +469,7 @@ test(
 			const [refusal] = worker.failures;
 			assert.ok(refusal instanceof SimulatedRequestRefusedError);
 			assert.equal(refusal.code, "request-refused");
-			assert.equal(refusal.request, "usage");
+			assert.equal(refusal.request, "heartbeat");
 		}
 		assertJournalIntact(outcome);
 		assert.deepEqual([...new Set(stepRounds(outcome))], [AGENT_STEP_ROUNDS]);

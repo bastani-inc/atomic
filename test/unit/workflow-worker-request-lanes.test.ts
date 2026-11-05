@@ -119,7 +119,7 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 		);
 	assert.deepEqual(lanes("barrier"), ["ready", "claim", "fenced", "recycle", "complete"]);
 	assert.deepEqual(lanes("commits"), ["commit"]);
-	assert.deepEqual(lanes("heartbeats"), ["renew", "control", "controlled", "usage"]);
+	assert.deepEqual(lanes("heartbeats"), ["heartbeat", "control", "controlled"]);
 	assert.deepEqual(lanes("free"), ["budget", "activity", "route"]);
 	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready"]);
 });
@@ -219,6 +219,52 @@ test("an extension of another attempt in flight is not shared with the worker's 
 	await Promise.all(asked.map((extension) => extension.answer.promise));
 	await drain();
 	assert.deepEqual(holder.work, attempt("first", 2, 500));
+});
+
+test("a longer lease a heartbeat took while an extension was in flight survives the extension landing after it (#4315)", async () => {
+	const holder: AttemptHolder = { work: attempt("work", 1, 100) };
+	const { extensions, asked } = heldExtensions(holder);
+	const extension = extensions.extend(holder.work!);
+	extensions.adopt(attempt("work", 1, 300));
+	assert.deepEqual(holder.work, attempt("work", 1, 300), "the heartbeat's lease is taken at once");
+	asked[0]!.answer.resolve(attempt("work", 1, 200));
+	assert.deepEqual(await extension, attempt("work", 1, 200), "the caller still gets its own answer");
+	assert.deepEqual(holder.work, attempt("work", 1, 300), "a shorter lease never replaces it");
+});
+
+test("a shorter lease a heartbeat answers after an extension landed does not replace the longer one (#4315)", async () => {
+	const holder: AttemptHolder = { work: attempt("work", 1, 100) };
+	const { extensions, asked } = heldExtensions(holder);
+	const extension = extensions.extend(holder.work!);
+	asked[0]!.answer.resolve(attempt("work", 1, 300));
+	await extension;
+	extensions.adopt(attempt("work", 1, 200));
+	assert.deepEqual(holder.work, attempt("work", 1, 300));
+});
+
+test("an extension that lands after a shorter heartbeat lease takes the longer one (#4315)", async () => {
+	const holder: AttemptHolder = { work: attempt("work", 1, 100) };
+	const { extensions, asked } = heldExtensions(holder);
+	const extension = extensions.extend(holder.work!);
+	extensions.adopt(attempt("work", 1, 150));
+	asked[0]!.answer.resolve(attempt("work", 1, 200));
+	await extension;
+	assert.deepEqual(holder.work, attempt("work", 1, 200));
+});
+
+test("a lease of the same expiry is taken, one of an ended or replaced attempt is not (#4315)", () => {
+	const holder: AttemptHolder = { work: attempt("work", 1, 100) };
+	const { extensions } = heldExtensions(holder);
+	const equal = { ...attempt("work", 1, 100), renewedAt: 50 };
+	extensions.adopt(equal);
+	assert.equal(holder.work, equal, "an equal expiry is the heartbeat's newer record of the same attempt");
+	extensions.adopt(attempt("work", 2, 900));
+	assert.deepEqual(holder.work, equal, "another generation of the work is not the held attempt");
+	extensions.adopt(attempt("other", 1, 900));
+	assert.deepEqual(holder.work, equal, "another work is not the held attempt");
+	holder.work = undefined;
+	extensions.adopt(attempt("work", 1, 900));
+	assert.equal(holder.work, undefined, "an ended attempt is not taken back");
 });
 
 test("renewing the lease of the attempt a worker holds does nothing while it holds none (#4315)", async () => {

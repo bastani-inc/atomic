@@ -1672,7 +1672,7 @@ export class PoolCoordinator {
 					if (message.kind === "heartbeat") {
 						const record = this.usageLedger!.recording(lease, held, message.reports);
 						const beat = await leased(() => queue.heartbeat(lease, held, options.leaseMs, record));
-						slot.work = beat.work;
+						extensions.adopt(beat.work);
 						this.noteUsage(beat.recorded);
 						return beat.control;
 					}
@@ -1750,7 +1750,9 @@ export class PoolCoordinator {
 					slot.work = undefined;
 					await this.sendResult(work.id);
 				};
-				const handled = this.counters.within(message.kind, () => lanes.run(WORKER_REQUEST_LANES[message.kind], answer));
+				const handled = this.counters.within(message.kind, () =>
+					lanes.run(WORKER_REQUEST_LANES[message.kind], answer),
+				);
 				const response = handled.then((value) => routeReady ?? value);
 				// A delivery waits on the worker's own acknowledgements, so it does not count as the pool's wait.
 				if (message.kind !== "delivery" && message.kind !== "delivery-ready") {

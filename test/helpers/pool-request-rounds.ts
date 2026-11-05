@@ -11,9 +11,8 @@
  * through a `FakeWorkerProcess` that the pool coordinator receives in place of a forked child. Every message is copied
  * as IPC serializes it. The worker claims one pooled child, creates its stage session, then runs agent steps: an
  * admission check, then the assistant entry and the tool result appended back to back, the second sent before the
- * first is answered, each with the sequence number it predicts. Its heartbeat keeps a lease renewal, a control poll
- * and a usage report in flight, and sends each again before every round once it is answered, as a worker whose
- * one-second heartbeat is far shorter than a loaded round trip does.
+ * first is answered, each with the sequence number it predicts. Its coalesced heartbeat stays in flight and is sent
+ * again before every round once answered, modeling a loaded journal whose round trip outlasts the heartbeat cadence.
  */
 import type { Serializable } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -195,8 +194,8 @@ export class SimulatedAppendOrderError extends Error {
 }
 
 type Request = DistributiveOmit<WorkerRequest, "id">;
-type HeartbeatKind = "renew" | "control" | "usage";
-const HEARTBEAT_KINDS: readonly HeartbeatKind[] = ["renew", "control", "usage"];
+type HeartbeatKind = "heartbeat";
+const HEARTBEAT_KINDS: readonly HeartbeatKind[] = ["heartbeat"];
 
 /** The identity of the child run a pooled child's checkpoints carry, read from its boundary-start checkpoint. */
 export interface PooledChildRun {
@@ -387,7 +386,7 @@ export class SimulatedPoolWorker {
 		}
 		this.heartbeating = false;
 		await Promise.all(this.heartbeats.values());
-		await this.request({ kind: "usage", reports: [{ key: usageKeyOf(this.index), usage: this.usage() }] });
+		await this.request({ kind: "heartbeat", reports: [{ key: usageKeyOf(this.index), usage: this.usage() }] });
 	}
 
 	/** Sends again each heartbeat request that was answered, as the worker's heartbeat timer does. */
@@ -395,11 +394,8 @@ export class SimulatedPoolWorker {
 		if (!this.heartbeating) return;
 		for (const kind of HEARTBEAT_KINDS) {
 			if (this.heartbeats.has(kind)) continue;
-			if (kind === "renew") this.renewals++;
-			const request =
-				kind === "usage"
-					? this.request({ kind, reports: [{ key: usageKeyOf(this.index), usage: this.usage() }] })
-					: this.request({ kind });
+			this.renewals++;
+			const request = this.request({ kind, reports: [{ key: usageKeyOf(this.index), usage: this.usage() }] });
 			this.heartbeats.set(
 				kind,
 				request.then(

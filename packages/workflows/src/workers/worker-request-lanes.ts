@@ -88,8 +88,8 @@ function attemptKey(work: PoolWork): string {
 /**
  * One worker's work-lease extensions (#4315). Requests in flight together that each need their attempt's lease extended
  * share one extension, one journal transaction rather than one each. The worker takes the extended lease only while it
- * still holds that attempt: an extension that lands after the attempt ended, or after the worker took another one,
- * leaves what it holds as it is.
+ * still holds that attempt: an extension that lands after the attempt ended, after the worker took another one, or
+ * after a heartbeat took a longer lease, leaves what it holds as it is.
  */
 export class AttemptLeaseExtensions {
 	private readonly inFlight = new Map<string, Promise<PoolWork>>();
@@ -105,14 +105,20 @@ export class AttemptLeaseExtensions {
 		const joined = this.inFlight.get(key);
 		if (joined !== undefined) return joined;
 		const renewed = this.extendLease(attempt).then((work) => {
-			const held = this.holder.work;
-			if (held !== undefined && attemptKey(held) === key) this.holder.work = work;
+			this.adopt(work);
 			return work;
 		});
 		this.inFlight.set(key, renewed);
 		const landed = () => this.inFlight.delete(key);
 		renewed.then(landed, landed);
 		return renewed;
+	}
+
+	adopt(work: PoolWork): void {
+		const held = this.holder.work;
+		if (held !== undefined && attemptKey(held) === attemptKey(work) && work.expiresAt >= held.expiresAt) {
+			this.holder.work = work;
+		}
 	}
 
 	/** Extends the lease of the attempt the worker holds now; nothing when it holds none. */
