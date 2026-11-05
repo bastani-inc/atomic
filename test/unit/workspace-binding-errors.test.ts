@@ -264,6 +264,28 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(config.field, "workspace.sandbox");
 	});
 
+	test("commits that completed steps recorded and that are gone are all named (#3109)", () => {
+		const error = new WorkspaceRestoreError({
+			reason: "commits-unavailable",
+			fields: {
+				repo: "/repos/api",
+				branch: "feat/x",
+				worktree: "/wt/api",
+				repository: "/repos/api",
+				missingCommits: ["aaa111", "bbb222"],
+			},
+		});
+		assert.equal(error.code, "restore-failed");
+		assert.equal(error.retryable, false);
+		assert.equal(
+			error.message,
+			"Workspace restore failed: aaa111, bbb222, which completed steps recorded on feat/x, are neither in /repos/api nor on its remote (restore-failed). Push feat/x from the machine that made those commits (git -C <its worktree> push origin feat/x), then resume; resuming without them would skip their work.",
+		);
+		const rehydrated = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(error))));
+		assert.ok(rehydrated instanceof WorkspaceRestoreError);
+		assert.deepEqual(rehydrated.fields, error.fields);
+	});
+
 	test("a cleanup failure crosses the wire beside the failure it accompanied (#3109)", () => {
 		const leftover = new WorkspaceBindingError({
 			code: "filesystem-failed",

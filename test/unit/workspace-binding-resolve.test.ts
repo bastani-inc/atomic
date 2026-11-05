@@ -1382,7 +1382,11 @@ describe("interrupted worktree additions (#3109)", () => {
 	for (const [kind, record] of [
 		["empty", ""],
 		["partial", '{"host":"'],
-		["misshapen", '{"host":7,"pid":-1,"startTime":3}'],
+		["without a host", '{"host":7,"pid":2,"startTime":null}'],
+		["with pid 0", '{"host":"h","pid":0,"startTime":null}'],
+		["with a fractional pid", '{"host":"h","pid":2.5,"startTime":null}'],
+		["with a numeric start time", '{"host":"h","pid":2,"startTime":3}'],
+		["null", "null"],
 	] as const)
 		test(`a crash that left the adder record ${kind} does not stop its addition from being repaired (#3109)`, async () => {
 			const repo = createRepository(dirs.root, `cut-record-${kind}`);

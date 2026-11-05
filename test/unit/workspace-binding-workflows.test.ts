@@ -17,6 +17,7 @@ import {
 	isWorkspaceBindingError,
 	isWorkspaceRestoreError,
 	rehydrateWorkspaceError,
+	resolveWorkspace,
 	type Workspace,
 	WorkspaceBindingError,
 	WorkspaceRestoreError,
@@ -891,6 +892,30 @@ describe("workspace bindings across resume (#3109)", () => {
 			error.message,
 			`Workspace restore failed: ${stepHead}, which completed steps recorded on feat/step, are neither in ${error.fields.repository} nor on its remote (restore-failed). Push feat/step from the machine that made those commits (git -C <its worktree> push origin feat/step), then resume; resuming without them would skip their work.`,
 		);
+		assert.deepEqual(sessions, []);
+	});
+
+	test("a resume fetches a step commit pushed from elsewhere and fails closed on a worktree that lacks it (#3109)", async () => {
+		const remote = createRemote(dirs.root, "pushed-elsewhere");
+		const origin = remote.url.replace(/^file:\/\//, "");
+		git(remote.seed, "push", "-q", origin, "HEAD:refs/heads/feat/step");
+		const { binding, stepHead, resume } = await interruptedAfterStep(
+			workspace({ repo: remote.url, branch: "feat/step" }),
+			join(dirs.root, "journal.sqlite"),
+		);
+		const keep = join(dirs.root, "keep.git");
+		git(dirs.root, "init", "-q", "--bare", keep);
+		git(binding.worktree, "push", "-q", keep, "HEAD:refs/heads/kept");
+		rmSync(join(dirs.home, "repos"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		rmSync(join(dirs.home, "worktrees"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const stale = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/step" }));
+		assert.equal(stale.worktree, binding.worktree, "this machine has the worktree, at the base");
+		git(keep, "push", "-q", origin, "refs/heads/kept:refs/heads/feat/step");
+		const { resumed, transcript, sessions } = await resume();
+		assert.equal(resumed.status, "failed");
+		assert.equal(resumed.workspaceError?.code, "drift", "fetched, the commit exists but this worktree lacks it");
+		assert.equal(resumed.workspaceError?.fields.expected, stepHead);
+		assert.ok(transcript.includes("fetch: fetch origin"));
 		assert.deepEqual(sessions, []);
 	});
 
