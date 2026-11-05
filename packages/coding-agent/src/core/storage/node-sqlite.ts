@@ -469,8 +469,8 @@ interface QueuedTransaction {
 
 /**
  * Transactions committed together. `position` is the connection operation that commits them; a batch directly behind
- * it (`position + 1`, so no statement between) is absorbed when this one takes the lock. A waiting batch takes new
- * transactions until a statement is queued after it.
+ * it (`position + 1`, so no statement between) is absorbed when this one first takes the lock. A waiting batch takes
+ * new transactions until a statement is queued after it.
  */
 interface PendingBatch {
 	readonly members: QueuedTransaction[];
@@ -934,21 +934,23 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		// The batch ahead of it took its transactions along when it got the lock.
 		if (this.waitingBatches[0] !== batch) return Promise.resolve();
 		this.waitingBatches.shift();
-		return gateTransaction(this.transactionIdentity, () => this.runBatch(batch));
+		return gateTransaction(this.transactionIdentity, () => this.runBatch(batch, true));
 	}
 
 	/**
-	 * Takes the write lock for the batch, then commits it on its own or as a group. Transactions requested directly
-	 * behind it while it waited join it first: otherwise they would queue for the lock all over again once it lets go.
+	 * Takes the write lock for the batch, then commits it on its own or as a group. On its first acquisition the
+	 * transactions requested directly behind it while it waited join it: otherwise they would queue for the lock all
+	 * over again once it lets go. Members left after the hold budget take the lock again with nothing new, so other
+	 * connections to the file wait for at most one batch of this one's.
 	 */
-	private async runBatch(batch: PendingBatch): Promise<void> {
+	private async runBatch(batch: PendingBatch, firstAcquisition: boolean): Promise<void> {
 		try {
 			await this.begin(this.lockWait(batch.members));
 		} catch (cause) {
 			for (const queued of batch.members.splice(0)) queued.reject(cause);
 			return;
 		}
-		this.absorbNext(batch);
+		if (firstAcquisition) this.absorbNext(batch);
 		await (batch.members.length === 1 ? this.commitAlone(batch.members.pop()!) : this.commitMembers(batch));
 	}
 
@@ -1038,7 +1040,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			else if (outcome.ok) queued.resolve(outcome.value);
 			else queued.reject(outcome.error);
 		});
-		if (batch.members.length > 0) await this.runBatch(batch);
+		if (batch.members.length > 0) await this.runBatch(batch, false);
 	}
 
 	/**
@@ -1061,7 +1063,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			queued.reject(outcome.ok ? unavailable(this.descriptor, rollbackCause) : outcome.error);
 		});
 		ran[failed]!.reject(new StorageRollbackError(cause as StorageFailureCause, rollbackCause as StorageFailureCause));
-		if (batch.members.length > 0) await this.runBatch(batch);
+		if (batch.members.length > 0) await this.runBatch(batch, false);
 	}
 
 	private async rollbackQuietly(): Promise<void> {

@@ -880,6 +880,42 @@ test("a transaction requested while an absorbing batch commits still runs, in it
 	assert.equal(counts.commits, 2);
 });
 
+test("members left after the hold budget take the lock again without new transactions, so another handle to the file waits for at most one batch (#4316)", async () => {
+	const { database: first, path, holder, writers } = await fixture({ groupCommitHoldMs: 0 });
+	const second = await openNodeSqliteDatabase(path, { groupCommitHoldMs: 0 });
+	cleanups.push(() => second.close());
+	const pumped = 40;
+	const requested: Promise<unknown>[] = [];
+	const request = (): void => {
+		const value = `a${requested.length}`;
+		requested.push(
+			first.transaction(async (tx) => {
+				await turn();
+				await tx.run("INSERT INTO items VALUES (?)", value);
+				if (requested.length < pumped) request();
+			}),
+		);
+	};
+	holder.exec("BEGIN IMMEDIATE");
+	request();
+	const [name] = await untilTickets(writers, 1);
+	for (let index = 0; index < 3; index++) request();
+	const other = second.transaction((tx) => tx.run("INSERT INTO items VALUES ('b')"));
+	holder.exec("COMMIT");
+	touch(join(writers, name!));
+	await other;
+	for (let settled = 0; settled < requested.length; ) {
+		settled = requested.length;
+		await Promise.all(requested);
+	}
+	const order = await values(first);
+	assert.deepEqual(
+		order.filter((value) => value !== "b"),
+		Array.from({ length: pumped }, (_, index) => `a${index}`),
+	);
+	assert.equal(order.indexOf("b"), 4, "the other handle committed right after the first batch's four commits");
+});
+
 test("closing a database the adapter opened closes its connection, which removes the write-ahead log", async () => {
 	const directory = makeTempDirectory("atomic-writer-queue-close-");
 	cleanups.push(() => removeTempDirectory(directory));

@@ -4,6 +4,7 @@ import {
 	findStorageWriteLockTimeoutError,
 	isRetryableStorageError,
 	isStorageConfigError,
+	isStorageError,
 	isStorageUnsupportedOperationError,
 	isStorageWriteLockTimeoutError,
 	isStorageWriterQueueDegradedError,
@@ -127,6 +128,37 @@ test("guards match instances, structural copies from another realm, and nothing 
 	const impostor = Object.assign(function StorageConfigError() {}, { code: "invalid-config" });
 	assert.equal(impostor.name, "StorageConfigError");
 	assert.equal(isStorageConfigError(impostor), false, "only objects pass the structural check");
+});
+
+test("the family guard matches every storage error, a structural copy of each coded one, and nothing else", () => {
+	for (const error of [
+		new StorageError("base"),
+		new StorageUnavailableError(descriptor, busy()),
+		new StoreClosedError(descriptor),
+		new StoragePayloadTooLargeError(1, 2),
+		rehydrateStorageError({ name: "StorageFutureError", message: "future", fields: {} }),
+	])
+		assert.ok(isStorageError(error), error.name);
+	for (const [name, code] of [
+		["StorageConfigError", "invalid-config"],
+		["StorageWriteLockTimeoutError", "write-lock-timeout"],
+		["StorageUnsupportedOperationError", "unsupported-operation"],
+		["StorageWriterQueueDegradedError", "writer-queue-degraded"],
+		["StorageWriterQueueUnusableError", "writer-queue-unusable"],
+	]) {
+		assert.ok(isStorageError({ name, code }), name);
+		assert.equal(isStorageError({ name, code: "other" }), false, `${name} with another code`);
+	}
+	for (const other of [
+		new Error("plain"),
+		Object.assign(new Error("driver"), { code: "ERR_SQLITE_ERROR" }),
+		{ name: "StorageUnavailableError" },
+		{ name: "Other", code: "invalid-config" },
+		null,
+		undefined,
+		"StorageError",
+	])
+		assert.equal(isStorageError(other), false, String(other));
 });
 
 test("retryability and the timeout are found anywhere in a bounded cause chain", () => {

@@ -35,34 +35,34 @@ A crabbox runner (Azure D64ads_v7: AMD EPYC 9V45, 64 vCPU), Linux 7.0, Node v24.
 
 | scenario | variant | lock utilization | commits/s | transactions/s | transactions/commit | wait p50 ms | wait p95 ms | wait p99 ms | wait max ms | per group: tx/s, wait p50/p95 ms |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| uncontended | baseline | 97.1% | 1905 | 1905 | 1.0 | 0.0 | 0.0 | 0.0 | 0 | 1905, 0.0/0.0 |
-| uncontended | current@100 | 97.4% | 1908 | 1908 | 1.0 | 0.0 | 0.0 | 0.0 | 5 | 1908, 0.0/0.0 |
-| serial-30 | baseline | 1.6% | 24 | 24 | 1.0 | 1213.6 | 1397.8 | 1457.1 | 1490 | 24, 1213.6/1397.8 |
-| serial-30 | current@100 | 67.6% | 1177 | 1177 | 1.0 | 24.6 | 26.3 | 29.0 | 41 | 1177, 24.6/26.3 |
-| bursty-8x16 | baseline | 20.8% | 26 | 408 | 16.0 | 320.4 | 409.7 | 441.2 | 454 | 408, 320.4/409.7 |
-| bursty-8x16 | current@100 | 97.8% | 119 | 1910 | 16.0 | 62.6 | 66.2 | 66.8 | 72 | 1910, 62.6/66.2 |
-| pool-like | baseline | 6.5% | 26 | 114 | 4.3 | 1063.6 | 1326.4 | 1335.4 | 1356 | 84, 1063.4/1326.4; 7, 1093.2/1354.2; 22, 1053.8/1284.9 |
-| pool-like | current@100 | 94.5% | 222 | 1710 | 7.7 | 59.1 | 67.3 | 74.7 | 94 | 1428, 58.6/67.1; 119, 62.3/68.1; 162, 59.6/67.8 |
-| heavy-batches | baseline | 32.0% | 21 | 168 | 8.1 | 1193.8 | 1392.5 | 1420.6 | 1440 | 152, 1203.2/1395.8; 16, 588.2/743.3 |
-| heavy-batches | current@100 | 98.9% | 42 | 513 | 12.4 | 284.8 | 544.0 | 548.5 | 552 | 481, 287.9/544.2; 32, 261.2/283.0 |
+| uncontended | baseline | 97.3% | 1913 | 1913 | 1.0 | 0.0 | 0.0 | 0.0 | 1 | 1913, 0.0/0.0 |
+| uncontended | current@100 | 97.5% | 1916 | 1916 | 1.0 | 0.0 | 0.0 | 0.0 | 4 | 1916, 0.0/0.0 |
+| serial-30 | baseline | 1.5% | 26 | 26 | 1.0 | 1139.3 | 1331.4 | 1368.8 | 1379 | 26, 1139.3/1331.4 |
+| serial-30 | current@100 | 69.5% | 1242 | 1242 | 1.0 | 23.3 | 24.6 | 26.3 | 30 | 1242, 23.3/24.6 |
+| bursty-8x16 | baseline | 20.4% | 25 | 398 | 16.0 | 310.0 | 418.6 | 458.6 | 476 | 398, 310.0/418.6 |
+| bursty-8x16 | current@100 | 98.2% | 120 | 1926 | 16.0 | 62.1 | 65.7 | 66.3 | 74 | 1926, 62.1/65.7 |
+| pool-like | baseline | 6.4% | 26 | 114 | 4.6 | 1110.2 | 1290.8 | 1360.0 | 1365 | 84, 1110.4/1295.3; 7, 1154.4/1221.6; 22, 1106.2/1258.0 |
+| pool-like | current@100 | 95.3% | 225 | 1737 | 7.7 | 58.1 | 65.8 | 72.8 | 94 | 1452, 57.5/65.8; 121, 61.2/66.3; 164, 58.5/66.2 |
+| heavy-batches | baseline | 31.8% | 21 | 168 | 8.1 | 1190.6 | 1310.1 | 1397.7 | 1424 | 152, 1205.0/1312.5; 16, 572.1/733.6 |
+| heavy-batches | current@100 | 98.6% | 56 | 521 | 9.3 | 358.3 | 396.6 | 400.1 | 407 | 480, 363.7/396.9; 41, 196.0/302.2 |
 
-No variant failed a transaction. In `serial-30` the lock changes hands about 1200 times a second; the remaining idle time, about 0.3 ms per turn, is the handoff itself: the notice reaching the next process, which wakes, checks the queue, and begins. The baseline's queued writers found the free lock by polling 50–100 ms apart.
+No variant failed a transaction. In `serial-30` the lock changes hands about 1240 times a second; the remaining idle time, about 0.25 ms per turn, is the handoff itself: the notice reaching the next process, which wakes, checks the queue, and begins. The baseline's queued writers found the free lock by polling 50–100 ms apart.
 
 ### Group-commit budget
 
-The budget only matters when one acquisition has more queued work than the budget allows. A sweep of 25, 50, 100, 200, and 400 ms over all five scenarios, run with this change on an earlier runner of the same size (Azure D64ads_v6, AMD EPYC 9V74), measured all budgets alike in the first four, where no batch reached 25 ms. `heavy-batches` makes it bind, measured on the runner's disk and again with every `fsync`/`fdatasync` delayed by 5 ms (an `LD_PRELOAD` shim, below) to stand in for slower storage:
+The budget only matters when one acquisition has more queued work than the budget allows. A sweep of 25, 50, 100, 200, and 400 ms over all five scenarios on an earlier runner of the same size (Azure D64ads_v6, AMD EPYC 9V74) measured all budgets alike in the first four, where no batch reached 25 ms. `heavy-batches` makes it bind. It was measured again on the runner above, where only a batch's first acquisition takes in the transactions queued behind it and the members a budget leaves over take the lock again on their own, both on the runner's disk and with every `fsync`/`fdatasync` delayed by 5 ms (an `LD_PRELOAD` shim, below) to stand in for slower storage:
 
 | budget | disk: tx/s | disk: coordinators tx/s, wait p50/p95 ms | disk: workers tx/s, wait p50/p95 ms | 5 ms sync: tx/s | 5 ms sync: coordinators | 5 ms sync: workers |
 |---:|---:|---|---|---:|---|---|
-| 25 | 531 | 450, 417/429 | 81, 75/86 | 327 | 271, 699/718 | 56, 123/143 |
-| 50 | 519 | 466, 435/458 | 54, 132/159 | 373 | 331, 618/649 | 42, 181/219 |
-| 100 | 507 | 475, 290/548 | 31, 264/285 | 420 | 393, 352/677 | 26, 325/340 |
-| 200 | 505 | 480, 333/391 | 25, 349/368 | 430 | 408, 395/453 | 22, 410/427 |
-| 400 | 505 | 480, 333/391 | 25, 347/367 | | | |
+| 25 | 541 | 459, 402/416 | 82, 71/83 | 333 | 275, 680/698 | 57, 119/139 |
+| 50 | 529 | 469, 386/406 | 59, 121/153 | 368 | 324, 564/590 | 45, 168/209 |
+| 100 | 521 | 480, 364/397 | 41, 201/300 | 400 | 365, 480/515 | 34, 241/350 |
+| 200 | 513 | 488, 330/387 | 25, 346/366 | 438 | 416, 390/448 | 22, 405/423 |
+| 400 | 514 | 488, 330/387 | 26, 346/364 | | | |
 
-A smaller budget lets the light writers in sooner (worker p50 75 ms at 25 vs 264 ms at 100 on the runner's disk) but commits more often, which costs the heavy writers throughput as syncs get slower: with 5 ms syncs a 25 ms budget loses 24% of total throughput against 200 ms, a 50 ms budget 13%, and 100 ms 2%. The `pool-like` scenario, the shape of the reported workload, is insensitive to the budget at both sync speeds (92% and 94% lock utilization). The default therefore stays at 100 ms: within 3% of the best throughput with slow syncs and within 5% with fast ones, while bounding how long a light writer waits behind a heavy one. Hosts that care more about small writers' latency on fast storage can lower it with `openNodeSqliteDatabase(path, { groupCommitHoldMs })`.
+A smaller budget lets the light writers in sooner (worker p50 71 ms at 25 vs 201 ms at 100 on the runner's disk) but commits more often, which costs the heavy writers throughput as syncs get slower: with 5 ms syncs a 25 ms budget loses 24% of total throughput against 200 ms, a 50 ms budget 16%, and 100 ms 9%. The `pool-like` scenario, the shape of the reported workload, is insensitive to the budget at both sync speeds (95% and 97% lock utilization at every budget). The default therefore stays at 100 ms: within 9% of the best throughput with slow syncs and within 4% with fast ones, while light writers wait about 40% less than at 200 ms. Hosts that care more about small writers' latency on fast storage can lower it with `openNodeSqliteDatabase(path, { groupCommitHoldMs })`.
 
-The slow-sync shim, compiled with `gcc -shared -fPIC -O2 -o slow-fsync.so slow-fsync.c -ldl` and run as `SLOW_FSYNC_US=5000 LD_PRELOAD=$PWD/slow-fsync.so bun run scripts/perf/writer-queue/benchmark.ts --scenarios uncontended,pool-like,heavy-batches --holds 25,50,100,200 --repeats 3` (uncontended drops to 177 commits/s, confirming the delay applies):
+The slow-sync shim, compiled with `gcc -shared -fPIC -O2 -o slow-fsync.so slow-fsync.c -ldl` and run as `SLOW_FSYNC_US=5000 LD_PRELOAD=$PWD/slow-fsync.so bun run scripts/perf/writer-queue/benchmark.ts --scenarios uncontended,pool-like,heavy-batches --holds 25,50,100,200 --repeats 3` (uncontended drops to 179 commits/s, confirming the delay applies):
 
 ```c
 #define _GNU_SOURCE

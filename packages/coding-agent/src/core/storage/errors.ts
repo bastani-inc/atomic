@@ -343,6 +343,21 @@ export function isStorageWriterQueueUnusableError(value: unknown): value is Stor
 	);
 }
 
+/**
+ * Any storage error: an instance of `StorageError` or one of its subclasses, including a rehydrated one, or a copy of
+ * a storage error with a stable `code` from another module instance, recognized by its name and code.
+ */
+export function isStorageError(value: unknown): value is StorageError {
+	return (
+		value instanceof StorageError ||
+		isStorageConfigError(value) ||
+		isStorageWriteLockTimeoutError(value) ||
+		isStorageUnsupportedOperationError(value) ||
+		isStorageWriterQueueDegradedError(value) ||
+		isStorageWriterQueueUnusableError(value)
+	);
+}
+
 function causeOf(value: unknown): unknown {
 	return typeof value === "object" && value !== null ? (value as { readonly cause?: unknown }).cause : undefined;
 }
