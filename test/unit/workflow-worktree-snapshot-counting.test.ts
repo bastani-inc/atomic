@@ -3,25 +3,41 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { restoreWorktreeSnapshot, setWorktreeSnapshotGit } from "@bastani/atomic";
 import { Type } from "typebox";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterAll, beforeAll, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
+import {
+	listWorkflowSnapshotBoundaries,
+	type WorkflowSnapshotBoundary,
+} from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
+import { openSqlSnapshotJournal, type SqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
-let sandbox: GitSandbox;
-beforeEach(() => {
-	sandbox = new GitSandbox();
-});
-afterEach(() => sandbox.dispose());
+const BASE_SIZE = 128 * 1024;
 
-test("eight workflow boundaries share one base fetch and store deltas instead of eight bases (#4245)", async () => {
-	const baseSize = 128 * 1024;
-	const { clone } = await sandbox.remoteWithClone("repo", { "base.bin": Buffer.alloc(baseSize, 42) });
-	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+interface RecordedRun {
+	readonly status: string;
+	readonly captureReads: number;
+	readonly journal: SqlSnapshotJournal["journal"];
+	readonly boundaries: readonly WorkflowSnapshotBoundary[];
+}
+
+let sandbox: GitSandbox;
+let fixture: SqlSnapshotJournal | undefined;
+let backend: JournalDurableBackend | undefined;
+let recorded: RecordedRun;
+/** The work a hook or test started, awaited before cleanup so a timed-out body never holds files being removed. */
+let inFlight: Promise<unknown> = Promise.resolve();
+const track = <T>(work: Promise<T>): Promise<T> => {
+	inFlight = work;
+	return work;
+};
+
+async function recordEightBoundaries(): Promise<RecordedRun> {
+	const { clone } = await sandbox.remoteWithClone("repo", { "base.bin": Buffer.alloc(BASE_SIZE, 42) });
+	fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
 	const actual = fixture.journal;
 	let ancestryReads = 0;
 	let readsBeforeFirstCheckpoint = 0;
@@ -36,7 +52,7 @@ test("eight workflow boundaries share one base fetch and store deltas instead of
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 	});
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	backend = await JournalDurableBackend.open(journal, { runs: [] });
 	const definition = workflow({
 		name: "count-deltas",
 		description: "",
@@ -54,36 +70,72 @@ test("eight workflow boundaries share one base fetch and store deltas instead of
 		},
 	});
 	const result = await run(definition, {}, { cwd: clone, durableBackend: backend, store: createStore() });
-	assert.equal(result.status, "completed");
-	const captureReads = ancestryReads - readsBeforeFirstCheckpoint;
-	assert.ok(captureReads <= 1, `snapshot ancestry read the root journal ${captureReads} times for eight checkpoints`);
-	const boundaries = await listWorkflowSnapshotBoundaries(journal, result.runId);
-	assert.equal(boundaries.length, 8);
-	const hashes = await journal.snapshotBlobs.listBlobHashes();
-	const totalBytes = (await Promise.all(hashes.map((hash) => journal.snapshotBlobs.getBlob(hash)))).reduce<number>(
-		(sum, blob) => sum + (blob?.byteLength ?? 0),
-		0,
-	);
-	assert.equal(hashes.length, 8);
-	assert.ok(totalBytes < baseSize, `delta bytes ${totalBytes} should be smaller than one ${baseSize}-byte base`);
-	const trace = sandbox.path("git-trace.jsonl");
-	setWorktreeSnapshotGit(async () => ({
-		...sandbox.executable,
-		env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace },
-	}));
-	for (const boundary of boundaries) {
-		const restored = await restoreWorktreeSnapshot(boundary.snapshot, {
-			blobs: journal.snapshotBlobs,
-			storeDir: sandbox.path("host"),
-		});
-		assert.equal(readFileSync(join(restored, "small.txt"), "utf8"), `change ${boundaries.indexOf(boundary)}\n`);
-	}
-	const fetches = readFileSync(trace, "utf8")
-		.split("\n")
-		.filter(Boolean)
-		.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
-		.filter((event) => event.event === "start" && event.argv?.includes("fetch"));
-	assert.equal(fetches.length, 1);
-	await backend.close();
-	await fixture.database.close();
+	return {
+		status: result.status,
+		captureReads: ancestryReads - readsBeforeFirstCheckpoint,
+		journal,
+		boundaries: await listWorkflowSnapshotBoundaries(journal, result.runId),
+	};
+}
+
+describe("eight workflow boundaries on one base (#4245)", () => {
+	beforeAll(async () => {
+		sandbox = new GitSandbox();
+		recorded = await track(recordEightBoundaries());
+	});
+
+	afterAll(async () => {
+		await inFlight.catch(() => undefined);
+		await backend?.close();
+		await fixture?.database.close();
+		sandbox.dispose();
+	});
+
+	test("store deltas instead of eight bases, reading the root journal's ancestry once", async () => {
+		const { status, captureReads, journal, boundaries } = recorded;
+		assert.equal(status, "completed");
+		assert.ok(
+			captureReads <= 1,
+			`snapshot ancestry read the root journal ${captureReads} times for eight checkpoints`,
+		);
+		assert.equal(boundaries.length, 8);
+		const hashes = await journal.snapshotBlobs.listBlobHashes();
+		const totalBytes = (await Promise.all(hashes.map((hash) => journal.snapshotBlobs.getBlob(hash)))).reduce<number>(
+			(sum, blob) => sum + (blob?.byteLength ?? 0),
+			0,
+		);
+		assert.equal(hashes.length, 8);
+		assert.ok(totalBytes < BASE_SIZE, `delta bytes ${totalBytes} should be smaller than one ${BASE_SIZE}-byte base`);
+	});
+
+	test("restore all eight with one fetch of the base", async () => {
+		await track(
+			(async () => {
+				const { journal, boundaries } = recorded;
+				const trace = sandbox.path("git-trace.jsonl");
+				setWorktreeSnapshotGit(async () => ({
+					...sandbox.executable,
+					env: { ...sandbox.executable.env, GIT_TRACE2_EVENT: trace },
+				}));
+				for (const [index, boundary] of boundaries.entries()) {
+					const restored = await restoreWorktreeSnapshot(boundary.snapshot, {
+						blobs: journal.snapshotBlobs,
+						storeDir: sandbox.path("host"),
+					});
+					assert.equal(readFileSync(join(restored, "small.txt"), "utf8"), `change ${index}\n`);
+				}
+				const started = readFileSync(trace, "utf8")
+					.split("\n")
+					.filter(Boolean)
+					.map((line) => JSON.parse(line) as { event: string; argv?: string[] })
+					.filter((event) => event.event === "start");
+				assert.equal(started.filter((event) => event.argv?.includes("fetch")).length, 1);
+				assert.equal(
+					started.filter((event) => event.argv?.includes("apply")).length,
+					boundaries.length,
+					"each restore applies only the deltas after the newest tree the store already holds",
+				);
+			})(),
+		);
+	});
 });

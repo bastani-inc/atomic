@@ -178,10 +178,13 @@ export async function writeWorkingTree(
 		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
 	);
 	const ignoredInIndex = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
-	const seededIgnored = new Set(nulFields((await runGit(ignoredInIndex, git)).stdout));
-	const forceAdded = nulFields(
+	const stagedIgnored = nulFields(
 		(await runGit(ignoredInIndex, { cwd: root, signal: options.signal, neutral: options.neutral })).stdout,
-	).filter((path) => !seededIgnored.has(path));
+	);
+	const seededIgnored = new Set(
+		stagedIgnored.length === 0 ? [] : nulFields((await runGit(ignoredInIndex, git)).stdout),
+	);
+	const forceAdded = stagedIgnored.filter((path) => !seededIgnored.has(path));
 	const untracked = [
 		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
 			(path) => !path.endsWith("/"),
