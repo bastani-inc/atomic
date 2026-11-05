@@ -341,26 +341,20 @@ function materializedStageMatches(
 	return false;
 }
 
-/** Every stage of the invocation, matched against the prediction and the child boundary it nests under. */
+/** Every stage of the invocation, matched against the prediction; rows exist only while the root runs, so an unconfirmed prediction is always `predicted`. */
 function referencePredictionOutcome(
 	runs: ReturnType<Store["runs"]>,
 	rootRunId: string,
 	segments: readonly string[],
-): "predicted" | "confirmed" | "unused" {
+): "predicted" | "confirmed" {
 	const runById = new Map(runs.map((run) => [run.id, run]));
 	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
-	const boundary = segments.slice(0, -1);
-	const boundaryStatuses: string[] = [];
 	for (const run of runs.filter((candidate) => reciprocalWorkflowRootRunId(runById, candidate.id) === rootRunId)) {
 		const hops = hopsFor(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			if (stageMatchesPathPattern(segments, hops, [stage.id, stage.name])) return "confirmed";
-			if (boundary.length > 0 && stageMatchesPathPattern(boundary, hops, [stage.id, stage.name])) {
-				boundaryStatuses.push(stage.status);
-			}
 		}
 	}
-	const ended = (status: string) => status === "completed" || status === "failed" || status === "skipped";
-	return boundaryStatuses.length > 0 && boundaryStatuses.every(ended) ? "unused" : "predicted";
+	return "predicted";
 }

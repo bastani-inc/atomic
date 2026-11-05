@@ -299,18 +299,22 @@ describe("prediction outcomes at their edges (#4359)", () => {
 	const child = (id: string, parentRunId: string, parentStageId: string, stages: StageSnapshot[]) =>
 		rootRun({ id, parentRunId, parentStageId, rootRunId: "root", stages });
 
-	test("a nested prediction is unused once its innermost boundary ended, even while an outer one runs", () => {
+	test("a nested prediction stays pending while the root runs, even once its innermost boundary ended", () => {
 		const runs = [
 			rootRun({ stages: [stage("workflow:a", { status: "running" })] }),
 			child("child-a", "root", "workflow:a-id", [stage("workflow:b", { status: "completed" })]),
 			child("child-b", "child-a", "workflow:b-id", [stage("draft", { status: "completed" })]),
 		];
 		const hopsOf = createWorkflowBoundaryHopsResolver(runs);
-		assert.equal(stagePredictionOutcome("workflow:a/workflow:b/extra", runs[0]!, runs, hopsOf), "unused");
+		assert.equal(stagePredictionOutcome("workflow:a/workflow:b/extra", runs[0]!, runs, hopsOf), "predicted");
+		assert.equal(
+			stagePredictionOutcome("workflow:a/workflow:b/extra", { status: "completed" }, runs, hopsOf),
+			"unused",
+		);
 		assert.equal(stagePredictionOutcome("workflow:a/workflow:b/draft", runs[0]!, runs, hopsOf), "confirmed");
 	});
 
-	test("one open boundary keeps a prediction pending; runs without lineage are skipped", () => {
+	test("a prediction stays pending beside open and ended boundaries; runs without lineage are skipped", () => {
 		const runs = [
 			rootRun({
 				stages: [

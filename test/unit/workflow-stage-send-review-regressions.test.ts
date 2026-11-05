@@ -53,9 +53,12 @@ function launch(knownPaths: readonly string[], probabilities: Readonly<Record<st
 	return { store, requests, classify, settle };
 }
 
-for (const pattern of ["release-*", "**/release", "workflow:*/release"]) {
+for (const [pattern, typo] of [
+	["release-*", "release-typo"],
+	["**/release", "typo-child/release"],
+	["workflow:*/release", "workflow:typo/release"],
+]) {
 	test(`a positive ${pattern} send judgment does not predict every matching literal (#4359)`, async () => {
-		const typo = pattern.replace("*", "typo").replace("*", "child");
 		const { settle, classify, store, requests } = launch([], { [pattern]: 0.95 });
 		assert.deepEqual(await settle(pattern), { prediction: "predicted" });
 		assert.deepEqual(classify(typo), { prediction: "unknown" });

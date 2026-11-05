@@ -314,14 +314,13 @@ export function stagePathsOverlap(targetSegments: readonly string[], path: strin
 // Outcomes
 // ---------------------------------------------------------------------------
 
-/** `confirmed`: a stage matching the prediction started; `unused`: none did and none can any more. */
+/** `confirmed`: a stage matching the prediction started; `unused`: none did and the root run ended. */
 export type StagePredictionOutcome = "predicted" | "confirmed" | "unused";
 
-const ENDED_STAGE_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "skipped"]);
-
 /**
- * Whether a predicted path came true. A prediction is `unused` once the root run ended without a matching stage, or
- * once every materialized child boundary it nests under ended without one.
+ * Whether a predicted path came true. A prediction stays `predicted` until a matching stage starts or the root run
+ * ends: repeated `ctx.workflow` calls can share a boundary name, so an ended child boundary does not rule out a later
+ * call starting the stage.
  */
 export function stagePredictionOutcome(
 	path: string,
@@ -330,22 +329,14 @@ export function stagePredictionOutcome(
 	hopsOf: (runId: string) => readonly WorkflowBoundaryHop[] | undefined,
 ): StagePredictionOutcome {
 	const segments = splitStagePathSegments(path);
-	const boundary = segments.slice(0, -1);
-	let boundaryStarted = false;
-	let boundaryOpen = false;
 	for (const run of invocationRuns) {
 		const hops = hopsOf(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
-			const spellings = [stage.id, stage.name];
-			if (stageMatchesPathPattern(segments, hops, spellings)) return "confirmed";
-			if (!stageMatchesPathPattern(boundary, hops, spellings)) continue;
-			boundaryStarted = true;
-			if (!ENDED_STAGE_STATUSES.has(stage.status)) boundaryOpen = true;
+			if (stageMatchesPathPattern(segments, hops, [stage.id, stage.name])) return "confirmed";
 		}
 	}
-	if (isTerminalRunStatus(rootRun.status)) return "unused";
-	return boundaryStarted && !boundaryOpen ? "unused" : "predicted";
+	return isTerminalRunStatus(rootRun.status) ? "unused" : "predicted";
 }
 
 /** A root run's predictions with what became of each, as workflow status reports them. */

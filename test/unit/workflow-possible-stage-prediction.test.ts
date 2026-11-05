@@ -645,24 +645,67 @@ describe("prediction outcomes (#4359)", () => {
 		assert.equal(outcome("workflow:child-a", runs), "confirmed");
 	});
 
-	test("a prediction is unused once the root ended or every boundary it nests under ended", () => {
+	test("a prediction is unused only once the root ended, however many boundaries it nests under ended", () => {
 		assert.equal(outcome("review-1", [rootRun({ status: "completed" })]), "unused");
 		assert.equal(outcome("review-1", [rootRun()]), "predicted");
 		const ended = [
 			rootRun({ stages: [stage("workflow:child-a", { status: "completed" })] }),
 			child({ stages: [stage("draft", { status: "completed" })] }),
 		];
-		assert.equal(outcome("workflow:child-a/extra", ended), "unused");
+		assert.equal(outcome("workflow:child-a/extra", ended), "predicted");
+		assert.equal(outcome("workflow:child-b/extra", ended), "predicted");
 		const open = [
 			rootRun({ stages: [stage("workflow:child-a", { status: "running" })] }),
 			child({ stages: [stage("draft")] }),
 		];
 		assert.equal(outcome("workflow:child-a/extra", open), "predicted");
-		assert.equal(outcome("workflow:child-b/extra", ended), "predicted");
-		const skipped = [rootRun({ stages: [stage("workflow:child-a", { status: "skipped" })] })];
-		assert.equal(outcome("workflow:child-a/extra", skipped), "unused");
-		const failed = [rootRun({ stages: [stage("workflow:child-a", { status: "failed" })] })];
-		assert.equal(outcome("workflow:child-a/extra", failed), "unused");
+		for (const status of ["skipped", "failed"] as const) {
+			const boundary = [rootRun({ stages: [stage("workflow:child-a", { status })] })];
+			assert.equal(outcome("workflow:child-a/extra", boundary), "predicted");
+		}
+		for (const status of ["completed", "failed", "cancelled"] as const) {
+			const rootEnded = [rootRun({ status, stages: ended[0]!.stages })];
+			assert.equal(outcome("workflow:child-a/extra", rootEnded), "unused");
+		}
+	});
+
+	test("status keeps a name shared by repeated child workflow calls pending until a later call or the root ending", () => {
+		const prediction = {
+			status: "ready" as const,
+			entries: [{ path: "workflow:child-a/extra", probability: 0.9, source: "scan" as const }],
+			targets: {},
+		};
+		const link = (runId: string) => ({ workflowChildRun: { alias: "child-a", workflow: "child-a", runId } });
+		const firstCallEnded = [
+			rootRun({
+				stagePredictions: prediction,
+				stages: [stage("workflow:child-a", { status: "completed", ...link("child") })],
+			}),
+			child({ stages: [stage("draft", { status: "completed" })] }),
+		];
+		const outcomes = (runs: readonly RunSnapshot[]) =>
+			stagePredictionStatus(runs[0]!, runs)?.entries.map((entry) => entry.outcome);
+		assert.deepEqual(outcomes(firstCallEnded), ["predicted"]);
+
+		const secondCall = [
+			rootRun({
+				stagePredictions: prediction,
+				stages: [
+					stage("workflow:child-a", { status: "completed", ...link("child") }),
+					stage("workflow:child-a", { id: "workflow:child-a-2-id", status: "running", ...link("child-2") }),
+				],
+			}),
+			firstCallEnded[1]!,
+			child({
+				id: "child-2",
+				parentStageId: "workflow:child-a-2-id",
+				stages: [stage("extra", { status: "running" })],
+			}),
+		];
+		assert.deepEqual(outcomes(secondCall), ["confirmed"]);
+
+		const rootEnded = [{ ...firstCallEnded[0]!, status: "completed" as const }, firstCallEnded[1]!];
+		assert.deepEqual(outcomes(rootEnded), ["unused"]);
 	});
 
 	test("status lists predictions with outcomes and the fallback reason", () => {
