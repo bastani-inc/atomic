@@ -80,6 +80,8 @@ describe("RPC background compaction errors (#4330)", () => {
 		});
 		const response = createRpcErrorResponse("t", "set_background_compaction_threshold", error.message, error);
 		assert.ok(!response.success && response.errorCode === "background_compaction");
+		assert.equal(response.type, "response");
+		assert.equal(response.id, "t");
 		assert.equal(response.error, error.message);
 		assert.deepEqual(response.errorDetails, serializeBackgroundCompactionError(error));
 		assert.deepEqual(JSON.parse(JSON.stringify(response)), response);
@@ -132,6 +134,28 @@ describe("RPC background compaction errors (#4330)", () => {
 		assert.equal(error.code, "planner-failed");
 	});
 
+	test("other errors keep the plain error response", () => {
+		const response = createRpcErrorResponse("x", "set_model", "Model not found", new Error("Model not found"));
+		assert.deepEqual(response, {
+			id: "x",
+			type: "response",
+			command: "set_model",
+			success: false,
+			error: "Model not found",
+		});
+		const envelope = serializeBackgroundCompactionError(
+			new BackgroundCompactionConfigError({ source: "sdk", field: "f", reason: "out-of-range" }),
+		);
+		const untagged = decoded({
+			type: "response",
+			command: "set_model",
+			success: false,
+			error: "Model not found",
+			errorDetails: envelope,
+		} as never);
+		assert.equal(untagged.constructor, Error, "details without the error code are not rehydrated");
+	});
+
 	test("a malformed envelope falls back to a plain error with the response message", () => {
 		const error = decoded({
 			type: "response",
@@ -151,6 +175,11 @@ describe("RPC background compaction errors (#4330)", () => {
 		);
 		assert.equal(isSerializedBackgroundCompactionError(valid), true);
 		assert.equal(
+			isSerializedBackgroundCompactionError({ ...valid, fields: { attempt: 2, resultEntryId: "r", retried: true } }),
+			true,
+			"string, number and boolean fields",
+		);
+		assert.equal(
 			isSerializedBackgroundCompactionError({ ...valid, cause: { name: "Error", message: "disk full" } }),
 			true,
 		);
@@ -166,6 +195,8 @@ describe("RPC background compaction errors (#4330)", () => {
 			{ ...valid, phase: "later" },
 			{ ...valid, fields: [] },
 			{ ...valid, fields: { nested: {} } },
+			{ ...valid, fields: { ok: "x", nested: {} } },
+			{ ...valid, cause: { name: 1, message: "m" } },
 			{ ...valid, cause: "disk full" },
 			{ ...valid, cause: { name: "Error" } },
 			{ ...valid, cause: { name: "Error", message: "m", cause: 3 } },
@@ -173,8 +204,23 @@ describe("RPC background compaction errors (#4330)", () => {
 		]) {
 			assert.equal(isSerializedBackgroundCompactionError(broken), false, JSON.stringify(broken));
 		}
-		let chain: object = { name: "Error", message: "root" };
-		for (let depth = 0; depth < 9; depth++) chain = { name: "Error", message: `wrap ${depth}`, cause: chain };
-		assert.equal(isSerializedBackgroundCompactionError({ ...valid, cause: chain }), false, "too deep a chain");
+		const chainOf = (causes: number): object | undefined => {
+			let chain: object | undefined;
+			for (let depth = 0; depth < causes; depth++)
+				chain = { name: "Error", message: `cause ${depth}`, ...(chain ? { cause: chain } : {}) };
+			return chain;
+		};
+		assert.equal(
+			isSerializedBackgroundCompactionError({ ...valid, cause: chainOf(7) }),
+			true,
+			"the longest chain serialized",
+		);
+		assert.equal(isSerializedBackgroundCompactionError({ ...valid, cause: chainOf(8) }), false, "one cause too many");
+		assert.equal(
+			isSerializedBackgroundCompactionError({ ...valid, cause: { ...valid, cause: chainOf(6) } }),
+			true,
+			"an envelope cause counts toward the depth",
+		);
+		assert.equal(isSerializedBackgroundCompactionError({ ...valid, cause: { ...valid, cause: chainOf(7) } }), false);
 	});
 });

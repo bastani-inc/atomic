@@ -2118,6 +2118,23 @@ describe("background compaction while it is off (#4330)", () => {
 		assert.equal(wakes.length, 1);
 	});
 
+	test("turning background compaction off never announces a saved result", async () => {
+		const planner = new Planner();
+		const wakes: CompactionReadyWake[] = [];
+		const harness = await createBackgroundHarness(TRIGGER, planner, {
+			compactionWake: { compactionReady: (wake) => wakes.push(wake) },
+		});
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		wakes.splice(0);
+		harness.session._backgroundCompaction.announcedResultEntryId = undefined;
+		harness.session.setBackgroundCompactionEnabled(false);
+		assert.deepEqual(wakes, []);
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
 	test("turning background compaction on with no saved result announces nothing", async () => {
 		const planner = new Planner(true);
 		const wakes: CompactionReadyWake[] = [];
