@@ -18,7 +18,6 @@ import {
 	type GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
-	isWorkspaceError,
 	isWorkspaceSnapshotError,
 	WorkspaceDriftError,
 	type WorkspaceError,
@@ -232,7 +231,8 @@ export async function resumeSessionWorktree(
 			signal: options.signal,
 		});
 	} catch (error) {
-		if (!isWorkspaceError(error)) throw error;
+		options.signal?.throwIfAborted();
+		if (!(error instanceof Error)) throw error;
 		throw new WorkspaceDriftError(
 			{
 				root: drift.root,
