@@ -223,6 +223,12 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly settingsManager?: never;
 	readonly context?: WorkflowContextMode;
 	readonly forkFromSessionId?: string;
+	/**
+	 * With `context: "fork"` and `forkFromSessionId`, start the stage session from this exact entry of the
+	 * source session: the new session holds the branch from the session's root to the entry. A missing entry
+	 * fails stage setup with `ForkEntryNotFoundError`.
+	 */
+	readonly forkFromEntryId?: string;
 	readonly gitWorktreeDir?: string;
 	readonly baseBranch?: string;
 	/**

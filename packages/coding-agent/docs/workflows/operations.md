@@ -187,6 +187,7 @@ Graph node cards show each model stage's effective model and thinking level abov
 /workflow status --all
 /workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message] [--accept-entry-changes]
+/workflow fork <run-id> [--from <stage-path>]
 /workflows [full-workflow-uuid]
 /workflow reload
 ```
@@ -202,6 +203,7 @@ Common controls:
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
 /workflow resume <run-id> --accept-entry-changes  # resume after editing a local worker definition's entry module
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
+/workflow fork <run-id> --from <stage> # retry from a stage in a new run; the source run is unchanged
 /workflows [run-id]                    # retained alias for /workflow resume (history picker)
 ```
 
@@ -627,7 +629,7 @@ Only valid current-format journal records are selectable. Unsupported or malform
 
 Selecting a paused, resumable failed, blocked, or crash-recovery target from the current project re-dispatches the workflow with its cached inputs and the **original workflow id**. Every nested invocation validates and reuses its durable boundary and child identity before dispatch. Previously completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child boundaries replay from checkpoints instead of executing again; only incomplete work continues.
 
-Workflow resume is project-scoped. Naming a resumable run from another project in an interactive `/workflow resume <id>` command asks: `Workflow run found in different project: <cwd>. Fork it into the current directory?` Choosing Yes creates a new run ID in the current directory, copies saved checkpoints and stage conversation history, and continues incomplete work there. Completed side effects replay from their saved results; the source run remains unchanged. Choosing No cancels without creating a run. The workflow definition must remain available in the current or original project. SDK, workflow-tool, and headless calls do not prompt: use the interactive command to fork, or reopen the original project to resume the original run.
+Workflow resume is project-scoped. Naming a resumable run from another project in an interactive `/workflow resume <id>` command asks: `Workflow run found in different project: <cwd>. Fork it into the current directory?` Choosing Yes forks the whole run into the current directory with the same mechanism as `/workflow fork`: a new run ID copies saved checkpoints and stage conversation history in one step and continues incomplete work there. Completed side effects replay from their saved results; the source run remains unchanged. Choosing No cancels without creating a run. The workflow definition must remain available in the current or original project. SDK, workflow-tool, and headless resume calls do not prompt: use `/workflow fork`, the workflow tool's `fork` action or `forkRun` instead, or reopen the original project to resume the original run.
 
 The fork inherits the source run's label and saved progress summary. When summaries are enabled and a saved summary exists, the main chat receives it before the fork resumes, identified by the new run ID and `forked from <source run id>`. Declining the fork adds no summary context.
 
@@ -655,6 +657,25 @@ The non-interactive `workflow` surface reads the journal for explicit IDs. `resu
 Targets other than full UUIDs or 8-hex prefixes are rejected before catalog lookup. Durable read-only prefix inspection includes actively running roots owned by other sessions, without claiming or resuming them. Once resolved, subsequent stage and transcript inspection uses the canonical root UUID, even when a nested child shares its prefix. Completed or failed roots with valid checkpoints remain inspectable when retained conversations are unavailable; invalid transcript paths are stripped while the graph remains visible.
 
 Validation uses the final retained transcript for a repeated stage replay key, so an obsolete superseded checkpoint path does not hide an otherwise valid read-only graph. Reopening inspection refreshes a changed authoritative retained-chat handle. Session-cache-only rows are hidden because the backend is authoritative. Checkpointed non-resumable failed roots appear only in read-only history; cancelled, killed, blocked non-resumable, failed roots without saved progress, and other terminal non-success states are never added. Normal `/resume`, `atomic -r`, and `--continue` behavior for internal workflow stage sessions is unchanged.
+
+### `/workflow fork` — retry a run from a stage
+
+```text
+/workflow fork <run-id>                               # copy the whole run into a new run here and continue it
+/workflow fork <run-id> --from <stage-path>           # re-run from that stage; earlier work replays
+```
+
+`/workflow fork` creates a new run in the current directory from a saved run, from any project, and starts it in the background. The source run is never changed, so you can fork the same run several times. With `--from`, the new run replays every completed `ctx.tool` call, prompt answer and stage that finished before that stage, then runs the stage and everything after it again. Prompts asked at or after the stage are asked again. Name a stage inside a nested workflow with a dot path, such as `implement-api.review-2`. The workflow tool's `fork` action does the same, and also accepts replacement `inputs` and `carryMessages: "all"` to keep Intercom messages and prompt answers recorded after the stage.
+
+A fork checks everything before it writes anything. When a check fails, nothing is created (a write that fails on a shared journal is the one exception, below) and the command reports a typed error with what to do next:
+
+- An unknown stage lists up to 10 stages you can fork from.
+- A run that is executing, being resumed or being forked is busy; pause or quit it (or wait), then fork again.
+- A workflow definition that is missing, renamed, or no longer accepts the run's inputs is reported as a definition mismatch; pass replacement inputs or restore the definition.
+- A run that is not in this node's journal is reported with the journal it searched; when that journal is local-only, the error says so and names the command that joins shared storage.
+- On a shared journal, a rejected write of the fork is not proof that nothing was written: the reply can be lost while the commit lands. If reading the fork back confirms it, the fork goes on. If it cannot be confirmed, the copied sessions are kept and the error names the fork run: once the journal is reachable, inspect that exact run with `/workflow status <fork-run-id>` and resume it with `/workflow resume <fork-run-id>` if it exists. Do not fork the source again before that check.
+
+`/workflow status <fork-run-id>` shows `forkedFrom` with the source run ID and stage. See [`forkRun`](/workflows/api-reference#forkrun-runid-options) for the SDK equivalent and the full error reference.
 
 ### Recovering an uncaught tool abort
 

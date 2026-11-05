@@ -1,6 +1,17 @@
 import type { ProviderRateLimitObservation } from "@bastani/atomic";
-import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
-import type { PoolControl, PoolWork, PoolWorkDescriptor } from "../durable/journal/sql-pool-queue.js";
+import {
+	isJournalStoreError,
+	rehydrateJournalStoreError,
+	type SerializedJournalStoreError,
+	serializeJournalStoreError,
+} from "@bastani/atomic/storage";
+import {
+	isForkError,
+	rehydrateForkError,
+	type SerializedForkError,
+	serializeForkError,
+} from "../durable/fork-errors.js";
+import type { PoolControl, PoolSessionClaim, PoolWork, PoolWorkDescriptor } from "../durable/journal/sql-pool-queue.js";
 import type { PoolUsage } from "../durable/journal/sql-pool-usage.js";
 import type { Lease } from "../durable/journal/types.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
@@ -104,6 +115,8 @@ export type CoordinatorCommandBody =
 			readonly rootRun?: PoolRootProjection;
 			/** The root's resume accepted edited entry modules: see `PoolEnqueueOptions` (#4200). */
 			readonly acceptEntryChanges?: boolean;
+			/** A forked root's stage sessions under the work's scope: see `PoolEnqueueOptions` (#4321). */
+			readonly claimSessions?: readonly PoolSessionClaim[];
 	  }
 	| ({ readonly kind: "transport"; readonly request: number } & DeliveryPayload)
 	| { readonly kind: "undeliverable"; readonly payload: Record<string, unknown> }
@@ -165,6 +178,31 @@ export interface CoordinatorReply {
 	readonly error?: string;
 	/** A journal store failure, serialized so the root rehydrates it into its typed class. */
 	readonly failure?: SerializedJournalStoreError;
+	/** A failure of the fork family, in its wire form, so the root rejects with the same class (#4321). */
+	readonly forkError?: SerializedForkError;
+}
+
+/**
+ * The reply to a command that failed: a journal store or fork error crosses as its wire form, any other failure as its
+ * message.
+ */
+export function failedCoordinatorReply(id: number, error: Error): CoordinatorReply {
+	return {
+		kind: "reply",
+		id,
+		error: error.message,
+		...(isJournalStoreError(error) ? { failure: serializeJournalStoreError(error) } : {}),
+		...(isForkError(error) ? { forkError: serializeForkError(error) } : {}),
+	};
+}
+
+/**
+ * The error a failed reply stands for on the root: the journal store or fork error it carried, as its own class, or its
+ * message.
+ */
+export function coordinatorReplyError(reply: Pick<CoordinatorReply, "error" | "failure" | "forkError">): Error {
+	if (reply.failure !== undefined) return rehydrateJournalStoreError(reply.failure);
+	return reply.forkError === undefined ? new Error(reply.error) : rehydrateForkError(reply.forkError);
 }
 
 /** An attempt's latest publication as its worker sent it: every run it holds, in full. */

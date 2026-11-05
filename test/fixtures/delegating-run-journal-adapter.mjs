@@ -1,5 +1,6 @@
 // A run-journal storage adapter that is not a SqlRunJournal as far as the pool can tell: it hands out an object with
-// only the public RunJournal members, each delegating to a SQLite file at `options.path`. Every process that opens it
+// only the public RunJournal members, including the optional atomic `createRunWithEvents` that `forkRun` requires,
+// each delegating to a SQLite file at `options.path`. Every process that opens it
 // reaches the same file, which stands in for a remote database (libSQL, Turso) that all of a pool's processes share.
 //
 // `options.faults` names a JSON file `{ "failAppends": n }`: the next n `append` calls throw, as an outage would.
@@ -19,6 +20,7 @@ const DELEGATED = [
 	"readKey",
 	"deleteOwnedRun",
 	"deleteRun",
+	"createRunWithEvents",
 ];
 
 function fault(file) {

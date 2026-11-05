@@ -5,9 +5,11 @@ import {
 	JsonlSessionStore,
 	type NewSessionOptions,
 	resolveSessionStore,
+	type SessionEntry,
 	SessionManager,
 	type SessionStore,
 } from "@bastani/atomic";
+import { ForkEntryNotFoundError } from "../durable/fork-errors.js";
 
 export async function stageSessionStore(
 	options: Pick<CreateAgentSessionOptions, "sessionManager" | "cwd" | "agentDir" | "settingsManager"> & {
@@ -26,14 +28,23 @@ export async function stageSessionStore(
 	});
 }
 
+/**
+ * A new session copied from `sessionId`: every entry, or with `entryId` the branch from the session's root to
+ * that exact entry. A missing entry throws `ForkEntryNotFoundError` before anything is written.
+ */
 export async function forkStageSession(
 	store: SessionStore,
 	sessionId: string,
 	cwd: string,
 	options: NewSessionOptions,
 	destination: SessionStore = store,
+	entryId?: string,
 ): Promise<SessionManager> {
 	const source = await store.load(sessionId);
+	const entries =
+		entryId === undefined
+			? source.entries
+			: sessionBranchTo(source.entries, entryId, { sessionId, stageName: options.workflow?.stageName });
 	const id = randomUUID();
 	await destination.create(
 		{
@@ -45,7 +56,7 @@ export async function forkStageSession(
 			...(options.internal === true ? { internal: true } : {}),
 			...(options.workflow === undefined ? {} : { workflow: options.workflow }),
 		},
-		source.entries,
+		entries,
 	);
 	return SessionManager.open(destination, id, cwd);
 }
@@ -76,4 +87,20 @@ export async function migrateLegacyStageSession(
 	} finally {
 		await legacy.close();
 	}
+}
+
+/** The branch of a session from its root to `entryId`, as a fork at that exact entry keeps it. */
+export function sessionBranchTo(
+	entries: readonly SessionEntry[],
+	entryId: string,
+	context: { readonly sessionId: string; readonly stageName?: string },
+): SessionEntry[] {
+	const byId = new Map(entries.map((entry) => [entry.id, entry]));
+	if (!byId.has(entryId)) throw new ForkEntryNotFoundError({ ...context, entryId });
+	const branch: SessionEntry[] = [];
+	for (let current = byId.get(entryId); current !== undefined; ) {
+		branch.push(current);
+		current = current.parentId === null ? undefined : byId.get(current.parentId);
+	}
+	return branch.reverse();
 }

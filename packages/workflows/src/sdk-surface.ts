@@ -127,6 +127,8 @@ export type {
 	WorkflowProvidedInputsFromSchemas,
 } from "./authoring/workflow.js";
 export { workflow } from "./authoring/workflow.js";
+export * from "./durable/fork-errors.js";
+export type { ForkCarryMessages, ForkPoint } from "./durable/fork-run.js";
 export type {
 	ObserveRunJournalRead,
 	OpenRunJournal,
@@ -139,6 +141,7 @@ export type { RunJournalOption, RunJournalSettings } from "./durable/journal/res
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
+export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "./durable/types.js";
 export {
 	listWorkflowSnapshotBoundaries,
 	type WorkflowSnapshotBoundary,
@@ -161,6 +164,13 @@ export {
 	readinessVerdict,
 	type StageReadinessDecision,
 } from "./runs/foreground/readiness-decision.js";
+export type {
+	ForkedRun,
+	ForkRunOptions,
+	ListForkPointsOptions,
+	WorkflowRunEvent,
+} from "./runs/foreground/sdk-fork.js";
+export { forkRun, listForkPoints } from "./runs/foreground/sdk-fork.js";
 export { run } from "./runs/foreground/sdk-run.js";
 export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage-runner.js";
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";

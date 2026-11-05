@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, test } from "vitest";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import {
 	createCheckpointIdGenerator,
 	createToolPrimitive,
@@ -482,4 +483,36 @@ describe("ctx.tool primitive (durable caching)", () => {
 		assert.equal(result, "done");
 		assert.equal(asyncBackend.persisted, true);
 	});
+});
+
+test("handles, metadata and run snapshots name lineage and bindings only when a run has them (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const registration = { name: "lineage", inputs: {}, status: "paused" as const, createdAt: 1 };
+	await backend.commitWorkflowRegistration({ ...registration, workflowId: "wf-plain" });
+	const plain = backend.getWorkflow("wf-plain")!;
+	for (const key of ["forkedFrom", "workspace", "snapshot"]) {
+		assert.equal(Object.hasOwn(plain, key), false, key);
+		assert.equal(Object.hasOwn(backend.toMetadata("wf-plain")!, key), false, key);
+	}
+	assert.equal(Object.hasOwn(durableWorkflowRunSnapshots(backend, plain)[0]!, "forkedFrom"), false);
+
+	const forkedFrom = { runId: "wf-plain", stagePath: "plan" };
+	const snapshot = { remotes: ["origin"], head: "abc123", tree: "def456", envHash: "env" };
+	const workspace = { ...snapshot, repository: "atomic", branch: "main" };
+	await backend.commitWorkflowRegistration({
+		...registration,
+		workflowId: "wf-fork",
+		forkedFrom,
+		workspace,
+		snapshot,
+	});
+	await backend.commitWorkflowRegistration({ ...registration, workflowId: "wf-fork", status: "running" });
+	const fork = backend.getWorkflow("wf-fork")!;
+	assert.equal(fork.status, "running");
+	assert.deepEqual([fork.forkedFrom, fork.workspace, fork.snapshot], [forkedFrom, workspace, snapshot]);
+	const metadata = backend.toMetadata("wf-fork")!;
+	assert.deepEqual([metadata.forkedFrom, metadata.workspace, metadata.snapshot], [forkedFrom, workspace, snapshot]);
+	const root = durableWorkflowRunSnapshots(backend, fork)[0]!;
+	assert.deepEqual(root.forkedFrom, forkedFrom);
+	assert.notEqual(root.forkedFrom, fork.forkedFrom, "the snapshot owns a copy of the lineage");
 });

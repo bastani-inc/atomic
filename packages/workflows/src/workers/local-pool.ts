@@ -14,7 +14,7 @@ import {
 	type QuestionnaireResult,
 	reportDebug,
 } from "@bastani/atomic";
-import { JournalShardUnavailableError, rehydrateJournalStoreError } from "@bastani/atomic/storage";
+import { JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { createTurnSlicer, type JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { PoolRemoteJournal } from "../durable/journal/pool-remote-journal.js";
@@ -22,6 +22,7 @@ import { rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import {
 	openSqlPoolQueue,
 	type PoolControl,
+	type PoolSessionClaim,
 	type PoolWork,
 	type SqlPoolQueue,
 	STALE_WORK_LEASE,
@@ -63,6 +64,7 @@ import {
 	type CoordinatorNotice,
 	type CoordinatorPort,
 	type CoordinatorRequestBody,
+	coordinatorReplyError,
 	POOL_COORDINATOR_ROLE,
 	POOL_SUMMARY_INTERVAL_MS,
 	type PoolActivityUpdate,
@@ -83,7 +85,7 @@ import {
 	promptIdentity,
 	questionIdentity,
 } from "./held-prompt-answers.js";
-import { hostWorkerBindings } from "./host-options.js";
+import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import {
@@ -273,6 +275,26 @@ function launchCoordinatorInProcess(): Coordinator {
  */
 const COMPLETION_TURN_BUDGET_MS = 4;
 const completeInTurns = createTurnSlicer(2, COMPLETION_TURN_BUDGET_MS);
+
+/**
+ * The stage sessions a forked root recorded under a child's scope, which the child's work takes over when it is queued
+ * (#4321): the fork copied them into the pool tables before that work existed. Only a fork's root claims sessions.
+ */
+async function forkSessionClaims(
+	backend: JournalDurableBackend,
+	root: string,
+	scope: string,
+): Promise<{ readonly claimSessions?: readonly PoolSessionClaim[] }> {
+	if (backend.getWorkflow(root)?.forkedFrom === undefined) return {};
+	const claims = new Map<string, PoolSessionClaim>();
+	for (const checkpoint of await backend.readCheckpoints(root, scope)) {
+		const runId = checkpoint.kind === "stage" ? checkpoint.topology?.run?.runId : undefined;
+		if (checkpoint.kind !== "stage" || checkpoint.sessionId === undefined || runId === undefined) continue;
+		if (!checkpoint.replayKey.startsWith(`${scope}:`)) continue;
+		claims.set(checkpoint.sessionId, { sessionId: checkpoint.sessionId, replayKey: checkpoint.replayKey, runId });
+	}
+	return claims.size === 0 ? {} : { claimSessions: [...claims.values()] };
+}
 
 export class LocalWorkerPool {
 	private readonly pids = new Set<number>();
@@ -546,21 +568,7 @@ export class LocalWorkerPool {
 	}
 	validateOptions(options: RunOpts): void {
 		if (options[hostWorkerBindings]) return;
-		for (const key of [
-			"adapters",
-			"persistence",
-			"mcp",
-			"overlay",
-			"models",
-			"registry",
-			"toolAdmissionBoundary",
-			"onStageStart",
-			"onStageEnd",
-			"onStageSession",
-			"onStageSessionEvent",
-			"confirmStageReadiness",
-			"rootBudget",
-		] as const)
+		for (const key of PROCESS_BOUND_RUN_OPTIONS)
 			if (options[key] !== undefined) throw new Error(`Local workers refuse process-bound override: ${key}`);
 	}
 	private async start(root: string, promptNodes: boolean): Promise<void> {
@@ -1285,6 +1293,7 @@ export class LocalWorkerPool {
 			},
 			boundary,
 			...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
+			...(await forkSessionClaims(this.backend, root, options.durableScope.scopePrefix)),
 		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
 		this.works.set(work.id, work);
@@ -1452,8 +1461,7 @@ export class LocalWorkerPool {
 			case "reply": {
 				const pending = this.commands.get(event.id);
 				this.commands.delete(event.id);
-				if (event.failure !== undefined) pending?.reject(rehydrateJournalStoreError(event.failure));
-				else if (event.error !== undefined) pending?.reject(new Error(event.error));
+				if (event.failure !== undefined || event.error !== undefined) pending?.reject(coordinatorReplyError(event));
 				else pending?.resolve(event.value);
 				return;
 			}

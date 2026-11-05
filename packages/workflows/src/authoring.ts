@@ -252,7 +252,9 @@ export type {
 	WorkflowWorktreeInputBinding,
 } from "./shared/authoring-contract.js";
 
+import type { RunJournalOption } from "./durable/journal/resolution.js";
 import type * as AuthoringContract from "./shared/authoring-contract.js";
+import type { WorkflowForkedFrom } from "./shared/fork-lineage.js";
 import type {
 	AuthoredWorkflowSpec as SharedAuthoredWorkflowSpec,
 	WorkflowInputsFromSchemas,
@@ -395,6 +397,7 @@ export {
 	WorkflowInfrastructureError,
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
+export * from "./durable/fork-errors.js";
 export {
 	READINESS_DECISION_THRESHOLDS,
 	type ReadinessDecisionThresholds,
@@ -405,6 +408,11 @@ export {
 	type StageReadinessDecision,
 } from "./runs/foreground/readiness-decision.js";
 export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
+export type {
+	DurableRepositoryBinding,
+	DurableWorkspaceBinding,
+	WorkflowForkedFrom,
+} from "./shared/fork-lineage.js";
 export type {
 	WorkflowAdmissionConfigErrorCode,
 	WorkflowAdmissionErrorCode,
@@ -433,6 +441,84 @@ export {
 	LocalWorkerPoolError,
 } from "./workers/local-worker-pool-errors.js";
 export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
+
+/** Which Intercom messages and prompt answers a fork carries: those before the fork point (default) or all. */
+export type ForkCarryMessages = "before" | "all";
+
+/** A completed stage a run can be forked from. */
+export interface ForkPoint {
+	/** Dot path of the stage: enclosing nested-workflow stage names, then the stage name. */
+	readonly stagePath: string;
+	/** Agent session the stage ran in, when it ran one. */
+	readonly sessionId?: string;
+	/** Last entry of that session, for `forkFromEntryId`. */
+	readonly entryId?: string;
+	readonly completedAt: number;
+}
+
+/** One notification of a run, as `run()` reports it through its `on*` callbacks. */
+export type WorkflowRunEvent =
+	| { readonly type: "run_start"; readonly run: RunSnapshot }
+	| { readonly type: "stage_start"; readonly runId: string; readonly stage: StageSnapshot }
+	| { readonly type: "stage_end"; readonly runId: string; readonly stage: StageSnapshot }
+	| {
+			readonly type: "stage_session_event";
+			readonly runId: string;
+			readonly stageId: string;
+			readonly event: import("@bastani/atomic").AgentSessionEvent;
+	  }
+	| {
+			readonly type: "run_end";
+			readonly runId: string;
+			readonly status: RunStatus;
+			readonly result?: WorkflowOutputValues;
+			readonly error?: string;
+			readonly exitReason?: string;
+	  };
+
+export interface ForkRunOptions<TDefinition = AnyWorkflowDefinition>
+	extends Omit<RunOpts, "runId" | "continuation" | "parentRun" | "cwd"> {
+	/** Dot path of the stage to re-run from (see `listForkPoints`). Omitted: the fork copies the whole run. */
+	readonly fromStage?: string;
+	/** Replacement inputs, validated against the definition. Omitted: the source run's inputs. */
+	readonly inputs?: WorkflowInputValues;
+	/** Directory the fork runs in. Omitted: the source run's directory. */
+	readonly cwd?: string;
+	/** Intercom messages and prompt answers to carry: those before the fork point (default) or all. */
+	readonly carryMessages?: ForkCarryMessages;
+	/** The workflow definition. Omitted: the registry option, then the workflows discovered for the source's directory. */
+	readonly definition?: TDefinition;
+	/** Session store holding the source run's stage sessions. Omitted: the source project's store. */
+	readonly sourceSessionStore?: import("@bastani/atomic").SessionStore;
+}
+
+/** A forked run. `events` yields the run's notifications once, in order; `result` settles when the run ends. */
+export interface ForkedRun {
+	readonly runId: string;
+	readonly forkedFrom: WorkflowForkedFrom;
+	readonly events: AsyncIterable<WorkflowRunEvent>;
+	readonly result: Promise<RunResult>;
+}
+
+export interface ListForkPointsOptions {
+	readonly journal?: RunJournalOption;
+	readonly store?: Store;
+	readonly cwd?: string;
+	/** Session store holding the run's stage sessions, read for each point's `entryId`. Omitted: the run's project store. */
+	readonly sourceSessionStore?: import("@bastani/atomic").SessionStore;
+}
+
+/**
+ * Fork a durable run from a stage into a new run and execute it; the source run is never written. Every
+ * precondition is checked before anything is copied, and failures are `ForkError`s.
+ */
+export declare function forkRun<
+	TInputs extends WorkflowInputValues,
+	TOutputs extends WorkflowOutputValues,
+	TRunInputs extends WorkflowInputValues = TInputs,
+>(runId: string, options?: ForkRunOptions<WorkflowDefinition<TInputs, TOutputs, TRunInputs>>): Promise<ForkedRun>;
+/** The completed stages of a durable run, in completion order, that `forkRun` can fork from. Read-only. */
+export declare function listForkPoints(runId: string, options?: ListForkPointsOptions): AsyncIterable<ForkPoint>;
 /**
  * Build the default stage-session adapter: each stage runs an in-process Atomic
  * `createAgentSession` session. `baseOptions` apply to every stage; stage options
@@ -558,6 +644,8 @@ export interface RunSnapshot {
 	readonly exited?: boolean;
 	readonly exitReason?: string;
 	readonly pendingPrompt?: PendingPrompt;
+	/** Source run and stage when the run was created by `forkRun`. */
+	readonly forkedFrom?: WorkflowForkedFrom;
 }
 
 export interface StoreSnapshot {

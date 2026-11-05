@@ -684,6 +684,9 @@ class JournalProjection {
 		const completedCheckpoints = handle.completedCheckpoints ?? existing?.handle.completedCheckpoints ?? 0;
 		const pendingPrompts = handle.pendingPrompts ?? existing?.handle.pendingPrompts ?? 0;
 		const updatedAt = handle.updatedAt ?? Date.now();
+		const forkedFrom = handle.forkedFrom ?? existing?.handle.forkedFrom;
+		const workspace = handle.workspace ?? existing?.handle.workspace;
+		const snapshot = handle.snapshot ?? existing?.handle.snapshot;
 		const full: DurableWorkflowHandle = {
 			workflowId: handle.workflowId,
 			name: handle.name,
@@ -729,6 +732,9 @@ class JournalProjection {
 				: existing?.handle.possibleStages !== undefined
 					? { possibleStages: existing.handle.possibleStages }
 					: {}),
+			...(forkedFrom !== undefined ? { forkedFrom } : {}),
+			...(workspace !== undefined ? { workspace } : {}),
+			...(snapshot !== undefined ? { snapshot } : {}),
 			...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
 			completedCheckpoints,
 			pendingPrompts,
@@ -1117,6 +1123,9 @@ class JournalProjection {
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
 			...(h.snapshots !== undefined ? { snapshots: h.snapshots } : {}),
 			...(h.worktreeRootMappings !== undefined ? { worktreeRootMappings: h.worktreeRootMappings } : {}),
+			...(h.forkedFrom !== undefined ? { forkedFrom: h.forkedFrom } : {}),
+			...(h.workspace !== undefined ? { workspace: h.workspace } : {}),
+			...(h.snapshot !== undefined ? { snapshot: h.snapshot } : {}),
 			updatedAt: h.updatedAt,
 		};
 	}
@@ -1217,6 +1226,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
 		...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
 		...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),
 		...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : {}),
+		...(handle.forkedFrom !== undefined ? { forkedFrom: handle.forkedFrom } : {}),
 		createdAt: handle.createdAt,
 		updatedAt: handle.updatedAt,
 	};

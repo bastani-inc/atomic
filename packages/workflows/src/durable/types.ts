@@ -10,6 +10,7 @@
  */
 
 import type { WorktreeSnapshot } from "@bastani/atomic";
+import type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "../shared/fork-lineage.js";
 import type {
 	PendingStageMessage,
 	WorkflowActor,
@@ -19,6 +20,8 @@ import type {
 	WorkflowFailureRecoverability,
 } from "../shared/store-types.js";
 import type { WorkflowArtifact, WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
+
+export type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "../shared/fork-lineage.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -96,6 +99,12 @@ export interface DurableWorkflowHandle {
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
 	/** Possible stage targets from the D1 static scan, frozen at root-run admission (D10). */
 	readonly possibleStages?: readonly string[];
+	/** The run and stage this run was forked from (#4321). */
+	readonly forkedFrom?: WorkflowForkedFrom;
+	/** Repository workspace the run is bound to (#3109); carried by resume and fork. */
+	readonly workspace?: DurableWorkspaceBinding;
+	/** Repository state the run's checkpoints were taken against (#4245); carried by resume and fork. */
+	readonly snapshot?: DurableRepositoryBinding;
 }
 
 export type DurableWorkflowStatus = "running" | "paused" | "completed" | "failed" | "cancelled" | "blocked";
@@ -348,6 +357,9 @@ export interface DurableWorkflowMetadata {
 	readonly pendingStageMessages?: readonly PendingStageMessage[];
 	/** Possible stage targets from the D1 static scan, frozen at root-run admission (D10). */
 	readonly possibleStages?: readonly string[];
+	readonly forkedFrom?: WorkflowForkedFrom;
+	readonly workspace?: DurableWorkspaceBinding;
+	readonly snapshot?: DurableRepositoryBinding;
 }
 
 /** Resume catalog entry. */
@@ -380,6 +392,7 @@ export interface ResumableWorkflowEntry {
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;
 	readonly gitWorktreeRoot?: string;
+	readonly forkedFrom?: WorkflowForkedFrom;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }

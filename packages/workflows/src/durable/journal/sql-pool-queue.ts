@@ -4,6 +4,7 @@ import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
 import { validateCheckpointInvocationFingerprint } from "../boundary-topology.js";
 import { durableHash } from "../durable-hash.js";
+import { ForkError, ForkSessionClaimError, type ForkSessionClaimReason } from "../fork-errors.js";
 import {
 	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
 	DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -18,6 +19,7 @@ import {
 	type PoolCheckpointMutation,
 	type PoolMutation,
 	type PoolSessionAppend,
+	poolTransactionSessionStore,
 	validatePoolMutation,
 } from "./pool-mutations.js";
 import { isRecordedCheckpointValue, isSameCheckpointValue, type PoolRemoteJournal } from "./pool-remote-journal.js";
@@ -72,6 +74,19 @@ export interface PoolEnqueueOptions {
 	 * root loaded.
 	 */
 	readonly acceptEntryChanges?: boolean;
+	/** Stage sessions a fork copied into the pool tables for this child, which the work takes over (#4321). */
+	readonly claimSessions?: readonly PoolSessionClaim[];
+}
+/**
+ * A stage session of a forked root's child, as the root's journal records it: a fork copies a pooled stage's session
+ * into the pool tables before the work that resumes it exists, so the work takes it over when it is queued.
+ */
+export interface PoolSessionClaim {
+	readonly sessionId: string;
+	/** Replay key of the stage that recorded the session, under the work's scope. */
+	readonly replayKey: string;
+	/** The run of that stage, which the copy's header names. */
+	readonly runId: string;
 }
 export interface PoolWork extends PoolWorkDescriptor {
 	readonly id: string;
@@ -456,6 +471,7 @@ export class SqlPoolQueue {
 					previous.fingerprint === fingerprint
 						? previous
 						: await this.rebind(tx, lease, previous, json, JSON.parse(payload), fingerprint, options);
+				await this.claimSessions(tx, lease.runId, row.id, descriptor, options.claimSessions);
 				if ((row.state !== "ready" && row.state !== "failed") || row.epoch >= lease.epoch) return fromRow(row);
 				// Work of an earlier incarnation becomes claimable again once this root enqueues it (#3979), including
 				// work that incarnation failed or left unfinished when its pool closed.
@@ -502,8 +518,73 @@ export class SqlPoolQueue {
 						now,
 					);
 			}
+			await this.claimSessions(tx, lease.runId, id, descriptor, options.claimSessions);
 			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, id))!);
 		});
+	}
+	/**
+	 * Makes `work` the owner of each claimed session, in the transaction that queues it. Only a session nobody owns is
+	 * taken over, and only when it is the fork's copy for the claimed stage: internal, copied from another session, and
+	 * naming the claimed run. A session the work already owns for the same stage is claimed already. Anything else is a
+	 * {@link ForkSessionClaimError}, which rolls the transaction back, so nothing is queued.
+	 */
+	private async claimSessions(
+		tx: SqliteExecutor,
+		root: string,
+		work: string,
+		descriptor: Pick<PoolWorkDescriptor, "childRunId" | "scope">,
+		claims: readonly PoolSessionClaim[] | undefined,
+	): Promise<void> {
+		if (claims === undefined || claims.length === 0) return;
+		const { childRunId, scope } = descriptor;
+		const prefix = `${this.journal.runs}_pool_`;
+		const sessions = await poolTransactionSessionStore(tx, prefix);
+		let primary: unknown;
+		try {
+			for (const claim of claims) {
+				const refuse = (reason: ForkSessionClaimReason) =>
+					new ForkSessionClaimError({
+						reason,
+						sessionId: claim.sessionId,
+						rootRunId: root,
+						childRunId,
+						scope,
+						replayKey: claim.replayKey,
+						stageRunId: claim.runId,
+					});
+				if (!claim.replayKey.startsWith(`${scope}:`)) throw refuse("outside-scope");
+				const owner = await tx.get(
+					`SELECT work, replay_key FROM ${prefix}session_owners WHERE session = ?`,
+					claim.sessionId,
+				);
+				if (owner !== undefined) {
+					if (owner.work !== work) throw refuse("owned-by-other-work");
+					if (owner.replay_key !== claim.replayKey) throw refuse("claimed-for-other-stage");
+					continue;
+				}
+				const header = await sessions.readHeader(claim.sessionId);
+				if (header === undefined) throw refuse("missing");
+				if (header.internal !== true || header.parentSessionId === undefined) throw refuse("not-fork-copy");
+				if (header.workflow?.runId !== claim.runId) throw refuse("run-mismatch");
+				await tx.run(
+					`INSERT INTO ${prefix}session_owners VALUES (?, ?, ?)`,
+					claim.sessionId,
+					work,
+					claim.replayKey,
+				);
+			}
+		} catch (error) {
+			primary = error;
+			throw error;
+		} finally {
+			// The store reads through this transaction and owns nothing to release, but a failed close never replaces
+			// the claim's own failure: it is attached to a fork error, or logged once.
+			await sessions.close().catch((closeFailure: Error) => {
+				if (primary === undefined) throw closeFailure;
+				if (primary instanceof ForkError) primary.withCleanupCause(closeFailure);
+				else console.warn("atomic-workflows: closing the pool sessions of a failed claim failed", closeFailure);
+			});
+		}
 	}
 	private async recordBoundaryStart(lease: Lease, key: string, boundary: DurableStageCheckpoint): Promise<void> {
 		const remote = this.remote!;

@@ -10,7 +10,8 @@ import {
 	SHARED_STORAGE_JOIN_HINT,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSelectedRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
@@ -28,6 +29,7 @@ import type { Lease, RunJournal } from "../../packages/workflows/src/durable/jou
 import { inspectTargetedDurableWorkflow } from "../../packages/workflows/src/durable/targeted-inspection.js";
 import { isLocalPoolJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import { observeJournalRead } from "../helpers/journal-read-observation.js";
+import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const conformanceShards = new WeakMap<RunJournal, Map<string, SqlRunJournal>>();
@@ -201,8 +203,10 @@ test("any run ID resolves through the catalog from a fresh store, across shards 
 
 test("status, the resume catalog and fork reach roots on every shard and in adopted journals through one backend (#4325)", async () => {
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+	// Forks take full run ids (#4321).
+	const LEGACY_ROOT = testRunId("legacy-root");
 	const legacy = join(root, "campaign-journal-7", "journal.sqlite");
-	await backendJournal(legacy, ["legacy-root"]);
+	await backendJournal(legacy, [LEGACY_ROOT]);
 	const writer = await JournalDurableBackend.open(await openStore(), { ownsJournal: false });
 	for (const workflowId of ["shard-root-a", "shard-root-b"]) {
 		await writer.commitWorkflowRegistration({
@@ -230,19 +234,25 @@ test("status, the resume catalog and fork reach roots on every shard and in adop
 	closing.push(() => backend.close());
 	await backend.hydrateResumableWorkflows();
 	const catalog = await backend.prepareWorkflowCatalog();
-	assert.deepEqual([...(catalog.inspectableIds ?? [])].sort(), ["legacy-root", "shard-root-a", "shard-root-b"]);
+	assert.deepEqual([...(catalog.inspectableIds ?? [])].sort(), [LEGACY_ROOT, "shard-root-a", "shard-root-b"]);
 	assert.deepEqual(
-		["legacy-root", "shard-root-a", "shard-root-b"].map((id) => journal.shardOf(id)?.kind),
+		[LEGACY_ROOT, "shard-root-a", "shard-root-b"].map((id) => journal.shardOf(id)?.kind),
 		["adopted", "native", "native"],
 	);
 	assert.notEqual(journal.shardOf("shard-root-a")?.id, journal.shardOf("shard-root-b")?.id);
-	for (const id of ["legacy-root", "shard-root-a"]) {
+	for (const id of [LEGACY_ROOT, "shard-root-a"]) {
 		await backend.hydrateWorkflow(id);
 		assert.ok(backend.listCheckpoints(id).length >= 1, `${id} folds its checkpoints from its shard`);
 	}
-	const forked = await forkDurableWorkflow(backend, backend.getWorkflow("legacy-root")!, root, undefined);
+	const { runId: forked } = await forkDurableRun(backend, {
+		source: "sdk",
+		runId: LEGACY_ROOT,
+		cwd: root,
+		carryMessages: "all",
+		definition: workflow({ name: "legacy", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
+	});
 	assert.equal(journal.shardOf(forked)?.kind, "native", "a fork of an adopted run is a new root on a native shard");
-	assert.equal(backend.listCheckpoints(forked).length, backend.listCheckpoints("legacy-root").length);
+	assert.equal(backend.listCheckpoints(forked).length, backend.listCheckpoints(LEGACY_ROOT).length);
 	const fresh = await JournalDurableBackend.open(await openStore(), { ownsJournal: false, runs: [] });
 	closing.push(() => fresh.close());
 	await fresh.hydrateResumableWorkflows();

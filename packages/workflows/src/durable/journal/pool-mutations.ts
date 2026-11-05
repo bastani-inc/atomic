@@ -167,7 +167,8 @@ function stagesExcept(entries: readonly IndexedStage[], checkpoint: DurableStage
 	return inKeyOrder(entries).filter((entry) => entry.checkpointId !== checkpoint.checkpointId);
 }
 
-async function sessionStore(tx: SqliteExecutor, prefix: string): Promise<SessionStore> {
+/** The pool session tables under `prefix`, read and written in `tx`. */
+export async function poolTransactionSessionStore(tx: SqliteExecutor, prefix: string): Promise<SessionStore> {
 	const database: SqliteDatabase = {
 		descriptor: { adapter: "pool-transaction", location: prefix },
 		exec: (sql) => tx.exec(sql),
@@ -221,7 +222,7 @@ async function withSessionStore(
 	prefix: string,
 	write: (store: SessionStore) => Promise<{ readonly lastSeq: number }>,
 ): Promise<number> {
-	const store = await sessionStore(tx, prefix);
+	const store = await poolTransactionSessionStore(tx, prefix);
 	try {
 		return (await write(store)).lastSeq;
 	} finally {

@@ -194,6 +194,25 @@ test("a failed final status write rolls back the event and retains the original 
 	await journal.close();
 });
 
+test("createRunWithEvents reports an unserializable header or event before touching the database (#4321)", async () => {
+	const db = await database();
+	const journal = await SqlRunJournal.open(db);
+	const transaction = vi.spyOn(db, "transaction");
+	const unserializable = { big: 1n } as never;
+	for (const attempt of [
+		() => journal.createRunWithEvents({ ...header, inputs: unserializable }, []),
+		() => journal.createRunWithEvents(header, [{ event: { type: "RunStarted", payload: unserializable } }]),
+	]) {
+		const error = await attempt().catch((failure: Error) => failure);
+		assert.ok(error instanceof StorageUnavailableError);
+		assert.ok(error.cause instanceof TypeError);
+		assert.match(error.cause.message, /BigInt/);
+	}
+	assert.equal(transaction.mock.calls.length, 0);
+	assert.equal(await journal.getRun(header.runId), undefined);
+	await journal.close();
+});
+
 test.each(["administrative", "owned"] as const)(
 	"%s deletion rolls back events and the lease when the final delete fails",
 	async (mode) => {

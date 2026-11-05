@@ -45,6 +45,7 @@ import {
 	type RunEvent,
 	type RunHeader,
 	type RunJournal,
+	type RunJournalSeedEvent,
 	RunNotFoundError,
 	type RunSummary,
 	StaleLeaseError,
@@ -308,6 +309,58 @@ export class SqlRunJournal implements RunJournal {
 				),
 			);
 			return result.changes === 1 ? "created" : "exists";
+		});
+	}
+
+	/**
+	 * Creates a run and its first events in one transaction (`RunJournal.createRunWithEvents`). Every payload is
+	 * serialized before the transaction starts, so an invalid payload writes nothing. Events carry the absent epoch:
+	 * the run has no lease until a holder takes one.
+	 */
+	async createRunWithEvents(header: RunHeader, events: readonly RunJournalSeedEvent[]): Promise<"created" | "exists"> {
+		this.assertOpen();
+		validateText("runId", header.runId);
+		validateText("name", header.name);
+		validateText("cwd", header.cwd);
+		validateText("status", header.status);
+		const json = this.snapshotJson(header);
+		if (json instanceof StorageUnavailableError) throw json;
+		const prepared = events.map((seed) => {
+			const append = this.prepare(seed.event, seed.key, undefined);
+			if (append.payload instanceof StorageUnavailableError) throw append.payload;
+			return { ...append, payload: append.payload };
+		});
+		const { runs, events: eventTable } = this.tables;
+		return this.operation(async () => {
+			if (await this.legacy?.find(this.database, header.runId)) return "exists";
+			return this.transaction(async (tx) => {
+				const created = await tx.run(
+					`INSERT INTO ${runs} VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(${c.runId}) DO NOTHING`,
+					header.runId,
+					header.name,
+					header.cwd,
+					header.createdAt,
+					header.status,
+					json,
+				);
+				if (created.changes !== 1) return "exists";
+				let status: string | undefined;
+				for (const [index, append] of prepared.entries()) {
+					await tx.run(
+						`INSERT INTO ${eventTable} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
+						header.runId,
+						index + 1,
+						JOURNAL_LEASE.absentEpoch,
+						append.key ?? null,
+						append.type,
+						append.payload,
+					);
+					status = append.status ?? status;
+				}
+				if (status !== undefined)
+					await tx.run(`UPDATE ${runs} SET ${c.status} = ? WHERE ${c.runId} = ?`, status, header.runId);
+				return "created";
+			});
 		});
 	}
 

@@ -235,6 +235,7 @@ function rootSnapshot(
 		...(handle.failureDisposition !== undefined ? { failureDisposition: handle.failureDisposition } : {}),
 		...(handle.failedToolNodeId !== undefined ? { failedToolNodeId: handle.failedToolNodeId } : {}),
 		...runResultFields(backend, handle),
+		...(handle.forkedFrom !== undefined ? { forkedFrom: { ...handle.forkedFrom } } : {}),
 		resumable: isDurableWorkflowResumable(handle),
 	};
 }

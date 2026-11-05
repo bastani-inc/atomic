@@ -3,11 +3,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultSessionDirPath, JsonlSessionStore, SessionManager } from "@bastani/atomic";
+import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { forkDurableWorkflow } from "../../packages/workflows/src/durable/fork-workflow.js";
-import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import {
+	ForkConfigError,
+	ForkCopyFailedError,
+	isForkConfigError,
+	isForkDefinitionMismatchError,
+	isForkSourceBusyError,
+} from "../../packages/workflows/src/durable/fork-errors.js";
+import { forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
+import {
+	crossProjectResumeMessage,
+	resumeDurableWorkflow,
+} from "../../packages/workflows/src/durable/resume-runtime.js";
 import { createDurableTaskPrimitive } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -67,7 +78,12 @@ for (const decision of [undefined, false, true] as const) {
 			await jobs.get(result.runId)?.promise;
 			assert.equal(backend.getWorkflow(result.runId)?.invocationCwd, "/target-project");
 			assert.equal(executions, 1);
+			assert.ok(
+				result.message.startsWith(`Forked workflow ${id} into the current directory. Resuming durable workflow`),
+				result.message,
+			);
 		} else {
+			assert.equal(result.reason, "different_project");
 			assert.match(result.message, decision === undefined ? /\/workflow resume.*interactive/i : /cancelled/i);
 			assert.equal(store.runs().length, 0);
 		}
@@ -225,7 +241,22 @@ test("forked stage conversations copy history without sharing the source session
 		const forkSession = vi.spyOn(sessionStore, "create");
 		let forkId: string;
 		try {
-			forkId = await forkDurableWorkflow(backend, backend.getWorkflow(id)!, cwd, undefined, sessionStore);
+			forkId = (
+				await forkDurableRun(backend, {
+					source: "cli",
+					runId: id,
+					cwd,
+					carryMessages: "all",
+					definition: workflow({
+						name: "history",
+						description: "",
+						inputs: { items: Type.Array(Type.String()) },
+						outputs: {},
+						run: async () => ({}),
+					}),
+					sessionStore,
+				})
+			).runId;
 			assert.equal(forkSession.mock.calls.length, 1);
 		} finally {
 			forkSession.mockRestore();
@@ -292,13 +323,14 @@ test("cross-project forks read the source project store and write the selected d
 			output: { text: "saved", sessionId: source.getSessionId() },
 			completedAt: 1,
 		});
-		const forkId = await forkDurableWorkflow(
-			backend,
-			backend.getWorkflow(sourceId)!,
-			join(root, "target"),
-			undefined,
-			destination,
-		);
+		const { runId: forkId } = await forkDurableRun(backend, {
+			source: "cli",
+			runId: sourceId,
+			cwd: join(root, "target"),
+			carryMessages: "all",
+			definition: workflow({ name: "history", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
+			sessionStore: destination,
+		});
 		const checkpoint = backend.listCheckpoints(forkId)[0];
 		assert.equal(checkpoint.kind, "stage");
 		if (checkpoint.kind !== "stage") assert.fail("stage checkpoint required");
@@ -357,9 +389,10 @@ test("cross-project fork retries an interrupted tool frontier and replays earlie
 	assert.deepEqual(backend.getWorkflow(id), source);
 });
 
-test("interrupted cross-project checkpoint copies never become resumable (#3577)", async () => {
+test("an interrupted cross-project fork copy leaves no run, and a retry forks every checkpoint (#3577, #4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sourceId = testRunId("interrupted-copy");
+	const definition = workflow({ name: "copy", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 	await backend.commitWorkflowRegistration({
 		workflowId: sourceId,
 		name: "copy",
@@ -378,26 +411,26 @@ test("interrupted cross-project checkpoint copies never become resumable (#3577)
 			completedAt: 1,
 		});
 	}
-	const original = backend.commitCheckpoint.bind(backend);
-	let incompleteId: string | undefined;
-	const copy = vi.spyOn(backend, "commitCheckpoint").mockImplementation(async (checkpoint) => {
-		incompleteId = checkpoint.workflowId;
-		assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
-		if (checkpoint.kind === "tool" && checkpoint.name === "second") throw new Error("copy interrupted");
-		await original(checkpoint);
-	});
-	try {
-		await assert.rejects(
-			forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined),
-			/copy interrupted/,
-		);
-	} finally {
-		copy.mockRestore();
-	}
-	assert.ok(incompleteId);
-	assert.equal(backend.listCheckpoints(incompleteId).length, 1);
-	assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === incompleteId));
-	const completedId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	const request = {
+		source: "cli" as const,
+		runId: sourceId,
+		cwd: "/target-project",
+		carryMessages: "all" as const,
+		definition,
+	};
+	const create = backend.journal.createRunWithEvents.bind(backend.journal);
+	const interrupted = vi
+		.spyOn(backend.journal, "createRunWithEvents")
+		.mockImplementationOnce(async (header, events) => {
+			await assert.rejects(create(header, [...events, events[1]!]));
+			throw new Error("copy interrupted");
+		});
+	const failure = await forkDurableRun(backend, request).catch((error: Error) => error);
+	interrupted.mockRestore();
+	assert.ok(failure instanceof ForkCopyFailedError);
+	assert.equal(await backend.journal.getRun(failure.forkRunId), undefined);
+	assert.ok(!backend.listResumableWorkflows().some((entry) => entry.workflowId === failure.forkRunId));
+	const { runId: completedId } = await forkDurableRun(backend, request);
 	assert.equal(backend.listCheckpoints(completedId).length, 2);
 	assert.ok(backend.listResumableWorkflows().some((entry) => entry.workflowId === completedId));
 });
@@ -437,7 +470,13 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 		backend,
 	);
 	const original = structuredClone(backend.getWorkflow(sourceId));
-	const forkId = await forkDurableWorkflow(backend, backend.getWorkflow(sourceId)!, "/target-project", undefined);
+	const { runId: forkId } = await forkDurableRun(backend, {
+		source: "cli",
+		runId: sourceId,
+		cwd: "/target-project",
+		carryMessages: "all",
+		definition: workflow({ name: "sticky", description: "", inputs: {}, outputs: {}, run: async () => ({}) }),
+	});
 	const pending = backend.getWorkflow(forkId)!.pendingStageMessages;
 	assert.equal(pending?.[0].stageKey, `workflow:${forkId}/review-*`);
 	assert.equal(pending?.[0].targetPath, `workflow:${forkId}/review-*`);
@@ -463,4 +502,208 @@ test("forked sticky messages reach stages under the fork root (#3577)", async ()
 	} finally {
 		setDurableBackend(undefined);
 	}
+});
+
+async function pausedCrossProjectSource(name: string, seed: string) {
+	const backend = await createMemoryTestBackend();
+	const def = workflow({
+		name,
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("saved", {}, async () => "saved");
+			return {};
+		},
+	});
+	const id = testRunId(seed);
+	await run(def, {}, { runId: id, durableBackend: backend, store: createStore(), cwd: "/source-project" });
+	await backend.commitWorkflowStatus(id, "paused", 0, true);
+	return { backend, def, id };
+}
+
+test("a non-resumable run from another project is not_resumable without prompting or forking (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("not-resumable-source", "cross-not-resumable");
+	await backend.commitWorkflowStatus(id, "completed", 0, true);
+	const runsBefore = await backend.journal.listRuns();
+	const result = await resumeDurableWorkflow(id, {
+		registry: createRegistry().register(def),
+		durableBackend: backend,
+		jobs: createJobTracker(),
+		baseRunOpts: { store: createStore(), cwd: "/target-project" },
+		confirmCrossProjectFork: async () => assert.fail("a non-resumable run must not prompt"),
+	});
+	assert.deepEqual(result, {
+		ok: false,
+		reason: "not_resumable",
+		message: `Workflow ${id} is completed, not resumable.`,
+	});
+	assert.deepEqual(await backend.journal.listRuns(), runsBefore);
+});
+
+test("cross-project resume without a prompt names the run's project and the resume command (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("no-prompt-source", "cross-no-prompt");
+	const result = await resumeDurableWorkflow(id, {
+		registry: createRegistry().register(def),
+		durableBackend: backend,
+		jobs: createJobTracker(),
+		baseRunOpts: { store: createStore(), cwd: "/target-project" },
+	});
+	assert.deepEqual(result, {
+		ok: false,
+		reason: "different_project",
+		message: crossProjectResumeMessage(id, "/source-project"),
+	});
+	assert.match(result.message, /\/source-project/);
+});
+
+test("a declined cross-project resume is a different_project result that says the source was not changed (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("declined-source", "cross-declined");
+	const result = await resumeDurableWorkflow(id, {
+		registry: createRegistry().register(def),
+		durableBackend: backend,
+		jobs: createJobTracker(),
+		baseRunOpts: { store: createStore(), cwd: "/target-project" },
+		confirmCrossProjectFork: async () => false,
+	});
+	assert.deepEqual(result, {
+		ok: false,
+		reason: "different_project",
+		message: "Workflow resume cancelled; the source run was not changed.",
+	});
+});
+
+test("cross-project resume looks the definition up in the registry first, then by the source project's directory (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("lookup-source", "cross-lookup");
+	const lookups: Array<[string, string | undefined]> = [];
+	const resolveDefinition = async (name: string, cwd: string | undefined) => {
+		lookups.push([name, cwd]);
+		return def;
+	};
+	const resume = async (registry: ReturnType<typeof createRegistry>) => {
+		const jobs = createJobTracker();
+		const result = await resumeDurableWorkflow(id, {
+			registry,
+			resolveDefinition,
+			durableBackend: backend,
+			jobs,
+			baseRunOpts: { store: createStore(), cwd: "/target-project" },
+			confirmCrossProjectFork: async () => true,
+		});
+		assert.ok(result.ok, result.message);
+		await jobs.get(result.runId)?.promise;
+	};
+	await resume(createRegistry().register(def));
+	assert.deepEqual(lookups, [], "a registered definition is used without a lookup");
+	await resume(createRegistry());
+	assert.deepEqual(lookups, [["lookup-source", "/source-project"]]);
+});
+
+test("a fork that fails with a ForkError is a fork_failed result carrying the typed error (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("fork-failed-source", "cross-fork-failed");
+	const runsBefore = await backend.journal.listRuns();
+	const resume = (overrides: Partial<Parameters<typeof resumeDurableWorkflow>[1]>, cwd = "/target-project") =>
+		resumeDurableWorkflow(id, {
+			registry: createRegistry().register(def),
+			durableBackend: backend,
+			jobs: createJobTracker(),
+			baseRunOpts: { store: createStore(), cwd },
+			confirmCrossProjectFork: async () => true,
+			...overrides,
+		});
+
+	const unavailable = await resume({ registry: createRegistry() });
+	assert.ok(!unavailable.ok);
+	assert.equal(unavailable.reason, "fork_failed");
+	assert.deepEqual(Object.keys(unavailable).sort(), ["error", "message", "ok", "reason"]);
+	assert.ok(isForkDefinitionMismatchError(unavailable.error));
+	assert.equal(unavailable.error.reason, "definition-unavailable");
+	assert.equal(unavailable.error.cause, undefined);
+	assert.equal(unavailable.message, unavailable.error.message);
+
+	const badCwd = await resume({}, "");
+	assert.ok(!badCwd.ok);
+	assert.equal(badCwd.reason, "fork_failed");
+	assert.ok(badCwd.error instanceof ForkConfigError);
+	assert.ok(isForkConfigError(badCwd.error));
+	assert.equal(badCwd.error.source, "cli");
+	assert.equal(badCwd.error.field, "cwd");
+	assert.equal(badCwd.message, badCwd.error.message);
+
+	const liveStore = createStore();
+	liveStore.recordRunStart({
+		id,
+		name: "fork-failed-source",
+		inputs: {},
+		status: "running",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+	});
+	const busy = await resume({ baseRunOpts: { store: liveStore, cwd: "/target-project" } });
+	assert.ok(!busy.ok);
+	assert.equal(busy.reason, "fork_failed");
+	assert.ok(isForkSourceBusyError(busy.error));
+	assert.equal(busy.error.reason, "live-execution");
+	assert.deepEqual(await backend.journal.listRuns(), runsBefore);
+});
+
+test("an error that is not a ForkError propagates from a cross-project resume (#4321)", async () => {
+	const { backend, def, id } = await pausedCrossProjectSource("propagate-source", "cross-propagate");
+	const controller = new AbortController();
+	const reason = new Error("resume stopped");
+	controller.abort(reason);
+	const failure = await resumeDurableWorkflow(id, {
+		registry: createRegistry().register(def),
+		durableBackend: backend,
+		jobs: createJobTracker(),
+		signal: controller.signal,
+		baseRunOpts: { store: createStore(), cwd: "/target-project" },
+		confirmCrossProjectFork: async () => true,
+	}).then(
+		() => assert.fail("the resume must reject"),
+		(error: Error) => error,
+	);
+	assert.equal(failure, reason);
+});
+
+test("a run recorded without a project directory resumes from the registry without a definition lookup (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const def = workflow({
+		name: "no-directory",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("saved", {}, async () => "saved");
+			return {};
+		},
+	});
+	const id = testRunId("no-directory");
+	await backend.commitWorkflowRegistration({
+		workflowId: id,
+		name: def.name,
+		inputs: {},
+		status: "paused",
+		createdAt: 1,
+	});
+	await backend.commitCheckpoint({
+		kind: "tool",
+		workflowId: id,
+		checkpointId: "saved",
+		name: "saved",
+		argsHash: "saved",
+		output: "saved",
+		completedAt: 1,
+	});
+	const jobs = createJobTracker();
+	const result = await resumeDurableWorkflow(id, {
+		registry: createRegistry().register(def),
+		resolveDefinition: async () => assert.fail("no directory means no definition lookup"),
+		durableBackend: backend,
+		jobs,
+		baseRunOpts: { store: createStore(), cwd: process.cwd() },
+	});
+	assert.ok(result.ok, result.message);
+	assert.equal(result.runId, id);
 });

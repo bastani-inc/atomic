@@ -10,6 +10,8 @@ export interface DurableResumeCandidate {
 	readonly pendingPrompts: number;
 	readonly rootWorkflowId?: string;
 	readonly resumable?: boolean;
+	/** A fork starts with its source's progress, which may be none when it re-runs from the first stage. */
+	readonly forkedFrom?: { readonly runId: string };
 }
 
 /** Live snapshot fields used by every workflow resume surface. */
@@ -63,7 +65,8 @@ export function isDurableWorkflowResumable(candidate: DurableResumeCandidate): b
 	const isRoot = candidate.rootWorkflowId === undefined || candidate.rootWorkflowId === candidate.workflowId;
 	if (!isRoot) return false;
 	if (candidate.status === "failed" || candidate.status === "blocked") return candidate.resumable !== false;
-	const hasResumeProgress = candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0;
+	const hasResumeProgress =
+		candidate.completedCheckpoints > 0 || candidate.pendingPrompts > 0 || candidate.forkedFrom !== undefined;
 	return (
 		candidate.resumable !== false &&
 		(candidate.status === "running" || candidate.status === "paused") &&

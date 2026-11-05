@@ -537,14 +537,26 @@ For large handoffs, write artifacts to files, pass their paths with `reads`, and
 
 See [Compression and Artifact Handoffs](/workflows/reliable-design#compression-and-artifact-handoffs) and [Filesystem Context](/workflows/reliable-design#filesystem-context) for complete patterns.
 
-### `context` / `forkFromSessionId`
+### `context` / `forkFromSessionId` / `forkFromEntryId`
 
 ```typescript
 readonly context?: "fresh" | "fork";
 readonly forkFromSessionId?: string;
+readonly forkFromEntryId?: string;
 ```
 
 Select a clean session or a forked context, with `forkFromSessionId` naming an explicit session ID in the selected session store. Use the earlier task's `sessionId`, not its transcript file path. IDs are preserved verbatim, including an empty stored ID. Omitting `context` creates a fresh session unless the runtime is reopening durable state; see [Locally Scoped Stage Prompts](/workflows/reliable-design#locally-scoped-stage-prompts) for choosing fresh reviewer context versus coherent implementation context.
+
+`forkFromEntryId` forks at an exact entry instead of the session's latest one. With `context: "fork"` and `forkFromSessionId`, the new session holds the entries on the path from the source session's root to that entry, with their ids, so a stage can retry from just before a bad turn. The path is copied as recorded: unlike `/fork` in chat, labels set with `/tree` after that entry are not carried over. It applies to `ctx.stage`, `ctx.task`, `ctx.chain` and `ctx.parallel` steps alike, and is ignored without `forkFromSessionId`. Stage setup fails with `ForkEntryNotFoundError` when the entry is not in the source session; nothing is created. The source session is never changed.
+
+```typescript
+await ctx.task("retry-impl", {
+  prompt: delta,
+  context: "fork",
+  forkFromSessionId: impl.sessionId,
+  forkFromEntryId: beforeBadTurn, // for example a fork point's entryId from listForkPoints()
+});
+```
 
 ### `group`
 
@@ -1865,12 +1877,14 @@ interface RunJournal {
 
 Custom journals need only the async contract; no synchronous journal methods are required. Use `registerRunJournalConformance(runner, name, open, observeRead)` to check a fresh journal per case. Supply a read observer that reports actual page sizes and entries loaded or copied, with `restore()` and `reset()` methods, so the suite can verify lazy reads without consuming the whole history.
 
-A custom journal can also implement two optional speed-ups that `SqlRunJournal` already provides. Atomic uses them whenever they are present on the journal object, including journals returned by a storage adapter's `openRunJournal`:
+A custom journal can also implement optional members that `SqlRunJournal` already provides. Atomic uses them whenever they are present on the journal object, including journals returned by a storage adapter's `openRunJournal`:
 
 - `changeToken()`, `runVersions()` and `snapshotTail(runId)`, implemented together, let `/workflow status` and resume skip runs that have not changed and summarize the others from their latest snapshot instead of reading every event. `changeToken()` must return a different string after any commit to the store, from any connection. `runVersions()` returns each listed run's latest `{ seq, at }`, or `{ seq: 0, at: 0 }` for a run with no events. `snapshotTail(runId)` returns the run's latest event that is not `CheckpointRecorded`, `MessageSettled` or `MessageDelivered`, the latest version, the number of checkpoints after that event and the last one's `completedAt`, or `undefined` when there is no such event.
 - `appendMany(lease, appends)` writes a burst of delivery receipts and settlements to one run in one transaction. Check the lease once for the batch and reject the whole call with `StaleLeaseError` if it is stale. Otherwise settle each append on its own, in order, with the same results `append` would give; one append's failure must not undo the others.
 
-The types `RunVersion`, `RunSnapshotTail` and `RunJournalBatchAppend` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
+- `createRunWithEvents(header, events)` creates a run together with its first events, as sequences 1 to n, in one transaction. Afterwards the run either exists with exactly those events or was not written at all; an invalid payload or a duplicate event key writes nothing. The run is created without a lease, and the call resolves `"exists"` without writing when the run id is taken. [`forkRun`](#forkrun-runid-options) requires it and fails with `ForkJournalUnsupportedError` on a journal without it.
+
+The types `RunVersion`, `RunSnapshotTail`, `RunJournalBatchAppend` and `RunJournalSeedEvent` are exported from `@bastani/atomic/storage`. When these members are present, `registerRunJournalConformance` also checks them.
 
 Precedence is `RunOpts.journal` (`createAgentSession({ journal })` for a session's `workflow` tool), `--storage` or `--storage-file`, `ATOMIC_WORKFLOWS_JOURNAL` or non-empty `ATOMIC_WORKFLOW_JOURNAL_PATH`, `ATOMIC_STORAGE`, `workflows.journal`, shared top-level `storage`, then the default journal store in `~/.atomic/workflows/journal/`. Nearer settings selections replace whole objects, never merge options or secrets. Relative settings paths resolve against Atomic home. Invalid selected values raise `StorageConfigError`; storage failures reject the call without selecting memory. Resume a run from the journal that holds it: the store finds its own and adopted runs by ID; a run in an explicitly selected file needs that selection or `atomic storage adopt`.
 
@@ -1888,6 +1902,114 @@ Await asynchronous workflow operations before using their results. Atomic commit
 For direct durable-backend use, open `JournalDurableBackend` with `await JournalDurableBackend.open(journal, { ownsJournal: false })`, not a constructor. Omit `ownsJournal: false` to let the backend close the journal. Await `commitWorkflowRegistration`, `commitWorkflowStatus`, `commitWorkflowStatusTransition`, `commitPendingPromptAdjustment`, `commitReset`, and `commitCheckpoint`; use `commitAdditiveCheckpointBestEffort` for additive writes.
 
 `ctx.stage()` remains synchronous. For a cached stage, Atomic commits its replay metadata before the next async execution boundary; callers do not need an extra checkpoint or flush. See [Storage errors](/storage#storage-errors) for configuration, driver, and ownership failures.
+
+### `forkRun(runId, options?)`
+
+```typescript
+function forkRun(runId: string, options?: ForkRunOptions): Promise<ForkedRun>;
+
+interface ForkRunOptions extends Omit<RunOpts, "runId" | "continuation" | "parentRun" | "cwd"> {
+  fromStage?: string; // dot path from listForkPoints(); omitted: copy the whole run
+  inputs?: WorkflowInputValues; // replacement inputs; omitted: the source run's inputs
+  cwd?: string; // directory the fork runs in; omitted: the source run's directory
+  carryMessages?: "before" | "all"; // default "before"
+  definition?: WorkflowDefinition; // omitted: options.registry, then workflows discovered for the source's directory
+  sourceSessionStore?: SessionStore; // where the source's stage sessions live; omitted: the source project's store
+}
+
+interface ForkedRun {
+  runId: string;
+  forkedFrom: { runId: string; stagePath?: string };
+  events: AsyncIterable<WorkflowRunEvent>;
+  result: Promise<RunResult>;
+}
+```
+
+Run time travel: fork a durable run from a stage into a new run and execute it. The fork is a new run, never a back-edge, so the source run stays unchanged and can be forked again.
+
+Stage conversations are read from `sourceSessionStore`, or the source project's session store when omitted. Conversations saved by local workers are found automatically in the run's journal when they are absent from that store. This also applies to `listForkPoints`; no extra session-store option is needed for worker conversations.
+
+When a local-worker run is paused, omitting `fromStage` preserves its unfinished stages' saved conversations and continues them on new workers. To discard that conversation and restart work, start a new run or choose an earlier completed fork point with `fromStage`.
+
+Worker overrides must remain compatible with the source run's saved resources. You may change pool size, worker timing, `admission.limits` and `admission.host`; removing worker definitions or changing `admission.userLimits` raises `ForkConfigError` before the fork is created. Start a new run to use incompatible resource settings.
+
+- **What replays.** Every completed `ctx.tool` call, `ctx.ui` answer and stage that finished before `fromStage` replays from its saved result. The stage at `fromStage` and everything after it run again, and prompts asked at or after it fire again. Stages that had started but not finished before `fromStage` run again from scratch.
+- **Without `fromStage`.** The fork copies every checkpoint, so recorded stages replay their saved results and `ctx.tool` calls replay when their arguments are unchanged. Replacement `inputs` then reach only tool calls whose arguments use them and work the source had not finished. To run stages again with new inputs, pass `fromStage`.
+- **Nested workflows.** `fromStage` is a dot path: the `ctx.workflow` stage names from the root, then the stage name, for example `implement-api.review-2`. A nested workflow's own stage name forks before the whole child. A stage name repeated in one run gets an occurrence suffix (`review#2`). Use the exact paths `listForkPoints` returns.
+- **Messages.** `carryMessages: "before"` carries Intercom messages and prompt answers recorded before the fork point; `"all"` also carries those recorded after it, so later prompts replay their answers instead of asking again.
+- **Lineage.** The fork records `forkedFrom: { runId, stagePath }`, visible in `workflow status` and `RunSnapshot.forkedFrom`. A source run's workspace and snapshot bindings are carried to the fork.
+- **Events.** `events` yields the run's notifications in order, the same ones `run()` reports through `onRunStart`, `onStageStart`, `onStageEnd`, `onStageSessionEvent` and `onRunEnd`, as `{ type: "run_start" | "stage_start" | "stage_end" | "stage_session_event" | "run_end", ... }`. Run and stage snapshots retain their state at emission, even if you await `result` before reading `events`. It ends when the run settles; iterate it once. Run and stage events are kept until you iterate; `stage_session_event`s are delivered only while you iterate, so a fork you only `await` holds none, and stopping early discards the rest. The `on*` callbacks in `options` still receive everything.
+- **Local workers.** With `localWorkers`, the fork's stages run in worker processes, so `events` carries only `run_start` and `run_end`. Options bound to this process (`registry`, `adapters`, the stage callbacks and the others local workers refuse) fail with `ForkConfigError` (`field: "localWorkers"`) before anything is written. Explicit and inherited lease and heartbeat settings are checked before copying sessions; invalid timing raises the same `LocalWorkerOptionsError` as `run()`, with `invalid-lease` or `invalid-heartbeat`, a `field` and a correction `hint`. A fork keeps its source's worker resources. If the source run started without local workers or resource admission, passing `localWorkers` or `admission` fails with `ForkConfigError` (`field: "localWorkers"` or `"admission"`) before anything is copied. Fork without them, or start a new run with `run()`. A source that saved worker resources accepts overrides of both.
+- **Nothing happens on failure.** `forkRun` checks explicit options before any I/O, then claims and validates the source, definition, inputs, fork point, saved worker timing and sessions before copying. Worker timing errors use `LocalWorkerOptionsError`; other fork precondition failures use `ForkError`. Neither leaves a fork behind. Sessions are then copied and journal events written in one transaction. If a rejected write can be confirmed by reading the fork back, it continues with that same fork and logs a typed `commit-confirmed` diagnostic. A confirmed-unwritten local write, or a returned `exists`, fails with retryable `ForkCopyFailedError` and removes the copies. An unconfirmed shared write keeps its copied sessions and raises non-retryable `ForkJournalUnavailableError`, phase `commit`, with `forkRunId`. Inspect that exact run after storage recovers and resume it if it exists; a missing row does not prove a pending commit will never land, so do not blindly fork again. Cancellation propagates `signal.reason`, preserving possibly committed sessions and logging the uncertainty once. Failure to load a written fork raises the same error with phase `hydrate` and the fork to resume.
+- **Cleanup.** Closing the session stores a fork opened, removing the sessions a failed fork copied, and releasing the claim never replace the fork's result or error. On a failed fork, a failed step is attached to the error as `cleanupCause`; after a fork that succeeded or was cancelled, each failed step is logged once as a `ForkCleanupError` or `ForkClaimReleaseError`.
+- **Busy sources.** Concurrent forks and resumes of the same source exclude each other. Pause or quit an executing source before forking it. Slow copies keep their claim automatically; no timing configuration is needed. If ownership changes during the fork, it stops with retryable `ForkSourceBusyError` (`reason: "lease-lost"`) and leaves no new run. Check the source's status and retry when it is paused or idle. A storage outage while checking the claim raises retryable `ForkJournalUnavailableError` (`phase: "claim"`). Avoid editing the source conversations directly while a fork is in progress.
+- **Cancellation.** Aborting `options.signal` before the fork's journal write starts rejects with `signal.reason`, never a `ForkError`, and creates no new run. Cancellation during an in-flight write cannot undo a commit; possible forks and their session copies are preserved as described above. After creation, the abort cancels the fork's execution as it does for `run()` and the fork stays resumable.
+
+```typescript
+import { forkRun, listForkPoints } from "@bastani/atomic/workflows";
+
+for await (const point of listForkPoints(runId)) console.log(point.stagePath, point.completedAt);
+
+const forked = await forkRun(runId, {
+  fromStage: "implement-api.review-2",
+  inputs: { objective: corrected },
+  carryMessages: "before",
+});
+for await (const event of forked.events) if (event.type === "stage_end") console.log(event.stage.name);
+const result = await forked.result;
+```
+
+The `workflow` tool's `fork` action (`{ action: "fork", runId, fromStage?, inputs?, carryMessages? }`) and `/workflow fork <run> [--from <stage>]` fork into the session's directory and start the fork in the background with the definition the fork resolved, so a workflow defined only in the source's project still runs. The tool action's `inputs` replace the source run's inputs; omitted or empty `inputs` keep them. A failed fork returns `status: "failed"` with the error's `code`, `message` and `hint`. A fork that was written but could not start returns `status: "forked"` with `startFailure` (the code a failed `resume` reports) and a message that names the next step: `/workflow resume <fork>` when the workflow is defined in this directory, otherwise forking the source again.
+
+The model-facing tool action enforces the source run's recorded session ownership before copying its inputs, results or conversations, including when resolving a run prefix or forking from another project. Knowing another session's run ID does not grant permission to fork it.
+
+### `listForkPoints(runId, options?)`
+
+```typescript
+function listForkPoints(runId: string, options?: ListForkPointsOptions): AsyncIterable<ForkPoint>;
+
+interface ForkPoint {
+  stagePath: string;
+  sessionId?: string; // the stage's agent session, when it ran one
+  entryId?: string; // the last entry of that session
+  completedAt: number;
+}
+```
+
+Lists the completed stages of a durable run that `forkRun` can fork from, in completion order. It only reads: the run is not claimed. `sessionId` and `entryId` are present for stages that ran an agent session and feed `forkFromSessionId` / `forkFromEntryId`; `entryId` is the last entry recorded in that session, which can be a label or other metadata entry rather than a message. Options select the journal (`journal`, `store`), the directory, and the `sourceSessionStore` that holds the run's stage sessions (omitted: the run's project store). Worker conversations absent from that store are read automatically from the journal. A session missing from both rejects with `ForkSessionNotFoundError`; a store that cannot be read rejects with the retryable `ForkSessionUnavailableError`. A nested run's id rejects with `ForkSourceNotFoundError` (`reason: "not-root"`) naming its root run.
+
+### Fork errors
+
+Every fork failure is a `ForkError` with a stable `code`, readonly JSON-safe fields, a `hint` that says what to do, and an explicit `retryable` flag. Branch on `code` or the class, never on `message`. The guards (`isForkError`, `isForkTargetNotFoundError`, and one per class) check the class first and then `name` and `code`, so they also match errors from another realm. `findForkError(error)` and `isRetryableForkError(error)` walk at most 8 `cause` links. `serializeForkError(error)` (also `error.toJSON()`) and `rehydrateForkError(json)` carry an error across a process boundary as the same class; an unknown name comes back as a `ForkError` with its name and code. Cleanup failures after a primary failure are attached as `cleanupCause`: the failure itself, or an `AggregateError` whose `errors` are in the order they happened when there are several. `cleanupCause` crosses the process boundary with the error. All are exported from `@bastani/atomic/workflows`.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `ForkTargetNotFoundError` | `target-not-found` | `fromStage` names no completed stage of the run, including a stage the run has not reached yet. | `runId`, `fromStage`, `validStagePaths` (at most 10, in completion order), `totalValidStagePaths` | Pass one of `validStagePaths`, or list them with `listForkPoints`. |
+| `ForkDefinitionMismatchError` | `definition-mismatch` | The definition cannot replay the run. `reason`: `definition-unavailable` (not found), `name-changed` (a different workflow), `inputs-incompatible` (the recorded inputs fail the current definition). | `runId`, `workflow`, `reason`, `definition?` | Pass the run's definition with `definition` or `registry`, or pass replacement `inputs`. |
+| `ForkSourceBusyError` | `source-busy` | Another fork or resume holds the run, it is executing, or the fork lost its source claim. `reason`: `fork-in-progress`, `resume-in-progress`, `live-execution`, `foreign-lease`, or `lease-lost` (the source no longer matches this fork's lease; `cause` is the stale lease). Retryable. | `runId`, `reason`, `holderId?`, `cause?` | Check the source's status and retry when it is paused or idle; wait for another fork or resume to finish, or pause or quit an active run. |
+| `ForkEntryNotFoundError` | `entry-not-found` | A stage's `forkFromEntryId` is not in the session named by `forkFromSessionId`. | `sessionId`, `entryId`, `stageName?` | Pass an entry id from that session, such as a fork point's `entryId`. |
+| `ForkSessionNotFoundError` | `session-not-found` | A stage session the fork copies or lists is not in the session store that was read. | `sessionId`, `runId?`, `stagePath?`, `storage?` (`adapter`, `scope`), `storeSource` (`supplied`: passed as `sourceSessionStore`; `project`: the source project's own store) | `supplied`: pass the session store of the project that ran the run. `project`: fork from that project, or pass its store as `sourceSessionStore`; on local-only storage, join the shared storage. |
+| `ForkSessionUnavailableError` | `session-unavailable` | The session store failed while a stage session was read; nothing was written. Retryable. | `sessionId`, `runId?`, `stagePath?`, `storage?`, `cause` | Retry once the session store is reachable; `atomic storage status` shows the storage in use. |
+| `ForkConfigError` | `invalid-option` | Invalid options or command arguments; incompatible replacement inputs; process-bound options for local workers; added or incompatible worker/admission resources, checked before copying. Saved-resource errors aggregate issues for `localWorkers` and `admission`, including removed definitions or changed user limits. | `source` (`sdk` or `cli`), `field`, `expected`, `issues` (every invalid option) | Correct each listed option, inherit the saved settings, or start a new run for incompatible resources. |
+| `ForkSourceNotFoundError` | `source-not-found` | The run id names no root run in this journal. `reason`: `not-found`, `malformed`, `ambiguous`, or `not-root` (a nested run). | `runId`, `reason`, `matches` (at most 10), `storage?`, `rootRunId?` (`not-root`) | Pass a run id from `/workflow list` or the full id. On a local-only journal, join the shared storage or pass the run's `journal`. For a nested run, fork its root run and pick the nested stage from `listForkPoints(root)`; a process that never saw the nested run reports it as `not-found`. |
+| `ForkSourceOwnershipError` | `source-not-owned` | The `workflow` tool's `fork` action names a run that another session owns (`reason: "foreign-owner"`), or a run an agent started without a recorded session (`owner-unavailable`). It is checked before anything is copied. The `/workflow fork` command and `forkRun` are not restricted. | `runId`, `reason` | Fork it from the session that started it, or run `/workflow fork <runId>` yourself. |
+| `ForkSessionClaimError` | `session-claim-refused` | A forked run that uses local workers couldn't hand a copied stage conversation to a child it was starting. `reason`: `outside-scope`, `owned-by-other-work`, `claimed-for-other-stage`, `missing`, `not-fork-copy` or `run-mismatch`. The enqueue attempt changes no session owners, but previously queued work may remain. `isForkSessionClaimError` also matches it inside a `cause` chain. | `reason`, `sessionId`, `rootRunId`, `childRunId`, `scope`, `replayKey`, `stageRunId` | Inspect `/workflow status <rootRunId>` and retain the fork's original journal and session copies. Do not blindly fork again or reassign owners; report inconsistent claims with these fields before resuming. |
+| `ForkJournalUnsupportedError` | `journal-unsupported` | The run journal has no atomic `createRunWithEvents`, so a fork could leave half a run. | `capability` | Use the SQLite or memory journal, or implement `createRunWithEvents`. |
+| `ForkJournalUnavailableError` | `journal-unavailable` | The run journal's storage failed (`cause` is the storage error). `phase`: `read` or `claim` (nothing was written; retryable), `commit` (the write rejected on a shared journal and the journal could not say whether the fork exists, because it was absent or the read-back failed; the copied sessions were kept; not retryable), `commit-confirmed` (the write rejected but reading the fork back confirmed it; logged once, never thrown), or `hydrate` (the fork run was written but not loaded; not retryable). | `runId`, `phase`, `forkRunId?` (`commit`, `commit-confirmed` and `hydrate`), `storage` (`adapter`, `scope`), `cause` (for `commit` when the read-back failed too, an `AggregateError` of the write failure and the read failure) | For `read` and `claim`, retry once the journal is reachable. For `commit`, do not fork again: once the journal is reachable, inspect that exact run with `/workflow status <forkRunId>` and resume it with `/workflow resume <forkRunId>` if it exists. For `hydrate`, resume `forkRunId` with `/workflow resume` instead of forking again. `atomic storage status` shows the storage in use. |
+| `ForkCopyFailedError` | `copy-failed` | Writing the fork failed and the journal confirmed it holds no fork run (a local journal, or a write that returned `exists`); nothing was kept and copied sessions were removed (a removal that failed is in `cleanupCause`). `phase`: `sessions` or `journal`. Retryable. On a shared journal an unconfirmed write is a `ForkJournalUnavailableError` (`commit`) instead. | `runId`, `forkRunId`, `phase`, `cause` | Retry the fork; the source run was not changed. |
+| `ForkClaimReleaseError` | `claim-release-failed` | Releasing the fork's claim on its source failed after the fork finished or failed. It is attached to a failed fork as `cleanupCause`, or logged once after a fork that succeeded or was cancelled; it is never thrown in their place. | `runId`, `claimExpiresInMs`, `cause` | Nothing to undo: forks and resumes of the source report it busy until the claim expires (`claimExpiresInMs`), then succeed. |
+| `ForkCleanupError` | `cleanup-failed` | A cleanup step failed after a fork or a `listForkPoints` listing. `step`: `close-source-sessions`, `close-destination-sessions`, or `remove-copied-sessions` (a failed fork's copies stayed in the session store). Attached as `cleanupCause` to a failed fork or listing, or logged once after one that succeeded or was cancelled; never thrown in their place. | `runId`, `step`, `forkRunId?`, `cause` | Closing: nothing to undo; if it repeats, check the session storage with `atomic storage status`. Removal: the leftover copies are internal sessions of run `forkRunId` that nothing reads, so they can be deleted. |
+
+### Branching: chat commands and their SDK equivalents
+
+| Chat | Workflow and SDK equivalent | Use it to |
+| --- | --- | --- |
+| `/tree` | `stage.navigateTree(targetId, options?)` | Move a live stage session to another point of its own history. |
+| `/fork` | `context: "fork"` with `forkFromSessionId` and `forkFromEntryId` on `ctx.stage`, `ctx.task`, `ctx.chain` or `ctx.parallel` | Start a stage from an exact entry of an earlier session, for example just before a bad turn. |
+| `/clone` | `context: "fork"` with `forkFromSessionId` and no `forkFromEntryId` | Start a stage from the latest entry of an earlier session. |
+| Run time travel | `forkRun(runId, { fromStage, inputs?, cwd?, carryMessages? })`, the `workflow` tool's `fork` action, `/workflow fork <run> [--from <stage>]` | Retry a finished or paused run from a stage, with corrected inputs, without rerunning earlier work. |
+
+Fork when the next stage should build on what an earlier one learned: an implementer retrying its own work keeps its context. Start fresh when independence matters: a judge or reviewer should not inherit the reasoning it is meant to check.
 
 ### `resolveInputs(schema, provided)`
 

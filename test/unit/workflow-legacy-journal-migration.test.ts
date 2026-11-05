@@ -183,6 +183,12 @@ test("does not create a new run over an unconverted legacy run with the same ID"
 	const journal = await openSqlRunJournal(path);
 	try {
 		assert.equal(await journal.createRun({ ...legacyRun, name: "replacement", status: "running" }), "exists");
+		assert.equal(
+			await journal.createRunWithEvents({ ...legacyRun, name: "replacement", status: "running" }, [
+				{ event: { type: RUN_EVENT_TYPES.runFinished, payload: null } },
+			]),
+			"exists",
+		);
 		assert.equal((await journal.getRun(legacyRun.runId))?.name, legacyRun.name);
 		assert.equal((await readAll(journal.read(legacyRun.runId))).length, 1);
 	} finally {

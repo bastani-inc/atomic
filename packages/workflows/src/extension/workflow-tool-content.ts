@@ -24,12 +24,16 @@ function compactWorkflowToolMessage(
 	result: Extract<
 		WorkflowToolResult,
 		{
-			action: "answer" | "pause" | "reload" | "quit" | "resume";
+			action: "answer" | "pause" | "reload" | "quit" | "resume" | "fork";
 		}
 	>,
 ): string {
 	if (result.action === "reload") {
 		return `${result.action}: ${result.status} — ${result.message}`;
+	}
+	if (result.action === "fork") {
+		const target = result.runId.length > 0 ? result.runId : result.sourceRunId;
+		return `fork: ${target} ${result.status} — ${result.message}`;
 	}
 	const target = [result.runId, result.action === "answer" ? result.stageId : undefined]
 		.filter((part): part is string => part !== undefined && part.length > 0)
@@ -286,6 +290,7 @@ export function renderWorkflowToolContent(result: WorkflowRegisteredToolResult, 
 		case "reload":
 		case "quit":
 		case "resume":
+		case "fork":
 			return compactWorkflowToolMessage(result);
 		case "status":
 			return renderStatusToolContent(result);

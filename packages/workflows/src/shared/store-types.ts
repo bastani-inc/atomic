@@ -628,6 +628,8 @@ export interface RunSnapshot extends RunExecutionState {
 	rootRunId?: string;
 	/** Source failed run when this run is a continuation. */
 	resumedFromRunId?: string;
+	/** Source run and stage when this run was created by `forkRun` (#4321). */
+	forkedFrom?: { readonly runId: string; readonly stagePath?: string };
 	/** Source stage id where continuation resumes real execution. */
 	resumeFromStageId?: string;
 	/**

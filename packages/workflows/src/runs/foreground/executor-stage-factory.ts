@@ -123,6 +123,7 @@ export function createWorkflowStageFactory(input: {
 						routerSelection: executeReplaySource.routerSelection,
 						context: options?.context ?? "fork",
 						forkFromSessionId: options?.forkFromSessionId ?? executeReplaySource.sessionId,
+						forkFromEntryId: options?.forkFromSessionId === undefined ? undefined : options.forkFromEntryId,
 					};
 		const intercomGroup =
 			options?.durableIntercomGroup ?? resolveStageGroup(replayStageOptions, input.workflowIntercomGroup);

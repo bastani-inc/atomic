@@ -24,6 +24,7 @@ import {
 	type RunHeader,
 	type RunJournal,
 	type RunJournalBatchAppend,
+	type RunJournalSeedEvent,
 	RunNotFoundError,
 	type RunSnapshotTail,
 	type RunSummary,
@@ -370,6 +371,49 @@ export class ShardedRunJournal implements RunJournal {
 					cwd: header.cwd,
 					status: header.status,
 				});
+			return created;
+		});
+	}
+
+	/**
+	 * Creates a run and its first events in one transaction of the shard the run is placed on, as {@link createRun}
+	 * places it (`RunJournal.createRunWithEvents`), so a fork's run is seeded atomically in the journal store (#4321).
+	 */
+	async createRunWithEvents(header: RunHeader, events: readonly RunJournalSeedEvent[]): Promise<"created" | "exists"> {
+		this.assertOpen();
+		validateText("runId", header.runId);
+		validateText("name", header.name);
+		validateText("cwd", header.cwd);
+		validateText("status", header.status);
+		const recorded = detached(header);
+		if (unserializable(recorded))
+			throw new StorageUnavailableError(this.descriptor, recorded.unserializable as StorageFailureCause);
+		const seeded = events.map((seed) => ({
+			...seed,
+			event: { type: seed.event.type, payload: recordedPayload(seed.event.payload) } as RunEvent,
+		}));
+		return this.operation(async () => {
+			if ((await this.catalog.locate(header.runId)) === undefined && (await this.locate(header.runId)) === undefined)
+				await this.reconcileStatuses();
+			const reserved = await this.catalog.place({ runId: header.runId });
+			this.located.set(header.runId, reserved.shard);
+			const shard = await this.shardJournal(reserved.shard, header.runId);
+			if (shard.createRunWithEvents === undefined)
+				throw new StorageUnavailableError(
+					this.descriptor,
+					new Error(`Journal shard ${reserved.shard.path} cannot create a run with its events in one transaction`),
+				);
+			const created = await shard.createRunWithEvents(recorded, seeded);
+			if (reserved.status === undefined)
+				await this.catalog.place({
+					runId: header.runId,
+					name: header.name,
+					cwd: header.cwd,
+					status: header.status,
+				});
+			let status: string | undefined;
+			for (const seed of seeded) status = this.statusOf(seed.event) ?? status;
+			if (created === "created" && status !== undefined) await this.recordStatus(header.runId, status);
 			return created;
 		});
 	}

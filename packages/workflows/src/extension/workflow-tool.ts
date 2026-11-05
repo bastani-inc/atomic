@@ -16,7 +16,11 @@ import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import { assertWorkflowInstanceOwner, workflowCaller } from "./workflow-instance-owner.js";
+import {
+	assertWorkflowForkSourceOwner,
+	assertWorkflowInstanceOwner,
+	workflowCaller,
+} from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
@@ -39,6 +43,7 @@ import {
 	workflowReloadAction,
 	workflowResumeAction,
 } from "./workflow-tool-control.js";
+import { workflowForkAction } from "./workflow-tool-fork.js";
 import {
 	type WorkflowInspectionSource,
 	workflowStageResult,
@@ -339,6 +344,21 @@ export function makeExecuteWorkflowTool(
 							),
 					}),
 				);
+			case "fork": {
+				const modelOwner = workflowCaller(ctx);
+				await ensureWorkflowResourcesVisible();
+				return awaitRequest(
+					workflowForkAction(args, {
+						getRuntime,
+						policy,
+						source: "sdk",
+						modelOwner,
+						signal,
+						onRunAccepted,
+						validateSource: (handle) => assertWorkflowForkSourceOwner(handle, modelOwner),
+					}),
+				);
+			}
 			default: {
 				const _exhaustive: never = action;
 				throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

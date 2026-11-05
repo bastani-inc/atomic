@@ -13,6 +13,8 @@
 
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { ForkErrorCode } from "../durable/fork-errors.js";
+import type { WorkflowForkedFrom } from "../durable/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { workflowBoundarySegments } from "../shared/pending-stage-status.js";
@@ -198,6 +200,20 @@ type ResumeResult = {
 	/** `run_not_found`: the typed storage error behind it, serialized for the SDK to rehydrate. */
 	failure?: SerializedJournalStoreError;
 };
+/** Outcome of the `fork` action: the new run, or the typed fork failure's code, message and hint. */
+export type ForkResult = {
+	action: "fork";
+	/** The fork's run id; empty when no fork was created. */
+	runId: string;
+	sourceRunId: string;
+	/** `forked` when the fork was created but did not start; `startFailure` says why. */
+	status: "running" | "forked" | "failed";
+	message: string;
+	forkedFrom?: WorkflowForkedFrom;
+	startFailure?: WorkflowControlFailureCode;
+	code?: ForkErrorCode;
+	hint?: string;
+};
 
 /**
  * Outcome of aborting one in-flight `ctx.tool` node with `quit`/`pause`.
@@ -250,6 +266,7 @@ export type WorkflowToolResult =
 	| ReloadResult
 	| QuitResult
 	| ResumeResult
+	| ForkResult
 	| ToolNodeControlResult
 	| ModelsResult;
 
@@ -576,6 +593,16 @@ function renderResultBody(result: WorkflowRegisteredToolResult | null | undefine
 		case "resume": {
 			const r = result as ResumeResult;
 			return renderNotice("WORKFLOW RESUME", `${r.runId}: ${r.message}`, opts, themed);
+		}
+
+		case "fork": {
+			const r = result as ForkResult;
+			return renderNotice(
+				"WORKFLOW FORK",
+				`${r.runId.length > 0 ? r.runId : r.sourceRunId}: ${r.message}`,
+				opts,
+				themed,
+			);
 		}
 
 		case "models": {

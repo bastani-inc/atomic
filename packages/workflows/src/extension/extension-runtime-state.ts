@@ -384,6 +384,9 @@ export function createWorkflowExtensionRuntimeState(
 		resumeDurableWorkflow(workflowId, options) {
 			return runtimeRef.current.resumeDurableWorkflow(workflowId, options);
 		},
+		forkDurableWorkflow(sourceRunId, options) {
+			return runtimeRef.current.forkDurableWorkflow(sourceRunId, options);
+		},
 		inspectDurableWorkflow(workflowId) {
 			return runtimeRef.current.inspectDurableWorkflow(workflowId);
 		},

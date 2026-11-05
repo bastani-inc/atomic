@@ -46,9 +46,11 @@ function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface ResourceChange {
+export interface ResourceChange {
 	readonly description: string;
 	readonly resumable: boolean;
+	/** The option that sets the changed setting: a coordinator is recorded for local workers. */
+	readonly option: "localWorkers" | "admission";
 	/** An edited entry module of a worker definition, which a resume that accepts entry changes applies (#4200). */
 	readonly entry?: true;
 }
@@ -64,6 +66,7 @@ function settingChanges(path: string, saved: unknown, current: unknown, changes:
 	changes.push({
 		description: `${path} changed from ${shown(saved)} to ${shown(current)}`,
 		resumable: RESUMABLE_SETTINGS.has(path),
+		option: path.startsWith("admission") ? "admission" : "localWorkers",
 	});
 }
 
@@ -77,6 +80,7 @@ function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExe
 		changes.push({
 			description: `local workers were turned ${current.localWorkers === undefined ? "off" : "on"}`,
 			resumable: false,
+			option: "localWorkers",
 		});
 	else {
 		// Definitions are compared below, by name and entry module, so a reordered list is not a change.
@@ -94,19 +98,90 @@ function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExe
 	for (const [name, digest] of before) {
 		const now = after.get(name);
 		if (now === undefined)
-			changes.push({ description: `worker definition ${name} is no longer listed`, resumable: false });
+			changes.push({
+				description: `worker definition ${name} is no longer listed`,
+				resumable: false,
+				option: "localWorkers",
+			});
 		else if (now !== digest)
 			changes.push({
 				description: `the entry module of worker definition ${name} was edited (sha256 ${digest.slice(0, 12)} to ${now.slice(0, 12)})`,
 				resumable: false,
+				option: "localWorkers",
 				entry: true,
 			});
 	}
 	for (const name of after.keys())
-		if (!before.has(name)) changes.push({ description: `worker definition ${name} was added`, resumable: false });
+		if (!before.has(name))
+			changes.push({ description: `worker definition ${name} was added`, resumable: false, option: "localWorkers" });
 	settingChanges("admission", saved.admission, current.admission, changes);
 	settingChanges("coordinator", saved.coordinator, current.coordinator, changes);
 	return changes;
+}
+
+/**
+ * The changes from a root's saved resources that its resume refuses: every one but the pool size, the root's own limits
+ * and, when `acceptEntryChanges` is set, an edited entry module.
+ */
+export function refusedResourceChanges(
+	saved: WorkflowExecutionResources,
+	current: WorkflowExecutionResources,
+	acceptEntryChanges: boolean | undefined,
+): ResourceChange[] {
+	return resourceChanges(saved, current).filter(
+		(change) => !change.resumable && !(change.entry && acceptEntryChanges === true),
+	);
+}
+
+/**
+ * The resources a root records for `options`: without the settings it never saves, with paths resolved against its
+ * directory, user limits counted in `userDatabase()` when they name no database, and each definition's `digestOf` its
+ * resolved path.
+ */
+export function workerResources(
+	options: Pick<RunOpts, "localWorkers" | "admission" | "cwd">,
+	context: {
+		readonly userDatabase: () => string | undefined;
+		readonly digestOf: (path: string) => string;
+		readonly coordinator: WorkflowExecutionResources["coordinator"];
+	},
+): WorkflowExecutionResources {
+	const cwd = options.cwd ?? process.cwd();
+	const localWorkers = options.localWorkers && {
+		...options.localWorkers,
+		startupTimeoutMs: undefined,
+		leaseMs: undefined,
+		heartbeatMs: undefined,
+		maxLoadPerCpu: undefined,
+		maxWorkerRssBytes: undefined,
+		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
+	};
+	const admission = options.admission && {
+		...options.admission,
+		...(options.admission.userDatabase ? { userDatabase: resolve(cwd, options.admission.userDatabase) } : {}),
+	};
+	const userDatabase =
+		admission?.userLimits && admission.userDatabase === undefined ? context.userDatabase() : undefined;
+	return JSON.parse(
+		JSON.stringify({
+			...(localWorkers
+				? {
+						localWorkers,
+						definitions: localWorkers.definitions.map((source) => ({
+							...source,
+							digest: context.digestOf(source.path),
+						})),
+					}
+				: {}),
+			...(admission ? { admission: userDatabase === undefined ? admission : { ...admission, userDatabase } } : {}),
+			...(localWorkers && context.coordinator ? { coordinator: context.coordinator } : {}),
+		}),
+	) as WorkflowExecutionResources;
+}
+
+/** The pool database a root in `journal` counts user limits in when they name none: unset for a local SQLite journal. */
+export function poolUserDatabase(journal: RunJournal): string | undefined {
+	return isLocalPoolJournal(journal) ? undefined : resolve(coordinationPath(poolDurableJournal(journal)));
 }
 
 /**
@@ -196,42 +271,31 @@ export async function activatePublicPool(
 		registerPoolJournal(backend.journal, poolJournal);
 	}
 	const cwd = options.cwd ?? process.cwd();
-	const localWorkers = options.localWorkers && {
-		...options.localWorkers,
-		startupTimeoutMs: undefined,
-		leaseMs: undefined,
-		heartbeatMs: undefined,
-		maxLoadPerCpu: undefined,
-		maxWorkerRssBytes: undefined,
-		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
-	};
-	const admission = options.admission && {
-		...options.admission,
-		...(options.admission.userDatabase ? { userDatabase: resolve(cwd, options.admission.userDatabase) } : {}),
-	};
-	if (durable !== undefined && admission?.userLimits) {
-		// User limits count across the roots sharing one database; for a journal in another database that is this
-		// machine's pool database, whose path is the only `userDatabase` that fits.
-		if (admission.userDatabase !== undefined && admission.userDatabase !== resolve(poolPath))
-			throw new Error(
-				`admission.userDatabase must be omitted, or ${resolve(poolPath)}, for a journal that is not a local SQLite file`,
-			);
-		(admission as { userDatabase?: string }).userDatabase = resolve(poolPath);
-	}
-	const sources =
-		localWorkers &&
-		(await Promise.all(
-			localWorkers.definitions.map(async (source) => ({ ...source, digest: await definitionDigest(source.path) })),
-		));
-	const resources = JSON.parse(
-		JSON.stringify({
-			...(localWorkers ? { localWorkers, definitions: sources } : {}),
-			...(admission ? { admission } : {}),
-			...(durable !== undefined && localWorkers
-				? { coordinator: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) } }
-				: {}),
-		}),
-	) as WorkflowExecutionResources;
+	const userDatabase = options.admission?.userDatabase
+		? resolve(cwd, options.admission.userDatabase)
+		: options.admission?.userDatabase;
+	// User limits count across the roots sharing one database; for a journal in another database that is this
+	// machine's pool database, whose path is the only `userDatabase` that fits.
+	if (
+		durable !== undefined &&
+		options.admission?.userLimits &&
+		userDatabase !== undefined &&
+		userDatabase !== resolve(poolPath)
+	)
+		throw new Error(
+			`admission.userDatabase must be omitted, or ${resolve(poolPath)}, for a journal that is not a local SQLite file`,
+		);
+	const paths = (options.localWorkers?.definitions ?? []).map((source) => resolve(cwd, source.path));
+	const digests = new Map(await Promise.all(paths.map(async (path) => [path, await definitionDigest(path)] as const)));
+	const resources = workerResources(options, {
+		userDatabase: () => (durable === undefined ? undefined : resolve(poolPath)),
+		digestOf: (path) => digests.get(path)!,
+		coordinator:
+			durable === undefined || !options.localWorkers
+				? undefined
+				: { host: poolHostId(durable.agentDir), database: coordinationDatabase(durable) },
+	});
+	const localWorkers = resources.localWorkers;
 	const saved = options.effectiveResources?.coordinator;
 	if (saved !== undefined && resources.coordinator !== undefined && saved.host !== resources.coordinator.host)
 		throw new Error(
@@ -254,9 +318,7 @@ export async function activatePublicPool(
 	const refused =
 		options.effectiveResources === undefined
 			? []
-			: resourceChanges(options.effectiveResources, resources).filter(
-					(change) => !change.resumable && !(change.entry && options.acceptEntryChanges === true),
-				);
+			: refusedResourceChanges(options.effectiveResources, resources, options.acceptEntryChanges);
 	if (refused.length > 0)
 		throw new Error(
 			`Since root ${options.runId} started, ${refused.map((change) => change.description).join("; ")}. Its recorded steps and queued children depend on these, so restore them to resume it, or start a new run. The pool size (localWorkers.count) and the root's own limits (admission.limits and admission.host) can change between resumes.${
@@ -279,7 +341,10 @@ export async function activatePublicPool(
 		});
 	if (!localWorkers) return;
 	const definitions = await Promise.all(
-		(sources ?? []).map(async (source) => ({ ...source, definition: await loadWorkerDefinition(source) })),
+		(resources.definitions ?? []).map(async (source) => ({
+			...source,
+			definition: await loadWorkerDefinition(source),
+		})),
 	);
 	const pool = new LocalWorkerPool(backend, {
 		rootId: options.runId!,

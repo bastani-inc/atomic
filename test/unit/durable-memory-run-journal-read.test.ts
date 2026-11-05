@@ -85,3 +85,15 @@ test("memory journal reads preserve inclusive numeric thresholds across page bou
 		await journal.close();
 	}
 });
+
+test("memory journal atomic run creation keeps the header's storage unless the journal has its own (#4321)", async () => {
+	const storage = { adapter: "libsql", location: "libsql://journal" };
+	const header = { runId: "run", name: "test", cwd: "", createdAt: 0, status: "running", storage };
+	const plain = new MemoryRunJournal();
+	assert.equal(await plain.createRunWithEvents(header, []), "created");
+	assert.deepEqual((await plain.getRun("run"))?.storage, storage);
+	const own = { adapter: "memory", location: ":memory:" };
+	const described = new MemoryRunJournal(own);
+	assert.equal(await described.createRunWithEvents(header, []), "created");
+	assert.deepEqual((await described.getRun("run"))?.storage, own);
+});

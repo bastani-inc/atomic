@@ -49,6 +49,7 @@ export async function buildStageSessionOptions(input: StageSessionOptionsInput):
 		options.resumeFromSessionId = input.reattachSessionId;
 		options.context = undefined;
 		options.forkFromSessionId = undefined;
+		options.forkFromEntryId = undefined;
 	}
 	if (input.sharedModelRuntime !== undefined && options.modelRuntime === undefined) {
 		options.modelRuntime = input.sharedModelRuntime;
