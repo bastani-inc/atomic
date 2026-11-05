@@ -944,7 +944,10 @@ describe("shared stores follow the remote (#3109)", () => {
 		git(clone, "fetch", "-q", "origin");
 		const binding = await resolveWorkspace(workspace({ repo: clone, base: "main", branch: "behind" }));
 		assert.equal(binding.head, behind, "the local branch is not moved to its remote copy");
-		assert.equal(binding.baseCommit, git(clone, "rev-parse", "main"), "base main is the repository's own main");
+		git(clone, "branch", "on-remote-main", "origin/main");
+		const onRemote = await resolveWorkspace(workspace({ repo: clone, base: "main", branch: "on-remote-main" }));
+		assert.equal(onRemote.baseCommit, git(clone, "rev-parse", "main"), "base main is the repository's own main");
+		assert.notEqual(onRemote.baseCommit, git(clone, "rev-parse", "origin/main"));
 	});
 
 	test("a base naming a remote branch means that branch as the remote has it (#3109)", async () => {
