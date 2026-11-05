@@ -1,5 +1,4 @@
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
-import { ReleasedChildError } from "./released-child-errors.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
@@ -25,16 +24,20 @@ export interface ReleasedChildReservation {
 	readonly wake: boolean;
 }
 
-/** Failures to keep a released child addressable, counted so they are not lost. */
-export const releasedChildHoldFailures: { count: number; last?: ReleasedChildError } = { count: 0 };
+/** Deliver a reservation failure to the launching session, without retaining a registry per child. */
+export const SUBAGENT_HOLD_FAILURE_EVENT = "subagent:released-child-hold-failure";
+export const SUBAGENT_HOLD_RECOVERED_EVENT = "subagent:released-child-hold-recovered";
 
-function recordHoldFailure(childName: string | undefined, error: Error): void {
-	releasedChildHoldFailures.count += 1;
-	releasedChildHoldFailures.last = new ReleasedChildError(
-		"hold-failed",
-		childName === undefined ? {} : { childName },
-		{ cause: error },
-	);
+export interface ReleasedChildHoldFailure {
+	readonly childNames: readonly string[];
+	readonly error: Error;
+	handled?: boolean;
+}
+
+function recordHoldFailure(events: IntercomEventBus, childNames: readonly string[], error: Error): void {
+	const failure: ReleasedChildHoldFailure = { childNames, error };
+	events.emit(SUBAGENT_HOLD_FAILURE_EVENT, failure);
+	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
 
 const PARKED_STATUSES: ReadonlySet<string> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
@@ -67,8 +70,14 @@ export function reserveReleasedChildren(
 	children: readonly ReleasedChildReservation[],
 ): Promise<void> {
 	if (children.length === 0) return Promise.resolve();
-	return emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children }).catch((error: Error) =>
-		recordHoldFailure(children.length === 1 ? children[0]?.childName : undefined, error),
+	return emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children }).then(
+		() => events.emit(SUBAGENT_HOLD_RECOVERED_EVENT, {}),
+		(error: Error) =>
+			recordHoldFailure(
+				events,
+				children.map((child) => child.childName),
+				error,
+			),
 	);
 }
 
@@ -80,14 +89,14 @@ export function dropReleasedChildren(
 ): Promise<void> {
 	if (childNames.length === 0) return Promise.resolve();
 	return emitIntercomRequest(events, SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, { childNames, ...outcome }).catch(
-		(error: Error) => recordHoldFailure(childNames.length === 1 ? childNames[0] : undefined, error),
+		(error: Error) => recordHoldFailure(events, childNames, error),
 	);
 }
 
 /** Tell the broker this owner is waking the child, so the sends held for it may wait longer. */
 export function acknowledgeReleasedChildWake(events: IntercomEventBus, childName: string): Promise<void> {
 	return emitIntercomRequest(events, SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, { childName }).catch(
-		(error: Error) => recordHoldFailure(childName, error),
+		(error: Error) => recordHoldFailure(events, [childName], error),
 	);
 }
 

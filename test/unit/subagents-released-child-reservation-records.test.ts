@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { beforeEach, describe, test } from "vitest";
+import { describe, test } from "vitest";
 import {
 	acknowledgeReleasedChildWake,
 	dropReleasedChildren,
-	releasedChildHoldFailures,
 	releasedChildReservation,
 	reserveReleasedChildren,
 	reserveReleasedChildTargets,
+	SUBAGENT_HOLD_FAILURE_EVENT,
+	SUBAGENT_HOLD_RECOVERED_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
@@ -26,7 +27,10 @@ function bus(failure?: Error) {
 		on: () => () => undefined,
 		emit(channel, data) {
 			emitted.push({ channel, data: data as object });
-			if (failure !== undefined) (data as { completion?: Promise<void> }).completion = Promise.reject(failure);
+			if (channel === SUBAGENT_HOLD_FAILURE_EVENT) (data as { handled?: boolean }).handled = true;
+			else if (channel !== SUBAGENT_HOLD_RECOVERED_EVENT && failure !== undefined)
+				(data as { completion?: Promise<void> }).completion = Promise.reject(failure);
+			if (channel === SUBAGENT_HOLD_RECOVERED_EVENT) emitted.pop();
 		},
 	};
 	return { events, emitted };
@@ -49,11 +53,6 @@ function record(overrides: Partial<SubagentChildRecord> = {}): SubagentChildReco
 		...overrides,
 	};
 }
-
-beforeEach(() => {
-	releasedChildHoldFailures.count = 0;
-	delete releasedChildHoldFailures.last;
-});
 
 describe("releasedChildReservation", () => {
 	test("a reservation has no group key unless the record has an intercom group (#4326)", () => {
@@ -104,28 +103,16 @@ describe("hold failures", () => {
 	const failure = new Error("broker down");
 	const reservation = (childName: string) => ({ childName, aliases: [], wake: true });
 
-	test("one reserved child is named in the failure, several are not (#4326)", async () => {
-		await reserveReleasedChildren(bus(failure).events, [reservation("a")]);
-		assert.equal(releasedChildHoldFailures.count, 1);
-		assert.deepEqual(releasedChildHoldFailures.last?.fields, { childName: "a" });
-		assert.equal(releasedChildHoldFailures.last?.cause, failure);
-		await reserveReleasedChildren(bus(failure).events, [reservation("a"), reservation("b")]);
-		assert.equal(releasedChildHoldFailures.count, 2);
-		assert.deepEqual(releasedChildHoldFailures.last?.fields, {});
-	});
-
-	test("one dropped child is named in the failure, several are not (#4326)", async () => {
-		await dropReleasedChildren(bus(failure).events, ["a"]);
-		assert.equal(releasedChildHoldFailures.count, 1);
-		assert.deepEqual(releasedChildHoldFailures.last?.fields, { childName: "a" });
-		await dropReleasedChildren(bus(failure).events, ["a", "b"]);
-		assert.equal(releasedChildHoldFailures.count, 2);
-		assert.deepEqual(releasedChildHoldFailures.last?.fields, {});
-	});
-
-	test("a failed wake acknowledgement is recorded with the child name (#4326)", async () => {
-		await acknowledgeReleasedChildWake(bus(failure).events, "a");
-		assert.equal(releasedChildHoldFailures.count, 1);
-		assert.deepEqual(releasedChildHoldFailures.last?.fields, { childName: "a" });
+	test("reserve, drop and acknowledgement failures preserve all affected names and the broker error (#4326)", async () => {
+		const { events, emitted } = bus(failure);
+		await reserveReleasedChildren(events, [reservation("a"), reservation("b")]);
+		await dropReleasedChildren(events, ["a", "b"]);
+		await acknowledgeReleasedChildWake(events, "a");
+		const failures = emitted.filter((item) => item.channel === SUBAGENT_HOLD_FAILURE_EVENT);
+		assert.deepEqual(
+			failures.map((item) => (item.data as { childNames: readonly string[] }).childNames),
+			[["a", "b"], ["a", "b"], ["a"]],
+		);
+		for (const item of failures) assert.equal((item.data as { error: Error }).error, failure);
 	});
 });

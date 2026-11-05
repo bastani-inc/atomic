@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@bastani/atomic";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { ReleasedChildReservationError } from "../../packages/intercom/broker/released-child-errors.js";
 import {
 	acknowledgeReleasedChildWake,
 	dropReleasedChildren,
@@ -13,6 +14,7 @@ import {
 	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_HOLD_RECOVERED_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
@@ -21,9 +23,12 @@ import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
+	subagentChildRecordFailures,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
+import { subagentChildrenAwaitingResume } from "../../packages/subagents/src/runs/foreground/subagent-run-control.js";
 import type { IntercomEventBus } from "../../packages/subagents/src/shared/types.js";
+import { SUBAGENT_COMPLETE_EVENT } from "../../packages/subagents/src/shared/types.js";
 
 function bus() {
 	const emitted: Array<{ channel: string; data: object }> = [];
@@ -38,7 +43,7 @@ function bus() {
 				);
 		},
 		emit(channel, data) {
-			emitted.push({ channel, data: data as object });
+			if (channel !== SUBAGENT_HOLD_RECOVERED_EVENT) emitted.push({ channel, data: data as object });
 			for (const handler of listeners.get(channel) ?? []) handler(data as object);
 		},
 	};
@@ -159,3 +164,67 @@ test("dropping and acknowledging name the children, and a request to nobody chan
 		{ channel: SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, data: { childName: "a" } },
 	]);
 });
+
+test("a broker refusal of a released child's reservation appears in status and notifies the owner once (#4326)", async () => {
+	const { ctx } = await ownerWith([{ waitingOn: [] }]);
+	const { events, emitted } = bus();
+	const refusal = new ReleasedChildReservationError({ code: "not_owner", childName: "subagent-worker-run0-1" });
+	let rejectReservation = true;
+	events.on(SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, (data) => {
+		(data as { completion?: Promise<void> }).completion = rejectReservation
+			? Promise.reject(refusal)
+			: Promise.resolve();
+	});
+	const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+	try {
+		await vi.waitFor(() =>
+			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1),
+		);
+		assert.equal(subagentChildRecordFailures.last?.code, "hold-failed");
+		assert.equal(subagentChildRecordFailures.last?.cause, refusal);
+		assert.equal(subagentChildRecordFailures.last?.fields.childId, "run0:0");
+		const status = subagentChildrenAwaitingResume(ctx).join("\n");
+		assert.match(status, /run0:0.*hold-failed/);
+		assert.match(status, /Intercom/);
+		events.emit(INTERCOM_CONNECTED_EVENT, {});
+		await vi.waitFor(() =>
+			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT).length, 2),
+		);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1);
+		rejectReservation = false;
+		events.emit(INTERCOM_CONNECTED_EVENT, {});
+		await new Promise((resolve) => setImmediate(resolve));
+		rejectReservation = true;
+		events.emit(INTERCOM_CONNECTED_EVENT, {});
+		await vi.waitFor(() =>
+			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 2),
+		);
+	} finally {
+		stop();
+	}
+});
+
+for (const operation of ["drop", "acknowledge"] as const) {
+	test(`a failed ${operation} reports hold-failed to the owner (#4326)`, async () => {
+		const { ctx } = await ownerWith([{ waitingOn: [] }]);
+		const { events, emitted } = bus();
+		const refusal = new ReleasedChildReservationError({ code: "not_owner", childName: "subagent-worker-run0-1" });
+		const channel =
+			operation === "drop" ? SUBAGENT_DROP_RELEASED_CHILDREN_EVENT : SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT;
+		events.on(channel, (data) => {
+			(data as { completion?: Promise<void> }).completion = Promise.reject(refusal);
+		});
+		const stop = bindReleasedChildWakes({} as SubagentChildRestoreDeps, ctx, events, new AgentWakeDispatcher());
+		try {
+			await new Promise((resolve) => setImmediate(resolve));
+			if (operation === "drop") await dropReleasedChildren(events, ["subagent-worker-run0-1"]);
+			else await acknowledgeReleasedChildWake(events, "subagent-worker-run0-1");
+			assert.equal(subagentChildRecordFailures.last?.cause, refusal);
+			assert.match(subagentChildrenAwaitingResume(ctx).join("\n"), /run0:0.*hold-failed/);
+			assert.equal(emitted.filter((item) => item.channel === SUBAGENT_COMPLETE_EVENT).length, 1);
+		} finally {
+			stop();
+		}
+	});
+}

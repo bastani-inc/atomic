@@ -15,8 +15,8 @@ import {
 	type ReleasedChildError,
 } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
-	releasedChildHoldFailures,
 	reserveReleasedChildTargets,
+	SUBAGENT_HOLD_FAILURE_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
@@ -339,26 +339,28 @@ test("a released child's name and ids are reserved for waking in one request, an
 	]);
 
 	const silent = fakeEvents(false);
-	const failures = releasedChildHoldFailures.count;
+	const failures = silent.emitted.filter((entry) => entry.channel === SUBAGENT_HOLD_FAILURE_EVENT).length;
 	await reserveReleasedChildTargets({ intercomEvents: silent }, "session-2", undefined);
 	await reserveReleasedChildTargets({ intercomSessionName: "child-2" }, "session-2", undefined);
 	assert.equal(silent.emitted.length, 0, "a child with no Intercom name or bus has nothing to keep addressable");
-	assert.equal(releasedChildHoldFailures.count, failures, "and nothing failed trying");
+	assert.equal(silent.emitted.filter((entry) => entry.channel === SUBAGENT_HOLD_FAILURE_EVENT).length, failures);
 });
 
-test("a failure to keep a released child addressable is counted as a typed hold failure, not swallowed (#4326)", async () => {
-	const before = releasedChildHoldFailures.count;
+test("a failed reservation hands its broker error to the owner (#4326)", async () => {
 	const events = fakeEvents(false);
+	const cause = new Error("broker gone");
+	let received: { childNames: readonly string[]; error: Error; handled?: boolean } | undefined;
 	events.emit = (channel, data) => {
 		if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT)
-			(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("broker gone"));
+			(data as { completion?: Promise<void> }).completion = Promise.reject(cause);
+		if (channel === SUBAGENT_HOLD_FAILURE_EVENT) {
+			received = data as typeof received;
+			if (received) received.handled = true;
+		}
 	};
 	await reserveReleasedChildTargets({ intercomEvents: events, intercomSessionName: "child-3" }, undefined, undefined);
-	assert.equal(releasedChildHoldFailures.count, before + 1);
-	const failure = releasedChildHoldFailures.last;
-	assert.ok(failure && isReleasedChildError(failure));
-	assert.deepEqual([failure.code, failure.fields, failure.retryable], ["hold-failed", { childName: "child-3" }, true]);
-	assert.equal((failure.cause as Error).message, "broker gone");
+	assert.deepEqual(received?.childNames, ["child-3"]);
+	assert.equal(received?.error, cause);
 });
 
 function owner() {

@@ -15,7 +15,10 @@ import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-chil
 import {
 	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
+	type ReleasedChildHoldFailure,
 	reserveReleasedChildrenOf,
+	SUBAGENT_HOLD_FAILURE_EVENT,
+	SUBAGENT_HOLD_RECOVERED_EVENT,
 } from "./released-child-reservations.js";
 import { bindResumeDispatcher } from "./released-child-resume.js";
 import {
@@ -91,6 +94,42 @@ export function bindReleasedChildWakes(
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
 	const namespace = subagentWakeNamespace(ownerSessionId);
+	let holdFailureNotified = false;
+	const unsubscribeHoldFailure = events.on(SUBAGENT_HOLD_FAILURE_EVENT, (payload) => {
+		const failure = payload as ReleasedChildHoldFailure;
+		indexSubagentChildOwner(ctx);
+		for (const childName of failure.childNames) {
+			const record = subagentChildRecordForTarget(ownerSessionId, childName);
+			if (record === undefined) continue;
+			failure.handled = true;
+			const error = new ReleasedChildError(
+				"hold-failed",
+				{ ownerSessionId, childId: record.childId, childName, reason: "Intercom reservation request failed" },
+				{ cause: failure.error },
+			);
+			observeChildRecordFailure(ownerSessionId, error);
+			if (holdFailureNotified) continue;
+			holdFailureNotified = true;
+			void deliverLocalCompletionNotification(
+				events,
+				{
+					id: record.runId,
+					runId: record.runId,
+					agent: record.agent,
+					status: "error",
+					summary: `${error.message} (${error.code}). ${error.hint}`,
+					timestamp: Date.now(),
+					noticeLabel: "Released subagent reservation",
+				},
+				`released-hold-failure-${ownerSessionId}-${randomUUID()}`,
+			).catch((cause: Error) => {
+				observeChildRecordFailure(ownerSessionId, new ReleasedChildError("hold-failed", error.fields, { cause }));
+			});
+		}
+	});
+	const unsubscribeHoldRecovered = events.on(SUBAGENT_HOLD_RECOVERED_EVENT, () => {
+		holdFailureNotified = false;
+	});
 	const reserveAll = () => {
 		indexSubagentChildOwner(ctx);
 		void reserveReleasedChildrenOf(events, ownerSessionId);
@@ -196,6 +235,8 @@ export function bindReleasedChildWakes(
 		disposeHandler();
 		unbindResume();
 		stopReporting();
+		unsubscribeHoldFailure();
+		unsubscribeHoldRecovered();
 		unsubscribe();
 		unsubscribeReply();
 		unsubscribeConnected();
