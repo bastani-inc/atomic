@@ -8,6 +8,7 @@ import {
 	type ReleasedChildErrorCode,
 } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
+	clearSubagentChildHeldToolResults,
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
@@ -136,4 +137,30 @@ test("holding results for a child with no record, or when the save fails, reject
 	failing.enabled = false;
 	const kept = await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]);
 	assert.deepEqual(kept.heldToolResults, [RESULT]);
+});
+
+test("held results are added beside those already held, and only the ids a run took are cleared, in the owner's order (#4326)", async () => {
+	const { sessionManager, ctx, pi, ownerSessionId } = owner();
+	const sink = createSubagentChildRecordSink(pi, ctx);
+	sink.record(launch);
+	await sink.flushed?.();
+	const later: DetachedToolResult = { ...RESULT, toolCallId: "deploy-2" };
+	const written = () =>
+		sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "custom" && entry.customType === SUBAGENT_CHILD_RECORD_TYPE).length;
+
+	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT]);
+	await recordSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", [RESULT, later]);
+	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [
+		RESULT,
+		later,
+	]);
+
+	const before = written();
+	await clearSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", ["unheld-9"]);
+	assert.equal(written(), before, "clearing ids it does not hold writes nothing");
+	await clearSubagentChildHeldToolResults(pi, ownerSessionId, "run:0", ["ci-1"]);
+	assert.deepEqual(readSubagentChildRecords(sessionManager.getEntries()).get("run:0")?.heldToolResults, [later]);
+	assert.equal(written(), before + 1);
 });

@@ -15,8 +15,8 @@ import type {
 	Usage,
 } from "../../shared/types.js";
 import { resolveTopLevelParallelRunningCapacity } from "../../shared/types.js";
-import { getOrCreateSubagentControl } from "../inprocess/control-registry.js";
-import type { AttemptOutcome, ChildSpec, ParentContext } from "../inprocess/runner.js";
+import { getOrCreateSubagentControl, unregisterSubagentControl } from "../inprocess/control-registry.js";
+import type { AttemptOutcome, ChildSpec, ParentContext, SubagentControlRuntime } from "../inprocess/runner.js";
 import { isParentCancellation } from "../shared/cancellation-recovery.js";
 import { filterSpawnableModelCandidates, skippedModelAttempt } from "../shared/model-candidate-filter.js";
 import {
@@ -567,6 +567,7 @@ export async function runSingleInProcess(
 					recovered.envelope = delivered.envelope;
 					recovered.finalOutput = delivered.envelope;
 				}
+				forgetIfReleased(control, continuedOutcome);
 				persistRequestedOutput(recovered, options, outputSnapshot);
 				options.onDetachedExit?.(recovered);
 			})
@@ -640,6 +641,7 @@ export async function runSingleInProcess(
 		result.envelope = delivered.envelope;
 		result.finalOutput = delivered.envelope;
 	}
+	forgetIfReleased(control, outcome);
 	persistRequestedOutput(result, options, outputSnapshot);
 	const update: SubagentToolResult = {
 		content: [{ type: "text", text: result.finalOutput ?? "(no output)" }],
@@ -652,6 +654,12 @@ export async function runSingleInProcess(
 	};
 	options.onUpdate?.(update);
 	return result;
+}
+
+function forgetIfReleased(control: SubagentControlRuntime, outcome: AttemptOutcome): void {
+	if (outcome.status !== "interrupted" || outcome.released === undefined) return;
+	control.forgetReleasedChild(outcome.path);
+	if (control.holdsNothing()) unregisterSubagentControl(control);
 }
 
 function persistRequestedOutput(

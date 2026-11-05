@@ -5,7 +5,10 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import type { AgentSession, DetachedToolCall, ExtensionContext } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
-import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import {
+	AgentWakeDispatcher,
+	agentWakeDispatcher,
+} from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -35,6 +38,7 @@ import {
 	createSubagentChildRecordSink,
 	isSubagentChildRecord,
 	readSubagentChildRecords,
+	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_RECORD_TYPE,
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
@@ -150,6 +154,8 @@ interface Harness {
 	wakeDispatcher?: AgentWakeDispatcher;
 	/** When set, a stubbed released outcome is returned only once this settles. */
 	releaseGate?: PromiseWithResolvers<void>;
+	releasedPendingMessages?: string[];
+	disposeGate?: PromiseWithResolvers<void>;
 	/** Receives each child run's stub session, to queue steering and follow-up messages as an SDK caller does. */
 	onSession?: (session: TestSessionQueue) => void;
 	/** Whether the worker agent is still defined; resume looks it up again. */
@@ -367,14 +373,17 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				status: "interrupted",
 				interrupted: true,
 				released: { waitingOn: [RELEASED_CALL], calls: state.releasedCalls },
+				...(state.releasedPendingMessages ? { pendingMessages: state.releasedPendingMessages } : {}),
 			};
 		}
 		const gate = [...state.finishOn].find(([marker]) => task.includes(marker))?.[1];
 		const onSession = state.onSession ? { onSession: state.onSession } : {};
+		const disposeGate = state.disposeGate;
+		const dispose = gate && disposeGate ? { dispose: () => disposeGate.promise } : {};
 		const result = await runSync(parentCwd, agents, agentName, task, {
 			...options,
 			testSession: gate
-				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true, ...onSession }
+				? { output: "finished", promptGate: gate.promise, abortResolvesPrompt: true, ...onSession, ...dispose }
 				: original || state.resumedRunsWait
 					? { output: "partial", promptGate: neverReleased.promise, abortResolvesPrompt: true, ...onSession }
 					: { output: "resumed", ...onSession },
@@ -3039,7 +3048,7 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 		"release4:0",
 		(record) => record.state === "terminal" && record.terminalStatus === "ok",
 	);
-	assert.deepEqual(woken.heldToolResults, []);
+	assert.deepEqual(woken.heldToolResults ?? [], []);
 	assert.deepEqual(dispatcher.stats().keys, 0);
 
 	h.releaseOriginal = true;
@@ -3067,11 +3076,12 @@ test("a tool result wakes a released child through the dispatcher once, and a pa
 	await settled(h, resumedTaskId(resumed));
 	assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(late));
 	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, ["go on", SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT]);
-	assert.deepEqual(
-		(await h.waitForLatest("release4b:0", (record) => record.state === "terminal" && record.terminalStatus === "ok"))
-			.heldToolResults,
-		[],
+	const cleared = await h.waitForLatest(
+		"release4b:0",
+		(record) =>
+			record.state === "terminal" && record.terminalStatus === "ok" && (record.heldToolResults ?? []).length === 0,
 	);
+	assert.deepEqual(cleared.heldToolResults, [], "the result the resumed run took is no longer held");
 });
 
 test("an Intercom wake restores a released child with the wake prompt; a live or ended child is not woken by it (#4326)", async () => {
@@ -3235,6 +3245,14 @@ function settledCall(result: ReturnType<typeof waitResult>): DetachedToolCall {
 	return { toolCallId: result.toolCallId, toolName: result.toolName, result: Promise.resolve(result), abort() {} };
 }
 
+const DRAIN_TURNS = 1_000;
+
+async function drained(dispatcher: AgentWakeDispatcher): Promise<number> {
+	for (let turn = 0; turn < DRAIN_TURNS && dispatcher.stats().keys > 0; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	return dispatcher.stats().keys;
+}
+
 test("a result already settled when its child is released wakes it once, after the released record, with nothing left held (#4326)", async () => {
 	const h = harness();
 	const dispatcher = new AgentWakeDispatcher();
@@ -3256,7 +3274,9 @@ test("a result already settled when its child is released wakes it once, after t
 	assert.equal(wakeRuns.length, 1, "one wake, not stranded and not repeated");
 	assert.equal(wakeRuns[0]?.task, lateToolResultMessage(green), "the wake brought the result");
 	assert.deepEqual(woken.heldToolResults ?? [], [], "nothing is left held once the wake took the result");
-	assert.equal(dispatcher.stats().keys, 0);
+	assert.ok(woken.taskId);
+	await settled(h, woken.taskId);
+	assert.equal(await drained(dispatcher), 0, "the wake's key is dropped once the woken run settled");
 });
 
 test("a result held while its child still ran wakes the child once it is released, and is then no longer held (#4326)", async () => {
@@ -3284,9 +3304,12 @@ test("a result held while its child still ran wakes the child once it is release
 	await settled(h, taskId);
 	const woken = await h.waitForLatest(
 		"drain1:0",
-		(record) => record.state === "terminal" && record.terminalStatus === "ok",
+		(record) =>
+			record.state === "terminal" && record.terminalStatus === "ok" && (record.heldToolResults ?? []).length === 0,
 	);
-	assert.deepEqual(woken.heldToolResults ?? [], [], "the wake took what was held");
+	assert.ok(woken.taskId);
+	await settled(h, woken.taskId);
+	assert.equal(await drained(dispatcher), 0);
 	assert.equal(h.runs.filter((run) => run.task !== ORIGINAL_TASK).length, 1, "woken once");
 });
 
@@ -3338,4 +3361,128 @@ test("an Intercom wake tells the broker the owner is waking the child, once per 
 		h.releasedChildRequests.filter((request) => "acknowledge" in request),
 		[{ acknowledge: "subagent-worker-ack1" }],
 	);
+});
+
+async function releasedWithWakes(h: Harness, runId: string): Promise<AgentWakeDispatcher> {
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	h.wakeDispatcher = dispatcher;
+	h.releaseOriginal = true;
+	await settled(h, await h.admit(runId));
+	await h.waitForLatest(`${runId}:0`, (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	return dispatcher;
+}
+
+function clearedOk(record: SubagentChildRecord): boolean {
+	return record.state === "terminal" && record.terminalStatus === "ok" && (record.heldToolResults ?? []).length === 0;
+}
+
+test("results a woken child is given stay held in its record until its run has them (#4326)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "heldwake1");
+	await h.call({ action: "pause", id: "heldwake1:0" });
+	await h.waitForLatest("heldwake1:0", (record) => record.terminalStatus === "paused");
+	const green = waitResult("CI green");
+	await recordSubagentChildHeldToolResults(h.deps.pi, h.sessionManager.getSessionId(), "heldwake1:0", [green]);
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", gate);
+
+	const resumed = await h.call({ action: "resume", id: "heldwake1:0", message: "go on" });
+	const taskId = resumedTaskId(resumed);
+	const running = await h.waitForLatest(
+		"heldwake1:0",
+		(record) => record.state === "running" && record.taskId === taskId && record.launchLeafId !== undefined,
+	);
+	assert.deepEqual(running.heldToolResults, [green], "the result is still held while the run has not read it");
+	assert.deepEqual(h.runs.at(-1)?.options.wakeToolResultIds, ["ci-1"]);
+
+	gate.resolve();
+	await settled(h, taskId);
+	const done = await h.waitForLatest("heldwake1:0", clearedOk);
+	assert.equal(done.taskId, taskId);
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+test("a result that arrives while a resumed child runs is kept, and wakes it once that run has ended (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "during1");
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("keep going", gate);
+	const resumed = await h.call({ action: "resume", id: "during1:0", message: "keep going" });
+	const taskId = resumedTaskId(resumed);
+	await h.waitForLatest("during1:0", (record) => record.state === "running" && record.taskId === taskId);
+	const green = waitResult("CI green");
+
+	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "during1:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	assert.deepEqual(h.latest("during1:0")?.heldToolResults, [green], "a running child keeps the result for later");
+	gate.resolve();
+	await settled(h, taskId);
+
+	const woken = await h.waitForLatest("during1:0", (record) => record.taskId !== taskId && clearedOk(record));
+	assert.ok(woken.taskId);
+	await settled(h, woken.taskId);
+	assert.equal(await drained(dispatcher), 0);
+	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1, "woken once, with it");
+	assert.deepEqual(h.latest("during1:0")?.heldToolResults, []);
+});
+
+test("messages a released child had queued and not read are delivered once, in order, when it wakes (#4326)", async () => {
+	const h = harness();
+	const queued = ["Check the flaky test too.", "Then rerun lint."];
+	h.releasedPendingMessages = queued;
+	const dispatcher = await releasedWithWakes(h, "queuedwake1");
+	const released = h.latest("queuedwake1:0");
+	assert.deepEqual(released?.heldMessages, { taskId: released?.taskId, messages: queued, taskExpands: false });
+	const green = waitResult("CI green");
+
+	await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "queuedwake1:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: green,
+	});
+	assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(green));
+	assert.deepEqual(h.runs.at(-1)?.options.resumeFollowUps, [...queued, SUBAGENT_RELEASED_WAKE_PROMPT]);
+	await h.waitForLatest("queuedwake1:0", clearedOk);
+
+	const again = await h.call({ action: "resume", id: "queuedwake1:0", message: "one more thing" });
+	await settled(h, resumedTaskId(again));
+	const delivered = h.runs.filter((run) =>
+		[run.task, ...(run.options.resumeFollowUps ?? [])].includes("Check the flaky test too."),
+	);
+	assert.equal(delivered.length, 1, "the queued messages are not delivered again");
+});
+
+test("a wake waits until the child's previous run has closed its session before it reopens it (#4326)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "closing1");
+	const gate = Promise.withResolvers<void>();
+	h.finishOn.set("wrap up", gate);
+	h.disposeGate = Promise.withResolvers<void>();
+	const resumed = await h.call({ action: "resume", id: "closing1:0", message: "wrap up" });
+	gate.resolve();
+	await settled(h, resumedTaskId(resumed));
+	const runsBeforeWake = h.runs.length;
+	let runsWhenClosed = -1;
+	void h.disposeGate.promise.then(() => {
+		runsWhenClosed = h.runs.length;
+	});
+
+	const wake = dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "closing1:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	for (let turn = 0; turn < DRAIN_TURNS && h.runs.length === runsBeforeWake; turn++)
+		await new Promise((resolve) => setImmediate(resolve));
+	h.disposeGate.resolve();
+	await wake;
+
+	assert.equal(runsWhenClosed, runsBeforeWake, "no wake ran before the previous run's session closed");
+	assert.equal(h.runs.length, runsBeforeWake + 1);
 });

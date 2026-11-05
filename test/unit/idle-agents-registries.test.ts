@@ -5,6 +5,11 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { childCommandRouteCount } from "../../packages/coding-agent/src/core/tasks/child-command-owner.js";
 import { subagentWakeNamespace } from "../../packages/subagents/src/runs/foreground/released-children.ts";
+import { subagentChildRecordOf } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.ts";
+import {
+	readSubagentChildRecords,
+	SUBAGENT_CHILD_RELEASED_STATUS,
+} from "../../packages/subagents/src/runs/foreground/subagent-child-records.ts";
 import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foreground/subagent-registry-sizes.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
 import { liveAsyncResources, trackAsyncResources } from "../../scripts/perf/idle-agents/async-resources.js";
@@ -32,7 +37,7 @@ function growth(before: Readonly<Record<string, number>>, after: Readonly<Record
 }
 
 test(
-	"a released child adds exactly seven small entries to its owner's registries (its record, task id, retained output and its run's control), and none to the rest (#4326)",
+	"a released child keeps exactly one plain-data entry in its owner's registries, its latest record, and adds none to the rest (#4326)",
 	async () => {
 		const env = await liveChildEnvironment(cleanups);
 		const dispatcher = new AgentWakeDispatcher();
@@ -50,15 +55,12 @@ test(
 		const children = 6;
 		for (let index = 1; index <= children; index++) await launchReleasedTask(index, env, host, owner, dispatcher);
 
-		assert.deepEqual(growth(before, subagentRegistrySizes(), children), {
-			controlChildIds: 1,
-			controlDelivered: 1,
-			controlEnvelopes: 1,
-			controls: 1,
-			records: 1,
-			retainedTaskOutputs: 1,
-			taskIds: 1,
-		});
+		assert.deepEqual(growth(before, subagentRegistrySizes(), children), { records: 1 });
+		const childId = `gct-${children}:0`;
+		const entry = subagentChildRecordOf(owner.getSessionId(), childId);
+		assert.equal(entry?.terminalStatus, SUBAGENT_CHILD_RELEASED_STATUS);
+		assert.deepEqual(entry, readSubagentChildRecords(owner.getEntries()).get(childId), "it is the saved record");
+		assert.deepEqual(JSON.parse(JSON.stringify(entry)), entry, "it is plain data");
 		assert.equal(childCommandRouteCount(host), routes, "no completion route is left in the parent's command owner");
 	},
 	CHILD_LOAD_TIMEOUT_MS,

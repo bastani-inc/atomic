@@ -50,6 +50,7 @@ export async function launchReleasedTask(
 				sessionManager: await SessionManager.create(new MemorySessionStore(), env.root),
 				resumeSession: true,
 				releaseWhenWaiting: subagentReleasePolicy(0),
+				intercomSessionName: `subagent-waiter-gct-${index}`,
 			}),
 			index: 0,
 		},

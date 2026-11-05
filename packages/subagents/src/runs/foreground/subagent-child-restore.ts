@@ -57,6 +57,7 @@ import type { ExecutorDeps } from "./subagent-executor-types.js";
 import {
 	type QueuedSubagentChildStart,
 	runAgentTask,
+	subagentChildClosed,
 	subagentChildSchedule,
 	takeStoppedQueuedSubagentChild,
 } from "./task-execution.js";
@@ -315,6 +316,7 @@ async function relaunchChild(
 		record,
 		reason,
 	});
+	await subagentChildClosed(record.runId, record.index);
 	const host = ctx.getAgentTaskHost?.();
 	const queued = record.taskId && host ? takeStoppedQueuedSubagentChild(record.taskId) : undefined;
 	if (queued && host)
@@ -418,18 +420,19 @@ async function relaunchChild(
 	const intercomGroup = launchIntercomGroup(record, ctx);
 	// A released child, or one results are held for, continues the turn it was waiting in before anything else (#4326).
 	const toolResults = [...(record.heldToolResults ?? []), ...(resume?.toolResults ?? [])];
+	const heldMessages =
+		record.heldMessages && record.heldMessages.taskId === record.taskId ? record.heldMessages.messages : [];
+	const promptless = resume?.promptless === true && heldMessages.length === 0;
 	const wakePlan =
 		!fresh &&
 		sessionManager &&
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, resume?.promptless !== true)
+			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
 			: undefined;
 	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
-	const prompts = wakePlan
-		? wakePrompts(basePrompts, wakePlan.lateMessages, resume?.promptless === true)
-		: basePrompts;
+	const prompts = wakePlan ? wakePrompts(basePrompts, wakePlan.lateMessages, promptless) : basePrompts;
 	const options: RunSyncOptions = {
 		runningCapacity: deps.config.parallel?.runningCapacity,
 		sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
@@ -449,8 +452,13 @@ async function relaunchChild(
 		...(fresh?.share === undefined ? {} : { share: fresh.share }),
 		...(prompts.followUps.length > 0 ? { resumeFollowUps: prompts.followUps } : {}),
 		...(prompts.taskLiteral ? { resumeTaskLiteral: true } : {}),
-		// Present, even empty, whenever the wake took the results its record held: none is held after it.
-		...(wakePlan ? { resumeToolResults: wakePlan.resumeToolResults } : {}),
+		// Present, even empty, whenever the wake took the results its record held: they are cleared once delivered.
+		...(wakePlan
+			? {
+					resumeToolResults: wakePlan.resumeToolResults,
+					wakeToolResultIds: toolResults.map((result) => result.toolCallId),
+				}
+			: {}),
 		...(wakePlan?.skipPrompt ? { skipTaskPrompt: true } : {}),
 		intercomEvents: deps.pi.events,
 		parentDepth: getCurrentSubagentDepth(ctx),

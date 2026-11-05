@@ -9,8 +9,8 @@ import { subagentTaskRegistrySizes } from "./task-execution.js";
 import { retainedTaskOutputCount } from "./task-output-retention.js";
 
 /**
- * Every per-child registry the subagents extension keeps in this process, by name. A released child may leave data
- * in the ones that index its record (`records`, `taskIds`, `targets`); the rest must not grow with released children.
+ * Every per-child registry the subagents extension keeps in this process, by name. A released child keeps one entry,
+ * its latest record in `records`; the rest must not grow with released children.
  */
 export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 	const card = subagentChildCardStateSizes();
@@ -26,7 +26,6 @@ export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 		...controlSizes,
 		records: card.records,
 		taskIds: card.taskIds,
-		targets: card.targets,
 		transcripts: card.transcripts,
 		cardOwners: card.owners,
 		appendChains: records.appendChains,
@@ -35,6 +34,7 @@ export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 		goneChildren: restore.gone,
 		queuedChildren: task.queued,
 		schedules: task.schedules,
+		closingChildren: task.closing,
 		earlyHolds: earlyChildHoldCount(),
 		ownerlessLive: ownerless.live,
 		ownerlessStoppedQueued: ownerless.stoppedQueued,

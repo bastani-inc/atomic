@@ -22,7 +22,6 @@ test("with nothing launched, every registry of the subagents extension is empty 
 	assert.deepEqual(subagentRegistrySizes(), {
 		records: 0,
 		taskIds: 0,
-		targets: 0,
 		transcripts: 0,
 		cardOwners: 0,
 		appendChains: 0,
@@ -31,6 +30,7 @@ test("with nothing launched, every registry of the subagents extension is empty 
 		goneChildren: 0,
 		queuedChildren: 0,
 		schedules: 0,
+		closingChildren: 0,
 		earlyHolds: 0,
 		ownerlessLive: 0,
 		ownerlessStoppedQueued: 0,

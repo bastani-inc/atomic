@@ -16,11 +16,12 @@ import {
 	isSubagentChildRecord,
 	observeSubagentChildRecord,
 	SUBAGENT_CHILD_RECORD_TYPE,
+	SUBAGENT_CHILD_RELEASED_STATUS,
 	subagentChildCardRecord,
 	subagentChildRecordOf,
 } from "./subagent-child-card-state.js";
 
-export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE };
+export { isSubagentChildRecord, SUBAGENT_CHILD_RECORD_TYPE, SUBAGENT_CHILD_RELEASED_STATUS };
 
 export type SubagentChildOwner =
 	| { readonly kind: "session"; readonly sessionId: string }
@@ -259,6 +260,7 @@ export interface SubagentChildRecordSink {
 	ownerEndedForGood?(): boolean;
 	/** Settles once every record this sink was given has been appended. */
 	flushed?(): Promise<void>;
+	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
 }
 
 /** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
@@ -297,12 +299,6 @@ export interface WorkflowStageChildrenEnd {
 
 /** `terminalStatus` of a child that could not be restored after a restart and was reported gone to its owner. */
 export const SUBAGENT_CHILD_GONE_STATUS = "gone";
-
-/**
- * `terminalStatus` of a background child released while it waited on detached tool calls (#4326): it holds no session,
- * task or connection, and a tool result, an Intercom send or ask, or `resume` rehydrates it from its session.
- */
-export const SUBAGENT_CHILD_RELEASED_STATUS = "released";
 
 const ENDED_STATUSES: ReadonlySet<string> = new Set([
 	"killed",
@@ -516,6 +512,8 @@ export function createSubagentChildRecordSink(
 		},
 		ownerEndedForGood: () => stage?.endedForGood() === true,
 		flushed: () => appended,
+		clearHeldToolResults: (childId, toolCallIds) =>
+			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
 	};
 }
 
@@ -547,7 +545,7 @@ export async function recordSubagentChildStatus(
 }
 
 /**
- * Append a new latest observation of a child that changes only the tool results it holds for its next wake. The
+ * Append a new latest observation of a child that adds tool results to the ones it holds for its next wake. The
  * record is taken from the index when this step's turn comes in the owner's order, never from an earlier snapshot:
  * one made before a later record was written would write that record's state over again. Failing loudly: a result
  * that is not saved must not be dropped.
@@ -562,7 +560,13 @@ export async function recordSubagentChildHeldToolResults(
 	await inOrder(ownerSessionId, async () => {
 		const latest = subagentChildRecordOf(ownerSessionId, childId);
 		if (latest === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
-		const record: SubagentChildRecord = { ...latest, heldToolResults };
+		const held = latest.heldToolResults ?? [];
+		const added = heldToolResults.filter(
+			(result, index) =>
+				!held.some((kept) => kept.toolCallId === result.toolCallId) &&
+				heldToolResults.findIndex((other) => other.toolCallId === result.toolCallId) === index,
+		);
+		const record: SubagentChildRecord = { ...latest, heldToolResults: [...held, ...added] };
 		observeSubagentChildRecord(record);
 		try {
 			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
@@ -572,6 +576,30 @@ export async function recordSubagentChildHeldToolResults(
 		next = record;
 	});
 	return next as SubagentChildRecord;
+}
+
+export async function clearSubagentChildHeldToolResults(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	toolCallIds: readonly string[],
+): Promise<void> {
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		const held = latest?.heldToolResults ?? [];
+		const kept = held.filter((result) => !toolCallIds.includes(result.toolCallId));
+		if (latest === undefined || kept.length === held.length) return;
+		const record: SubagentChildRecord = { ...latest, heldToolResults: kept };
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+	}).catch((error: ReleasedChildError) => {
+		subagentChildRecordFailures.count += 1;
+		subagentChildRecordFailures.last = error;
+	});
 }
 
 /**

@@ -250,7 +250,7 @@ test("a released child's wake is not sent when its sink does not know the child'
 
 test("the registry sizes count remembered run schedules and drop them when a child ends for good (#4326)", () => {
 	const before = subagentTaskRegistrySizes();
-	assert.deepEqual(Object.keys(before).sort(), ["queued", "schedules"]);
+	assert.deepEqual(Object.keys(before).sort(), ["closing", "queued", "schedules"]);
 	assert.equal(typeof before.queued, "number");
 	rememberSubagentChildSchedule("sizes-run", 0, () => {});
 	rememberSubagentChildSchedule("sizes-run", 1, () => {});

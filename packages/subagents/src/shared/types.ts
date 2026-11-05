@@ -29,6 +29,7 @@ export interface TaskExecutionHooks {
 	bindChildSession?(session: { sessionId: string; sessionFile: string | undefined }): void;
 	/** The model and thinking level the child's session started on, and the session's leaf entry at that moment. */
 	bindChildLaunch?(launch: { model: string | undefined; thinking: string | undefined; leafId: string | null }): void;
+	toolResultsSaved?(toolCallIds: readonly string[]): void;
 	onExecution(execution: { result: Promise<AttemptOutcome>; cleanup: Promise<Cleanup> }): void;
 	yieldTaskWait(reason: "intercom-coordination"): void;
 	/** True only while the launching tool call still blocks on this task and can return a handoff as its result. */

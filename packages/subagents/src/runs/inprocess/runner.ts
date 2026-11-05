@@ -1137,6 +1137,17 @@ export class SubagentControlRuntime {
 		return latest;
 	}
 
+	forgetReleasedChild(pathValue: string): void {
+		this.childIds.delete(pathValue);
+		this.delivered.delete(pathValue);
+		this.deliveredEnvelopes.delete(pathValue);
+		this.killedChildren.delete(pathValue);
+	}
+
+	holdsNothing(): boolean {
+		return Object.values(this.registrySizes()).every((size) => size === 0);
+	}
+
 	registerAgents(agents: readonly AgentConfig[]): void {
 		for (const agent of agents) this.native.registerAgent(agent.name);
 	}
@@ -1196,6 +1207,7 @@ export class SubagentControlRuntime {
 			| "bindTranscript"
 			| "bindChildSession"
 			| "bindChildLaunch"
+			| "toolResultsSaved"
 			| "setExtensionStatus"
 			| "clearExtensionStatuses"
 		>,
@@ -1230,6 +1242,7 @@ export class SubagentControlRuntime {
 					| "bindTranscript"
 					| "bindChildSession"
 					| "bindChildLaunch"
+					| "toolResultsSaved"
 					| "setExtensionStatus"
 					| "clearExtensionStatuses"
 			  >
@@ -1720,8 +1733,10 @@ export class SubagentControlRuntime {
 			if (signals.abort.aborted) await terminate("abort");
 			if (signals.interrupt.aborted) await terminate("interrupt");
 			if (!termination && admitted.spec.resumeSession) await session.startPendingRecovery("resume");
-			if (!termination && admitted.spec.resumeToolResults?.length)
+			if (!termination && admitted.spec.resumeToolResults?.length) {
 				await session.resumeDetachedTurn(admitted.spec.resumeToolResults);
+				taskHooks?.toolResultsSaved?.(admitted.spec.resumeToolResults.map((result) => result.toolCallId));
+			}
 			for (const followUp of admitted.spec.resumeFollowUps ?? []) {
 				if (termination) break;
 				// Held and resume messages are delivered as written, whether or not the child had any held (#4027).
@@ -1763,6 +1778,7 @@ export class SubagentControlRuntime {
 						calls: detached,
 						...releasedIntercomId(sessionManager),
 					},
+					...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
 					stats,
 					path: admitted.identity.path,
 					envelope: releasedEnvelope(waitingOn),
@@ -1909,30 +1925,30 @@ export class SubagentControlRuntime {
 						: settledTranscript(transcriptManager),
 				);
 			};
-			onDisposal(
-				(async (): Promise<SessionDisposal> => {
-					try {
-						await session?.dispose();
-						return { cleanup: { kind: "reaped" } };
-					} catch (error) {
-						return {
-							cleanup: {
-								kind: "failed",
-								resources: [
-									{
-										resource: "agent-session",
-										code: "CleanupFailed",
-										message: error instanceof Error ? error.message : String(error),
-									},
-								],
-							},
-							error,
-						};
-					} finally {
-						settleTranscript();
-					}
-				})(),
-			);
+			const disposal = (async (): Promise<SessionDisposal> => {
+				try {
+					await session?.dispose();
+					return { cleanup: { kind: "reaped" } };
+				} catch (error) {
+					return {
+						cleanup: {
+							kind: "failed",
+							resources: [
+								{
+									resource: "agent-session",
+									code: "CleanupFailed",
+									message: error instanceof Error ? error.message : String(error),
+								},
+							],
+						},
+						error,
+					};
+				} finally {
+					settleTranscript();
+				}
+			})();
+			onDisposal(disposal);
+			if (releasedAttempt) await disposal;
 			if (this.attemptTokens.get(admitted.identity.path) === token)
 				this.attemptTokens.delete(admitted.identity.path);
 			if (this.attemptTerminators.get(admitted.identity.path) === terminate)

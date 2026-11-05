@@ -370,7 +370,7 @@ test("a released child whose session ends on its pending call is woken by that c
 	assert.equal(run.task, SUBAGENT_RELEASED_WAKE_PROMPT);
 	assert.equal(run.resumeSession, true);
 	assert.equal(h.latest(record.childId)?.terminalStatus, "ok");
-	assert.deepEqual(h.latest(record.childId)?.heldToolResults, [], "nothing is left held after the wake took it");
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "nothing is left held after the wake took it");
 });
 
 async function endedOnPendingCall(h: Harness, runId: string): Promise<SubagentChildRecord> {
@@ -511,6 +511,38 @@ test("a release policy its launch gave is kept (#4326)", async () => {
 	await h.waitForLatest("policy-own:0", (record) => record.launchLeafId !== undefined);
 
 	assert.equal(h.runs[0]?.options.releaseWhenWaiting, own);
+});
+
+test("a foreground child is never released while it waits: its parent's turn is awaiting it (#4326)", async () => {
+	const h = harness();
+	const policies: Array<RunSyncOptions["releaseWhenWaiting"]> = [];
+	const runtime = async (...args: Parameters<typeof runSync>): Promise<SingleResult> => {
+		const [parentCwd, agents, agentName, task, options] = args;
+		policies.push(options.releaseWhenWaiting);
+		return runSync(parentCwd, agents, agentName, task, { ...options, testSession: { output: "done" } });
+	};
+	for (const wait of [{ kind: "foreground" }, { kind: "background" }] as const) {
+		const response = await runAgentTask({
+			host: h.host,
+			cwd: h.cwd,
+			agents: [agent],
+			agent: "worker",
+			task: ORIGINAL_TASK,
+			options: {
+				cwd: h.cwd,
+				runId: `policy-${wait.kind}`,
+				index: 0,
+				sessionDir: join(h.cwd, "children", wait.kind),
+			},
+			wait,
+			recordChild: createSubagentChildRecordSink(h.deps.pi, h.ctx),
+			runtime: { runSync: runtime },
+		});
+		assert.ok(response.kind === "admitted");
+		await settled(h, response.observation.taskId);
+	}
+
+	assert.deepEqual(policies, [undefined, { afterMs: SUBAGENT_RELEASE_AFTER_MS }]);
 });
 
 test("a child launched with no owner record, or one with no owning session, is never released and still runs (#4326)", async () => {

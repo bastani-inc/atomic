@@ -53,6 +53,7 @@ import {
 	subagentChildInheritance,
 	subagentChildLaunch,
 	subagentChildModelChoice,
+	subagentChildRecordsAppended,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
@@ -335,6 +336,39 @@ export function forgetRunMembership(runId: string, index: number): void {
 	unparkRunWorktree(runId, index);
 }
 
+const closingChildren = new Map<string, Promise<void>>();
+
+export function subagentChildClosed(runId: string, index: number): Promise<void> {
+	return closingChildren.get(subagentChildId(runId, index)) ?? Promise.resolve();
+}
+
+function trackChildClosing(childId: string, cleanup: Promise<Cleanup>): void {
+	const closed = cleanup.then(
+		() => undefined,
+		() => undefined,
+	);
+	closingChildren.set(childId, closed);
+	void closed.then(() => {
+		if (closingChildren.get(childId) === closed) closingChildren.delete(childId);
+	});
+}
+
+function wakeForResultsHeldDuringRun(
+	dispatcher: AgentWakeDispatcher,
+	ownerSessionId: string,
+	childId: string,
+	taskId: string,
+	delivered: readonly string[],
+): void {
+	void subagentChildRecordsAppended(ownerSessionId).then(() => {
+		const arrived = (subagentChildRecordOf(ownerSessionId, childId)?.heldToolResults ?? []).filter(
+			(held) => !delivered.includes(held.toolCallId),
+		);
+		if (arrived.length > 0)
+			wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey(ownerSessionId, childId), taskId);
+	});
+}
+
 /** Bind the real foreground runner once; only its registered observation may yield. */
 export async function runAgentTask(input: {
 	host: AgentTaskHost;
@@ -400,8 +434,6 @@ export async function runAgentTask(input: {
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(waitingOn ? { waitingOn } : {}),
 			...(releasedIntercomId === undefined ? {} : { releasedIntercomId }),
-			// A wake hands this execution the results the record held for it: they are delivered, so none is held now.
-			...(input.options.resumeToolResults ? { heldToolResults: [] } : {}),
 			...(heldMessages?.messages.length ? { heldMessages: { taskId, ...heldMessages } } : {}),
 			...(launch
 				? { launch }
@@ -533,6 +565,14 @@ export async function runAgentTask(input: {
 					waitingOn,
 					releasedIntercomId,
 				);
+			const childId = subagentChildId(runId, index);
+			const wokenWith = input.options.wakeToolResultIds ?? [];
+			const clearDelivered = (toolCallIds: readonly string[]) => {
+				const delivered = toolCallIds.filter((toolCallId) => wokenWith.includes(toolCallId));
+				return delivered.length === 0
+					? Promise.resolve()
+					: (input.recordChild?.clearHeldToolResults?.(childId, delivered) ?? Promise.resolve());
+			};
 			const result = registered.promise.then(async (): Promise<TaskResult> => {
 				try {
 					input.options.modelRoute?.assertCurrent();
@@ -540,7 +580,9 @@ export async function runAgentTask(input: {
 					const child = await input.runtime.runSync(input.cwd, input.agents, input.agent, input.task, {
 						...input.options,
 						// A background child is released while it waits, and its owner wakes it (#4326).
-						...(input.options.releaseWhenWaiting === undefined && ownerSessionId !== undefined
+						...(input.options.releaseWhenWaiting === undefined &&
+						ownerSessionId !== undefined &&
+						input.wait?.kind !== "foreground"
 							? { releaseWhenWaiting: subagentReleasePolicy() }
 							: {}),
 						signal: context.signal,
@@ -568,8 +610,10 @@ export async function runAgentTask(input: {
 								};
 								recordChild("running");
 							},
+							toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
 							onExecution: (execution) => {
 								executionBound = true;
+								trackChildClosing(childId, execution.cleanup);
 								void execution.cleanup.then(cleaned.resolve, (error) =>
 									cleaned.resolve({
 										kind: "failed",
@@ -611,21 +655,15 @@ export async function runAgentTask(input: {
 						recordChild(
 							"terminal",
 							SUBAGENT_CHILD_RELEASED_STATUS,
-							undefined,
+							pendingMessagesOfResult(child),
 							child.released.waitingOn,
 							child.released.intercomId,
 						);
 						if (ownerSessionId !== undefined)
 							forwardDetachedResults(
 								input.wakeDispatcher ?? agentWakeDispatcher(),
-								subagentWakeKey(ownerSessionId, subagentChildId(runId, index)),
+								subagentWakeKey(ownerSessionId, childId),
 								child.released.calls,
-							);
-						if (ownerSessionId !== undefined)
-							wakeReleasedChildWithHeldResults(
-								input.wakeDispatcher ?? agentWakeDispatcher(),
-								subagentWakeKey(ownerSessionId, subagentChildId(runId, index)),
-								subagentChildRecordOf(ownerSessionId, subagentChildId(runId, index))?.heldToolResults,
 							);
 						void reserveReleasedChildTargets(
 							input.options,
@@ -647,9 +685,26 @@ export async function runAgentTask(input: {
 					// Its owner closed, which ends nothing: it stays restorable, with what it had queued and not read.
 					else if (child.pendingMessages?.length)
 						recordChild("running", undefined, pendingMessagesOfResult(child));
+					const settled = released || !ownerClosed();
+					if (settled && (released || child.status === "ok" || stoppedByControl || stoppedByStagePause))
+						void clearDelivered(wokenWith);
 					input.onTerminal?.(child);
+					if (
+						ownerSessionId !== undefined &&
+						settled &&
+						!stoppedByControl &&
+						!stoppedByStagePause &&
+						child.status !== "killed"
+					)
+						wakeForResultsHeldDuringRun(
+							input.wakeDispatcher ?? agentWakeDispatcher(),
+							ownerSessionId,
+							childId,
+							context.ref.taskId,
+							wokenWith,
+						);
 					const text = input.outputText?.(child) ?? getSingleResultOutput(child);
-					retainTaskOutput(child, text, context.ref);
+					if (!released) retainTaskOutput(child, text, context.ref);
 					const bytes = Buffer.from(text);
 					context.reportActivity({
 						reportId: "terminal-output",
@@ -742,7 +797,11 @@ export async function runAgentTask(input: {
 	return { kind: "admitted", observation: observed.value };
 }
 
-/** Queued children and remembered run schedulers held in this process; counted by tests and the benchmark. */
-export function subagentTaskRegistrySizes(): { readonly queued: number; readonly schedules: number } {
-	return { queued: queuedChildren.size, schedules: childSchedules.size };
+/** Queued children, remembered run schedulers and executions still closing in this process; counted by tests. */
+export function subagentTaskRegistrySizes(): {
+	readonly queued: number;
+	readonly schedules: number;
+	readonly closing: number;
+} {
+	return { queued: queuedChildren.size, schedules: childSchedules.size, closing: closingChildren.size };
 }

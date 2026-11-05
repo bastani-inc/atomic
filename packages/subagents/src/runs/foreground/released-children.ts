@@ -54,13 +54,8 @@ function deliverToolResult(
 	dispatcher: AgentWakeDispatcher,
 	wakeKey: string,
 	toolResult: DetachedToolResult,
-	origin: "call" | "held" = "call",
 ): Promise<void> {
-	return dispatcher.deliver(wakeKey, {
-		id: origin === "held" ? `held-result:${toolResult.toolCallId}` : `tool-result:${toolResult.toolCallId}`,
-		kind: "tool-result",
-		toolResult,
-	});
+	return dispatcher.deliver(wakeKey, { id: `tool-result:${toolResult.toolCallId}`, kind: "tool-result", toolResult });
 }
 
 function forwardDetachedResult(dispatcher: AgentWakeDispatcher, wakeKey: string, call: DetachedToolCall): void {
@@ -81,23 +76,19 @@ export function forwardDetachedResults(
 	for (const call of calls) outsideAnyTask(forwardDetachedResult, dispatcher, wakeKey, call);
 }
 
-function wakeWithHeldResult(dispatcher: AgentWakeDispatcher, wakeKey: string, held: DetachedToolResult): void {
-	void deliverToolResult(dispatcher, wakeKey, held, "held").catch((error) =>
-		dispatcher.reportUnobservedFailure(error),
-	);
+function wakeWithHeldResults(dispatcher: AgentWakeDispatcher, wakeKey: string, id: string): void {
+	void dispatcher
+		.deliver(wakeKey, { id: `held-results:${id}`, kind: "tool-result" })
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
 }
 
 /**
- * Results that arrived while the child still ran are held in its record. Once the child is released they have nobody
- * waiting for them, so one wake hands them over: the handler takes every result the record holds.
+ * Results that arrived while the child still ran are held in its record. Once its run's terminal or released record
+ * is written they have nobody waiting for them, so one wake hands them over: the handler takes every result the
+ * record holds. `id` names the run whose end sends the wake, so it is sent once.
  */
-export function wakeReleasedChildWithHeldResults(
-	dispatcher: AgentWakeDispatcher,
-	wakeKey: string,
-	held: readonly DetachedToolResult[] | undefined,
-): void {
-	const [first] = held ?? [];
-	if (first !== undefined) outsideAnyTask(wakeWithHeldResult, dispatcher, wakeKey, first);
+export function wakeReleasedChildWithHeldResults(dispatcher: AgentWakeDispatcher, wakeKey: string, id: string): void {
+	outsideAnyTask(wakeWithHeldResults, dispatcher, wakeKey, id);
 }
 
 /** The release policy of one background child: release after `afterMs` of waiting on a detachable call. */
@@ -185,13 +176,13 @@ const STOPPED: ReadonlySet<string | undefined> = new Set(["paused", "quit", SUBA
 /** What the owner does with a batch of wakes for one child, by the child's latest record. */
 export type ReleasedChildWakeDecision =
 	| { readonly kind: "ignore" }
-	| { readonly kind: "hold"; readonly heldToolResults: readonly DetachedToolResult[] }
+	| { readonly kind: "hold"; readonly toolResults: readonly DetachedToolResult[] }
 	| { readonly kind: "wake"; readonly toolResults: readonly DetachedToolResult[]; readonly prompt: boolean };
 
 /**
  * Decide a batch of wakes: an ended child or a stopped child with no new result ignores it; a stopped or live child
- * keeps new results for later; a released child, or a settled one a late result reaches, is woken with every result
- * it holds. Messages and asks wake only a released child: a live one already has them.
+ * keeps the new results for later; a released child, or a settled one that holds or is reached by a late result, is
+ * woken with every result it holds. Messages and asks wake only a released child: a live one already has them.
  */
 export function decideReleasedChildWake(
 	record: Pick<SubagentChildRecord, "state" | "terminalStatus" | "heldToolResults">,
@@ -200,21 +191,25 @@ export function decideReleasedChildWake(
 	const status = record.terminalStatus;
 	const held = record.heldToolResults ?? [];
 	const arrived = wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult]));
-	const fresh = arrived.filter((result) => !held.some((kept) => kept.toolCallId === result.toolCallId));
+	const fresh = arrived.filter(
+		(result, index) =>
+			!held.some((kept) => kept.toolCallId === result.toolCallId) &&
+			arrived.findIndex((other) => other.toolCallId === result.toolCallId) === index,
+	);
 	const toolResults = [...held, ...fresh];
 	if (ENDED.has(status)) return { kind: "ignore" };
 	if (record.state === "running" || STOPPED.has(status))
-		return fresh.length === 0 ? { kind: "ignore" } : { kind: "hold", heldToolResults: toolResults };
+		return fresh.length === 0 ? { kind: "ignore" } : { kind: "hold", toolResults: fresh };
 	const prompt = wakes.some((wake) => wake.kind !== "tool-result");
 	if (status === SUBAGENT_CHILD_RELEASED_STATUS) return { kind: "wake", toolResults, prompt };
-	return fresh.length === 0 ? { kind: "ignore" } : { kind: "wake", toolResults, prompt: false };
+	return toolResults.length === 0 ? { kind: "ignore" } : { kind: "wake", toolResults, prompt: false };
 }
 
 /** Wakes this owner's children through `wake`; returns the function that stops handling them. */
 export function handleReleasedChildWakes(
 	ctx: Pick<ExtensionContext, "sessionManager" | "orchestrationContext">,
 	wake: (record: SubagentChildRecord, decision: Extract<ReleasedChildWakeDecision, { kind: "wake" }>) => Promise<void>,
-	hold: (record: SubagentChildRecord, heldToolResults: readonly DetachedToolResult[]) => Promise<void>,
+	hold: (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void>,
 	dispatcher: AgentWakeDispatcher = agentWakeDispatcher(),
 ): () => void {
 	const ownerSessionId = subagentChildOwner(ctx).sessionId;
@@ -229,18 +224,18 @@ export function handleReleasedChildWakes(
 			const record = subagentChildRecordOf(ownerSessionId, childId);
 			if (record === undefined) throw new ReleasedChildError("child-record-missing", { ownerSessionId, childId });
 			const decision = decideReleasedChildWake(record, wakes);
-			if (decision.kind === "hold") await hold(record, decision.heldToolResults);
+			if (decision.kind === "hold") await hold(record, decision.toolResults);
 			else if (decision.kind === "wake") await wake(record, decision);
 		},
 		{ replace: true },
 	);
 }
 
-/** Keep results for a child that cannot take them now, durably, for its next wake or resume. */
+/** Keep new results for a child that cannot take them now, durably, beside those it holds, for its next wake or resume. */
 export function holdToolResultsInRecord(
 	pi: Parameters<typeof recordSubagentChildHeldToolResults>[0],
-): (record: SubagentChildRecord, heldToolResults: readonly DetachedToolResult[]) => Promise<void> {
-	return async (record, heldToolResults) => {
-		await recordSubagentChildHeldToolResults(pi, record.owner.sessionId, record.childId, heldToolResults);
+): (record: SubagentChildRecord, toolResults: readonly DetachedToolResult[]) => Promise<void> {
+	return async (record, toolResults) => {
+		await recordSubagentChildHeldToolResults(pi, record.owner.sessionId, record.childId, toolResults);
 	};
 }

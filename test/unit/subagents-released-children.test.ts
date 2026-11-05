@@ -216,16 +216,16 @@ test("a released child is woken with what it holds and what arrived, prompted on
 	);
 });
 
-test("a paused, quit or live child keeps new results for later and ignores messages (#4326)", () => {
+test("a paused, quit or live child keeps only the new results for later and ignores messages (#4326)", () => {
 	for (const [state, status] of [
 		["terminal", "paused"],
 		["terminal", "quit"],
 		["terminal", "stage-paused"],
 		["running", undefined],
 	] as const) {
-		assert.deepEqual(decideReleasedChildWake(record(state, status, [result("a")]), [toolWake("b")]), {
+		assert.deepEqual(decideReleasedChildWake(record(state, status, [result("a")]), [toolWake("b"), toolWake("b")]), {
 			kind: "hold",
-			heldToolResults: [result("a"), result("b")],
+			toolResults: [result("b")],
 		});
 		assert.deepEqual(decideReleasedChildWake(record(state, status), [intercomWake]), { kind: "ignore" });
 		assert.deepEqual(decideReleasedChildWake(record(state, status, [result("a")]), [toolWake("a")]), {
@@ -234,7 +234,7 @@ test("a paused, quit or live child keeps new results for later and ignores messa
 	}
 });
 
-test("an ended child takes nothing, and a settled one is woken only by a new result (#4326)", () => {
+test("an ended child takes nothing, and a settled one is woken by a new result or by results it holds (#4326)", () => {
 	for (const status of ["killed", "stage-closed", "gone"])
 		assert.deepEqual(decideReleasedChildWake(record("terminal", status), [toolWake("a"), intercomWake]), {
 			kind: "ignore",
@@ -244,6 +244,10 @@ test("an ended child takes nothing, and a settled one is woken only by a new res
 		toolResults: [result("a")],
 		prompt: false,
 	});
+	assert.deepEqual(
+		decideReleasedChildWake(record("terminal", "ok", [result("a")]), [{ id: "held-results:t", kind: "tool-result" }]),
+		{ kind: "wake", toolResults: [result("a")], prompt: false },
+	);
 	assert.deepEqual(decideReleasedChildWake(record("terminal", "error"), [intercomWake]), { kind: "ignore" });
 	assert.deepEqual(decideReleasedChildWake({ state: "terminal" }, [intercomWake]), { kind: "ignore" });
 });
