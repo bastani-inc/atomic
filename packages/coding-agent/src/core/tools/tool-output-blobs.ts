@@ -14,7 +14,8 @@ export function getReleasedStageBlobDir(agentDir: string, sessionId: string): st
 
 /**
  * Remove a deleted session's released-stage tool results. A session that has none is not an error. The id is checked
- * first: a valid id has no separator and is not `.` or `..`, so the directory it names is inside the blob root.
+ * first: a valid id has no separator and is not `.` or `..`, so the directory it names is inside the blob root. The
+ * resolved directory is checked as well, so nothing but a direct child of the blob root is ever removed.
  */
 export async function removeReleasedStageBlobs(agentDir: string, sessionId: string): Promise<void> {
 	assertValidSessionId(sessionId);
