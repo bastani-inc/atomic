@@ -121,7 +121,7 @@ describe("sticky queue transitions", () => {
 		assert.equal(result.entry.sticky, true);
 		assert.equal(result.entry.targetPath, `workflow:${ROOT_RUN_ID}/orchestrator-*`);
 		assert.equal(result.entry.stageKey, `workflow:${ROOT_RUN_ID}/orchestrator-*`);
-		assert.equal(result.entry.notInKnownSet, undefined);
+		assert.equal(result.entry.prediction, undefined);
 		assert.deepEqual(result.entry.deliveries, []);
 		assert.equal(result.entry.deliveryCount, 0);
 		assert.equal(result.entry.status, "queued");
@@ -209,7 +209,7 @@ describe("sticky delivery ledger", () => {
 	function queuedSticky(): readonly PendingStageMessage[] {
 		const result = queueStickyStageMessage(
 			[],
-			stickyInput("1", `workflow:${ROOT_RUN_ID}/**`, { notInKnownSet: true }),
+			stickyInput("1", `workflow:${ROOT_RUN_ID}/**`, { prediction: "unknown" }),
 			GROUP,
 			GROUP,
 		);
@@ -1100,7 +1100,7 @@ describe("sticky entries in durable metadata", () => {
 	test("round-trips sticky fields verbatim", async () => {
 		const accepted = queueStickyStageMessage(
 			[],
-			stickyInput("sticky-1", `workflow:${ROOT_RUN_ID}/**`, { notInKnownSet: true }),
+			stickyInput("sticky-1", `workflow:${ROOT_RUN_ID}/**`, { prediction: "unknown" }),
 			GROUP,
 			GROUP,
 		);
@@ -1289,7 +1289,7 @@ interface StickyBridgeHarness {
 			| {
 					readonly outcome: "queued";
 					readonly position: number;
-					readonly notInKnownSet?: true;
+					readonly prediction?: "known" | "predicted" | "unknown";
 					readonly forwardTargets?: readonly string[];
 			  }
 			| { readonly outcome: "delivered" }
@@ -1373,7 +1373,7 @@ async function stickyBridgeFixture(
 				| {
 						readonly outcome: "queued";
 						readonly position: number;
-						readonly notInKnownSet?: true;
+						readonly prediction?: "known" | "predicted" | "unknown";
 						readonly forwardTargets?: readonly string[];
 				  }
 				| { readonly outcome: "delivered" }
@@ -1808,7 +1808,7 @@ describe("pending-stage bridge sticky delivery", () => {
 
 	afterEach(() => setDurableBackend(undefined));
 
-	test("queues a pattern target speculatively with notInKnownSet when neither the scan nor a materialized stage matches it", async () => {
+	test("queues a pattern target speculatively with prediction unknown when neither the scan nor a materialized stage matches it", async () => {
 		const harness = await stickyBridgeFixture(baseStage({ id: "reviewer-id", name: "reviewer" }), {
 			possibleStages: ["reviewer", "pull-request"],
 		});
@@ -1817,42 +1817,42 @@ describe("pending-stage bridge sticky delivery", () => {
 		assert.deepEqual(result, {
 			outcome: "queued",
 			position: 1,
-			notInKnownSet: true,
+			prediction: "unknown",
 		});
 		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.sticky, true);
-		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.notInKnownSet, true);
+		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.prediction, "unknown");
 		harness.dispose();
 	});
 
-	test("omits notInKnownSet when the persisted possible-stage set matches the target", async () => {
+	test("classifies a target as known when the persisted possible-stage set matches the target", async () => {
 		const knownHarness = await stickyBridgeFixture(baseStage(), {
 			possibleStages: ["orchestrator-*", "pull-request"],
 		});
 		const literal = await knownHarness.request("1");
-		assert.deepEqual(literal.result, { outcome: "queued", position: 1 });
+		assert.deepEqual(literal.result, { outcome: "queued", position: 1, prediction: "known" });
 
 		const patternHarness = await stickyBridgeFixture(baseStage(), { possibleStages: ["pull-request"] });
 		const wildcardTarget = await patternHarness.request("2", { target: `workflow:${ROOT_RUN_ID}/pull-*` });
-		assert.deepEqual(wildcardTarget.result, { outcome: "queued", position: 1 });
+		assert.deepEqual(wildcardTarget.result, { outcome: "queued", position: 1, prediction: "known" });
 
 		const literalTarget = await patternHarness.request("3", { target: `workflow:${ROOT_RUN_ID}/pull-request` });
-		assert.deepEqual(literalTarget.result, { outcome: "queued", position: 1 });
+		assert.deepEqual(literalTarget.result, { outcome: "queued", position: 1, prediction: "known" });
 		knownHarness.dispose();
 		patternHarness.dispose();
 	});
 
 	test("queues an unresolved literal future-stage target (D3 name targets are sticky)", async () => {
 		// `orchestrator-9` is materialized nowhere; only the pattern appears in the scan,
-		// so the literal target is accepted speculatively as a sticky entry without the
-		// notInKnownSet flag. A target that resolves to a materialized stage instead
+		// so the literal target is accepted speculatively as a sticky entry classified
+		// as known. A target that resolves to a materialized stage instead
 		// keeps today's exactly-once queueing (covered by the exact-path suites).
 		const harness = await stickyBridgeFixture(baseStage(), { possibleStages: ["orchestrator-*", "pull-request"] });
 		const { result } = await harness.request("1", { target: `workflow:${ROOT_RUN_ID}/orchestrator-9` });
-		assert.deepEqual(result, { outcome: "queued", position: 1 });
+		assert.deepEqual(result, { outcome: "queued", position: 1, prediction: "known" });
 		const entry = harness.store.runs()[0]?.pendingStageMessages?.[0];
 		assert.equal(entry?.sticky, true);
 		assert.equal(entry?.targetPath, `workflow:${ROOT_RUN_ID}/orchestrator-9`);
-		assert.equal(entry?.notInKnownSet, undefined);
+		assert.equal(entry?.prediction, undefined);
 		harness.dispose();
 	});
 
@@ -1905,7 +1905,7 @@ describe("pending-stage bridge sticky delivery", () => {
 						| {
 								readonly outcome: "queued";
 								readonly position: number;
-								readonly notInKnownSet?: true;
+								readonly prediction?: "known" | "predicted" | "unknown";
 								readonly forwardTargets?: readonly string[];
 						  }
 						| { readonly outcome: "delivered" }
@@ -1937,7 +1937,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		const { result } = await harness.request("next-iteration", { target: `workflow:${ROOT_RUN_ID}/reviewer-a` });
 		assert.equal(result?.outcome, "queued");
 		if (result?.outcome !== "queued") return;
-		assert.equal(result.notInKnownSet, undefined);
+		assert.equal(result.prediction, "known");
 		const entry = harness.store.runs()[0]?.pendingStageMessages?.[0];
 		assert.equal(entry?.sticky, true);
 		assert.equal(entry?.targetPath, `workflow:${ROOT_RUN_ID}/reviewer-a`);
@@ -2041,7 +2041,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		dispose();
 	});
 
-	test("a pattern send matching a live or pending pooled child stage carries no notInKnownSet warning", async () => {
+	test("a pattern send matching a live or pending pooled child stage is classified as known", async () => {
 		// Final E2E: the static scan of a root that loads its child through loadWorkerWorkflow
 		// persists only `child-*`, so `**/work-2` was flagged as unknown although the pooled
 		// child's work-2 stage was live and received the message.
@@ -2088,15 +2088,16 @@ describe("pending-stage bridge sticky delivery", () => {
 			assert.deepEqual(live.result, {
 				outcome: "queued",
 				position: 1,
+				prediction: "known",
 				forwardTargets: [`workflow:${ROOT_RUN_ID}/child-2/work-2-id`],
 			});
 			const pending = await harness.request("pending", { target: `workflow:${ROOT_RUN_ID}/*/work-*` });
 			assert.equal(pending.result?.outcome, "queued");
-			if (pending.result?.outcome === "queued") assert.equal(pending.result.notInKnownSet, undefined);
+			if (pending.result?.outcome === "queued") assert.equal(pending.result.prediction, "known");
 			const pendingOnly = await harness.request("pending-only", { target: `workflow:${ROOT_RUN_ID}/**/work-3` });
-			assert.deepEqual(pendingOnly.result, { outcome: "queued", position: 1 });
+			assert.deepEqual(pendingOnly.result, { outcome: "queued", position: 1, prediction: "known" });
 			const unknown = await harness.request("unknown", { target: `workflow:${ROOT_RUN_ID}/**/work-9` });
-			assert.deepEqual(unknown.result, { outcome: "queued", position: 1, notInKnownSet: true });
+			assert.deepEqual(unknown.result, { outcome: "queued", position: 1, prediction: "unknown" });
 		} finally {
 			harness.dispose();
 		}
@@ -2143,7 +2144,7 @@ describe("pending-stage bridge sticky delivery", () => {
 		// Once confirmed, a dedup retry has nothing left to forward. The live match makes the
 		// target known even though the root has no scanned possible-stage set.
 		const retry = await harness.request("broadcast", { target });
-		assert.deepEqual(retry.result, { outcome: "queued", position: 1 });
+		assert.deepEqual(retry.result, { outcome: "queued", position: 1, prediction: "known" });
 		assert.equal(harness.store.runs()[0]?.pendingStageMessages?.[0]?.deliveryCount, 1);
 		harness.dispose();
 	});

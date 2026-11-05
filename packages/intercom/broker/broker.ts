@@ -19,6 +19,13 @@ import {
   writeMessageWithOutcome,
 } from "./socket-writes.js";
 import { boundWorkflowPossibleStageRow } from "../workflow-delivery-states.js";
+import {
+	isWorkflowFutureStagePredictionFields,
+	isWorkflowSendPredictionFields,
+	type WorkflowSendPredictionFields,
+	workflowFutureStagePredictionFields,
+	workflowSendPredictionFields,
+} from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { acquireSocketReplacementLock } from "./socket-replacement-lock.js";
 import { startBrokerWatchdog } from "./watchdog.js";
@@ -330,6 +337,7 @@ function isWorkflowPossibleStageAnnouncements(
 				Number.isInteger(announcement.queuedCount) &&
 				announcement.queuedCount >= 0 &&
 				(announcement.deliveryOnly === undefined || announcement.deliveryOnly === true) &&
+				isWorkflowFutureStagePredictionFields(announcement) &&
 				(announcement.omittedDeliveryStates === undefined ||
 					(Number.isInteger(announcement.omittedDeliveryStates) && announcement.omittedDeliveryStates >= 0)) &&
 				(announcement.deliveryStateCounts === undefined ||
@@ -814,6 +822,7 @@ class IntercomBroker {
 					...(row.deliveryStateCounts === undefined ? {} : { deliveryStateCounts: row.deliveryStateCounts }),
 					...(row.omittedDeliveryStates === undefined ? {} : { omittedDeliveryStates: row.omittedDeliveryStates }),
 					...(row.deliveryOnly === undefined ? {} : { deliveryOnly: row.deliveryOnly }),
+					...workflowFutureStagePredictionFields(row),
 					group: roster.group,
 				});
 			}
@@ -1051,7 +1060,7 @@ class IntercomBroker {
 		forwardTarget: string | undefined,
 		reason: string | undefined,
 		reasonCode: "message_id_conflict" | undefined,
-		notInKnownSet?: true,
+		prediction?: WorkflowSendPredictionFields,
 		forwardTargets?: readonly string[],
 	): void {
 		const pending = this.pendingStageAcknowledgments.get(requestId);
@@ -1095,7 +1104,7 @@ class IntercomBroker {
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
 				target: pending.target,
 				position,
-				...(notInKnownSet === true ? { notInKnownSet: true } : {}),
+				...prediction,
 			});
 			return;
 		}
@@ -2202,7 +2211,7 @@ class IntercomBroker {
 			(clientMessage.outcome === "forward" && typeof clientMessage.target !== "string") ||
 			(clientMessage.reason !== undefined && typeof clientMessage.reason !== "string") ||
 			(clientMessage.reasonCode !== undefined && clientMessage.reasonCode !== "message_id_conflict") ||
-			(clientMessage.notInKnownSet !== undefined && clientMessage.notInKnownSet !== true) ||
+			!isWorkflowSendPredictionFields(clientMessage) ||
 			(clientMessage.forwardTargets !== undefined &&
 				(!Array.isArray(clientMessage.forwardTargets) ||
 					!clientMessage.forwardTargets.every((entry) => typeof entry === "string")))
@@ -2217,7 +2226,7 @@ class IntercomBroker {
 			clientMessage.target,
 			clientMessage.reason,
 			clientMessage.reasonCode,
-			clientMessage.notInKnownSet === true ? true : undefined,
+			workflowSendPredictionFields(clientMessage),
 			Array.isArray(clientMessage.forwardTargets) ? [...clientMessage.forwardTargets] : undefined,
         );
         break;

@@ -15,7 +15,9 @@ import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../ru
 import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolve_budget } from "../shared/budget.js";
-import { scanPossibleStagesFromSource } from "../shared/possible-stages.js";
+import type { StageDecisionPort } from "../shared/possible-stage-prediction-errors.js";
+import { type StagePredictor, stageDecisionPortFromModels } from "../shared/possible-stage-predictor.js";
+import { type PossibleStagesScanResult, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
 import { store as defaultStore, type Store } from "../shared/store.js";
@@ -83,6 +85,13 @@ export interface DispatcherOpts {
 	 * launch skips the scan and the run simply has no known set.
 	 */
 	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
+	/**
+	 * The decision service that predicts stage names the scan could not resolve. Defaults to the host's `decide()` from
+	 * `models`; when neither exists, nothing is predicted and the scan alone decides the known set.
+	 */
+	decisions?: StageDecisionPort;
+	/** The owning session's predictor, which its Intercom bridge also reads; without one nothing is predicted. */
+	stagePredictor?: StagePredictor;
 	/** Cancellation registry forwarded to the detached runner. */
 	cancellation?: CancellationRegistry;
 	/** Job tracker forwarded to runDetached() for background run management. */
@@ -208,11 +217,12 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			// the scan itself never blocks launch.
 			const entryPath = opts.resolvePossibleStageEntry?.(def.normalizedName);
 			let possibleStages: readonly string[] | undefined;
+			let scan: PossibleStagesScanResult | undefined;
 			if (entryPath !== undefined) {
 				// Belt-and-braces around the scanner's never-throw discipline:
 				// a discovery failure must never block launch (D1).
 				try {
-					const scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
+					scan = scanPossibleStagesFromSource(entryPath, { maxDepth: opts.config?.maxDepth });
 					possibleStages = scan.stages;
 					// D1: scan warnings surface at launch as one aggregate line,
 					// bounded so builtin-internal partials do not spam stderr.
@@ -225,6 +235,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					}
 				} catch {
 					possibleStages = undefined;
+					scan = undefined;
 				}
 			}
 			let launch: ReturnType<typeof launchDetachedUntilStartup>;
@@ -261,6 +272,20 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
 			}
 			const { accepted } = launch;
+			const decisions = opts.decisions ?? stageDecisionPortFromModels(opts.models);
+			if (scan !== undefined && decisions !== undefined && opts.stagePredictor !== undefined) {
+				// Never awaited: the prediction records itself on the root run once it and admission settle.
+				opts.stagePredictor.launch({
+					store: opts.store ?? defaultStore,
+					runId: accepted.runId,
+					workflowName: def.normalizedName,
+					scan,
+					maxDepth: opts.config?.maxDepth,
+					inputs,
+					decisions,
+					admitted: launch.wait.then((admission) => admission.started),
+				});
+			}
 			opts.onRunAccepted?.(accepted.runId);
 			const admission = await raceWorkflowRequestAbort(launch.wait, opts.signal);
 			if (!admission.started) {

@@ -31,6 +31,7 @@ type RunStoreMethods = Pick<
 	| "recordRunSummary"
 	| "recordRunExecutionState"
 	| "recordRunPool"
+	| "recordRunStagePredictions"
 	| "reconcileRunParentStage"
 	| "recordRunEnd"
 	| "recordRunBlocked"
@@ -128,6 +129,13 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			const run = context.findRun(runId);
 			if (run === undefined) return;
 			run.pool = pool;
+			context.bumpAndNotify({ runId });
+		},
+
+		recordRunStagePredictions(runId, predictions): void {
+			const run = context.findRun(runId);
+			if (run === undefined) return;
+			run.stagePredictions = predictions;
 			context.bumpAndNotify({ runId });
 		},
 

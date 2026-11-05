@@ -291,6 +291,16 @@ const WarningSettingsSchema = Type.Object({
 	anthropicExtraUsage: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.warnings.anthropicExtraUsage })),
 });
 
+const IntercomSettingsSchema = Type.Object({
+	showUnknownTargetWarnings: Type.Optional(
+		Type.Boolean({
+			description:
+				"Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way.",
+			default: SETTINGS_DEFAULTS.intercom.showUnknownTargetWarnings,
+		}),
+	),
+});
+
 const TaskSettingsSchema = Type.Object({
 	heartbeatMs: Type.Optional(
 		Type.Union([Type.Literal(0), Type.Number({ minimum: 60_000 })], {
@@ -756,6 +766,7 @@ export const SettingsSchema = Type.Object(
 		codemode: Type.Optional(CodemodeSettingsSchema),
 		markdown: Type.Optional(MarkdownSettingsSchema),
 		warnings: Type.Optional(WarningSettingsSchema),
+		intercom: Type.Optional(IntercomSettingsSchema),
 		tasks: Type.Optional(TaskSettingsSchema),
 		httpProxy: Type.Optional(
 			Type.String({

@@ -1020,6 +1020,16 @@
         }
       }
     },
+    "intercom": {
+      "type": "object",
+      "properties": {
+        "showUnknownTargetWarnings": {
+          "type": "boolean",
+          "description": "Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way.",
+          "default": false
+        }
+      }
+    },
     "tasks": {
       "type": "object",
       "properties": {

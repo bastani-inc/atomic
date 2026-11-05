@@ -15,6 +15,7 @@ import type {
 	WorkflowStageRosterAnnouncement,
 	WorkflowStageRosterEntry,
 	WorkflowFutureStageRosterEntry,
+	WorkflowSendPrediction,
 	WorkflowPossibleStageAnnouncement,
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
@@ -35,6 +36,12 @@ import { isSocketAnswering } from "./socket-liveness.js";
 import { IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
+import {
+	isWorkflowFutureStagePredictionFields,
+	isWorkflowSendPredictionFields,
+	type WorkflowSendPredictionFields,
+	workflowSendPredictionFields,
+} from "../workflow-prediction-fields.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 /** How long `connect()` waits for the broker to answer `register`. */
@@ -152,8 +159,12 @@ export interface SendResult {
 	reasonCode?: "message_id_conflict" | "session_not_found";
 	target?: string;
   position?: number;
-  /** D4 speculative accept: the sticky target is not in the run's persisted possible-stage set. */
-  notInKnownSet?: true;
+  /** How a queued workflow target relates to the run's stages (#4359). */
+  prediction?: WorkflowSendPrediction;
+  /** The decision model judged the workflow target unlikely: probably a typo. */
+  unexpected?: true;
+  /** The closest known stage path for an unexpected target. */
+  suggestion?: string;
 }
 
 export interface PendingStageMessageRequest {
@@ -184,12 +195,11 @@ export interface PendingStageNotificationRequest {
 }
 
 export type PendingStageMessageResult =
-	| {
+	| ({
 			readonly outcome: "queued";
 			readonly position: number;
-			readonly notInKnownSet?: true;
 			readonly forwardTargets?: readonly string[];
-	  }
+	  } & WorkflowSendPredictionFields)
 	| { readonly outcome: "delivered" }
 	| { readonly outcome: "forward"; readonly target: string }
 	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
@@ -226,6 +236,7 @@ function isWorkflowFutureStageRosterEntries(value: unknown): value is WorkflowFu
 				typeof (entry as WorkflowFutureStageRosterEntry).queuedCount === "number" &&
 				Number.isInteger((entry as WorkflowFutureStageRosterEntry).queuedCount) &&
 				(entry as WorkflowFutureStageRosterEntry).queuedCount >= 0 &&
+				isWorkflowFutureStagePredictionFields(entry as WorkflowFutureStageRosterEntry) &&
 				typeof (entry as WorkflowFutureStageRosterEntry).group === "string",
 		)
 	);
@@ -931,14 +942,14 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "queued": {
-		const { messageId, attemptId, target, position, notInKnownSet } = brokerMessage;
+		const { messageId, attemptId, target, position } = brokerMessage;
         if (
           typeof messageId !== "string" ||
           (attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof target !== "string" ||
           typeof position !== "number" ||
           position < 1 ||
-			(notInKnownSet !== undefined && notInKnownSet !== true)
+			!isWorkflowSendPredictionFields(brokerMessage)
         ) {
           throw new Error("Invalid queued message");
         }
@@ -948,7 +959,7 @@ export class IntercomClient extends EventEmitter {
 			queued: true,
 			target,
 			position,
-			...(notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+			...workflowSendPredictionFields(brokerMessage),
 		} as const;
         if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
         else this.pendingSends.resolve(messageId, attemptId, result);
@@ -1513,7 +1524,7 @@ export class IntercomClient extends EventEmitter {
 						requestId,
 						outcome: "queued",
 						position: result.position,
-						...(result.notInKnownSet === true ? { notInKnownSet: true as const } : {}),
+						...workflowSendPredictionFields(result),
 						...(result.forwardTargets === undefined ? {} : { forwardTargets: [...result.forwardTargets] }),
 					}
 				: result.outcome === "forward"

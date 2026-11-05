@@ -26,6 +26,7 @@ import type {
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
+import { formatStagePredictionStatus, stagePredictionStatus } from "../shared/possible-stage-prediction.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
@@ -183,11 +184,15 @@ function renderRunEntry(
 	const poolText = poolCoordinationLine(run.pool);
 	const poolLine =
 		poolText === undefined ? [] : [`   ${muted}${truncateToWidth(poolText, interior - 3, ELLIPSIS)}${reset}`];
+	const predictionLines = formatStagePredictionStatus(stagePredictionStatus(run, allRuns)).map(
+		(line) => `   ${muted}${truncateToWidth(line, interior - 3, ELLIPSIS)}${reset}`,
+	);
 	return [
 		...identityRows,
 		identity,
 		metaLine,
 		...poolLine,
+		...predictionLines,
 		...pendingStageLines(run, interior, theme, resolveOwningRunStatus, resolveBoundarySegments),
 	];
 }

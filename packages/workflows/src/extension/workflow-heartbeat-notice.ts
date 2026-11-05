@@ -37,7 +37,7 @@ export function formatWorkflowHeartbeatNoticeText(details: WorkflowHeartbeatEven
 		"`workflow:<rootRunId>/<segment>[/<segment>...]`; `*` matches one segment and `**` any depth. Intercom delivers " +
 		"immediately to live stages and queues updates for known stages that have not started, delivering them before their " +
 		"first model turn, so workers and reviewers begin with one consistent contract. A valid target outside the known set " +
-		"queues with a `notInKnownSet` warning and settles undeliverable at terminal only if never delivered. " +
+		"still queues and settles undeliverable at terminal only if never delivered; a note appears only when the target looks like a typo of a known stage. " +
 		"Use `ask` once the target has a live session that can reply. " +
 		"Use workflow pause, resume, or quit for run control. " +
 		"Continue the progressing run when no intervention is needed, or ask the user when a decision is needed. " +

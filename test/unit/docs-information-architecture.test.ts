@@ -991,6 +991,7 @@ describe("docs references and assets (#2847)", () => {
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
 				"Subagent being restored after a restart",
+				"Queued for a workflow stage that has not started",
 				"Queued for an offline session",
 			],
 			"the runbook must cover every observable lifecycle state named by the Intercom contracts",

@@ -24,6 +24,7 @@ import type {
 	WorkflowBoundarySegmentsResolver,
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatus } from "../shared/pending-stage-status.js";
+import { describeStagePredictions } from "../shared/possible-stage-prediction.js";
 import { pooledStageStartingStep, stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { StageSnapshot, ToolNodeSnapshot, ToolNodeStatus } from "../shared/store-types.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
@@ -243,6 +244,8 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 		rows.push(["error", detail.error.split("\n")[0] ?? ""]);
 	}
 	if (detail.resumeGuidance) rows.push(["guidance", detail.resumeGuidance]);
+	const { predicted, unavailable } = describeStagePredictions(detail.stagePredictions);
+	rows.push(["predictions", predicted], ["predictions", unavailable]);
 	return rows;
 }
 

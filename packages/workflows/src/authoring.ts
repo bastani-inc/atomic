@@ -232,6 +232,25 @@ export declare function run<
 	opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export type {
+	PossibleStagePredictionErrorCode,
+	PossibleStagePredictionPhase,
+	StageDecisionAnswerErrorReason,
+} from "./shared/possible-stage-prediction-errors.js";
+export {
+	findPossibleStagePredictionError,
+	isPossibleStagePredictionError,
+	isStageDecisionAnswerError,
+	isStageDecisionFailedError,
+	isStageDecisionTimeoutError,
+	isStageDecisionUnavailableError,
+	POSSIBLE_STAGE_PREDICTION_THRESHOLDS,
+	PossibleStagePredictionError,
+	StageDecisionAnswerError,
+	StageDecisionFailedError,
+	StageDecisionTimeoutError,
+	StageDecisionUnavailableError,
+} from "./shared/possible-stage-prediction-errors.js";
+export type {
 	SerializedWorkflowGitRequiredError,
 	WorkflowGitRequiredFields,
 	WorkflowGitRequiredSource,

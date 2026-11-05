@@ -410,7 +410,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 		const { store, request, dispose } = await harness();
 		const { payload, result } = await request("1", GROUP, "unknown-stage");
 		assert.equal(payload.handled, true);
-		assert.deepEqual(result, { outcome: "queued", position: 1, notInKnownSet: true });
+		assert.deepEqual(result, { outcome: "queued", position: 1, prediction: "unknown" });
 		// Exact lookups stay empty: the entry is sticky and keyed by the verbatim target.
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
 		const entry = store.runs()[0]?.pendingStageMessages?.[0];
@@ -1662,14 +1662,17 @@ describe("possible future stage rows in the route announcement (D7)", () => {
 		assert.deepEqual(await queueSticky("s1", `workflow:${RUN_ID}/orchestrator-*`), {
 			outcome: "queued",
 			position: 1,
+			prediction: "known",
 		});
 		assert.deepEqual(await queueSticky("s2", `workflow:${RUN_ID}/orchestrator-3`), {
 			outcome: "queued",
 			position: 1,
+			prediction: "known",
 		});
 		assert.deepEqual(await queueSticky("s3", `workflow:${RUN_ID}/**`), {
 			outcome: "queued",
 			position: 1,
+			prediction: "known",
 		});
 		assert.deepEqual((await routePayload())?.possibleStages, [
 			{ target: `workflow:${RUN_ID}/orchestrator-*`, queuedCount: 2 },

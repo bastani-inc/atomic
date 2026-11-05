@@ -89,9 +89,10 @@ The decision model is used by:
 - [workflow-stage `model: "auto"`](/workflows/authoring#automatic-stage-model-selection) and [subagent `model: "auto"`](/subagents/reference#automatic-model-selection) selection;
 - the `structured_output` tool when the call names no `model` (a classifier answers when the result schema is a finite Choice; otherwise the call's `fallbackModels` and then the current chat model answer);
 - [readiness after a steer](/workflows/operations#readiness-after-a-steer) in workflow stages, when `workflows.autoAdvanceAfterSteer` is on;
+- [predicted stage names](/workflows/operations#intercom-delivery-to-pending-workflow-stages) in workflows whose stage names the launch scan cannot read, and judgments of Intercom sends to paths outside a run's known stages;
 - [`decide()`](/sdk/structured-decisions#decide), which extensions and workflows call to make their own decisions.
 
-A classifier answers with probabilities; a chat model's answer has none. Readiness after a steer needs probabilities, so it only decides on its own with a classifier `decisionModel`, such as `typesafe/jev-latest`.
+A classifier answers with probabilities; a chat model's answer has none. Readiness after a steer and predicted stage names need probabilities, so they only work with a classifier `decisionModel`, such as `typesafe/jev-latest`.
 
 Use `/settings` → **Decision model** to change the effective selection. If the project already defines `decisionModel`, the picker edits that project override; otherwise it saves the global default in `~/.atomic/agent/settings.json`. The picker identifies which scope it will save. Choose **Automatic** to save `""` in that scope. `""` and `auto` both use the current chat model; saved classifier credentials do not change that choice. To pin a decision model, choose an exact ID from the current registry, such as `typesafe/jev-latest`, or a chat model by provider/model ID. A classifier is not a chat model and does not appear in `/model`. Run `/reload` or restart Atomic to apply the saved choice to an already-running isolated engine.
 
@@ -297,6 +298,20 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 {
   "warnings": {
     "anthropicExtraUsage": false
+  }
+}
+```
+
+### Intercom
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `intercom.showUnknownTargetWarnings` | boolean | `false` | Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way |
+
+```json
+{
+  "intercom": {
+    "showUnknownTargetWarnings": true
   }
 }
 ```

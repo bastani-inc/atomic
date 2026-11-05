@@ -26,6 +26,7 @@ import type {
 	WorkflowBoundarySegmentsResolver,
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses } from "../shared/pending-stage-status.js";
+import { type StagePredictionStatus, stagePredictionStatus } from "../shared/possible-stage-prediction.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { observeRunExecution, type RunExecutionObservation } from "../shared/run-execution-state.js";
 import { boundStickyDeliveryStates } from "../shared/sticky-delivery-state-bound.js";
@@ -120,6 +121,8 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly budgetState?: RunBudgetState;
 	/** The run's local worker pool, for a root that runs one: its coordinator's traffic by kind. */
 	readonly pool?: RunPoolSnapshot;
+	/** Decision-model stage-name predictions of a root run, each with whether it came true. */
+	readonly stagePredictions?: StagePredictionStatus;
 	readonly exitReason?: string;
 	readonly error?: string;
 	/** True when a raw-running root has a completed frontier, no control node, and an exhausted duration budget. */
@@ -267,6 +270,7 @@ export function summarizeRunSnapshot(
 		),
 	);
 	const strandedRoot = isImpossibleRootLiveness(run, now, { hasActiveControlNode });
+	const stagePredictions = stagePredictionStatus(run, options?.allRuns ?? [run]);
 	return {
 		...observeRunExecution(run, now),
 		runId: run.id,
@@ -278,6 +282,7 @@ export function summarizeRunSnapshot(
 		...(run.budget !== undefined ? { budget: run.budget } : {}),
 		...(budgetState !== undefined ? { budgetState } : {}),
 		...(run.pool !== undefined ? { pool: run.pool } : {}),
+		...(stagePredictions !== undefined ? { stagePredictions } : {}),
 		activeStages: run.stages.filter(stageIsActive).map((stage) => ({
 			stageId: stage.id,
 			name: stage.name,

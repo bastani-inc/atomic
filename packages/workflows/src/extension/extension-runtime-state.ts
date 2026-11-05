@@ -8,6 +8,7 @@ import {
 } from "../durable/workflow-heartbeat-anchor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import type { SessionManager } from "../shared/persistence-restore.js";
+import { StagePredictor } from "../shared/possible-stage-predictor.js";
 import { resolveBuiltinDefinitionSource } from "../shared/possible-stages.js";
 import type { Store } from "../shared/store.js";
 import { readGraphStoreSnapshot } from "../shared/store-observation.js";
@@ -117,6 +118,8 @@ export interface WorkflowExtensionRuntimeState {
 	/** Seed lifecycle notification state before completed historical snapshots are inserted. */
 	beforeRestoreCompleted(snapshots: readonly RunSnapshot[]): void;
 	runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime;
+	/** This session's stage-name predictor: dispatch launches predictions and the Intercom bridge reads them. */
+	stagePredictor: StagePredictor;
 	resolveInvocationCwd(): string;
 	resetWorkflowDiscoveryForSession(): void;
 	ensureWorkflowConfigLoaded(): Promise<void>;
@@ -149,8 +152,10 @@ export function createWorkflowExtensionRuntimeState(
 	const { store, stageUiBroker, cancellationRegistry, jobs, stageControlRegistry, toolControlRegistry } =
 		options.runState ?? currentWorkflowSessionRunState();
 	let projectTrusted: boolean | undefined;
+	const stagePredictor = new StagePredictor();
 	const scopedRunOptions = {
 		store,
+		stagePredictor,
 		jobs,
 		stageControlRegistry,
 		toolControlRegistry,
@@ -177,6 +182,7 @@ export function createWorkflowExtensionRuntimeState(
 			});
 	});
 	pi.on?.("session_shutdown", () => {
+		stagePredictor.dispose();
 		disposeWorkflowSummaryService(store);
 		detachHumanInput?.();
 		detachHumanInput = undefined;
@@ -709,6 +715,7 @@ export function createWorkflowExtensionRuntimeState(
 		workflowHeartbeatSchedulerState,
 		beforeRestoreCompleted,
 		runtimeForContext,
+		stagePredictor,
 		resolveInvocationCwd: resolveCwd,
 		resetWorkflowDiscoveryForSession,
 		ensureWorkflowConfigLoaded,

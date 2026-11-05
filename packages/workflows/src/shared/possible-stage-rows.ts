@@ -5,6 +5,7 @@ import {
 	stageMatchesPathPattern,
 	type WorkflowBoundaryHop,
 } from "./pending-stage-status.js";
+import { type StagePredictionOutcome, stagePredictionOutcome } from "./possible-stage-prediction.js";
 import { type BoundedStickyDeliveryStates, boundStickyDeliveryStates } from "./sticky-delivery-state-bound.js";
 import type { StickyStageDeliveryStatus } from "./sticky-stage-delivery-status.js";
 import { isTerminalRunStatus } from "./store-internal.js";
@@ -31,6 +32,10 @@ export interface PossibleStageRow {
 	readonly deliveryStates?: readonly PossibleStageDeliveryState[];
 	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
 	readonly omittedDeliveryStates?: number;
+	/** A decision-model prediction's row: whether it is still predicted, came true, or can no longer. */
+	readonly prediction?: StagePredictionOutcome;
+	/** The probability that accepted the prediction. */
+	readonly probability?: number;
 }
 
 export type PossibleStageDeliveryState = Omit<StickyStageDeliveryStatus, "target">;
@@ -636,6 +641,8 @@ export class PossibleStageRowsIndex {
 			readonly target: string;
 			readonly queuedCount: number;
 			readonly deliveryOnly?: true;
+			readonly prediction?: StagePredictionOutcome;
+			readonly probability?: number;
 		}[] = [];
 		const scanTargets = [...this.targets.values()].filter(
 			(state) =>
@@ -671,6 +678,27 @@ export class PossibleStageRowsIndex {
 			rows.push({ slot: `s${position}`, target, queuedCount });
 			rowTargets.add(target);
 		}
+		const scanned = new Set(rootRun.possibleStages);
+		let invocationRuns: readonly RunSnapshot[] | undefined;
+		for (const entry of rootRun.stagePredictions?.entries ?? []) {
+			if (scanned.has(entry.path)) continue;
+			const rowSegments = splitStagePathSegments(entry.path);
+			let queuedCount = 0;
+			for (const state of scanTargets) {
+				const segments = state.segments!;
+				if (matchStagePathSegments(rowSegments, segments) || matchStagePathSegments(segments, rowSegments)) {
+					queuedCount += state.queued;
+				}
+			}
+			const target = formatWorkflowStageTarget(this.rootRunId, ...rowSegments);
+			if (rowTargets.has(target)) continue;
+			invocationRuns ??= this.invocationRuns(runs);
+			const prediction = stagePredictionOutcome(entry.path, rootRun, invocationRuns, (runId) =>
+				this.topology.hopsOf(runId),
+			);
+			rows.push({ slot: `p${entry.path}`, target, queuedCount, prediction, probability: entry.probability });
+			rowTargets.add(target);
+		}
 		let broadcastCount = 0;
 		for (const state of this.targets.values()) {
 			if (state.segments?.length === 1 && state.segments[0] === "**") broadcastCount += state.queued;
@@ -692,7 +720,10 @@ export class PossibleStageRowsIndex {
 			rows.push({ slot: `d${state.target}`, target: state.target, queuedCount: state.queued, deliveryOnly: true });
 		}
 		const result = rows.map((row) =>
-			this.row(row.slot, row.target, row.queuedCount, statusesByTarget.get(row.target), row.deliveryOnly),
+			this.row(row.slot, row.target, row.queuedCount, statusesByTarget.get(row.target), row.deliveryOnly, {
+				...(row.prediction === undefined ? {} : { prediction: row.prediction }),
+				...(row.probability === undefined ? {} : { probability: row.probability }),
+			}),
 		);
 		this.pruneRows(result);
 		return result;
@@ -704,13 +735,16 @@ export class PossibleStageRowsIndex {
 		target: string,
 		queuedCount: number,
 		deliveryStates: readonly StickyStageDeliveryStatus[] | undefined,
-		deliveryOnly?: true,
+		deliveryOnly: true | undefined,
+		prediction: Pick<PossibleStageRow, "prediction" | "probability">,
 	): PossibleStageRow {
 		const cached = this.rowCache.get(slot);
 		const same =
 			cached !== undefined &&
 			cached.row.target === target &&
 			cached.row.queuedCount === queuedCount &&
+			cached.row.prediction === prediction.prediction &&
+			cached.row.probability === prediction.probability &&
 			cached.row.deliveryOnly === deliveryOnly;
 		if (same && cached.statuses === deliveryStates) return cached.row;
 		const bounded = deliveryStates === undefined ? undefined : this.bounded(deliveryStates);
@@ -723,6 +757,7 @@ export class PossibleStageRowsIndex {
 			target,
 			queuedCount,
 			...(deliveryOnly === true ? { deliveryOnly } : {}),
+			...prediction,
 			...bounded,
 		};
 		this.rowCache.set(slot, { row, statuses: deliveryStates });
@@ -746,8 +781,12 @@ export class PossibleStageRowsIndex {
 		for (const [key, cached] of this.rowCache) if (!kept.has(cached.row)) this.rowCache.delete(key);
 	}
 
+	private invocationRuns(runs: readonly RunSnapshot[]): readonly RunSnapshot[] {
+		return runs.filter((run) => this.topology.rootOf(run.id) === this.rootRunId);
+	}
+
 	private materializedStageMatcher(runs: readonly RunSnapshot[]): (segments: readonly string[]) => boolean {
-		const invocationRuns = runs.filter((run) => this.topology.rootOf(run.id) === this.rootRunId);
+		const invocationRuns = this.invocationRuns(runs);
 		return (entrySegments) => {
 			for (const run of invocationRuns) {
 				const hops = this.topology.hopsOf(run.id);

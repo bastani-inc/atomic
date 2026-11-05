@@ -204,6 +204,8 @@ export function possibleStageRows(
 	readonly queuedCount: number;
 	readonly deliveryOnly?: true;
 	readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+	readonly prediction?: "predicted" | "confirmed" | "unused";
+	readonly probability?: number;
 }[] {
 	if (isTerminalRunStatus(rootRun.status)) return [];
 	const stickyQueued = (rootRun.pendingStageMessages ?? []).filter(
@@ -232,6 +234,8 @@ export function possibleStageRows(
 		readonly queuedCount: number;
 		readonly deliveryOnly?: true;
 		readonly deliveryStates?: readonly StickyStageDeliveryStatus[];
+		readonly prediction?: "predicted" | "confirmed" | "unused";
+		readonly probability?: number;
 	}[] = [];
 	for (const scanEntry of rootRun.possibleStages ?? []) {
 		const rowSegments = splitStagePathSegments(scanEntry);
@@ -246,6 +250,26 @@ export function possibleStageRows(
 				if (segments === undefined) return false;
 				return matchStagePathSegments(rowSegments, segments) || matchStagePathSegments(segments, rowSegments);
 			}).length,
+		});
+	}
+	// Decision-model predictions (#4359) the scan does not already list, recomputed from scratch.
+	const listed = new Set(rows.map((row) => row.target));
+	for (const prediction of rootRun.stagePredictions?.entries ?? []) {
+		if ((rootRun.possibleStages ?? []).includes(prediction.path)) continue;
+		const rowSegments = splitStagePathSegments(prediction.path);
+		if (rowSegments.some((segment) => segment.length === 0)) continue;
+		const target = formatWorkflowStageTarget(rootRunId, ...rowSegments);
+		if (listed.has(target)) continue;
+		listed.add(target);
+		rows.push({
+			target,
+			queuedCount: scanEntries.filter((entry) => {
+				const segments = stickySegments(entry);
+				if (segments === undefined) return false;
+				return matchStagePathSegments(rowSegments, segments) || matchStagePathSegments(segments, rowSegments);
+			}).length,
+			prediction: referencePredictionOutcome(runs, rootRunId, rowSegments),
+			probability: prediction.probability,
 		});
 	}
 	rows.push({
@@ -315,4 +339,22 @@ function materializedStageMatches(
 		}
 	}
 	return false;
+}
+
+/** Every stage of the invocation, matched against the prediction; rows exist only while the root runs, so an unconfirmed prediction is always `predicted`. */
+function referencePredictionOutcome(
+	runs: ReturnType<Store["runs"]>,
+	rootRunId: string,
+	segments: readonly string[],
+): "predicted" | "confirmed" {
+	const runById = new Map(runs.map((run) => [run.id, run]));
+	const hopsFor = createWorkflowBoundaryHopsResolver(runs);
+	for (const run of runs.filter((candidate) => reciprocalWorkflowRootRunId(runById, candidate.id) === rootRunId)) {
+		const hops = hopsFor(run.id);
+		if (hops === undefined) continue;
+		for (const stage of run.stages) {
+			if (stageMatchesPathPattern(segments, hops, [stage.id, stage.name])) return "confirmed";
+		}
+	}
+	return "predicted";
 }

@@ -47,6 +47,12 @@ export interface WorkflowStickyDeliveryState {
 	readonly reason: string;
 }
 
+/** How a workflow send's target relates to the run's stages: covered by the scan or a started stage, expected by the decision model, or neither. */
+export type WorkflowSendPrediction = "known" | "predicted" | "unknown";
+
+/** A decision-model prediction row in `intercom list`: still predicted, came true, or can no longer. */
+export type WorkflowFutureStagePrediction = "predicted" | "confirmed" | "unused";
+
 export interface WorkflowPossibleStageAnnouncement {
 	/** Canonical depth-faithful path target, e.g. `workflow:<rootRunId>/orchestrator-*`. */
 	readonly target: string;
@@ -59,6 +65,10 @@ export interface WorkflowPossibleStageAnnouncement {
 	/** Delivery states left out of `deliveryStates`. */
 	readonly omittedDeliveryStates?: number;
 	readonly deliveryOnly?: true;
+	/** Present on rows the decision model predicted; scan rows carry none. */
+	readonly prediction?: WorkflowFutureStagePrediction;
+	/** The probability that accepted the prediction. */
+	readonly probability?: number;
 }
 
 export interface WorkflowFutureStageRosterEntry {
@@ -71,6 +81,8 @@ export interface WorkflowFutureStageRosterEntry {
 	readonly deliveryStateCounts?: Readonly<Record<string, number>>;
 	readonly omittedDeliveryStates?: number;
 	readonly deliveryOnly?: true;
+	readonly prediction?: WorkflowFutureStagePrediction;
+	readonly probability?: number;
 }
 
 export interface SessionDirectory {

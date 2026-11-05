@@ -20,7 +20,7 @@ export const PENDING_STAGE_DELIVERY_GUIDANCE_LINES = [
 	"Send material updates through Intercom to every affected workflow stage, including stages that have not started.",
 	"Atomic queues messages for known pending stages addressed as `workflow:<rootRunId>/<segment>[/<segment>...]`; each segment may be a stage name, run id, or glob (`*` matches one segment and `**` any depth), and pattern sends remain sticky for every future matching stage until the root run terminates.",
 	"When shared scope or acceptance criteria change, broadcast one authoritative update to `workflow:<rootRunId>/**` (or a narrower path pattern) rather than enumerating stages; use `intercom list` inside the invocation group to see live, pending, and possible future targets, and use `ask` only on live targets.",
-	"A valid target outside the known stage set queues with a `notInKnownSet` warning and settles undeliverable at terminal only if it never delivered.",
+	"A valid target outside the known stage set still queues and settles undeliverable at terminal only if it never delivered; a note appears only when the target looks like a typo of a known stage.",
 ] as const;
 
 export const PENDING_STAGE_DELIVERY_GUIDANCE = PENDING_STAGE_DELIVERY_GUIDANCE_LINES.join("\n");
