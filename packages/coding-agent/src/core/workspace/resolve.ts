@@ -156,7 +156,7 @@ async function cloneStore(spec: Extract<WorkspaceRepository, { kind: "remote" }>
 		await git(dirname(store), ["clone", "--bare", spec.url, staging], "clone");
 		await git(staging, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], "clone");
 		await git(staging, ["fetch", "origin"], "fetch");
-		await filesystem("rename", staging, () => rename(staging, store));
+		await filesystem("move clone to", store, () => rename(staging, store));
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
 			() => undefined,

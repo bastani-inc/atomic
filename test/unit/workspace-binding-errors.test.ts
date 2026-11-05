@@ -212,6 +212,8 @@ describe("workspace error family (#3109)", () => {
 			failure("EACCES").hint,
 			"Check that /home/u/.atomic/repos/x.git is writable by this user, then retry.",
 		);
+		for (const errno of ["EEXIST", "ENOTEMPTY"])
+			assert.equal(failure(errno).hint, "Remove /home/u/.atomic/repos/x.git, which is in the way, then retry.");
 		const rehydrated = rehydrateWorkspaceError(serializeWorkspaceError(failure("ENOSPC")));
 		assert.ok(rehydrated instanceof WorkspaceBindingError);
 		assert.equal(rehydrated.code, "filesystem-failed");

@@ -918,6 +918,20 @@ describe("workspace git phases (#3109)", () => {
 		);
 	});
 
+	test("reports a leftover store directory with content as in the way instead of overwriting it (#3109)", async () => {
+		const remote = createRemote(dirs.root, "occupied-store");
+		const store = sharedStorePath(classifyRepository(remote.url) as never);
+		mkdirSync(store, { recursive: true });
+		writeFileSync(join(store, "unrelated.txt"), "not a git store\n");
+		const error = await rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" })));
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.code, "filesystem-failed");
+		assert.equal(error.fields.operation, "move clone to");
+		assert.equal(error.fields.path, store);
+		assert.deepEqual(readdirSync(store), ["unrelated.txt"], "the leftover content is untouched");
+		if (process.platform !== "win32") assert.equal(error.hint, `Remove ${store}, which is in the way, then retry.`);
+	});
+
 	test("derives the branch from a remote base by dropping only a leading origin/ (#3109)", async () => {
 		const remote = createRemote(dirs.root, "base-branches");
 		const bare = remote.url.replace(/^file:\/\//, "");

@@ -133,6 +133,7 @@ interface Described {
 }
 
 const OUT_OF_SPACE_ERRNOS: ReadonlySet<string> = new Set(["ENOSPC", "EDQUOT"]);
+const IN_THE_WAY_ERRNOS: ReadonlySet<string> = new Set(["EEXIST", "ENOTEMPTY"]);
 
 function describeBinding(
 	code: WorkspaceBindingErrorCode,
@@ -205,7 +206,9 @@ function describeBinding(
 				subject: `${text(fields, "operation")} ${text(fields, "path")} failed with ${text(fields, "errno")}`,
 				hint: OUT_OF_SPACE_ERRNOS.has(text(fields, "errno"))
 					? `Free disk space on the volume that holds ${text(fields, "path")}, then retry.`
-					: `Check that ${text(fields, "path")} is writable by this user, then retry.`,
+					: IN_THE_WAY_ERRNOS.has(text(fields, "errno"))
+						? `Remove ${text(fields, "path")}, which is in the way, then retry.`
+						: `Check that ${text(fields, "path")} is writable by this user, then retry.`,
 			};
 		case "drift":
 			return {
