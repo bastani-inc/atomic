@@ -4,6 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
+import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
 import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -263,6 +264,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   pi.registerTool({
     name: "intercom",
     exposure: "model-only",
+    detachable: intercomCallMayDetach,
     label: "Intercom",
     description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -1026,7 +1028,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
               : "";
-            await pi.appendEntry("intercom_received", {
+            await appendEntryUnlessReleased(pi, "intercom_received", {
               from: to,
               message: { text: replyText, attachments: replyMessage.content.attachments },
               messageId: replyMessage.id,

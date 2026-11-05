@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
 import { renderIntercomToolResult } from "./result-renderers.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
+import { contactSupervisorCallMayDetach, intercomCallMayDetach } from "./detachable-calls.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
 import { isIntercomBrokerTimeout, isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
@@ -940,6 +941,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	pi.registerTool({
 		name: "intercom",
 		exposure: "model-only",
+		detachable: intercomCallMayDetach,
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
@@ -991,6 +993,7 @@ Usage:
 		pi.registerTool({
 			name: "contact_supervisor",
 			exposure: "model-only",
+			detachable: contactSupervisorCallMayDetach,
 			label: "Contact Supervisor",
 			description: "Subagent-only tool for contacting the supervisor agent that delegated this task. Use need_decision when blocked, uncertain, needing approval, or facing a product/API/scope decision before continuing; this waits for the supervisor's reply. Use interview_request when multiple structured questions need supervisor answers; this also waits for a reply. Use progress_update only for meaningful progress or unexpected discoveries that change the plan; this does not wait for a reply. Do not use for routine completion handoffs.",
 			promptSnippet: "Subagent-only: contact the supervisor for decisions, structured interviews, or meaningful plan-changing updates. Do not use for routine completion handoffs.",

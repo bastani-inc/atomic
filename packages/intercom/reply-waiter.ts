@@ -1,9 +1,11 @@
+import { type ReleasedReplyMailbox, releasedReplyMailbox } from "./released-reply-mailbox.js";
 import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message } from "./types.js";
 
 export interface ReplyWaiterRecord {
   from: string;
   replyTo: string;
+  readonly signal?: AbortSignal;
   resolve(message: Message): void;
   reject(error: Error): void;
 }
@@ -44,6 +46,7 @@ export class ReplyWaiterRegistry {
   constructor(
     private readonly timeoutMs: number = DEFAULT_REPLY_TIMEOUT_MS,
     maxPending: number = DEFAULT_MAX_PENDING_REPLY_WAITS,
+    private readonly mailbox: ReleasedReplyMailbox = releasedReplyMailbox(),
   ) {
     this.maxPending = Math.max(1, maxPending);
   }
@@ -68,6 +71,19 @@ export class ReplyWaiterRegistry {
     for (const waiter of this.pending()) waiter.reject(error);
   }
 
+  releaseRunningWaits(error: Error): number {
+    let released = 0;
+    for (const waiter of this.pending()) {
+      if (waiter.signal?.aborted === false && this.mailbox.adopt(waiter)) {
+        this.waiters.delete(waiter.replyTo);
+        released += 1;
+        continue;
+      }
+      waiter.reject(error);
+    }
+    return released;
+  }
+
   begin(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission {
     if (signal?.aborted) return { ok: false, reason: "cancelled" };
     if (this.waiters.size >= this.maxPending) {
@@ -85,11 +101,13 @@ export class ReplyWaiterRegistry {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
         if (this.waiters.get(replyTo) === record) this.waiters.delete(replyTo);
+        this.mailbox.forget(record);
       };
       signal?.addEventListener("abort", onAbort, { once: true });
       record = {
         from,
         replyTo,
+        ...(signal === undefined ? {} : { signal }),
         resolve: (message) => {
           if (settled) return;
           cleanup();

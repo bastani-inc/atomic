@@ -37,11 +37,21 @@ export class PendingQuestionIndex {
   }
 
   pruneSender(senderSessionId: string): void {
+    this.takeForSender(senderSessionId);
+  }
+
+  takeForSender(senderSessionId: string): PendingQuestion[] {
+    const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
-      const remaining = routes.filter((route) => route.senderSessionId !== senderSessionId);
+      const remaining = routes.filter((route) => {
+        if (route.senderSessionId !== senderSessionId) return true;
+        pending.push(route);
+        return false;
+      });
       if (remaining.length === 0) this.questions.delete(messageId);
       else if (remaining.length !== routes.length) this.questions.set(messageId, remaining);
     }
+    return pending;
   }
 
   takeForTarget(targetSessionId: string): PendingQuestion[] {

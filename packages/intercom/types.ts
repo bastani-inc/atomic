@@ -266,6 +266,7 @@ export type ClientMessage =
   | { type: "drop_released_children"; requestId: string; childNames: string[]; gone?: string; refusal?: string }
   /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
   | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
+  | { type: "released_child_reply_ack"; messageId: string; accepted: boolean }
   | {
       type: "send" | "supervisor_send";
       to: string;
@@ -424,6 +425,7 @@ export type BrokerMessage =
 	 * hold that starts empty, so a wake that fails is asked for again by the next send.
 	 */
 	| { type: "restoring_recipient_wake"; childName: string; capability?: string }
+	| { type: "released_child_reply"; childName: string; replyTo: string; from: SessionInfo; message: Message }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal }
 	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: DeliveryFailureReasonCode; attemptId?: string }

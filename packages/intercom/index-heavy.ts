@@ -52,6 +52,7 @@ import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
 import { ReplyTracker } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
+import { answerReleasedChildReplies } from "./released-reply-mailbox.js";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";
@@ -965,6 +966,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       handlePendingStageMessage(nextClient, request, () => client === nextClient);
     });
+    answerReleasedChildReplies(nextClient);
     // #4326: a send waits at the broker for a released child of this session; Subagents wakes it.
     nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
       const wake: ReleasedChildWakeNotice = { childName: notice.childName };
@@ -1760,6 +1762,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     activeTools,
     getLiveContext,
     rejectReplyWaiter,
+    releaseRunningReplyWaits: (error) => {
+      replyWaiters.releaseRunningWaits(error);
+    },
     replyTracker: () => replyTracker,
     bindReplyTracker: (ctx) => { replyTracker = bindWorkflowReplyTracker(ctx, replyTracker); },
     preserveReplyTrackerOnCleanup: () => preserveWorkflowReplyTracker(runtimeContext),

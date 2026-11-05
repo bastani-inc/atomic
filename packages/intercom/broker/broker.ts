@@ -67,6 +67,7 @@ import {
 	handleBrokerSend,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
+	type ReleasedAskerReplyRouter,
 	type RemoteSendRequest,
 	type RemoteSendRouter,
 	type RestoringRecipientHold,
@@ -94,6 +95,7 @@ import {
 	validateReleasedChildFrame,
 } from "./released-children.js";
 import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
+import { ReleasedAskerReplies } from "./released-asker-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -215,6 +217,18 @@ interface LiveWorkflowStageRouteActivation {
 }
 
 type ConnectedSession = BrokerConnectedSession;
+
+interface PendingReleasedReplyAck {
+  readonly socket: net.Socket;
+  readonly attemptId?: string;
+  readonly ownerSessionId: string;
+  readonly questionId: string;
+  readonly childName: string;
+}
+
+function releasedAskerReplyRefusal(childName: string): string {
+  return `Subagent \`${childName}\` is released and no longer waiting for this reply`;
+}
 
 function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -376,6 +390,8 @@ class IntercomBroker {
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
+  private releasedAskerReplies = new ReleasedAskerReplies();
+  private releasedReplyAcks = new Map<string, PendingReleasedReplyAck>();
   private restoringRecipients = new RestoringRecipients((held, reason, reasonCode) =>
     this.failHeldSend(held, reason, reasonCode),
   );
@@ -1956,7 +1972,10 @@ class IntercomBroker {
           writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
           break;
         }
-        for (const child of validation.children) this.reserveReleasedChild(currentId, owner.registrationGroup, child);
+        for (const child of validation.children) {
+          this.reserveReleasedChild(currentId, owner.registrationGroup, child);
+          this.releasedAskerReplies.attach(child.childName, currentId);
+        }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
         break;
       }
@@ -1984,6 +2003,7 @@ class IntercomBroker {
         }
         for (const childName of childNames) {
           this.releaseReservation(releasedReservationKey(childName), currentId, clientMessage.gone, clientMessage.refusal);
+          this.releasedAskerReplies.dropChild(childName, currentId);
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
         break;
@@ -2307,6 +2327,16 @@ class IntercomBroker {
 			break;
 		}
 
+		case "released_child_reply_ack": {
+			if (typeof clientMessage.messageId !== "string" || typeof clientMessage.accepted !== "boolean") {
+				throw new Error("Invalid released_child_reply_ack message");
+			}
+			if (this.releasedReplyAcks.get(clientMessage.messageId)?.ownerSessionId === currentId) {
+				this.settleReleasedReply(clientMessage.messageId, clientMessage.accepted ? "accepted" : "refused");
+			}
+			break;
+		}
+
 		case "received": {
 			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid received message");
 			const recipient = this.sessions.get(currentId);
@@ -2380,7 +2410,58 @@ class IntercomBroker {
       this.receipts,
       this.routeRemote,
       (sender, group) => this.canInspectSelectedGroup(sender, group),
+      this.routeReleasedAskerReply,
     );
+  }
+
+  private readonly routeReleasedAskerReply: ReleasedAskerReplyRouter = ({
+    socket,
+    from,
+    message,
+    target,
+    attemptId,
+    expectedRecipientId,
+  }) => {
+    const route = this.releasedAskerReplies.take(message.replyTo, from.info.id, target, expectedRecipientId);
+    if (route === undefined) return false;
+    const owner = this.sessions.get(route.ownerSessionId);
+    const pending: PendingReleasedReplyAck = {
+      socket,
+      ...(attemptId === undefined ? {} : { attemptId }),
+      ownerSessionId: route.ownerSessionId,
+      questionId: route.questionId,
+      childName: route.childName,
+    };
+    this.releasedReplyAcks.set(message.id, pending);
+    const written =
+      owner !== undefined &&
+      writeMessageIfOpen(owner.socket, {
+        type: "released_child_reply",
+        childName: route.childName,
+        replyTo: route.questionId,
+        from: from.info,
+        message,
+      });
+    if (!written) this.settleReleasedReply(message.id, "refused");
+    return true;
+  };
+
+  private settleReleasedReply(messageId: string, outcome: "accepted" | "refused" | "uncertain"): void {
+    const pending = this.releasedReplyAcks.get(messageId);
+    if (pending === undefined) return;
+    this.releasedReplyAcks.delete(messageId);
+    const attempt = pending.attemptId === undefined ? {} : { attemptId: pending.attemptId };
+    if (outcome === "accepted") {
+      this.deliveredMessages.settleQuestion(pending.questionId);
+      writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
+      return;
+    }
+    writeMessageIfOpen(pending.socket, {
+      type: "delivery_failed",
+      messageId,
+      ...attempt,
+      reason: outcome === "uncertain" ? UNCERTAIN_RECEIPT_REASON : releasedAskerReplyRefusal(pending.childName),
+    });
   }
 
   /** Multi-node S5: a send no local session resolved goes to the shared state once it is open. */
@@ -2668,7 +2749,18 @@ class IntercomBroker {
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
     const unreserved = this.restoringRecipients.dropOwner(sessionId);
 
-    this.pendingQuestions.pruneSender(sessionId);
+    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    if (unanswered.length > 0 && departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+      this.releasedAskerReplies.keep(
+        { sessionId, childName: departed.registrationName },
+        unanswered,
+        this.restoringRecipients.releasedOwner(departed.registrationName),
+      );
+    }
+    this.releasedAskerReplies.dropOwner(sessionId);
+    for (const [messageId, pending] of [...this.releasedReplyAcks]) {
+      if (pending.ownerSessionId === sessionId) this.settleReleasedReply(messageId, "uncertain");
+    }
     for (const question of this.pendingQuestions.takeForTarget(sessionId)) {
       const asker = this.sessions.get(question.senderSessionId);
       if (!asker) continue;
@@ -2773,6 +2865,8 @@ class IntercomBroker {
     this.liveWorkflowStageRoutes.clear();
     this.liveWorkflowStageRouteActivations.clear();
     this.restoringRecipients.clear();
+    this.releasedAskerReplies.clear();
+    this.releasedReplyAcks.clear();
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();

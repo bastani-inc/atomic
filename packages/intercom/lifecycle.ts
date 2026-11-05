@@ -24,6 +24,7 @@ interface LifecycleDeps {
   activeTools: Map<string, string>;
   getLiveContext(ctx?: ExtensionContext | null, generation?: number): ExtensionContext | null;
   rejectReplyWaiter(error: Error): void;
+  releaseRunningReplyWaits?(error: Error): void;
   replyTracker: ReplyTracker | (() => ReplyTracker);
   bindReplyTracker?(ctx: ExtensionContext): void;
   preserveReplyTrackerOnCleanup?(): boolean;
@@ -51,7 +52,8 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setDisposed(true);
     deps.incrementRuntimeGeneration();
     deps.clearReconnectTimer();
-    deps.rejectReplyWaiter(new Error(reason));
+    if (deps.releaseRunningReplyWaits !== undefined) deps.releaseRunningReplyWaits(new Error(reason));
+    else deps.rejectReplyWaiter(new Error(reason));
     if (deps.preserveReplyTrackerOnCleanup?.() !== true) activeReplyTracker().reset();
     deps.pendingIdleMessages.clear();
     deps.clearInboundFlushTimer();

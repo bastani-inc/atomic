@@ -156,6 +156,13 @@ export interface IntercomClientOptions {
 	readonly multiplexesPendingStageRoutes?: true;
 }
 
+export interface ReleasedChildReply {
+	readonly childName: string;
+	readonly replyTo: string;
+	readonly from: SessionInfo;
+	readonly message: Message;
+}
+
 /** A released subagent to keep addressable through its owner, by name (#4326). */
 export interface ReleasedChildReservation {
 	readonly childName: string;
@@ -1023,6 +1030,21 @@ export class IntercomClient extends EventEmitter {
         this.emit("restoring_recipient_wake", capability === undefined ? { childName } : { childName, capability });
         break;
       }
+      case "released_child_reply": {
+        const { childName, replyTo, from, message } = brokerMessage;
+        if (
+          typeof childName !== "string" ||
+          typeof replyTo !== "string" ||
+          !isSessionInfo(from) ||
+          !isMessage(message) ||
+          message.replyTo !== replyTo
+        ) {
+          throw new Error("Invalid released_child_reply message");
+        }
+        const notice: ReleasedChildReply = { childName, replyTo, from, message };
+        this.emit("released_child_reply", notice);
+        break;
+      }
       case "released_children_ack": {
         const { requestId, refusal } = brokerMessage;
         const parsed = refusal === undefined ? undefined : readReleasedChildRefusal(refusal);
@@ -1453,6 +1475,12 @@ export class IntercomClient extends EventEmitter {
    */
   acknowledgeReleasedChildWake(childName: string): Promise<void> {
     return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
+  }
+
+  acknowledgeReleasedChildReply(messageId: string, accepted: boolean): boolean {
+    if (!this.socket || this.socket.destroyed) return false;
+    writeMessage(this.socket, { type: "released_child_reply_ack", messageId, accepted });
+    return true;
   }
 
   private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {
