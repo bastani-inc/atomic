@@ -80,7 +80,7 @@ async function assertRecordedHeads(
 	let absent = await absentCommits(repository, heads, signal);
 	if (absent.length > 0 && repository.spec.kind === "remote") {
 		await withRepositoryLock(repository.commonDir, () =>
-			gitOutput({ cwd: repository.root, args: ["fetch", "origin"], phase: "fetch", signal }),
+			gitOutput({ cwd: repository.root, args: ["fetch", "--prune", "origin"], phase: "fetch", signal }),
 		);
 		absent = await absentCommits(repository, absent, signal);
 	}

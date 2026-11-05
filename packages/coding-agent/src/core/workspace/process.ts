@@ -3,6 +3,8 @@ import { killProcessTree } from "../../utils/shell.ts";
 
 /** How long a stopped process gets to clean up after itself before its process group is killed. */
 export const WORKSPACE_PROCESS_STOP_GRACE_MS = 5_000;
+/** How often a stopped run looks again whether the rest of its process group has exited. */
+const GROUP_EXIT_POLL_MS = 50;
 /** On POSIX each process runs in its own process group, so stopping it also stops what it started. */
 const OWN_PROCESS_GROUP = process.platform !== "win32";
 
@@ -72,12 +74,14 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
 		let escalation: NodeJS.Timeout | undefined;
+		let groupPoll: NodeJS.Timeout | undefined;
 		/** Set once the process is being stopped: how the call fails once it has exited, or after the grace. */
 		let stopped: (() => void) | undefined;
 		// A promise settles once, so a late `close` after an error, abort or timeout changes nothing.
 		const settle = (finish: () => void): void => {
 			clearTimeout(timer);
 			clearTimeout(escalation);
+			clearTimeout(groupPoll);
 			run.signal?.removeEventListener("abort", onAbort);
 			finish();
 		};
@@ -113,8 +117,9 @@ export function runWorkspaceProcess(run: WorkspaceProcessRun): Promise<Workspace
 		 */
 		const settleWhenStopped = (): void => {
 			if (child.exitCode === null && child.signalCode === null) return;
-			if (groupRunning(child.pid!)) return;
-			settle(stopped!);
+			clearTimeout(groupPoll);
+			if (groupRunning(child.pid!)) groupPoll = setTimeout(settleWhenStopped, GROUP_EXIT_POLL_MS);
+			else settle(stopped!);
 		};
 		child.on("exit", () => {
 			if (stopped !== undefined) settleWhenStopped();

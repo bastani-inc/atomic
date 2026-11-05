@@ -610,7 +610,7 @@ async function addWorktree(
 				if (running !== undefined) return running;
 			}
 			if (repository.spec.kind === "remote" && repository.fresh !== true)
-				await git(repository.root, ["fetch", "origin"], "fetch");
+				await git(repository.root, ["fetch", "--prune", "origin"], "fetch");
 			await steps.prepare?.();
 			await git(repository.root, ["worktree", "prune"], "worktree-add");
 			// A failed addition keeps its record: its git has exited, so a later bind sees the adder gone and repairs it.

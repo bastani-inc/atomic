@@ -1218,6 +1218,25 @@ describe("shared stores follow the remote (#3109)", () => {
 		assert.equal(missing.fields.base, "origin/HEAD");
 	});
 
+	test("a branch deleted on the remote starts again from base, not from the store's stale copy (#3109)", async () => {
+		const remote = createRemote(dirs.root, "deleted-remote-branch");
+		const origin = remote.url.replace(/^file:\/\//, "");
+		const gone = pushFromElsewhere(remote, dirs.root, "feat/gone", "gone.txt");
+		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/gone" }));
+		assert.equal(first.head, gone);
+		git(first.repository, "worktree", "remove", "--force", first.worktree);
+		git(first.repository, "branch", "-D", "feat/gone");
+		git(origin, "branch", "-D", "feat/gone");
+		const again = await resolveWorkspace(workspace({ repo: remote.url, base: "main", branch: "feat/gone" }));
+		assert.equal(again.head, git(remote.seed, "rev-parse", "HEAD"), "started from base main");
+		assert.notEqual(again.head, gone);
+		assert.equal(
+			git(first.repository, "branch", "-r", "--list", "origin/feat/gone"),
+			"",
+			"the stale copy was pruned",
+		);
+	});
+
 	test("a base naming a remote branch means that branch as the remote has it (#3109)", async () => {
 		const remote = createRemote(dirs.root, "base-name");
 		await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
@@ -1881,7 +1900,7 @@ describe("workspace git phases (#3109)", () => {
 		assert.deepEqual(existing.transcript, [
 			"probe: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
-			"fetch: fetch origin",
+			"fetch: fetch --prune origin",
 			"probe: rev-parse --verify origin/main^{commit}",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
@@ -1894,7 +1913,7 @@ describe("workspace git phases (#3109)", () => {
 		assert.deepEqual(fetched.transcript.slice(0, 3), [
 			"probe: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
-			"fetch: fetch origin",
+			"fetch: fetch --prune origin",
 		]);
 		commitFile(existing.result.worktree, "change.txt", "change\n");
 		const changes = await record(() => workspaceChangeSet(existing.result));
@@ -1911,7 +1930,7 @@ describe("workspace git phases (#3109)", () => {
 		const record = transcriptOf({ worktree: binding.worktree });
 		const { transcript } = await record(() => restoreWorkspace(binding));
 		assert.deepEqual(transcript, [
-			"fetch: fetch origin",
+			"fetch: fetch --prune origin",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/main^{commit}",

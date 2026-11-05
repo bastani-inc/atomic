@@ -936,7 +936,7 @@ describe("workspace bindings across resume (#3109)", () => {
 		assert.equal(resumed.status, "failed");
 		assert.equal(resumed.workspaceError?.code, "drift", "fetched, the commit exists but this worktree lacks it");
 		assert.equal(resumed.workspaceError?.fields.expected, stepHead);
-		assert.ok(transcript.includes("fetch: fetch origin"));
+		assert.ok(transcript.includes("fetch: fetch --prune origin"));
 		assert.deepEqual(sessions, []);
 	});
 

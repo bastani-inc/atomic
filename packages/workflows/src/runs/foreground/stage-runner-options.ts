@@ -54,6 +54,7 @@ export async function stripWorkflowOnlyOptions(
 	defaultSessionDir: string | undefined,
 	meta: StageExecutionMeta,
 	pendingStageDelivery?: NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["pendingStageDelivery"],
+	signal?: AbortSignal,
 ): Promise<CreateAgentSessionOptions> {
 	const classification = workflowSessionOptions(meta);
 	const orchestrationContext = workflowOrchestrationContext(meta, options, pendingStageDelivery);
@@ -99,10 +100,11 @@ export async function stripWorkflowOnlyOptions(
 	if (sessionOptions.workspace !== undefined) {
 		const binding =
 			resumeStore === undefined
-				? await resolveWorkspace(sessionOptions.workspace)
+				? await resolveWorkspace(sessionOptions.workspace, { signal })
 				: await bindSessionWorkspace(
 						sessionOptions.workspace,
 						await SessionManager.open(resumeStore, resumeFromSessionId!),
+						signal,
 					);
 		sessionOptions.workspace = binding;
 		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
