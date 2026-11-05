@@ -226,6 +226,36 @@ test("a directory outside any repository does not stop later captures, and a rep
 	assert.equal(missing, 1, "the loop stops at the first directory once Git is known to be missing");
 });
 
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+	"a checkout that cannot be read is reported as such and never stops later captures (#4245)",
+	async () => {
+		const healthy = await sandbox.remoteWithClone("healthy");
+		const unreadable = await sandbox.remoteWithClone("unreadable");
+		chmodSync(unreadable.clone, 0o000);
+		try {
+			const { record, run } = await harness({ cwd: healthy.clone });
+			const first = await record(checkpoint("a"), undefined, [unreadable.clone]);
+			assert.deepEqual(
+				first.map((snapshot) => snapshot.root),
+				[healthy.clone],
+			);
+			const reason = reasonOf(run);
+			assert.ok(isWorkspaceSnapshotError(reason));
+			assert.equal(reason.code, "unreadable-path");
+			assert.equal(reason.subject, unreadable.clone);
+			sandbox.write(join(healthy.clone, "later.txt"), "later\n");
+			const second = await record(checkpoint("b"), undefined, [unreadable.clone]);
+			assert.deepEqual(
+				second.map((snapshot) => snapshot.root),
+				[healthy.clone],
+			);
+			assert.notEqual(second[0]!.id, first[0]!.id);
+		} finally {
+			chmodSync(unreadable.clone, 0o755);
+		}
+	},
+);
+
 test("several directories of one repository yield one snapshot (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone("repo", { "sub/a.txt": "a\n" });
 	const { record, commits } = await harness({ cwd: clone });
