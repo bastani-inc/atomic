@@ -228,7 +228,7 @@ export type StorageWriterQueueDegradedCode = "writer-queue-degraded";
 export type StorageWriterQueueDegradedReason = "watch-unavailable" | "wake-failed";
 
 const WRITER_QUEUE_DEGRADED_HINT =
-	"Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is writable";
+	"Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is readable and writable";
 
 /**
  * Not a failure: a node-sqlite connection fell back to polling for the write lock. It is reported once per connection

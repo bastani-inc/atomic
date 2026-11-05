@@ -69,6 +69,14 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /**
+ * A ticket that is gone or going: Windows reports a deleted file that another process still has open (to stat or
+ * touch it) as EPERM until that handle closes.
+ */
+function isVanishedTicket(error: unknown): boolean {
+	return isMissingFile(error) || ((error as NodeJS.ErrnoException).code === "EPERM" && process.platform === "win32");
+}
+
+/**
  * First come, first served for SQLite's write lock across processes. SQLite has no queue for `BEGIN IMMEDIATE`: a
  * writer that polls after `SQLITE_BUSY` loses to one that begins the moment the lock is free, and a busy process
  * can take the lock again and again while another waits for its whole deadline (#3978). A writer that has been
@@ -107,19 +115,24 @@ class SqliteWriteQueue {
 				utimesSync(join(this.directory, name), now, now);
 				return;
 			} catch (error) {
-				if (!isMissingFile(error)) throw error;
+				if (!isVanishedTicket(error)) throw error;
 			}
 		}
 	}
 
-	/** Live tickets, oldest first; stale ones long abandoned are removed on the way. */
+	/**
+	 * Live tickets, oldest first; stale ones long abandoned are removed on the way. A queue directory or a ticket that
+	 * vanishes while it is read counts as absent; any other failure to read the queue is thrown, so no caller takes a
+	 * queue it cannot read for an empty one.
+	 */
 	liveTickets(except?: string): string[] {
 		let names: string[];
 		// Uncontended writers find no directory; checking costs a third of a failed listing, twice per transaction.
 		if (!existsSync(this.directory)) return [];
 		try {
 			names = readdirSync(this.directory);
-		} catch {
+		} catch (error) {
+			if (!isMissingFile(error)) throw error;
 			return [];
 		}
 		const now = Date.now();
@@ -129,7 +142,8 @@ class SqliteWriteQueue {
 			let age: number;
 			try {
 				age = now - statSync(join(this.directory, name)).mtimeMs;
-			} catch {
+			} catch (error) {
+				if (!isVanishedTicket(error)) throw error;
 				continue;
 			}
 			if (Math.abs(age) < TICKET_STALE_MS) live.push(name);
@@ -137,7 +151,8 @@ class SqliteWriteQueue {
 				try {
 					unlinkSync(join(this.directory, name));
 				} catch {
-					// Another writer removed it first.
+					// Removing it is housekeeping: the ticket is stale and ignored whether or not it goes. Another writer
+					// may have removed it first, or it may belong to another user of a shared directory.
 				}
 			}
 		}
@@ -611,7 +626,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	}
 
 	writerQueueStats(): WriterQueueStats {
-		return this.lockUse.stats(this.writeQueue?.liveTickets().length ?? 0);
+		return this.lockUse.stats(this.queueOp(() => this.writeQueue?.liveTickets().length ?? 0));
 	}
 
 	private driver<T>(operation: () => T): T {
@@ -1139,7 +1154,7 @@ export function wrapNodeSqliteDatabase(connection: DatabaseSync): SqliteDatabase
 /**
  * How one database handle has used the write lock over the last 10 seconds, and how many writers wait for it now in
  * any process. Throws `StorageUnsupportedOperationError` for a handle that `openNodeSqliteDatabase` or
- * `wrapNodeSqliteDatabase` did not return.
+ * `wrapNodeSqliteDatabase` did not return, and `StorageUnavailableError` when the writers' queue cannot be read.
  */
 export function getWriterQueueStats(database: SqliteDatabase): WriterQueueStats {
 	if (!(database instanceof NodeSqliteDatabase))

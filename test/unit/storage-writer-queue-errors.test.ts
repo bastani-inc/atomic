@@ -65,7 +65,7 @@ test("the writers'-queue degradation names its reason and the remedy", () => {
 	assert.equal(error.location, "/data/journal.sqlite");
 	assert.equal(
 		error.message,
-		"Storage writers' queue degraded: node-sqlite at /data/journal.sqlite (writer-queue-degraded, watch-unavailable). Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is writable",
+		"Storage writers' queue degraded: node-sqlite at /data/journal.sqlite (writer-queue-degraded, watch-unavailable). Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is readable and writable",
 	);
 	assert.equal(isRetryableStorageError(error), false);
 });
