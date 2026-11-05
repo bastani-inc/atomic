@@ -456,6 +456,7 @@ export interface RunFailureClassification extends WorkflowSerializableObject {
 		| "stale_work_lease"
 		| "intercom_unavailable"
 		| "storage_unavailable"
+		| "process_cleanup_unconfirmed"
 		| "cancelled"
 		| "unknown";
 	/** Whether retrying the same work can succeed, as for a rate limit or an outage. */

@@ -5,6 +5,7 @@ import {
 	convertToLlm,
 	isExtensionStartupFailure,
 	isModelRoutingDebugEnabled,
+	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
 	type ModelConstraints,
 	type ModelRoute,
@@ -29,6 +30,7 @@ import type {
 	WorkflowModelValue,
 } from "../../shared/types.js";
 import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
+import { ProcessCleanupUnconfirmedError } from "../../shared/workflow-infrastructure-error.js";
 import {
 	buildModelCandidatesFromCatalog,
 	errorMessage,
@@ -755,7 +757,11 @@ export class StageSessionController {
 		this.sealGeneration(closedForGood);
 		const pending = this.activeCreation ?? this.sessionPromise;
 		const session = pending ? await pending : this.session;
-		await session?.closeWorkflowStageGeneration?.();
+		try {
+			await session?.closeWorkflowStageGeneration?.();
+		} catch (error) {
+			throw isTaskCleanupError(error) ? new ProcessCleanupUnconfirmedError(error) : error;
+		}
 		this.artifactCapture.close();
 		// A generation that already closed resumably (its stage blocked) ends its children now that it ends for good.
 		if (closedForGood) {

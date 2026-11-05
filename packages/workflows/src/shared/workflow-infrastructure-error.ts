@@ -1,3 +1,10 @@
+import {
+	type ResourceFailure,
+	rehydrateTaskCleanupError,
+	type TaskCleanupError,
+	type TaskCleanupPhase,
+} from "@bastani/atomic";
+
 export type WorkflowInfrastructureFault =
 	| "worker_lost"
 	| "worker_cleanup_unconfirmed"
@@ -5,7 +12,8 @@ export type WorkflowInfrastructureFault =
 	| "worker_startup_failed"
 	| "stale_work_lease"
 	| "intercom_unavailable"
-	| "storage_unavailable";
+	| "storage_unavailable"
+	| "process_cleanup_unconfirmed";
 
 const WORKFLOW_INFRASTRUCTURE_ERROR_NAME = "WorkflowInfrastructureError";
 
@@ -18,6 +26,7 @@ export const WORKFLOW_INFRASTRUCTURE_FAULTS: ReadonlySet<string> = new Set<Workf
 	"stale_work_lease",
 	"intercom_unavailable",
 	"storage_unavailable",
+	"process_cleanup_unconfirmed",
 ]);
 const MAX_CAUSE_DEPTH = 8;
 
@@ -50,6 +59,86 @@ function isInfrastructureError(value: unknown): value is WorkflowInfrastructureE
 		candidate.retryable === true &&
 		typeof candidate.code === "string"
 	);
+}
+
+/** A resource a stage's task cleanup left unconfirmed, with the task that owned it. */
+export interface ProcessCleanupResource extends ResourceFailure {
+	readonly taskId: string;
+}
+
+/**
+ * `process_cleanup_unconfirmed`: a stage's task process cleanup was still unconfirmed when the stage closed. The
+ * stage's work is done, so retrying it can succeed, and a resume continues the stage from its saved session. The
+ * fields come from the `TaskCleanupError` that is its cause.
+ */
+export class ProcessCleanupUnconfirmedError extends WorkflowInfrastructureError {
+	declare readonly code: "process_cleanup_unconfirmed";
+	readonly hint: string;
+	readonly phase: TaskCleanupPhase;
+	readonly resources: readonly ProcessCleanupResource[];
+	declare readonly cause: TaskCleanupError;
+
+	constructor(cause: TaskCleanupError) {
+		const resources = cause.failures.flatMap((failure) =>
+			failure.resources.map((resource) => ({ taskId: failure.taskId, ...resource })),
+		);
+		const subject = resources.length > 0 ? resources.map((resource) => resource.resource).join(", ") : "owned tasks";
+		super(
+			"process_cleanup_unconfirmed",
+			`Workflow stage task cleanup was not confirmed: ${subject} (process_cleanup_unconfirmed). ${cause.hint}.`,
+			{ cause },
+		);
+		this.hint = cause.hint;
+		this.phase = cause.phase;
+		this.resources = resources;
+	}
+}
+
+/** True for a {@link ProcessCleanupUnconfirmedError}, also a copy from another realm that kept its fields. */
+export function isProcessCleanupUnconfirmedError(error: unknown): error is ProcessCleanupUnconfirmedError {
+	if (error instanceof ProcessCleanupUnconfirmedError) return true;
+	return (
+		isInfrastructureError(error) &&
+		error.code === "process_cleanup_unconfirmed" &&
+		Array.isArray((error as { readonly resources?: unknown }).resources)
+	);
+}
+
+/** A {@link WorkflowInfrastructureError} as JSON-safe data, for crossing a process boundary. */
+export interface SerializedWorkflowInfrastructureError {
+	readonly name: string;
+	readonly code: string;
+	readonly message: string;
+	readonly hint?: string;
+	readonly fields?: { readonly phase: TaskCleanupPhase; readonly resources: readonly ProcessCleanupResource[] };
+	readonly cause?: Pick<TaskCleanupError, "name" | "code" | "retryable" | "hint" | "phase" | "failures">;
+}
+
+export function serializeWorkflowInfrastructureError(
+	error: WorkflowInfrastructureError,
+): SerializedWorkflowInfrastructureError {
+	if (!isProcessCleanupUnconfirmedError(error)) return { name: error.name, code: error.code, message: error.message };
+	const { name, code, retryable, hint, phase, failures } = error.cause;
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		fields: { phase: error.phase, resources: error.resources },
+		cause: { name, code, retryable, hint, phase, failures },
+	};
+}
+
+/**
+ * Rebuilds a serialized error as the same class: `process_cleanup_unconfirmed` with a well-formed cause becomes a
+ * {@link ProcessCleanupUnconfirmedError}; any other code, or a malformed cause, the base class with its code and message.
+ */
+export function rehydrateWorkflowInfrastructureError(
+	value: SerializedWorkflowInfrastructureError,
+): WorkflowInfrastructureError {
+	const cause = rehydrateTaskCleanupError(value.cause);
+	if (value.code === "process_cleanup_unconfirmed" && cause) return new ProcessCleanupUnconfirmedError(cause);
+	return new WorkflowInfrastructureError(value.code as WorkflowInfrastructureFault, value.message, cause && { cause });
 }
 
 export function isRetryableWorkflowError(error: unknown): boolean {

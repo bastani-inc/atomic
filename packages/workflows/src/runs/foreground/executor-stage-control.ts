@@ -58,6 +58,14 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	const unsubscribeStageEvents = runtime.innerCtx.subscribe((event) => {
 		toolExecutions.record(event);
 		queuedUserMessages.record(event);
+		if (event.type === "task_cleanup_quarantined")
+			runtime.activeStore.recordStageNotice(runtime.runId, runtime.stageId, {
+				id: crypto.randomUUID(),
+				ts: Date.now(),
+				kind: "cleanup",
+				to: "quarantined",
+				meta: event.resources.map((entry) => `${event.taskId} ${entry.resource}: ${entry.message}`).join("; "),
+			});
 	});
 	// Mounted chats subscribe through this handle for as long as they exist, hidden or not.
 	let externalSubscribers = 0;

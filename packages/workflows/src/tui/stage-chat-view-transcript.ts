@@ -190,6 +190,14 @@ function stageNoticeCard(entry: NoticeEntry): {
 				tone: "mauve",
 				fields: stageNoticeFields(entry),
 			};
+		case "cleanup":
+			return {
+				title: "TASK CLEANUP",
+				glyph: "!",
+				headline: "Task finished; its process cleanup is still being confirmed",
+				tone: "warning",
+				fields: stageNoticeFields(entry, "warning"),
+			};
 		case "tree":
 			return {
 				title: "STAGE TREE",

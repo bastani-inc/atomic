@@ -70,8 +70,19 @@ export {
 	DEFAULT_WORKFLOW_HEARTBEAT_INTERVAL_MINUTES,
 	WORKFLOW_HEARTBEAT_CUSTOM_TYPE,
 } from "./shared/workflow-heartbeat-contract.js";
-export type { WorkflowInfrastructureFault } from "./shared/workflow-infrastructure-error.js";
-export { isRetryableWorkflowError, WorkflowInfrastructureError } from "./shared/workflow-infrastructure-error.js";
+export type {
+	ProcessCleanupResource,
+	SerializedWorkflowInfrastructureError,
+	WorkflowInfrastructureFault,
+} from "./shared/workflow-infrastructure-error.js";
+export {
+	isProcessCleanupUnconfirmedError,
+	isRetryableWorkflowError,
+	ProcessCleanupUnconfirmedError,
+	rehydrateWorkflowInfrastructureError,
+	serializeWorkflowInfrastructureError,
+	WorkflowInfrastructureError,
+} from "./shared/workflow-infrastructure-error.js";
 export { loadWorkerWorkflow } from "./workers/definitions.js";
 export type {
 	LocalWorkerOptionsErrorCode,
