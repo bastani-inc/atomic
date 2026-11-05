@@ -107,6 +107,7 @@
 - An invalid `--storage`, `ATOMIC_STORAGE` or `ATOMIC_PROFILE` selection, or a missing libSQL adapter for the CI profile, now stops startup with one `Error:` line and exit code 1 instead of a stack trace ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - llama.cpp chat models remain available for automatic task analysis and structured-output fallbacks when a classifier shares the same model ID ([#4358](https://github.com/bastani-inc/atomic/issues/4358)).
 - On Windows, writers to one SQLite database in different processes keep taking the write lock in turn after the system clock is set, for example by a virtual machine's time synchronization. A running process's own clock could stay seconds off the system clock for up to a minute afterwards, so writers took waiting writers for gone and went ahead of them, or removed their places in line. Writers now judge the queue on the database's clock, which every process shares. A writer waiting for its turn also no longer pauses its process while it reads the queue or writes, refreshes or removes its place in line ([#4387](https://github.com/bastani-inc/atomic/issues/4387))
+- `Ctrl+P` switches to the only model in scope, or the only available model, when the active model is a different one, instead of showing "Only one model in scope". Cycling forward from a model outside the scope now selects the first scoped model instead of skipping it (upstream [#11806](https://github.com/earendil-works/pi/issues/11806))
 
 ## [0.9.71] - 2026-11-03
 

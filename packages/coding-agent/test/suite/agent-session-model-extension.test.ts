@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { fauxAssistantMessage, fauxToolCall, type Model } from "@bastani/pi-ai/compat";
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -99,6 +100,73 @@ describe("AgentSession model and extension characterization", () => {
 		expect(harness.session.model?.id).toBe("faux-2");
 		expect(harness.session.thinkingLevel).toBe("high");
 		expect(sessionEvents).toEqual(["faux-1->faux-2:cycle"]);
+	});
+
+	it("cycles to the only scoped model and to the first scoped model from outside the scope (upstream #11806)", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One" },
+				{ id: "faux-2", name: "Two" },
+				{ id: "faux-3", name: "Three" },
+			],
+		});
+		harnesses.push(harness);
+		const modelTwo = harness.getModel("faux-2")!;
+		const modelThree = harness.getModel("faux-3")!;
+
+		harness.session.setScopedModels([{ model: modelTwo }]);
+		assert.equal((await harness.session.cycleModel())?.model.id, "faux-2");
+		assert.equal(harness.session.model?.id, "faux-2");
+		assert.equal(await harness.session.cycleModel(), undefined);
+		assert.equal(harness.session.model?.id, "faux-2");
+
+		await harness.session.setModel(harness.getModel("faux-1")!);
+		harness.session.setScopedModels([{ model: modelTwo }, { model: modelThree }]);
+		await harness.session.cycleModel();
+		assert.equal(harness.session.model?.id, "faux-2");
+
+		await harness.session.setModel(harness.getModel("faux-1")!);
+		await harness.session.cycleModel("backward");
+		assert.equal(harness.session.model?.id, "faux-3");
+	});
+
+	it("cycles to the only available model when the active model is no longer available (upstream #11806)", async () => {
+		const harness = await createHarness({ models: [{ id: "faux-1", name: "One" }] });
+		harnesses.push(harness);
+		harness.session.agent.state.model = { ...harness.getModel(), id: "retired-model" };
+
+		assert.equal((await harness.session.cycleModel("backward"))?.model.id, "faux-1");
+		assert.equal(harness.session.model?.id, "faux-1");
+		assert.equal(await harness.session.cycleModel(), undefined);
+		assert.equal(harness.session.model?.id, "faux-1");
+	});
+
+	it("cycles backward through scoped models and wraps from the first to the last (upstream #11806)", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", name: "One" },
+				{ id: "faux-2", name: "Two" },
+				{ id: "faux-3", name: "Three" },
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setScopedModels(["faux-1", "faux-2", "faux-3"].map((id) => ({ model: harness.getModel(id)! })));
+		await harness.session.setModel(harness.getModel("faux-2")!);
+
+		assert.equal((await harness.session.cycleModel("backward"))?.model.id, "faux-1");
+		assert.equal((await harness.session.cycleModel("backward"))?.model.id, "faux-3");
+		assert.equal((await harness.session.cycleModel("forward"))?.model.id, "faux-1");
+	});
+
+	it("has nothing to cycle to when no scoped or available model has auth (upstream #11806)", async () => {
+		const harness = await createHarness({ models: [{ id: "faux-1", name: "One" }], withConfiguredAuth: false });
+		harnesses.push(harness);
+		assert.deepEqual(await harness.session.modelRuntime.getAvailableSnapshot(), []);
+
+		assert.equal(await harness.session.cycleModel(), undefined);
+		harness.session.setScopedModels([{ model: harness.getModel() }]);
+		assert.equal(await harness.session.cycleModel("backward"), undefined);
+		assert.equal(harness.session.model?.id, "faux-1");
 	});
 
 	it("clamps thinking levels to model capabilities and cycles available levels", async () => {
