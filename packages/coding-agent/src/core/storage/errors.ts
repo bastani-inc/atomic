@@ -87,8 +87,9 @@ export class StoragePrefixError extends StorageError {
 export type StorageConfigErrorCode = "invalid-config";
 
 export class StorageConfigError extends StorageError {
-	override readonly name = "StorageConfigError" as const;
-	readonly code: StorageConfigErrorCode = "invalid-config";
+	/** {@link TeamProfileConfigError} is the one subclass, with its own name and codes. */
+	override readonly name: "StorageConfigError" | "TeamProfileConfigError" = "StorageConfigError";
+	readonly code: StorageConfigErrorCode | TeamProfileConfigErrorCode = "invalid-config";
 	readonly source: "sdk" | "cli" | "env" | "settings";
 	readonly field: string;
 	readonly reason: string;
