@@ -138,7 +138,7 @@ export class WorkspaceGitError extends WorkspaceError {
 		super(
 			"git-failed",
 			`Git ${fields.operation} failed in ${fields.cwd}${fields.detail ? `: ${fields.detail}` : ""}`,
-			"Check that the repository is readable and not locked by another Git process, then retry.",
+			"Check that the repository is readable, its disk has free space, and no other Git process holds its lock, then retry.",
 			fields,
 			cause,
 		);
@@ -202,12 +202,12 @@ function restoreMessage(
 			];
 		case "blob-missing":
 			return [
-				`Cannot restore snapshot ${snapshot}: ${fields.role} blob ${fields.blob} is missing from storage`,
+				`Cannot restore snapshot ${snapshot}: ${fields.role ?? "snapshot"} blob ${fields.blob} is missing from storage`,
 				"Use the storage the snapshot was recorded in, or import (`atomic --import <file>`) a session saved with `/export <file>.jsonl`, which carries its blobs.",
 			];
 		case "blob-corrupt":
 			return [
-				`Cannot restore snapshot ${snapshot}: ${fields.role} blob ${fields.blob} does not match its hash`,
+				`Cannot restore snapshot ${snapshot}: ${fields.role ?? "snapshot"} blob ${fields.blob} does not match its hash`,
 				"The stored snapshot is damaged; restore an earlier snapshot or re-import the session.",
 			];
 		case "commits-unavailable": {
@@ -337,7 +337,7 @@ function structurallyIs(value: unknown, name: WorkspaceErrorName): boolean {
 	if (name === "WorkspaceError") {
 		return (
 			typeof candidate.name === "string" &&
-			candidate.name in CODES &&
+			Object.hasOwn(CODES, candidate.name) &&
 			ALL_CODES.has(candidate.code as WorkspaceErrorCode)
 		);
 	}
@@ -448,7 +448,8 @@ export function rehydrateWorkspaceError(value: SerializedWorkspaceError): Error 
 	const known =
 		value.name === "GitUnavailableError"
 			? isGitUnavailableError(value)
-			: CODES[value.name as WorkspaceErrorName]?.includes(value.code as WorkspaceErrorCode) === true;
+			: Object.hasOwn(CODES, value.name) &&
+				CODES[value.name as WorkspaceErrorName].includes(value.code as WorkspaceErrorCode);
 	if (rehydrate && value.fields && known) return rehydrate(value.fields, value.code as string, cause);
 	if (value.code !== undefined) {
 		const error = Object.create(WorkspaceError.prototype) as WorkspaceError;

@@ -39,9 +39,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const table = `${validateStoragePrefix(prefix)}snapshot_blobs`;
-		await database.exec(
-			`CREATE TABLE IF NOT EXISTS ${table} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`,
-		);
+		const exists = await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?", table);
+		if (!exists) {
+			await database.transaction(async (transaction) => {
+				await transaction.exec(
+					`CREATE TABLE IF NOT EXISTS ${table} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`,
+				);
+			});
+		}
 		return new SqlSnapshotBlobStore(database, table);
 	}
 

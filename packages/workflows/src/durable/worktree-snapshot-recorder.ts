@@ -65,7 +65,7 @@ async function serializeRun<T>(runId: string, action: () => Promise<T>): Promise
 
 function containsDirectory(root: string, directory: string): boolean {
 	const path = relative(root, directory);
-	return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
+	return !isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`);
 }
 
 /** Captures live checkpoint workspaces and commits while holding the run's in-process snapshot queue. */
@@ -78,27 +78,21 @@ export function createWorkflowSnapshotRecorder(input: {
 	readonly run: RunSnapshot;
 }): WorkflowSnapshotRecord {
 	let gitUnavailable = false;
+	const report = (error: Error) => {
+		if (isGitUnavailableError(error)) gitUnavailable = true;
+		input.run.snapshotUnavailable ??= serializeWorkspaceError(error);
+	};
 	return async (checkpoint, signal, directories = []) => {
-		if (input.settings?.enabled === false) {
+		const journal = input.rootBackend.snapshotJournal;
+		if (input.settings?.enabled === false || gitUnavailable || !journal?.snapshotBlobs) {
+			if (input.settings?.enabled !== false && !journal?.snapshotBlobs) {
+				report(new WorkspaceSnapshotError("blob-store-unsupported", "workflow journal"));
+			}
 			await input.backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
 			return [];
 		}
 		return serializeRun(input.rootRunId, async () => {
 			signal?.throwIfAborted();
-			const journal = input.rootBackend.snapshotJournal;
-			const report = (error: Error) => {
-				if (isGitUnavailableError(error)) gitUnavailable = true;
-				input.run.snapshotUnavailable ??= serializeWorkspaceError(error);
-			};
-			if (!journal?.snapshotBlobs) {
-				report(new WorkspaceSnapshotError("blob-store-unsupported", "workflow journal"));
-				await input.backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
-				return [];
-			}
-			if (gitUnavailable) {
-				await input.backend.commitCheckpoint(checkpoint, signal === undefined ? undefined : { signal });
-				return [];
-			}
 			const latest = await snapshotAncestry(journal, input.rootRunId);
 			const snapshots: WorktreeSnapshot[] = [];
 			const workflowCwd = resolve(input.cwd());
