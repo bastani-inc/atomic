@@ -344,19 +344,21 @@ export function makeExecuteWorkflowTool(
 							),
 					}),
 				);
-			case "fork":
+			case "fork": {
+				const modelOwner = workflowCaller(ctx);
 				await ensureWorkflowResourcesVisible();
 				return awaitRequest(
 					workflowForkAction(args, {
 						getRuntime,
 						policy,
 						source: "sdk",
-						modelOwner: workflowCaller(ctx),
+						modelOwner,
 						signal,
 						onRunAccepted,
-						validateSource: (handle) => assertWorkflowForkSourceOwner(handle, ctx),
+						validateSource: (handle) => assertWorkflowForkSourceOwner(handle, modelOwner),
 					}),
 				);
+			}
 			default: {
 				const _exhaustive: never = action;
 				throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

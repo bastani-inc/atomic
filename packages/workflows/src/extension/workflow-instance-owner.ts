@@ -23,9 +23,9 @@ export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessio
 	return id;
 }
 
-export function assertWorkflowForkSourceOwner(handle: DurableWorkflowHandle, ctx: PiExecuteContext): void {
+export function assertWorkflowForkSourceOwner(handle: DurableWorkflowHandle, callerId: string): void {
 	if (handle.modelOwner !== undefined) {
-		if (handle.modelOwner !== workflowCaller(ctx))
+		if (handle.modelOwner !== callerId)
 			throw new ForkSourceOwnershipError({ runId: handle.workflowId, reason: "foreign-owner" });
 	} else if (handle.origin === "agent") {
 		throw new ForkSourceOwnershipError({ runId: handle.workflowId, reason: "owner-unavailable" });

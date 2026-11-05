@@ -217,6 +217,7 @@ test("the fork action refuses a source run another session owns before copying a
 			run: async () => ({}),
 		});
 		const jobs = createJobTracker();
+		let onResourceLoad: () => void = () => undefined;
 		const execute = makeExecuteWorkflowTool(
 			createExtensionRuntime({
 				definitions: [definition],
@@ -226,7 +227,7 @@ test("the fork action refuses a source run another session owns before copying a
 				cwd: join(root, "target"),
 			}),
 			() => undefined,
-			() => undefined,
+			() => onResourceLoad(),
 		);
 		assert.equal(store.run(runId), undefined, "the source run is not in this session's store");
 		const runsBefore = await backend.journal.listRuns();
@@ -242,6 +243,19 @@ test("the fork action refuses a source run another session owns before copying a
 				hint: `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
 			});
 		}
+		let activeCaller = "foreign-session";
+		const changingContext: PiExecuteContext = {
+			...context(),
+			sessionManager: { getSessionId: () => activeCaller },
+		};
+		onResourceLoad = () => {
+			activeCaller = "owner-session";
+		};
+		const changedCaller = (await execute({ action: "fork", runId }, changingContext)) as ForkResult;
+		await jobs.get(changedCaller.runId)?.promise;
+		assert.equal(changedCaller.status, "failed", "resource loading cannot change a request's authority");
+		assert.equal(changedCaller.code, "source-not-owned");
+		onResourceLoad = () => undefined;
 		assert.deepEqual(await backend.journal.listRuns(), runsBefore, "a refused fork writes no run");
 		assert.equal(sessionWrites(), 0, "a refused fork writes no stage conversation");
 		assert.equal(await readText(sourcePath), history);
@@ -275,15 +289,15 @@ test("the fork source owner check accepts the owner and unowned user runs and re
 		pendingPrompts: 0,
 	};
 	const caller = workflowCaller(context());
-	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, modelOwner: caller }, context()));
-	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, origin: "user" }, context()));
-	assert.doesNotThrow(() => assertWorkflowForkSourceOwner(handle, context()));
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, modelOwner: caller }, caller));
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, origin: "user" }, caller));
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner(handle, caller));
 	for (const [owned, reason] of [
 		[{ ...handle, modelOwner: "other-session", origin: "user" as const }, "foreign-owner"],
 		[{ ...handle, origin: "agent" as const }, "owner-unavailable"],
 	] as const) {
 		assert.throws(
-			() => assertWorkflowForkSourceOwner(owned, context()),
+			() => assertWorkflowForkSourceOwner(owned, caller),
 			(error: Error) =>
 				error instanceof ForkSourceOwnershipError &&
 				isForkSourceOwnershipError(error) &&
