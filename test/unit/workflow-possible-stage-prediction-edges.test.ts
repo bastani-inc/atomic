@@ -206,19 +206,34 @@ describe("prediction questions and answers at their edges (#4359)", () => {
 		});
 	});
 
-	test("the state keeps at most 64 known stages and 12 call sites", () => {
+	test("the state keeps at most 64 known stages, 12 asked call sites and 12 others, which carry no question key", () => {
 		const stages = Array.from({ length: 70 }, (_, index) => `stage-${index}`);
-		const sites = Array.from({ length: 14 }, (_, index) => uncertainty([[`s${index}`]]));
-		const state = scanDecisionState("flow", scanOf(sites, stages), {});
+		const asked = Array.from({ length: 14 }, (_, index) => uncertainty([[`s${index}`]], { line: index + 1 }));
+		const unasked = Array.from({ length: 12 }, (_, index) => uncertainty([], { line: 100 + index }));
+		const state = scanDecisionState("flow", scanOf([...asked, ...unasked], stages), {});
 		assert.deepEqual(state.knownStages, stages.slice(0, 64));
 		assert.equal((state.uncertainCallSites as readonly unknown[]).length, 12);
+		const others = state.otherUnreadCallSites as readonly Record<string, unknown>[];
+		assert.deepEqual(
+			others.map((site) => site.line),
+			[13, 14, ...Array.from({ length: 10 }, (_, index) => 100 + index)],
+		);
+		assert.ok(others.every((site) => !("site" in site)));
+		assert.deepEqual(others[0], {
+			code: "unresolved-name",
+			file: "workflow.mjs",
+			line: 13,
+			boundary: "",
+			source: "await ctx.task(name(1))",
+		});
 	});
 
 	test("a probability of exactly 1 is accepted; text, missing or misplaced probabilities are refused", () => {
 		const plan = scanQuestionPlan([uncertainty([["review"]])]);
-		assert.deepEqual(decodeScanAnswers(plan, { answers: { site0: { type: "choice", probabilities: { c0: 1 } } } }), [
-			{ path: "review", probability: 1, source: "scan" },
-		]);
+		assert.deepEqual(decodeScanAnswers(plan, { answers: { site0: { type: "choice", probabilities: { c0: 1 } } } }), {
+			entries: [{ path: "review", probability: 1, source: "scan" }],
+			resolvedPlaceholders: [],
+		});
 		const refusals: readonly [unknown, string][] = [
 			[{ type: "choice", probabilities: { c0: "0.9" } }, "not-a-probability"],
 			[{ type: "choice" }, "wrong-type"],
@@ -247,18 +262,19 @@ describe("prediction questions and answers at their edges (#4359)", () => {
 		assert.equal(closestStagePath("abcdef", []), undefined);
 	});
 
-	test("any accepted scan candidate retires wildcard-only scan entries, and partial wildcards stay", () => {
-		const mixed: RunStagePredictions = {
+	test("a scan prediction keeps every wildcard it did not resolve", () => {
+		const predicted: RunStagePredictions = {
 			status: "ready",
 			targets: {},
-			entries: [
-				{ path: "x", probability: 0.9, source: "send" },
-				{ path: "y", probability: 0.9, source: "scan" },
-			],
+			entries: [{ path: "y", probability: 0.9, source: "scan" }],
+			resolvedPlaceholders: ["*"],
 		};
 		assert.deepEqual(
-			knownScanEntries({ possibleStages: ["*", "workflow:*/lint", "lint"], stagePredictions: mixed }),
-			["workflow:*/lint", "lint"],
+			knownScanEntries({
+				possibleStages: ["*", "workflow:*", "workflow:*/lint", "lint"],
+				stagePredictions: predicted,
+			}),
+			["workflow:*", "workflow:*/lint", "lint"],
 		);
 	});
 });

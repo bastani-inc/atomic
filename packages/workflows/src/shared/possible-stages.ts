@@ -92,6 +92,11 @@ export interface PossibleStageUncertainty {
 	readonly boundary: string;
 	/** Deterministic (first-seen source order), de-duplicated by `stages` content, at most 24 per uncertainty. */
 	readonly candidates: readonly PossibleStageCandidate[];
+	/**
+	 * The wildcard entry of `stages` this call site added because it could not read the name, such as `*` or
+	 * `workflow:child/*`; absent when the site added none.
+	 */
+	readonly placeholder?: string;
 }
 
 export interface PossibleStageSourceDigest {
@@ -435,16 +440,21 @@ interface TemplateHelper {
 	readonly returned: Token;
 }
 
-interface FileUnit {
-	readonly source: string;
+/** What only an uncertain call site needs from a unit, built on first use so a fully certain scan never pays for it. */
+interface CandidateIndex {
 	/** Offsets of each line's first character. */
 	readonly lineStarts: readonly number[];
-	readonly sha256: string;
 	readonly templateHelpers: ReadonlyMap<string, TemplateHelper>;
 	/** `const X = ["a", "b"]` arrays whose every element is a string literal. */
 	readonly enumArrays: ReadonlyMap<string, readonly string[]>;
 	/** Body tokens of `function f(...) {...}` declarations and `const f = (...) => ...` initializers. */
 	readonly functionBodies: ReadonlyMap<string, readonly Token[]>;
+}
+
+interface FileUnit {
+	readonly source: string;
+	readonly sha256: string;
+	readonly candidateIndex: () => CandidateIndex;
 	readonly tokens: readonly Token[];
 	readonly imports: ReadonlyMap<string, ImportBinding>;
 	readonly ctxLike: ReadonlySet<string>;
@@ -477,17 +487,14 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 	for (const [local, binding] of imports) {
 		if (binding.importedName === "workflow") workflowNames.add(local);
 	}
-	const lineStarts = [0];
-	for (let offset = source.indexOf("\n"); offset >= 0; offset = source.indexOf("\n", offset + 1)) {
-		lineStarts.push(offset + 1);
-	}
+	let candidateIndex: CandidateIndex | undefined;
 	return {
 		source,
-		lineStarts,
 		sha256: createHash("sha256").update(source, "utf8").digest("hex"),
-		templateHelpers: collectTemplateHelpers(tokens),
-		enumArrays: collectEnumArrays(tokens),
-		functionBodies: collectFunctionBodies(tokens),
+		candidateIndex: () => {
+			candidateIndex ??= buildCandidateIndex(source, tokens);
+			return candidateIndex;
+		},
 		tokens,
 		imports,
 		ctxLike: collectCtxLikeIdentifiers(tokens),
@@ -498,6 +505,19 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 		definitionName: collectDefinitionName(tokens, localValues, workflowNames),
 		hasWorkflowCall: tokens.some((_, index) => isBareWorkflowCall(tokens, index, workflowNames)),
 		workflowNames,
+	};
+}
+
+function buildCandidateIndex(source: string, tokens: readonly Token[]): CandidateIndex {
+	const lineStarts = [0];
+	for (let offset = source.indexOf("\n"); offset >= 0; offset = source.indexOf("\n", offset + 1)) {
+		lineStarts.push(offset + 1);
+	}
+	return {
+		lineStarts,
+		templateHelpers: collectTemplateHelpers(tokens),
+		enumArrays: collectEnumArrays(tokens),
+		functionBodies: collectFunctionBodies(tokens),
 	};
 }
 
@@ -1058,9 +1078,10 @@ class PossibleStagesScanner {
 		code: PossibleStageUncertaintyCode,
 		site: UncertaintySite,
 		candidates?: () => readonly PossibleStageCandidate[],
+		placeholder?: string,
 	): void {
 		if (this.quiet) return;
-		const line = lineOf(site.unit.lineStarts, site.offset);
+		const line = lineOf(site.unit.candidateIndex().lineStarts, site.offset);
 		this.uncertainties.push({
 			code,
 			file: this.relativeFile(site.path),
@@ -1068,11 +1089,12 @@ class PossibleStagesScanner {
 			excerpt: excerptAround(site.unit, line),
 			boundary: site.boundary,
 			candidates: capCandidates(candidates?.() ?? []),
+			...(placeholder === undefined ? {} : { placeholder }),
 		});
 	}
 
 	private noteName(tokens: readonly Token[], site: UncertaintySite): void {
-		this.note("unresolved-name", site, () => this.nameCandidates(tokens, site));
+		this.note("unresolved-name", site, () => this.nameCandidates(tokens, site), joinBoundary(site.boundary, "*"));
 	}
 
 	/** Candidates for an unresolved name expression, drawn only from source tokens. */
@@ -1105,10 +1127,12 @@ class PossibleStagesScanner {
 	}
 
 	private findTemplateHelper(name: string, site: UncertaintySite): TemplateHelper | undefined {
-		const local = site.unit.templateHelpers.get(name);
+		const local = site.unit.candidateIndex().templateHelpers.get(name);
 		if (local !== undefined) return local;
 		const imported = this.importedUnit(name, site);
-		return imported === undefined ? undefined : imported.unit.templateHelpers.get(imported.exportName);
+		return imported === undefined
+			? undefined
+			: imported.unit.candidateIndex().templateHelpers.get(imported.exportName);
 	}
 
 	/** The relative module a named import of `localName` resolves to. */
@@ -1126,10 +1150,10 @@ class PossibleStagesScanner {
 
 	/** Enum-like arrays in scope of the unit, in source order, then named imports in import order. */
 	private visibleEnumArrays(site: UncertaintySite): Map<string, readonly string[]> {
-		const arrays = new Map<string, readonly string[]>(site.unit.enumArrays);
+		const arrays = new Map<string, readonly string[]>(site.unit.candidateIndex().enumArrays);
 		for (const local of site.unit.imports.keys()) {
 			const imported = this.importedUnit(local, site);
-			const elements = imported?.unit.enumArrays.get(imported.exportName);
+			const elements = imported?.unit.candidateIndex().enumArrays.get(imported.exportName);
 			if (elements !== undefined && !arrays.has(local)) arrays.set(local, elements);
 		}
 		return arrays;
@@ -1164,7 +1188,9 @@ class PossibleStagesScanner {
 		const head = element[0];
 		if (head?.kind !== "ident" || !isPunct(element[1], "(")) return [];
 		const imported = this.importedUnit(head.value, site);
-		const body = site.unit.functionBodies.get(head.value) ?? imported?.unit.functionBodies.get(imported.exportName);
+		const body =
+			site.unit.candidateIndex().functionBodies.get(head.value) ??
+			imported?.unit.candidateIndex().functionBodies.get(imported.exportName);
 		if (body === undefined) return [];
 		const out: PossibleStageCandidate[] = [];
 		for (const name of nameLiteralsIn(body)) {
@@ -1473,8 +1499,14 @@ class PossibleStagesScanner {
 		this.stages.add(joinBoundary(boundaryPrefix, boundaryName));
 		if (childPath === undefined) childUncertain = true;
 		if (childUncertain) {
-			this.note("unresolved-child", site, () =>
-				this.childCandidates(site, depth, ancestorStack, explicitStage === undefined ? undefined : boundaryName),
+			this.note(
+				"unresolved-child",
+				site,
+				() =>
+					this.childCandidates(site, depth, ancestorStack, explicitStage === undefined ? undefined : boundaryName),
+				boundaryName === "*" || boundaryName === "workflow:*"
+					? joinBoundary(boundaryPrefix, boundaryName)
+					: undefined,
 			);
 		}
 		if (childPath === undefined) {
@@ -2105,10 +2137,11 @@ function lineOf(lineStarts: readonly number[], offset: number): number {
 
 /** Lines `first..last` (1-based, inclusive) of a unit's source without trailing newline or CR. */
 function linesText(unit: FileUnit, first: number, last: number): string {
-	const lineCount = unit.lineStarts.length;
+	const { lineStarts } = unit.candidateIndex();
+	const lineCount = lineStarts.length;
 	const lastLine = Math.min(lineCount, last);
-	const start = unit.lineStarts[first - 1] ?? 0;
-	const end = lastLine < lineCount ? unit.lineStarts[lastLine]! - 1 : unit.source.length;
+	const start = lineStarts[first - 1] ?? 0;
+	const end = lastLine < lineCount ? lineStarts[lastLine]! - 1 : unit.source.length;
 	return unit.source.slice(start, end).replace(/\r/g, "").replace(/\n$/, "");
 }
 

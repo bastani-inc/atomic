@@ -654,6 +654,11 @@ export interface RunStagePredictions {
 	/** `fallback` once a prediction failed; the scan alone then decides what it did not predict. */
 	readonly status: "ready" | "fallback";
 	readonly entries: readonly RunStagePrediction[];
+	/**
+	 * Wildcard entries of the scan that `entries` stand in for: every call site that added one was asked and accepted a
+	 * candidate. Sends are classified without them; any other wildcard still covers its targets.
+	 */
+	readonly resolvedPlaceholders?: readonly string[];
 	/** The yes-probability of every judged send target, by stage path. */
 	readonly targets: Readonly<Record<string, number>>;
 	/** Recorded once, from the first failure. */

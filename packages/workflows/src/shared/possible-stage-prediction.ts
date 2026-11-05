@@ -56,6 +56,14 @@ interface ScanQuestionPlan {
 	readonly questions: Readonly<Record<string, StageDecisionQuestion>>;
 	/** Per question key, each option key's candidate. */
 	readonly options: ReadonlyMap<string, ReadonlyMap<string, PossibleStageCandidate>>;
+	/** Per question key, the wildcard entry its call site added. */
+	readonly placeholders: ReadonlyMap<string, string>;
+	/** Wildcard entries also added by a call site no question asks about, so no answer can stand in for them. */
+	readonly unaskedPlaceholders: ReadonlySet<string>;
+}
+
+function askedSites(uncertainties: readonly PossibleStageUncertainty[]): readonly PossibleStageUncertainty[] {
+	return uncertainties.filter((uncertainty) => uncertainty.candidates.length > 0).slice(0, MAX_UNCERTAIN_SITES);
 }
 
 function describeCandidate(candidate: PossibleStageCandidate): string {
@@ -71,49 +79,63 @@ function describeCandidate(candidate: PossibleStageCandidate): string {
 export function scanQuestionPlan(uncertainties: readonly PossibleStageUncertainty[]): ScanQuestionPlan {
 	const questions: Record<string, StageDecisionQuestion> = {};
 	const options = new Map<string, ReadonlyMap<string, PossibleStageCandidate>>();
-	uncertainties
-		.filter((uncertainty) => uncertainty.candidates.length > 0)
-		.slice(0, MAX_UNCERTAIN_SITES)
-		.forEach((uncertainty, site) => {
-			const key = `site${site}`;
-			const siteOptions = new Map<string, PossibleStageCandidate>();
-			const criteria: Record<string, string> = {};
-			uncertainty.candidates.forEach((candidate, index) => {
-				siteOptions.set(`c${index}`, candidate);
-				criteria[`c${index}`] = describeCandidate(candidate);
-			});
-			criteria[NONE_OPTION] = "none of these candidates";
-			questions[key] = {
-				type: "choice",
-				instructions: `Which candidate will the call site ${key} (${uncertainty.file}:${uncertainty.line}) produce when this workflow runs? Choose only from the listed candidates; choose none when no candidate fits.`,
-				criteria,
-			};
-			options.set(key, siteOptions);
+	const placeholders = new Map<string, string>();
+	const asked = askedSites(uncertainties);
+	asked.forEach((uncertainty, site) => {
+		const key = `site${site}`;
+		const siteOptions = new Map<string, PossibleStageCandidate>();
+		const criteria: Record<string, string> = {};
+		uncertainty.candidates.forEach((candidate, index) => {
+			siteOptions.set(`c${index}`, candidate);
+			criteria[`c${index}`] = describeCandidate(candidate);
 		});
-	return { questions, options };
+		criteria[NONE_OPTION] = "none of these candidates";
+		questions[key] = {
+			type: "choice",
+			instructions: `Which candidate will the call site ${key} (${uncertainty.file}:${uncertainty.line}) produce when this workflow runs? Choose only from the listed candidates; choose none when no candidate fits.`,
+			criteria,
+		};
+		options.set(key, siteOptions);
+		if (uncertainty.placeholder !== undefined) placeholders.set(key, uncertainty.placeholder);
+	});
+	const unaskedPlaceholders = new Set<string>();
+	for (const uncertainty of uncertainties) {
+		if (uncertainty.placeholder !== undefined && !asked.includes(uncertainty)) {
+			unaskedPlaceholders.add(uncertainty.placeholder);
+		}
+	}
+	return { questions, options, placeholders, unaskedPlaceholders };
 }
 
-/** The state the decision model reads for the scan question: redacted call-site source and the scan's partial result. */
+function describeSite(uncertainty: PossibleStageUncertainty): WorkflowSerializableObject {
+	return {
+		code: uncertainty.code,
+		file: uncertainty.file,
+		line: uncertainty.line,
+		boundary: uncertainty.boundary,
+		source: redactSensitiveText(uncertainty.excerpt),
+	};
+}
+
+/**
+ * The state the decision model reads: the redacted source of every call site the scan could not read, those with
+ * candidates keyed by their question, and the scan's partial result.
+ */
 export function scanDecisionState(
 	workflowName: string,
 	scan: Pick<PossibleStagesScanResult, "uncertainties" | "stages">,
 	inputs: WorkflowSerializableObject,
 ): WorkflowSerializableObject {
+	const asked = askedSites(scan.uncertainties);
 	return {
 		workflow: workflowName,
 		knownStages: scan.stages.slice(0, MAX_STATE_STAGES),
 		inputsShape: inputsShape(inputs),
-		uncertainCallSites: scan.uncertainties
-			.filter((uncertainty) => uncertainty.candidates.length > 0)
+		uncertainCallSites: asked.map((uncertainty, site) => ({ site: `site${site}`, ...describeSite(uncertainty) })),
+		otherUnreadCallSites: scan.uncertainties
+			.filter((uncertainty) => !asked.includes(uncertainty))
 			.slice(0, MAX_UNCERTAIN_SITES)
-			.map((uncertainty, site) => ({
-				site: `site${site}`,
-				code: uncertainty.code,
-				file: uncertainty.file,
-				line: uncertainty.line,
-				boundary: uncertainty.boundary,
-				source: redactSensitiveText(uncertainty.excerpt),
-			})),
+			.map(describeSite),
 	};
 }
 
@@ -121,9 +143,20 @@ function isProbability(value: unknown): value is number {
 	return Number.isFinite(value) && (value as number) >= 0 && (value as number) <= 1;
 }
 
-/** Accept every candidate at or above the `predicted` threshold; any malformed answer refuses the whole result. */
-export function decodeScanAnswers(plan: ScanQuestionPlan, result: StageDecisionResult): readonly RunStagePrediction[] {
+/** A scan answer: the accepted candidates' stage paths, and the wildcard entries they stand in for. */
+export interface ScanPredictions {
+	readonly entries: readonly RunStagePrediction[];
+	readonly resolvedPlaceholders: readonly string[];
+}
+
+/**
+ * Accept every candidate at or above the `predicted` threshold; any malformed answer refuses the whole result. A
+ * wildcard entry is resolved only when every call site that added it was asked and accepted a candidate.
+ */
+export function decodeScanAnswers(plan: ScanQuestionPlan, result: StageDecisionResult): ScanPredictions {
 	const accepted = new Map<string, number>();
+	const resolved = new Set<string>();
+	const unresolved = new Set(plan.unaskedPlaceholders);
 	for (const [key, siteOptions] of plan.options) {
 		const answer = result.answers[key];
 		if (answer === undefined) throw new StageDecisionAnswerError("scan", key, "missing");
@@ -136,13 +169,20 @@ export function decodeScanAnswers(plan: ScanQuestionPlan, result: StageDecisionR
 			}
 			if (!isProbability(probability)) throw new StageDecisionAnswerError("scan", key, "not-a-probability");
 		}
+		let siteAccepted = false;
 		for (const [option, candidate] of siteOptions) {
 			const probability = answer.probabilities[option] ?? 0;
 			if (probability < POSSIBLE_STAGE_PREDICTION_THRESHOLDS.predicted) continue;
+			siteAccepted = true;
 			for (const path of candidate.stages) accepted.set(path, Math.max(accepted.get(path) ?? 0, probability));
 		}
+		const placeholder = plan.placeholders.get(key);
+		if (placeholder !== undefined) (siteAccepted ? resolved : unresolved).add(placeholder);
 	}
-	return [...accepted].map(([path, probability]) => ({ path, probability, source: "scan" as const }));
+	return {
+		entries: [...accepted].map(([path, probability]) => ({ path, probability, source: "scan" as const })),
+		resolvedPlaceholders: [...resolved].filter((placeholder) => !unresolved.has(placeholder)),
+	};
 }
 
 export const TARGET_QUESTION_KEY = "target";
@@ -203,16 +243,12 @@ export function closestStagePath(path: string, names: readonly string[]): string
 }
 
 /**
- * The scan entries that decide whether a send is known. A wildcard-only entry (every segment `*` or `workflow:*`) is
- * the scan saying it could not read the names; once the decision model accepted scan candidates for the run, those
- * predictions stand in for it, so a misspelled target is no longer matched by the placeholder.
+ * The scan entries that decide whether a send is known: every entry but the wildcards the decision model's accepted
+ * candidates stand in for, so a misspelled target is no longer matched by a placeholder that is no longer needed.
  */
 export function knownScanEntries(run: Pick<RunSnapshot, "possibleStages" | "stagePredictions">): readonly string[] {
-	const entries = run.possibleStages ?? [];
-	if (run.stagePredictions?.entries.some((entry) => entry.source === "scan") !== true) return entries;
-	return entries.filter(
-		(entry) => !splitStagePathSegments(entry).every((segment) => segment === "*" || segment === "workflow:*"),
-	);
+	const resolved = new Set(run.stagePredictions?.resolvedPlaceholders);
+	return (run.possibleStages ?? []).filter((entry) => !resolved.has(entry));
 }
 
 /** Whether a target's segments and a stage path match in either direction (D4 membership). */

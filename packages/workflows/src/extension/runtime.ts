@@ -24,6 +24,7 @@ import { currentJobTracker, type JobTracker } from "../runs/background/job-track
 import { type RunOpts, resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import { currentStageControlRegistry, type StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import type { StagePredictor } from "../shared/possible-stage-predictor.js";
 import { currentStageUiBroker, type StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
@@ -111,6 +112,8 @@ export interface ExtensionRuntimeOpts {
 	 * When absent, launch skips the scan and the run simply has no set.
 	 */
 	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
+	/** The owning session's stage-name predictor, forwarded to dispatch. */
+	stagePredictor?: StagePredictor;
 	/** Seed lifecycle state before historical completed snapshots are restored. */
 	beforeRestoreCompleted?: (snapshots: readonly RunSnapshot[]) => void;
 	getWorkflowHostModules?: import("./workflow-module-loader.js").WorkflowHostModuleProvider;
@@ -446,6 +449,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				config,
 				models,
 				resolvePossibleStageEntry,
+				...(opts.stagePredictor === undefined ? {} : { stagePredictor: opts.stagePredictor }),
 				...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
 				policy: options?.policy,
 				modelOwner: options?.modelOwner,

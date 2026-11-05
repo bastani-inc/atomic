@@ -20,7 +20,7 @@ import {
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
 import { knownScanEntries } from "../shared/possible-stage-prediction.js";
-import { type StagePredictor, stagePredictor } from "../shared/possible-stage-predictor.js";
+import type { StagePredictor } from "../shared/possible-stage-predictor.js";
 import { type PossibleStageRow, PossibleStageRowsIndex, WorkflowTopologyIndex } from "../shared/possible-stage-rows.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
@@ -129,7 +129,7 @@ export function registerPendingStageIntercomBridge(
 	pi: WorkflowEventSurface,
 	activeStore: Store,
 	ownsRun: (runId: string) => boolean = () => true,
-	predictor: StagePredictor = stagePredictor,
+	predictor?: StagePredictor,
 ): (() => void) & { flush(): Promise<void>; refresh(): void } {
 	let disposed = false;
 	let sweepPromise: Promise<void> = Promise.resolve();
@@ -916,7 +916,7 @@ async function deliverStickyTarget(
 		readonly message: PendingStageMessageInput["message"];
 	},
 	parsedTarget: WorkflowStageTarget,
-	predictor: StagePredictor,
+	predictor: StagePredictor | undefined,
 ): Promise<
 	| ({
 			readonly outcome: "queued";
@@ -945,7 +945,7 @@ async function deliverStickyTarget(
 		liveMatches.length > 0 ||
 		matchingLiveStages(activeStore, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
 			? { prediction: "known" }
-			: predictor.classifySend(rootRun, parsedTarget.segments);
+			: (predictor?.classifySend(rootRun, parsedTarget.segments) ?? { prediction: "unknown" });
 	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = pendingStageSenderGroup(event, runGroup);

@@ -16,11 +16,7 @@ import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolve_budget } from "../shared/budget.js";
 import type { StageDecisionPort } from "../shared/possible-stage-prediction-errors.js";
-import {
-	stagePredictor as defaultStagePredictor,
-	type StagePredictor,
-	stageDecisionPortFromModels,
-} from "../shared/possible-stage-predictor.js";
+import { type StagePredictor, stageDecisionPortFromModels } from "../shared/possible-stage-predictor.js";
 import { type PossibleStagesScanResult, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
@@ -94,7 +90,7 @@ export interface DispatcherOpts {
 	 * `models`; when neither exists, nothing is predicted and the scan alone decides the known set.
 	 */
 	decisions?: StageDecisionPort;
-	/** Defaults to the process-wide predictor that send classification also reads. */
+	/** The owning session's predictor, which its Intercom bridge also reads; without one nothing is predicted. */
 	stagePredictor?: StagePredictor;
 	/** Cancellation registry forwarded to the detached runner. */
 	cancellation?: CancellationRegistry;
@@ -277,9 +273,9 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 			}
 			const { accepted } = launch;
 			const decisions = opts.decisions ?? stageDecisionPortFromModels(opts.models);
-			if (scan !== undefined && decisions !== undefined) {
+			if (scan !== undefined && decisions !== undefined && opts.stagePredictor !== undefined) {
 				// Never awaited: the prediction records itself on the root run once it and admission settle.
-				(opts.stagePredictor ?? defaultStagePredictor).launch({
+				opts.stagePredictor.launch({
 					store: opts.store ?? defaultStore,
 					runId: accepted.runId,
 					workflowName: def.normalizedName,

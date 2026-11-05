@@ -1,5 +1,6 @@
 import {
 	type DecisionQuestions,
+	findDecisionError,
 	isDecisionModelUnavailableError,
 	isDecisionTimeoutError,
 	type JsonObject,
@@ -8,6 +9,7 @@ import {
 	closestStagePath,
 	decodeScanAnswers,
 	decodeTargetAnswer,
+	type ScanPredictions,
 	scanDecisionState,
 	scanQuestionPlan,
 	stagePathsOverlap,
@@ -30,7 +32,8 @@ import {
 } from "./possible-stage-prediction-errors.js";
 import type { PossibleStagesScanResult } from "./possible-stages.js";
 import type { Store } from "./store.js";
-import type { RunSnapshot, RunStagePrediction, RunStagePredictions } from "./store-types.js";
+import { isTerminalRunStatus } from "./store-internal.js";
+import type { RunSnapshot, RunStagePredictions } from "./store-types.js";
 import type { WorkflowModelCatalogPort, WorkflowSerializableObject } from "./types.js";
 
 /** How long one decision may take before it falls back with a typed timeout. */
@@ -39,8 +42,10 @@ const MAX_DEFINITIONS = 128;
 const MAX_TARGETS_PER_DEFINITION = 256;
 const MAX_ROOTS = 512;
 const MAX_STATE_STAGES = 64;
-const PREDICTION_INSTRUCTIONS =
-	"A workflow's static scan could not read some of its stage names. `uncertainCallSites` holds the source around each such call site, `knownStages` the names the scan did read, and `inputsShape` the type of each run input. Judge only from this source; the candidates and paths in the questions are the only names that exist.";
+const SCAN_INSTRUCTIONS =
+	"A workflow's static scan could not read some of its stage names. `uncertainCallSites` holds the source around each call site a question asks about, `otherUnreadCallSites` the source of call sites with no candidates, `knownStages` the names the scan did read, and `inputsShape` the type of each run input. Judge only from this source; for each question, its listed candidates are the only names that call site can produce.";
+const TARGET_INSTRUCTIONS =
+	"A message was sent to a stage path this workflow run has not started. `uncertainCallSites` and `otherUnreadCallSites` hold the source of call sites whose stage names the static scan could not read, `knownStages` the names it did read, `startedStages` and `predictedStages` what the run started and is expected to start, and `inputsShape` the type of each run input. Names built at run time can produce paths that appear nowhere in this source.";
 
 /** How a send outside the static known set relates to the decision model's predictions. */
 export interface StageSendClassification {
@@ -64,7 +69,7 @@ export interface StagePredictionLaunch {
 }
 
 interface DefinitionAnswers {
-	scan?: Promise<readonly RunStagePrediction[]>;
+	scan?: Promise<ScanPredictions>;
 	readonly targets: Map<string, Promise<number>>;
 	readonly settledTargets: Map<string, number>;
 }
@@ -112,7 +117,7 @@ export class StagePredictor {
 		const answers = this.definition(definitionHash);
 		let pending = answers.scan;
 		if (pending === undefined) {
-			const asked = this.ask("scan", input.decisions, state, plan.questions).then((result) =>
+			const asked = this.ask("scan", input.decisions, state, plan.questions, SCAN_INSTRUCTIONS).then((result) =>
 				decodeScanAnswers(plan, result),
 			);
 			answers.scan = asked;
@@ -159,7 +164,7 @@ export class StagePredictor {
 		return { prediction: "unknown", unexpected: true, ...(suggestion === undefined ? {} : { suggestion }) };
 	}
 
-	/** Abort every open decision; nothing is recorded for a cancelled one. */
+	/** Abort every open decision; nothing is recorded for a cancelled one. The owning session calls it on shutdown. */
 	dispose(): void {
 		this.disposed.abort(new DOMException("Stage prediction was disposed", "AbortError"));
 	}
@@ -173,9 +178,13 @@ export class StagePredictor {
 			startedStages: rootRun.stages.slice(0, MAX_STATE_STAGES).map((stage) => stage.name),
 			predictedStages: (rootRun.stagePredictions?.entries ?? []).map((entry) => entry.path),
 		};
-		const asked = this.ask("target", context.decisions, state, { [TARGET_QUESTION_KEY]: targetQuestion(path) }).then(
-			decodeTargetAnswer,
-		);
+		const asked = this.ask(
+			"target",
+			context.decisions,
+			state,
+			{ [TARGET_QUESTION_KEY]: targetQuestion(path) },
+			TARGET_INSTRUCTIONS,
+		).then(decodeTargetAnswer);
 		answers.targets.set(path, asked);
 		const runId = rootRun.id;
 		const recorded = asked.then(
@@ -196,6 +205,7 @@ export class StagePredictor {
 		decisions: StageDecisionPort,
 		state: WorkflowSerializableObject,
 		questions: Readonly<Record<string, StageDecisionQuestion>>,
+		instructions: string,
 	): Promise<StageDecisionResult> {
 		const deadline = new AbortController();
 		const startedAt = Date.now();
@@ -209,7 +219,7 @@ export class StagePredictor {
 			const decided = decisions.decide({
 				state,
 				questions,
-				instructions: PREDICTION_INSTRUCTIONS,
+				instructions,
 				deadline: this.deadlineMs,
 				signal,
 			});
@@ -250,20 +260,30 @@ export class StagePredictor {
 		if (this.roots.size > MAX_ROOTS) this.roots.delete(this.roots.keys().next().value!);
 	}
 
-	private current(store: Store, runId: string): RunStagePredictions {
-		return store.run(runId)?.stagePredictions ?? { status: "ready", entries: [], targets: {} };
+	/** The run's predictions so far, or `undefined` once the run is gone or ended: an ended run records nothing more. */
+	private current(store: Store, runId: string): RunStagePredictions | undefined {
+		const run = store.run(runId);
+		if (run === undefined || isTerminalRunStatus(run.status)) return undefined;
+		return run.stagePredictions ?? { status: "ready", entries: [], targets: {} };
 	}
 
-	private mergeEntries(store: Store, runId: string, entries: readonly RunStagePrediction[]): void {
+	private mergeEntries(store: Store, runId: string, predictions: ScanPredictions): void {
 		const current = this.current(store, runId);
+		if (current === undefined) return;
 		const merged = new Map(current.entries.map((entry) => [entry.path, entry]));
-		for (const entry of entries) if (!merged.has(entry.path)) merged.set(entry.path, entry);
-		store.recordRunStagePredictions?.(runId, { ...current, entries: [...merged.values()] });
+		for (const entry of predictions.entries) if (!merged.has(entry.path)) merged.set(entry.path, entry);
+		store.recordRunStagePredictions?.(runId, {
+			...current,
+			entries: [...merged.values()],
+			resolvedPlaceholders: [
+				...new Set([...(current.resolvedPlaceholders ?? []), ...predictions.resolvedPlaceholders]),
+			],
+		});
 	}
 
 	private recordTarget(store: Store, runId: string, path: string, probability: number): void {
 		const current = this.current(store, runId);
-		if (current.targets[path] === probability) return;
+		if (current === undefined || current.targets[path] === probability) return;
 		const expected = probability >= POSSIBLE_STAGE_PREDICTION_THRESHOLDS.known;
 		store.recordRunStagePredictions?.(runId, {
 			...current,
@@ -277,8 +297,9 @@ export class StagePredictor {
 
 	private recordFallback(store: Store, runId: string, phase: PossibleStagePredictionPhase, error: unknown): void {
 		if ((error as { readonly name?: unknown }).name === "AbortError") return;
+		if (decisionModelGivesNoProbabilities(error)) return;
 		const current = this.current(store, runId);
-		if (current.fallback !== undefined) return;
+		if (current === undefined || current.fallback !== undefined) return;
 		const failure: PossibleStagePredictionError = isPossibleStagePredictionError(error)
 			? error
 			: new StageDecisionFailedError(phase, error);
@@ -298,6 +319,15 @@ export class StagePredictor {
 			},
 		});
 	}
+}
+
+/**
+ * A chat decision model answers without probabilities, so it cannot predict stage names. That is a setup choice, not a
+ * failure, so nothing is recorded, as readiness decisions do.
+ */
+function decisionModelGivesNoProbabilities(error: unknown): boolean {
+	const decision = findDecisionError(error);
+	return isDecisionModelUnavailableError(decision) && decision.reason === "no-probabilities";
 }
 
 /**
@@ -341,6 +371,3 @@ function reportUnrecorded(error: unknown): void {
 		`atomic-workflows: a stage prediction could not be recorded: ${error instanceof Error ? error.message : String(error)}`,
 	);
 }
-
-/** The process-wide predictor launch and send classification share. */
-export const stagePredictor = new StagePredictor();

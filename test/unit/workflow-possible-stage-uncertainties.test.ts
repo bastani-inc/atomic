@@ -67,6 +67,10 @@ describe("committed prediction fixtures", () => {
 				["unresolved-step", 10, [{ stages: ["typecheck"], source: "factory" }]],
 			],
 		);
+		assert.deepEqual(
+			result.uncertainties.map((entry) => entry.placeholder),
+			[undefined, undefined],
+		);
 		assert.ok(result.uncertainties[0]!.excerpt.includes("await ctx.parallel([makeLint(), makeTypecheck()]);"));
 	});
 
@@ -78,6 +82,7 @@ describe("committed prediction fixtures", () => {
 		const [only] = result.uncertainties;
 		assert.equal(only!.code, "unresolved-name");
 		assert.equal(only!.line, 12);
+		assert.equal(only!.placeholder, "*");
 		assert.deepEqual(only!.candidates, [
 			{ stages: ["api", "ui", "docs"], source: "enum-array" },
 			{ stages: ["api"], source: "enum-array" },
@@ -95,6 +100,7 @@ describe("committed prediction fixtures", () => {
 		const [only] = result.uncertainties;
 		assert.equal(only!.code, "unresolved-child");
 		assert.equal(only!.line, 13);
+		assert.equal(only!.placeholder, "workflow:*");
 		assert.deepEqual(only!.candidates, [
 			{ stages: ["workflow:child-alpha", "workflow:child-alpha/alpha-draft"], source: "child-definition" },
 			{ stages: ["workflow:child-beta", "workflow:child-beta/beta-draft"], source: "child-definition" },
@@ -294,6 +300,7 @@ describe("uncertainty records", () => {
 				excerpt: `export default workflow({ name: "child-a", run: async (ctx) => { await ctx.task(pick("only"), {}); }});`,
 				boundary: "workflow:child-a",
 				candidates: [{ stages: ["workflow:child-a/only"], source: "literal" }],
+				placeholder: "workflow:child-a/*",
 			},
 		]);
 	});
@@ -314,8 +321,8 @@ describe("uncertainty records", () => {
 		);
 		assert.deepEqual(result.stages, ["*", "*/inner"]);
 		assert.deepEqual(
-			result.uncertainties.map((entry) => entry.code),
-			["unresolved-name"],
+			result.uncertainties.map((entry) => [entry.code, entry.placeholder]),
+			[["unresolved-name", "*"]],
 		);
 	});
 

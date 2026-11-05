@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	DecisionModelUnavailableError,
@@ -8,6 +10,7 @@ import {
 	DecisionTimeoutError,
 } from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
+import { queuedSendText } from "../../packages/intercom/intercom-tool.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
@@ -232,7 +235,7 @@ describe("prediction policy (#4359)", () => {
 		const decoded = decodeScanAnswers(plan, {
 			answers: { site0: { type: "choice", probabilities: { c0: 0.8, c1: 0.79, c2: 0.9, none: 0 } } },
 		});
-		assert.deepEqual(decoded, [
+		assert.deepEqual(decoded.entries, [
 			{ path: "review-1", probability: 0.8, source: "scan" },
 			{ path: "api", probability: 0.9, source: "scan" },
 			{ path: "ui", probability: 0.9, source: "scan" },
@@ -247,7 +250,44 @@ describe("prediction policy (#4359)", () => {
 				site1: { type: "choice", probabilities: { c0: 0.95, c1: 0.1 } },
 			},
 		});
-		assert.deepEqual(decoded, [{ path: "review", probability: 0.95, source: "scan" }]);
+		assert.deepEqual(decoded, {
+			entries: [{ path: "review", probability: 0.95, source: "scan" }],
+			resolvedPlaceholders: [],
+		});
+	});
+
+	test("a wildcard is resolved only when every call site that added it accepted a candidate", () => {
+		const site = (stage: string, placeholder?: string) =>
+			uncertainty([[stage]], placeholder === undefined ? {} : { placeholder });
+		const resolved = (uncertainties: readonly PossibleStageUncertainty[], accepted: readonly number[]) => {
+			const plan = scanQuestionPlan(uncertainties);
+			const answers = Object.fromEntries(
+				[...plan.options.keys()].map((key, index) => [
+					key,
+					{
+						type: "choice" as const,
+						probabilities: { c0: accepted[index] ?? 0, none: 1 - (accepted[index] ?? 0) },
+					},
+				]),
+			);
+			return decodeScanAnswers(plan, { answers }).resolvedPlaceholders;
+		};
+		assert.deepEqual(resolved([site("review", "*"), site("deploy", "*")], [0.9, 0.95]), ["*"]);
+		assert.deepEqual(resolved([site("review", "*"), site("deploy", "*")], [0.9, 0.1]), [], "a none answer");
+		assert.deepEqual(
+			resolved([site("review", "*"), uncertainty([], { placeholder: "*" })], [0.9]),
+			[],
+			"a site without candidates is never asked",
+		);
+		assert.deepEqual(
+			resolved([site("review", "*"), site("lint", "workflow:c/*")], [0.9, 0.1]),
+			["*"],
+			"each wildcard on its own",
+		);
+		assert.deepEqual(resolved([site("review")], [0.9]), [], "a site that added no wildcard resolves none");
+		const capped = [...Array.from({ length: 12 }, (_, index) => site(`s${index}`, "*")), site("s12", "*")];
+		assert.deepEqual(resolved(capped, Array(12).fill(0.9)), [], "a site past the question cap");
+		assert.deepEqual(resolved(capped.slice(0, 12), Array(12).fill(0.9)), ["*"]);
 	});
 
 	test("every malformed scan answer is refused with a typed reason", () => {
@@ -304,18 +344,23 @@ describe("prediction policy (#4359)", () => {
 		assert.equal(closestStagePath("abcde", ["axyze"]), undefined);
 	});
 
-	test("wildcard-only scan entries count as known until the model accepted scan candidates", () => {
+	test("only the wildcards the model resolved leave the known set", () => {
 		const scanned = { possibleStages: ["*", "workflow:*", "workflow:*/*", "review-*", "lint"] };
 		assert.deepEqual(knownScanEntries(scanned), scanned.possibleStages);
 		assert.deepEqual(knownScanEntries({}), []);
-		const sendOnly = {
+		const predicted = {
 			status: "ready" as const,
 			targets: {},
-			entries: [{ path: "x", probability: 0.9, source: "send" as const }],
+			entries: [{ path: "review-1", probability: 0.9, source: "scan" as const }],
 		};
-		assert.deepEqual(knownScanEntries({ ...scanned, stagePredictions: sendOnly }), scanned.possibleStages);
-		const predicted = { ...sendOnly, entries: [{ path: "review-1", probability: 0.9, source: "scan" as const }] };
-		assert.deepEqual(knownScanEntries({ ...scanned, stagePredictions: predicted }), ["review-*", "lint"]);
+		assert.deepEqual(knownScanEntries({ ...scanned, stagePredictions: predicted }), scanned.possibleStages);
+		assert.deepEqual(
+			knownScanEntries({
+				...scanned,
+				stagePredictions: { ...predicted, resolvedPlaceholders: ["*", "workflow:*/*"] },
+			}),
+			["workflow:*", "review-*", "lint"],
+		);
 	});
 
 	test("the definition hash follows sources, depth and inputs shape, not input values", () => {
@@ -571,6 +616,7 @@ describe("stage predictor (#4359)", () => {
 		assert.deepEqual(first.run("root")?.stagePredictions, {
 			status: "ready",
 			entries: [{ path: "review-1", probability: 0.93, source: "scan" }],
+			resolvedPlaceholders: [],
 			targets: {},
 		});
 		assert.equal(requests.length, 1);
@@ -803,6 +849,7 @@ describe("stage predictor (#4359)", () => {
 				{ path: "review-1", probability: 0.95, source: "scan" },
 				{ path: "summary-2", probability: 0.9, source: "send" },
 			],
+			resolvedPlaceholders: [],
 			targets: { "summary-2": 0.9, "reviwe-1": 0.1, maybe: 0.5 },
 		});
 		assert.deepEqual(
@@ -1035,6 +1082,110 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 		dispose();
 	});
 
+	for (const [shape, helper, call] of [
+		[
+			"a helper that receives the name",
+			"async function step(ctx, name) {\n\treturn ctx.task(name, { prompt: name });\n}",
+			'await step(ctx, "deploy");',
+		],
+		["a name built from the run's inputs", "", 'await ctx.task(deployName(ctx.inputs), { prompt: "Deploy." });'],
+	] as const) {
+		test(`a wildcard a call site without candidates added keeps covering its targets: ${shape}`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), "stage-prediction-repro-"));
+			try {
+				const entry = join(directory, "workflow.mjs");
+				writeFileSync(
+					entry,
+					`function stageName(kind, round) {
+	return \`\${kind}-\${round}\`;
+}
+${helper}
+export default workflow({ name: "repro", run: async (ctx) => {
+	await ctx.task(stageName("review", 1), { prompt: "Review." });
+	${call}
+}});
+`,
+				);
+				const scan = scanPossibleStagesFromSource(entry);
+				assert.deepEqual(scan.stages, ["*"]);
+				assert.deepEqual(
+					scan.uncertainties.map((uncertainty) => uncertainty.placeholder),
+					["*", "*"],
+				);
+				assert.deepEqual(scan.uncertainties.map((uncertainty) => uncertainty.candidates.length > 0).sort(), [
+					false,
+					true,
+				]);
+				const { port, requests } = recordedPort({ "stage review-1": 0.95 }, () => 0.1);
+				const predictor = new StagePredictor();
+				const store = createStore();
+				store.recordRunStart(rootRun({ id: ROOT, possibleStages: scan.stages }));
+				const backend = await createMemoryTestBackend();
+				await backend.commitWorkflowRegistration({
+					workflowId: ROOT,
+					name: "flow",
+					inputs: {},
+					status: "running",
+					createdAt: 1,
+				});
+				bindStoreDurableBackend(store, backend);
+				predictor.launch({
+					store,
+					runId: ROOT,
+					workflowName: "repro",
+					scan,
+					maxDepth: 3,
+					inputs: {},
+					decisions: port,
+					admitted: Promise.resolve(true),
+				});
+				await until(() => store.run(ROOT)?.stagePredictions !== undefined);
+				assert.deepEqual(store.run(ROOT)?.stagePredictions?.entries, [
+					{ path: "review-1", probability: 0.95, source: "scan" },
+				]);
+				assert.deepEqual(store.run(ROOT)?.stagePredictions?.resolvedPlaceholders, []);
+				const listeners = new Map<string, (payload: unknown) => void>();
+				const dispose = registerPendingStageIntercomBridge(
+					{
+						events: {
+							emit: (event, payload) => listeners.get(event)?.(payload),
+							on: (event, listener) => listeners.set(event, listener),
+						},
+					},
+					store,
+					() => true,
+					predictor,
+				);
+				const target = `workflow:${ROOT}/deploy`;
+				for (const id of ["m1", "m2"]) {
+					const payload: { handled: boolean; completion?: Promise<unknown> } & Record<string, unknown> = {
+						handled: false,
+						requestId: `request-${id}`,
+						from: { id: "sender", name: "sender", cwd: "/repo", groups: [`workflow:${ROOT}`] },
+						runId: ROOT,
+						target,
+						message: { id, timestamp: 1, content: { text: id } },
+					};
+					listeners.get("atomic:workflow-pending-stage-message")?.(payload);
+					const result = (await payload.completion) as { readonly prediction?: "known" | "predicted" | "unknown" };
+					assert.equal(result.prediction, "known");
+					assert.equal("unexpected" in result, false);
+					for (const showUnknownTargetWarnings of [false, true]) {
+						assert.equal(
+							queuedSendText(target, result, showUnknownTargetWarnings),
+							`Message queued for ${target}`,
+						);
+					}
+				}
+				await sleep(10);
+				assert.equal(requests.length, 1, "only the scan question: a covered target is never asked about");
+				dispose();
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
+
 	test("recording predictions re-announces the root's rows, so intercom list updates without a send", async () => {
 		const { port } = recordedPort({ "stage review-1": 0.94, "stage summary-2": 0.93 });
 		const predictor = new StagePredictor();
@@ -1166,7 +1317,7 @@ describe("the host decision service as the prediction port (#4359)", () => {
 			return store.run("root")!.stagePredictions!.fallback;
 		};
 		assert.deepEqual(
-			await fallbackOf(new DecisionModelUnavailableError({ reason: "no-probabilities", model: "openai/gpt" })),
+			await fallbackOf(new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "openai/gpt" })),
 			{
 				name: "StageDecisionUnavailableError",
 				code: "decision-unavailable",
@@ -1193,8 +1344,38 @@ describe("the host decision service as the prediction port (#4359)", () => {
 		);
 	});
 
+	test("a chat decision model, which gives no probabilities, records nothing and is asked again later", async () => {
+		const seen: unknown[] = [];
+		const predictor = new StagePredictor();
+		const store = createStore();
+		store.recordRunStart(rootRun());
+		predictor.launch({
+			store,
+			runId: "root",
+			workflowName: "flow",
+			scan: scanOf([uncertainty([["review"]])]),
+			maxDepth: 3,
+			inputs: {},
+			decisions: stageDecisionPortFromModels(
+				catalog(() => {
+					const error = new DecisionModelUnavailableError({ reason: "no-probabilities", model: "openai/gpt" });
+					seen.push(error);
+					return Promise.reject(error);
+				}),
+			)!,
+			admitted: Promise.resolve(true),
+		});
+		await until(() => seen.length === 1);
+		assert.deepEqual(predictor.classifySend(store.run("root")!, ["deploy"]), { prediction: "unknown" });
+		await until(() => seen.length === 2);
+		await sleep(10);
+		assert.equal(store.run("root")?.stagePredictions, undefined);
+		predictor.classifySend(store.run("root")!, ["deploy"]);
+		await until(() => seen.length === 3);
+	});
+
 	test("the typed fallback keeps the decision error as its cause", async () => {
-		const original = new DecisionModelUnavailableError({ reason: "no-probabilities" });
+		const original = new DecisionModelUnavailableError({ reason: "no-chat-model" });
 		const predictor = new StagePredictor();
 		const store = createStore();
 		store.recordRunStart(rootRun());
@@ -1225,7 +1406,7 @@ describe("the host decision service as the prediction port (#4359)", () => {
 		assert.equal(store.run("root")?.stagePredictions?.entries.length, 0);
 	});
 
-	test("a chat-only decision model's fallback stays out of the status text", () => {
+	test("a decision-unavailable fallback stays out of the status text", () => {
 		const run = rootRun({
 			stagePredictions: {
 				status: "fallback",

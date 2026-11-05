@@ -156,7 +156,7 @@ function factory(pi: ExtensionAPI): void {
 	};
 	const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
 	const disposeCompletedRoutes = registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
-	const disposePendingRoutes = registerPendingStageIntercomBridge(pi, store);
+	const disposePendingRoutes = registerPendingStageIntercomBridge(pi, store, undefined, runtimeState.stagePredictor);
 	// Registered after the live bridge so a run that is live here is always answered by its live owner.
 	const dormantRuns = registerDormantRunIntercomRoutes(pi, store, {
 		prepareBackend: async (ctx, runIds) => {
