@@ -255,6 +255,8 @@ test("ForkSessionUnavailableError renders the session, its store and when to ret
 			fields: { sessionId: "s-1" },
 		},
 	]);
+	const bare = new ForkSessionUnavailableError({ sessionId: "s-1" }, { cause });
+	assert.deepEqual([bare.storage, bare.runId, bare.stagePath, bare.cause], [undefined, undefined, undefined, cause]);
 });
 
 test("ForkConfigError renders every invalid option at once as a stable message and hint (#4321)", () => {

@@ -786,6 +786,27 @@ test("a session missing from the store the caller passed is a ForkSessionNotFoun
 		sourceSessionStore: failing,
 	}).catch((failure: Error) => failure);
 	assert.ok(coreOutage instanceof ForkSessionUnavailableError, String(coreOutage));
+	vi.spyOn(failing, "load").mockRejectedValueOnce(new StorageRollbackError(new Error("write"), new Error("rollback")));
+	const rolledBack = await forkDurableRun(backend, {
+		source: "sdk",
+		runId,
+		carryMessages: "before",
+		definition: def,
+		sessionStore: sessions,
+		sourceSessionStore: failing,
+	}).catch((failure: Error) => failure);
+	assert.ok(rolledBack instanceof ForkSessionUnavailableError, String(rolledBack));
+	const lookalike = { name: "SessionNotFoundError", message: "not an Error" };
+	vi.spyOn(failing, "load").mockRejectedValueOnce(lookalike);
+	const passedThrough = await forkDurableRun(backend, {
+		source: "sdk",
+		runId,
+		carryMessages: "before",
+		definition: def,
+		sessionStore: sessions,
+		sourceSessionStore: failing,
+	}).catch((failure: Error) => failure);
+	assert.equal(passedThrough, lookalike, "a rejection that is not an Error is passed through as it is");
 	const bug = new TypeError("not a session store failure");
 	vi.spyOn(failing, "load").mockRejectedValueOnce(bug);
 	const propagated = await forkDurableRun(backend, {
@@ -849,6 +870,20 @@ test("a session missing from the source project's own store names that project a
 	}
 });
 
+test("a journal run without a run record is not found, with the journal it was read from (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId("fork-headless-run");
+	await backend.journal.createRun({ runId, name: "headless", cwd: process.cwd(), createdAt: 1, status: "paused" });
+	const error = await forkDurableRun(backend, { source: "sdk", runId, carryMessages: "before" }).catch(
+		(failure: Error) => failure,
+	);
+	assert.ok(error instanceof ForkSourceNotFoundError, String(error));
+	assert.deepEqual(
+		[error.runId, error.reason, error.storage],
+		[runId, "not-found", { adapter: "memory", scope: "local-only" }],
+	);
+});
+
 test("a nested run id is reported as a nested run of its root, never as storage that is not joined (#4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const child = workflow({
@@ -896,6 +931,26 @@ test("a nested run id is reported as a nested run of its root, never as storage 
 	const unknown = await refused({ durableBackend: backend, definition: def, store: createStore() });
 	assert.ok(unknown instanceof ForkSourceNotFoundError);
 	assert.equal(unknown.reason, "not-found", "a store that never saw the nested run cannot tell it apart");
+	const unlistable = await (async () => {
+		for await (const point of listForkPoints(childId, { durableBackend: backend, store: createStore() }))
+			return point;
+	})().catch((error: Error) => error);
+	assert.ok(unlistable instanceof ForkSourceNotFoundError, String(unlistable));
+	assert.equal(unlistable.reason, "not-found");
+	const selfRooted = createStore();
+	selfRooted.recordRunStart({
+		id: childId,
+		name: child.name,
+		inputs: {},
+		status: "completed",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+		rootRunId: childId,
+	});
+	const ownRoot = await refused({ durableBackend: backend, definition: def, store: selfRooted });
+	assert.ok(ownRoot instanceof ForkSourceNotFoundError);
+	assert.equal(ownRoot.reason, "not-found", "a run whose root is itself is not a nested run");
 	await backend.commitWorkflowRegistration({
 		workflowId: childId,
 		name: child.name,

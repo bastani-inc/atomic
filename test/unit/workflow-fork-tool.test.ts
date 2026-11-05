@@ -265,6 +265,25 @@ test("the fork action keeps the source run's inputs when given the schema's empt
 	await jobs.get(replaced.runId)?.promise;
 });
 
+test("the fork action reports a nested run's id as a nested run of its root (#4321)", async () => {
+	const { runId, execute } = await forkToolFixture("fork-tool-nested");
+	const nestedId = testRunId("fork-tool-nested-child");
+	store.recordRunStart({
+		id: nestedId,
+		name: "nested-child",
+		inputs: {},
+		status: "completed",
+		toolNodes: [],
+		stages: [],
+		startedAt: 1,
+		parentRunId: runId,
+		rootRunId: runId,
+	});
+	const refused = (await execute({ action: "fork", runId: nestedId }, context())) as ForkResult;
+	assert.deepEqual([refused.status, refused.code], ["failed", "source-not-found"]);
+	assert.equal(refused.hint, `Fork the root run ${runId}; listForkPoints("${runId}") lists the nested stage paths.`);
+});
+
 test("the workflow tool schema accepts the fork action and its options (#4321)", () => {
 	assert.ok(
 		Value.Check(WorkflowParametersSchema, {
