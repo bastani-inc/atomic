@@ -36,6 +36,9 @@ vi.mock("../../packages/workflows/src/workers/local-pool.js", async (importOrigi
 	return { ...original, LocalWorkerPool: RecordingPool };
 });
 
+/** Two public pools start a real coordinator and worker process each: their cost is structural, and grows on a loaded runner. */
+const REAL_WORKER_POOLS_TIMEOUT_MS = 120_000;
+
 const childPath = fileURLToPath(new URL("../fixtures/pool-child.ts", import.meta.url));
 
 let directory: string;
@@ -135,6 +138,7 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(constructed[1]?.journalPath, join(directory, "single.sqlite"));
 		assert.equal("journalShard" in constructed[1]!, false);
 	},
+	REAL_WORKER_POOLS_TIMEOUT_MS,
 );
 
 test("pooled stage sessions are read from the root's shard, for the root and for a child of it (#4325)", async () => {
