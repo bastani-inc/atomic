@@ -2302,12 +2302,47 @@ describe("git install command on this machine (#4322)", () => {
 			const third = releaseFor(first.bytes, undefined, "v2.56.0-4");
 			const thirdInstall = await installAs(third);
 			assert.equal(fetchMock.mock.calls.length, 3);
+			assert.notEqual(thirdInstall.path, rebuilt.path);
+			assert.equal(releaseMarker(thirdInstall).tag, third.release.tag);
 			const retainedBefore = readdirSync(join(installDir, "releases")).sort();
 			assert.equal((await installAs(rebuild)).path, rebuilt.path);
 			assert.equal((await installAs(third)).path, thirdInstall.path);
 			assert.equal(fetchMock.mock.calls.length, 3);
 			assert.deepEqual(readdirSync(join(installDir, "releases")).sort(), retainedBefore);
 			assert.deepEqual(leftovers(), []);
+		});
+
+		it("does not switch a retained release after its only caller cancels during lock acquisition", async () => {
+			const first = releaseFor(bytes(), undefined, "v2.56.0-2");
+			const fetchMock = serveArchive(first.bytes);
+			await installAs(first);
+			const second = releaseFor(first.bytes, undefined, "v2.56.0-3");
+			await installAs(second);
+			const third = releaseFor(first.bytes, undefined, "v2.56.0-4");
+			const selected = await installAs(third);
+			const controller = new AbortController();
+			const reason = new Error("retained selection cancelled");
+			let releaseFinished!: () => void;
+			const released = new Promise<void>((resolveReleased) => {
+				releaseFinished = resolveReleased;
+			});
+			mocks.lock = async (actual, file, options) => {
+				const release = await actual.lock(file, options);
+				controller.abort(reason);
+				return async () => {
+					await release();
+					releaseFinished();
+				};
+			};
+			await tools.withGitProvisionSettingsForTest({ release: second.release }, async () => {
+				await assert.rejects(tools.resolveGit({ signal: controller.signal }), (error) => error === reason);
+				await released;
+			});
+			const current = await tools.withGitProvisionSettingsForTest({ release: third.release }, async () =>
+				tools.resolveGitSync(),
+			);
+			assert.equal(current.path, selected.path);
+			assert.equal(fetchMock.mock.calls.length, 3);
 		});
 
 		it.each(["ENOTDIR", "EACCES"])(
