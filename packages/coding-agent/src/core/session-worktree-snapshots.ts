@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
@@ -707,15 +708,7 @@ export async function sessionRestoresOnOpen(store: SessionStore, sessionId: stri
 	const { header, entries } = await store.load(sessionId);
 	const { mappings, current } = storedBranchSnapshots(entries, entries.at(-1)?.id);
 	const cwd = mapRestoredPath(header.cwd, mappings);
-	if (![...current.keys()].some((root) => isInside(root, cwd))) return false;
-	try {
-		await stat(cwd);
-		return false;
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT" || code === "ENOTDIR") return true;
-		throw unreadablePathError(cwd, error);
-	}
+	return [...current.keys()].some((root) => isInside(root, cwd)) && !existsSync(cwd);
 }
 
 /**
