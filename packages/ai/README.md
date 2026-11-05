@@ -67,7 +67,7 @@ Unified LLM API with provider collections, automatic auth resolution, token and 
 - **OpenAI** (API key or Sign in with ChatGPT)
 - **Ant Ling**
 - **Azure OpenAI (Responses)**
-- **OpenAI Codex (legacy)** (ChatGPT subscription, requires OAuth, see below)
+- **OpenAI Codex** (ChatGPT subscription, requires OAuth, see below)
 - **Radius** (API key or OAuth, with a dynamically refreshed gateway catalog)
 - **TypeSafe** (System One classifier API)
 - **DeepSeek**
@@ -1854,7 +1854,7 @@ Several providers support OAuth authentication instead of static API keys:
 
 - **Anthropic** (Claude Pro/Max subscription)
 - **OpenAI** (Sign in with ChatGPT, direct Responses API access)
-- **OpenAI Codex (legacy)** (ChatGPT subscription, Codex Responses access)
+- **OpenAI Codex** (ChatGPT subscription, Codex Responses access)
 - **GitHub Copilot** (Copilot subscription)
 - **OpenRouter** (OAuth PKCE that mints a user-controlled API key)
 
@@ -1936,7 +1936,7 @@ Built-in login and refresh flows are private provider implementations. Use provi
 
 Provider notes:
 
-**OpenAI Codex (legacy)**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
+**OpenAI Codex**: Requires a ChatGPT subscription with model access. Includes GPT-6.1 Sol and Codex models with extended context windows and reasoning capabilities. The library handles session-based prompt caching when `sessionId` is provided unless `cacheRetention` is `"none"`. Set `transport` to `"sse"`, `"websocket"`, or `"auto"` for Codex Responses transport selection. WebSocket connections with a `sessionId` and caching enabled are reused per session and expire after 5 minutes of inactivity.
 
 Call `cleanupSessionResources(sessionId)` when finished with a Codex session so its pooled WebSocket connection does not keep the process alive. Import it from `@bastani/pi-ai`.
 
