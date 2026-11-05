@@ -53,6 +53,8 @@ test("a trusted project's routerModel fails fast; an untrusted project's setting
 	const untrusted = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	assert.equal(untrusted.getDecisionModel(), "");
 	assert.throws(() => untrusted.setProjectTrusted(true), renamed("project", "settings"));
+	assert.equal(untrusted.isProjectTrusted(), false);
+	assert.deepEqual(untrusted.getProjectSettings(), {});
 });
 
 test("the check stops loading at the first settings file, before any other read or write", () => {

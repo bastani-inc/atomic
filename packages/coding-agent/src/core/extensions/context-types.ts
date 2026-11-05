@@ -271,7 +271,11 @@ export interface ExtensionContext {
 	getSystemPrompt(): string;
 	/** Current loader-owned skill candidates and exact selector resolver. */
 	getSkillCatalog?(): SkillCatalog;
-	/** Current routing-only inference setting from the owning session. Does not change the chat model. */
+	/**
+	 * The owning session's `decisionModel`: an exact `provider/model`, `"auto"` or `""`. Every decision uses it:
+	 * `model: "auto"` selection, the `structured_output` tool without a `model`, readiness after a steer, and `decide()`.
+	 * Does not change the chat model.
+	 */
 	getDecisionModel(): string;
 	/** Provider filters for `model: "auto"` candidates from the owning session's settings. */
 	getModelRouting?(): import("../settings-types.ts").ModelRoutingSettings;

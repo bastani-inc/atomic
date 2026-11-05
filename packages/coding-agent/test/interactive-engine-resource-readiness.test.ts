@@ -460,6 +460,7 @@ describe("interactive engine resource readiness", () => {
 		try {
 			probe.emitResourceFailure("workflow load failed");
 			await vi.waitFor(() => expect(diagnostics).toHaveBeenCalledTimes(1));
+			expect(diagnostics.mock.calls[0]![0].error).toBeInstanceOf(InteractiveEngineResourceReadinessError);
 
 			await expect(probe.runtime.session.prompt("hello")).rejects.toBeInstanceOf(
 				InteractiveEngineResourceReadinessError,

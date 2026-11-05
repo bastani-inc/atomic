@@ -1,7 +1,11 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { exitOnDecisionConfigError } from "../../cli/settings-startup.ts";
 import type { SessionRecoveryReport } from "../../core/agent-session-types.js";
+import { findDecisionError, isDecisionConfigError } from "../../core/decision/errors.js";
 import type { SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
+import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
+import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.ts";
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { setRegisteredThemes, stopThemeWatcher, Text, theme } from "./interactive-mode-deps.ts";
@@ -165,6 +169,34 @@ InteractiveModeBase.prototype.handleFatalRuntimeError = async function (
 	// must remain on screen after the process dies, whatever the setting says.
 	this.stop("transcript");
 	process.exit(1);
+};
+
+/**
+ * A refused decision-model setting found after startup, such as a renamed `routerModel` key in a project trusted at
+ * the prompt, stops Atomic as it does at startup: the message and hint once, then exit status 1. Other errors return.
+ */
+InteractiveModeBase.prototype.exitOnRefusedDecisionSetting = function (
+	this: InteractiveModeBase,
+	error: unknown,
+): void {
+	const refused = findDecisionError(error);
+	if (!isDecisionConfigError(refused)) return;
+	stopThemeWatcher();
+	this.stop("transcript");
+	exitOnDecisionConfigError(refused);
+};
+
+/** Shows an interactive-engine diagnostic, and stops Atomic when the engine refused a decision-model setting. */
+InteractiveModeBase.prototype.handleEngineDiagnostic = function (
+	this: InteractiveModeBase,
+	diagnostic: ActivityWatchdogDiagnostic,
+): void {
+	this.exitOnRefusedDecisionSetting(diagnostic.error);
+	renderEngineDiagnostic(diagnostic, {
+		stopWorkingLoader: () => this.stopWorkingLoader(),
+		showStatus: (message, persist) => this.showStatus(message, persist),
+		showError: (message) => this.showError(message),
+	});
 };
 
 InteractiveModeBase.prototype.renderCurrentSessionState = function (this: InteractiveModeBase): void {

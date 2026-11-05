@@ -17,6 +17,7 @@ import {
 	isDecisionRequestError,
 	isDecisionTimeoutError,
 	isRetryableDecisionError,
+	parseSerializedDecisionError,
 	rehydrateDecisionError,
 	serializeDecisionError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
@@ -265,4 +266,68 @@ test("a structural decision error is recognized for every family code, and a pla
 	});
 	assert.equal(Object.getOwnPropertyDescriptor(unknown, "name")?.enumerable, false);
 	assert.equal(Object.keys(unknown).includes("name"), false);
+});
+
+test("a serialized error received across a process boundary is validated before it is rehydrated", () => {
+	const chain = new DecisionProviderError(
+		{ model: "a/b", providerStatus: 429 },
+		{
+			cause: new DecisionConfigError(
+				{ code: "renamed-setting", source: "settings", field: "routerModel", scope: "project" },
+				{ cause: new RangeError("inner") },
+			),
+		},
+	);
+	const wire = JSON.parse(JSON.stringify(serializeDecisionError(chain)));
+	assert.deepEqual(parseSerializedDecisionError(wire), serializeDecisionError(chain));
+	const restored = rehydrateDecisionError(parseSerializedDecisionError(wire)!);
+	assert.ok(isDecisionProviderError(restored));
+	assert.ok(isDecisionConfigError(restored.cause));
+	assert.equal((restored.cause as DecisionConfigError).scope, "project");
+	const valid = serializeDecisionError(ERRORS.request);
+	for (const malformed of [
+		undefined,
+		null,
+		"DecisionConfigError",
+		[valid],
+		{ ...valid, name: 1 },
+		{ ...valid, code: undefined },
+		{ ...valid, message: {} },
+		{ ...valid, hint: null },
+		{ ...valid, retryable: "false" },
+		{ ...valid, fields: [] },
+		{ ...valid, fields: { field: { nested: true } } },
+		{ ...valid, cause: "text" },
+		{ ...valid, cause: { name: "Error" } },
+		{ ...valid, cause: { ...valid, code: 7 } },
+	])
+		assert.equal(parseSerializedDecisionError(malformed), undefined, JSON.stringify(malformed));
+	let deep: object = valid;
+	for (let depth = 0; depth < 8; depth++) deep = { ...valid, cause: deep };
+	assert.equal(parseSerializedDecisionError(deep), undefined);
+	let longest: DecisionError = new DecisionOutputError({ model: "root" });
+	for (let depth = 1; depth < 12; depth++)
+		longest = new DecisionOutputError({ model: `m${depth}` }, { cause: longest });
+	assert.deepEqual(parseSerializedDecisionError(serializeDecisionError(longest)), serializeDecisionError(longest));
+	assert.deepEqual(
+		parseSerializedDecisionError({ ...valid, cause: { name: "RangeError", message: "x", extra: 1 } })?.cause,
+		{
+			name: "RangeError",
+			message: "x",
+		},
+	);
+});
+
+test("a host without decision support is a model-unavailable error that keeps its reason and hint across processes", () => {
+	const error = new DecisionModelUnavailableError({ reason: "host-unsupported" });
+	assert.equal(
+		error.message,
+		"Decision model unavailable: host-unsupported (model-unavailable). Run this in an Atomic session, whose host provides the decision model and a model registry.",
+	);
+	const restored = rehydrateDecisionError(
+		parseSerializedDecisionError(JSON.parse(JSON.stringify(serializeDecisionError(error))))!,
+	);
+	assert.ok(isDecisionModelUnavailableError(restored));
+	assert.equal(restored.reason, "host-unsupported");
+	assert.equal(restored.hint, error.hint);
 });

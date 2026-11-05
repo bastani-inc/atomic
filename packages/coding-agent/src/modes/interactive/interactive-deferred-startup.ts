@@ -90,6 +90,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
 		loaded = true;
 	} catch (error) {
+		this.exitOnRefusedDecisionSetting(error);
 		// Same ownership rule as the success path: this catch swallows the error,
 		// so prompt preflight continues and must keep its indicator.
 		if (!this.promptTurnWorkingLoaderActive) {

@@ -1,3 +1,4 @@
+import { rehydrateDecisionError } from "../../core/decision/errors.js";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { ActivityWatchdog, type ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { type InteractiveEngineMessage, parseInteractiveEngineMessage } from "./protocol.ts";
@@ -108,7 +109,12 @@ export class InteractiveEngineMonitor {
 			case "engine_resources_failed":
 				this.resolveProjectTrustSettled();
 				this.resourceState = "failed";
-				this.rejectResourcesReady(new Error(`Interactive engine resource loading failed: ${message.message}`));
+				this.rejectResourcesReady(
+					new Error(
+						`Interactive engine resource loading failed: ${message.message}`,
+						message.decisionError ? { cause: rehydrateDecisionError(message.decisionError) } : undefined,
+					),
+				);
 				break;
 			case "engine_heartbeat":
 				this.watchdog.heartbeat();

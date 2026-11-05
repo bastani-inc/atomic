@@ -1,5 +1,6 @@
 import {
 	type CreateAgentSessionOptions,
+	DecisionModelUnavailableError,
 	DecisionRequestError,
 	decide,
 	type ModelRoutingSettings,
@@ -87,7 +88,7 @@ export function workflowModelCatalogFromContext(
 						const current = live();
 						const registry = current.modelRegistry;
 						if (!current.getDecisionModel || !registry?.getAll || !registry.streamSimple) {
-							throw new Error("Workflow decisions require host decision model and model registry support.");
+							throw new DecisionModelUnavailableError({ reason: "host-unsupported" });
 						}
 						// decide() refuses environment credentials and key-shaped text; the host also knows its configured ones.
 						if ((await registry.containsConfiguredCredential?.(JSON.stringify(request.state))) === true)

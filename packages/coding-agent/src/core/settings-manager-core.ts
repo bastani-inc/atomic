@@ -243,19 +243,19 @@ export class SettingsManager {
 		if (this.projectTrusted === trusted) {
 			return;
 		}
+		const projectLoad = trusted ? SettingsManager.tryLoadFromStorage(this.storage, "project", true) : undefined;
 
 		this.projectTrusted = trusted;
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
 
-		if (!trusted) {
+		if (projectLoad === undefined) {
 			this.projectSettings = {};
 			this.projectSettingsLoadError = null;
 			this.settings = this.mergeEffectiveSettings();
 			return;
 		}
 
-		const projectLoad = SettingsManager.tryLoadFromStorage(this.storage, "project", trusted);
 		this.projectSettings = projectLoad.settings;
 		this.projectSettingsLoadError = projectLoad.error;
 		if (projectLoad.error) {

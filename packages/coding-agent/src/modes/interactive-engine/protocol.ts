@@ -1,4 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
+import { parseSerializedDecisionError, type SerializedDecisionError } from "../../core/decision/errors.js";
 import type { UIPromptEndEvent, UIPromptStartEvent } from "../../core/extensions/agent-events.ts";
 import type {
 	HostInputFormField,
@@ -66,7 +67,8 @@ export type InteractiveEngineMessage =
 	/** The child recorded `engine_explicit_quit`; it is safe for the host to stop it. */
 	| { type: "engine_explicit_quit_ack" }
 	| { type: "engine_resources_ready" }
-	| { type: "engine_resources_failed"; message: string }
+	/** `decisionError`: a refused decision-model setting, kept typed so the host can stop as startup does. */
+	| { type: "engine_resources_failed"; message: string; decisionError?: SerializedDecisionError }
 	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
 	/**
 	 * The engine retired the session whose extension UI the host mirrors. Sent by the child before the
@@ -476,8 +478,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return { type: value.type };
 		case "engine_resources_ready":
 			return { type: value.type };
-		case "engine_resources_failed":
-			return typeof value.message === "string" ? { type: value.type, message: value.message } : undefined;
+		case "engine_resources_failed": {
+			if (typeof value.message !== "string") return undefined;
+			const decisionError = parseSerializedDecisionError(value.decisionError);
+			return { type: value.type, message: value.message, ...(decisionError ? { decisionError } : {}) };
+		}
 		case "engine_keybindings_reloaded": {
 			const state = parseKeybindingState(value.state);
 			return state ? { type: value.type, state } : undefined;

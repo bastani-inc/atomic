@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
 import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
+import { isDecisionModelUnavailableError } from "../src/core/decision/errors.ts";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
@@ -682,7 +683,11 @@ test("an extension reads the session's decision model, and a host without one sa
 			...(getDecisionModel ? { getDecisionModel } : {}),
 		}) as unknown as ExtensionContextSource;
 	expect(createExtensionContext(source(() => "typesafe/jev-latest")).getDecisionModel()).toBe("typesafe/jev-latest");
-	expect(() => createExtensionContext(source()).getDecisionModel()).toThrow(
-		"Decision model settings are unavailable in this extension host.",
-	);
+	let refused: unknown;
+	try {
+		createExtensionContext(source()).getDecisionModel();
+	} catch (error) {
+		refused = error;
+	}
+	expect(isDecisionModelUnavailableError(refused) && refused.reason).toBe("host-unsupported");
 });

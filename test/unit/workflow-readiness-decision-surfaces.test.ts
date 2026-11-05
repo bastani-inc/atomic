@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { DecisionRequestError } from "../../packages/coding-agent/src/core/decision/errors.js";
+import {
+	DecisionRequestError,
+	isDecisionModelUnavailableError,
+} from "../../packages/coding-agent/src/core/decision/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { decisionSettingScopes } from "../../packages/coding-agent/src/modes/interactive/components/settings-selector-items.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -126,7 +129,7 @@ test("the host decision port refuses a host without a model registry", async () 
 	});
 	await assert.rejects(
 		catalog!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
-		/Workflow decisions require host decision model and model registry support/,
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "host-unsupported",
 	);
 });
 
@@ -364,7 +367,7 @@ test("the host decision port decides with the live context's decision model, reg
 	}));
 	await assert.rejects(
 		withoutStream!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
-		/require host decision model and model registry support/,
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "host-unsupported",
 	);
 	const withoutLiveSetting = workflowModelCatalogFromContext(launch, () => ({
 		...live,
@@ -372,7 +375,7 @@ test("the host decision port decides with the live context's decision model, reg
 	}));
 	await assert.rejects(
 		withoutLiveSetting!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
-		/require host decision model and model registry support/,
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "host-unsupported",
 	);
 	assert.equal(catalog!.autoAdvanceAfterSteer?.(), true);
 });
@@ -450,6 +453,6 @@ test("the host decision port refuses a live host without a model registry", asyn
 	);
 	await assert.rejects(
 		catalog!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
-		/require host decision model and model registry support/,
+		(error: unknown) => isDecisionModelUnavailableError(error) && error.reason === "host-unsupported",
 	);
 });

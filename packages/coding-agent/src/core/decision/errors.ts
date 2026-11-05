@@ -34,9 +34,14 @@ export type DecisionRequestErrorReason =
 /**
  * Why no model could answer: `not-in-catalog` (the configured model is not a registered chat or classifier model),
  * `no-chat-model` (no `decisionModel` is set and no concrete chat model is selected), `no-probabilities` (the
- * request requires probabilities and the decision model is a chat model, whose answers carry none).
+ * request requires probabilities and the decision model is a chat model, whose answers carry none), `host-unsupported`
+ * (the host running the extension or workflow provides no decision model settings or model registry).
  */
-export type DecisionModelUnavailableReason = "not-in-catalog" | "no-chat-model" | "no-probabilities";
+export type DecisionModelUnavailableReason =
+	| "not-in-catalog"
+	| "no-chat-model"
+	| "no-probabilities"
+	| "host-unsupported";
 
 /** What the decision was doing when its deadline passed: resolving the model, or waiting for a classifier or chat model. */
 export type DecisionPhase = "resolve" | "classifier" | "chat";
@@ -199,6 +204,7 @@ const UNAVAILABLE_HINTS: Readonly<Record<DecisionModelUnavailableReason, string>
 	"no-chat-model": 'Select a chat model with /model, or set "decisionModel" in /settings.',
 	"no-probabilities":
 		'Set "decisionModel" to a classifier, such as typesafe/jev-latest, in /settings; a chat model\'s answers carry no probabilities.',
+	"host-unsupported": "Run this in an Atomic session, whose host provides the decision model and a model registry.",
 };
 
 /** No model can answer this decision. Not retryable until the configuration changes. */
@@ -517,6 +523,47 @@ export function serializeDecisionError(error: DecisionError, depth = 0): Seriali
 		fields: error.fields(),
 		...serializedCause(error.cause, depth + 1),
 	};
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseSerializedCause(value: unknown, depth: number): SerializedDecisionError["cause"] | null {
+	if (!isRecord(value) || typeof value.name !== "string" || typeof value.message !== "string") return null;
+	if (!("code" in value)) return { name: value.name, message: value.message };
+	return parseSerializedDecisionErrorAt(value, depth) ?? null;
+}
+
+function parseSerializedDecisionErrorAt(value: unknown, depth: number): SerializedDecisionError | undefined {
+	if (depth >= MAX_CAUSE_DEPTH || !isRecord(value)) return undefined;
+	const { name, code, message, hint, retryable, fields, cause } = value;
+	if (
+		typeof name !== "string" ||
+		typeof code !== "string" ||
+		typeof message !== "string" ||
+		typeof hint !== "string" ||
+		typeof retryable !== "boolean" ||
+		!isRecord(fields) ||
+		!Object.values(fields).every((field) => ["string", "number", "boolean"].includes(typeof field))
+	)
+		return undefined;
+	const parsedCause = cause === undefined ? undefined : parseSerializedCause(cause, depth + 1);
+	if (parsedCause === null) return undefined;
+	return {
+		name,
+		code,
+		message,
+		hint,
+		retryable,
+		fields: fields as Readonly<Record<string, DecisionErrorFieldValue>>,
+		...(parsedCause === undefined ? {} : { cause: parsedCause }),
+	};
+}
+
+/** Validate untrusted data received across a process boundary as a {@link SerializedDecisionError}. */
+export function parseSerializedDecisionError(value: unknown): SerializedDecisionError | undefined {
+	return parseSerializedDecisionErrorAt(value, 0);
 }
 
 function rehydrateCause(cause: SerializedDecisionError["cause"]): Error | undefined {

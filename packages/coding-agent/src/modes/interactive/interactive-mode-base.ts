@@ -15,7 +15,6 @@ import type { MarkdownTransformer } from "../../core/extensions/types.ts";
 import type { FullscreenExitOutput, MermaidRenderingMode } from "../../core/settings-manager.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { readClipboardText } from "../../utils/clipboard.js";
-import { renderEngineDiagnostic } from "../interactive-engine/engine-diagnostic-view.js";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
@@ -752,12 +751,7 @@ export class InteractiveModeBase {
 		this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
 			runtimeHost,
 			this.createExtensionUIContext(),
-			(diagnostic) =>
-				renderEngineDiagnostic(diagnostic, {
-					stopWorkingLoader: () => this.stopWorkingLoader(),
-					showStatus: (message, persist) => this.showStatus(message, persist),
-					showError: (message) => this.showError(message),
-				}),
+			this.handleEngineDiagnostic.bind(this),
 			{
 				isFullscreen: () => this.renderer.mode === "fullscreen",
 				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),

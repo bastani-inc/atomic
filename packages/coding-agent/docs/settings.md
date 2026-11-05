@@ -82,7 +82,7 @@ Normal automatic selection of an available authenticated model remains enabled i
 { "decisionModel": "" }
 ```
 
-`decisionModel` replaces the former `routerModel` setting, which has no alias. A `settings.json` that still contains `routerModel` stops Atomic at startup with `DecisionConfigError` (code `renamed-setting`), naming the file's scope; rename the key to `decisionModel`. An SDK settings object with `routerModel` fails the same way.
+`decisionModel` replaces the former `routerModel` setting, which has no alias. A `settings.json` that still contains `routerModel` stops Atomic at startup with `DecisionConfigError` (code `renamed-setting`), naming the file's scope; rename the key to `decisionModel`. A project's file is read once you trust the project, so trusting it at the startup prompt stops Atomic the same way. An SDK settings object with `routerModel` fails the same way.
 
 The decision model is used by:
 
@@ -103,9 +103,9 @@ A classifier `decisionModel` such as Jev only chooses between the shortlisted mo
 
 Routing fallbacks are recovered automatically and are not printed to the terminal or added to the conversation. Set `ATOMIC_MODEL_ROUTING_DEBUG=1` to print them while debugging model selection, or turn on [debug mode](#debug-mode) to write them to the debug log.
 
-This setting selects the model that makes each decision listed above. It does not directly select a child's execution model, change the selected chat model, or change an SDK `generateStructuredOutput()` call, which uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The selected router provider receives the routing context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
+This setting selects the model that makes each decision listed above. It does not directly select a child's execution model or change the selected chat model. An SDK `generateStructuredOutput()` call starts on it only when you pass `settings` and no `model`; otherwise the call uses only the models it names. The decision provider may be any registered classifier or chat model, never an image-generation model; execution `auto` selects only chat language models, including multimodal-input chat. The decision model's provider receives the decision context, so choose a provider permitted to process that data. Authenticate a pinned classifier with that provider's login, such as `/login typesafe` or `TYPESAFE_API_KEY` for TypeSafe Jev. See [Structured decisions](/sdk/structured-decisions) and [TypeSafe Jev](/providers#typesafe-jev).
 
-Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the router. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
+Remove secrets from routing tasks, inputs, and workflow descriptions/contracts before calling the tool. A routing-context credential error stops before inference or launch. Known configured credentials are screened even when they belong to a provider other than the decision model's. Remove the credential from the supplied context or registered definition, reload a changed definition, then retry explicitly. The guard does not detect every possible secret.
 
 #### modelRouting
 
