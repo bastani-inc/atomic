@@ -11,7 +11,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
-import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
+import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS, ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 /** How long a call of a `detachable` tool runs inline before the session lets it go on without the session. */
@@ -483,12 +483,63 @@ async function resultSaved(session: AgentSession): Promise<void> {
 	}
 }
 
+/** A new result and the call of the pending turn it answers. */
+interface Answer {
+	readonly toolCall: ToolCall;
+	readonly result: DetachedToolResult;
+}
+
+/** Record each answer as its call's result, in the order given, and refresh the session's context from them. */
+async function recordAnswers(session: AgentSession, answers: readonly Answer[]): Promise<void> {
+	for (const answer of answers) session._reissuedToolCallIds.add(answer.result.toolCallId);
+	try {
+		for (const answer of answers) {
+			const result = await finalizedResult(session, answer.toolCall, answer.result);
+			const message = resultMessage(result);
+			// Through the session's event pipeline, as the agent loop records a result: hosts see the call end,
+			// and the result is persisted as that call's result.
+			session._handleAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: result.toolCallId,
+				toolName: result.toolName,
+				result: result.result,
+				isError: result.isError,
+			});
+			session._handleAgentEvent({ type: "message_start", message });
+			session._handleAgentEvent({ type: "message_end", message });
+			await resultSaved(session);
+		}
+	} finally {
+		for (const answer of answers) session._reissuedToolCallIds.delete(answer.result.toolCallId);
+		session._refreshFinalizedContext();
+	}
+}
+
 /**
- * Record the results of detached calls the transcript is waiting on, each as its own call's result, then continue
- * the turn that issued them. A result for a call that already has one is ignored. With no new result, a transcript
- * that ends on a detachable turn whose every call has its result continues that turn: its process stopped before the
- * model answered. Each result is finalized as an inline call's is: extension `tool_result` handlers, image
- * normalization and the oversized-output spill.
+ * Record answers of a turn that still waits on other calls, without continuing it. The session counts as running
+ * meanwhile, as it does while a continuation records its results, so a second resume is refused as busy instead of
+ * recording beside this one, where neither would see the turn complete and continue it.
+ */
+function recordWithoutContinuing(session: AgentSession, answers: readonly Answer[]): Promise<void> {
+	return trackSessionWork(session, async () => {
+		session._activePromptCount += 1;
+		try {
+			await recordAnswers(session, answers);
+		} finally {
+			session._activePromptCount -= 1;
+		}
+	});
+}
+
+/**
+ * Record the results of detached calls the transcript is waiting on, each as its own call's result right after its
+ * call, then continue the turn that issued them once every detachable call of that turn has its result. Results may
+ * arrive together or across several calls: until the last one arrives, the session records what it is given and
+ * resolves without continuing. A result for a call that already has one, or repeated in `results`, is ignored. With
+ * no new result, a transcript that ends on a detachable turn whose every call has its result continues that turn
+ * (its process stopped before the model answered), and a turn still waiting on a call is left as it is. Each result
+ * is finalized as an inline call's is: extension `tool_result` handlers, image normalization and the
+ * oversized-output spill.
  */
 export async function resumeDetachedTurn(this: AgentSession, results: readonly DetachedToolResult[]): Promise<void> {
 	const sessionId = this.sessionManager.getSessionId();
@@ -496,7 +547,7 @@ export async function resumeDetachedTurn(this: AgentSession, results: readonly D
 	if (this._disposed || sessionGenerationClosing.has(this))
 		throw new ToolDetachmentError("session-closed", { sessionId });
 	if (this.isStreaming || this._activePromptCount > 0) throw new ToolDetachmentError("session-busy", { sessionId });
-	const { assistant, endsOnDetachableTurn } = pendingDetachableCalls(this);
+	const { assistant, calls, endsOnDetachableTurn } = pendingDetachableCalls(this);
 	const issued = new Map(
 		assistant?.content.flatMap((block) => (block.type === "toolCall" ? [[block.id, block] as const] : [])) ?? [],
 	);
@@ -520,30 +571,12 @@ export async function resumeDetachedTurn(this: AgentSession, results: readonly D
 	if (pending.length === 0 && !(endsOnDetachableTurn && [...issued.keys()].every((id) => recorded.has(id)))) return;
 	const detached = states.get(this)?.detached;
 	for (const result of pending) detached?.delete(result.toolCallId);
-	await this._runAgentContinuation(async () => {
-		for (const result of pending) this._reissuedToolCallIds.add(result.toolCallId);
-		try {
-			for (const answer of answers) {
-				const result = await finalizedResult(this, answer.toolCall, answer.result);
-				const message = resultMessage(result);
-				// Through the session's event pipeline, as the agent loop records a result: hosts see the call end,
-				// and the result is persisted as that call's result.
-				this._handleAgentEvent({
-					type: "tool_execution_end",
-					toolCallId: result.toolCallId,
-					toolName: result.toolName,
-					result: result.result,
-					isError: result.isError,
-				});
-				this._handleAgentEvent({ type: "message_start", message });
-				this._handleAgentEvent({ type: "message_end", message });
-				await resultSaved(this);
-			}
-		} finally {
-			for (const result of pending) this._reissuedToolCallIds.delete(result.toolCallId);
-			this._refreshFinalizedContext();
-		}
-	});
+	// The turn continues only once every detachable call it issued has a result; until then the results wait for it.
+	if (calls.some(({ toolCall }) => !recorded.has(toolCall.id))) {
+		await recordWithoutContinuing(this, answers);
+		return;
+	}
+	await this._runAgentContinuation(() => recordAnswers(this, answers));
 	deliverHeldTaskCompletions(this);
 }
 

@@ -383,7 +383,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	hasPendingDetachedTurn(): boolean;
 	/** Start again the detachable calls the transcript ends on without a result, with their original ids and arguments. */
 	redispatchDetachedToolCalls(): DetachedToolCall[];
-	/** Record detached calls' results as their calls' results and continue the turn that issued them. */
+	/** Record detached calls' results; the turn that issued them continues once each of its detachable calls has one. */
 	resumeDetachedTurn(results: readonly DetachedToolResult[]): Promise<void>;
 	_waitForExtensionStart(): Promise<void>;
 	extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void>;
