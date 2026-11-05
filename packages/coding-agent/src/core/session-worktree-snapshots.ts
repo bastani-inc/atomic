@@ -675,29 +675,33 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 }
 
 /**
- * The snapshots retention keeps for sessions: the latest snapshot of each checkout on the branch every session of
- * `store` reopens on, the one resume checks, internal workflow-stage sessions included. Pass them, with the snapshots
- * resumable workflow runs reference, to `collectSnapshotGarbage`.
+ * The snapshots retention keeps for sessions: on every leaf of every session tree in `store`, the latest snapshot of
+ * each checkout as resume would find it from that leaf, internal workflow-stage sessions included. Pass them, with the
+ * snapshots resumable workflow runs reference, to `collectSnapshotGarbage`.
  */
 export async function listRetainedSessionSnapshots(
 	store: SessionStore,
 	signal?: AbortSignal,
 ): Promise<WorktreeSnapshot[]> {
-	const retained: WorktreeSnapshot[] = [];
+	const retained = new Set<WorktreeSnapshot>();
 	for await (const summary of store.list({ includeInternal: true, signal })) {
 		const { entries } = await store.load(summary.id);
-		const branch = getBranchPath(entries.at(-1)?.id, new Map(entries.map((entry) => [entry.id, entry])));
+		const byId = new Map(entries.map((entry) => [entry.id, entry]));
+		const parents = new Set(entries.map((entry) => entry.parentId));
 		const records = new Map<string, WorktreeSnapshot>();
 		for (const entry of entries) {
 			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 		}
-		const current = currentWorktreeSnapshots({
-			getBranch: () => branch,
-			getWorktreeRootMappings: () =>
-				branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),
-			getWorktreeSnapshotRecords: () => records,
-		});
-		retained.push(...new Set(current.values()));
+		for (const leaf of entries.filter((entry) => !parents.has(entry.id))) {
+			const branch = getBranchPath(leaf.id, byId);
+			const current = currentWorktreeSnapshots({
+				getBranch: () => branch,
+				getWorktreeRootMappings: () =>
+					branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),
+				getWorktreeSnapshotRecords: () => records,
+			});
+			for (const snapshot of current.values()) retained.add(snapshot);
+		}
 	}
-	return retained;
+	return [...retained];
 }

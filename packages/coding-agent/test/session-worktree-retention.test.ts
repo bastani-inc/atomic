@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
@@ -75,7 +75,7 @@ test("retention keeps the latest snapshot of each session and collects blobs not
 	assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), []);
 });
 
-test("retention follows the branch a session reopens on, so collection never removes what resume restores (#4245)", async () => {
+test("retention keeps each leaf's latest snapshot, so every branch of a session still resumes after collection (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
 	const store = await SqlSessionStore.open(database);
@@ -84,27 +84,34 @@ test("retention follows the branch a session reopens on, so collection never rem
 		await database.close();
 	});
 	const manager = await SessionManager.create(store, clone);
-	const kept = await record(manager, store, clone, "kept\n");
-	const branchPoint = manager.getLeafId()!;
-	const abandoned = await record(manager, store, clone, "abandoned\n", kept);
-	assert.equal(abandoned.chain.length, 1, "the abandoned snapshot shares no blob with the kept one");
-	await manager.branch(branchPoint);
-	await manager.appendSessionInfo("continued from the earlier snapshot");
+	const base = await record(manager, store, clone, "base\n");
+	const fork = manager.getLeafId()!;
+	const first = await record(manager, store, clone, "first branch\n", base);
+	const firstLeaf = manager.getLeafId()!;
+	await manager.branch(fork);
+	const second = await record(manager, store, clone, "second branch\n", base);
+	const secondLeaf = manager.getLeafId()!;
+	await manager.branch(fork);
+	await manager.appendSessionInfo("a third leaf that recorded nothing new");
+	for (const snapshot of [first, second]) assert.equal(snapshot.chain.length, 1, "each branch has its own full delta");
 
 	const retained = await listRetainedSessionSnapshots(store);
-	assert.deepEqual(
-		retained.map((snapshot) => snapshot.id),
-		[kept.id],
-	);
-	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, retained, { graceSeconds: 0 });
-	assert.deepEqual(deleted, snapshotBlobHashes(abandoned));
+	assert.deepEqual(retained.map((snapshot) => snapshot.id).sort(), [base.id, first.id, second.id].sort());
+	await collectSnapshotGarbage(store.snapshotBlobs, retained, { graceSeconds: 0 });
 
-	writeFileSync(join(clone, "notes.txt"), "drifted\n");
-	const reopened = await SessionManager.open(store, manager.getSessionId());
-	const result = await resumeSessionWorktree(reopened, {
-		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
-		storeDir: sandbox.path("host"),
-	});
-	assert.equal(result.status, "restored");
-	assert.equal(result.status === "restored" && result.snapshot.id, kept.id);
+	for (const [leaf, expected] of [
+		[firstLeaf, "first branch\n"],
+		[secondLeaf, "second branch\n"],
+	] as const) {
+		writeFileSync(join(clone, "notes.txt"), "drifted\n");
+		const reopened = await SessionManager.open(store, manager.getSessionId());
+		await reopened.branch(leaf);
+		const result = await resumeSessionWorktree(reopened, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			storeDir: sandbox.path(`host-${expected.length}`),
+		});
+		assert.equal(result.status, "restored");
+		if (result.status !== "restored") return;
+		assert.equal(readFileSync(join(result.cwd, "notes.txt"), "utf8"), expected);
+	}
 });
