@@ -391,7 +391,13 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 	for (const [root, snapshot] of latest) {
 		lines.push(...describeWorktreeSnapshot(root, snapshot));
 		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
-		if (comparison.status === "match") lines.push(theme.fg("success", "  matches the current tree"));
+		if (comparison.status === "match")
+			lines.push(
+				theme.fg(
+					"success",
+					`  matches the current tree${comparison.head ? ` at ${comparison.head.slice(0, 12)}` : ""}`,
+				),
+			);
 		else if (comparison.status === "missing") lines.push(theme.fg("warning", `  ${comparison.reason.message}`));
 		else {
 			lines.push(

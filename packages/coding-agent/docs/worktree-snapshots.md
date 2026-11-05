@@ -62,15 +62,17 @@ The SDK takes the same fields as `createAgentSession({ snapshots })` and workflo
 
 ## Resuming
 
-When a session resumes, Atomic checks its checkout against the last snapshot it recorded:
+When a session resumes, Atomic checks every checkout the session recorded a snapshot for, not only the one that contains its working directory:
 
-- If `HEAD` and the tree match, the session resumes in place.
-- If the checkout drifted or does not exist on this machine, Atomic restores the snapshot automatically into a fresh worktree under `~/.atomic/agent/worktree-snapshots/worktrees/`, prints one line naming it, and continues the session there. Your own checkout is never written to.
-- If the snapshot cannot be restored (for example, its unpushed commits touched denied paths, a remote is unreachable, or a blob is missing), the resume fails with `WorkspaceDriftError` (`reason: "restore-failed"`). Its message names what failed (the commits, remote, or blob), its `hint` is the fix, `restoreCode` is the failure's code, and `cause` is the typed failure.
+- If the tree matches and `HEAD` is the recorded commit or a descendant of it, for example after you committed the recorded edits, the session resumes in place.
+- If a checkout drifted, does not exist on this machine, or is no longer a repository with commits, Atomic restores its snapshot automatically into a fresh worktree under `~/.atomic/agent/worktree-snapshots/worktrees/`, prints one line per restored checkout, and continues the session there. Your own checkout is never written to.
+- If any snapshot cannot be restored (for example, its unpushed commits touched denied paths, a remote is unreachable, or a blob is missing), nothing is restored and the resume fails with `WorkspaceDriftError` (`reason: "restore-failed"`). Its message names what failed (the commits, remote, or blob), its `hint` is the fix, `restoreCode` is the failure's code, and `cause` is the typed failure. A session that refers to a snapshot it holds no record of fails with `snapshot-not-found`.
+
+A working directory reached through a symbolic link is matched by the directory the link points at, because snapshot roots are Git's physical top-level directories.
 
 Restored worktrees share one object store per repository on each host (`~/.atomic/agent/worktree-snapshots/repositories/`), so many restores of one base cost about one base plus their deltas. The session records the old-to-new root mapping (`SessionManager.getWorktreeRootMappings()`), and later resumes keep using the new root.
 
-A checkout matches its snapshot when `HEAD` is the recorded commit and every file of the recorded tree has the recorded content. Unchanged recorded files are compared even when this host's excludes or size settings would leave them out; those settings only decide whether a file the snapshot never had counts as a change. A recorded file whose content changed and that is now left out, for example because it grew past `snapshots.maxFileBytes` or is listed in `.atomic/snapshot-ignore`, counts as drift. A checkout whose repository does not hold the recorded tree is treated as drifted and restored.
+A checkout matches its snapshot when every file of the recorded tree has the recorded content and `HEAD` is the recorded commit; `verifyWorktree` checks exactly that, while resume also accepts a `HEAD` that descends from the recorded commit over the same tree. Unchanged recorded files are compared even when this host's excludes or size settings would leave them out; those settings only decide whether a file the snapshot never had counts as a change. A recorded file whose content changed and that is now left out, for example because it grew past `snapshots.maxFileBytes` or is listed in `.atomic/snapshot-ignore`, counts as drift. A checkout whose repository does not hold the recorded tree is treated as drifted and restored.
 
 A restore builds the worktree under a staging directory, verifies it there, and only then moves it to its final path, so a final path never holds an unverified worktree. If the process is killed mid-restore, the staging worktree stays behind with a crash record under `~/.atomic/agent/worktree-snapshots/restores/`. The next restore or `removeRestoredWorktree` on that host removes it once the crash record's lock is stale, 30 seconds after the process stopped. A leftover that cannot be removed is reported once as the `stale-restore-retained` warning naming its path.
 
@@ -78,11 +80,13 @@ Snapshot records come from storage and from imported session files, so restore a
 
 Restore fetches never wait for input. On Linux and macOS they run without a terminal, so an unknown host key, a passphrase, or a credential prompt fails at once as `commits-unavailable` (`reason: "not-fetched"`) instead of waiting. Unless you configured your own ssh command (`GIT_SSH_COMMAND`, `GIT_SSH`, or `core.sshCommand`), ssh runs with `BatchMode=yes` and a 15-second connect timeout. To fix such a failure, run `git ls-remote <remote>` once yourself to accept the host key or unlock the key, then resume again.
 
-Workflow runs follow the same rule at the point where execution resumes: each bound worktree is compared once with the last snapshot recorded for it, and restored automatically into a fresh worktree when it drifted. See [Workflows operations](/workflows/operations).
+When the repository uses Git LFS, a restore downloads the LFS objects from the recorded remotes, trying each in order and stopping at the first that has them; a remote that is a local path is used as a `file://` URL. The download never waits for input either. If no recorded remote has the objects, the files stay LFS pointers and the `lfs-objects-unavailable` warning lists them; push the objects from the recording machine with `git lfs push --all <remote>`, then restore again.
+
+Workflow runs follow the same rules at the point where execution resumes: each bound worktree is compared once with the last snapshot recorded for it, continues in place when only `HEAD` moved forward over the same tree, and is restored automatically into a fresh worktree when it drifted. A run, stage, or `gitWorktreeDir` path reached through a symbolic link maps to the restored worktree like the path it points at. See [Workflows operations](/workflows/operations).
 
 ## Inspecting snapshots
 
-`/session snapshot` lists the latest snapshot of each checkout in the session (branch, `HEAD`, tree, patch chain, bundled commits, omissions, conversion settings) and compares it with the current tree, with a `git diff --stat` when the snapshot's tree is available locally.
+`/session snapshot` lists the latest snapshot of each checkout in the session (branch, `HEAD`, tree, patch chain, bundled commits, omissions, conversion settings) and compares it with the current checkout the way resume does, so it reports a match when only `HEAD` moved forward over the recorded tree, with a `git diff --stat` when the snapshot's tree is available locally.
 
 ## Moving a session as a file
 
@@ -111,6 +115,8 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 - `captureWorktreeSnapshot(dir, { settings?, previous?, blobs?, signal? })` resolves `captured`, `unchanged`, `disabled`, or `unavailable` with the typed reason (`GitUnavailableError` or `WorkspaceSnapshotError`).
 - `restoreWorktreeSnapshot(bindingOrSnapshot, { into?, blobs?, snapshots?, storeDir?, onWarning?, signal? })` resolves to the path of a new, verified worktree. `into` must be a new or empty directory. A binding is restored from a matching entry of `snapshots`, or from a host whose object store already holds its tree. Restore checks the target and every blob before writing, and removes what it created when it fails. `onWarning` receives `omitted-content`, `filters`, `lfs-objects-unavailable` (LFS files left as pointers), and `stale-restore-retained` (an interrupted earlier restore that could not be cleaned up).
 - `verifyWorktree(binding, dir, { settings?, signal? })` resolves to the checkout's current binding when its `HEAD` and tree match, and rejects with `WorkspaceDriftError` otherwise.
+- `isHeadOnlyAdvance(driftError, signal?)` resolves `true` when a `WorkspaceDriftError` from `verifyWorktree` only moved `HEAD` forward over the recorded tree, the case resume continues in place.
+- `canonicalizeWorktreePath(path)` resolves the symbolic links in the existing part of a path and keeps the rest, the form snapshot roots are compared in.
 - `removeRestoredWorktree(path, { storeDir?, onWarning?, signal? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other path, including a regular file.
 - `collectSnapshotGarbage(blobs, retained, { graceSeconds? })` deletes blobs that none of the retained snapshots needs, and resolves with the hashes it deleted. Retain the latest snapshot of each session (`listRetainedSessionSnapshots(sessionStore)`) and the snapshots resumable workflow runs reference (`listResumableWorkflowSnapshots(journal)` from `@bastani/atomic/workflows`). When sessions and runs share one database they share one blob table, so pass both sets together. A blob stored or stored again within `graceSeconds` (default `DEFAULT_BLOB_GRACE_SECONDS`, one hour, measured on the database's clock) is never deleted, so a collection can run while captures are in flight. Atomic does not run this collection on its own yet ([#4355](https://github.com/bastani-inc/atomic/issues/4355)).
 

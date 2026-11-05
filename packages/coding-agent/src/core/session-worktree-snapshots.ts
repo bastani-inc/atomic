@@ -26,8 +26,15 @@ import {
 	WorkspaceSnapshotError,
 } from "./worktree-snapshot/errors.ts";
 import { gitText, runGit } from "./worktree-snapshot/git.ts";
+import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
+import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
 import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
-import { restoreWorktree, snapshotRestoreWarnings, verifyWorktree } from "./worktree-snapshot/restore.ts";
+import {
+	removeRestoredWorktree,
+	restoreWorktree,
+	snapshotRestoreWarnings,
+	verifyWorktree,
+} from "./worktree-snapshot/restore.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -55,7 +62,7 @@ export interface TurnSnapshotDependencies {
 }
 
 function isInside(parent: string, child: string): boolean {
-	const path = relative(parent, child);
+	const path = relative(canonicalizeWorktreePath(parent), canonicalizeWorktreePath(child));
 	return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
 }
 
@@ -167,10 +174,31 @@ async function nearestExisting(directory: string): Promise<string> {
 /** `path` rewritten through each restore in order: a path under `from` moves to the same place under `to`. */
 export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMapping[]): string {
 	let mapped = resolve(path);
-	for (const mapping of mappings) {
-		if (isInside(mapping.from, mapped)) mapped = resolve(mapping.to, relative(mapping.from, mapped));
+	let next = 0;
+	while (next < mappings.length) {
+		const current = canonicalizeWorktreePath(mapped);
+		let best: { index: number; source: string } | undefined;
+		for (let index = next; index < mappings.length; index++) {
+			const source = canonicalizeWorktreePath(mappings[index]!.from);
+			if (isInside(source, current) && (best === undefined || source.length > best.source.length)) {
+				best = { index, source };
+			}
+		}
+		if (best === undefined) break;
+		mapped = resolve(mappings[best.index]!.to, relative(best.source, current));
+		next = best.index + 1;
 	}
 	return mapped;
+}
+
+/** Recover the original root of a sequence of restores, so a restored root supersedes its earlier location. */
+function originalRoot(root: string, mappings: readonly WorktreeRootMapping[]): string {
+	let current = canonicalizeWorktreePath(root);
+	for (let index = mappings.length - 1; index >= 0; index--) {
+		const mapping = mappings[index]!;
+		if (canonicalizeWorktreePath(mapping.to) === current) current = canonicalizeWorktreePath(mapping.from);
+	}
+	return current;
 }
 
 export type SessionWorktreeResume =
@@ -179,7 +207,7 @@ export type SessionWorktreeResume =
 	| {
 			readonly status: "restored";
 			readonly snapshot: WorktreeSnapshot;
-			readonly mapping: WorktreeRootMapping;
+			readonly mappings: readonly WorktreeRootMapping[];
 			readonly cwd: string;
 			readonly warnings: readonly WorktreeRestoreWarning[];
 	  };
@@ -192,80 +220,118 @@ export interface ResumeSessionWorktreeOptions {
 }
 
 /**
- * Checks the checkout a resumed session works in against the last snapshot it recorded. A match resumes in place.
- * A drifted or missing checkout is restored automatically into a fresh worktree under Atomic home, and the old→new
- * root mapping is recorded on the session; the returned `cwd` is where the session continues. Throws
- * {@link WorkspaceDriftError} (with the restore failure as `cause`) when the snapshot cannot be restored, and
- * GitUnavailableError when the session recorded a snapshot but Git cannot verify it, so a session never resumes live
- * work against an unverified tree. With `snapshots.enabled` false nothing is checked.
+ * Checks the latest recorded snapshot of each checkout on the active session branch. Drifted or missing checkouts are
+ * restored into fresh worktrees, and each old→new mapping is recorded only after all checkouts have been restored.
+ * The returned cwd follows those mappings. A HEAD-only advance over identical content also resumes in place.
  */
 export async function resumeSessionWorktree(
 	sessionManager: SessionManager,
 	options: ResumeSessionWorktreeOptions,
 ): Promise<SessionWorktreeResume> {
 	if (!options.settings.enabled) return { status: "none" };
-	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
-	let match: { root: string; snapshot: WorktreeSnapshot } | undefined;
-	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
-		if (isInside(root, cwd) && (!match || root.length > match.root.length)) match = { root, snapshot };
+	const existing = sessionManager.getWorktreeRootMappings();
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const latestIds = new Map<string, string>();
+	for (const entry of sessionManager.getBranch()) {
+		if (entry.type === "worktree_snapshot") latestIds.set(originalRoot(entry.root, existing), entry.snapshotId);
 	}
-	if (!match) return { status: "none" };
-	const { root, snapshot } = match;
-	let drift: WorkspaceDriftError;
+	const latest = new Map<string, WorktreeSnapshot>();
+	for (const [root, snapshotId] of latestIds) {
+		const snapshot = records.get(snapshotId);
+		if (!snapshot) throw new WorkspaceRestoreError("snapshot-not-found", { snapshotId, target: root });
+		latest.set(root, snapshot);
+	}
+	if (latest.size === 0) return { status: "none" };
+	const cwd = mapRestoredPath(sessionManager.getCwd(), existing);
+	const mappings: WorktreeRootMapping[] = [];
+	const warnings: WorktreeRestoreWarning[] = [];
+	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
 	try {
-		await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
-		return { status: "verified", snapshot, cwd };
-	} catch (error) {
-		if (isWorkspaceDriftError(error)) drift = error;
-		else if (isWorkspaceSnapshotError(error) && error.code === "not-a-repository") {
-			drift = new WorkspaceDriftError({
-				root,
-				expectedHead: snapshot.head,
-				actualHead: null,
-				expectedTree: snapshot.tree,
-				actualTree: null,
+		for (const [original, snapshot] of latest) {
+			options.signal?.throwIfAborted();
+			const root = mapRestoredPath(original, existing);
+			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
+			let drift: WorkspaceDriftError;
+			try {
+				await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
+				continue;
+			} catch (error) {
+				options.signal?.throwIfAborted();
+				if (isWorkspaceDriftError(error)) {
+					if (await isHeadOnlyAdvance(error, options.signal)) continue;
+					drift = error;
+				} else if (isWorkspaceSnapshotError(error)) {
+					drift = new WorkspaceDriftError(
+						{
+							root,
+							expectedHead: snapshot.head,
+							actualHead: null,
+							expectedTree: snapshot.tree,
+							actualTree: null,
+							snapshotId: snapshot.id,
+						},
+						error,
+					);
+				} else throw error;
+			}
+			let restored: Awaited<ReturnType<typeof restoreWorktree>>;
+			try {
+				restored = await restoreWorktree(snapshot, {
+					blobs: sessionSnapshotBlobs(sessionManager.getSessionStore().snapshotBlobs, sessionManager.getEntries()),
+					storeDir: options.storeDir,
+					signal: options.signal,
+				});
+			} catch (error) {
+				options.signal?.throwIfAborted();
+				if (!(error instanceof Error)) throw error;
+				throw new WorkspaceDriftError(
+					{
+						root: drift.root,
+						expectedHead: drift.expectedHead,
+						actualHead: drift.actualHead,
+						expectedTree: drift.expectedTree,
+						actualTree: drift.actualTree,
+						snapshotId: drift.snapshotId,
+						reason: "restore-failed",
+					},
+					error,
+				);
+			}
+			mappings.push({
+				from: root,
+				to: restored.path,
 				snapshotId: snapshot.id,
+				tree: snapshot.tree,
+				restoredAt: new Date().toISOString(),
 			});
-		} else throw error;
-	}
-	let restored: Awaited<ReturnType<typeof restoreWorktree>>;
-	try {
-		restored = await restoreWorktree(snapshot, {
-			blobs: sessionSnapshotBlobs(sessionManager.getSessionStore().snapshotBlobs, sessionManager.getEntries()),
-			storeDir: options.storeDir,
-			signal: options.signal,
-		});
+			warnings.push(...restored.warnings);
+		}
+		for (const mapping of mappings) {
+			options.signal?.throwIfAborted();
+			await sessionManager.appendWorktreeSnapshot(mapping.to, mapping.snapshotId, undefined, mapping);
+		}
 	} catch (error) {
-		options.signal?.throwIfAborted();
-		if (!(error instanceof Error)) throw error;
-		throw new WorkspaceDriftError(
-			{
-				root: drift.root,
-				expectedHead: drift.expectedHead,
-				actualHead: drift.actualHead,
-				expectedTree: drift.expectedTree,
-				actualTree: drift.actualTree,
-				snapshotId: drift.snapshotId,
-				reason: "restore-failed",
-			},
-			error,
-		);
+		const cleanupFailures: unknown[] = [];
+		for (const mapping of [...mappings].reverse()) {
+			try {
+				await removeRestoredWorktree(mapping.to, { storeDir: options.storeDir });
+			} catch (cleanupCause) {
+				cleanupFailures.push(cleanupCause);
+			}
+		}
+		if (cleanupFailures.length > 0 && error instanceof Error && Object.isExtensible(error)) {
+			Object.defineProperty(error, "cleanupCause", {
+				value: cleanupFailures.length === 1 ? cleanupFailures[0] : new AggregateError(cleanupFailures),
+				configurable: true,
+			});
+		}
+		throw error;
 	}
-	const mapping: WorktreeRootMapping = {
-		from: root,
-		to: restored.path,
-		snapshotId: snapshot.id,
-		tree: snapshot.tree,
-		restoredAt: new Date().toISOString(),
-	};
-	await sessionManager.appendWorktreeSnapshot(restored.path, snapshot.id, undefined, mapping);
-	return {
-		status: "restored",
-		snapshot,
-		mapping,
-		cwd: resolve(restored.path, relative(root, cwd)),
-		warnings: restored.warnings,
-	};
+	const snapshot = selected?.snapshot ?? [...latest.values()].at(-1)!;
+	const mappedCwd = mapRestoredPath(cwd, mappings);
+	return mappings.length === 0
+		? { status: "verified", snapshot, cwd: mappedCwd }
+		: { status: "restored", snapshot, mappings, cwd: mappedCwd, warnings };
 }
 
 /** The one-line notice shown when a session or run continues in a restored worktree. */
@@ -295,24 +361,25 @@ export function formatWorktreeRestoreWarning(warning: WorktreeRestoreWarning): s
 	}
 }
 
-/**
- * The notices for a restore this resume performed: one informational line naming the new worktree, then a warning per
- * omission or conversion setting recorded on the restored snapshot. Empty when the latest restore predates `since`.
- */
+/** One informational line and recorded snapshot warnings per worktree restored since `since`. */
 export function worktreeRestoreNotices(
 	sessionManager: Pick<SessionManager, "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
 	since: string,
 ): { readonly type: "info" | "warning"; readonly message: string }[] {
-	const mapping = sessionManager.getWorktreeRootMappings().at(-1);
-	if (!mapping || mapping.restoredAt < since) return [];
-	const snapshot = sessionManager.getWorktreeSnapshotRecords().get(mapping.snapshotId);
-	return [
-		{ type: "info", message: formatWorktreeRestoreNotice(mapping) },
-		...(snapshot ? snapshotRestoreWarnings(snapshot) : []).map((warning) => ({
-			type: "warning" as const,
-			message: formatWorktreeRestoreWarning(warning),
-		})),
-	];
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	return sessionManager
+		.getWorktreeRootMappings()
+		.filter((mapping) => mapping.restoredAt >= since)
+		.flatMap((mapping) => {
+			const snapshot = records.get(mapping.snapshotId);
+			return [
+				{ type: "info" as const, message: formatWorktreeRestoreNotice(mapping) },
+				...(snapshot ? snapshotRestoreWarnings(snapshot) : []).map((warning) => ({
+					type: "warning" as const,
+					message: formatWorktreeRestoreWarning(warning),
+				})),
+			];
+		});
 }
 
 /**
@@ -450,7 +517,7 @@ export function describeSnapshotExport(
 }
 
 export type WorktreeSnapshotComparison =
-	| { readonly status: "match"; readonly tree: string }
+	| { readonly status: "match"; readonly tree: string; readonly head?: string }
 	| { readonly status: "missing"; readonly reason: WorktreeSnapshotUnavailableReason }
 	| {
 			readonly status: "differs";
@@ -468,13 +535,26 @@ export async function compareWorktreeSnapshot(
 ): Promise<WorktreeSnapshotComparison> {
 	const checkout = await locateCheckout(dir);
 	if (checkout instanceof Error) return { status: "missing", reason: checkout };
-	const policy = await loadSnapshotPathPolicy(checkout.root);
-	const state = await withScratchDirectory((scratch) => writeWorkingTree(checkout, settings, policy, scratch, {}));
-	if (checkout.head === snapshot.head && state.tree === snapshot.tree) return { status: "match", tree: state.tree };
 	const present = await runGit(["cat-file", "-e", `${snapshot.tree}^{tree}`], {
 		cwd: checkout.root,
 		allowExitCodes: [1, 128],
 	});
+	const policy = await loadSnapshotPathPolicy(checkout.root);
+	const state = await withScratchDirectory((scratch) =>
+		writeWorkingTree(checkout, settings, policy, scratch, present.exitCode === 0 ? { seedTree: snapshot.tree } : {}),
+	);
+	if (state.tree === snapshot.tree) {
+		if (checkout.head === snapshot.head) return { status: "match", tree: state.tree };
+		const drift = new WorkspaceDriftError({
+			root: checkout.root,
+			expectedHead: snapshot.head,
+			actualHead: checkout.head,
+			expectedTree: snapshot.tree,
+			actualTree: state.tree,
+			snapshotId: snapshot.id,
+		});
+		if (await isHeadOnlyAdvance(drift)) return { status: "match", tree: state.tree, head: checkout.head };
+	}
 	const stat =
 		present.exitCode === 0
 			? await gitText(["diff-tree", "--stat", "--no-renames", "--no-ext-diff", "-r", snapshot.tree, state.tree], {
@@ -547,7 +627,7 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 	);
 	if (mappings.length === 0) return false;
 	const mapped = mapRestoredPath(header.cwd, mappings);
-	return mapped === resolve(cwd);
+	return canonicalizeWorktreePath(mapped) === canonicalizeWorktreePath(cwd);
 }
 
 /**
