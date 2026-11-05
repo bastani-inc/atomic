@@ -169,6 +169,8 @@ describe("validating persisted snapshot entries", () => {
 				restoreWarnings: [
 					{ code: "lfs-objects-unavailable", paths: ["a.bin"] },
 					{ code: "stale-restore-retained", path: "/host/restores", kind: "records-directory" },
+					{ code: "stale-restore-retained", path: "/host/restores/r.json", kind: "record" },
+					{ code: "stale-restore-retained", path: "/host/worktrees/w", kind: "worktree" },
 				],
 			}),
 		);
