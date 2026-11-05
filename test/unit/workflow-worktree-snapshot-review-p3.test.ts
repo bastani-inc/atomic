@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -57,5 +59,47 @@ test("two worktrees restored in one resume that raise the same warning each get 
 	const warnings = store.notices().filter((notice) => notice.level === "warning");
 	assert.equal(warnings.length, 2);
 	assert.equal(new Set(warnings.map((notice) => notice.id)).size, 2);
+	await fixture.close();
+});
+
+test("each warning of a restore and each later restore of the same snapshot is its own notice (#4245)", async () => {
+	const { clone } = await sandbox.remoteWithClone("one");
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	let attempt = 0;
+	const definition = workflow({
+		name: "repeated-restores",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("write", {}, async () => {
+				sandbox.write(join(clone, "result.txt"), "recorded\n");
+				return "done";
+			});
+			if (attempt++ < 2) throw new Error("interrupted");
+			return {};
+		},
+	});
+	const options = { durableBackend: fixture.backend, cwd: clone };
+	const initial = await run(definition, {}, { ...options, store: createStore() });
+	assert.equal(initial.status, "failed");
+	const records = join(sandbox.path("agent"), "worktree-snapshots", "restores");
+	mkdirSync(records, { recursive: true });
+	for (let index = 0; index < 2; index++) writeFileSync(join(records, `${randomUUID()}.json`), "{");
+	const store = createStore();
+	sandbox.write(join(clone, "result.txt"), "drift\n");
+	assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "failed");
+	const firstRestore = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!.at(-1)!;
+	sandbox.write(join(firstRestore.to, "result.txt"), "drift again\n");
+	assert.equal((await run(definition, {}, { ...options, runId: initial.runId, store })).status, "completed");
+	const mappings = fixture.backend.getWorkflow(initial.runId)!.worktreeRootMappings!;
+	assert.equal(mappings.length, 2);
+	assert.equal(mappings[0]!.snapshotId, mappings[1]!.snapshotId);
+	const notices = store.notices().filter((notice) => notice.runId === initial.runId);
+	const restores = notices.filter((notice) => notice.level === "info");
+	const leftovers = notices.filter((notice) => notice.level === "warning");
+	assert.equal(restores.length, 2);
+	assert.equal(leftovers.length, 4);
+	for (const notice of notices) assert.equal(store.ackNotice(notice.id), true, notice.id);
 	await fixture.close();
 });

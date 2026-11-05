@@ -76,12 +76,12 @@ test("a rerun that restores a drifted worktree announces it through the run's no
 		notices.map(({ id, level, message }) => ({ id, level, message })),
 		[
 			{
-				id: `workflow-worktree-restore:${first.runId}:${snapshot.id}`,
+				id: `workflow-worktree-restore:${first.runId}:${snapshot.id}:${mapping.restoredAt}`,
 				level: "info",
 				message: formatWorktreeRestoreNotice(mapping),
 			},
 			{
-				id: `workflow-worktree-restore-warning:${first.runId}:${snapshot.id}:omitted-content`,
+				id: `workflow-worktree-restore-warning:${first.runId}:${snapshot.id}:${mapping.restoredAt}:0`,
 				level: "warning",
 				message: formatWorktreeRestoreWarning({ code: "omitted-content", omitted: snapshot.omitted }),
 			},
