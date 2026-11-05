@@ -109,6 +109,7 @@ test("session and journal stores isolate records in one caller-owned database ac
 			"session_meta",
 			"session_search_texts",
 			"session_sessions",
+			"snapshot_blobs",
 			"wf_events",
 			"wf_leases",
 			"wf_meta",

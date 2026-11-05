@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { getAgentDir } from "../../config.ts";
+import { getAgentDir } from "../../config.js";
 import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkingTree } from "./capture.ts";
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
 import {
@@ -436,7 +436,12 @@ export async function removeRestoredWorktree(
 		allowExitCodes: [128],
 	});
 	const store = common.stdout.toString("utf8").trim();
-	if (common.exitCode !== 0 || !isWithin(repositories, store) || isWithin(store, target)) {
+	if (
+		common.exitCode !== 0 ||
+		!isWithin(repositories, store) ||
+		relative(store, target) === "" ||
+		isWithin(store, target)
+	) {
 		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
 	}
 	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target, true);

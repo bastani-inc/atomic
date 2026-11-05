@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionManager } from "./session-manager.ts";
 import type { SessionEntry } from "./session-manager-types.ts";
+import type { SessionStore } from "./storage/session/types.js";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
 	captureWorktreeSnapshot,
@@ -169,7 +170,6 @@ export function mapRestoredPath(path: string, mappings: readonly WorktreeRootMap
 
 export type SessionWorktreeResume =
 	| { readonly status: "none" }
-	| { readonly status: "unavailable"; readonly reason: GitUnavailableError }
 	| { readonly status: "verified"; readonly snapshot: WorktreeSnapshot; readonly cwd: string }
 	| {
 			readonly status: "restored";
@@ -190,7 +190,9 @@ export interface ResumeSessionWorktreeOptions {
  * Checks the checkout a resumed session works in against the last snapshot it recorded. A match resumes in place.
  * A drifted or missing checkout is restored automatically into a fresh worktree under Atomic home, and the old→new
  * root mapping is recorded on the session; the returned `cwd` is where the session continues. Throws
- * {@link WorkspaceDriftError} (with the restore failure as `cause`) when the snapshot cannot be restored.
+ * {@link WorkspaceDriftError} (with the restore failure as `cause`) when the snapshot cannot be restored, and
+ * GitUnavailableError when the session recorded a snapshot but Git cannot verify it, so a session never resumes live
+ * work against an unverified tree. With `snapshots.enabled` false nothing is checked.
  */
 export async function resumeSessionWorktree(
 	sessionManager: SessionManager,
@@ -209,7 +211,6 @@ export async function resumeSessionWorktree(
 		await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
 		return { status: "verified", snapshot, cwd };
 	} catch (error) {
-		if (isGitUnavailableError(error)) return { status: "unavailable", reason: error };
 		if (isWorkspaceDriftError(error)) drift = error;
 		else if (isWorkspaceSnapshotError(error) && error.code === "not-a-repository") {
 			drift = new WorkspaceDriftError({
@@ -517,4 +518,18 @@ export async function openSessionInWorktree(
 		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
 		: sessionManager;
 	return { sessionManager: opened, notices: worktreeRestoreNotices(opened, startedAt) };
+}
+
+/**
+ * Whether a session recorded elsewhere continues in `cwd` because a restore moved its checkout there, so opening it
+ * from `cwd` resumes it rather than forking it into another project.
+ */
+export async function sessionContinuesIn(store: SessionStore, sessionId: string, cwd: string): Promise<boolean> {
+	const { header, entries } = await store.load(sessionId);
+	const mappings = entries.flatMap((entry) =>
+		entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
+	);
+	if (mappings.length === 0) return false;
+	const mapped = mapRestoredPath(header.cwd, mappings);
+	return mapped === resolve(cwd);
 }
