@@ -193,10 +193,15 @@ export interface ChildIdentity {
   loaded: boolean
 }
 
+/**
+ * `Quarantined` is a command whose result settled before its process-group exit or output drain was confirmed: its
+ * resources stay charged while the supervisor keeps confirming in the background, until they end `Reaped` or `Failed`.
+ */
 export type Cleanup =
   | { kind: 'active' }
   | { kind: 'draining' }
   | { kind: 'reaped' }
+  | { kind: 'quarantined'; resources: Array<ResourceFailure> }
   | { kind: 'failed'; resources: Array<ResourceFailure> }
 
 export interface CommandIntent {

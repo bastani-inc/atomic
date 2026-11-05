@@ -50,6 +50,7 @@ test.runIf(process.platform !== "win32")(
 		const bash = createBashTool(process.cwd(), { taskOwner: host.ownerBinding });
 		const kill = createKillTool({ taskOwner: () => host.ownerBinding });
 		const processes: Array<{ parent: number; holder: number }> = [];
+		let closed: Awaited<ReturnType<typeof host.close>>;
 		const command = (name: string) =>
 			`exec ${JSON.stringify(process.execPath)} ${JSON.stringify(resolve("test/fixtures/task-escaped-output-holder.mjs"))} ${JSON.stringify(join(directory, name))}`;
 		const started = async (name: string) => {
@@ -84,7 +85,7 @@ test.runIf(process.platform !== "win32")(
 			const abortedAt = Date.now();
 			controller.abort();
 
-			// Cleanup gives up within its bound; both stops then settle and leave the widget.
+			// Both stops settle once the drain window passes, with their cleanup still quarantined, and leave the widget.
 			await until(
 				() => {
 					store.drain();
@@ -102,7 +103,7 @@ test.runIf(process.platform !== "win32")(
 					assert.equal(result.code, "CleanupUnconfirmed");
 					assert.match(result.message, /^Stop requested \(user\); cleanup unconfirmed: process-group:\d+: /);
 				}
-				assert.equal(task.cleanup.kind, "failed");
+				assert.equal(task.cleanup.kind, "quarantined", JSON.stringify(task.cleanup));
 			}
 			const error = await foregroundCall;
 			assert.ok(error instanceof Error, "the aborted foreground call reports its stop");
@@ -119,8 +120,10 @@ test.runIf(process.platform !== "win32")(
 				} catch {}
 			}
 			store.dispose();
-			await host.close("session-close");
+			closed = await host.close("session-close");
 			await rm(directory, { recursive: true, force: true });
 		}
+		// The holders are gone, so the quarantined cleanup is confirmed and the owner closes.
+		assert.ok(closed.ok, closed.ok ? "" : closed.error.message);
 	},
 );

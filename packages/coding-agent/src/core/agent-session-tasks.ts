@@ -13,6 +13,7 @@ import {
 	taskCompletionNotice,
 } from "./tasks/completion.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
+import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
 import { bindOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
 import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
@@ -180,6 +181,8 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			outbox.record(ref.ownerId, receipt, kind);
 			void outbox.flush();
 		},
+		onTaskCleanupQuarantined: (ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]) =>
+			this._emit({ type: "task_cleanup_quarantined", taskId: ref.taskId, resources }),
 	};
 	if (!stageAdmission && !replacementOwnerScopes.has(this)) replacementOwnerScopes.set(this, randomUUID());
 	this._agentTaskHost = stageAdmission
@@ -221,8 +224,9 @@ export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	// Replacement stage sessions share generation lifetime; disposal is not stage closure.
 	if (stageTaskAdmission(this)) return;
 	this._taskAdmission?.seal();
-	const closed = await this._agentTaskHost?.close("session-close");
-	if (closed && !closed.ok) throw new Error(`${closed.error.code}: ${closed.error.message}`);
+	const host = this._agentTaskHost;
+	const closed = await host?.close("session-close");
+	if (closed && !closed.ok) throw host!.closeError("session-close", closed.error);
 }
 
 /** Workflow controller only: main-chat message pause does not stop owned tasks. */

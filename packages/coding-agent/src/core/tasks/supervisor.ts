@@ -5,8 +5,9 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import type { AgentSessionEvent } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
-import type { ResourcePermit } from "../sdk-types.ts";
+import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
+import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
@@ -19,6 +20,12 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 };
 
 export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;
+/**
+ * How long a command's process admission waits while the owner's own commands hold process permits for cleanup that
+ * is not confirmed, before it fails with a `TaskCleanupAdmissionTimeoutError`. A quarantined command keeps its permit
+ * until its cleanup is confirmed or the owner closes. Waiting on capacity held only by live work has no added bound.
+ */
+export const QUARANTINED_ADMISSION_WAIT_MS = 5_000;
 /** These objects are live authority, not DTOs, restart tokens or model arguments. */
 class Capability {
 	#live = true;
@@ -71,12 +78,15 @@ export type TrustedTaskHost = {
 	/** The existing host/tool refusal throws here, before native admission. */
 	authorizeCommandLaunch?(intent: C.CommandIntent): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
-	resourceAdmission?: import("../sdk-types.ts").ResourceAdmission;
+	resourceAdmission?: ResourceAdmission;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
+	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
+	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
 	/** Heartbeat cadence for a launch that names none, fixed on its record at admission; omitted, none is recorded. */
 	defaultHeartbeatMs?(): number | undefined;
 	createRunner(context: FakeRunnerContext, intent: C.AgentIntent): FakeExecution;
 };
+type HeldPermit = { readonly admission: ResourceAdmission; readonly release: ResourcePermit };
 type HostState = { native: native.HostSession; binding: TrustedTaskHost };
 type OwnerState = {
 	id: C.OwnerId;
@@ -85,9 +95,12 @@ type OwnerState = {
 	tasks: Map<C.TaskId, TaskLease>;
 	watches: Set<TaskSubscription>;
 	settledTasks: Set<C.TaskId>;
+	quarantinedTasks: Set<C.TaskId>;
 	commandAdmissions: Set<Promise<void>>;
 	closing: AbortController;
-	permits: Map<C.TaskId, ResourcePermit>;
+	permits: Map<C.TaskId, HeldPermit>;
+	unconfirmedCleanups: Map<C.TaskId, C.ResourceFailure[]>;
+	admissionWatchers: Set<() => void>;
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
 	commandStarts: Map<C.OperationId, { intent: C.CommandIntent; result: Promise<C.Result<TaskLease, C.StartFailure>> }>;
@@ -500,6 +513,21 @@ function applyEvent(current: C.OwnerSnapshot, value: C.NativeEvent): C.OwnerSnap
 	}
 	return next;
 }
+/**
+ * Every quarantined cleanup a drain shows, in its events first: a quarantine confirmed again before the drain is gone
+ * from the projection, which still carries the quarantines a journal reset left without events.
+ */
+export function quarantinedCleanups(
+	projection: C.OwnerSnapshot,
+	events: readonly C.NativeEvent[],
+): Array<{ ref: C.NativeTaskRef; resources: C.ResourceFailure[] }> {
+	return [
+		...events.flatMap((event) =>
+			event.payload.kind === "cleanup-changed" ? [{ ref: event.payload.ref, cleanup: event.payload.cleanup }] : [],
+		),
+		...projection.tasks.map((task) => ({ ref: task.ref, cleanup: task.cleanup })),
+	].flatMap(({ ref, cleanup }) => (cleanup.kind === "quarantined" ? [{ ref, resources: cleanup.resources }] : []));
+}
 /** One bounded wake poll per live subscription, including a journal with no retained event. */
 const RECONCILE_INTERVAL_MS = 25;
 const MAX_PENDING_EVENTS = 64;
@@ -672,9 +700,12 @@ export class TaskSupervisor {
 					tasks: new Map(),
 					watches: new Set(),
 					settledTasks: new Set(),
+					quarantinedTasks: new Set(),
 					commandAdmissions: new Set(),
 					closing: new AbortController(),
 					permits: new Map(),
+					unconfirmedCleanups: new Map(),
+					admissionWatchers: new Set(),
 					releases: new Set(),
 					releaseFailures: [],
 					commandStarts: new Map(),
@@ -683,7 +714,7 @@ export class TaskSupervisor {
 				this.#ownerIds.set(id, owner);
 				const watched = this.watchOwnerTasks(owner);
 				if (!watched.ok) throw new Error(watched.error.message);
-				watched.value.onReconcile = (projection) => {
+				watched.value.onReconcile = (projection, events) => {
 					if (projection.state === "closed") this.#ownerIds.delete(projection.ownerId);
 					for (const record of projection.tasks) {
 						const cause =
@@ -699,6 +730,19 @@ export class TaskSupervisor {
 					let failure: Error | undefined;
 					for (const record of projection.tasks) {
 						if (record.cleanup.kind === "reaped") this.#releasePermit(ownerState, record.ref.taskId);
+						if (record.cleanup.kind === "quarantined" || record.cleanup.kind === "failed")
+							ownerState.unconfirmedCleanups.set(record.ref.taskId, record.cleanup.resources);
+						else ownerState.unconfirmedCleanups.delete(record.ref.taskId);
+					}
+					this.#notifyAdmissionWatchers(ownerState);
+					for (const { ref, resources } of quarantinedCleanups(projection, events)) {
+						if (ownerState.quarantinedTasks.has(ref.taskId)) continue;
+						ownerState.quarantinedTasks.add(ref.taskId);
+						try {
+							state.binding.onTaskCleanupQuarantined?.(ref, resources);
+						} catch (error) {
+							failure ??= new Error(rejectionMessage(error));
+						}
 					}
 					for (const record of projection.tasks) {
 						if (
@@ -728,15 +772,70 @@ export class TaskSupervisor {
 		);
 	}
 	#releasePermit(state: OwnerState, taskId: C.TaskId): void {
-		const release = state.permits.get(taskId);
-		if (!release) return;
+		const held = state.permits.get(taskId);
+		if (!held) return;
 		state.permits.delete(taskId);
+		const release = held.release;
 		const pending: Promise<void> = release()
 			.catch((error) => {
 				state.releaseFailures.push(new Error(rejectionMessage(error)));
 			})
 			.finally(() => state.releases.delete(pending));
 		state.releases.add(pending);
+		this.#notifyAdmissionWatchers(state);
+	}
+	#notifyAdmissionWatchers(state: OwnerState): void {
+		for (const watcher of [...state.admissionWatchers]) watcher();
+	}
+	#unconfirmedPermitHolders(state: OwnerState, admission: ResourceAdmission): TaskCleanupFailure[] {
+		return [...state.unconfirmedCleanups].flatMap(([taskId, resources]) =>
+			state.permits.get(taskId)?.admission === admission ? [{ taskId, resources }] : [],
+		);
+	}
+	async #acquireProcessPermit(
+		state: OwnerState,
+		admission: ResourceAdmission | undefined,
+		signal: AbortSignal | undefined,
+	): Promise<HeldPermit | undefined> {
+		if (!admission) return undefined;
+		const external = signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal;
+		const refusal = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const outcome: { blocked?: { holders: TaskCleanupFailure[]; elapsedMs: number } } = {};
+		const watch = () => {
+			if (external.aborted || refusal.signal.aborted) return;
+			if (this.#unconfirmedPermitHolders(state, admission).length === 0) {
+				clearTimeout(timer);
+				timer = undefined;
+				return;
+			}
+			if (timer) return;
+			const startedAt = performance.now();
+			timer = setTimeout(() => {
+				timer = undefined;
+				const holders = this.#unconfirmedPermitHolders(state, admission);
+				if (external.aborted || holders.length === 0) return watch();
+				outcome.blocked = { holders, elapsedMs: Math.round(performance.now() - startedAt) };
+				refusal.abort();
+			}, QUARANTINED_ADMISSION_WAIT_MS);
+		};
+		state.admissionWatchers.add(watch);
+		try {
+			watch();
+			return { admission, release: await admission.acquire("process", AbortSignal.any([external, refusal.signal])) };
+		} catch (error) {
+			const { blocked } = outcome;
+			if (external.aborted) throw external.reason;
+			if (!blocked) throw error;
+			throw new TaskCleanupAdmissionTimeoutError(
+				blocked.holders,
+				{ timeoutMs: QUARANTINED_ADMISSION_WAIT_MS, elapsedMs: blocked.elapsedMs },
+				error === refusal.signal.reason ? undefined : { cause: error },
+			);
+		} finally {
+			state.admissionWatchers.delete(watch);
+			clearTimeout(timer);
+		}
 	}
 	#notifyTaskSettled(state: OwnerState, ref: C.NativeTaskRef, receipt: native.SettlementReceipt): void {
 		if (!state.host.binding.onTaskSettled || state.settledTasks.has(ref.taskId)) return;
@@ -787,11 +886,12 @@ export class TaskSupervisor {
 			finishAdmission = resolve;
 		});
 		state.commandAdmissions.add(admission);
-		let release: ResourcePermit | undefined;
+		let held: HeldPermit | undefined;
 		try {
-			release = await (currentResourceAdmission() ?? state.host.binding.resourceAdmission)?.acquire(
-				"process",
-				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
+			held = await this.#acquireProcessPermit(
+				state,
+				currentResourceAdmission() ?? state.host.binding.resourceAdmission,
+				signal,
 			);
 			const { heartbeatMs, ...nativeIntent } = intent;
 			const heartbeatKey = rememberLaunchHeartbeat(
@@ -803,13 +903,13 @@ export class TaskSupervisor {
 			try {
 				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
 			} catch (error) {
-				release = undefined;
+				held = undefined;
 				throw new Error(`Command cleanup unconfirmed; process permit retained: ${rejectionMessage(error)}`, {
 					cause: error,
 				});
 			}
 			if (!started.ok && !startErrors.some((code) => code === started.error.code)) {
-				release = undefined;
+				held = undefined;
 				throw new Error(
 					`Command cleanup unconfirmed; process permit retained: ${started.error.code}: ${started.error.message}`,
 				);
@@ -825,18 +925,20 @@ export class TaskSupervisor {
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
 			let bindFailure: Error | undefined;
-			if (release?.bindProcess) {
+			if (held?.release.bindProcess) {
 				try {
 					const group = this.#native.taskProcessGroup(admitted.value);
 					if (!group.ok) throw new Error(group.error.message);
-					if (group.value !== null) await release.bindProcess({ kind: "unix-process-group", id: group.value });
+					if (group.value !== null)
+						await held.release.bindProcess({ kind: "unix-process-group", id: group.value });
 				} catch (error) {
 					bindFailure = new Error(rejectionMessage(error));
 				}
 			}
-			if (release) {
-				state.permits.set(id, release);
-				release = undefined;
+			if (held) {
+				state.permits.set(id, held);
+				this.#notifyAdmissionWatchers(state);
+				held = undefined;
 			}
 			const task = new TaskCapability();
 			this.#tasks.set(task, {
@@ -863,6 +965,7 @@ export class TaskSupervisor {
 			return { ok: true, value: task };
 		} finally {
 			try {
+				const release = held?.release;
 				await release?.();
 			} finally {
 				state.commandAdmissions.delete(admission);
@@ -1194,6 +1297,15 @@ export class TaskSupervisor {
 			if (failure) throw failure;
 		}
 		return result;
+	}
+	/** Every task whose cleanup failed, as the owner's live projection holds it: a closing owner cannot be watched anew. */
+	failedTaskCleanups(owner: OwnerLease): TaskCleanupFailure[] {
+		const [watch] = this.#owner(owner).watches;
+		if (!watch) return [];
+		watch.drain();
+		return watch.snapshot.tasks.flatMap((task) =>
+			task.cleanup.kind === "failed" ? [{ taskId: task.ref.taskId, resources: task.cleanup.resources }] : [],
+		);
 	}
 	/**
 	 * The bounded stream carries only authentic deltas. Overflow/native reset publishes

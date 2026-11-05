@@ -225,7 +225,7 @@ export class WorkflowStageAdmissionBoundary {
 		await Promise.allSettled([...this.pending]);
 		await this.drainAdmittedWork();
 		const closed = await this.taskClose;
-		if (closed && !closed.ok) throw new Error(`${closed.error.code}: ${closed.error.message}`);
+		if (closed && !closed.ok) throw this.taskHost!.closeError("stage-close", closed.error);
 	}
 
 	private invoke(callback: () => void | Promise<void>): Promise<void> {

@@ -189,10 +189,15 @@ export interface ToolEvent {
 	endedAt?: number;
 }
 
+/**
+ * `cleanup` warns that a task's result settled before its process cleanup was confirmed (`to: "quarantined"`); `meta`
+ * names the task and each unconfirmed resource. A cleanup that is never confirmed fails the stage with
+ * `process_cleanup_unconfirmed` when it closes.
+ */
 export interface StageNotice {
 	readonly id: string;
 	readonly ts: number;
-	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp";
+	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp" | "cleanup";
 	readonly from?: string;
 	readonly to: string;
 	readonly meta?: string;

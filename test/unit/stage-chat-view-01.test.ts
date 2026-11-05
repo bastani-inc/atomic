@@ -54,6 +54,44 @@ describe("StageChatView", () => {
 		}
 	});
 
+	test("renders a quarantined task cleanup notice as a warning card (#4338)", () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		store.recordStageNotice("run-1", "stage-a", {
+			id: "notice-1",
+			ts: 1,
+			kind: "cleanup",
+			to: "quarantined",
+			meta: "task-1 process-group:42: Output reader drain was not confirmed",
+		});
+		const { handle } = makeHandle();
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({ warning: "#ff0000", info: "#00ff00", text: "#0000ff", textMuted: "#00ffff" }),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+
+		const rendered = view.render(90);
+		const visible = stripAnsi(rendered.join("\n"));
+		assert.match(visible, /╭ TASK CLEANUP/);
+		assert.match(visible, /! Task finished; its process cleanup is still being confirmed/);
+		assert.match(visible, /value\s+quarantined/);
+		assert.match(visible, /meta\s+task-1 process-group:42: Output reader drain was not confirmed/);
+		const title = rendered.find((line) => stripAnsi(line).includes("TASK CLEANUP"));
+		const value = rendered.find((line) => stripAnsi(line).includes("quarantined"));
+		assert.ok(title?.includes("\x1b[38;2;255;0;0m"), "the card is drawn in the warning color");
+		assert.match(
+			value ?? "",
+			/\x1b\[38;2;255;0;0m(?:\x1b\[1m)?quarantined/,
+			"the notice value is drawn in the warning color",
+		);
+	});
+
 	test("app.tools.expand keybinding toggles host tool expansion in attached stage chat", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");

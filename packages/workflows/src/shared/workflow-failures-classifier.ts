@@ -95,6 +95,7 @@ function decisionOfRecordedCode(
 		case "stale_work_lease":
 		case "intercom_unavailable":
 		case "storage_unavailable":
+		case "process_cleanup_unconfirmed":
 			return strongDecisionFromNormalizedCode(code, retryAfterMs);
 		case "unknown":
 			return undefined;

@@ -21,6 +21,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SourceInfo } from "./source-info.ts";
+import type { ResourceFailure, TaskId } from "./tasks/contracts.js";
 export type CompactionReason = "manual" | "threshold" | "overflow" | "branchSummary";
 
 export type AgentSessionEvent =
@@ -84,7 +85,16 @@ export type AgentSessionEvent =
 			reason: string;
 			attempt: number;
 	  }
-	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
+	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string }
+	/**
+	 * A task's result settled before its process cleanup was confirmed. Cleanup continues in the background; the
+	 * owner's close fails with a `TaskCleanupError` only if it is never confirmed.
+	 */
+	| {
+			type: "task_cleanup_quarantined";
+			taskId: TaskId;
+			resources: readonly ResourceFailure[];
+	  };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 

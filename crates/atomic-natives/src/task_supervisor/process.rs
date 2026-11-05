@@ -90,6 +90,10 @@ const PROCESS_TERM_GRACE: Duration = Duration::from_millis(250);
 const PROCESS_DRAIN_GRACE: Duration = Duration::from_secs(2);
 const PROCESS_POLL: Duration = Duration::from_millis(5);
 pub(super) const PROCESS_SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
+/// How long quarantined cleanup still has once its owner closes or its task is stopped, before it fails as unconfirmed.
+const PROCESS_QUARANTINE_GRACE: Duration = Duration::from_secs(15);
+/// Quarantine without a deadline waits for a process outside the group, so it checks less often.
+const PROCESS_QUARANTINE_POLL: Duration = Duration::from_millis(100);
 
 #[napi(string_enum = "kebab-case")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,8 +134,44 @@ pub(super) struct CommandTask {
 	group_by_number: bool,
 	#[cfg(all(test, unix))]
 	signals: Mutex<Vec<(libc::pid_t, libc::c_int)>>,
+	#[cfg(all(test, unix))]
+	quarantine_grace: Duration,
+	/// Keep the exited leader unreaped, as a host too starved to observe its exit within the drain window would.
+	#[cfg(all(test, unix))]
+	reap_delayed: AtomicBool,
+	/// Another group now holds this command's group number: nonzero answers group probes as alive (-1) or with that
+	/// errno, and records signals without sending them.
+	#[cfg(all(test, unix))]
+	reused_group: std::sync::atomic::AtomicI32,
+	#[cfg(all(test, unix))]
+	loop_iterations: std::sync::atomic::AtomicUsize,
 }
 impl CommandTask {
+	#[cfg(unix)]
+	fn quarantine_grace(&self) -> Duration {
+		#[cfg(test)]
+		return self.quarantine_grace;
+		#[cfg(not(test))]
+		PROCESS_QUARANTINE_GRACE
+	}
+	#[cfg(unix)]
+	fn try_reap(&self, child: &mut ProcessResource) -> io::Result<Option<std::process::ExitStatus>> {
+		#[cfg(test)]
+		if self.reap_delayed.load(Ordering::Acquire) {
+			return Ok(None);
+		}
+		child.try_wait()
+	}
+	#[cfg(unix)]
+	fn probe_group(&self, group: &ProcessGroup) -> io::Result<bool> {
+		#[cfg(test)]
+		match self.reused_group.load(Ordering::Acquire) {
+			0 => {},
+			-1 => return Ok(false),
+			errno => return Err(io::Error::from_raw_os_error(errno)),
+		}
+		group.gone()
+	}
 	fn file_spool(&self) -> bool {
 		matches!(self.intent.terminal, CommandTerminal::Pipe {})
 			&& self.options.sink != Some(CommandOutputSink::Drained)
@@ -160,6 +200,10 @@ impl CommandTask {
 	fn signal_group(&self, group: &ProcessGroup, signal: libc::c_int) -> io::Result<()> {
 		#[cfg(test)]
 		self.signals.lock().unwrap().push((group.pid, signal));
+		#[cfg(test)]
+		if self.reused_group.load(Ordering::Acquire) != 0 {
+			return Ok(());
+		}
 		#[cfg(test)]
 		if signal == libc::SIGKILL && self.kill_error.load(Ordering::Acquire) != 0 {
 			return Err(io::Error::from_raw_os_error(self.kill_error.load(Ordering::Acquire)));
@@ -300,6 +344,14 @@ impl Actor {
 			group_by_number: TEST_GROUP_BY_NUMBER.get(),
 			#[cfg(all(test, unix))]
 			signals: Mutex::new(Vec::new()),
+			#[cfg(all(test, unix))]
+			quarantine_grace: TEST_QUARANTINE_GRACE.get(),
+			#[cfg(all(test, unix))]
+			reap_delayed: AtomicBool::new(false),
+			#[cfg(all(test, unix))]
+			reused_group: std::sync::atomic::AtomicI32::new(0),
+			#[cfg(all(test, unix))]
+			loop_iterations: std::sync::atomic::AtomicUsize::new(0),
 		});
 		let record = TaskRecord {
 			reference: reference.clone(),
@@ -507,7 +559,14 @@ impl Actor {
 		let mut stderr_eof = false;
 		let mut read_failure = setup_failure.clone();
 		let mut cleanup_failure = None;
+		// Set once the result settled ahead of unconfirmed cleanup; output after it is drained, not kept.
+		let mut quarantined = false;
+		// Quarantine has no deadline until the owner closes or the task is stopped (#4338).
+		let mut expires: Option<Instant> = None;
+		let mut group_gone = false;
 		loop {
+			#[cfg(test)]
+			command.loop_iterations.fetch_add(1, Ordering::AcqRel);
 			if setup_failure.is_none() {
 				command.input.lock().unwrap().drain(&mut stdin);
 			}
@@ -523,9 +582,10 @@ impl Actor {
 			}
 			// A failed O_NONBLOCK setup must never enter a potentially blocking read.
 			if setup_failure.is_none() {
+				let keep = !quarantined;
 				for result in [
-					drain_pipe(&mut stdout, command, &mut stdout_eof),
-					drain_pipe(&mut stderr, command, &mut stderr_eof),
+					read_pipe(&mut stdout, command, &mut stdout_eof, keep),
+					read_pipe(&mut stderr, command, &mut stderr_eof, keep),
 				] {
 					if let Err(error) = result {
 						read_failure = Some(error.to_string());
@@ -540,9 +600,13 @@ impl Actor {
 						self.cancel(&TaskLease { cap: runner.cap.clone() }, CancelCause::OutputLimit);
 				}
 			}
-			let cancelling = {
+			let (cancelling, closing) = {
 				let state = self.state.lock().unwrap();
-				state.owners[runner.cap.owner].tasks[runner.cap.task.unwrap()].cancel_cause.is_some()
+				let owner = &state.owners[runner.cap.owner];
+				(
+					owner.tasks[runner.cap.task.unwrap()].cancel_cause.is_some(),
+					state.closing || owner.state != "open",
+				)
 			};
 			if stopping.is_none()
 				&& !cancelling
@@ -589,7 +653,7 @@ impl Actor {
 				// it exits: its zombie would keep the group alive, so a group that is already empty
 				// could not be told apart from one with members left until the grace ran out (#4268).
 				if status.is_none() {
-					match child.try_wait() {
+					match command.try_reap(&mut child) {
 						Ok(value) => status = value,
 						Err(error) => {
 							cleanup_failure = Some(error.to_string());
@@ -598,9 +662,11 @@ impl Actor {
 					}
 					group.reaped = status.is_some();
 				}
-				// Probe the group once the leader is reaped, independently of EOF.
-				let gone = if status.is_some() {
-					match group.gone() {
+				// Probe the group once the leader is reaped, independently of EOF. A group found gone stays gone: no
+				// process can join an empty group, so a later "alive" could only be another group given its number,
+				// which an open-ended quarantine must never probe or signal (#4338).
+				if status.is_some() && !group_gone {
+					group_gone = match command.probe_group(&group) {
 						Ok(gone) => gone,
 						Err(error) => {
 							// Darwin also returns EPERM for zombie-only groups after the
@@ -617,10 +683,9 @@ impl Actor {
 							cleanup_failure = Some(error.to_string());
 							break;
 						},
-					}
-				} else {
-					false
-				};
+					};
+				}
+				let gone = group_gone;
 				if gone && ((stdout_eof && stderr_eof) || setup_failure.is_some()) {
 					// Confirmed gone: an earlier refused TERM left nothing behind to clean up.
 					cleanup_failure = None;
@@ -638,26 +703,55 @@ impl Actor {
 						break;
 					}
 				}
-				if stop.elapsed() >= PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE {
-					cleanup_failure =
-						Some("Process-group exit or reader drain was not confirmed".into());
+				if !quarantined && stop.elapsed() >= PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE {
+					if setup_failure.is_some() || (status.is_none() && !cancelling) {
+						cleanup_failure = Some(unconfirmed_cleanup(gone));
+						break;
+					}
+					// The outcome is known, so the result settles now: only cleanup is late (#4338).
+					let result = command_result(runner, command, status, read_failure.clone(), None);
+					command.output.lock().unwrap().settle();
+					let _ = self.runner_outcome(runner, result);
+					let _ = self.acknowledge_cleanup(
+						runner,
+						Cleanup::Quarantined {
+							resources: vec![ResourceFailure {
+								resource: format!("process-group:{pid}").into(),
+								code: "CleanupUnconfirmed".into(),
+								message: unconfirmed_cleanup(gone).into(),
+							}],
+						},
+					);
+					quarantined = true;
+				}
+				if quarantined && expires.is_none() && (closing || cancelling) {
+					expires = Some(Instant::now() + command.quarantine_grace());
+				}
+				if expires.is_some_and(|deadline| Instant::now() >= deadline) {
+					cleanup_failure = Some(unconfirmed_cleanup(gone));
 					break;
 				}
 			}
-			std::thread::sleep(PROCESS_POLL);
+			std::thread::sleep(if quarantined && expires.is_none() {
+				PROCESS_QUARANTINE_POLL
+			} else {
+				PROCESS_POLL
+			});
 		}
 		command.input.lock().unwrap().close();
 		if let Some(message) = cleanup_failure {
 			command.retain_failed(runner.cap.reference(), child, (stdout, stderr), message.clone());
-			let _ = self.runner_outcome(
-				runner,
-				TaskResult::Failed {
-					code: "CleanupFailed".into(),
-					message: message.clone().into(),
-					output: None,
-					exit_code: None,
-				},
-			);
+			if !quarantined {
+				let _ = self.runner_outcome(
+					runner,
+					TaskResult::Failed {
+						code: "CleanupFailed".into(),
+						message: message.clone().into(),
+						output: None,
+						exit_code: None,
+					},
+				);
+			}
 			let _ = self.acknowledge_cleanup(
 				runner,
 				Cleanup::Failed {
@@ -673,36 +767,61 @@ impl Actor {
 			}
 			return;
 		}
-		let status = status.expect("group confirmed only after direct child reaped");
-		let store = command.output.lock().unwrap();
-		let reference = runner.cap.reference();
-		let output = OutputRef {
-			owner_id: reference.owner_id.into(),
-			task_id: reference.task_id.clone().into(),
-			artifact_id: format!("output-{}", reference.task_id).into(),
-			byte_count: store.byte_count.to_string().into(),
-			omitted_ranges: store
-				.omitted_ranges()
-				.into_iter()
-				.map(|range| OmittedRange { start: range.start.into(), end: range.end.into() })
-				.collect(),
-		};
-		drop(store);
-		let result = if let Some(message) = read_failure {
-			TaskResult::Failed {
-				code: if setup_failure.is_some() { "SpawnFailed" } else { "OutputUnavailable" }.into(),
-				message: message.into(),
-				output: Some(output),
-				exit_code: status.code().map(f64::from),
-			}
-		} else {
-			TaskResult::Completed { output, exit_code: status.code().map(f64::from) }
-		};
-		let _ = self.runner_outcome(runner, result);
+		if !quarantined {
+			let status = status.expect("group confirmed only after direct child reaped");
+			let result =
+				command_result(runner, command, Some(status), read_failure, setup_failure.as_deref());
+			let _ = self.runner_outcome(runner, result);
+		}
 		let _ = self.acknowledge_cleanup(runner, Cleanup::Reaped {});
 		if let Some(message) = setup_failure {
 			command.setup_result(Err(TaskFailure { code: "SpawnFailed".into(), message }));
 		}
+	}
+}
+
+/// What a command whose leader exited (or that is stopping) settles with: its output, exit status and any read failure.
+#[cfg(unix)]
+fn command_result(
+	runner: &RunnerLease,
+	command: &CommandTask,
+	status: Option<std::process::ExitStatus>,
+	read_failure: Option<String>,
+	setup_failure: Option<&str>,
+) -> TaskResult {
+	let store = command.output.lock().unwrap();
+	let reference = runner.cap.reference();
+	let output = OutputRef {
+		owner_id: reference.owner_id.into(),
+		task_id: reference.task_id.clone().into(),
+		artifact_id: format!("output-{}", reference.task_id).into(),
+		byte_count: store.byte_count.to_string().into(),
+		omitted_ranges: store
+			.omitted_ranges()
+			.into_iter()
+			.map(|range| OmittedRange { start: range.start.into(), end: range.end.into() })
+			.collect(),
+	};
+	drop(store);
+	let exit_code = status.and_then(|status| status.code()).map(f64::from);
+	if let Some(message) = read_failure {
+		TaskResult::Failed {
+			code: if setup_failure.is_some() { "SpawnFailed" } else { "OutputUnavailable" }.into(),
+			message: message.into(),
+			output: Some(output),
+			exit_code,
+		}
+	} else {
+		TaskResult::Completed { output, exit_code }
+	}
+}
+
+#[cfg(unix)]
+fn unconfirmed_cleanup(group_gone: bool) -> String {
+	if group_gone {
+		"Output reader drain was not confirmed".into()
+	} else {
+		"Process-group exit was not confirmed".into()
 	}
 }
 
@@ -761,15 +880,18 @@ fn process_group_gone(pid: libc::pid_t) -> io::Result<bool> {
 /// output-limit stop), so that a group with nobody left shows as gone (ESRCH) at once instead of after
 /// the TERM grace (#4268). From then on only the group's members hold the ID, and POSIX forbids reusing a
 /// process group ID while the group exists. A group signal after the reap (the KILL for members that
-/// outlived the grace) is therefore sent only straight after a probe found the group alive.
+/// outlived the grace) is therefore sent only straight after a probe found the group alive. Once a probe after
+/// the reap finds the group gone, it is never probed or signalled again: no process can join an empty group, so a
+/// later "alive" could only be another group given the same number, and a quarantine (#4338) may keep the command's
+/// loop running long after its group emptied.
 ///
-/// That leaves one window: the group's last member is reaped, the kernel hands the freed ID to a new
-/// process, and that process makes itself a group leader, all between two probes (one [`PROCESS_POLL`]),
-/// and its group is still alive when the grace ends. It would then be probed as alive and receive the
-/// KILL. Linux and macOS hand out PIDs cyclically, so this needs the allocator to come all the way round
-/// to this ID within that poll. On Linux 6.9 and later the window does not exist: signals and probes go
-/// through a pidfd of the leader with `PIDFD_SIGNAL_PROCESS_GROUP`, which addresses the group by the
-/// kernel's own object for it, never by its number, so a reused number cannot be reached.
+/// That leaves one window, inside the grace: the group's last member is reaped, the kernel hands the freed ID to a
+/// new process, and that process makes itself a group leader, all between two probes (one [`PROCESS_POLL`]), and its
+/// group is still alive when the grace ends. It would then be probed as alive and receive the KILL. Linux and macOS
+/// hand out PIDs cyclically, so this needs the allocator to come all the way round to this ID within that poll. On
+/// Linux 6.9 and later the window does not exist: signals and probes go through a pidfd of the leader with
+/// `PIDFD_SIGNAL_PROCESS_GROUP`, which addresses the group by the kernel's own object for it, never by its number,
+/// so a reused number cannot be reached.
 #[cfg(unix)]
 struct ProcessGroup {
 	/// The leader's PID, which is also the group's ID.
@@ -885,6 +1007,15 @@ fn make_nonblocking(fd: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 	Ok(())
 }
 fn drain_pipe(reader: &mut impl Read, command: &CommandTask, eof: &mut bool) -> io::Result<()> {
+	read_pipe(reader, command, eof, true)
+}
+/// Reads what the pipe holds; with `keep` false the bytes are discarded, as output after a settled result is.
+fn read_pipe(
+	reader: &mut impl Read,
+	command: &CommandTask,
+	eof: &mut bool,
+	keep: bool,
+) -> io::Result<()> {
 	if *eof {
 		return Ok(());
 	}
@@ -895,7 +1026,8 @@ fn drain_pipe(reader: &mut impl Read, command: &CommandTask, eof: &mut bool) -> 
 				*eof = true;
 				break;
 			},
-			Ok(count) => command.output.lock().unwrap().append(&buffer[..count]),
+			Ok(count) if keep => command.output.lock().unwrap().append(&buffer[..count]),
+			Ok(_) => {},
 			#[cfg(unix)]
 			Err(error)
 				if error.raw_os_error() == Some(libc::EIO)
@@ -985,6 +1117,10 @@ thread_local! {
 #[cfg(all(test, target_os = "linux"))]
 thread_local! {
 	static TEST_GROUP_BY_NUMBER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+#[cfg(all(test, unix))]
+thread_local! {
+	static TEST_QUARANTINE_GRACE: std::cell::Cell<Duration> = const { std::cell::Cell::new(PROCESS_QUARANTINE_GRACE) };
 }
 
 /// Raw bytes retain original offsets; consumers carry incomplete UTF-8 while decoding.
@@ -2025,6 +2161,519 @@ mod tests {
 		assert!(failed);
 		assert!(retained, "failed cleanup dropped its live child");
 		assert!(transferred, "environment drop discarded native failure ownership");
+	}
+	/// A command that leaves a holder in its own session, outside the command's group, holding the output pipes until
+	/// `release` exists. `leader` runs once the holder has recorded its PID.
+	#[cfg(target_os = "linux")]
+	fn escaped_holder(dir: &std::path::Path, leader: &str) -> String {
+		format!(
+			"setsid /bin/sh -c 'echo $$ > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done' sh '{0}/holder' '{0}/release' & while [ ! -s '{0}/holder' ]; do sleep 0.01; done; {leader}",
+			dir.display()
+		)
+	}
+	#[cfg(target_os = "linux")]
+	fn settled_record(actor: &Actor, owner: &OwnerLease) -> TaskRecord {
+		let deadline =
+			Instant::now() + PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE;
+		loop {
+			let record = actor.snapshot(owner).unwrap().tasks[0].clone();
+			if matches!(record.execution, Execution::Settled { .. })
+				&& !matches!(record.cleanup, Cleanup::Active {} | Cleanup::Draining {})
+			{
+				return record;
+			}
+			assert!(Instant::now() < deadline, "the result never settled: {record:?}");
+			std::thread::sleep(PROCESS_POLL);
+		}
+	}
+	#[cfg(target_os = "linux")]
+	fn assert_group_gone(group: libc::pid_t) {
+		assert_eq!(unsafe { libc::kill(-group, 0) }, -1, "process group {group} survived cleanup");
+		assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+	}
+	/// A holder process a test started outside the command's group. It is killed and awaited when dropped, also when
+	/// the test panics first, so a failing test never leaves it holding a pipe or stopped.
+	#[cfg(target_os = "linux")]
+	struct Holder(libc::pid_t);
+	#[cfg(target_os = "linux")]
+	impl Holder {
+		fn read(dir: &std::path::Path) -> Self {
+			Self(wait_for_file(&dir.join("holder")).trim().parse().unwrap())
+		}
+	}
+	#[cfg(target_os = "linux")]
+	impl Drop for Holder {
+		fn drop(&mut self) {
+			unsafe {
+				libc::kill(self.0, libc::SIGKILL);
+			}
+			let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+			while unsafe { libc::kill(self.0, 0) } == 0 && Instant::now() < deadline {
+				std::thread::sleep(PROCESS_POLL);
+			}
+		}
+	}
+	#[cfg(target_os = "linux")]
+	fn unconfirmed_drain(group: libc::pid_t, code: &str) -> Vec<ResourceFailure> {
+		vec![ResourceFailure {
+			resource: format!("process-group:{group}").into(),
+			code: code.into(),
+			message: "Output reader drain was not confirmed".into(),
+		}]
+	}
+	// #4338: a process outside the group that keeps the output open past the drain window no longer fails the
+	// command: its result settles with its exit status and output, and cleanup confirms once the pipe closes.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn escaped_output_holder_settles_the_result_ahead_of_cleanup_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-escaped-holder-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		std::fs::create_dir(&dir).unwrap();
+		actor
+			.start_command(
+				&owner,
+				pipe_intent(&escaped_holder(&dir, "printf done; exit 7")),
+				"escaped".into(),
+			)
+			.unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let holder = Holder::read(&dir);
+		let group = command.process_group.load(Ordering::Acquire);
+		let settled = settled_record(&actor, &owner);
+		let spool_closed = command.output.lock().unwrap().file.is_none();
+		let holding = unsafe { libc::kill(holder.0, 0) } == 0;
+		actor.begin_close(&owner).unwrap();
+		let closing = actor.close_receipt(&owner);
+		std::fs::write(dir.join("release"), b"").unwrap();
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		let closed = actor.close_receipt(&owner);
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		match &settled.execution {
+			Execution::Settled { result: TaskResult::Completed { exit_code, output } } => {
+				assert_eq!(*exit_code, Some(7.0));
+				assert_eq!(output.byte_count, JsString::from("4"));
+			},
+			other => panic!("the command did not complete: {other:?}"),
+		}
+		assert_eq!(std::fs::read(&command.output.lock().unwrap().path).unwrap(), b"done");
+		assert!(spool_closed, "settled output must not hold its spool open during quarantine");
+		assert!(holding, "the result must settle while the holder still holds the pipe");
+		assert_eq!(
+			settled.cleanup,
+			Cleanup::Quarantined { resources: unconfirmed_drain(group, "CleanupUnconfirmed") }
+		);
+		assert!(
+			closing.unwrap().is_none(),
+			"quarantine keeps the owner closing, without a close failure"
+		);
+		assert!(finished, "cleanup was not confirmed after the holder released the pipe");
+		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
+		assert_eq!(confirmed.execution, settled.execution, "confirmation must not change the result");
+		assert!(closed.unwrap().is_some());
+		assert_group_gone(group);
+		assert_eq!(*command.signals.lock().unwrap(), vec![(group, libc::SIGTERM)]);
+	}
+	/// Starts `escaped_holder` with `grace` as its quarantine bound; returns the command, the holder and the group.
+	#[cfg(target_os = "linux")]
+	fn start_escaped(
+		actor: &Arc<Actor>,
+		owner: &OwnerLease,
+		dir: &std::path::Path,
+		leader: &str,
+		grace: Duration,
+	) -> (TaskLease, Arc<CommandTask>, Holder, libc::pid_t) {
+		std::fs::create_dir(dir).unwrap();
+		TEST_QUARANTINE_GRACE.set(grace);
+		let launched =
+			actor.start_command(owner, pipe_intent(&escaped_holder(dir, leader)), "escaped".into());
+		TEST_QUARANTINE_GRACE.set(PROCESS_QUARANTINE_GRACE);
+		let task = launched.unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let holder = Holder::read(dir);
+		let group = command.process_group.load(Ordering::Acquire);
+		(task, command, holder, group)
+	}
+	/// Whether the task's cleanup stays quarantined for all of `period`.
+	#[cfg(target_os = "linux")]
+	fn stays_quarantined(actor: &Actor, owner: &OwnerLease, period: Duration) -> bool {
+		let until = Instant::now() + period;
+		while Instant::now() < until {
+			if !matches!(actor.snapshot(owner).unwrap().tasks[0].cleanup, Cleanup::Quarantined { .. })
+			{
+				return false;
+			}
+			std::thread::sleep(PROCESS_POLL);
+		}
+		true
+	}
+	// #4338: quarantine has no deadline while the owner is open, so cleanup confirmed long after the result settled is
+	// still confirmed, and the owner then closes normally.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn quarantine_outlasts_its_bound_while_the_owner_is_open_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-open-quarantine-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let grace = Duration::from_secs(1);
+		let (_task, command, holder, group) =
+			start_escaped(&actor, &owner, &dir, "printf done; exit 7", grace);
+		let settled = settled_record(&actor, &owner);
+		let held = stays_quarantined(&actor, &owner, grace * 2);
+		std::fs::write(dir.join("release"), b"").unwrap();
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		actor.begin_close(&owner).unwrap();
+		let closed = actor.close_receipt(&owner);
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		assert!(held, "quarantine must not expire while the owner is open");
+		assert!(finished, "cleanup was not confirmed after the holder released the pipe");
+		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
+		assert_eq!(confirmed.execution, settled.execution);
+		assert!(closed.unwrap().is_some());
+		assert_group_gone(group);
+	}
+	// #4338: a stopped holder that never releases the pipe keeps cleanup quarantined while the owner is open; closing
+	// the owner gives it its bound, after which cleanup fails, the close reports it, and the result keeps its status.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn unconfirmable_drain_fails_cleanup_once_closing_bounds_it_and_keeps_the_result_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-stopped-holder-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let grace = Duration::from_secs(1);
+		let (_task, command, holder, group) =
+			start_escaped(&actor, &owner, &dir, "printf done; exit 7", grace);
+		assert_eq!(unsafe { libc::kill(holder.0, libc::SIGSTOP) }, 0);
+		let settled = settled_record(&actor, &owner);
+		let held = stays_quarantined(&actor, &owner, grace * 2);
+		actor.begin_close(&owner).unwrap();
+		let finished = command.join_until(Instant::now() + grace + PROCESS_SHUTDOWN_GRACE);
+		let failed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		let closing = actor.close_receipt(&owner);
+		let retained = command.retained.lock().unwrap().is_some();
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		assert!(matches!(
+			&settled.execution,
+			Execution::Settled { result: TaskResult::Completed { exit_code: Some(7.0), .. } }
+		));
+		assert!(held, "quarantine must not expire while the owner is open");
+		assert!(finished, "closing must bound the quarantine");
+		assert_eq!(
+			failed.execution, settled.execution,
+			"failed cleanup must not replace the settled result"
+		);
+		assert_eq!(
+			failed.cleanup,
+			Cleanup::Failed { resources: unconfirmed_drain(group, "CleanupFailed") }
+		);
+		let error = closing.unwrap_err();
+		assert_eq!(error.code, "CleanupFailed");
+		assert!(error.message.contains(&format!("process-group:{group}")), "{error:?}");
+		assert!(retained, "failed cleanup must keep the readers it could not drain");
+		assert_group_gone(group);
+	}
+	// #4338: stopping a task bounds its quarantine too, without its owner closing.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn stop_bounds_quarantine_without_an_owner_close_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-stop-bound-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let grace = Duration::from_secs(1);
+		let (task, command, holder, group) =
+			start_escaped(&actor, &owner, &dir, "exec sleep 30", grace);
+		assert_eq!(unsafe { libc::kill(holder.0, libc::SIGSTOP) }, 0);
+		actor.cancel(&task, CancelCause::User).unwrap();
+		let settled = settled_record(&actor, &owner);
+		let finished = command.join_until(Instant::now() + grace + PROCESS_SHUTDOWN_GRACE);
+		let failed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		let state = actor.snapshot(&owner).unwrap().state;
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		assert_eq!(
+			settled.cleanup,
+			Cleanup::Quarantined { resources: unconfirmed_drain(group, "CleanupUnconfirmed") }
+		);
+		assert!(finished, "the stop must bound the quarantine");
+		assert_eq!(state, "open");
+		assert_eq!(failed.execution, settled.execution);
+		assert_eq!(
+			failed.cleanup,
+			Cleanup::Failed { resources: unconfirmed_drain(group, "CleanupFailed") }
+		);
+		assert_group_gone(group);
+	}
+	// #4338: once a quarantined command has seen its group gone, it never probes or signals that group number again,
+	// so a group that later gets the number is neither killed nor mistaken for the command's own.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn quarantine_never_signals_a_reused_group_number_4338() {
+		for reuse in [-1, libc::EPERM] {
+			let (actor, owner) = command_owner();
+			let dir = std::env::temp_dir().join(format!(
+				"atomic-reused-group-{}-{}",
+				std::process::id(),
+				actor.id
+			));
+			TEST_GROUP_BY_NUMBER.set(true);
+			let (_task, command, holder, group) =
+				start_escaped(&actor, &owner, &dir, "printf done; exit 7", PROCESS_QUARANTINE_GRACE);
+			TEST_GROUP_BY_NUMBER.set(false);
+			let settled = settled_record(&actor, &owner);
+			command.reused_group.store(reuse, Ordering::Release);
+			let seen = command.loop_iterations.load(Ordering::Acquire);
+			let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+			while command.loop_iterations.load(Ordering::Acquire) < seen + 3 {
+				assert!(Instant::now() < deadline, "the quarantine stopped looping");
+				std::thread::sleep(PROCESS_POLL);
+			}
+			std::fs::write(dir.join("release"), b"").unwrap();
+			let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+			let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+			actor.begin_close(&owner).unwrap();
+			let closed = actor.close_receipt(&owner);
+			actor.shutdown();
+			drop(holder);
+			std::fs::remove_dir_all(&dir).unwrap();
+			assert_eq!(
+				*command.signals.lock().unwrap(),
+				vec![(group, libc::SIGTERM)],
+				"reuse {reuse}"
+			);
+			assert!(finished, "reuse {reuse}: cleanup was not confirmed");
+			assert_eq!(confirmed.cleanup, Cleanup::Reaped {}, "reuse {reuse}");
+			assert_eq!(confirmed.execution, settled.execution, "reuse {reuse}");
+			assert!(closed.unwrap().is_some(), "reuse {reuse}");
+			assert_group_gone(group);
+		}
+	}
+	// #4338: output written after the result settled ahead of cleanup is drained, never added to the settled output.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn output_after_an_early_settlement_is_discarded_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-late-output-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let holder_script = "echo $$ > \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done; printf late; echo > \"$3\"; while [ ! -e \"$4\" ]; do sleep 0.01; done";
+		actor
+			.start_command(
+				&owner,
+				pipe_intent(&format!(
+					"setsid /bin/sh -c '{holder_script}' sh '{0}/holder' '{0}/write' '{0}/written' '{0}/release' & while [ ! -s '{0}/holder' ]; do sleep 0.01; done; printf done",
+					dir.display()
+				)),
+				"late".into(),
+			)
+			.unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let holder = Holder::read(&dir);
+		let settled = settled_record(&actor, &owner);
+		std::fs::write(dir.join("write"), b"").unwrap();
+		wait_for_file(&dir.join("written"));
+		std::fs::write(dir.join("release"), b"").unwrap();
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		let spool = std::fs::read(&command.output.lock().unwrap().path).unwrap();
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		assert!(finished);
+		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
+		assert_eq!(confirmed.execution, settled.execution);
+		assert!(matches!(
+			&settled.execution,
+			Execution::Settled { result: TaskResult::Completed { output, .. } } if output.byte_count == JsString::from("4")
+		));
+		assert_eq!(spool, b"done", "output written after the result settled must not be kept");
+	}
+	// #4338: a member that outlives the TERM grace and dies at KILL is confirmed within the drain window, so its
+	// command never quarantines.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn straggler_killed_at_the_grace_never_quarantines_4338() {
+		let (actor, owner) = command_owner();
+		let path = std::env::temp_dir().join(format!(
+			"atomic-no-quarantine-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		let (subscription, _) = actor.watch(&owner, None).unwrap();
+		actor
+			.start_command(
+				&owner,
+				pipe_intent(&leave_member(&path, "trap \"\" TERM HUP; ")),
+				"straggler".into(),
+			)
+			.unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let finished = command.join_until(
+			Instant::now() + PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE,
+		);
+		let events = actor.drain(&subscription).unwrap().events;
+		let straggler: libc::pid_t = wait_for_file(&path).trim().parse().unwrap();
+		std::fs::remove_file(&path).unwrap();
+		actor.shutdown();
+		assert!(finished);
+		let cleanups: Vec<_> = events
+			.iter()
+			.filter_map(|event| match &event.payload {
+				TaskEvent::CleanupChanged { cleanup, .. } => Some(cleanup.clone()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(cleanups, vec![Cleanup::Draining {}, Cleanup::Reaped {}]);
+		assert_gone(straggler, "straggler");
+	}
+	// #4338: a leader whose reap the host has not yet observed leaves the outcome unknown, so the command fails at the
+	// drain window, as before, rather than settling a result it does not know.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn unknown_outcome_at_the_drain_window_fails_as_before_4338() {
+		let (actor, owner) = command_owner();
+		actor.start_command(&owner, pipe_intent("exec sleep 0.05"), "unreaped".into()).unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		command.reap_delayed.store(true, Ordering::Release);
+		let finished = command.join_until(
+			Instant::now() + PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE + PROCESS_SHUTDOWN_GRACE,
+		);
+		let record = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		let group = command.process_group.load(Ordering::Acquire);
+		actor.shutdown();
+		poll_failed_processes();
+		assert!(finished);
+		assert_eq!(
+			record.execution,
+			Execution::Settled {
+				result: TaskResult::Failed {
+					code: "CleanupFailed".into(),
+					message: "Process-group exit was not confirmed".into(),
+					output: None,
+					exit_code: None,
+				}
+			}
+		);
+		assert!(matches!(record.cleanup, Cleanup::Failed { .. }), "{:?}", record.cleanup);
+		let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+		while unsafe { libc::kill(-group, 0) } == 0 {
+			assert!(Instant::now() < deadline, "the retained leader was never reaped");
+			poll_failed_processes();
+			std::thread::sleep(PROCESS_POLL);
+		}
+		assert_group_gone(group);
+	}
+	// #4338: a stop whose leader the host has not yet reaped still settles as a stop at the drain window and then
+	// confirms its cleanup once the reap is observed.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn stop_with_an_unreaped_leader_quarantines_then_confirms_4338() {
+		let (actor, owner) = command_owner();
+		let task =
+			actor.start_command(&owner, pipe_intent("exec sleep 30"), "unreaped-stop".into()).unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let group = command.process_group.load(Ordering::Acquire);
+		command.reap_delayed.store(true, Ordering::Release);
+		actor.cancel(&task, CancelCause::User).unwrap();
+		let settled = settled_record(&actor, &owner);
+		command.reap_delayed.store(false, Ordering::Release);
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		actor.shutdown();
+		assert!(
+			matches!(
+				&settled.execution,
+				Execution::Settled { result: TaskResult::Failed { code, message, exit_code: None, .. } }
+					if code == &JsString::from("CleanupUnconfirmed")
+						&& message.process_text() == format!("Stop requested (user); cleanup unconfirmed: process-group:{group}: Process-group exit was not confirmed")
+			),
+			"{:?}",
+			settled.execution
+		);
+		assert_eq!(
+			settled.cleanup,
+			Cleanup::Quarantined {
+				resources: vec![ResourceFailure {
+					resource: format!("process-group:{group}").into(),
+					code: "CleanupUnconfirmed".into(),
+					message: "Process-group exit was not confirmed".into(),
+				}]
+			}
+		);
+		assert!(finished);
+		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
+		assert_eq!(confirmed.execution, settled.execution);
+		assert_group_gone(group);
+	}
+	// #4338: a stop whose output is still held settles as cleanup unconfirmed at the drain window, as before, and its
+	// cleanup is then confirmed in the background instead of failing for good.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn stopped_command_with_held_output_confirms_cleanup_after_settling_4338() {
+		let (actor, owner) = command_owner();
+		let dir = std::env::temp_dir().join(format!(
+			"atomic-stopped-escaped-{}-{}",
+			std::process::id(),
+			actor.id
+		));
+		std::fs::create_dir(&dir).unwrap();
+		let task = actor
+			.start_command(&owner, pipe_intent(&escaped_holder(&dir, "exec sleep 30")), "stop".into())
+			.unwrap();
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let holder = Holder::read(&dir);
+		let group = command.process_group.load(Ordering::Acquire);
+		actor.cancel(&task, CancelCause::User).unwrap();
+		let settled = settled_record(&actor, &owner);
+		std::fs::write(dir.join("release"), b"").unwrap();
+		let finished = command.join_until(Instant::now() + PROCESS_SHUTDOWN_GRACE);
+		let confirmed = actor.snapshot(&owner).unwrap().tasks[0].clone();
+		actor.shutdown();
+		drop(holder);
+		std::fs::remove_dir_all(&dir).unwrap();
+		match &settled.execution {
+			Execution::Settled { result: TaskResult::Failed { code, message, .. } } => {
+				assert_eq!(code, &JsString::from("CleanupUnconfirmed"));
+				assert_eq!(
+					message.process_text(),
+					format!(
+						"Stop requested (user); cleanup unconfirmed: process-group:{group}: Output reader drain was not confirmed"
+					)
+				);
+			},
+			other => panic!("the stop did not settle as cleanup unconfirmed: {other:?}"),
+		}
+		assert_eq!(
+			settled.cleanup,
+			Cleanup::Quarantined { resources: unconfirmed_drain(group, "CleanupUnconfirmed") }
+		);
+		assert!(finished);
+		assert_eq!(confirmed.cleanup, Cleanup::Reaped {});
+		assert_eq!(confirmed.execution, settled.execution);
+		assert_group_gone(group);
 	}
 	// #2884: terminal metadata is retention arithmetic, not a full-output read.
 	#[test]
