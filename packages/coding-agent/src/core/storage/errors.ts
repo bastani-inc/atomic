@@ -227,11 +227,18 @@ export class StorageUnsupportedOperationError extends StorageError {
 }
 
 export type StorageWriterQueueDegradedCode = "writer-queue-degraded";
-const WRITER_QUEUE_DEGRADED_REASONS = ["watch-unavailable", "wake-failed", "stale-ticket-kept"] as const;
+const WRITER_QUEUE_DEGRADED_REASONS = [
+	"watch-unavailable",
+	"wake-failed",
+	"stale-ticket-kept",
+	"holder-record-unavailable",
+] as const;
 /**
  * What degraded: `"watch-unavailable"`, a waiting writer cannot watch its release notice and polls instead;
  * `"wake-failed"`, a writer letting go of the lock could not read the queue or notify the next writer;
- * `"stale-ticket-kept"`, a ticket or its notice could not be removed, either when its writer left or after abandonment.
+ * `"stale-ticket-kept"`, a ticket or its notice could not be removed, either when its writer left or after abandonment;
+ * `"holder-record-unavailable"`, the connection could not keep its record of holding the write lock, or remove an
+ * exited process's.
  */
 export type StorageWriterQueueDegradedReason = (typeof WRITER_QUEUE_DEGRADED_REASONS)[number];
 
@@ -242,11 +249,13 @@ const WRITER_QUEUE_DEGRADED_HINTS: Readonly<Record<StorageWriterQueueDegradedRea
 		"Writers still take the lock in turn, but the next writer notices a released lock at its next check instead of at once; make the writers' queue directories next to the database (<file>-writers and <file>-wakes) readable and writable",
 	"stale-ticket-kept":
 		"An entry or release notice could not be removed from the writers' queue directories next to the database (<file>-writers and <file>-wakes); a remaining live ticket may delay other writers until it becomes stale. Make the directories writable for every writer, or remove abandoned entries by hand",
+	"holder-record-unavailable":
+		"Writers still take the lock in turn, but a writer that gives up waiting may not name the process holding the lock; make the write-lock records directory next to the database (<file>-holders) readable and writable for every writer",
 };
 
 /**
- * Not a failure: a node-sqlite connection fell back from the prompt handoff of the write lock, or kept a ticket or
- * notice it could not remove. Transactions keep working. Each reason is recorded once on the connection, readable with
+ * Not a failure: a node-sqlite connection fell back from the prompt handoff of the write lock, kept a ticket or
+ * notice it could not remove, or could not keep its record of holding the write lock. Transactions keep working. Each reason is recorded once on the connection, readable with
  * `getWriterQueueDegradation`, and emitted once as a process warning (`process.on("warning")`), which Atomic's own
  * processes suppress.
  */

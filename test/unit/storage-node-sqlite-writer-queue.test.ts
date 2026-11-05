@@ -20,6 +20,7 @@ import {
 } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
+	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
 	wrapNodeSqliteDatabase,
@@ -93,7 +94,9 @@ async function releaseWaiters(writers: string): Promise<void> {
 			try {
 				touch(join(notices, name));
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				// A notice its writer is removing: gone, or on Windows going while another process still has it open.
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT" && !(code === "EPERM" && process.platform === "win32")) throw error;
 			}
 		}
 		await turn();
@@ -702,13 +705,35 @@ test("a connection removes exited processes' write-lock records as it creates it
 	assert.deepEqual(readdirSync(holders).sort(), kept, "and none is removed");
 });
 
-test("a read-only connection makes no write-lock record next to the database (#4387)", async () => {
+test("a read-only connection makes no write-lock record next to the database, even through a transaction (#4387)", async () => {
 	const { path } = await fixture();
 	const holders = `${path}-holders`;
 	const records = readdirSync(holders);
 	const reader = await openNodeSqliteDatabase(path, { readOnly: true });
 	cleanups.push(() => reader.close());
 	assert.deepEqual(readdirSync(holders), records);
+	assert.deepEqual(await reader.transaction((tx) => tx.get("SELECT COUNT(*) AS count FROM items")), { count: 0 });
+	assert.deepEqual(readdirSync(holders), records);
+	assert.deepEqual(getWriterQueueDegradation(reader), [], "and records nothing missing");
+});
+
+test("a release notice that finds the lock still held costs a waiting writer one more look, then it waits again (#4387)", async () => {
+	const { database, holder, writers, counts } = await fixture();
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('waited again')"));
+	const [name] = await untilTickets(writers, 1);
+	await untilWaiting();
+	const before = counts.attempts.length;
+	assert.equal(before, 2, "refused, then once more with its ticket in place");
+	touch(join(wakes(writers), name!));
+	while (counts.attempts.length === before) await turn();
+	await untilWaiting();
+	assert.ok(counts.attempts.length <= before + 2, `${counts.attempts.length - before} attempts after one notice`);
+	holder.exec("COMMIT");
+	touch(join(wakes(writers), name!));
+	await write;
+	assert.deepEqual(await values(database), ["waited again"]);
 });
 
 test("a waiting writer refreshes its ticket every 500 ms, recreates it if it was removed, and still hears the release (#4316)", async () => {

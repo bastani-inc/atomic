@@ -5,6 +5,7 @@ import * as os from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import {
 	isStorageUnsupportedOperationError,
 	isStorageWriterQueueDegradedError,
@@ -20,12 +21,14 @@ vi.mock("node:fs", async (importOriginal) => {
 	return {
 		...actual,
 		watch: vi.fn(actual.watch),
+		existsSync: vi.fn(actual.existsSync),
 		mkdirSync: vi.fn(actual.mkdirSync),
 		openSync: vi.fn(actual.openSync),
 		utimesSync: vi.fn(actual.utimesSync),
 		readdirSync: vi.fn(actual.readdirSync),
 		statSync: vi.fn(actual.statSync),
 		unlinkSync: vi.fn(actual.unlinkSync),
+		writeSync: vi.fn(actual.writeSync),
 	};
 });
 
@@ -35,6 +38,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	return {
 		...actual,
 		mkdir: vi.fn(actual.mkdir),
+		readdir: vi.fn(actual.readdir),
+		stat: vi.fn(actual.stat),
 		utimes: vi.fn(actual.utimes),
 		writeFile: vi.fn(actual.writeFile),
 		unlink: vi.fn(actual.unlink),
@@ -63,13 +68,17 @@ const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
 const actualPromises = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 const actualOs = await vi.importActual<typeof import("node:os")>("node:os");
 const watch = vi.mocked(fs.watch);
+const existsSync = vi.mocked(fs.existsSync);
 const mkdirSync = vi.mocked(fs.mkdirSync);
 const openSync = vi.mocked(fs.openSync);
 const utimesSync = vi.mocked(fs.utimesSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
 const unlinkSync = vi.mocked(fs.unlinkSync);
+const writeSync = vi.mocked(fs.writeSync);
 const mkdir = vi.mocked(fsPromises.mkdir);
+const readdir = vi.mocked(fsPromises.readdir);
+const stat = vi.mocked(fsPromises.stat);
 const utimes = vi.mocked(fsPromises.utimes);
 const writeFile = vi.mocked(fsPromises.writeFile);
 const unlink = vi.mocked(fsPromises.unlink);
@@ -80,13 +89,17 @@ const cleanups: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	vi.useRealTimers();
 	watch.mockImplementation(actual.watch);
+	existsSync.mockImplementation(actual.existsSync);
 	mkdirSync.mockImplementation(actual.mkdirSync);
 	openSync.mockImplementation(actual.openSync);
 	utimesSync.mockImplementation(actual.utimesSync);
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
 	unlinkSync.mockImplementation(actual.unlinkSync);
+	writeSync.mockImplementation(actual.writeSync);
 	mkdir.mockImplementation(actualPromises.mkdir);
+	readdir.mockImplementation(actualPromises.readdir);
+	stat.mockImplementation(actualPromises.stat);
 	utimes.mockImplementation(actualPromises.utimes);
 	writeFile.mockImplementation(actualPromises.writeFile);
 	unlink.mockImplementation(actualPromises.unlink);
@@ -105,6 +118,14 @@ function failListing(writers: string, code: string): void {
 		return actual.readdirSync(path);
 	};
 	readdirSync.mockImplementation(listing as typeof fs.readdirSync);
+}
+
+/** Makes a waiting writer's listing of the queue, off the event loop, fail with `code`. */
+function failListingOffLoop(writers: string, code: string): void {
+	readdir.mockImplementation((async (path: fs.PathLike) => {
+		if (String(path) === writers) throw failure(code);
+		return actualPromises.readdir(path);
+	}) as typeof fsPromises.readdir);
 }
 
 /** Makes reading the named queue entries fail with `code`, as a directory without search permission would. */
@@ -216,7 +237,9 @@ async function releaseWaiters(writers: string): Promise<void> {
 				const now = new Date();
 				actual.utimesSync(join(notices, name), now, now);
 			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				// A notice its writer is removing: gone, or on Windows going while another process still has it open.
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code !== "ENOENT" && !(code === "EPERM" && process.platform === "win32")) throw error;
 			}
 		}
 		await turn();
@@ -379,7 +402,10 @@ test("a waiting writer that cannot refresh its own ticket fails the transaction 
 		if (String(path).startsWith(writers))
 			throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
 	}) as typeof fsPromises.utimes);
-	await vi.advanceTimersByTimeAsync(500);
+	// Each recheck reads the queue off the event loop; the refresh is due at the second.
+	await vi.advanceTimersByTimeAsync(250);
+	await untilWaiting();
+	await vi.advanceTimersByTimeAsync(250);
 	const error = await failure;
 	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
 	assert.equal(error.code, "writer-queue-unusable");
@@ -438,7 +464,7 @@ test("a waiting writer that cannot list the queue fails as an unusable writers' 
 			(error: unknown) => error,
 		);
 	await untilWaiting();
-	failListing(writers, "EACCES");
+	failListingOffLoop(writers, "EACCES");
 	await vi.advanceTimersByTimeAsync(250);
 	const error = await failed;
 	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
@@ -1023,6 +1049,7 @@ test("a write-lock record that cannot be created is left out, and the transactio
 		if (String(directory) === holders) throw failure("EACCES");
 		return actualPromises.mkdir(directory, options);
 	}) as typeof fsPromises.mkdir);
+	suppressWarnings();
 	const calls = syncCallsOn(holders);
 	const database = await openNodeSqliteDatabase(path);
 	cleanups.push(() => database.close());
@@ -1030,6 +1057,67 @@ test("a write-lock record that cannot be created is left out, and the transactio
 	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "unrecorded" }]);
 	assert.deepEqual(actual.readdirSync(holders), earlier, "no record");
 	assert.deepEqual(calls(), [], "and no synchronous attempt to create one under the lock");
+	assertHolderRecordUnavailable(database, path, "EACCES");
+});
+
+/** The connection recorded one degradation: it could not keep its write-lock record, failing with `code`. */
+function assertHolderRecordUnavailable(database: SqliteDatabase, path: string, code: string): void {
+	const [degradation, ...more] = getWriterQueueDegradation(database);
+	assert.deepEqual(more, []);
+	assert.deepEqual(
+		[degradation?.reason, degradation?.location, (degradation?.cause as { code?: string } | undefined)?.code],
+		["holder-record-unavailable", path, code],
+	);
+}
+
+test("a connection that cannot remove an exited process's write-lock record still creates its own, and records why (#4387)", async () => {
+	const { path } = await fixture();
+	suppressWarnings();
+	const holders = `${path}-holders`;
+	const exited = join(holders, "999999999-1");
+	actual.writeFileSync(exited, "");
+	unlink.mockImplementation((async (file: fs.PathLike) => {
+		if (String(file) === exited) throw failure("EACCES");
+		return actualPromises.unlink(file);
+	}) as typeof fsPromises.unlink);
+	const earlier = actual.readdirSync(holders);
+	const database = await openNodeSqliteDatabase(path);
+	cleanups.push(() => database.close());
+	assert.equal(actual.readdirSync(holders).filter((name) => !earlier.includes(name)).length, 1, "its own record");
+	assert.ok(actual.existsSync(exited), "the record it could not remove stays");
+	assertHolderRecordUnavailable(database, path, "EACCES");
+});
+
+test("an exited process's write-lock record another connection removes first is not a failure (#4387)", async () => {
+	const { path } = await fixture();
+	const exited = join(`${path}-holders`, "999999999-1");
+	actual.writeFileSync(exited, "");
+	unlink.mockImplementation((async (file: fs.PathLike) => {
+		if (String(file) !== exited) return actualPromises.unlink(file);
+		await actualPromises.unlink(file);
+		throw failure("ENOENT");
+	}) as typeof fsPromises.unlink);
+	const database = await openNodeSqliteDatabase(path);
+	cleanups.push(() => database.close());
+	assert.equal(actual.existsSync(exited), false);
+	assert.deepEqual(getWriterQueueDegradation(database), []);
+});
+
+test("a write-lock record that cannot be written is removed and left out, and transactions still commit (#4387)", async () => {
+	const { database, path } = await fixture();
+	suppressWarnings();
+	let attempts = 0;
+	writeSync.mockImplementation(((descriptor: number, data: string, ...rest: never[]) => {
+		if (typeof data !== "string" || !/^(held|free) /.test(data)) return actual.writeSync(descriptor, data, ...rest);
+		attempts += 1;
+		throw failure("EIO");
+	}) as typeof fs.writeSync);
+	for (const value of ["first", "second"])
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "first" }, { value: "second" }]);
+	assert.equal(attempts, 1, "a record it could not write is not written again");
+	assert.deepEqual(actual.readdirSync(`${path}-holders`), [], "and does not stay to name a holder");
+	assertHolderRecordUnavailable(database, path, "EIO");
 });
 
 /**
@@ -1074,4 +1162,132 @@ test("a writer that makes its missing queue directory still never writes over a 
 	const [notice, ...more] = actual.readdirSync(wakes(writers));
 	assert.deepEqual(more, []);
 	assert.equal(actual.readFileSync(join(wakes(writers), notice!), "utf8"), "another writer's notice");
+});
+
+test("a writer waiting for the lock reads and refreshes the queue off the event loop, with no synchronous queue file call (#4387)", async () => {
+	const { database, holder, path, writers } = await fixture();
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('waited')"));
+	await untilWaiting();
+	const directories = [writers, wakes(writers), `${path}-holders`];
+	const synchronous = [existsSync, readdirSync, statSync, utimesSync, unlinkSync, mkdirSync, openSync, writeSync];
+	const marks = synchronous.map((spy) => spy.mock.calls.length);
+	const [watches, listings, refreshes, removals, reads] = [watch, readdir, utimes, unlink, stat].map(
+		(spy) => spy.mock.calls.length,
+	);
+	const [own] = actual.readdirSync(writers);
+	for (let waited = 0; waited < 1_000; waited += 250) {
+		await vi.advanceTimersByTimeAsync(250);
+		await untilWaiting();
+	}
+	const calls = synchronous.flatMap((spy, index) =>
+		spy.mock.calls
+			.slice(marks[index])
+			.map(([file]) => String(file))
+			.filter((file) => directories.some((directory) => file === directory || dirname(file) === directory)),
+	);
+	assert.deepEqual(calls, [], "no synchronous call listed, read, refreshed, made or removed a queue file");
+	assert.equal(watch.mock.calls.length, watches, "the watch it started stays");
+	assert.equal(readdir.mock.calls.length - listings!, 4, "it read the queue at every recheck");
+	assert.equal(utimes.mock.calls.length - refreshes!, 2, "and refreshed its ticket every 500 ms");
+	assert.equal(unlink.mock.calls.length - removals!, 0, "nothing abandoned, so nothing removed");
+	const ownReads = stat.mock.calls.slice(reads).filter(([file]) => String(file) === join(writers, own!));
+	assert.deepEqual(ownReads, [], "and never read its own ticket's time to see who is ahead");
+	holder.exec("COMMIT");
+	await releaseWaiters(writers);
+	await write;
+});
+
+/** Captures the listener the adapter gives each watch it starts, so a test can deliver a release notice itself. */
+function captureNoticeListeners(): (() => void)[] {
+	const listeners: (() => void)[] = [];
+	watch.mockImplementation(((file: fs.PathLike, listener: () => void) => {
+		listeners.push(listener);
+		return actual.watch(file, listener);
+	}) as typeof fs.watch);
+	return listeners;
+}
+
+/** Holds the waiting writer's next read of `path`'s time until `answer` resolves, then answers with `answered`. */
+function holdTicketRead(path: string, answered: fs.Stats, answer: Promise<void>): void {
+	stat.mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
+		if (String(file) !== path) return actualPromises.stat(file, options);
+		await answer;
+		return answered;
+	}) as typeof fsPromises.stat);
+}
+
+test("a release notice that arrives while a waiting writer reads the queue ends its next wait at once (#4387)", async () => {
+	const { database, holder, writers } = await fixture();
+	const listeners = captureNoticeListeners();
+	const ahead = liveTicket(writers, 999_999_961, -1);
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	let written = false;
+	const write = database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('handed on')"))
+		.then(() => {
+			written = true;
+		});
+	await untilWaiting();
+	assert.equal(listeners.length, 1);
+	// Its next look at the ticket ahead is answered only after the release, and as it was before: still live.
+	const aheadPath = join(writers, ahead);
+	const answer = Promise.withResolvers<void>();
+	holdTicketRead(aheadPath, await actualPromises.stat(aheadPath), answer.promise);
+	await vi.advanceTimersByTimeAsync(250);
+	while (!stat.mock.calls.some(([file]) => String(file) === aheadPath)) await turn();
+	// The writer ahead took the lock in turn and left; its release reaches this writer while it reads.
+	holder.exec("COMMIT");
+	actual.unlinkSync(join(wakes(writers), ahead));
+	actual.unlinkSync(aheadPath);
+	listeners[0]!();
+	answer.resolve();
+	while (!written && vi.getTimerCount() === 0) await turn();
+	assert.equal(written, true, "it took the lock instead of waiting out its recheck timer");
+	await write;
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "handed on" }]);
+});
+
+test("a ticket that vanishes while a waiting writer reads the queue counts as gone (#4387)", async () => {
+	const { database, holder, writers } = await fixture();
+	const ahead = liveTicket(writers, 999_999_962, -1);
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after a vanished ticket')"));
+	await untilWaiting();
+	holder.exec("COMMIT");
+	const aheadPath = join(writers, ahead);
+	stat.mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
+		if (String(file) === aheadPath) throw failure("ENOENT");
+		return actualPromises.stat(file, options);
+	}) as typeof fsPromises.stat);
+	await vi.advanceTimersByTimeAsync(250);
+	await write;
+	assert.deepEqual(await database.all("SELECT value FROM items"), [{ value: "after a vanished ticket" }]);
+	assert.ok(actual.existsSync(aheadPath), "a ticket it only failed to find is left alone");
+});
+
+test("a waiting writer that cannot read a ticket's time fails as an unusable writers' queue, keeping the cause (#4387)", async () => {
+	const { database, holder, path, writers } = await fixture();
+	const ahead = liveTicket(writers, 999_999_963, -1);
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const failed = database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"))
+		.then(
+			() => assert.fail("wrote under a held lock"),
+			(error: unknown) => error,
+		);
+	await untilWaiting();
+	stat.mockImplementation((async (file: fs.PathLike, options?: fs.StatOptions) => {
+		if (String(file) === join(writers, ahead)) throw failure("EACCES");
+		return actualPromises.stat(file, options);
+	}) as typeof fsPromises.stat);
+	await vi.advanceTimersByTimeAsync(250);
+	const error = await failed;
+	assert.ok(isStorageWriterQueueUnusableError(error), String(error));
+	assert.deepEqual([error.errno, error.location], ["EACCES", path]);
+	assert.equal((error.cause as NodeJS.ErrnoException).code, "EACCES");
 });

@@ -84,18 +84,21 @@ test("the writers'-queue degradation names its reason and the remedy", () => {
 });
 
 test("each way the writers' queue degrades has its own remedy", () => {
-	const hints = (["watch-unavailable", "wake-failed", "stale-ticket-kept"] as const).map((reason) => {
+	const reasons = ["watch-unavailable", "wake-failed", "stale-ticket-kept", "holder-record-unavailable"] as const;
+	const hints = reasons.map((reason) => {
 		const error = new StorageWriterQueueDegradedError(descriptor, reason);
 		assert.equal(error.reason, reason);
 		assert.ok(error.message.includes(`(writer-queue-degraded, ${reason})`));
 		assert.ok(error.message.endsWith(error.hint));
 		return error.hint;
 	});
-	assert.equal(new Set(hints).size, 3);
+	assert.equal(new Set(hints).size, 4);
 	assert.match(hints[0]!, /file-watch limits/);
 	assert.match(hints[1]!, /<file>-writers and <file>-wakes\) readable and writable/);
 	assert.match(hints[2]!, /remaining live ticket may delay other writers until it becomes stale/);
 	assert.match(hints[2]!, /remove abandoned entries by hand/);
+	assert.match(hints[3]!, /may not name the process holding the lock/);
+	assert.match(hints[3]!, /<file>-holders\) readable and writable/);
 });
 
 test("a storage configuration error keeps its message without a hint and has a stable code", () => {
@@ -208,6 +211,11 @@ test("each storage error survives a JSON round trip as the same class with its f
 			descriptor,
 			"stale-ticket-kept",
 			Object.assign(new Error("EPERM: operation not permitted, unlink"), { code: "EPERM" }),
+		),
+		new StorageWriterQueueDegradedError(
+			descriptor,
+			"holder-record-unavailable",
+			Object.assign(new Error("EACCES: permission denied, mkdir"), { code: "EACCES" }),
 		),
 		new StorageUnsupportedOperationError({ adapter: "custom", location: "remote://db" }, "getWriterQueueDegradation"),
 		new StorageWriterQueueUnusableError(
