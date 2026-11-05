@@ -1027,20 +1027,49 @@ describe("the session that launches runs owns their predictions (#4359)", () => 
 		await next.shutdown();
 	});
 
-	test("an answer or a failure that arrives after the run ended is not recorded", async () => {
+	test("answers and failures that arrive after the run ended are dropped quietly", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const store = storeWith();
 		const predictor = new StagePredictor();
 		const { port, pending } = deferredPort();
 		launch(predictor, store, port, scanOf([uncertainty([["review"]])]));
 		await until(() => pending.length === 1);
 		predictor.classifySend(store.run("root")!, ["deploy"]);
-		await until(() => pending.length === 2);
+		predictor.classifySend(store.run("root")!, ["lint"]);
+		await until(() => pending.length === 3);
 		store.recordRunEnd("root", "completed");
 		pending[0]!.resolve({ answers: { site0: { type: "choice", probabilities: { c0: 0.95 } } } });
 		pending[1]!.reject(new Error("provider down"));
+		pending[2]!.resolve({ answers: { target: { type: "bool", probability: 0.95 } } });
 		await sleep(10);
 		assert.equal(store.run("root")?.stagePredictions, undefined);
+		assert.equal(warn.mock.calls.length, 0);
 		predictor.dispose();
+	});
+
+	test("dispatch without a predictor launches the run and asks nothing", async () => {
+		setDurableBackend(await createMemoryTestBackend());
+		const module = (await import(fixtureEntry("helper-names"))) as {
+			default: (factory: typeof workflow) => WorkflowDefinition;
+		};
+		const definition = module.default(workflow);
+		const { port, requests } = answeringPort(() => 0.95);
+		const store = createStore();
+		const result = await dispatch(
+			{ action: "run", workflow: definition.normalizedName },
+			{
+				registry: createRegistry([definition]),
+				store,
+				adapters: { prompt: { prompt: async () => "ok" } },
+				resolvePossibleStageEntry: () => fixtureEntry("helper-names"),
+				decisions: port,
+			},
+		);
+		if (result.action !== "run") assert.fail("expected a run result");
+		assert.notEqual(result.status, "failed");
+		await sleep(10);
+		assert.equal(requests.length, 0);
+		assert.equal(store.run(result.runId)?.stagePredictions, undefined);
 	});
 
 	test("a session runtime launches predictions into the predictor it was given", async () => {

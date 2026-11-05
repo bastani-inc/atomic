@@ -326,6 +326,40 @@ describe("uncertainty records", () => {
 		);
 	});
 
+	test("a child that cannot be resolved under a readable name adds no wildcard", () => {
+		const result = scanFile(
+			"missing-child-parent.ts",
+			`
+			import child from "./missing-child.js";
+			export default workflow({ name: "p", run: async (ctx) => { await ctx.workflow(child); }});
+		`,
+		);
+		assert.deepEqual(result.stages, ["workflow:child"]);
+		assert.deepEqual(
+			result.uncertainties.map((entry) => [entry.code, entry.placeholder]),
+			[["unresolved-child", undefined]],
+		);
+	});
+
+	test("an unreadable stageName on an unresolved child marks both call-site records with the wildcard", () => {
+		const result = scanFile(
+			"unread-child-parent.ts",
+			`
+			export default workflow({ name: "p", run: async (ctx) => {
+				await ctx.workflow(children[kind], { stageName: dynamicName });
+			}});
+		`,
+		);
+		assert.deepEqual(result.stages, ["*"]);
+		assert.deepEqual(
+			result.uncertainties.map((entry) => [entry.code, entry.placeholder]),
+			[
+				["unresolved-name", "*"],
+				["unresolved-child", "*"],
+			],
+		);
+	});
+
 	test("maxDepth limits a child candidate to its boundary", () => {
 		writeFixture(
 			"md-child.ts",

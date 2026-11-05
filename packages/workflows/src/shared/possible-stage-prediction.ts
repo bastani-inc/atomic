@@ -56,10 +56,10 @@ interface ScanQuestionPlan {
 	readonly questions: Readonly<Record<string, StageDecisionQuestion>>;
 	/** Per question key, each option key's candidate. */
 	readonly options: ReadonlyMap<string, ReadonlyMap<string, PossibleStageCandidate>>;
-	/** Per question key, the wildcard entry its call site added. */
-	readonly placeholders: ReadonlyMap<string, string>;
+	/** Per question key, the wildcard entry its call site added, if any. */
+	readonly placeholders: ReadonlyMap<string, string | undefined>;
 	/** Wildcard entries also added by a call site no question asks about, so no answer can stand in for them. */
-	readonly unaskedPlaceholders: ReadonlySet<string>;
+	readonly unaskedPlaceholders: ReadonlySet<string | undefined>;
 }
 
 function askedSites(uncertainties: readonly PossibleStageUncertainty[]): readonly PossibleStageUncertainty[] {
@@ -79,7 +79,7 @@ function describeCandidate(candidate: PossibleStageCandidate): string {
 export function scanQuestionPlan(uncertainties: readonly PossibleStageUncertainty[]): ScanQuestionPlan {
 	const questions: Record<string, StageDecisionQuestion> = {};
 	const options = new Map<string, ReadonlyMap<string, PossibleStageCandidate>>();
-	const placeholders = new Map<string, string>();
+	const placeholders = new Map<string, string | undefined>();
 	const asked = askedSites(uncertainties);
 	asked.forEach((uncertainty, site) => {
 		const key = `site${site}`;
@@ -96,14 +96,11 @@ export function scanQuestionPlan(uncertainties: readonly PossibleStageUncertaint
 			criteria,
 		};
 		options.set(key, siteOptions);
-		if (uncertainty.placeholder !== undefined) placeholders.set(key, uncertainty.placeholder);
+		placeholders.set(key, uncertainty.placeholder);
 	});
-	const unaskedPlaceholders = new Set<string>();
-	for (const uncertainty of uncertainties) {
-		if (uncertainty.placeholder !== undefined && !asked.includes(uncertainty)) {
-			unaskedPlaceholders.add(uncertainty.placeholder);
-		}
-	}
+	const unaskedPlaceholders = new Set(
+		uncertainties.filter((uncertainty) => !asked.includes(uncertainty)).map((uncertainty) => uncertainty.placeholder),
+	);
 	return { questions, options, placeholders, unaskedPlaceholders };
 }
 

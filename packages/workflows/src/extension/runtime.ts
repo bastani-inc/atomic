@@ -449,7 +449,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				config,
 				models,
 				resolvePossibleStageEntry,
-				...(opts.stagePredictor === undefined ? {} : { stagePredictor: opts.stagePredictor }),
+				stagePredictor: opts.stagePredictor,
 				...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
 				policy: options?.policy,
 				modelOwner: options?.modelOwner,

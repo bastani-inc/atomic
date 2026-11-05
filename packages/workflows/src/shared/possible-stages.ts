@@ -490,7 +490,7 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 	let candidateIndex: CandidateIndex | undefined;
 	return {
 		source,
-		sha256: createHash("sha256").update(source, "utf8").digest("hex"),
+		sha256: createHash("sha256").update(source).digest("hex"),
 		candidateIndex: () => {
 			candidateIndex ??= buildCandidateIndex(source, tokens);
 			return candidateIndex;
@@ -2177,7 +2177,7 @@ function parameterNames(tokens: readonly Token[]): string[] {
 				continue;
 			}
 		}
-		if (atStart) names.push(token.kind === "ident" ? token.value : "");
+		if (atStart) names.push(token.value);
 		atStart = false;
 	}
 	return names;
