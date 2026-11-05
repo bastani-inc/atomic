@@ -298,10 +298,15 @@ test("a serialized error received across a process boundary is validated before 
 		{ ...valid, fields: [] },
 		{ ...valid, fields: { field: { nested: true } } },
 		{ ...valid, cause: "text" },
+		{ ...valid, cause: null },
+		{ ...valid, cause: { message: "x" } },
+		{ ...valid, fields: { field: "state", nested: { deep: true } } },
 		{ ...valid, cause: { name: "Error" } },
 		{ ...valid, cause: { ...valid, code: 7 } },
 	])
 		assert.equal(parseSerializedDecisionError(malformed), undefined, JSON.stringify(malformed));
+	const primitiveFields = { ...valid, fields: { field: "state", count: 2, flag: true } };
+	assert.deepEqual(parseSerializedDecisionError(primitiveFields), primitiveFields);
 	let deep: object = valid;
 	for (let depth = 0; depth < 8; depth++) deep = { ...valid, cause: deep };
 	assert.equal(parseSerializedDecisionError(deep), undefined);

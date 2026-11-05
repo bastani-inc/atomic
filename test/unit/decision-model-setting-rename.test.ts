@@ -57,6 +57,18 @@ test("a trusted project's routerModel fails fast; an untrusted project's setting
 	assert.deepEqual(untrusted.getProjectSettings(), {});
 });
 
+test("trusting a project later reads its decisionModel, and distrusting it drops the value", () => {
+	const { cwd, agentDir } = workspace({ decisionModel: "global/model" }, { decisionModel: "project/model" });
+	const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	assert.equal(settings.getDecisionModel(), "global/model");
+	settings.setProjectTrusted(true);
+	assert.equal(settings.isProjectTrusted(), true);
+	assert.equal(settings.getDecisionModel(), "project/model");
+	settings.setProjectTrusted(false);
+	assert.equal(settings.getDecisionModel(), "global/model");
+	assert.deepEqual(settings.getProjectSettings(), {});
+});
+
 test("the check stops loading at the first settings file, before any other read or write", () => {
 	const calls: SettingsScope[] = [];
 	const storage: SettingsStorage = {
