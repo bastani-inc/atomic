@@ -862,3 +862,23 @@ test("a run the catalog dropped while it moved loses its destination copy and ke
 		source.close();
 	}
 });
+
+test("a batch with a registered journal and a copy of a run written to it since adoption is refused, not split (#4325)", async () => {
+	const original = await journal(join(root, "original", "journal.sqlite"), [{ runId: "early" }]);
+	await adoptJournals(store, [original]);
+	await journal(original, [{ runId: "late" }]);
+	const copy = await journal(join(root, "copy", "journal.sqlite"), [{ runId: "late" }]);
+	const refused = await adoptJournals(store, [original, copy]).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(refused));
+	assert.deepEqual(
+		[refused.code, refused.fields.runId, refused.fields.path, refused.fields.existingPath],
+		["run-conflict", "late", copy, original],
+	);
+	await withCatalog(async (catalog) => {
+		assert.deepEqual(
+			(await catalog.shards()).map((shard) => shard.path),
+			[original],
+		);
+		assert.equal(await catalog.locate("late"), undefined, "the copy did not claim the run");
+	});
+});

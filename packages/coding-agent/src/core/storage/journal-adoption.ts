@@ -284,9 +284,22 @@ export async function adoptJournals(
 ): Promise<JournalAdoptionReport> {
 	return withCatalog(store, async (catalog) => {
 		const inspections: JournalFileInspection[] = [];
+		const owners = new Map<string, string>();
 		for (const path of paths) {
 			const inspection = await inspectJournalFile(path);
-			if (!inspections.some((earlier) => earlier.path === inspection.path)) inspections.push(inspection);
+			if (inspections.some((earlier) => earlier.path === inspection.path)) continue;
+			for (const run of inspection.runs) {
+				const other = owners.get(run.runId);
+				if (other !== undefined)
+					throw new JournalAdoptError({
+						code: "run-conflict",
+						path: inspection.path,
+						runId: run.runId,
+						existingPath: other,
+					});
+				owners.set(run.runId, inspection.path);
+			}
+			inspections.push(inspection);
 		}
 		const registrations = await catalog.registerAdoptedAll(inspections);
 		const adopted = inspections.map((inspection, index) => adoptionOutcome(inspection, registrations[index]!));
