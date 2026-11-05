@@ -51,6 +51,7 @@
 - The session tree's "Type to search" line shows a cursor while the tree has focus, like the resume picker's search; the cursor moves to the label input while you edit a label (upstream [#9157](https://github.com/earendil-works/pi/pull/9157))
 - A collapsed paste (`[paste #1 +12 lines]`) in the editor keeps its content when an extension replaces the editor, when an inline extension UI closes, and when queued messages are restored above the draft; before, the draft came back as the bare marker (upstream [#10146](https://github.com/earendil-works/pi/pull/10146))
 - The `/model` selector keeps the model you moved to when its background catalog refresh lands, instead of jumping back to the current model or the top search result; if that model is gone, it falls back as before. The llama.cpp Hugging Face search likewise keeps the result you browsed to when a search finishes (upstream [#11810](https://github.com/earendil-works/pi/pull/11810))
+- Extensions installed through a symlink, such as a pnpm package whose dependencies exist only next to the real file in the store, now load: the entry is imported by its real path, so its imports resolve from there (upstream [#8112](https://github.com/earendil-works/pi/pull/8112))
 
 ## [0.9.71] - 2026-11-03
 
