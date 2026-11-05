@@ -1,4 +1,5 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, StorageDescriptor } from "../storage/database.js";
+import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { renderStorageIdentifiers, validateStoragePrefix } from "../storage/prefix.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
@@ -75,28 +76,60 @@ export type SnapshotCollectionOutcome =
 /** The prefix of every blob table identity in one database, for telling the tables of one database apart. */
 const databaseIdentity = (descriptor: StorageDescriptor) => `${descriptor.adapter}\0${descriptor.location}\0`;
 
-const collectionsRunning = new Map<string, Promise<SnapshotCollectionOutcome>>();
+/**
+ * How an automatic collection waits, so that it never keeps its process alive: between batches, and before it tries
+ * a write lock another connection holds again, on timers the process does not wait for. A process that has nothing
+ * else to do exits at the next wait, which leaves only garbage, like a crash, and the next trigger after the claim
+ * lease carries on. {@link keepProcessAlive} makes the process wait for the collection like any other work.
+ */
+export class BackgroundCollectionPace {
+	private keepAlive = false;
+	private pending?: ReturnType<typeof setTimeout>;
+
+	/** Resolves after `milliseconds`, unless the process exits first because it has nothing else to do. */
+	wait(milliseconds: number): Promise<void> {
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				this.pending = undefined;
+				resolve();
+			}, milliseconds);
+			if (!this.keepAlive) timer.unref();
+			this.pending = timer;
+		});
+	}
+
+	/** Makes the process wait for the collection: the wait in progress and every later one. */
+	keepProcessAlive(): void {
+		this.keepAlive = true;
+		this.pending?.ref();
+	}
+}
+
+/** An automatic collection this process is running, and how it waits. */
+export interface RunningSnapshotCollection {
+	readonly outcome: Promise<SnapshotCollectionOutcome>;
+	readonly pace: BackgroundCollectionPace;
+}
+
+const collectionsRunning = new Map<string, RunningSnapshotCollection>();
 
 /** Records the automatic collection this process runs on `store`'s blob table, until it settles. */
-export function trackSnapshotCollection(
-	store: SqlSnapshotBlobStore,
-	running: Promise<SnapshotCollectionOutcome>,
-): void {
+export function trackSnapshotCollection(store: SqlSnapshotBlobStore, running: RunningSnapshotCollection): void {
 	collectionsRunning.set(store.identity, running);
-	void running.then(() => collectionsRunning.delete(store.identity));
+	void running.outcome.then(() => collectionsRunning.delete(store.identity));
 }
 
 /** The automatic collection of `store`'s blob table that this process is running, if any. */
-export function runningSnapshotCollectionOf(
-	store: SqlSnapshotBlobStore,
-): Promise<SnapshotCollectionOutcome> | undefined {
+export function runningSnapshotCollectionOf(store: SqlSnapshotBlobStore): RunningSnapshotCollection | undefined {
 	return collectionsRunning.get(store.identity);
 }
 
 /** Every automatic collection this process is running on a blob table of the database `descriptor` names. */
 export function runningSnapshotCollectionsOn(descriptor: StorageDescriptor): Promise<SnapshotCollectionOutcome>[] {
 	const prefix = databaseIdentity(descriptor);
-	return [...collectionsRunning].filter(([identity]) => identity.startsWith(prefix)).map(([, running]) => running);
+	return [...collectionsRunning]
+		.filter(([identity]) => identity.startsWith(prefix))
+		.map(([, running]) => running.outcome);
 }
 
 /**
@@ -119,10 +152,23 @@ export const SNAPSHOT_INDEX_BACKFILL_BATCH = 500;
  */
 export const SNAPSHOT_COLLECTION_LEASE_SECONDS = 120;
 
+/**
+ * How long a background collection first waits before it tries a write lock another connection holds again, in
+ * milliseconds. Each refusal doubles the wait, up to {@link SNAPSHOT_COLLECTION_LOCK_RETRY_MAX_MS}; once the waits add
+ * up to the claim lease, the collection gives up with the lock's error, since another process may take over its claim.
+ */
+export const SNAPSHOT_COLLECTION_LOCK_RETRY_FIRST_MS = 10;
+export const SNAPSHOT_COLLECTION_LOCK_RETRY_MAX_MS = 1_000;
+
 export interface SnapshotIndexOptions {
 	readonly signal?: AbortSignal;
 	/** Renews this holder's claim in every batch, so a long collection keeps it. */
 	readonly holder?: string;
+	/**
+	 * Runs in the background: waits between batches, and for a write lock another connection holds, on `pace`, so the
+	 * process can exit meanwhile. Without it the collection waits like any other work of its caller.
+	 */
+	readonly pace?: BackgroundCollectionPace;
 }
 
 export interface SnapshotSweepOptions extends SnapshotIndexOptions {
@@ -443,11 +489,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * above it, indexed by the triggers. A table that has none yet, an empty one included, costs one watermark of 0.
 	 * Resolves with the state of every referencing table.
 	 */
-	private async installIndex(): Promise<SourceState[]> {
+	private async installIndex(pace?: BackgroundCollectionPace): Promise<SourceState[]> {
 		const states = await readSourceStates(this.database, this.tables, this.sources);
 		const missing = states.filter((state) => !state.installed);
 		for (const { source } of missing) {
-			await this.database.transaction(async (transaction) => {
+			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.tables, [source]);
 				if (current === undefined || current.installed) return;
 				await transaction.exec(source.createTriggers);
@@ -468,20 +514,20 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
-		for (const { source, backfilled } of await this.installIndex()) {
+		for (const { source, backfilled } of await this.installIndex(options.pace)) {
 			if (backfilled) continue;
 			for (;;) {
 				options.signal?.throwIfAborted();
-				if (await this.backfillBatch(source, options.holder)) break;
-				await yieldToEventLoop();
+				if (await this.backfillBatch(source, options)) break;
+				await this.betweenBatches(options.pace);
 			}
 		}
 	}
 
 	/** Indexes the next rows of `source`, and resolves true once every row at or below its watermark is indexed. */
-	private backfillBatch(source: IndexSource, holder: string | undefined): Promise<boolean> {
+	private backfillBatch(source: IndexSource, { holder, pace }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
-		return this.database.transaction(async (transaction) => {
+		return this.write(pace, async (transaction) => {
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
 				source.name,
@@ -505,8 +551,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Deletes every blob stored or re-stored at least `graceSeconds` ago on the database clock that no retained snapshot
 	 * references, in batches of {@link SNAPSHOT_COLLECTION_BATCH}, and resolves with the hashes deleted. Each batch is
 	 * one write transaction whose delete re-checks age and references in the same statement, so a reference published
-	 * before the batch commits keeps its blob and a process killed mid-collection leaves only garbage. Reads the
-	 * reference index and the blob table's age index, never a journal or a session.
+	 * before the batch commits keeps its blob and a process killed mid-collection leaves only garbage. Each batch's page
+	 * holds only blobs it can delete, so a sweep started again after a process exited makes progress even when the
+	 * oldest blobs are all retained. Reads the reference index and the blob table's age index, never a journal or a
+	 * session.
 	 *
 	 * Every batch first checks, in its own transaction, that every referencing table has its triggers and a finished
 	 * backfill, as {@link completeIndex} leaves them. When one does not, because a table appeared or lost its triggers
@@ -533,11 +581,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		for (;;) {
 			options.signal?.throwIfAborted();
 			const after = cursor;
-			const batch = await this.database.transaction(async (transaction) => {
+			const batch = await this.write(options.pace, async (transaction) => {
 				const states = await readSourceStates(transaction, this.tables, this.sources);
 				if (!states.every((state) => state.installed && state.backfilled)) return undefined;
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
-				const page = await this.page(transaction, options.graceSeconds, after);
+				const page = await this.page(transaction, options.graceSeconds, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
 				const rows = await transaction.all<SqliteRow & { hash: string }>(
 					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
@@ -556,7 +604,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			options.onBatch?.(batch.deleted);
 			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) return deleted;
 			cursor = batch.page.at(-1);
-			await yieldToEventLoop();
+			await this.betweenBatches(options.pace);
 		}
 	}
 
@@ -566,16 +614,22 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		return this.sweep(options);
 	}
 
-	private page(transaction: SqliteExecutor, graceSeconds: number, after: PageRow | undefined): Promise<PageRow[]> {
+	/** The next {@link SNAPSHOT_COLLECTION_BATCH} blobs old enough and `unreferenced`, oldest first, after `after`. */
+	private page(
+		transaction: SqliteExecutor,
+		graceSeconds: number,
+		unreferenced: string,
+		after: PageRow | undefined,
+	): Promise<PageRow[]> {
 		const t = this.tables;
 		return after === undefined
 			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					graceSeconds,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					graceSeconds,
 					after.created_at,
 					after.hash,
@@ -588,14 +642,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * the last one finished at least `intervalSeconds` ago, or an unfinished one has renewed its claim in no batch for
 	 * {@link SNAPSHOT_COLLECTION_LEASE_SECONDS}, so it stopped. A failed collection finishes with its error code, so it
 	 * backs off for the whole interval. A read without the write lock answers "not due" first; only a due claim takes
-	 * the lock.
+	 * the lock, waiting for it on `pace` when one is given.
 	 */
-	async claimCollection(intervalSeconds: number, holder: string): Promise<boolean> {
+	async claimCollection(intervalSeconds: number, holder: string, pace?: BackgroundCollectionPace): Promise<boolean> {
 		const due = `id = 1 AND (claimed_at IS NULL OR (finished_at IS NULL AND claimed_at <= unixepoch() - ?) OR (finished_at IS NOT NULL AND finished_at <= unixepoch() - ?))`;
 		const lease = SNAPSHOT_COLLECTION_LEASE_SECONDS;
 		if (!(await this.database.get(`SELECT id FROM ${this.tables.collection} WHERE ${due}`, lease, intervalSeconds)))
 			return false;
-		const { changes } = await this.database.transaction((transaction) =>
+		const { changes } = await this.write(pace, (transaction) =>
 			transaction.run(
 				`UPDATE ${this.tables.collection} SET claimed_at = unixepoch(), holder = ?, finished_at = NULL, deleted = NULL, error_code = NULL WHERE ${due}`,
 				holder,
@@ -613,12 +667,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		);
 	}
 
-	/** Records how `holder`'s claimed collection ended; a later claim by another holder is left alone. */
+	/**
+	 * Records how `holder`'s claimed collection ended; a later claim by another holder is left alone. Waits for the
+	 * write lock on `pace` when one is given.
+	 */
 	async recordCollection(
 		holder: string,
 		outcome: { readonly deleted: number; readonly errorCode: string | null },
+		pace?: BackgroundCollectionPace,
 	): Promise<void> {
-		await this.database.transaction((transaction) =>
+		await this.write(pace, (transaction) =>
 			transaction.run(
 				`UPDATE ${this.tables.collection} SET finished_at = unixepoch(), deleted = ?, error_code = ? WHERE id = 1 AND holder = ?`,
 				outcome.deleted,
@@ -626,5 +684,34 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				holder,
 			),
 		);
+	}
+
+	/** Waits between two batches: on `pace` in the background, otherwise until the event loop has run once. */
+	private betweenBatches(pace: BackgroundCollectionPace | undefined): Promise<void> {
+		return pace === undefined ? yieldToEventLoop() : pace.wait(0);
+	}
+
+	/**
+	 * Runs `body` in a write transaction. With `pace`, the transaction never waits for a write lock another connection
+	 * holds: it is refused at once and tried again after a wait on `pace` that doubles each time, so the process can
+	 * exit meanwhile; once the waits add up to {@link SNAPSHOT_COLLECTION_LEASE_SECONDS}, it rejects with the refusal.
+	 */
+	private async write<T>(
+		pace: BackgroundCollectionPace | undefined,
+		body: (transaction: SqliteExecutor) => Promise<T>,
+	): Promise<T> {
+		if (pace === undefined) return this.database.transaction(body);
+		let waited = 0;
+		for (let delay = SNAPSHOT_COLLECTION_LOCK_RETRY_FIRST_MS; ; ) {
+			try {
+				return await this.database.transaction(body, { lockWaitMs: 0 });
+			} catch (error) {
+				if (!(error instanceof StorageWriteLockTimeoutError) || waited >= SNAPSHOT_COLLECTION_LEASE_SECONDS * 1_000)
+					throw error;
+			}
+			await pace.wait(delay);
+			waited += delay;
+			delay = Math.min(delay * 2, SNAPSHOT_COLLECTION_LOCK_RETRY_MAX_MS);
+		}
 	}
 }

@@ -132,12 +132,12 @@ describe("collection cost follows the number of snapshots, never the number of j
 		// The full scan the reference index replaces reads every event and entry: 40,025 rows at 20,000 events.
 		assert.deepEqual(summary(before.fullScan), { statements: 7, rows: 425, transactions: 1 });
 		assert.deepEqual(summary(after.fullScan), { statements: 85, rows: 40_025, transactions: 1 });
-		// Collection checks the index twice, examines the 16 aged blobs and returns the 7 it deletes, in one batch, at
-		// either length.
+		// Collection checks the index twice, pages through the 7 aged blobs nothing retains and deletes them, in one
+		// batch, at either length.
 		for (const { collection } of measured) {
 			assert.deepEqual(summary(collection), {
 				statements: 2 * INDEX_CHECK.statements + 2,
-				rows: 2 * INDEX_CHECK.rows + 16 + 7,
+				rows: 2 * INDEX_CHECK.rows + 7 + 7,
 				transactions: 1,
 			});
 			assert.equal(collection.result.deleted.length, 7);
@@ -157,7 +157,7 @@ describe("collection cost follows the number of snapshots, never the number of j
 		}
 	});
 
-	test("collection rows grow with the number of snapshots, a batch of statements per 256 blobs", async () => {
+	test("collection rows grow with the number of snapshots, a batch of statements per 256 blobs it deletes", async () => {
 		const few = await history("few", 16, 200);
 		const many = await history("many", 600, 200);
 
@@ -166,14 +166,14 @@ describe("collection cost follows the number of snapshots, never the number of j
 
 		assert.deepEqual(summary(small), {
 			statements: 2 * INDEX_CHECK.statements + 2,
-			rows: 2 * INDEX_CHECK.rows + 16 + 7,
+			rows: 2 * INDEX_CHECK.rows + 7 + 7,
 			transactions: 1,
 		});
 		assert.equal(large.result.deleted.length, 150 + 149);
 		assert.deepEqual(summary(large), {
-			statements: INDEX_CHECK.statements + 3 * (INDEX_CHECK.statements + 2),
-			rows: INDEX_CHECK.rows + 3 * INDEX_CHECK.rows + 600 + 299,
-			transactions: 3,
+			statements: INDEX_CHECK.statements + 2 * (INDEX_CHECK.statements + 2),
+			rows: INDEX_CHECK.rows + 2 * INDEX_CHECK.rows + 299 + 299,
+			transactions: 2,
 		});
 	});
 

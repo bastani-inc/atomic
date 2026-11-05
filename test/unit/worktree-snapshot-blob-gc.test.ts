@@ -4,14 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
+	MemorySnapshotBlobStore,
 	SNAPSHOT_COLLECTION_BATCH,
+	SqlSnapshotBlobStore,
 	snapshotBlobHashes,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
 	collectSnapshotGarbage,
 	DEFAULT_BLOB_GRACE_SECONDS,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
-import { isWorkspaceConfigError } from "../../packages/coding-agent/src/index.ts";
+import type { SnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
+import { isWorkspaceConfigError, isWorkspaceSnapshotError } from "../../packages/coding-agent/src/index.ts";
+import { countingDatabase } from "../helpers/counting-database.js";
 import {
 	ageBlobs,
 	checkpointEvent,
@@ -354,6 +358,57 @@ describe("collectSnapshotGarbage validates graceSeconds at the boundary", () => 
 			(error: unknown) =>
 				(error as Error).message ===
 				"Invalid worktree snapshot setting: graceSeconds from sdk (invalid-setting). Set graceSeconds to a non-negative integer number of seconds.",
+		);
+	});
+});
+
+describe("collectSnapshotGarbage refuses a store it cannot collect, before reading anything (#4355)", () => {
+	/** A store that keeps its blobs in the shared database but is not the SQL store, so it has no reference index. */
+	async function wrappedSqlStore() {
+		const counted = countingDatabase(shared.database);
+		const sql = await SqlSnapshotBlobStore.open(counted.wrapped);
+		const wrapped: SnapshotBlobStore = {
+			putBlobs: (entries) => sql.putBlobs(entries),
+			getBlob: (hash) => sql.getBlob(hash),
+			refreshBlobs: (hashes) => sql.refreshBlobs(hashes),
+			listBlobHashes: () => sql.listBlobHashes(),
+		};
+		counted.statements.length = 0;
+		counted.counts.transactions = 0;
+		return { wrapped, counted };
+	}
+
+	test.each([
+		["an in-memory store", new MemorySnapshotBlobStore()],
+		["no store, as for storage without a blob table", undefined],
+	] as const)(
+		"%s is refused with the typed blob-store-unsupported error",
+		async (_name, store: SnapshotBlobStore | undefined) => {
+			await assert.rejects(collectSnapshotGarbage(store), (error: unknown) => {
+				assert.ok(isWorkspaceSnapshotError(error));
+				assert.equal(error.code, "blob-store-unsupported");
+				assert.deepEqual(error.fields, { subject: "non-SQLite" });
+				assert.equal(error.retryable, false);
+				return true;
+			});
+		},
+	);
+
+	test("a store of its own over a SQL database is refused without a single statement or transaction", async () => {
+		const [patch] = await put("untouched");
+		await ageBlobs(shared.database, blobs().table, DEFAULT_BLOB_GRACE_SECONDS + 10);
+		const { wrapped, counted } = await wrappedSqlStore();
+
+		await assert.rejects(collectSnapshotGarbage(wrapped), (error: unknown) => isWorkspaceSnapshotError(error));
+
+		assert.deepEqual(counted.statements, []);
+		assert.equal(counted.counts.transactions, 0);
+		assert.deepEqual(await stored(), [patch]);
+	});
+
+	test("the store is checked before the settings: an unsupported store with an invalid grace is a store error", async () => {
+		await assert.rejects(collectSnapshotGarbage(undefined, { graceSeconds: -1 }), (error: unknown) =>
+			isWorkspaceSnapshotError(error),
 		);
 	});
 });

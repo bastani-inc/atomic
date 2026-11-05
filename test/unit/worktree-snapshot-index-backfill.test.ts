@@ -563,6 +563,9 @@ describe("the backfill works in short transactions that resume where they stoppe
 		const { database } = await oldHistory();
 		const counted = countingDatabase(database);
 		const upgraded = await openStores(counted.wrapped);
+		const extraOrphans = Array.from({ length: SNAPSHOT_COLLECTION_BATCH }, (_, index) => textBlob(`extra ${index}`));
+		await upgraded.blobs.putBlobs(extraOrphans);
+		await database.run("UPDATE snapshot_blobs SET created_at = 0");
 		counted.statements.length = 0;
 
 		const outcome = await scheduleSnapshotCollection(upgraded.blobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, {
@@ -574,7 +577,8 @@ describe("the backfill works in short transactions that resume where they stoppe
 			statement.sql.startsWith("UPDATE snapshot_collection SET claimed_at = unixepoch() WHERE id = 1"),
 		).length;
 		const backfillBatches = Math.ceil((EVENTS + 2) / SNAPSHOT_INDEX_BACKFILL_BATCH) + 1;
-		const sweepBatches = Math.ceil((EVENTS + 2) / SNAPSHOT_COLLECTION_BATCH);
+		const sweepBatches = Math.ceil((ORPHANS.length + extraOrphans.length) / SNAPSHOT_COLLECTION_BATCH);
+		assert.equal(sweepBatches, 2);
 		assert.equal(renewals, backfillBatches + sweepBatches);
 	});
 
@@ -649,4 +653,77 @@ describe("the backfill works in short transactions that resume where they stoppe
 		for (const progress of await sourceProgress(database))
 			assert.equal(progress.backfilled_through, progress.watermark, progress.source);
 	});
+});
+
+describe("a backfill never replaces a run's later status with an earlier one (#4355)", () => {
+	type Status = "completed" | "failed";
+	const blob = textBlob("checkpointed by the run");
+
+	/** One run that checkpointed `blob`, then reported `statuses` in order, written while the index did not exist. */
+	async function unindexedRun(statuses: readonly Status[]) {
+		const database = await openDatabase();
+		const before = await openStores(database);
+		await dropSnapshotIndex(database);
+		await before.blobs.putBlobs([blob]);
+		const lease = await startRun(before.journal, "run");
+		await before.journal.append(lease, statusEvent("run", { status: "running" }, "RunStarted"));
+		await before.journal.append(lease, checkpointEvent([syntheticSnapshot("s", [blob.hash])]));
+		for (const status of statuses) await before.journal.append(lease, statusEvent("run", { status }));
+		await before.close();
+		return { database, lease };
+	}
+
+	const lastStatusSeq = async (database: SqliteDatabase) =>
+		Number(
+			(
+				await database.get<{ seq: number }>(
+					"SELECT max(seq) AS seq FROM wf_events WHERE run_id = 'run' AND type = 'StatusChanged'",
+				)
+			)?.seq,
+		);
+
+	test.each([
+		["an earlier release does not undo a later failure, so the failed run keeps its blobs", "completed", "failed", 1],
+		[
+			"an earlier failure does not undo a later completion, so the completed run releases them",
+			"failed",
+			"completed",
+			0,
+		],
+	] as const)("%s", async (_name, earlier, later, retained) => {
+		const { database, lease } = await unindexedRun([earlier]);
+		const upgraded = await openStores(database);
+		await upgraded.journal.append(lease, statusEvent("run", { status: later }));
+		const seq = await lastStatusSeq(database);
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+
+		await upgraded.blobs.completeIndex();
+
+		assert.deepEqual(
+			{ ...(await database.get("SELECT retained, seq FROM snapshot_run_state WHERE run_id = 'run'")) },
+			{ retained, seq },
+			"the state the triggers recorded for the later status stays",
+		);
+		await collectSnapshotGarbage(upgraded.blobs);
+		assert.equal((await upgraded.blobs.getBlob(blob.hash)) !== undefined, retained === 1);
+	});
+
+	test.each([
+		["completed", "failed", 1],
+		["failed", "completed", 0],
+	] as const)(
+		"within one backfill batch, %s then %s leaves the later status in force",
+		async (earlier, later, retained) => {
+			const { database } = await unindexedRun([earlier, later]);
+			const upgraded = await openStores(database);
+			const seq = await lastStatusSeq(database);
+
+			await upgraded.blobs.completeIndex();
+
+			assert.deepEqual(
+				{ ...(await database.get("SELECT retained, seq FROM snapshot_run_state WHERE run_id = 'run'")) },
+				{ retained, seq },
+			);
+		},
+	);
 });

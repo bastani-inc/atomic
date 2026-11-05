@@ -2,13 +2,19 @@ import { randomUUID } from "node:crypto";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { StoreClosedError } from "../storage/errors.js";
 import {
+	BackgroundCollectionPace,
 	runningSnapshotCollectionOf,
 	type SnapshotCollectionOutcome,
 	type SnapshotCollectionSkipReason,
 	SqlSnapshotBlobStore,
 	trackSnapshotCollection,
 } from "./blob-store.ts";
-import { type SnapshotCollectionPhase, WorkspaceCollectionError, WorkspaceConfigError } from "./errors.ts";
+import {
+	type SnapshotCollectionPhase,
+	WorkspaceCollectionError,
+	WorkspaceConfigError,
+	WorkspaceSnapshotError,
+} from "./errors.ts";
 import { resolveWorktreeSnapshotSettings } from "./settings.ts";
 import type { SnapshotBlobStore, WorktreeSnapshotSettings } from "./types.ts";
 
@@ -39,12 +45,16 @@ export interface CollectSnapshotGarbageOptions {
  * indexed first, once, in short transactions, and nothing is deleted until that is done. Batches commit one at a
  * time; stopping part way leaves only garbage.
  *
- * Throws {@link WorkspaceConfigError} before reading the store when `graceSeconds` is not a non-negative integer.
+ * Rejects before reading anything: with {@link WorkspaceSnapshotError} (`blob-store-unsupported`) when `store` is not a
+ * {@link SqlSnapshotBlobStore}, which has no reference index to collect by, or is missing, as for storage that holds
+ * no blobs; with {@link WorkspaceConfigError} when `graceSeconds` is not a non-negative integer.
  */
 export async function collectSnapshotGarbage(
-	store: SqlSnapshotBlobStore,
+	store: SnapshotBlobStore | undefined,
 	options: CollectSnapshotGarbageOptions = {},
 ): Promise<{ readonly deleted: readonly string[] }> {
+	if (!(store instanceof SqlSnapshotBlobStore))
+		throw new WorkspaceSnapshotError("blob-store-unsupported", "non-SQLite");
 	const graceSeconds = options.graceSeconds ?? DEFAULT_BLOB_GRACE_SECONDS;
 	if (!Number.isSafeInteger(graceSeconds) || graceSeconds < 0) {
 		throw new WorkspaceConfigError("sdk", "graceSeconds", "a non-negative integer number of seconds");
@@ -80,6 +90,10 @@ function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollecti
  * clock. This process asks the database at most once per interval. A failure is recorded in the table's collection
  * row and reported once through `onFailure`.
  *
+ * The collection never keeps the process alive: it waits between batches, and for a write lock another connection
+ * holds, on timers the process does not wait for, so a process with nothing else to do exits after the batch in
+ * progress and a later trigger carries on. {@link runningSnapshotCollection} makes the process wait for it.
+ *
  * Throws {@link WorkspaceConfigError} before reading the store when a setting is invalid: `autoCollect` not a boolean,
  * `collectIntervalSeconds` not a positive integer, or `graceSeconds` not a non-negative integer. Everything else is an
  * outcome of the returned promise, which never rejects.
@@ -97,8 +111,9 @@ export function scheduleSnapshotCollection(
 	if (now - (lastAskedAt.get(store.identity) ?? Number.NEGATIVE_INFINITY) < checked.collectIntervalSeconds * 1000)
 		return skipped("not-due");
 	lastAskedAt.set(store.identity, now);
-	const running = collectIfDue(store, checked, options.onFailure ?? ((error) => process.emitWarning(error)));
-	trackSnapshotCollection(store, running);
+	const pace = new BackgroundCollectionPace();
+	const running = collectIfDue(store, checked, pace, options.onFailure ?? ((error) => process.emitWarning(error)));
+	trackSnapshotCollection(store, { outcome: running, pace });
 	void running.then((outcome) => {
 		if (outcome.status === "interrupted") lastAskedAt.delete(store.identity);
 	});
@@ -107,32 +122,41 @@ export function scheduleSnapshotCollection(
 
 /**
  * The automatic collection of `store`'s blob table that this process is running, if any, as a promise that settles
- * when it ends and never rejects. Close a database you opened yourself only after it settles, so the close does not
+ * when it ends and never rejects. Asking for it makes the process wait for the collection, which otherwise lets the
+ * process exit between batches. Close a database you opened yourself only after it settles, so the close does not
  * cut the collection short; storage that Atomic opened itself waits for it on its own.
  */
 export function runningSnapshotCollection(
 	store: SnapshotBlobStore | undefined,
 ): Promise<SnapshotCollectionOutcome> | undefined {
-	return store instanceof SqlSnapshotBlobStore ? runningSnapshotCollectionOf(store) : undefined;
+	const running = store instanceof SqlSnapshotBlobStore ? runningSnapshotCollectionOf(store) : undefined;
+	running?.pace.keepProcessAlive();
+	return running?.outcome;
 }
 
 async function collectIfDue(
 	store: SqlSnapshotBlobStore,
 	settings: CollectionSettings,
+	pace: BackgroundCollectionPace,
 	onFailure: (error: WorkspaceCollectionError) => void,
 ): Promise<SnapshotCollectionOutcome> {
 	const holder = randomUUID();
 	const deleted: string[] = [];
 	let phase: SnapshotCollectionPhase = "claim";
 	try {
-		if (!(await store.claimCollection(settings.collectIntervalSeconds, holder)))
+		if (!(await store.claimCollection(settings.collectIntervalSeconds, holder, pace)))
 			return { status: "skipped", reason: "not-due" };
 		phase = "index";
-		await store.completeIndex({ holder });
+		await store.completeIndex({ holder, pace });
 		phase = "sweep";
-		await store.sweep({ graceSeconds: settings.graceSeconds, holder, onBatch: (batch) => deleted.push(...batch) });
+		await store.sweep({
+			graceSeconds: settings.graceSeconds,
+			holder,
+			pace,
+			onBatch: (batch) => deleted.push(...batch),
+		});
 		phase = "record";
-		await store.recordCollection(holder, { deleted: deleted.length, errorCode: null });
+		await store.recordCollection(holder, { deleted: deleted.length, errorCode: null }, pace);
 		return { status: "collected", deleted };
 	} catch (cause) {
 		if (cause instanceof StoreClosedError) return { status: "interrupted", deleted };
@@ -142,7 +166,7 @@ async function collectIfDue(
 		);
 		if (phase !== "claim") {
 			try {
-				await store.recordCollection(holder, { deleted: deleted.length, errorCode: error.code });
+				await store.recordCollection(holder, { deleted: deleted.length, errorCode: error.code }, pace);
 			} catch (cleanupCause) {
 				Object.defineProperty(error, "cleanupCause", { value: cleanupCause });
 			}
