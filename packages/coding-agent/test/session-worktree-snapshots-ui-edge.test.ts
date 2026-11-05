@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 const plain = (container: Container): string[] =>
-	container.children.flatMap((child) => child.render(200)).map((line) => stripVTControlCharacters(line).trimEnd());
+	container.children.flatMap((child) => child.render(2000)).map((line) => stripVTControlCharacters(line).trimEnd());
 
 async function store(): Promise<SessionStore> {
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));

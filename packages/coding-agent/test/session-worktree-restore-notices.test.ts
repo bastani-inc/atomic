@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
@@ -191,7 +191,13 @@ describe("restore notices in the TUI (#4245)", () => {
 
 	test("/import keeps a missing Git on screen like a workspace failure, and treats any other failure as fatal", async () => {
 		const manager = await SessionManager.create(store, sandbox.root);
-		const missingGit = new GitUnavailableError("not-installed", "/opt/git/bin/git");
+		const missingGit = new GitUnavailableError({
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: "/opt/git",
+			systemGit: { path: "/opt/git/bin/git", problem: "probe-failed" },
+		});
 		const unexpected = new Error("the session file could not be parsed");
 		for (const failure of [missingGit, unexpected]) {
 			const host = chatHost(manager) as ChatHost;
@@ -252,7 +258,7 @@ describe("restore warnings recorded with their restore (#4245)", () => {
 			getWorktreeRootMappings: () => [],
 			getWorktreeSnapshotRecords: () => new Map([["kept", recorded]]),
 		});
-		assert.deepEqual([...current], [["/work/a", recorded]]);
+		assert.deepEqual([...current], [[resolve("/work/a"), recorded]]);
 	});
 
 	test("a reopened session still reports what each restore said, and startup shows it once", async () => {

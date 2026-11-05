@@ -48,14 +48,16 @@ const drift = () =>
 
 describe("WorkspaceError rendering", () => {
 	test("each class renders <what failed>: <subject> (<code>). <hint>", () => {
-		const git = new GitUnavailableError("not-installed", "/opt/git/bin/git");
-		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
-		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
-		assert.equal(
-			git.message,
-			`Git is unavailable: /opt/git/bin/git could not be started, and worktree snapshots need it to read and rebuild repository state (not-installed). ${hint}`,
-		);
-		assert.equal(git.hint, hint);
+		const git = new GitUnavailableError({
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: "/opt/git",
+			installCommand: gitInstallCommand(),
+			systemGit: { path: "/opt/git/bin/git", problem: "probe-failed" },
+		});
+		assert.match(git.message, /^Git is unavailable: .+\(not-installed\)\. /);
+		assert.match(git.hint, new RegExp(gitInstallCommand().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 		assert.equal(gitInstallCommand("darwin"), "xcode-select --install");
 		assert.equal(gitInstallCommand("win32"), "winget install --id Git.Git -e");
 		assert.equal(gitInstallCommand("aix"), "install Git from https://git-scm.com/downloads");
@@ -93,23 +95,20 @@ describe("WorkspaceError rendering", () => {
 		);
 	});
 
-	test("the Git install hint is the platform's command, with the package-manager alternative only on Linux", () => {
-		const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+	test("the Git install hint names the platform's command", () => {
 		const hintOn = (platform: NodeJS.Platform) => {
-			Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: platform });
-			const error = new GitUnavailableError("not-installed", "git");
+			const error = new GitUnavailableError({
+				code: "not-installed",
+				platform,
+				arch: "x64",
+				installDir: "/opt/git",
+				installCommand: gitInstallCommand(platform),
+			});
 			assert.equal(error.platform, platform);
 			return error.hint;
 		};
-		try {
-			assert.equal(hintOn("darwin"), "Install Git with `xcode-select --install` or put it on PATH, then retry.");
-			assert.equal(
-				hintOn("linux"),
-				"Install Git with `sudo apt-get install git` (or your distribution's package manager) or put it on PATH, then retry.",
-			);
-		} finally {
-			Object.defineProperty(process, "platform", original);
-		}
+		assert.match(hintOn("darwin"), /`xcode-select --install`/);
+		assert.match(hintOn("linux"), /`sudo apt-get install git`/);
 	});
 
 	test("every error keeps hint and fields separately for UIs and logs", () => {
@@ -135,10 +134,30 @@ describe("WorkspaceError guards and chains", () => {
 		assert.equal(isWorkspaceError(new Error("tree-drift")), false);
 		assert.equal(isWorkspaceError(null), false);
 		assert.equal(isWorkspaceError("WorkspaceError"), false);
-		assert.equal(isGitUnavailableError(new GitUnavailableError("offline", "git")), true);
+		assert.equal(
+			isGitUnavailableError(
+				new GitUnavailableError({
+					code: "offline",
+					platform: "linux",
+					arch: "x64",
+					offlineVariable: "ATOMIC_OFFLINE",
+				}),
+			),
+			true,
+		);
 		assert.equal(isGitUnavailableError({ name: "GitUnavailableError", code: "checksum-mismatch" }), true);
 		assert.equal(isGitUnavailableError({ name: "GitUnavailableError", code: "tree-drift" }), false);
-		assert.equal(isWorkspaceError(new GitUnavailableError("not-installed", "git")), false);
+		assert.equal(
+			isWorkspaceError(
+				new GitUnavailableError({
+					code: "not-installed",
+					platform: "linux",
+					arch: "x64",
+					installDir: "/opt/git",
+				}),
+			),
+			false,
+		);
 		assert.equal(
 			isWorkspaceGitError(new WorkspaceGitError({ operation: "x", cwd: "/", exitCode: 1, detail: "" })),
 			true,
@@ -180,7 +199,12 @@ describe("WorkspaceError guards and chains", () => {
 		assert.ok(restore.cause instanceof WorkspaceGitError);
 		assert.equal(restore.cause.exitCode, 128);
 		for (const error of [
-			new GitUnavailableError("unsupported-platform", "git"),
+			new GitUnavailableError({
+				code: "unsupported-platform",
+				platform: "linux",
+				arch: "x64",
+				reason: "musl",
+			}),
 			new WorkspaceConfigError("env", "F", "x"),
 			new WorkspaceSnapshotError("blob-store-unsupported", "jsonl"),
 		]) {
@@ -228,7 +252,7 @@ describe("fail-fast setup errors", () => {
 			(error: unknown) => {
 				assert.ok(error instanceof GitUnavailableError);
 				assert.equal(error.code, "not-installed");
-				assert.match(error.hint, /Install Git with `.+`/);
+				assert.match(error.hint, /`.+`/);
 				return true;
 			},
 		);

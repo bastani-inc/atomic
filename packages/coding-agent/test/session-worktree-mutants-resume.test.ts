@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmodSync, readdirSync, renameSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -80,7 +80,7 @@ function assertRemovalFailure(error: unknown, worktree: string): void {
 }
 
 describe("mapping a path through several restores (#4245)", () => {
-	const at = (path: string) => `/atomic-mapping-fixture/${path}`;
+	const at = (path: string) => resolve("/atomic-mapping-fixture", path);
 	const mapping = (from: string, to: string): WorktreeRootMapping => ({
 		from: at(from),
 		to: at(to),

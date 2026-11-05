@@ -128,7 +128,7 @@ Every error except `GitUnavailableError` extends `WorkspaceError`; all of them c
 | Class | Code | When | Fields | What to do |
 |-------|------|------|--------|------------|
 | `WorkspaceConfigError` | `invalid-setting` | A snapshot setting or SDK option has the wrong type or range | `source`, `field`, `expected` | Fix the named setting or option |
-| `GitUnavailableError` | `not-installed` | Git could not be started | `executable`, `platform` | Install Git with the command in `hint`, or put it on `PATH` |
+| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | Git could not be started or provisioned | `platform`, `arch`, `installDir`, `installCommand?`, `systemGit?` | Follow `hint` (for example `await resolveGit()`, or install Git with `installCommand` or put it on `PATH`) |
 | `WorkspaceGitError` | `git-failed` | A Git command failed (`detail` holds its first error line, for example `No space left on device`) | `operation`, `cwd`, `exitCode`, `detail` | Check the repository is readable, its disk has free space, and no other Git process holds its lock, then retry |
 | `WorkspaceSnapshotError` | `not-a-repository` | The directory is outside any Git work tree | `subject` | Work inside a Git checkout |
 | `WorkspaceSnapshotError` | `unborn-head` | The repository has no commits | `subject` | Create a first commit |

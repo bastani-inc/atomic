@@ -63,6 +63,7 @@ describe("the snapshot blob table", () => {
 
 	test("writing no blobs sends the database nothing, with or without batching", async () => {
 		for (const withBatch of [false, true]) {
+			while (cleanups.length > 0) await cleanups.pop()?.();
 			sandbox.dispose();
 			sandbox = new GitSandbox();
 			const { wrapped, counts } = await countingDatabase(withBatch);

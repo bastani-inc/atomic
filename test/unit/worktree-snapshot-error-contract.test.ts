@@ -8,7 +8,6 @@ import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	findWorkspaceError,
 	GitUnavailableError,
-	type GitUnavailableErrorCode,
 	gitInstallCommand,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
@@ -60,37 +59,63 @@ describe("WorkspaceError base", () => {
 });
 
 describe("GitUnavailableError", () => {
-	const summaries: Record<GitUnavailableErrorCode, string> = {
-		"not-installed": "could not be started",
-		"unsupported-platform": "cannot be provisioned on this platform",
-		offline: "could not be downloaded while offline",
-		"checksum-mismatch": "failed its checksum after download",
-	};
+	const cases = [
+		{
+			code: "not-installed" as const,
+			platform: "linux",
+			arch: "x64",
+			installDir: "/opt/git",
+			installCommand: "sudo apt-get install git",
+			systemGit: { path: "/opt/git/bin/git", problem: "probe-failed" as const },
+		},
+		{
+			code: "unsupported-platform" as const,
+			platform: "linux",
+			arch: "x64",
+			reason: "musl" as const,
+			installCommand: "apk add git",
+		},
+		{
+			code: "offline" as const,
+			platform: "darwin",
+			arch: "arm64",
+			offlineVariable: "ATOMIC_OFFLINE",
+			installCommand: "xcode-select --install",
+		},
+		{
+			code: "checksum-mismatch" as const,
+			platform: "win32",
+			arch: "x64",
+			asset: "PortableGit.zip",
+			url: "https://example.com/PortableGit.zip",
+			expectedSha256: "a".repeat(64),
+			actualSha256: "b".repeat(64),
+			installCommand: "winget install --id Git.Git -e",
+		},
+	] as const;
 
 	test("each code renders its own reason, the platform's install command and no stray cause", () => {
-		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
-		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
-		for (const [code, summary] of Object.entries(summaries) as [GitUnavailableErrorCode, string][]) {
-			const error = new GitUnavailableError(code, "/opt/git");
-			assert.equal(
-				error.message,
-				`Git is unavailable: /opt/git ${summary}, and worktree snapshots need it to read and rebuild repository state (${code}). ${hint}`,
-			);
-			assert.equal(error.code, code);
-			assert.equal(error.hint, hint);
+		for (const fields of cases) {
+			const error = new GitUnavailableError(fields);
+			assert.equal(error.code, fields.code);
 			assert.equal(error.name, "GitUnavailableError");
 			assert.equal(error.retryable, false);
-			assert.equal(error.platform, process.platform);
-			assert.equal(error.executable, "/opt/git");
-			assert.deepEqual(error.fields, { platform: process.platform, executable: "/opt/git" });
-			assert.ok(Object.isFrozen(error.fields));
+			assert.equal(error.platform, fields.platform);
+			assert.deepEqual(error.fields, fields);
+			assert.match(error.hint, new RegExp(fields.installCommand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			assert.equal(Object.hasOwn(error, "cause"), false);
 		}
 	});
 
 	test("keeps the lower-level failure as its cause", () => {
 		const cause = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
-		assert.equal(new GitUnavailableError("not-installed", "git", { cause }).cause, cause);
+		assert.equal(
+			new GitUnavailableError(
+				{ code: "not-installed", platform: "linux", arch: "x64", installDir: "/opt/git" },
+				{ cause },
+			).cause,
+			cause,
+		);
 	});
 
 	test("names the install command of each platform", () => {
@@ -488,7 +513,17 @@ describe("guards", () => {
 			isWorkspaceGitError(new WorkspaceGitError({ operation: "x", cwd: "/", exitCode: 1, detail: "" })),
 			true,
 		);
-		assert.equal(isGitUnavailableError(new GitUnavailableError("offline", "git")), true);
+		assert.equal(
+			isGitUnavailableError(
+				new GitUnavailableError({
+					code: "offline",
+					platform: "linux",
+					arch: "x64",
+					offlineVariable: "ATOMIC_OFFLINE",
+				}),
+			),
+			true,
+		);
 		assert.equal(isGitUnavailableError(new Error("offline")), false);
 	});
 });
@@ -543,15 +578,23 @@ describe("serialization across a process boundary", () => {
 			fields: { operation: "x", cwd: "/", exitCode: 2, detail: "d" },
 			message: git.message,
 		});
-		const unavailable = new GitUnavailableError("offline", "git");
+		const unavailable = new GitUnavailableError({
+			code: "offline",
+			platform: process.platform,
+			arch: process.arch,
+			offlineVariable: "ATOMIC_OFFLINE",
+		});
 		const wire = serializeWorkspaceError(unavailable);
 		assert.equal(wire.code, "offline");
-		assert.deepEqual(wire.fields, { platform: process.platform, executable: "git" });
+		assert.deepEqual(wire.fields, unavailable.fields);
 		assert.equal(wire.hint, unavailable.hint);
 	});
 
 	test("a Git unavailability keeps its cause through a round trip", () => {
-		const original = new GitUnavailableError("not-installed", "git", { cause: new Error("spawn git ENOENT") });
+		const original = new GitUnavailableError(
+			{ code: "not-installed", platform: process.platform, arch: process.arch, installDir: "/opt/git" },
+			{ cause: new Error("spawn git ENOENT") },
+		);
 		const back = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(original))));
 		assert.ok(back instanceof GitUnavailableError);
 		assert.equal(back.code, "not-installed");
@@ -689,7 +732,12 @@ describe("filesystem failure wrappers", () => {
 
 	test("errors that are not filesystem failures pass through both unchanged", () => {
 		const coded = Object.assign(new Error("no syscall"), { code: "EACCES" });
-		const typed = new GitUnavailableError("offline", "git");
+		const typed = new GitUnavailableError({
+			code: "offline",
+			platform: "linux",
+			arch: "x64",
+			offlineVariable: "ATOMIC_OFFLINE",
+		});
 		for (const error of [coded, typed, "text", undefined]) {
 			assert.equal(unreadablePathError("/w/a", error), error);
 			assert.equal(unwritablePathError("/w/a", "snap1", error), error);
@@ -764,7 +812,12 @@ describe("a drift whose automatic restore failed shows that failure (#4245)", ()
 		);
 		assert.equal(wrapped.restoreCode, "blob-missing");
 		assert.equal(wrapped.hint, missing.hint);
-		const git = new GitUnavailableError("not-installed", "git");
+		const git = new GitUnavailableError({
+			code: "not-installed",
+			platform: "linux",
+			arch: "x64",
+			installDir: "/opt/git",
+		});
 		const unavailable = new WorkspaceDriftError({ ...drift, reason: "restore-failed" }, git);
 		assert.equal(
 			unavailable.message,

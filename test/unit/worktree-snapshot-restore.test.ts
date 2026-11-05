@@ -379,7 +379,8 @@ describe("restoreWorktreeSnapshot", () => {
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 		await assert.rejects(
 			restoreWorktreeSnapshot(snapshot, { blobs, storeDir: sandbox.path("host") }),
-			(error: unknown) => error instanceof GitUnavailableError && error.executable === sandbox.path("no-git"),
+			(error: unknown) =>
+				error instanceof GitUnavailableError && error.fields.systemGit?.path === sandbox.path("no-git"),
 		);
 		await assert.rejects(verifyWorktree(snapshot, clone), (error: unknown) => error instanceof GitUnavailableError);
 	});

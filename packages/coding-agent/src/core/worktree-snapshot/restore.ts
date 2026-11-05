@@ -574,7 +574,8 @@ async function reconstructTree(
 		git,
 		snapshot.chain.map((link) => link.tree),
 	);
-	const resumeAt = snapshot.chain.findLastIndex((link) => stored.has(link.tree)) + 1;
+	let resumeAt = snapshot.chain.length;
+	while (resumeAt > 0 && !stored.has(snapshot.chain[resumeAt - 1]!.tree)) resumeAt--;
 	await runGit(["read-tree", resumeAt === 0 ? snapshot.head : snapshot.chain[resumeAt - 1]!.tree], indexed);
 	for (const [deltaIndex, link] of snapshot.chain.entries()) {
 		if (deltaIndex < resumeAt) continue;

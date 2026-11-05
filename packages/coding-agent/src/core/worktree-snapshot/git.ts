@@ -1,8 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { getBinDir } from "../../config.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { GitUnavailableError, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
+import { GitUnavailableError, gitInstallCommand, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
@@ -162,7 +164,17 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
 		(error.code === "ENOENT" || error.code === "EACCES") && isDirectory(options.cwd)
 			? (unreadableDirectory(options.cwd) ??
-				new GitUnavailableError("not-installed", executable.path, { cause: error }))
+				new GitUnavailableError(
+					{
+						code: "not-installed",
+						platform: process.platform,
+						arch: process.arch,
+						installDir: join(getBinDir(), "git"),
+						installCommand: gitInstallCommand(process.platform),
+						systemGit: { path: executable.path, problem: "probe-failed" },
+					},
+					{ cause: error },
+				))
 			: new WorkspaceGitError(
 					{
 						operation: gitOperation(args),

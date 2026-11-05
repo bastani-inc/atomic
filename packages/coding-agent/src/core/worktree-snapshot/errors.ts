@@ -1,14 +1,23 @@
+import {
+	type GitUnavailableCode,
+	GitUnavailableError,
+	type GitUnavailableFields,
+	isGitUnavailableError,
+} from "../../utils/git-errors.ts";
+
+export { type GitUnavailableCode, GitUnavailableError, type GitUnavailableFields, isGitUnavailableError };
+export type GitUnavailableErrorCode = GitUnavailableCode;
+
 export type WorkspaceErrorFieldValue =
 	| string
 	| number
 	| boolean
 	| null
 	| readonly WorkspaceErrorFieldValue[]
-	| { readonly [key: string]: WorkspaceErrorFieldValue };
-export type WorkspaceErrorFields = { readonly [key: string]: WorkspaceErrorFieldValue };
+	| { readonly [key: string]: WorkspaceErrorFieldValue | undefined };
+export type WorkspaceErrorFields = { readonly [key: string]: WorkspaceErrorFieldValue | undefined };
 
 export type WorkspaceConfigErrorCode = "invalid-setting";
-export type GitUnavailableErrorCode = "not-installed" | "unsupported-platform" | "offline" | "checksum-mismatch";
 export type WorkspaceGitErrorCode = "git-failed";
 export type WorkspaceSnapshotErrorCode =
 	| "not-a-repository"
@@ -99,42 +108,9 @@ export function gitInstallCommand(platform: NodeJS.Platform = process.platform):
 	return GIT_INSTALL_COMMANDS[platform] ?? "install Git from https://git-scm.com/downloads";
 }
 
-const GIT_UNAVAILABLE_SUMMARIES: Record<GitUnavailableErrorCode, string> = {
-	"not-installed": "could not be started",
-	"unsupported-platform": "cannot be provisioned on this platform",
-	offline: "could not be downloaded while offline",
-	"checksum-mismatch": "failed its checksum after download",
-};
-
-/**
- * Git cannot be provided, so worktree snapshots cannot be read or restored. Capture degrades with this as its reason;
- * restore and verification throw it before any other work. Code-compatible with the class that Git provisioning
- * (#4322) exports, which replaces this definition.
- */
-export class GitUnavailableError extends Error {
-	override readonly name = "GitUnavailableError" as const;
-	readonly code: GitUnavailableErrorCode;
-	readonly platform: NodeJS.Platform;
-	readonly executable: string;
-	readonly hint: string;
-	readonly retryable = false;
-	readonly fields: WorkspaceErrorFields;
-
-	constructor(code: GitUnavailableErrorCode, executable: string, options?: { cause?: Error }) {
-		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
-		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
-		super(
-			`Git is unavailable: ${executable} ${GIT_UNAVAILABLE_SUMMARIES[code]}, and worktree snapshots need it to read and rebuild repository state (${code}). ${hint}`,
-			options?.cause === undefined ? undefined : { cause: options.cause },
-		);
-		this.code = code;
-		this.platform = process.platform;
-		this.executable = executable;
-		this.hint = hint;
-		this.fields = Object.freeze({ platform: this.platform, executable });
-	}
+function compactFields(fields: object): WorkspaceErrorFields {
+	return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as WorkspaceErrorFields;
 }
-
 /** A Git command failed. `detail` is the first line of its error output with any URL credentials removed. */
 export class WorkspaceGitError extends WorkspaceError {
 	override readonly name = "WorkspaceGitError" as const;
@@ -400,10 +376,6 @@ export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDrif
 	}
 }
 
-function compactFields(fields: object): WorkspaceErrorFields {
-	return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as WorkspaceErrorFields;
-}
-
 const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>> = {
 	WorkspaceError: [],
 	WorkspaceConfigError: ["invalid-setting"],
@@ -443,20 +415,6 @@ export function isWorkspaceError(value: unknown): value is WorkspaceError {
 }
 export function isWorkspaceConfigError(value: unknown): value is WorkspaceConfigError {
 	return value instanceof WorkspaceConfigError || structurallyIs(value, "WorkspaceConfigError");
-}
-const GIT_UNAVAILABLE_CODES: ReadonlySet<string> = new Set<GitUnavailableErrorCode>(
-	Object.keys(GIT_UNAVAILABLE_SUMMARIES) as GitUnavailableErrorCode[],
-);
-
-export function isGitUnavailableError(value: unknown): value is GitUnavailableError {
-	if (value instanceof GitUnavailableError) return true;
-	if (typeof value !== "object" || value === null) return false;
-	const candidate = value as { readonly name?: unknown; readonly code?: unknown };
-	return (
-		candidate.name === "GitUnavailableError" &&
-		typeof candidate.code === "string" &&
-		GIT_UNAVAILABLE_CODES.has(candidate.code)
-	);
 }
 export function isWorkspaceGitError(value: unknown): value is WorkspaceGitError {
 	return value instanceof WorkspaceGitError || structurallyIs(value, "WorkspaceGitError");
@@ -511,8 +469,7 @@ const REHYDRATORS: Partial<Record<WorkspaceErrorName | "GitUnavailableError", Re
 		new WorkspaceConfigError(fields.source as WorkspaceConfigSource, String(fields.field), String(fields.expected)),
 	GitUnavailableError: (fields, code, cause) =>
 		new GitUnavailableError(
-			code as GitUnavailableErrorCode,
-			String(fields.executable),
+			compactFields({ ...fields, code }) as unknown as GitUnavailableFields,
 			cause ? { cause } : undefined,
 		),
 	WorkspaceGitError: (fields, _code, cause) =>
