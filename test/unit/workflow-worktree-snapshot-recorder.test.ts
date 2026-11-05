@@ -97,6 +97,9 @@ function countGitLookups(): { readonly count: () => number } {
 	return { count: () => count };
 }
 
+/** How long a test waits for a capture to commit: a capture spawns about a dozen Git processes, which can take seconds on a loaded Windows runner. */
+const CAPTURE_WAIT = { timeout: 20_000, interval: 20 };
+
 const reasonOf = (run: RunSnapshot) =>
 	run.snapshotUnavailable ? rehydrateWorkspaceError(run.snapshotUnavailable) : undefined;
 
@@ -360,7 +363,7 @@ test("checkpoints of one run are captured and committed one at a time, in arriva
 		},
 	});
 	const first = record(checkpoint("one"));
-	await vi.waitFor(() => assert.equal(commits.length, 1));
+	await vi.waitFor(() => assert.equal(commits.length, 1), CAPTURE_WAIT);
 	const second = record(checkpoint("two"));
 	const lookupsDuringFirstCommit = lookups.count();
 	await settle();
@@ -368,7 +371,7 @@ test("checkpoints of one run are captured and committed one at a time, in arriva
 	assert.equal(commits.length, 1);
 	gates[0]!.release();
 	await first;
-	await vi.waitFor(() => assert.equal(commits.length, 2));
+	await vi.waitFor(() => assert.equal(commits.length, 2), CAPTURE_WAIT);
 	const third = record(checkpoint("three"));
 	const lookupsDuringSecondCommit = lookups.count();
 	await settle();
@@ -376,7 +379,7 @@ test("checkpoints of one run are captured and committed one at a time, in arriva
 	assert.equal(commits.length, 2);
 	gates[1]!.release();
 	await second;
-	await vi.waitFor(() => assert.equal(commits.length, 3));
+	await vi.waitFor(() => assert.equal(commits.length, 3), CAPTURE_WAIT);
 	gates[2]!.release();
 	await third;
 	assert.deepEqual(
@@ -391,7 +394,7 @@ test("a run's queue does not hold up another run (#4245)", async () => {
 	const slow = await harness({ cwd: clone, rootRunId: "slow", onCommit: () => gate.promise });
 	const quick = await harness({ cwd: clone, rootRunId: "quick" });
 	const blocked = slow.record(checkpoint("slow"));
-	await vi.waitFor(() => assert.equal(slow.commits.length, 1));
+	await vi.waitFor(() => assert.equal(slow.commits.length, 1), CAPTURE_WAIT);
 	await quick.record(checkpoint("quick"));
 	assert.equal(quick.commits.length, 1);
 	gate.release();
