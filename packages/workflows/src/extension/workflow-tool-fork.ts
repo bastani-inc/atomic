@@ -1,6 +1,7 @@
 import type { ForkError, ForkErrorCode } from "../durable/fork-errors.js";
 import { isForkError } from "../durable/fork-errors.js";
 import { validateForkOptions } from "../durable/fork-run.js";
+import type { DurableWorkflowHandle } from "../durable/types.js";
 import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { WorkflowToolArgs } from "./public-types.js";
 import type { ForkResult } from "./render-result.js";
@@ -13,6 +14,7 @@ export interface WorkflowForkActionDeps {
 	readonly modelOwner?: string;
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
+	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
 }
 
 function forkFailure(sourceRunId: string, error: ForkError): ForkResult {
@@ -58,6 +60,7 @@ export async function workflowForkAction(
 		modelOwner: deps.modelOwner,
 		signal: deps.signal,
 		onRunAccepted: deps.onRunAccepted,
+		validateSource: deps.validateSource,
 	});
 	if (!forked.ok) return forkFailure(sourceRunId, forked.error);
 	return {

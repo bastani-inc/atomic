@@ -659,6 +659,59 @@ test("a failed session copy removes the sessions it created and reports a cleanu
 	assert.equal(await sessions.readHeader(removed.mock.calls[0]![0]), undefined);
 });
 
+test("a session create that publishes then rejects removes its copied conversation before retry (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const sessions = new MemorySessionStore();
+	const sourceId = testRunId("copy-published-rejection");
+	await register(backend, sourceId);
+	const source = await SessionManager.create(sessions, "/source");
+	await source.appendMessage({ role: "user", content: "saved conversation", timestamp: 1 });
+	await commit(backend, [
+		stage(sourceId, "stage:one", "one", "stage:one:1", { output: "one", sessionId: source.getSessionId() }),
+	]);
+	const create = sessions.create.bind(sessions);
+	const failure = new Error("published session acknowledgement failed");
+	let attemptedId = "";
+	vi.spyOn(sessions, "create").mockImplementationOnce(async (header, entries) => {
+		attemptedId = header.id;
+		await create(header, entries);
+		throw failure;
+	});
+	const options = { ...request(sourceId), sessionStore: sessions, sourceSessionStore: sessions };
+	const error = await forkDurableRun(backend, options).catch((problem: Error) => problem);
+	assert.ok(error instanceof ForkCopyFailedError);
+	assert.deepEqual(
+		[error.code, error.phase, error.retryable, error.cause],
+		["copy-failed", "sessions", true, failure],
+	);
+	assert.equal(await sessions.readHeader(attemptedId), undefined);
+	assert.equal(await backend.journal.getRun(error.forkRunId), undefined);
+	assert.equal(Object.hasOwn(error, "cleanupCause"), false);
+	const retried = await forkDurableRun(backend, options);
+	const copied = backend.listCheckpoints(retried.runId)[0];
+	assert.ok(copied?.kind === "stage");
+	assert.notEqual(copied.sessionId, attemptedId);
+	assert.deepEqual(
+		(await sessions.load(copied.sessionId!)).entries,
+		(await sessions.load(source.getSessionId())).entries,
+	);
+	for (const workflow of [undefined, { runId: sourceId, stageId: "foreign", stageName: "foreign" }]) {
+		vi.spyOn(sessions, "create").mockImplementationOnce(async (header, entries) => {
+			attemptedId = header.id;
+			await create({ ...header, workflow }, entries);
+			throw failure;
+		});
+		const collision = await forkDurableRun(backend, options).catch((problem: Error) => problem);
+		assert.ok(collision instanceof ForkCopyFailedError);
+		assert.equal(collision.cause, failure);
+		const unrelated = await sessions.readHeader(attemptedId);
+		assert.ok(unrelated !== undefined);
+		assert.deepEqual(unrelated.workflow, workflow);
+		assert.equal(Object.hasOwn(collision, "cleanupCause"), false);
+		assert.equal(await backend.journal.getRun(collision.forkRunId), undefined);
+	}
+});
+
 test("an abort while copying sessions rejects with its reason and removes the copies (#4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sessions = new MemorySessionStore();

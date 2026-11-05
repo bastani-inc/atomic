@@ -18,7 +18,7 @@ import { hasActiveLiveRun } from "../durable/run-claims.js";
 import { availableRunDurableBackend } from "../durable/run-owner-backend.js";
 import { bindStoreDurableBackend, DurableBackendNotInitializedError } from "../durable/store-backend.js";
 import { inspectTargetedDurableWorkflow, type TargetedDurableInspection } from "../durable/targeted-inspection.js";
-import type { ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
+import type { DurableWorkflowHandle, ResumableWorkflowEntry, WorkflowForkedFrom } from "../durable/types.js";
 import type { ToolControlRegistry } from "../engine/run-tool-control-registry.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import type { RunOpts } from "../runs/foreground/executor.js";
@@ -60,6 +60,7 @@ export interface ForkDurableWorkflowOptions {
 	readonly modelOwner?: string;
 	readonly signal?: AbortSignal;
 	readonly onRunAccepted?: (runId: string) => void;
+	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
 }
 
 export interface DurableResumeRuntime {
@@ -177,6 +178,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					sessionStore: deps.adapters?.sessionStore,
 					modelOwner: options.modelOwner,
 					signal: options.signal,
+					validateSource: options.validateSource,
 					isLiveRun: (runId) => hasActiveLiveRun(deps.store, runId),
 					rootRunOf: (runId) => deps.store.run(runId)?.rootRunId,
 				});

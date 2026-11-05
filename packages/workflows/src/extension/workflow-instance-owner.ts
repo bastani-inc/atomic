@@ -1,5 +1,7 @@
+import { ForkSourceOwnershipError } from "../durable/fork-errors.js";
 import { foreignInstanceMessage } from "../durable/sdk-owner-release.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
+import type { DurableWorkflowHandle } from "../durable/types.js";
 import type { Store } from "../shared/store.js";
 import { WorkflowInstanceOwnershipError } from "../shared/workflow-instance-ownership-error.js";
 import type { PiExecuteContext } from "./public-types.js";
@@ -19,6 +21,15 @@ export function workflowCaller(ctx: Pick<PiExecuteContext, "sessionId" | "sessio
 		anonymousCallers.set(caller, id);
 	}
 	return id;
+}
+
+export function assertWorkflowForkSourceOwner(handle: DurableWorkflowHandle, ctx: PiExecuteContext): void {
+	if (handle.modelOwner !== undefined) {
+		if (handle.modelOwner !== workflowCaller(ctx))
+			throw new ForkSourceOwnershipError({ runId: handle.workflowId, reason: "foreign-owner" });
+	} else if (handle.origin === "agent") {
+		throw new ForkSourceOwnershipError({ runId: handle.workflowId, reason: "owner-unavailable" });
+	}
 }
 
 /** Admission metadata, not the disposable routing reservation, owns a live or retained instance. */

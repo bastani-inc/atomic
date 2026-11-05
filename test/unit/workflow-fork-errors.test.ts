@@ -16,6 +16,7 @@ import {
 	ForkSessionUnavailableError,
 	ForkSourceBusyError,
 	ForkSourceNotFoundError,
+	ForkSourceOwnershipError,
 	ForkTargetNotFoundError,
 	findForkError,
 	isForkClaimReleaseError,
@@ -31,6 +32,7 @@ import {
 	isForkSessionUnavailableError,
 	isForkSourceBusyError,
 	isForkSourceNotFoundError,
+	isForkSourceOwnershipError,
 	isForkTargetNotFoundError,
 	isRetryableForkError,
 	type KnownForkError,
@@ -389,6 +391,48 @@ test("ForkSourceNotFoundError renders each reason, its journal and the join comm
 	]);
 });
 
+test("ForkSourceOwnershipError renders each reason as a stable message and hint (#4321)", () => {
+	const foreign = `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`;
+	const unavailable = `Ask the user to run /workflow fork ${runId}.`;
+	assertCases([
+		{
+			error: new ForkSourceOwnershipError({ runId, reason: "foreign-owner" }),
+			message: `Fork source not owned: run ${runId} belongs to another session (source-not-owned). ${foreign}`,
+			hint: foreign,
+			fields: { runId, reason: "foreign-owner" },
+		},
+		{
+			error: new ForkSourceOwnershipError({ runId, reason: "owner-unavailable" }),
+			message: `Fork source not owned: run ${runId} was started by an agent whose session was not recorded (source-not-owned). ${unavailable}`,
+			hint: unavailable,
+			fields: { runId, reason: "owner-unavailable" },
+		},
+	]);
+});
+
+test("isForkSourceOwnershipError finds the error in a bounded cause chain, also after a wire round trip (#4321)", () => {
+	const owned = new ForkSourceOwnershipError({ runId, reason: "owner-unavailable" });
+	const wrap = (cause: unknown, links: number): unknown => {
+		let value = cause;
+		for (let index = 0; index < links; index++) value = new Error(`wrapper ${index}`, { cause: value });
+		return value;
+	};
+	assert.equal(isForkSourceOwnershipError(wrap(owned, FORK_ERROR_MAX_CAUSE_DEPTH - 1)), true);
+	assert.equal(isForkSourceOwnershipError(wrap(owned, FORK_ERROR_MAX_CAUSE_DEPTH)), false);
+	assert.equal(
+		isForkSourceOwnershipError(wrap({ name: "ForkSourceOwnershipError", code: "source-not-owned" }, 2)),
+		true,
+	);
+	assert.equal(isForkSourceOwnershipError(wrap({ name: "ForkSourceOwnershipError", code: "source-busy" }, 2)), false);
+	const wrapped = new ForkCopyFailedError({ runId, forkRunId, phase: "journal" }, { cause: owned });
+	const back = rehydrateForkError(JSON.parse(JSON.stringify(wrapped)) as SerializedForkError);
+	assert.ok(back instanceof ForkCopyFailedError);
+	assert.equal(isForkSourceOwnershipError(back), true);
+	const cause = back.cause;
+	assert.ok(cause instanceof ForkSourceOwnershipError);
+	assert.deepEqual([cause.runId, cause.reason, cause.retryable], [runId, "owner-unavailable", false]);
+});
+
 test("ForkJournalUnsupportedError and ForkCopyFailedError render stable messages and hints (#4321)", () => {
 	const retry = "Retry the fork; the source run was not changed.";
 	const cause = new Error("disk full");
@@ -611,6 +655,7 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 		),
 		guard: isForkSessionUnavailableError,
 	},
+	{ error: new ForkSourceOwnershipError({ runId, reason: "foreign-owner" }), guard: isForkSourceOwnershipError },
 	{
 		error: new ForkCleanupError(
 			{ runId, step: "remove-copied-sessions", forkRunId },
@@ -1061,6 +1106,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkClaimReleaseError",
 		"ForkSessionUnavailableError",
 		"ForkCleanupError",
+		"ForkSourceOwnershipError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -1075,6 +1121,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkClaimReleaseError",
 		"isForkSessionUnavailableError",
 		"isForkCleanupError",
+		"isForkSourceOwnershipError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",

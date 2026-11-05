@@ -13,6 +13,7 @@ export type ForkErrorCode =
 	| "session-not-found"
 	| "invalid-option"
 	| "source-not-found"
+	| "source-not-owned"
 	| "journal-unsupported"
 	| "journal-unavailable"
 	| "copy-failed"
@@ -28,6 +29,7 @@ export type ForkErrorName =
 	| "ForkSessionNotFoundError"
 	| "ForkConfigError"
 	| "ForkSourceNotFoundError"
+	| "ForkSourceOwnershipError"
 	| "ForkJournalUnsupportedError"
 	| "ForkJournalUnavailableError"
 	| "ForkCopyFailedError"
@@ -96,6 +98,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkSessionNotFoundError: "session-not-found",
 	ForkConfigError: "invalid-option",
 	ForkSourceNotFoundError: "source-not-found",
+	ForkSourceOwnershipError: "source-not-owned",
 	ForkJournalUnsupportedError: "journal-unsupported",
 	ForkJournalUnavailableError: "journal-unavailable",
 	ForkCopyFailedError: "copy-failed",
@@ -579,6 +582,36 @@ export class ForkSourceNotFoundError extends ForkError {
 	}
 }
 
+export type ForkSourceOwnershipReason = "foreign-owner" | "owner-unavailable";
+
+export class ForkSourceOwnershipError extends ForkError {
+	declare readonly name: "ForkSourceOwnershipError";
+	declare readonly code: "source-not-owned";
+	declare readonly retryable: false;
+	readonly runId: string;
+	readonly reason: ForkSourceOwnershipReason;
+
+	constructor(input: { readonly runId: string; readonly reason: ForkSourceOwnershipReason }) {
+		super({
+			name: "ForkSourceOwnershipError",
+			code: "source-not-owned",
+			what: "Fork source not owned",
+			subject:
+				input.reason === "foreign-owner"
+					? `run ${input.runId} belongs to another session`
+					: `run ${input.runId} was started by an agent whose session was not recorded`,
+			hint:
+				input.reason === "foreign-owner"
+					? `Fork it from the session that started it, or ask the user to run /workflow fork ${input.runId}.`
+					: `Ask the user to run /workflow fork ${input.runId}.`,
+			retryable: false,
+			fields: { runId: input.runId, reason: input.reason },
+		});
+		this.runId = input.runId;
+		this.reason = input.reason;
+	}
+}
+
 /** The run journal cannot create a run with its events in one transaction, so a fork could leave half a run. */
 export class ForkJournalUnsupportedError extends ForkError {
 	declare readonly name: "ForkJournalUnsupportedError";
@@ -794,6 +827,7 @@ export type KnownForkError =
 	| ForkSessionNotFoundError
 	| ForkConfigError
 	| ForkSourceNotFoundError
+	| ForkSourceOwnershipError
 	| ForkJournalUnsupportedError
 	| ForkJournalUnavailableError
 	| ForkCopyFailedError
@@ -837,6 +871,14 @@ export const isForkEntryNotFoundError = guard(ForkEntryNotFoundError, "ForkEntry
 export const isForkSessionNotFoundError = guard(ForkSessionNotFoundError, "ForkSessionNotFoundError");
 export const isForkConfigError = guard(ForkConfigError, "ForkConfigError");
 export const isForkSourceNotFoundError = guard(ForkSourceNotFoundError, "ForkSourceNotFoundError");
+export function isForkSourceOwnershipError(value: unknown): boolean {
+	let current = value as ForkErrorShape | undefined;
+	for (let depth = 0; depth < FORK_ERROR_MAX_CAUSE_DEPTH && current != null; depth++) {
+		if (current instanceof ForkSourceOwnershipError || hasForkShape(current, "ForkSourceOwnershipError")) return true;
+		current = current.cause;
+	}
+	return false;
+}
 export const isForkJournalUnsupportedError = guard(ForkJournalUnsupportedError, "ForkJournalUnsupportedError");
 export const isForkJournalUnavailableError = guard(ForkJournalUnavailableError, "ForkJournalUnavailableError");
 export const isForkCopyFailedError = guard(ForkCopyFailedError, "ForkCopyFailedError");
@@ -1015,6 +1057,11 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			matches: texts(f, "matches"),
 			storage: storage(f),
 			rootRunId: optionalText(f, "rootRunId"),
+		}),
+	ForkSourceOwnershipError: (f) =>
+		new ForkSourceOwnershipError({
+			runId: text(f, "runId"),
+			reason: text(f, "reason") as ForkSourceOwnershipReason,
 		}),
 	ForkJournalUnsupportedError: () => new ForkJournalUnsupportedError(),
 	ForkJournalUnavailableError: (f, cause) =>

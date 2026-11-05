@@ -16,7 +16,11 @@ import type { ExtensionAPI, PiExecuteContext, WorkflowToolArgs } from "./public-
 import type { WorkflowToolResult } from "./render-result.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import { assertWorkflowInstanceOwner, workflowCaller } from "./workflow-instance-owner.js";
+import {
+	assertWorkflowForkSourceOwner,
+	assertWorkflowInstanceOwner,
+	workflowCaller,
+} from "./workflow-instance-owner.js";
 import { captureWorkflowOwnerResources, type WorkflowOwnerResources } from "./workflow-owner-resources.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
@@ -350,6 +354,7 @@ export function makeExecuteWorkflowTool(
 						modelOwner: workflowCaller(ctx),
 						signal,
 						onRunAccepted,
+						validateSource: (handle) => assertWorkflowForkSourceOwner(handle, ctx),
 					}),
 				);
 			default: {

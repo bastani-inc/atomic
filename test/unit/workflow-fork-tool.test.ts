@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getDefaultSessionDirPath, JsonlSessionStore } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { ForkConfigError } from "../../packages/workflows/src/durable/fork-errors.js";
+import {
+	ForkConfigError,
+	ForkSourceOwnershipError,
+	isForkSourceOwnershipError,
+} from "../../packages/workflows/src/durable/fork-errors.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import type { PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
 import type { ForkResult } from "../../packages/workflows/src/extension/render-result.js";
@@ -16,6 +21,10 @@ import {
 	workflowArgumentCompletionsNeedWorkflowResources,
 } from "../../packages/workflows/src/extension/workflow-command-completions.js";
 import { parseWorkflowForkArgs } from "../../packages/workflows/src/extension/workflow-command-registration.js";
+import {
+	assertWorkflowForkSourceOwner,
+	workflowCaller,
+} from "../../packages/workflows/src/extension/workflow-instance-owner.js";
 import { workflowPolicyFromContext } from "../../packages/workflows/src/extension/workflow-policy.js";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
@@ -25,6 +34,7 @@ import { createJobTracker, currentJobTracker } from "../../packages/workflows/sr
 import { createStore, store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
+import { readText, writeFileEnsuringDir } from "../helpers/runtime.js";
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { registerWorkflowCommand } from "./slash-dispatch-utils.js";
@@ -155,6 +165,136 @@ test("the fork action reports a typed failure with its code and hint and creates
 	assert.match(invalid.message, /carryMessages/);
 });
 
+test("the fork action refuses a source run another session owns before copying anything (#4321)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "workflow-fork-tool-owner-"));
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(root, "agent"));
+	try {
+		const sourceCwd = join(root, "source");
+		vi.stubEnv("ATOMIC_CODING_AGENT_SESSION_DIR", getDefaultSessionDirPath(sourceCwd));
+		const sourcePath = join(getDefaultSessionDirPath(sourceCwd), "source.jsonl");
+		const history = `${JSON.stringify({
+			type: "session",
+			version: 4,
+			id: "source-session",
+			createdAt: new Date().toISOString(),
+			cwd: sourceCwd,
+		})}\n`;
+		await writeFileEnsuringDir(sourcePath, history);
+		const backend = await createMemoryTestBackend();
+		setDurableBackend(backend);
+		const runId = testRunId("fork-tool-foreign-owner");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: "fork-tool-owned",
+			inputs: {},
+			status: "completed",
+			createdAt: 1,
+			invocationCwd: sourceCwd,
+			origin: "agent",
+			modelOwner: "owner-session",
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: runId,
+			checkpointId: "stage:plan",
+			name: "plan",
+			replayKey: "stage:plan:1",
+			sessionId: "source-session",
+			sessionFile: sourcePath,
+			output: "planned",
+			completedAt: 1,
+		});
+		const destination = await JsonlSessionStore.open(join(root, "destination"), { exactDirectory: true });
+		const writes = (["create", "append", "replace", "delete"] as const).map((method) =>
+			vi.spyOn(destination, method),
+		);
+		const sessionWrites = () => writes.reduce((count, spy) => count + spy.mock.calls.length, 0);
+		const definition = workflow({
+			name: "fork-tool-owned",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => ({}),
+		});
+		const jobs = createJobTracker();
+		const execute = makeExecuteWorkflowTool(
+			createExtensionRuntime({
+				definitions: [definition],
+				store,
+				jobs,
+				adapters: { sessionStore: destination },
+				cwd: join(root, "target"),
+			}),
+			() => undefined,
+			() => undefined,
+		);
+		assert.equal(store.run(runId), undefined, "the source run is not in this session's store");
+		const runsBefore = await backend.journal.listRuns();
+		for (const target of [runId, runId.slice(0, 8)]) {
+			const refused = (await execute({ action: "fork", runId: target }, context())) as ForkResult;
+			assert.deepEqual(refused, {
+				action: "fork",
+				runId: "",
+				sourceRunId: target,
+				status: "failed",
+				message: `Fork source not owned: run ${runId} belongs to another session (source-not-owned). Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
+				code: "source-not-owned",
+				hint: `Fork it from the session that started it, or ask the user to run /workflow fork ${runId}.`,
+			});
+		}
+		assert.deepEqual(await backend.journal.listRuns(), runsBefore, "a refused fork writes no run");
+		assert.equal(sessionWrites(), 0, "a refused fork writes no stage conversation");
+		assert.equal(await readText(sourcePath), history);
+		const owner: PiExecuteContext = {
+			...context(),
+			sessionManager: { getSessionId: () => "owner-session" },
+			cwd: join(root, "elsewhere"),
+		};
+		const forked = (await execute({ action: "fork", runId }, owner)) as ForkResult;
+		assert.equal(forked.status, "running", forked.message);
+		await jobs.get(forked.runId)?.promise;
+		assert.equal(backend.getWorkflow(forked.runId)?.modelOwner, "owner-session");
+		assert.equal(writes[0]?.mock.calls.length, 1, "the owner's fork copies the stage conversation");
+		await destination.close();
+	} finally {
+		vi.unstubAllEnvs();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("the fork source owner check accepts the owner and unowned user runs and refuses both other cases (#4321)", () => {
+	const runId = testRunId("fork-owner-check");
+	const handle = {
+		workflowId: runId,
+		name: "w",
+		inputs: {},
+		status: "completed" as const,
+		createdAt: 1,
+		updatedAt: 1,
+		completedCheckpoints: 0,
+		pendingPrompts: 0,
+	};
+	const caller = workflowCaller(context());
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, modelOwner: caller }, context()));
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner({ ...handle, origin: "user" }, context()));
+	assert.doesNotThrow(() => assertWorkflowForkSourceOwner(handle, context()));
+	for (const [owned, reason] of [
+		[{ ...handle, modelOwner: "other-session", origin: "user" as const }, "foreign-owner"],
+		[{ ...handle, origin: "agent" as const }, "owner-unavailable"],
+	] as const) {
+		assert.throws(
+			() => assertWorkflowForkSourceOwner(owned, context()),
+			(error: Error) =>
+				error instanceof ForkSourceOwnershipError &&
+				isForkSourceOwnershipError(error) &&
+				error.code === "source-not-owned" &&
+				error.reason === reason &&
+				error.runId === runId &&
+				error.retryable === false,
+		);
+	}
+});
+
 test("a fork from the first stage re-runs every stage and reports the accepted run to the caller (#4321)", async () => {
 	const { backend, calls, runId, execute, jobs } = await forkToolFixture("fork-tool-first-stage");
 	const accepted: string[] = [];
@@ -237,7 +377,7 @@ test("the fork action forwards its options to the runtime unchanged (#4321)", as
 	const [sourceRunId, options] = seen[0]!;
 	assert.equal(sourceRunId, fixture.runId);
 	assert.deepEqual(
-		{ ...options, policy: undefined },
+		{ ...options, policy: undefined, validateSource: undefined },
 		{
 			source: "sdk",
 			fromStage: "plan",
@@ -247,9 +387,11 @@ test("the fork action forwards its options to the runtime unchanged (#4321)", as
 			modelOwner: "fork-tool-session",
 			signal,
 			onRunAccepted,
+			validateSource: undefined,
 		},
 	);
 	assert.ok(options.policy !== undefined);
+	assert.equal(typeof options.validateSource, "function", "the source owner is checked by the fork");
 	const noRun = (await execute({ action: "fork" }, context())) as ForkResult;
 	assert.deepEqual([noRun.status, noRun.code, noRun.sourceRunId], ["failed", "invalid-option", ""]);
 	assert.equal(seen.length, 1, "invalid arguments never reach the runtime");

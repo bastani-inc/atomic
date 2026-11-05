@@ -21,6 +21,7 @@ import type {
 	WorkflowSerializableValue,
 } from "../shared/types.js";
 import { formatWorkflowStageTarget, parseWorkflowStageTarget } from "../shared/workflow-stage-target.js";
+import { poolSessionStore } from "../workers/pool-session-store.js";
 import { workflowNamesEqual } from "../workflows/identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./durable-hash.js";
@@ -137,6 +138,7 @@ interface ForkSource {
 	readonly entries: readonly JournalEntry[];
 	readonly handle: DurableWorkflowHandle;
 	readonly checkpoints: readonly CheckpointEvent[];
+	readonly backend: JournalDurableBackend;
 }
 
 const STAGE_PATH_SEPARATOR = ".";
@@ -288,7 +290,7 @@ async function readForkSource(
 		throw new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) });
 	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== runId)
 		throw new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId: handle.rootWorkflowId });
-	return { runId, entries, handle, checkpoints };
+	return { runId, entries, handle, checkpoints, backend };
 }
 
 function stageSessionId(checkpoint: DurableStageCheckpoint): string | undefined {
@@ -354,13 +356,33 @@ function forkSessionStoreCwd(source: DurableWorkflowHandle, cwd: string): string
 	return forkKeepsWorkspace(source, cwd) ? (source.workflowCwd ?? cwd) : cwd;
 }
 
-async function sourceSessionStoreFor(handle: DurableWorkflowHandle, options: ForkSourceOptions, cwd: string) {
-	return options.sourceSessionStore === undefined
-		? { store: await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd ?? cwd }), owned: true }
-		: { store: options.sourceSessionStore, owned: false };
+interface SourceSessions {
+	readonly store: SessionStore;
+	readonly owned: boolean;
+	readonly backend: JournalDurableBackend;
+	pool?: { readonly store: SessionStore | undefined };
 }
 
-type SourceSessions = Awaited<ReturnType<typeof sourceSessionStoreFor>>;
+async function sourceSessionStoreFor(
+	backend: JournalDurableBackend,
+	handle: DurableWorkflowHandle,
+	options: ForkSourceOptions,
+	cwd: string,
+): Promise<SourceSessions> {
+	return options.sourceSessionStore === undefined
+		? {
+				store: await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd ?? cwd }),
+				owned: true,
+				backend,
+			}
+		: { store: options.sourceSessionStore, owned: false, backend };
+}
+
+async function closeSourceSessions(sessions: SourceSessions | undefined, cleanup: ForkCleanup): Promise<void> {
+	if (sessions?.owned === true) await cleanup.step("close-source-sessions", undefined, () => sessions.store.close());
+	const pooled = sessions?.pool?.store;
+	if (pooled !== undefined) await cleanup.step("close-source-sessions", undefined, () => pooled.close());
+}
 
 /** A session store's own errors, told apart by name: they come from `@bastani/atomic`'s session stores. */
 function sessionStoreFailure(error: unknown): "not-found" | "unavailable" | undefined {
@@ -370,22 +392,35 @@ function sessionStoreFailure(error: unknown): "not-found" | "unavailable" | unde
 	return error.name === "StorageUnavailableError" ? "unavailable" : undefined;
 }
 
-async function loadSession(
-	sessions: SourceSessions,
-	sessionId: string,
-	context: { readonly runId: string; readonly stagePath?: string },
-) {
+type SessionContext = { readonly runId: string; readonly stagePath?: string };
+
+async function loadSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
 	try {
 		return await sessions.store.load(sessionId);
 	} catch (error) {
 		const failure = sessionStoreFailure(error);
 		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
-		if (failure === "not-found")
-			throw new ForkSessionNotFoundError(
-				{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
-				{ cause: error as Error },
-			);
 		if (failure === "unavailable") throw new ForkSessionUnavailableError(details, { cause: error as Error });
+		if (failure !== "not-found") throw error;
+		const pooled = await loadPoolSession(sessions, sessionId, context);
+		if (pooled !== undefined) return pooled;
+		throw new ForkSessionNotFoundError(
+			{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
+			{ cause: error as Error },
+		);
+	}
+}
+
+async function loadPoolSession(sessions: SourceSessions, sessionId: string, context: SessionContext) {
+	const storage = journalStorage(sessions.backend.journal);
+	try {
+		sessions.pool ??= { store: await poolSessionStore(sessions.backend) };
+		return await sessions.pool.store?.load(sessionId);
+	} catch (error) {
+		const failure = sessionStoreFailure(error);
+		if (failure === "not-found") return undefined;
+		if (failure === "unavailable")
+			throw new ForkSessionUnavailableError({ sessionId, ...context, storage }, { cause: error as Error });
 		throw error;
 	}
 }
@@ -410,7 +445,7 @@ export async function* durableForkPoints(
 				yield { stagePath: record.stagePath, completedAt: record.completedAt };
 				continue;
 			}
-			sessions ??= await sourceSessionStoreFor(source.handle, options, options.cwd ?? process.cwd());
+			sessions ??= await sourceSessionStoreFor(journalBackend, source.handle, options, options.cwd ?? process.cwd());
 			const session = await loadSession(sessions, record.sessionId, {
 				runId: source.runId,
 				stagePath: record.stagePath,
@@ -427,8 +462,7 @@ export async function* durableForkPoints(
 		primary = error;
 		throw error;
 	} finally {
-		const opened = sessions;
-		if (opened?.owned === true) await cleanup.step("close-source-sessions", undefined, () => opened.store.close());
+		await closeSourceSessions(sessions, cleanup);
 		cleanup.settle(primary);
 	}
 }
@@ -1006,10 +1040,11 @@ interface CopiedSessions {
 	readonly owned: boolean;
 }
 
-async function removeSessions(copied: CopiedSessions): Promise<void> {
+async function removeSessions(copied: CopiedSessions, forkRunId: string): Promise<void> {
 	const failures: Error[] = [];
 	for (const id of copied.ids) {
 		try {
+			if ((await copied.store.readHeader(id))?.workflow?.runId !== forkRunId) continue;
 			await copied.store.delete(id);
 		} catch (error) {
 			failures.push(error as Error);
@@ -1022,7 +1057,7 @@ async function removeSessions(copied: CopiedSessions): Promise<void> {
 }
 
 function removeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
-	return cleanup.step("remove-copied-sessions", forkRunId, () => removeSessions(copied));
+	return cleanup.step("remove-copied-sessions", forkRunId, () => removeSessions(copied, forkRunId));
 }
 
 async function closeCopies(copied: CopiedSessions, forkRunId: string, cleanup: ForkCleanup): Promise<void> {
@@ -1224,7 +1259,7 @@ async function readSessions(
 	cleanup: ForkCleanup,
 	claim: SourceClaim,
 ): Promise<SessionSnapshots> {
-	const sourceStore = await sourceSessionStoreFor(source.handle, request, request.cwd);
+	const sourceStore = await sourceSessionStoreFor(source.backend, source.handle, request, request.cwd);
 	const snapshots: SessionSnapshots = new Map();
 	try {
 		for (const { sessionId, checkpoint } of sessions) {
@@ -1239,7 +1274,7 @@ async function readSessions(
 		}
 		return snapshots;
 	} finally {
-		if (sourceStore.owned) await cleanup.step("close-source-sessions", undefined, () => sourceStore.store.close());
+		await closeSourceSessions(sourceStore, cleanup);
 	}
 }
 
@@ -1266,6 +1301,7 @@ async function copySessions(
 			request.signal?.throwIfAborted();
 			claim.throwIfLost();
 			const id = randomUUID();
+			created.push(id);
 			await destination.create(
 				{
 					id,
@@ -1282,7 +1318,6 @@ async function copySessions(
 				},
 				entries,
 			);
-			created.push(id);
 			const file = (await SessionManager.open(destination, id, request.cwd)).getSessionFile();
 			ids.sessions.set(sessionId, { id, file });
 		}
