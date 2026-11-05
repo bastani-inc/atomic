@@ -609,6 +609,59 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 });
 
 describe("release and idle release details (#4326)", () => {
+	test("a message queued for the next turn keeps a session busy, and is delivered by that turn instead of being dropped (#4326)", async () => {
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted")]);
+		await h.session.sendCustomMessage(
+			{ customType: "next-turn", content: "carry this", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+
+		await assert.rejects(h.session.release(), (error: Error) => {
+			assert.ok(isAgentRehydrateError(error));
+			assert.equal(error.code, "session-busy");
+			assert.equal(error.fields.activity, "queued-messages");
+			assert.equal(isRetryableAgentRehydrateError(error), true);
+			return true;
+		});
+		assert.equal(internal(h.session)._disposed, false);
+		assert.equal(internal(h.session)._pendingNextTurnMessages.length, 1);
+
+		await h.session.prompt("go");
+
+		assert.equal(internal(h.session)._pendingNextTurnMessages.length, 0);
+		assert.ok(
+			h.sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom_message" && entry.customType === "next-turn"),
+			"the queued message reached the saved history",
+		);
+		await h.session.release();
+		assert.equal(internal(h.session)._disposed, true);
+	});
+
+	test("idle release leaves a session with a message queued for the next turn alone, then releases it once the turn has taken it (#4326)", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const h = await harness();
+		h.setResponses([fauxAssistantMessage("noted")]);
+		enableReleaseWhenIdle(internal(h.session), { afterMs: 100 }, dispatcher);
+		await h.session.sendCustomMessage(
+			{ customType: "next-turn", content: "carry this", display: true, details: {} },
+			{ deliverAs: "nextTurn" },
+		);
+
+		await time.advance(100);
+		assert.equal(internal(h.session)._disposed, false);
+		assert.equal(internal(h.session)._pendingNextTurnMessages.length, 1, "the message was not dropped");
+		assert.equal(dispatcher.stats().scheduled, 1, "the idle wake checks again later");
+
+		await h.session.prompt("go");
+		await time.advance(100);
+
+		assert.equal(internal(h.session)._disposed, true);
+	});
+
 	test("a file-backed session's release names its session file", async () => {
 		const dir = join(tmpdir(), `atomic-release-file-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(dir, { recursive: true });

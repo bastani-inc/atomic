@@ -61,7 +61,7 @@ export function sessionActivity(session: AgentSession): AgentSessionActivity | u
 	if (session._activePromptCount > 0) return "prompt";
 	if (session.isCompacting) return "compaction";
 	if (session.isBashRunning || session.hasPendingBashMessages) return "shell";
-	if (session.pendingMessageCount > 0) return "queued-messages";
+	if (session.pendingMessageCount > 0 || session._pendingNextTurnMessages.length > 0) return "queued-messages";
 	if (hasLiveTasks(session)) return "background-tasks";
 	return undefined;
 }
