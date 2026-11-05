@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import {
 	assertChaosInvariants,
+	assertLocalSqliteReport,
 	CHAOS_ERROR_CAUSE_DEPTH,
 	CHAOS_INVARIANTS,
 	ChaosInvariantError,
@@ -310,6 +311,309 @@ describe("fork chaos verdict", () => {
 				new RegExp(`^Fork chaos round did not pass: .*\\(${code}\\)\\. `),
 				name,
 			);
+		}
+	});
+});
+
+/**
+ * Stand-ins for `az`, `ssh` and `timeout` around verify-security.sh. `az` answers from per-group fixtures and fails a
+ * query when a matching `fail-*` flag file exists; `ssh` answers the probe and listener queries with healthy results.
+ */
+const SECURITY_AZ_STUB = `#!/usr/bin/env bash
+d="$AZ_STUB_DIR"
+printf '%s\\n' "$*" >>"$d/calls.log"
+arg() { local want="$1"; shift; while [ $# -gt 0 ]; do [ "$1" = "$want" ] && { printf '%s' "$2"; return; }; shift; done; }
+rg="$(arg -g "$@")"
+case "$1 $2 $3" in
+"vm list-ip-addresses "*) [ -e "$d/fail-vm-$rg" ] && exit 1; cat "$d/vm-$rg.json" ;;
+"network public-ip list") [ -e "$d/fail-public-ip-$rg" ] && exit 1; echo 0 ;;
+"network lb list") echo 0 ;;
+"network nic list") [ -e "$d/fail-nic-$rg" ] && exit 1; cat "$d/nics-$rg.tsv" ;;
+"network nic list-effective-nsg") [ -e "$d/fail-nsg-$(arg -n "$@")" ] && exit 1; cat "$d/effective.json" ;;
+*) echo "unexpected az call: $*" >&2; exit 64 ;;
+esac
+`;
+const SECURITY_SSH_STUB = `#!/usr/bin/env bash
+cat >/dev/null
+case "\${!#}" in
+*"ss -ltnH"*) echo "10.64.1.4:8443,127.0.0.1:8080,0.0.0.0:22" ;;
+*) echo '{"withTokenAndCa":"200","withoutToken":"401","plainHttpToTlsPort":"400","curlWithoutRunCaExit":60,"sqldBackendPort8080Exit":7,"atomicClient":{"withTokenAndCa":"ok","withoutToken":{"rejected":true},"plainHttpWithoutTls":{"rejected":true}},"atomicClientWithoutRunCa":{"withTokenAndCa":{"rejected":true}}}' ;;
+esac
+`;
+
+const inboundRule = (name: string, access: "Allow" | "Deny", source: string) => ({
+	name,
+	direction: "Inbound",
+	access,
+	priority: 100,
+	sourceAddressPrefix: source,
+	destinationPortRange: "22",
+});
+const vmAddresses = (...vms: readonly [string, string][]) =>
+	JSON.stringify(
+		vms.map(([name, ip]) => ({
+			virtualMachine: { name, network: { privateIpAddresses: [ip], publicIpAddresses: [] } },
+		})),
+	);
+
+function securityFixture(faults: readonly string[], manifest?: object) {
+	const root = makeTempDirectory("fork-chaos-security-");
+	temporary.push(root);
+	const stub = join(root, "stub");
+	const bin = join(root, "bin");
+	const state = join(root, "state");
+	for (const directory of [stub, bin, state]) mkdirSync(directory);
+	for (const [name, script] of [
+		["az", SECURITY_AZ_STUB],
+		["ssh", SECURITY_SSH_STUB],
+		// The control host's own probe of sqld:8443 is refused.
+		["timeout", "#!/usr/bin/env bash\nexit 1\n"],
+	] as const) {
+		writeFileSync(join(bin, name), script);
+		chmodSync(join(bin, name), 0o755);
+	}
+	writeFileSync(
+		join(state, "manifest.json"),
+		JSON.stringify(
+			manifest ?? {
+				regions: [
+					{ region: "westus3", resourceGroup: "rg-west" },
+					{ region: "centralus", resourceGroup: "rg-central" },
+				],
+				nodes: [
+					{ role: "sqld", name: "sqld", resourceGroup: "rg-west", ip: "10.64.1.4" },
+					{ role: "worker", name: "a", resourceGroup: "rg-west", ip: "10.64.2.4" },
+					{ role: "worker", name: "b", resourceGroup: "rg-central", ip: "10.65.2.4" },
+				],
+			},
+		),
+	);
+	writeFileSync(join(stub, "calls.log"), "");
+	writeFileSync(join(stub, "vm-rg-west.json"), vmAddresses(["vm-sqld", "10.64.1.4"], ["vm-a", "10.64.2.4"]));
+	writeFileSync(join(stub, "vm-rg-central.json"), vmAddresses(["vm-b", "10.65.2.4"]));
+	writeFileSync(join(stub, "nics-rg-west.tsv"), "nic-sqld\nnic-a\n");
+	writeFileSync(join(stub, "nics-rg-central.tsv"), faults.includes("no-nic-rg-central") ? "" : "nic-b\n");
+	writeFileSync(
+		join(stub, "effective.json"),
+		JSON.stringify({
+			value: [
+				{
+					effectiveSecurityRules: [
+						inboundRule("fc-deny-internet-in", "Deny", "Internet"),
+						inboundRule("fc-deny-vnet-in", "Deny", "VirtualNetwork"),
+						inboundRule("fc-deny-lb-in", "Deny", "AzureLoadBalancer"),
+						inboundRule("fc-allow-ssh-from-control", "Allow", "10.200.0.0/24"),
+					],
+				},
+			],
+		}),
+	);
+	for (const fault of faults) if (fault.startsWith("fail-")) writeFileSync(join(stub, fault), "");
+	const result = spawnSyncCollect(["bash", join(harness, "verify-security.sh")], {
+		env: {
+			...process.env,
+			PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+			AZ_STUB_DIR: stub,
+			RUN_ID: "demo",
+			STATE_DIR: state,
+			ARTIFACT_DIR: "",
+		},
+	});
+	const calls = readFileSync(join(stub, "calls.log"), "utf8").split("\n").filter(Boolean);
+	const reportFile = join(state, "security-verification.json");
+	const report = () =>
+		JSON.parse(readFileSync(reportFile, "utf8")) as {
+			passed: boolean;
+			failures: string[];
+			effectiveNsg: { nics: unknown[] };
+		};
+	return { result, calls, report };
+}
+
+describe("fork chaos security verification", () => {
+	unixTest("passes a topology whose every query answered and whose NICs match the manifest", () => {
+		const { result, report } = securityFixture([]);
+		assert.equal(result.exitCode, 0, result.stderr.toString());
+		assert.equal(report().passed, true);
+		assert.deepEqual(report().failures, []);
+		assert.equal(report().effectiveNsg.nics.length, 3);
+	});
+
+	const faults: readonly [string, readonly string[], readonly string[]][] = [
+		["the NIC list fails", ["fail-nic-rg-central"], ["listing NICs in rg-central failed"]],
+		[
+			"a group has fewer NICs than VMs",
+			["no-nic-rg-central"],
+			["found 0 NICs in rg-central, expected 1 (one per VM in the manifest)"],
+		],
+		[
+			"a NIC's effective rules cannot be read",
+			["fail-nsg-nic-b"],
+			["reading the effective NSG rules of NIC nic-b in rg-central failed"],
+		],
+		[
+			"the VM address list fails",
+			["fail-vm-rg-central"],
+			["listing VM addresses in rg-central failed", "found 2 VMs in the run groups, expected 3 from the manifest"],
+		],
+		["the public IP count fails", ["fail-public-ip-rg-west"], ["listing public IPs in rg-west failed"]],
+	];
+	for (const [name, injected, expected] of faults)
+		unixTest(`fails closed when ${name}`, () => {
+			const { result, report } = securityFixture(injected);
+			assert.equal(result.exitCode, 1);
+			assert.equal(report().passed, false);
+			assert.deepEqual(report().failures, expected);
+		});
+
+	unixTest("stops before any Azure query when the manifest lists no VMs", () => {
+		const { result, calls } = securityFixture([], {
+			regions: [{ region: "westus3", resourceGroup: "rg-west" }],
+			nodes: [],
+		});
+		assert.equal(result.exitCode, 2);
+		assert.match(result.stderr.toString(), /lists no regions or no VMs\. Run provision\.sh for RUN_ID=demo first\./);
+		assert.deepEqual(calls, []);
+	});
+});
+
+const sourceNotFound = {
+	fork: true,
+	name: "ForkSourceNotFoundError",
+	code: "source-not-found",
+	retryable: false,
+	storageScope: "local-only",
+	storageAdapter: "node-sqlite",
+	hintJoin: true,
+	message: "Fork source not found",
+};
+const passingLocalReport = () => ({
+	node: "b",
+	mount: "/opt/fork-chaos/localfs",
+	localSource: { runId: "run-1", status: "completed" },
+	localForkPoints: ["s1", "s2", "child.c1", "child.c2", "child.c3", "child", "s3"],
+	localFork: {
+		runId: "run-2",
+		forkedFrom: { runId: "run-1", stagePath: "child.c2" },
+		status: "completed",
+		toolsExecutedInFork: ["ct2", "t3", "t4"],
+		journalAdapter: "node-sqlite",
+	},
+	sharedRunViaLocalJournal: { ...sourceNotFound },
+	sharedRunPointsViaLocalJournal: { ...sourceNotFound },
+	diskFull: { freeBeforeFill: 4096, fallocateExit: 0, ddExit: 1, freeAfterFill: 0 },
+	diskFullFork: {
+		fork: true,
+		name: "ForkCopyFailedError",
+		code: "copy-failed",
+		retryable: true,
+		message: "copy failed",
+	},
+	runsBeforeDiskFull: 2,
+	runsAfterDiskFullAttempt: 2,
+	afterFreeingDisk: { forked: "run-3", status: "completed" },
+	localRuns: 3,
+	localPartialRuns: [] as string[],
+});
+type LocalReport = ReturnType<typeof passingLocalReport>;
+
+function localVerdictOf(text: string | undefined, workloadExitCode?: number | null): ChaosInvariantError {
+	try {
+		assertLocalSqliteReport(text, { workloadExitCode });
+	} catch (error) {
+		assert.ok(error instanceof ChaosInvariantError);
+		assert.equal(error.code, "local-sqlite-failed");
+		return error;
+	}
+	assert.fail("expected the node-local SQLite scenario to fail");
+}
+
+describe("fork chaos node-local SQLite verdict", () => {
+	test("passes a report that met every expectation from a workload that exited 0", () => {
+		assertLocalSqliteReport(JSON.stringify(passingLocalReport()), { workloadExitCode: 0 });
+	});
+
+	const misses: readonly [string, (report: LocalReport) => void, string][] = [
+		["the local fork failed", (r) => (r.localFork.status = "failed"), "localFork.status is not completed"],
+		[
+			"the fork came from the wrong point",
+			(r) => (r.localFork.forkedFrom.stagePath = "s3"),
+			"localFork.forkedFrom is not the local source at child.c2",
+		],
+		[
+			"a tool before the fork point ran again",
+			(r) => r.localFork.toolsExecutedInFork.push("t1"),
+			"localFork.toolsExecutedInFork did not replay t1, t2 and ct1 and run t3 and t4",
+		],
+		[
+			"a shared-only run was forked",
+			(r) => Object.assign(r, { sharedRunViaLocalJournal: "unexpected success" }),
+			"sharedRunViaLocalJournal is not a local-only source-not-found fork error with the join hint",
+		],
+		[
+			"listing a shared-only run's points gave no join hint",
+			(r) => (r.sharedRunPointsViaLocalJournal.hintJoin = false),
+			"sharedRunPointsViaLocalJournal is not a local-only source-not-found fork error with the join hint",
+		],
+		[
+			"the fork on a full disk succeeded",
+			(r) => Object.assign(r, { diskFullFork: { forked: "run-9", status: "completed" } }),
+			"diskFullFork did not fail with a typed fork error",
+		],
+		[
+			"the failed fork left a run",
+			(r) => (r.runsAfterDiskFullAttempt = 3),
+			"runsAfterDiskFullAttempt differs from runsBeforeDiskFull",
+		],
+		[
+			"the fork after freeing the disk failed",
+			(r) => Object.assign(r, { afterFreeingDisk: { ...sourceNotFound } }),
+			"afterFreeingDisk.status is not completed",
+		],
+		["a partial run remains", (r) => r.localPartialRuns.push("run-9"), "localPartialRuns is not empty"],
+	];
+	for (const [name, mutate, expected] of misses)
+		test(`fails when ${name}`, () => {
+			const report = passingLocalReport();
+			mutate(report);
+			assert.deepEqual(localVerdictOf(JSON.stringify(report), 0).localFailures, [expected]);
+		});
+
+	test("fails a passing report from a workload that exited nonzero or was killed, and a missing or unreadable one", () => {
+		const passing = JSON.stringify(passingLocalReport());
+		const exited = localVerdictOf(passing, 1);
+		assert.deepEqual(exited.localFailures, ["workload exit 1"]);
+		assert.equal(
+			exited.message,
+			"Fork chaos round did not pass: node-local SQLite scenario failed (workload exit 1) (local-sqlite-failed). " +
+				"Open node-local-sqlite.json and local-stderr.log on node b; each listed expectation names the report field that missed.",
+		);
+		assert.deepEqual(localVerdictOf(passing, null).localFailures, ["workload ended by a signal"]);
+		assert.deepEqual(localVerdictOf("", 1).localFailures, ["workload exit 1", "no report"]);
+		const unreadable = localVerdictOf("{ cut", 0);
+		assert.deepEqual(unreadable.localFailures, ["report is not JSON"]);
+		assert.ok(unreadable.cause instanceof SyntaxError);
+		assert.equal(findChaosInvariantError(new Error("controller", { cause: unreadable })), unreadable);
+	});
+
+	test("the verdict command exits nonzero for a failing or missing node-local report", () => {
+		const directory = makeTempDirectory("fork-chaos-local-verdict-");
+		temporary.push(directory);
+		const failing = passingLocalReport();
+		failing.localPartialRuns.push("run-9");
+		writeFileSync(join(directory, "passing.json"), JSON.stringify(passingLocalReport()));
+		writeFileSync(join(directory, "failing.json"), JSON.stringify(failing));
+		const verdict = (file: string) =>
+			spawnSyncCollect([process.execPath, join(harness, "verdict.mjs"), "--local", join(directory, file)]);
+
+		assert.equal(verdict("passing.json").exitCode, 0);
+		for (const [file, detail] of [
+			["failing.json", "localPartialRuns is not empty"],
+			["absent.json", "no report"],
+		] as const) {
+			const result = verdict(file);
+			assert.equal(result.exitCode, 1, file);
+			assert.match(result.stderr.toString(), new RegExp(`\\(${detail}\\) \\(local-sqlite-failed\\)`), file);
 		}
 	});
 });

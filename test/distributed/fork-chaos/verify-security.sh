@@ -6,7 +6,8 @@
 #      certificate against the per-run CA (curl and the Atomic libSQL client stack);
 #   4. sqld is unreachable from outside the run's peered test VNets: it listens on its private IP (TLS) and loopback
 #      only, has no public endpoint, and the peered control host (not an allowed source) cannot open its port.
-# Writes security-verification.json to $ARTIFACT_DIR (or $STATE_DIR) and exits non-zero when any check fails.
+# Writes security-verification.json to $ARTIFACT_DIR (or $STATE_DIR) and exits non-zero when any check fails. A query
+# that fails, or a run group whose VMs or NICs do not match the manifest, is a failure: nothing passes unchecked.
 #
 #   RUN_ID=<id> test/distributed/fork-chaos/verify-security.sh
 set -uo pipefail
@@ -15,6 +16,10 @@ set -uo pipefail
 STATE_DIR="${STATE_DIR:-$HOME/.fork-chaos/$RUN_ID}"
 OUT_DIR="${ARTIFACT_DIR:-$STATE_DIR}"
 MANIFEST="$STATE_DIR/manifest.json"
+jq -e '(.regions | length > 0) and (.nodes | length > 0)' "$MANIFEST" >/dev/null 2>&1 || {
+	echo "error: $MANIFEST lists no regions or no VMs. Run provision.sh for RUN_ID=$RUN_ID first." >&2
+	exit 2
+}
 SSH_OPTS=(-i "$STATE_DIR/ssh_key" -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$STATE_DIR/known_hosts"
 	-o ConnectTimeout=10 -o BatchMode=yes -o LogLevel=ERROR)
 ip_of() { jq -r --arg n "$1" '.nodes[] | select(.name == $n) | .ip' "$MANIFEST"; }
@@ -22,28 +27,60 @@ remote() { ssh "${SSH_OPTS[@]}" "azureuser@$(ip_of "$1")" "${@:2}"; }
 SQLD_IP=$(ip_of sqld)
 failures=()
 fail() { failures+=("$1"); echo "FAIL: $1" >&2; }
+# Sets variable $1 to the count an az query returned; records a failure and sets 0 when the query failed or returned
+# no number. Runs in this shell, never in a command substitution, so the failure is kept.
+query_count() {
+	local var="$1" what="$2" out
+	shift 2
+	if out=$("$@") && [[ "$out" =~ ^[0-9]+$ ]]; then
+		printf -v "$var" '%s' "$out"
+	else
+		fail "listing $what failed"
+		printf -v "$var" 0
+	fi
+}
+expected_in() { jq --arg rg "$1" '[.nodes[] | select(.resourceGroup == $rg)] | length' "$MANIFEST"; }
 
 # 1. Public IPs.
 vm_ips='[]'
 public_ip_resources=0
 load_balancers=0
 for rg in $(jq -r '.regions[].resourceGroup' "$MANIFEST"); do
-	vm_ips=$(jq -s 'add' <(echo "$vm_ips") <(az vm list-ip-addresses -g "$rg" -o json))
-	public_ip_resources=$((public_ip_resources + $(az network public-ip list -g "$rg" --query "length(@)" -o tsv)))
-	load_balancers=$((load_balancers + $(az network lb list -g "$rg" --query "length(@)" -o tsv)))
+	if listed=$(az vm list-ip-addresses -g "$rg" -o json) && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$listed"; then
+		vm_ips=$(jq -s 'add' <(echo "$vm_ips") <(echo "$listed"))
+	else
+		fail "listing VM addresses in $rg failed"
+	fi
+	query_count count "public IPs in $rg" az network public-ip list -g "$rg" --query "length(@)" -o tsv
+	public_ip_resources=$((public_ip_resources + count))
+	query_count count "load balancers in $rg" az network lb list -g "$rg" --query "length(@)" -o tsv
+	load_balancers=$((load_balancers + count))
 done
 public_ip_count=$(jq '[.[].virtualMachine.network.publicIpAddresses[]?] | length' <<<"$vm_ips")
 vm_count=$(jq 'length' <<<"$vm_ips")
+expected_vms=$(jq '.nodes | length' "$MANIFEST")
+[ "$vm_count" -eq "$expected_vms" ] || fail "found $vm_count VMs in the run groups, expected $expected_vms from the manifest"
 [ "$public_ip_count" -eq 0 ] || fail "VMs have $public_ip_count public IPs"
 [ "$public_ip_resources" -eq 0 ] || fail "$public_ip_resources public IP resources exist in the run groups"
 [ "$load_balancers" -eq 0 ] || fail "$load_balancers load balancers exist in the run groups"
 private_ips=$(jq -c '[.[] | {vm: .virtualMachine.name, private: [.virtualMachine.network.privateIpAddresses[]], public: [.virtualMachine.network.publicIpAddresses[]?]}]' <<<"$vm_ips")
-
 # 2. Effective NSG rules on every NIC.
+# 2. Effective NSG rules on every NIC: one NIC per manifest VM, each one's effective rules read.
 nic_reports='[]'
 for rg in $(jq -r '.regions[].resourceGroup' "$MANIFEST"); do
-	for nic in $(az network nic list -g "$rg" --query "[].name" -o tsv); do
-		effective=$(az network nic list-effective-nsg -g "$rg" -n "$nic" -o json)
+	if ! nics=$(az network nic list -g "$rg" --query "[].name" -o tsv); then
+		fail "listing NICs in $rg failed"
+		continue
+	fi
+	found=$(grep -c . <<<"$nics")
+	expected=$(expected_in "$rg")
+	[ "$found" -eq "$expected" ] || fail "found $found NICs in $rg, expected $expected (one per VM in the manifest)"
+	for nic in $nics; do
+		if ! effective=$(az network nic list-effective-nsg -g "$rg" -n "$nic" -o json) ||
+			! jq -e '.value | type == "array"' >/dev/null 2>&1 <<<"$effective"; then
+			fail "reading the effective NSG rules of NIC $nic in $rg failed"
+			continue
+		fi
 		report=$(jq --arg nic "$nic" '
 			[.value[]?.effectiveSecurityRules[]? | select(.direction == "Inbound")] as $in
 			| {

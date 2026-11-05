@@ -91,9 +91,18 @@ failure is a `ForkError` with the documented `retryable` flag, or the caller's a
 
 The round fails unless every one of those invariants passed. `check.ts` writes `check.json` and then exits 1 if any
 invariant failed. The controller copies the report and exits 1 if the report is missing or unreadable, lacks an
-invariant, holds a failed one, or the checker exited nonzero. Its `controller-error` timeline event carries the code
-(`report-missing`, `report-invalid`, `checker-failed` or `invariants-failed`) and the invariants involved. To
-re-check a stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>`.
+invariant, holds a failed one, or the checker exited nonzero. The shared checker does not cover the node-local
+SQLite scenario, so it has its own expectations. `workload.ts local` exits 1, and the round fails with
+`local-sqlite-failed`, when the workload exits nonzero, prints no report, or its report misses one: the local fork
+completes from `child.c2` replaying the tools before it; a shared-only run is `source-not-found` on local-only storage
+with the join hint; the fork on a full disk fails with a typed error and writes no run; the fork after freeing the
+disk completes; and no partial run is left. The `controller-error` timeline event carries the code (`report-missing`,
+`report-invalid`, `checker-failed`, `invariants-failed` or `local-sqlite-failed`) and what missed. To re-check a
+stored round, run `node test/distributed/fork-chaos/verdict.mjs <check.json>` or
+`node test/distributed/fork-chaos/verdict.mjs --local <node-local-sqlite.json>`.
+
+`verify-security.sh` fails when any `az` query fails, and when the VMs or NICs it finds do not match the manifest.
+So a query that returns nothing cannot pass the security gate.
 
 ## Teardown
 

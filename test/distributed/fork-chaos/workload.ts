@@ -47,6 +47,7 @@ import {
 	STORE_NOW_SQL,
 	sleep,
 } from "./shared.js";
+import { assertLocalSqliteReport, ChaosInvariantError } from "./verdict.mjs";
 
 /** What the controller steers at runtime; re-read before every attempt and at every hook. */
 interface Control {
@@ -651,8 +652,11 @@ async function sweep(sources: ReadonlySet<string>): Promise<void> {
 	console.log(JSON.stringify({ swept: pending.length }));
 }
 
-/** Node-local SQLite: a local journal forks its own runs, and reports a shared run as not found with a join hint. */
-async function local(sharedSourceId: string, mount: string): Promise<void> {
+/**
+ * Node-local SQLite: a local journal forks its own runs, and reports a shared run as not found with a join hint.
+ * Prints the report as its last stdout line either way; returns false (exit 1) when the report misses an expectation.
+ */
+async function local(sharedSourceId: string, mount: string): Promise<boolean> {
 	const report: { [key: string]: Json } = { node: config.node, mount };
 	const path = join(mount, "journal.sqlite");
 	rmSync(path, { force: true });
@@ -749,6 +753,14 @@ async function local(sharedSourceId: string, mount: string): Promise<void> {
 	await backend.close();
 	await journal.close();
 	console.log(JSON.stringify(report));
+	try {
+		assertLocalSqliteReport(JSON.stringify(report));
+		return true;
+	} catch (error) {
+		if (!(error instanceof ChaosInvariantError)) throw error;
+		console.error(error.message);
+		return false;
+	}
 }
 
 /** Security verification through the real client stack: token required, TLS verified. */
@@ -783,6 +795,7 @@ async function tlscheck(): Promise<void> {
 	console.log(JSON.stringify(report));
 }
 
+let passed = true;
 switch (mode) {
 	case "seed":
 		await seed(Number(process.argv[3] ?? "6"));
@@ -806,7 +819,7 @@ switch (mode) {
 	}
 	case "local":
 		mkdirSync(process.argv[4] ?? "", { recursive: true });
-		await local(process.argv[3] ?? "", process.argv[4] ?? "");
+		passed = await local(process.argv[3] ?? "", process.argv[4] ?? "");
 		break;
 	case "tlscheck":
 		await tlscheck();
@@ -814,4 +827,4 @@ switch (mode) {
 	default:
 		throw new Error(`unknown mode ${mode}`);
 }
-process.exit(0);
+process.exit(passed ? 0 : 1);

@@ -14,7 +14,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertChaosInvariants, findChaosInvariantError } from "./verdict.mjs";
+import { assertChaosInvariants, assertLocalSqliteReport, findChaosInvariantError } from "./verdict.mjs";
 
 const runId = process.env.RUN_ID;
 if (!runId) throw new Error("set RUN_ID");
@@ -423,10 +423,23 @@ async function main() {
 	timeline.convergence = { healAt, convergedAt, msToConverge: convergedAt - healAt, manualSteps: 0 };
 	record("converged", timeline.convergence);
 
+	let localFailure;
 	await phase("node-local-sqlite", async () => {
-		const result = await ssh("b", `${env}\nbun run test/distributed/fork-chaos/workload.ts local ${hot} /opt/fork-chaos/localfs 2>>${state}/local-stderr.log | tail -1`, { timeoutMs: 600_000 });
-		writeFileSync(join(artifactDir, "node-local-sqlite.json"), result.stdout.trim() || JSON.stringify({ error: result.stderr.slice(-2000) }));
-		record("node-local-sqlite", { exit: result.code });
+		// The workload's own exit status is kept (no pipeline), and its report is the last line it printed.
+		const result = await ssh(
+			"b",
+			`${env}\nbun run test/distributed/fork-chaos/workload.ts local ${hot} /opt/fork-chaos/localfs >${state}/local-stdout.log 2>>${state}/local-stderr.log; status=$?; tail -1 ${state}/local-stdout.log; exit $status`,
+			{ timeoutMs: 600_000 },
+		);
+		const reportText = result.stdout.trim();
+		writeFileSync(join(artifactDir, "node-local-sqlite.json"), reportText || JSON.stringify({ error: result.stderr.slice(-2000) }));
+		try {
+			assertLocalSqliteReport(reportText, { workloadExitCode: result.code });
+		} catch (error) {
+			localFailure = findChaosInvariantError(error);
+			if (localFailure === undefined) throw error;
+		}
+		record("node-local-sqlite", { exit: result.code, passed: localFailure === undefined, localFailures: localFailure?.localFailures ?? [] });
 	});
 
 	await phase("check", async () => {
@@ -451,13 +464,21 @@ async function main() {
 		// A missing, unreadable, incomplete or failing report fails the round; main's catch records it and exits 1.
 		assertChaosInvariants(report.code === 0 ? report.stdout : undefined, { checkerExitCode: checked.code });
 	});
+	// The shared checker does not cover the node-local scenario; its failure fails the round once the check ran.
+	if (localFailure !== undefined) throw localFailure;
 	record("controller-done");
 }
 
 main().catch((error) => {
 	const failure = findChaosInvariantError(error);
 	const verdict = failure
-		? { code: failure.code, failedInvariants: failure.failedInvariants, missingInvariants: failure.missingInvariants, hint: failure.hint }
+		? {
+				code: failure.code,
+				failedInvariants: failure.failedInvariants,
+				missingInvariants: failure.missingInvariants,
+				localFailures: failure.localFailures,
+				hint: failure.hint,
+			}
 		: {};
 	record("controller-error", { ...verdict, message: String(error?.stack ?? error).slice(0, 2000) });
 	process.exitCode = 1;
