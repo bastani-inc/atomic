@@ -685,7 +685,6 @@ export {
 	type SearchToolDetails,
 	type SearchToolInput,
 	type SearchToolOptions,
-	type SerializedErrorCause,
 	type SerializedFileToolError,
 	type ShellToolPresentation,
 	searchToolSystemPromptContribution,

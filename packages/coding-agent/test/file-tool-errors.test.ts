@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "vitest";
+import { MAX_SERIALIZED_CAUSE_DEPTH } from "../src/core/error-contract.js";
 import type { ExtensionToolContext } from "../src/core/extensions/types.js";
 import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.js";
 import { applyReplacementsPreservingUnchangedLines } from "../src/core/tools/edit-diff.js";
@@ -21,12 +22,14 @@ import {
 	isWriteSelectorError,
 	rehydrateEditToolError,
 	rehydrateWriteSelectorError,
+	type SerializedErrorCause,
 	serializeFileToolError,
 	WriteSelectorError,
 	type WriteSelectorErrorCode,
 } from "../src/core/tools/file-tool-errors.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
 import { createWriteTool, createWriteToolDefinition } from "../src/core/tools/write.js";
+import type { SerializedErrorCause as RootSerializedErrorCause } from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -469,6 +472,27 @@ describe("serialization round trip", () => {
 		assert.equal((cause.cause as Error).message, "root");
 	});
 
+	it("serializes a cause as the root public SerializedErrorCause", () => {
+		const wire = serializeFileToolError(editErrors[2]!());
+		const asRoot: RootSerializedErrorCause | undefined = wire.cause;
+		const asFileTool: SerializedErrorCause | undefined = asRoot;
+		assert.equal(asFileTool?.code, "EACCES");
+	});
+
+	it("removes URL credentials from a serialized cause message", () => {
+		const cause = new Error("connect failed: https://user:secret@example.com/path");
+		const wire = serializeFileToolError(new EditTargetError("target-inaccessible", "x", { path: "a" }, { cause }));
+		assert.equal(wire.cause?.message, "connect failed: https://example.com/path");
+		assert.equal(JSON.stringify(wire).includes("secret"), false);
+	});
+
+	it("serializes a null cause as no cause", () => {
+		const wire = serializeFileToolError(
+			new EditTargetError("target-inaccessible", "x", { path: "a" }, { cause: null }),
+		);
+		assert.equal("cause" in wire, false);
+	});
+
 	it("bounds a self-referential cause chain", () => {
 		const loop = new Error("loop") as Error & { cause?: unknown };
 		loop.cause = loop;
@@ -477,7 +501,7 @@ describe("serialization round trip", () => {
 		);
 		let depth = 0;
 		for (let cause = wire.cause; cause; cause = cause.cause) depth++;
-		assert.equal(depth, 4);
+		assert.equal(depth, MAX_SERIALIZED_CAUSE_DEPTH);
 	});
 
 	it("keeps WriteSelectorError identity", () => {

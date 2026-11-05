@@ -1,3 +1,10 @@
+import {
+	hasErrorIdentity,
+	rehydrateErrorCause,
+	type SerializedErrorCause,
+	serializeErrorCause,
+} from "../error-contract.js";
+
 /**
  * Typed failures of the `edit` and `write` tools.
  *
@@ -171,12 +178,8 @@ export class FileToolAbortedError extends Error {
 	}
 }
 
-type NamedCandidate = { readonly name?: unknown; readonly code?: unknown };
-
 function hasNameAndCode(error: unknown, name: string, codes: ReadonlySet<string>): boolean {
-	if (typeof error !== "object" || error === null) return false;
-	const candidate = error as NamedCandidate;
-	return candidate.name === name && typeof candidate.code === "string" && codes.has(candidate.code);
+	return hasErrorIdentity(error, new Set([name]), codes);
 }
 
 /** True for any {@link EditToolError}, including one from another realm or a structural copy. */
@@ -210,15 +213,7 @@ export function isFileToolAbortedError(error: unknown): error is FileToolAborted
 	return error instanceof FileToolAbortedError || hasNameAndCode(error, "AbortError", ABORTED_CODES);
 }
 
-const MAX_CAUSE_DEPTH = 4;
-
-/** A cause as it crosses a process boundary: identity and code only, never a stack. */
-export interface SerializedErrorCause {
-	readonly name: string;
-	readonly message: string;
-	readonly code?: string;
-	readonly cause?: SerializedErrorCause;
-}
+export type { SerializedErrorCause };
 
 /** An {@link EditToolError} or {@link WriteSelectorError} as JSON. */
 export interface SerializedFileToolError {
@@ -230,30 +225,8 @@ export interface SerializedFileToolError {
 	readonly cause?: SerializedErrorCause;
 }
 
-function serializeCause(cause: unknown, depth: number): SerializedErrorCause | undefined {
-	if (cause === undefined || depth >= MAX_CAUSE_DEPTH) return undefined;
-	if (!(cause instanceof Error)) return { name: "Error", message: String(cause) };
-	const code = (cause as { code?: unknown }).code;
-	const nested = serializeCause(cause.cause, depth + 1);
-	return {
-		name: cause.name,
-		message: cause.message,
-		...(typeof code === "string" ? { code } : {}),
-		...(nested ? { cause: nested } : {}),
-	};
-}
-
-function rehydrateCause(cause: SerializedErrorCause | undefined): Error | undefined {
-	if (!cause) return undefined;
-	const nested = rehydrateCause(cause.cause);
-	const error = new Error(cause.message, nested ? { cause: nested } : undefined);
-	error.name = cause.name;
-	if (cause.code !== undefined) Object.assign(error, { code: cause.code });
-	return error;
-}
-
 export function serializeFileToolError(error: EditToolError | WriteSelectorError): SerializedFileToolError {
-	const cause = serializeCause(error.cause, 0);
+	const cause = serializeErrorCause(error.cause);
 	return {
 		name: error.name,
 		code: error.code,
@@ -265,7 +238,7 @@ export function serializeFileToolError(error: EditToolError | WriteSelectorError
 }
 
 function causeOptions(value: SerializedFileToolError): ErrorOptions | undefined {
-	const cause = rehydrateCause(value.cause);
+	const cause = rehydrateErrorCause(value.cause);
 	return cause ? { cause } : undefined;
 }
 

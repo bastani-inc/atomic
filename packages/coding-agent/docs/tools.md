@@ -128,7 +128,7 @@ The built-in `write` also accepts these targets, described under [Lines and loca
 | `WriteSelectorError` | `conflict-id-not-found` | No conflict has that id | `path`, `conflictId` | Read `conflict://*` again. |
 | `WriteSelectorError` | `unsupported-scheme` | The path is a URL that is not an Atomic resource | `path` | Write to a file path or a supported selector. |
 
-`EditInputError`, `EditMatchError`, and `EditTargetError` extend `EditToolError`. Guards (`isEditToolError`, `isEditInputError`, `isEditMatchError`, `isEditTargetError`, `isWriteSelectorError`) also recognize copies from another process by `name` and `code`. `serializeFileToolError` turns an error into JSON with its cause chain; `rehydrateEditToolError` and `rehydrateWriteSelectorError` rebuild it, keeping an unknown `name` or `code` on the family base class.
+`EditInputError`, `EditMatchError`, and `EditTargetError` extend `EditToolError`. Guards (`isEditToolError`, `isEditInputError`, `isEditMatchError`, `isEditTargetError`, `isWriteSelectorError`) also recognize copies from another process by `name` and `code`. `serializeFileToolError` turns an error into JSON with its bounded cause chain, removing URL credentials from cause messages; `rehydrateEditToolError` and `rehydrateWriteSelectorError` rebuild it, keeping an unknown `name` or `code` on the family base class.
 
 A cancelled `edit` or `write` throws `FileToolAbortedError` (`name: "AbortError"`, `code: "aborted"`, message `Operation aborted`) with the signal's `reason` as `cause`. It is a cancellation, not an edit failure. Other filesystem failures while writing, such as `EACCES` or `EISDIR`, are the filesystem's own errors.
 
