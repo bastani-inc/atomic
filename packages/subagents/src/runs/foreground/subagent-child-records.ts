@@ -261,6 +261,8 @@ export interface SubagentChildRecordSink {
 	/** Settles once every record this sink was given has been appended. */
 	flushed?(): Promise<void>;
 	clearHeldToolResults?(childId: string, toolCallIds: readonly string[]): Promise<void>;
+	/** Keep messages for a released or stopped child, for its next wake or resume; see {@link holdSubagentChildMessages}. */
+	holdMessages?(childId: string, messages: readonly string[]): Promise<HeldMessagesOutcome>;
 }
 
 /** `terminalStatus` of a child whose workflow stage finished, or whose run ended or was cancelled; never resumable. */
@@ -514,7 +516,59 @@ export function createSubagentChildRecordSink(
 		flushed: () => appended,
 		clearHeldToolResults: (childId, toolCallIds) =>
 			clearSubagentChildHeldToolResults(pi, owner.sessionId, childId, toolCallIds),
+		holdMessages: (childId, messages) => holdSubagentChildMessages(pi, owner.sessionId, childId, messages),
 	};
+}
+
+/** Whether held messages were kept, and for which kind of stopped child: a released one is woken for them. */
+export type HeldMessagesOutcome = "released" | "stopped" | "not-held";
+
+const STOPPED_STATUSES: ReadonlySet<string | undefined> = new Set([
+	"paused",
+	"quit",
+	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
+]);
+
+/**
+ * Add `messages` after the ones a released or stopped child already holds for its current task, in the owner's
+ * append order, so its next wake or resume delivers them once. A child that runs again or has ended holds nothing:
+ * the caller delivers the messages some other way.
+ */
+export async function holdSubagentChildMessages(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	ownerSessionId: string,
+	childId: string,
+	messages: readonly string[],
+): Promise<HeldMessagesOutcome> {
+	let outcome: HeldMessagesOutcome = "not-held";
+	await inOrder(ownerSessionId, async () => {
+		const latest = subagentChildRecordOf(ownerSessionId, childId);
+		if (latest?.state !== "terminal") return;
+		const kind =
+			latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS
+				? "released"
+				: STOPPED_STATUSES.has(latest.terminalStatus)
+					? "stopped"
+					: undefined;
+		if (kind === undefined || latest.taskId === undefined) return;
+		const held = latest.heldMessages?.taskId === latest.taskId ? latest.heldMessages : undefined;
+		const record: SubagentChildRecord = {
+			...latest,
+			heldMessages: {
+				taskId: latest.taskId,
+				messages: [...(held?.messages ?? []), ...messages],
+				taskExpands: held?.taskExpands ?? false,
+			},
+		};
+		observeSubagentChildRecord(record);
+		try {
+			await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, record);
+		} catch (error) {
+			throw recordAppendFailure(record, error as Error);
+		}
+		outcome = kind;
+	});
+	return outcome;
 }
 
 /** `terminalStatus` of a child stopped by `pause` or `quit`; both stay resumable. */

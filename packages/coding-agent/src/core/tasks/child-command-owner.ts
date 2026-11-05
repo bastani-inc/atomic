@@ -25,11 +25,17 @@ export interface ChildCommandTaskOwner {
 	bind(childId: string, route: ChildTaskCompletionRoute, waits: ChildTaskWaits): SupervisedCommandOwner;
 	/** The child's session closed: forget its route, which holds the whole session, so a released child holds nothing. */
 	unbind(childId: string): void;
+	/**
+	 * The child was released while shell tasks it launched still run: their completions reach it through `route` until
+	 * the last of them has completed, and the route is then forgotten. Returns false, binding nothing, when none runs.
+	 */
+	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean;
 }
 
 class ChildCommandTaskRoutes {
 	private readonly launchedBy = new Map<TaskId, string>();
 	private readonly routes = new Map<string, ChildTaskCompletionRoute>();
+	private readonly running = new Map<string, Set<TaskId>>();
 
 	bind(childId: string, route: ChildTaskCompletionRoute): void {
 		this.routes.set(childId, route);
@@ -46,15 +52,38 @@ class ChildCommandTaskRoutes {
 
 	recordLaunch(taskId: TaskId, childId: string): void {
 		this.launchedBy.set(taskId, childId);
+		const running = this.running.get(childId);
+		if (running === undefined) this.running.set(childId, new Set([taskId]));
+		else running.add(taskId);
+	}
+
+	routeReleased(childId: string, route: ChildTaskCompletionRoute): boolean {
+		if (!this.running.has(childId)) return false;
+		const released: ChildTaskCompletionRoute = {
+			isOpen: () => true,
+			deliver: async (message) => {
+				try {
+					await route.deliver(message);
+				} finally {
+					if (!this.running.has(childId) && this.routes.get(childId) === released) this.routes.delete(childId);
+				}
+			},
+		};
+		this.routes.set(childId, released);
+		return true;
 	}
 
 	launchedByChild(taskId: TaskId, childId: string): boolean {
 		return this.launchedBy.get(taskId) === childId;
 	}
 
-	openRoute(taskId: TaskId): ChildTaskCompletionRoute | undefined {
+	completionRoute(taskId: TaskId): ChildTaskCompletionRoute | undefined {
 		const childId = this.launchedBy.get(taskId);
-		const route = childId === undefined ? undefined : this.routes.get(childId);
+		if (childId === undefined) return undefined;
+		const running = this.running.get(childId);
+		running?.delete(taskId);
+		if (running?.size === 0) this.running.delete(childId);
+		const route = this.routes.get(childId);
 		return route?.isOpen() ? route : undefined;
 	}
 }
@@ -70,9 +99,12 @@ function routesFor(host: AgentTaskHost): ChildCommandTaskRoutes {
 	return routes;
 }
 
-/** Completion route for a task a child launched in this owner, only while that child accepts messages. */
+/**
+ * The task completed: the route to the child that launched it in this owner, only while that child accepts messages.
+ * The task no longer counts as running for its child.
+ */
 export function childTaskCompletionRoute(host: AgentTaskHost, taskId: TaskId): ChildTaskCompletionRoute | undefined {
-	return routesByHost.get(host)?.openRoute(taskId);
+	return routesByHost.get(host)?.completionRoute(taskId);
 }
 
 /** How many children have a completion route in this host's owner. */
@@ -94,6 +126,7 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 	};
 	return {
 		unbind: dropRoute,
+		routeReleased: (childId, route) => routesFor(resolveHost()).routeReleased(childId, route),
 		bind(childId, route, waits) {
 			const host = resolveHost();
 			if (boundHosts.get(childId) !== host) dropRoute(childId);

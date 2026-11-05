@@ -409,6 +409,8 @@ pi.registerTool({
 });
 ```
 
+**Long waits:** a tool whose calls only wait for something outside the session, such as a CI run or a deployment, can declare `detachable: true`, or a function `(args) => boolean` that decides per call. In a session whose host releases waiting agents, such as a background subagent, a call still running after the host's delay goes on without the session, the session is released, and the call's result wakes it later. After a restart such a call may be started again with the same id and arguments, so declare it only when that is safe. Built-in `bash` detaches only `{ action: "wait" }` calls without a `budgetMs`.
+
 ### Structured results and nested tools
 
 Declare `outputSchema` when a tool returns machine-readable data, and return a matching `structuredContent` alongside model-facing `content`. Script callers receive the structured value; tools without an output schema return text to scripts. A `tool_result` handler that redacts text must also replace `structuredContent`; replacing only `content` drops the structured value to prevent it leaking through another path.

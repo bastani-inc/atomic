@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import {
 	type AgentWake,
 	type AgentWakeDispatcher,
@@ -8,7 +9,8 @@ import {
 	type ExtensionContext,
 	type SessionManager,
 } from "@bastani/atomic";
-import type { SubagentReleasePolicy } from "../inprocess/runner.js";
+import type { ChildTaskCompletionRoute } from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
+import type { SubagentReleased, SubagentReleasePolicy } from "../inprocess/runner.js";
 import { ReleasedChildError } from "./released-child-errors.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
@@ -18,7 +20,9 @@ import {
 	SUBAGENT_CHILD_STAGE_CLOSED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
+	type SubagentChildRecordSink,
 	subagentChildOwner,
+	subagentChildRecordFailures,
 	subagentChildRecordsAppended,
 } from "./subagent-child-records.js";
 
@@ -238,4 +242,65 @@ export function holdToolResultsInRecord(
 	return async (record, toolResults) => {
 		await recordSubagentChildHeldToolResults(pi, record.owner.sessionId, record.childId, toolResults);
 	};
+}
+
+function wakeForTaskCompletion(dispatcher: AgentWakeDispatcher, wakeKey: string, completionId: string): void {
+	void dispatcher
+		.deliver(wakeKey, { id: `task-completion:${completionId}`, kind: "task-completion" })
+		.catch((error) => dispatcher.reportUnobservedFailure(error));
+}
+
+function completionIdOf(details: object): string {
+	const completionId = (details as { readonly completionId?: string }).completionId;
+	return typeof completionId === "string" ? completionId : randomUUID();
+}
+
+/**
+ * The route the completions of shell tasks a released child launched take to that child: each is held in its record
+ * and wakes it, or waits for its resume when it is stopped. A child that runs again or has ended holds none, so the
+ * session that launched it receives the notice instead.
+ */
+export function releasedChildShellRoute(
+	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,
+	ownerSessionId: string,
+	childId: string,
+	dispatcher: AgentWakeDispatcher,
+): ChildTaskCompletionRoute {
+	return {
+		isOpen: () => true,
+		deliver: async (message) => {
+			const outcome = await holdMessages(childId, [message.content]);
+			if (outcome === "not-held") throw new ReleasedChildError("completion-not-held", { ownerSessionId, childId });
+			if (outcome === "released")
+				outsideAnyTask(
+					wakeForTaskCompletion,
+					dispatcher,
+					subagentWakeKey(ownerSessionId, childId),
+					completionIdOf(message.details),
+				);
+		},
+	};
+}
+
+/**
+ * Route the completions of shell tasks a just-released child launched and that still run to that child, so they
+ * wake it instead of reaching the session that launched it. A child with no such task keeps nothing here.
+ */
+export function routeReleasedChildShellCompletions(
+	released: Pick<SubagentReleased, "routeShellCompletions">,
+	holdMessages: NonNullable<SubagentChildRecordSink["holdMessages"]>,
+	ownerSessionId: string,
+	childId: string,
+	dispatcher: AgentWakeDispatcher,
+): void {
+	try {
+		released.routeShellCompletions?.(releasedChildShellRoute(holdMessages, ownerSessionId, childId, dispatcher));
+	} catch (error) {
+		subagentChildRecordFailures.count += 1;
+		subagentChildRecordFailures.last = new ReleasedChildError(
+			"completion-not-held",
+			{ ownerSessionId, childId },
+			{ cause: error as Error },
+		);
+	}
 }

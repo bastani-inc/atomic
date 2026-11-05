@@ -38,6 +38,10 @@ import {
 	getSupportedThinkingLevels,
 	type Model,
 } from "@bastani/pi-ai/compat";
+import type {
+	ChildCommandTaskOwner,
+	ChildTaskCompletionRoute,
+} from "../../../../coding-agent/src/core/tasks/child-command-owner.js";
 import type { Cleanup } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import {
@@ -221,6 +225,18 @@ export interface SubagentReleased {
 	readonly calls: readonly DetachedToolCall[];
 	/** The Intercom session id the child was registered under, when its session recorded one. */
 	readonly intercomId?: string;
+	/**
+	 * Route the completions of shell tasks the child launched and that still run to `route` instead of the session that
+	 * launched it. Returns false when none runs. Present when the child ran in its parent's task owner.
+	 */
+	readonly routeShellCompletions?: (route: ChildTaskCompletionRoute) => boolean;
+}
+
+function shellCompletionRouter(
+	owner: ChildCommandTaskOwner,
+	childSessionId: string,
+): (route: ChildTaskCompletionRoute) => boolean {
+	return (route) => owner.routeReleased(childSessionId, route);
 }
 
 /** The envelope a released child's attempt reports: what it waits on, and what wakes it. */
@@ -1343,6 +1359,7 @@ export class SubagentControlRuntime {
 		const token = guard.token;
 		this.attemptTokens.set(admitted.identity.path, token);
 		let session: AgentSession | undefined;
+		let parentCommandTaskOwner: ChildCommandTaskOwner | undefined;
 		// Messages this attempt produced; a forked child's inherited history is never among them.
 		let ownMessages: () => TranscriptMessage[] = () => [];
 		const executionEnded = new AbortController();
@@ -1446,6 +1463,7 @@ export class SubagentControlRuntime {
 					excludedTools: admitted.policy.excludedTools ? [...admitted.policy.excludedTools] : undefined,
 				};
 				const inherited = admitted.spec.parent?.getChildSessionOptions?.(childOptions) ?? childOptions;
+				parentCommandTaskOwner = inherited.parentCommandTaskOwner;
 				// The child has no UI of its own; its extensions' status writes belong to its task's pages,
 				// never to the parent's footer.
 				const extensionBindings: CreateAgentSessionOptions["extensionBindings"] = taskHooks?.setExtensionStatus
@@ -1777,6 +1795,14 @@ export class SubagentControlRuntime {
 						waitingOn,
 						calls: detached,
 						...releasedIntercomId(sessionManager),
+						...(parentCommandTaskOwner === undefined
+							? {}
+							: {
+									routeShellCompletions: shellCompletionRouter(
+										parentCommandTaskOwner,
+										sessionManager.getSessionId(),
+									),
+								}),
 					},
 					...pendingMessagesOf(session, unsent, admitted.spec.resumeTaskLiteral),
 					stats,

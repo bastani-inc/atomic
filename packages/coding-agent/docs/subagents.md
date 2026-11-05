@@ -284,7 +284,8 @@ A background subagent that waits more than a minute on a tool call marked `detac
 - A result that arrives while a woken child is running is kept, and wakes the child again once that run ends.
 - `pause` and `quit` on a released child only stop it from being woken; results that arrive meanwhile are kept and delivered when you `resume` it. `resume` wakes it at once, with your `message` if given.
 - Released children wake through the session that launched them, so that session must stay open.
-- No built-in tool is marked `detachable` yet, so a child that waits in a built-in tool (a shell `wait`, an Intercom `ask`, `contact_supervisor`) stays a live session until the wait ends. Only a wait in an extension tool that opts in releases it.
+- A shell `wait` without a `budgetMs` waits until its task finishes, so a child that waits on its own background shell this way is released too, and the task's result wakes it. A shell task a released child started that finishes while it is released wakes it with the task's completion notice; while it is paused or quit, the notice waits for its `resume`.
+- An Intercom `ask` and `contact_supervisor` still keep a child live until their reply arrives.
 
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 

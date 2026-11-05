@@ -3,7 +3,7 @@ import type { DetachedToolResult } from "./agent-session-detached-tools.ts";
 import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
 
 /** What woke an agent. Every kind arrives the same way, as a wake on the agent's key. */
-export type AgentWakeKind = "intercom" | "tool-result" | "timer";
+export type AgentWakeKind = "intercom" | "tool-result" | "task-completion" | "timer";
 
 /** One message for a released (or idle) agent. `id` makes delivery exactly once while the wake is pending. */
 export interface AgentWake {

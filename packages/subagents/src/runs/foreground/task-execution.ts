@@ -28,6 +28,7 @@ import { launchRequestedModel } from "../shared/model-fallback.js";
 import { reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
 	forwardDetachedResults,
+	routeReleasedChildShellCompletions,
 	subagentReleasePolicy,
 	subagentWakeKey,
 	wakeReleasedChildWithHeldResults,
@@ -670,6 +671,15 @@ export async function runAgentTask(input: {
 							childSession.childSessionId,
 							child.released.intercomId,
 						);
+						const holdMessages = input.recordChild?.holdMessages;
+						if (ownerSessionId !== undefined && holdMessages !== undefined)
+							routeReleasedChildShellCompletions(
+								child.released,
+								holdMessages,
+								ownerSessionId,
+								childId,
+								input.wakeDispatcher ?? agentWakeDispatcher(),
+							);
 					} else if (!ownerClosed())
 						recordChild(
 							"terminal",

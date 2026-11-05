@@ -13,8 +13,10 @@ import {
 	type ChildCommandTaskOwner,
 	ChildTaskWaits,
 	childCommandRouteCount,
+	childTaskCompletionRoute,
 	createChildCommandTaskOwner,
 } from "../src/core/tasks/child-command-owner.ts";
+import type { TaskId } from "../src/core/tasks/contracts.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -114,5 +116,39 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 		};
 		await harness.session.dispose();
 		assert.deepEqual(unbound, [harness.session.sessionId]);
+	});
+
+	test("a released child keeps a route only while a shell task it launched runs, and loses it with the last one (#4326)", async () => {
+		const host = new AgentTaskHost({ scope: { kind: "session", sessionId: "owner" }, authorizeLaunch() {} });
+		cleanups.push(() => void host.close("session-close"));
+		const owner = createChildCommandTaskOwner(() => host);
+		const binding = owner.bind("child-a", route, new ChildTaskWaits());
+		binding.onCommandStarted?.("t-1" as TaskId);
+		binding.onCommandStarted?.("t-2" as TaskId);
+		owner.bind("child-b", route, new ChildTaskWaits());
+		owner.unbind("child-a");
+		owner.unbind("child-b");
+		const delivered: string[] = [];
+		const released = {
+			isOpen: () => true,
+			deliver: async (message: { content: string }) => void delivered.push(message.content),
+		};
+
+		assert.equal(owner.routeReleased("child-b", released), false, "a child with nothing running keeps nothing");
+		assert.equal(owner.routeReleased("child-a", released), true);
+		assert.equal(childCommandRouteCount(host), 1);
+		const message = (content: string) => ({
+			customType: "task_completion",
+			content,
+			details: {},
+			display: true as const,
+		});
+		await childTaskCompletionRoute(host, "t-1" as TaskId)?.deliver(message("first done"));
+		assert.equal(childCommandRouteCount(host), 1, "one of its tasks still runs");
+		await childTaskCompletionRoute(host, "t-2" as TaskId)?.deliver(message("second done"));
+
+		assert.deepEqual(delivered, ["first done", "second done"]);
+		assert.equal(childCommandRouteCount(host), 0);
+		assert.equal(childTaskCompletionRoute(host, "t-2" as TaskId), undefined);
 	});
 });

@@ -2,7 +2,8 @@ export type ReleasedChildErrorCode =
 	| "child-record-missing"
 	| "child-unrestorable"
 	| "record-append-failed"
-	| "hold-failed";
+	| "hold-failed"
+	| "completion-not-held";
 
 /** Ids and reasons only, so an error can be logged, serialized and shown without exposing prompts or results. */
 export interface ReleasedChildErrorFields {
@@ -21,6 +22,7 @@ const RELEASED_CHILD_ERROR_CODES: ReadonlySet<string> = new Set<ReleasedChildErr
 	"child-unrestorable",
 	"record-append-failed",
 	"hold-failed",
+	"completion-not-held",
 ]);
 
 const RETRYABLE_CODES: ReadonlySet<ReleasedChildErrorCode> = new Set(["record-append-failed", "hold-failed"]);
@@ -39,6 +41,8 @@ function hintFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFields)
 			return "Check the session store the owning session writes to; until it is saved, a restart would not know this state of the child.";
 		case "hold-failed":
 			return "Check that Intercom is connected; until the reservation exists, sends to this subagent are answered as not found.";
+		case "completion-not-held":
+			return "Nothing to do: the session that launched the subagent receives the task's completion notice instead.";
 	}
 }
 
@@ -52,6 +56,8 @@ function subjectFor(code: ReleasedChildErrorCode, fields: ReleasedChildErrorFiel
 			return `The ${fields.state} record of subagent ${fields.childId} could not be saved`;
 		case "hold-failed":
 			return `Sends to released subagent ${fields.childName} cannot be held`;
+		case "completion-not-held":
+			return `Subagent ${fields.childId} runs again or has ended, so it does not hold the completion of a task it launched`;
 	}
 }
 
