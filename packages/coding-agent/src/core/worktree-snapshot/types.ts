@@ -21,6 +21,12 @@ export interface WorktreeSnapshotSettings {
 	readonly maxSnapshotBytes: number;
 	/** Record a full delta against `head` after this many incremental snapshots. Default 10. */
 	readonly fullEvery: number;
+	/** Delete unreferenced snapshot blobs automatically when a session closes or a root workflow run finishes. Default true. */
+	readonly autoCollect: boolean;
+	/** Shortest time between two automatic collections of one database, in seconds, on the database's clock. Default 3600. */
+	readonly collectIntervalSeconds: number;
+	/** Blobs stored or re-stored less than this many seconds ago are never collected. 0 turns the protection off. Default 3600. */
+	readonly graceSeconds: number;
 }
 
 export type WorktreeSnapshotPathOmissionReason = "denied" | "snapshot-ignore" | "untracked-excluded";
@@ -97,10 +103,14 @@ export interface SnapshotBlobStore {
 	/** Stores each blob once. Storing a hash that exists keeps its bytes and restarts its age, which protects it from collection. */
 	putBlobs(blobs: readonly SnapshotBlob[]): Promise<void>;
 	getBlob(hash: string): Promise<Uint8Array | undefined>;
-	/** Every stored hash, for garbage collection. */
+	/**
+	 * Restarts the age of each stored hash, as storing it again would, without its bytes. Resolves false when any is
+	 * missing. Capture calls it before reusing an earlier snapshot's blobs, so collection keeps them until the new
+	 * snapshot that references them is published.
+	 */
+	refreshBlobs(hashes: readonly string[]): Promise<boolean>;
+	/** Every stored hash. */
 	listBlobHashes(): Promise<readonly string[]>;
-	/** Deletes each of `hashes` stored or re-stored at least `olderThanSeconds` ago, and resolves with those it deleted. */
-	deleteBlobs(hashes: readonly string[], options: { readonly olderThanSeconds: number }): Promise<readonly string[]>;
 }
 
 /** Restore-time notices that never block a verified restore. */

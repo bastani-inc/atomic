@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { GitSandbox, gitConfigPath, lfsPointer } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -444,8 +444,8 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		const reason = new Error("operator cancelled");
 		const aborting: SnapshotBlobStore = {
 			putBlobs: (blobs) => store.snapshotBlobs!.putBlobs(blobs),
+			refreshBlobs: (hashes) => store.snapshotBlobs!.refreshBlobs(hashes),
 			listBlobHashes: () => store.snapshotBlobs!.listBlobHashes(),
-			deleteBlobs: (hashes, options) => store.snapshotBlobs!.deleteBlobs(hashes, options),
 			getBlob: async (hash) => {
 				controller.abort(reason);
 				return store.snapshotBlobs!.getBlob(hash);
@@ -914,7 +914,7 @@ describe("snapshot content carried inline by an exported session", () => {
 		const noStore = await inlineSnapshotBlobs([entry("e1", { blobs: { stale: "AA==" } })], records, undefined);
 		assert.deepEqual((noStore[0] as WorktreeSnapshotEntry).snapshot, snapshot);
 		assert.equal(Object.hasOwn(noStore[0]!, "blobs"), false);
-		await store.deleteBlobs([(await store.listBlobHashes())[1]!], { olderThanSeconds: 0 });
+		await loseSnapshotBlobs(store, [(await store.listBlobHashes())[1]!]);
 		const partial = await inlineSnapshotBlobs([entry("e1", { blobs: { stale: "AA==" } })], records, store);
 		assert.deepEqual(Object.keys((partial[0] as WorktreeSnapshotEntry).blobs ?? {}), [hashA]);
 		const unknown = await inlineSnapshotBlobs([entry("e1")], new Map(), store);
@@ -933,8 +933,8 @@ describe("snapshot content carried inline by an exported session", () => {
 				return target.putBlobs(blobs);
 			},
 			getBlob: (hash) => target.getBlob(hash),
+			refreshBlobs: (hashes) => target.refreshBlobs(hashes),
 			listBlobHashes: () => target.listBlobHashes(),
-			deleteBlobs: (hashes, options) => target.deleteBlobs(hashes, options),
 		};
 		const carried = entry("e1", {
 			blobs: { [hashA]: Buffer.from(dataA).toString("base64"), [hashB]: Buffer.from(dataB).toString("base64") },
@@ -1013,14 +1013,14 @@ describe("snapshot content carried inline by an exported session", () => {
 		assert.deepEqual([...(await view.getBlob(hashB))!], [250, 0, 9]);
 		assert.equal(await view.getBlob("absent"), undefined);
 		assert.deepEqual([...(await view.listBlobHashes())].sort(), [hashA, hashB].sort());
-		for (const write of [() => view.putBlobs([]), () => view.deleteBlobs([], { olderThanSeconds: 0 })]) {
-			await assert.rejects(write(), (error: unknown) => {
-				assert.ok(isWorkspaceSnapshotError(error));
-				assert.equal(error.code, "blob-store-unsupported");
-				assert.equal(error.subject, "inline");
-				return true;
-			});
-		}
+		await assert.rejects(view.putBlobs([]), (error: unknown) => {
+			assert.ok(isWorkspaceSnapshotError(error));
+			assert.equal(error.code, "blob-store-unsupported");
+			assert.equal(error.subject, "inline");
+			return true;
+		});
+		assert.equal(await view.refreshBlobs([hashA, hashB]), true, "inline blobs never age, so refreshing finds them");
+		assert.equal(await view.refreshBlobs([hashA, "absent"]), false);
 	});
 
 	test("the session view reads the store first, falls back to inline blobs and delegates every write to the store", async () => {
@@ -1036,8 +1036,8 @@ describe("snapshot content carried inline by an exported session", () => {
 		await view.putBlobs([{ hash: "written", data: new Uint8Array([9]) }]);
 		assert.deepEqual([...(await primary.listBlobHashes())].sort(), ["only-primary", "written"]);
 		assert.deepEqual([...(await view.listBlobHashes())].sort(), ["only-primary", "written"]);
-		await view.deleteBlobs(["written"], { olderThanSeconds: 0 });
-		assert.deepEqual(await primary.listBlobHashes(), ["only-primary"]);
+		assert.equal(await view.refreshBlobs(["written", "only-primary"]), true);
+		assert.equal(await view.refreshBlobs([hashA]), false, "a refresh reaches the store, not the inline blobs");
 		const inlineOnly = sessionSnapshotBlobs(undefined, [
 			entry("e1", { blobs: { [hashA]: Buffer.from(dataA).toString("base64") } }),
 		]);

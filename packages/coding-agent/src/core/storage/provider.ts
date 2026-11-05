@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
 	StorageAdapterLoadError,
@@ -11,6 +12,7 @@ import {
 	StorageError,
 	type StorageFailureCause,
 	StorageUnavailableError,
+	StoreClosedError,
 } from "./errors.js";
 import { legacyDefaultJournalPath } from "./journal-adoption.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -305,6 +307,19 @@ export async function resolveAdapterOptions(
 	return options;
 }
 
+async function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
+	const running = runningSnapshotCollectionsOn(database.descriptor);
+	if (running.length === 0) return database.close();
+	abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
+	await Promise.all(running);
+	try {
+		await database.close();
+	} catch (cause) {
+		if (cause instanceof StorageError) throw cause;
+		throw new StorageUnavailableError(database.descriptor, cause as StorageFailureCause);
+	}
+}
+
 function withIdempotentClose<T extends { close(): Promise<void> }>(store: T, release?: () => Promise<void>): T {
 	const close = store.close.bind(store);
 	let closing: Promise<void> | undefined;
@@ -488,7 +503,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		const release = async () => {
 			if (--entry.references === 0) {
 				if (this.databases.get(key) === entry) this.databases.delete(key);
-				await database.close();
+				await closeAfterSnapshotCollections(database);
 			}
 		};
 		try {

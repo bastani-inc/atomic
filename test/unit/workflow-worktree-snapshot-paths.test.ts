@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "@bastani/atomic";
 import { test } from "vitest";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
-	listResumableWorkflowSnapshots,
 	listWorkflowSnapshotBoundaries,
 	mapWorkflowWorktreePath,
 	stageWorktreeSnapshot,
@@ -15,6 +17,7 @@ import {
 	workflowSnapshotFrontier,
 } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { durableRootRegistrationForRun } from "../../packages/workflows/src/engine/run-durable-registration.js";
+import { ageBlobs, textBlob } from "../helpers/snapshot-reference-index.js";
 
 const at = (...parts: string[]): string => join(sep, ...parts);
 
@@ -208,20 +211,50 @@ test("only tool and stage checkpoints contribute boundaries; other events and ki
 	await journal.close();
 });
 
+/**
+ * The trees whose patch blob a collection keeps after `events` are journaled to one run, in the order they were
+ * journaled: what retention keeps, read through the reference index the journal maintains.
+ */
 async function retained(
 	events: readonly { type: string; payload: object }[],
 	header: { status?: string } = {},
 ): Promise<readonly string[]> {
-	const { journal, append } = await journalWithRun("run", header);
-	for (const event of events) await append(event.type, event.payload);
-	const trees = (await listResumableWorkflowSnapshots(journal)).map((entry) => entry.tree);
-	await journal.close();
-	return trees;
+	const directory = mkdtempSync(join(tmpdir(), "snapshot-retained-"));
+	const database = await openNodeSqliteDatabase(join(directory, "journal.sqlite"));
+	const journal = await SqlRunJournal.open(database);
+	try {
+		await journal.createRun({
+			runId: "run",
+			name: "run",
+			cwd: "/",
+			status: header.status ?? "running",
+			createdAt: 1,
+		});
+		const acquired = await journal.acquire("run", "holder");
+		if (acquired.status !== "acquired") throw new Error("lease not acquired");
+		const trees: string[] = [];
+		for (const event of events) {
+			await journal.append(acquired.lease, event as unknown as RunEvent);
+			const carried = (event.payload as { worktreeSnapshots?: WorktreeSnapshot[] }).worktreeSnapshots ?? [];
+			trees.push(...carried.map((item) => item.tree));
+		}
+		await journal.snapshotBlobs.putBlobs(trees.map(textBlob));
+		await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
+		await collectSnapshotGarbage(journal.snapshotBlobs);
+		const kept = new Set(await journal.snapshotBlobs.listBlobHashes());
+		return trees.filter((tree) => kept.has(textBlob(tree).hash));
+	} finally {
+		await journal.close();
+		await database.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
 }
 
+/** A snapshot of `tree` whose one patch blob is the text of `tree`. */
+const patched = (tree: string) => snapshot("/repo", tree, { chain: [{ tree, patch: textBlob(tree).hash, bytes: 1 }] });
 const checkpoint = (kind: string, tree: string) => ({
 	type: RUN_EVENT_TYPES.checkpointRecorded,
-	payload: { kind, checkpointId: `${kind}-${tree}`, worktreeSnapshots: [snapshot("/repo", tree)] },
+	payload: { kind, checkpointId: `${kind}-${tree}`, worktreeSnapshots: [patched(tree)] },
 });
 const candidate = (type: string, fields: object) => ({
 	type,
@@ -239,7 +272,7 @@ test("a resumable run pins the snapshots of its tool and stage checkpoints only 
 			{ type: RUN_EVENT_TYPES.checkpointRecorded, payload: { kind: "stage", checkpointId: "bare-stage" } },
 			{
 				type: RUN_EVENT_TYPES.promptAsked,
-				payload: { kind: "tool", checkpointId: "prompt", worktreeSnapshots: [snapshot("/repo", "prompt")] },
+				payload: { kind: "tool", checkpointId: "prompt", worktreeSnapshots: [patched("prompt")] },
 			},
 		]),
 		["tool", "stage"],
@@ -291,6 +324,26 @@ test("a run's resumability comes from its latest well-formed start or status eve
 		]),
 		[],
 		"a later well-formed completed status ends retention",
+	);
+});
+
+test("retention keeps a paused run's snapshots and releases a completed run's (#4245)", async () => {
+	assert.deepEqual(await retained([candidate(RUN_EVENT_TYPES.statusChanged, {}), checkpoint("stage", "paused")]), [
+		"paused",
+	]);
+	assert.deepEqual(
+		await retained([candidate(RUN_EVENT_TYPES.statusChanged, { status: "completed" }), checkpoint("stage", "done")]),
+		[],
+	);
+});
+
+test("retention keeps a running run's checkpoints even when its last status predates them (#4245)", async () => {
+	assert.deepEqual(
+		await retained([
+			candidate(RUN_EVENT_TYPES.runStarted, { status: "running", completedCheckpoints: 0 }),
+			checkpoint("tool", "T1"),
+		]),
+		["T1"],
 	);
 });
 

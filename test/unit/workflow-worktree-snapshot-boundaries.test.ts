@@ -4,7 +4,6 @@ import { test } from "vitest";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
-	listResumableWorkflowSnapshots,
 	listWorkflowSnapshotBoundaries,
 	workflowSnapshotFrontier,
 } from "../../packages/workflows/src/durable/worktree-snapshots.js";
@@ -66,51 +65,6 @@ test("journal snapshot boundaries retain all siblings in sequence and select the
 			["/b", "B1"],
 			["/a", "T3"],
 		],
-	);
-	await journal.close();
-});
-
-test("retention selects snapshots of resumable runs, not completed runs (#4245)", async () => {
-	const journal = new MemoryRunJournal();
-	for (const status of ["paused", "completed"] as const) {
-		await journal.createRun({ runId: status, name: status, cwd: "/", status: "running", createdAt: 1 });
-		const acquired = await journal.acquire(status, "holder");
-		assert.equal(acquired.status, "acquired");
-		if (acquired.status !== "acquired") throw new Error("lease not acquired");
-		await journal.append(acquired.lease, {
-			type: RUN_EVENT_TYPES.checkpointRecorded,
-			payload: { kind: "stage", checkpointId: status, worktreeSnapshots: [snapshot("/repo", status)] },
-		} as unknown as RunEvent);
-		await journal.append(acquired.lease, {
-			type: RUN_EVENT_TYPES.statusChanged,
-			payload: { workflowId: status, status, completedCheckpoints: 1, pendingPrompts: 0 },
-		} as RunEvent);
-	}
-	const retained = await listResumableWorkflowSnapshots(journal);
-	assert.deepEqual(
-		retained.map((item) => item.tree),
-		["paused"],
-	);
-	await journal.close();
-});
-
-test("retention keeps a running run's checkpoints even when its last status predates them (#4245)", async () => {
-	const journal = new MemoryRunJournal();
-	await journal.createRun({ runId: "running", name: "run", cwd: "/", status: "running", createdAt: 1 });
-	const acquired = await journal.acquire("running", "holder");
-	assert.equal(acquired.status, "acquired");
-	if (acquired.status !== "acquired") throw new Error("lease not acquired");
-	await journal.append(acquired.lease, {
-		type: RUN_EVENT_TYPES.runStarted,
-		payload: { workflowId: "running", status: "running", completedCheckpoints: 0, pendingPrompts: 0 },
-	} as RunEvent);
-	await journal.append(acquired.lease, {
-		type: RUN_EVENT_TYPES.checkpointRecorded,
-		payload: { kind: "tool", checkpointId: "first", worktreeSnapshots: [snapshot("/repo", "T1")] },
-	} as unknown as RunEvent);
-	assert.deepEqual(
-		(await listResumableWorkflowSnapshots(journal)).map((item) => item.tree),
-		["T1"],
 	);
 	await journal.close();
 });

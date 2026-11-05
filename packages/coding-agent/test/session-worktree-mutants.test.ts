@@ -8,7 +8,6 @@ import type { FileEntry, SessionEntry, WorktreeSnapshotEntry } from "../src/core
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	adoptInlineSnapshotBlobs,
-	listRetainedSessionSnapshots,
 	resumeSessionWorktree,
 	SessionWorktreeSnapshotRecorder,
 	type WorktreeSnapshotUnavailable,
@@ -16,7 +15,9 @@ import {
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
+import { snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import {
 	isWorkspaceConfigError,
@@ -243,8 +244,8 @@ describe("resuming a session whose snapshot cannot be restored", () => {
 			getBlob: async () => {
 				throw "blob storage went away";
 			},
+			refreshBlobs: (hashes) => real.snapshotBlobs!.refreshBlobs(hashes),
 			listBlobHashes: () => real.snapshotBlobs!.listBlobHashes(),
-			deleteBlobs: (hashes, options) => real.snapshotBlobs!.deleteBlobs(hashes, options),
 		};
 		const store = new Proxy(real, {
 			get(target, property) {
@@ -287,7 +288,7 @@ describe("snapshots recorded in a session", () => {
 });
 
 describe("what retention keeps for sessions", () => {
-	test("workflow-stage sessions are listed with the others, and a cancelled listing rejects with the cancellation", async () => {
+	test("collection keeps the latest snapshot of internal workflow-stage sessions, which ordinary listings leave out (#4355)", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "one\n" });
 		const store = await sqlStore();
 		const stage = await SessionManager.create(store, clone, {
@@ -304,19 +305,13 @@ describe("what retention keeps for sessions", () => {
 		for await (const summary of store.list({})) standard.push(summary.id);
 		assert.deepEqual(standard, [], "the stage session is internal: ordinary listings leave it out");
 
-		const retained = await listRetainedSessionSnapshots(store);
-		assert.deepEqual(
-			retained.map((snapshot) => snapshot.id),
-			[capture.snapshot.id],
-		);
-		await assert.rejects(
-			listRetainedSessionSnapshots(store, AbortSignal.abort()),
-			(error: unknown) => (error as Error).name === "AbortError",
-		);
+		assert.deepEqual((await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 })).deleted, []);
+		assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), snapshotBlobHashes(capture.snapshot));
 	});
 
 	test("a snapshot recorded once and referenced again stays retained, and a reference without a record retains nothing", async () => {
-		const { clone, manager, snapshot, sessions } = await recordedSession();
+		const sessions = await sqlStore();
+		const { clone, manager, snapshot } = await recordedSession(sessions);
 		await manager.appendWorktreeSnapshot(clone, snapshot.id);
 		const ghost: WorktreeSnapshotEntry = {
 			type: "worktree_snapshot",
@@ -329,11 +324,12 @@ describe("what retention keeps for sessions", () => {
 		const { lastSeq } = await sessions.load(manager.getSessionId());
 		await sessions.append(manager.getSessionId(), [ghost as SessionEntry], { expectSeq: lastSeq });
 
-		const retained = await listRetainedSessionSnapshots(sessions);
-		assert.deepEqual(
-			retained.map((kept) => kept?.id),
-			[snapshot.id],
-		);
+		const orphan = { hash: "f".repeat(64), data: new Uint8Array([1]) };
+		await sessions.snapshotBlobs.putBlobs([orphan]);
+		assert.deepEqual((await collectSnapshotGarbage(sessions.snapshotBlobs, { graceSeconds: 0 })).deleted, [
+			orphan.hash,
+		]);
+		assert.deepEqual(await sessions.snapshotBlobs.listBlobHashes(), snapshotBlobHashes(snapshot));
 	});
 });
 

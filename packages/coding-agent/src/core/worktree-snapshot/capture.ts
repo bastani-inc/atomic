@@ -1,6 +1,7 @@
 import { copyFile, lstat, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
 	type GitUnavailableError,
@@ -36,7 +37,11 @@ import type {
 export interface CaptureWorktreeSnapshotOptions {
 	/** Overrides for the default snapshot settings. */
 	readonly settings?: WorktreeSnapshotSettingsInput;
-	/** The last snapshot recorded for this checkout: the no-op comparison and the incremental delta base. */
+	/**
+	 * The last snapshot recorded for this checkout: the no-op comparison and the incremental delta base. With `blobs`,
+	 * its blobs' age restarts first, so collection keeps them for the new snapshot; when any is missing it is ignored
+	 * and the capture records a full delta.
+	 */
 	readonly previous?: WorktreeSnapshot;
 	/** Where to store new patch and bundle blobs before the capture resolves. */
 	readonly blobs?: SnapshotBlobStore;
@@ -439,7 +444,13 @@ async function captureCheckout(
 	const checkout = await locateCheckout(dir, signal);
 	if (checkout instanceof Error) return { status: "unavailable", reason: checkout };
 	const { root, head } = checkout;
-	const previous = options.previous?.root === root ? options.previous : undefined;
+	const candidate = options.previous?.root === root ? options.previous : undefined;
+	const previous =
+		candidate !== undefined &&
+		options.blobs !== undefined &&
+		!(await options.blobs.refreshBlobs(snapshotBlobHashes(candidate)))
+			? undefined
+			: candidate;
 	return withScratchDirectory(async (scratch) => {
 		const policy = await loadSnapshotPathPolicy(root);
 		const state = await writeWorkingTree(checkout, settings, policy, scratch, { signal });

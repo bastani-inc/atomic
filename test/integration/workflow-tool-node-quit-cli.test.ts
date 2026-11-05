@@ -432,7 +432,7 @@ async function runScenario(control: "quit" | "pause" = "quit", omission?: "retur
 		const reexecuted =
 			omission === undefined && (await cli.settle(() => readState().hangExecutions > 1, RESUME_SETTLE_TIMEOUT_MS));
 		if (reexecuted) await cli.waitUntil(() => !readState().hangRunning, "the re-executed callback to settle");
-		if (control === "pause")
+		if (reexecuted || control === "pause")
 			await cli.waitUntil(
 				() =>
 					cli

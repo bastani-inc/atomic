@@ -273,7 +273,13 @@ for (const retention of ["caller-owned registry", "resumable failure", "graceful
 			await registry.clear(outcome.runId);
 			assert.equal(registry.has(outcome.runId), false);
 			await assert.rejects(sessionStore.load(outcome.sessionId), { name: "StoreClosedError" });
-			assert.equal(databaseClose.mock.calls.length, 1);
+			await vi.waitFor(() =>
+				assert.equal(
+					databaseClose.mock.calls.length,
+					1,
+					"the database closes once the snapshot collection the session's close started has ended (#4355)",
+				),
+			);
 		} finally {
 			await registry.clear();
 			databaseClose.mockRestore();

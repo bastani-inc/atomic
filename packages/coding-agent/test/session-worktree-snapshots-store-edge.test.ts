@@ -286,6 +286,9 @@ describe("snapshot settings from settings.json", () => {
 			maxFileBytes: 5 * 1024 * 1024,
 			maxSnapshotBytes: 50 * 1024 * 1024,
 			fullEvery: 10,
+			autoCollect: true,
+			collectIntervalSeconds: 3600,
+			graceSeconds: 3600,
 		});
 		const merged = SettingsManager.inMemory({
 			snapshots: { enabled: false, maxFileBytes: 7 },

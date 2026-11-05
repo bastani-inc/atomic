@@ -19,7 +19,6 @@ import type { WorkflowSnapshotBoundary } from "../shared/worktree-snapshot-contr
 export type { WorkflowSnapshotBoundary } from "../shared/worktree-snapshot-contract.js";
 
 import { RUN_EVENT_TYPES, type RunJournal } from "./journal/types.js";
-import { type DurableResumeCandidate, isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type { DurableStageCheckpoint, DurableToolCheckpoint } from "./types.js";
 
 export function stageWorktreeSnapshot(snapshot: WorktreeSnapshot): StageWorktreeSnapshot {
@@ -208,43 +207,4 @@ export async function resolveWorkflowSnapshotFrontier(
 		for (const warning of warnings) options.onWarning?.(warning, mapping);
 	}
 	return restored;
-}
-
-/** Snapshots pinned by resumable root workflows, including every earlier explicit recovery boundary. */
-export async function listResumableWorkflowSnapshots(journal: RunJournal): Promise<readonly WorktreeSnapshot[]> {
-	const retained: WorktreeSnapshot[] = [];
-	for (const run of await journal.listRuns()) {
-		let candidate: DurableResumeCandidate | undefined;
-		let checkpointCount = 0;
-		const snapshots: WorktreeSnapshot[] = [];
-		for await (const entry of journal.read(run.runId)) {
-			if (entry.event.type === RUN_EVENT_TYPES.runStarted || entry.event.type === RUN_EVENT_TYPES.statusChanged) {
-				const payload = entry.event.payload as unknown as Partial<DurableResumeCandidate>;
-				if (
-					typeof payload.workflowId === "string" &&
-					typeof payload.status === "string" &&
-					typeof payload.completedCheckpoints === "number" &&
-					typeof payload.pendingPrompts === "number"
-				) {
-					candidate = payload as DurableResumeCandidate;
-				}
-			}
-			if (entry.event.type !== RUN_EVENT_TYPES.checkpointRecorded) continue;
-			checkpointCount++;
-			const checkpoint = entry.event.payload as unknown as DurableToolCheckpoint | DurableStageCheckpoint;
-			if (checkpoint.kind === "tool" || checkpoint.kind === "stage") {
-				snapshots.push(...(checkpoint.worktreeSnapshots ?? []));
-			}
-		}
-		if (
-			candidate !== undefined
-				? isDurableWorkflowResumable({
-						...candidate,
-						completedCheckpoints: Math.max(candidate.completedCheckpoints, checkpointCount),
-					})
-				: run.status !== "completed" && run.status !== "cancelled"
-		)
-			retained.push(...snapshots);
-	}
-	return retained;
 }

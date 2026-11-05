@@ -8,8 +8,8 @@ export const DEFAULT_WORKTREE_SNAPSHOT_SETTINGS: WorktreeSnapshotSettings = Obje
 
 export type WorktreeSnapshotSettingsInput = Partial<WorktreeSnapshotSettings>;
 
-const BOOLEAN_FIELDS = ["enabled", "includeUntracked"] as const;
-const INTEGER_FIELDS = ["maxFileBytes", "maxSnapshotBytes", "fullEvery"] as const;
+const BOOLEAN_FIELDS = ["enabled", "includeUntracked", "autoCollect"] as const;
+const INTEGER_FIELDS = ["maxFileBytes", "maxSnapshotBytes", "fullEvery", "collectIntervalSeconds"] as const;
 
 /**
  * Overlays `input` on `base` after checking every field, so a bad value is reported with its source before any Git
@@ -37,11 +37,17 @@ export function resolveWorktreeSnapshotSettings(
 			throw new WorkspaceConfigError(source, `${prefix}.${field}`, "a positive integer");
 		}
 	}
+	if (input.graceSeconds !== undefined && (!Number.isSafeInteger(input.graceSeconds) || input.graceSeconds < 0)) {
+		throw new WorkspaceConfigError(source, `${prefix}.graceSeconds`, "a non-negative integer number of seconds");
+	}
 	return Object.freeze({
 		enabled: input.enabled ?? base.enabled,
 		includeUntracked: input.includeUntracked ?? base.includeUntracked,
 		maxFileBytes: input.maxFileBytes ?? base.maxFileBytes,
 		maxSnapshotBytes: input.maxSnapshotBytes ?? base.maxSnapshotBytes,
 		fullEvery: input.fullEvery ?? base.fullEvery,
+		autoCollect: input.autoCollect ?? base.autoCollect,
+		collectIntervalSeconds: input.collectIntervalSeconds ?? base.collectIntervalSeconds,
+		graceSeconds: input.graceSeconds ?? base.graceSeconds,
 	});
 }

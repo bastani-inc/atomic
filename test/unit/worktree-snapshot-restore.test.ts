@@ -201,8 +201,8 @@ describe("restoreWorktreeSnapshot", () => {
 			...blobs,
 			getBlob: async () => new Uint8Array([1, 2, 3]),
 			putBlobs: blobs.putBlobs,
+			refreshBlobs: blobs.refreshBlobs,
 			listBlobHashes: blobs.listBlobHashes,
-			deleteBlobs: blobs.deleteBlobs,
 		};
 		await assert.rejects(
 			restoreWorktreeSnapshot(snapshot, { blobs: corrupt, storeDir: sandbox.path("host") }),

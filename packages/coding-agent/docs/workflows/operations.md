@@ -518,7 +518,7 @@ Fencing prevents a displaced executor from saving new checkpoints, not from fini
 - Unsupported or inconsistent saved topology is refused rather than repaired by guessing. Preserve the run ID and diagnostic.
 - Independent roots persist independently; nested workflows share their root's ordering.
 
-**Privacy and retention.** The journal contains workflow inputs, completed tool outputs, UI responses, stage outputs, message delivery receipts, and chat-session paths. Treat the file and its SQLite sidecar files as sensitive. History does not automatically delete runs by age or count. Confirmed picker deletion removes inactive workflow records while preserving independent chat transcripts.
+**Privacy and retention.** The journal contains workflow inputs, completed tool outputs, UI responses, stage outputs, message delivery receipts, and chat-session paths. Treat the file and its SQLite sidecar files as sensitive. History does not automatically delete runs by age or count. Worktree snapshot content that no resumable run or session needs is deleted in the background (see [Retention and collection](/worktree-snapshots#retention-and-collection)); the run records stay. Confirmed picker deletion removes inactive workflow records while preserving independent chat transcripts.
 
 Sticky receipts suppress repeat delivery to the same recipient session, whether the message arrived as pre-start context or through live Intercom forwarding. This also holds after a failed stage retries or a cold resume. Repeated confirmations do not increase the delivery count. Delivery without an explicit recipient uses the stage's previous receipts; delivery to a new recipient session remains eligible.
 

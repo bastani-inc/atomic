@@ -19,7 +19,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox, gitConfigPath, lfsPointer } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, gitConfigPath, lfsPointer, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -327,7 +327,7 @@ describe("finding the head", () => {
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(clone, blobs);
 		assert.ok(snapshot.bundle);
-		await blobs.deleteBlobs([snapshot.bundle.blob], { olderThanSeconds: 0 });
+		await loseSnapshotBlobs(blobs, [snapshot.bundle.blob]);
 		await assert.rejects(restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") }), (error: unknown) => {
 			assert.ok(isWorkspaceRestoreError(error));
 			assert.equal(error.code, "blob-missing");

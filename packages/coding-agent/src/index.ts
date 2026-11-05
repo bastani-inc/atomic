@@ -662,7 +662,6 @@ export {
 export {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
-	listRetainedSessionSnapshots,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,

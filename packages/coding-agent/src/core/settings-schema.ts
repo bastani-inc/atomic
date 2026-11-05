@@ -139,6 +139,28 @@ const SnapshotSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.snapshots.fullEvery,
 		}),
 	),
+	autoCollect: Type.Optional(
+		Type.Boolean({
+			description:
+				"Delete snapshot blobs that no retained snapshot references when a session closes or a workflow run finishes.",
+			default: SETTINGS_DEFAULTS.snapshots.autoCollect,
+		}),
+	),
+	collectIntervalSeconds: Type.Optional(
+		positiveSafeInteger({
+			description: "Shortest time between two automatic snapshot blob collections of one database, in seconds.",
+			default: SETTINGS_DEFAULTS.snapshots.collectIntervalSeconds,
+		}),
+	),
+	graceSeconds: Type.Optional(
+		Type.Integer({
+			minimum: 0,
+			maximum: Number.MAX_SAFE_INTEGER,
+			description:
+				"Snapshot blobs stored less than this many seconds ago are never collected, which protects captures still being recorded.",
+			default: SETTINGS_DEFAULTS.snapshots.graceSeconds,
+		}),
+	),
 });
 
 const ProviderRetrySettingsSchema = Type.Object({

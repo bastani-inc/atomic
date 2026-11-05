@@ -2,6 +2,7 @@ import {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
 	resolveWorktreeSnapshotSettings,
+	scheduleSnapshotCollection,
 } from "@bastani/atomic";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
@@ -145,7 +146,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	inputs: WorkflowRunInputArgument,
 	opts: RunOpts = {},
 ): Promise<RunResult> {
-	resolveWorktreeSnapshotSettings(opts.snapshots, "sdk", "snapshots");
+	const snapshotSettings = resolveWorktreeSnapshotSettings(opts.snapshots, "sdk", "snapshots");
 	if (!isWorkflowDefinition(def))
 		throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));
 	const depth = opts.depth ?? 0;
@@ -235,6 +236,17 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				await publicPool?.close();
 			} finally {
 				if (opts.parentRun === undefined && journal !== undefined) releaseWorkflowSnapshotAncestry(journal, runId);
+				if (opts.parentRun === undefined)
+					void scheduleSnapshotCollection(journal?.snapshotBlobs, snapshotSettings, {
+						onFailure: (error) =>
+							activeStore.recordNotice({
+								id: `workflow-snapshot-collection:${runId}:${error.code}`,
+								runId,
+								level: "warning",
+								message: error.message,
+								createdAt: Date.now(),
+							}),
+					});
 			}
 		}
 	};

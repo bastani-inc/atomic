@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, test, vi } from "vitest";
-import { MemorySnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import { describe, test } from "vitest";
 import {
 	rehydrateWorkspaceError,
 	WorkspaceDriftError,
 	WorkspaceRestoreError,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
-import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { snapshotRecordProblem } from "../../packages/coding-agent/src/core/worktree-snapshot/records.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 
@@ -121,23 +119,5 @@ describe("a drift whose cause is a workspace error from an unknown release (#424
 		assert.equal(error.hint, "Restore the recorded snapshot into a new worktree, or undo the changes, then resume.");
 		assert.equal(error.restoreCode, undefined);
 		assert.equal(error.message.includes("automatic restore failed"), false);
-	});
-});
-
-describe("the memory blob store's own clock (#4245)", () => {
-	afterEach(() => {
-		vi.useRealTimers();
-	});
-
-	test("ages blobs in seconds of wall-clock time", async () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-		const store = new MemorySnapshotBlobStore();
-		await store.putBlobs([{ hash: HASH, data: new Uint8Array([1]) }]);
-		assert.deepEqual((await collectSnapshotGarbage(store, [], { graceSeconds: 3600 })).deleted, []);
-		vi.setSystemTime(new Date("2026-01-01T00:16:40.000Z"));
-		assert.deepEqual((await collectSnapshotGarbage(store, [], { graceSeconds: 3600 })).deleted, []);
-		vi.setSystemTime(new Date("2026-01-01T01:00:00.000Z"));
-		assert.deepEqual((await collectSnapshotGarbage(store, [], { graceSeconds: 3600 })).deleted, [HASH]);
 	});
 });

@@ -10,6 +10,8 @@ import {
 	GitUnavailableError,
 	gitInstallCommand,
 	isGitUnavailableError,
+	isRetryableWorkspaceError,
+	isWorkspaceCollectionError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,
 	isWorkspaceError,
@@ -20,6 +22,7 @@ import {
 	resolveWorktreeSnapshotSettings,
 	type SerializedWorkspaceError,
 	serializeWorkspaceError,
+	WorkspaceCollectionError,
 	WorkspaceConfigError,
 	WorkspaceDriftError,
 	WorkspaceError,
@@ -377,8 +380,20 @@ describe("WorkspaceConfigError and settings resolution", () => {
 			maxFileBytes: 5 * 1024 * 1024,
 			maxSnapshotBytes: 50 * 1024 * 1024,
 			fullEvery: 10,
+			autoCollect: true,
+			collectIntervalSeconds: 3600,
+			graceSeconds: 3600,
 		});
-		const base = { enabled: false, includeUntracked: false, maxFileBytes: 7, maxSnapshotBytes: 9, fullEvery: 3 };
+		const base = {
+			enabled: false,
+			includeUntracked: false,
+			maxFileBytes: 7,
+			maxSnapshotBytes: 9,
+			fullEvery: 3,
+			autoCollect: false,
+			collectIntervalSeconds: 11,
+			graceSeconds: 13,
+		};
 		assert.deepEqual(resolveWorktreeSnapshotSettings({}, "sdk", "snapshots", base), base);
 		assert.deepEqual(resolveWorktreeSnapshotSettings({ enabled: true, fullEvery: 1 }, "sdk", "snapshots", base), {
 			...base,
@@ -402,7 +417,7 @@ describe("WorkspaceConfigError and settings resolution", () => {
 	});
 
 	test("a non-boolean flag fails naming its field", () => {
-		for (const field of ["enabled", "includeUntracked"] as const) {
+		for (const field of ["enabled", "includeUntracked", "autoCollect"] as const) {
 			for (const value of ["yes", 1, null]) {
 				assert.throws(
 					() => resolveWorktreeSnapshotSettings({ [field]: value } as never, "cli", "opts"),
@@ -417,7 +432,7 @@ describe("WorkspaceConfigError and settings resolution", () => {
 	});
 
 	test("sizes and cadence accept any positive safe integer and reject everything else", () => {
-		for (const field of ["maxFileBytes", "maxSnapshotBytes", "fullEvery"] as const) {
+		for (const field of ["maxFileBytes", "maxSnapshotBytes", "fullEvery", "collectIntervalSeconds"] as const) {
 			assert.equal(resolveWorktreeSnapshotSettings({ [field]: 1 }, "sdk", "s")[field], 1);
 			assert.equal(
 				resolveWorktreeSnapshotSettings({ [field]: Number.MAX_SAFE_INTEGER }, "sdk", "s")[field],
@@ -450,6 +465,30 @@ describe("WorkspaceConfigError and settings resolution", () => {
 	});
 });
 
+describe("snapshots.graceSeconds (#4355)", () => {
+	test("accepts zero and any non-negative safe integer, and rejects everything else naming the field", () => {
+		for (const value of [0, 1, Number.MAX_SAFE_INTEGER])
+			assert.equal(
+				resolveWorktreeSnapshotSettings({ graceSeconds: value }, "settings", "snapshots").graceSeconds,
+				value,
+			);
+		for (const value of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "5", null]) {
+			assert.throws(
+				() => resolveWorktreeSnapshotSettings({ graceSeconds: value } as never, "settings", "snapshots"),
+				(error: unknown) => {
+					assert.ok(isWorkspaceConfigError(error));
+					assert.deepEqual(error.fields, {
+						source: "settings",
+						field: "snapshots.graceSeconds",
+						expected: "a non-negative integer number of seconds",
+					});
+					return true;
+				},
+			);
+		}
+	});
+});
+
 describe("guards", () => {
 	const named = (name: string, code: string) => ({ name, code, message: "m" });
 	const guards = [
@@ -458,6 +497,7 @@ describe("guards", () => {
 		["isWorkspaceSnapshotError", isWorkspaceSnapshotError, "WorkspaceSnapshotError", "unborn-head"],
 		["isWorkspaceRestoreError", isWorkspaceRestoreError, "WorkspaceRestoreError", "delta-failed"],
 		["isWorkspaceDriftError", isWorkspaceDriftError, "WorkspaceDriftError", "tree-drift"],
+		["isWorkspaceCollectionError", isWorkspaceCollectionError, "WorkspaceCollectionError", "collection-failed"],
 		["isGitUnavailableError", isGitUnavailableError, "GitUnavailableError", "offline"],
 	] as const;
 
@@ -857,5 +897,60 @@ describe("blob-store-unsupported names the setting that selects SQLite for its s
 			new WorkspaceSnapshotError("blob-store-unsupported", "workflow journal").message,
 			'Worktree snapshot unavailable: workflow journal storage cannot hold snapshot blobs (blob-store-unsupported). Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.',
 		);
+	});
+});
+
+describe("WorkspaceCollectionError (#4355)", () => {
+	const cause = new Error("database is locked");
+	const error = new WorkspaceCollectionError({ table: "team_snapshot_blobs", phase: "sweep", deleted: 4 }, cause);
+
+	test("renders what failed, where, its code and what to do", () => {
+		assert.equal(
+			error.message,
+			"Snapshot blob collection failed while deleting unreferenced blobs from team_snapshot_blobs (collection-failed). No blob a retained snapshot needs was deleted. Check that the database is writable, has free space and is not locked by a stopped process; collection retries after snapshots.collectIntervalSeconds, or call collectSnapshotGarbage to retry now.",
+		);
+	});
+
+	test("carries its fields, the storage failure as its cause, and is retryable", () => {
+		assert.ok(error instanceof WorkspaceError);
+		assert.equal(error.name, "WorkspaceCollectionError");
+		assert.equal(error.code, "collection-failed");
+		assert.deepEqual(error.fields, { table: "team_snapshot_blobs", phase: "sweep", deleted: 4 });
+		assert.deepEqual([error.table, error.phase, error.deleted], ["team_snapshot_blobs", "sweep", 4]);
+		assert.equal(error.cause, cause);
+		assert.equal(error.retryable, true);
+		assert.match(error.hint, /^No blob a retained snapshot needs was deleted/u);
+		for (const [phase, words] of [
+			["claim", "while claiming team_snapshot_blobs"],
+			["index", "while indexing existing snapshot references of team_snapshot_blobs"],
+			["record", "while recording its outcome for team_snapshot_blobs"],
+		] as const)
+			assert.ok(
+				new WorkspaceCollectionError({ table: "team_snapshot_blobs", phase, deleted: 0 }).summary.endsWith(words),
+			);
+	});
+
+	test("isRetryableWorkspaceError finds it through causes and rejects non-retryable and foreign errors", () => {
+		assert.equal(isRetryableWorkspaceError(error), true);
+		assert.equal(isRetryableWorkspaceError(new Error("outer", { cause: error })), true);
+		assert.equal(isRetryableWorkspaceError(new WorkspaceConfigError("sdk", "graceSeconds", "x")), false);
+		assert.equal(
+			isRetryableWorkspaceError(new Error("x", { cause: new WorkspaceSnapshotError("unborn-head", "/") })),
+			false,
+		);
+		assert.equal(isRetryableWorkspaceError({ name: "WorkspaceCollectionError", code: "collection-failed" }), false);
+		assert.equal(isRetryableWorkspaceError(undefined), false);
+	});
+
+	test("round-trips across a process boundary as the same class with its fields, retryability and cause", () => {
+		const rehydrated = rehydrateWorkspaceError(
+			JSON.parse(JSON.stringify(serializeWorkspaceError(error))) as SerializedWorkspaceError,
+		);
+		assert.ok(rehydrated instanceof WorkspaceCollectionError);
+		assert.ok(isWorkspaceCollectionError(rehydrated));
+		assert.deepEqual(rehydrated.fields, error.fields);
+		assert.equal(rehydrated.retryable, true);
+		assert.equal(rehydrated.message, error.message);
+		assert.equal((rehydrated.cause as Error).message, "database is locked");
 	});
 });

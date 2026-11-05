@@ -385,6 +385,9 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 | `snapshots.maxFileBytes` | number | `5242880` | Largest file a snapshot captures, in bytes |
 | `snapshots.maxSnapshotBytes` | number | `52428800` | Largest total of captured content, and largest unpushed-commit bundle, in bytes |
 | `snapshots.fullEvery` | number | `10` | Restart the patch chain from `HEAD` after this many snapshots |
+| `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains when a session closes or a workflow run finishes |
+| `snapshots.collectIntervalSeconds` | number | `3600` | Shortest time between two automatic collections of one database, in seconds |
+| `snapshots.graceSeconds` | number | `3600` | Snapshot content stored or reused less than this many seconds ago is never collected; `0` turns this protection off |
 
 See [Worktree snapshots](/worktree-snapshots).
 

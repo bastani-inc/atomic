@@ -104,11 +104,14 @@ async function recorded(): Promise<Recorded> {
 	cleanups.push(() => removeTempDirectory(directory));
 	const path = join(directory, "journal.sqlite");
 	const writer = await JournalDurableBackend.open(await openSqlRunJournal(path));
+	cleanups.push(() => writer.close());
 	try {
 		const result = await run(
 			root,
 			{},
 			{
+				cwd: directory,
+				snapshots: { enabled: false, autoCollect: false },
 				runId: ROOT,
 				registry: createRegistry([root, child, grandchild] as WorkflowDefinition[]),
 				store: createStore(),

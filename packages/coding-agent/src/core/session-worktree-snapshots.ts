@@ -26,6 +26,7 @@ import {
 	WorkspaceRestoreError,
 	WorkspaceSnapshotError,
 } from "./worktree-snapshot/errors.ts";
+import { scheduleSnapshotCollection } from "./worktree-snapshot/garbage.ts";
 import { gitText, runGit } from "./worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
 import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
@@ -151,6 +152,21 @@ export class SessionWorktreeSnapshotRecorder {
 				this.reportFailure(error);
 			}
 		}
+	}
+
+	/**
+	 * Starts an automatic collection of the session store's unreferenced snapshot blobs when one is due, and returns
+	 * without waiting for it. Called when the session closes.
+	 */
+	scheduleCollection(): void {
+		let settings: WorktreeSnapshotSettings;
+		try {
+			settings = this.deps.settings();
+		} catch (error) {
+			this.reportFailure(error);
+			return;
+		}
+		void scheduleSnapshotCollection(this.deps.sessionManager.getSessionStore().snapshotBlobs, settings);
 	}
 
 	private reportFailure(error: unknown): void {
@@ -527,11 +543,11 @@ export function inlineBlobStore(entries: readonly SessionEntry[]): SnapshotBlobS
 			const base64 = blobs.get(hash);
 			return base64 === undefined ? undefined : new Uint8Array(Buffer.from(base64, "base64"));
 		},
+		async refreshBlobs(hashes) {
+			return hashes.every((hash) => blobs.has(hash));
+		},
 		async listBlobHashes() {
 			return [...blobs.keys()];
-		},
-		async deleteBlobs() {
-			throw new WorkspaceSnapshotError("blob-store-unsupported", "inline");
 		},
 	};
 }
@@ -546,8 +562,8 @@ export function sessionSnapshotBlobs(
 	return {
 		putBlobs: (blobs) => primary.putBlobs(blobs),
 		getBlob: async (hash) => (await primary.getBlob(hash)) ?? (await inline.getBlob(hash)),
+		refreshBlobs: (hashes) => primary.refreshBlobs(hashes),
 		listBlobHashes: () => primary.listBlobHashes(),
-		deleteBlobs: (hashes, options) => primary.deleteBlobs(hashes, options),
 	};
 }
 
@@ -716,24 +732,4 @@ export async function sessionRunsInRecordedCheckout(store: SessionStore, session
 	const { mappings, current } = storedBranchSnapshots(entries, entries.at(-1)?.id);
 	const cwd = mapRestoredPath(header.cwd, mappings);
 	return [...current.keys()].some((root) => isInside(root, cwd));
-}
-
-/**
- * The snapshots retention keeps for sessions: on every leaf of every session tree in `store`, the latest snapshot of
- * each checkout as resume would find it from that leaf, internal workflow-stage sessions included. Pass them, with the
- * snapshots resumable workflow runs reference, to `collectSnapshotGarbage`.
- */
-export async function listRetainedSessionSnapshots(
-	store: SessionStore,
-	signal?: AbortSignal,
-): Promise<WorktreeSnapshot[]> {
-	const retained = new Set<WorktreeSnapshot>();
-	for await (const summary of store.list({ includeInternal: true, signal })) {
-		const { entries } = await store.load(summary.id);
-		const parents = new Set(entries.map((entry) => entry.parentId));
-		for (const leaf of entries.filter((entry) => !parents.has(entry.id))) {
-			for (const snapshot of storedBranchSnapshots(entries, leaf.id).current.values()) retained.add(snapshot);
-		}
-	}
-	return [...retained];
 }

@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
+import {
+	type MemorySnapshotBlobStore,
+	SqlSnapshotBlobStore,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import type { WorktreeSnapshotCapture } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
 import { isWorkspaceSnapshotError } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import {
@@ -26,6 +31,23 @@ export function gitConfigPath(path: string): string {
 export function lfsPointer(content: string): string {
 	const oid = createHash("sha256").update(content).digest("hex");
 	return `version https://git-lfs.github.com/spec/v1\noid sha256:${oid}\nsize ${Buffer.byteLength(content)}\n`;
+}
+
+/**
+ * Removes `hashes` from `store` whether or not anything references them, as storage that lost them would. Stores
+ * expose no such delete: collection only removes unreferenced blobs, so tests reach the store's own table or map.
+ */
+export async function loseSnapshotBlobs(
+	store: SqlSnapshotBlobStore | MemorySnapshotBlobStore,
+	hashes: readonly string[],
+): Promise<void> {
+	if (store instanceof SqlSnapshotBlobStore) {
+		const { database } = store as unknown as { readonly database: SqliteDatabase };
+		for (const hash of hashes) await database.run(`DELETE FROM ${store.table} WHERE hash = ?`, hash);
+		return;
+	}
+	const { blobs } = store as unknown as { readonly blobs: Map<string, Uint8Array> };
+	for (const hash of hashes) blobs.delete(hash);
 }
 
 /** Asserts `error` is the typed `unreadable-path` snapshot error for `path`, caused by the filesystem error `errno`. */

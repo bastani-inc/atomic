@@ -1,4 +1,5 @@
-export { MemorySnapshotBlobStore, SqlSnapshotBlobStore } from "../worktree-snapshot/blob-store.ts";
+export type { SnapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
+export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export type { SnapshotBlob, SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 export type {
 	SqliteDatabase,

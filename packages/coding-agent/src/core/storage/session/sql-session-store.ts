@@ -1,6 +1,5 @@
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
-import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "../database.js";
 import { StorageInvalidTextError } from "../errors.js";
 import { renderStorageIdentifiers } from "../prefix.js";
@@ -96,7 +95,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly prefix: string;
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
-	readonly snapshotBlobs: SnapshotBlobStore;
+	readonly snapshotBlobs: SqlSnapshotBlobStore;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
 	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
@@ -112,7 +111,7 @@ export class SqlSessionStore implements SessionStore {
 		tables: Tables,
 		prefix: string | undefined,
 		cwdMatcher: SessionCwdMatcher | undefined,
-		snapshotBlobs: SnapshotBlobStore,
+		snapshotBlobs: SqlSnapshotBlobStore,
 	) {
 		this.database = database;
 		this.tables = tables;

@@ -2,7 +2,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
-	type SnapshotBlobStore,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -138,7 +137,7 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
-	readonly snapshotBlobs: SnapshotBlobStore;
+	readonly snapshotBlobs: SqlSnapshotBlobStore;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 	private readonly readerFile: string | undefined;
 	private reader?: Promise<SqliteDatabase>;
@@ -149,7 +148,7 @@ export class SqlRunJournal implements RunJournal {
 		tables: Tables,
 		legacy: LegacyJournalRuns | undefined,
 		readerFile: string | undefined,
-		snapshotBlobs: SnapshotBlobStore,
+		snapshotBlobs: SqlSnapshotBlobStore,
 	) {
 		this.database = database;
 		this.tables = tables;
