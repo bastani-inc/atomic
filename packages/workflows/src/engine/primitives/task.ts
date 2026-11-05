@@ -1,6 +1,7 @@
 import {
 	cleanupPreparedWorktrees,
 	collectWorktreeDiffs,
+	inputsSelectGitWorktree,
 	prepareTaskWorktrees,
 	stageOptionsWithGitWorktree,
 	stageOptionsWithInputDefaults,
@@ -16,6 +17,7 @@ import {
 	truncateTaskOutput,
 } from "../../runs/foreground/executor-task-prompts.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
+import { prepareTaskGit } from "../../runs/shared/worktree-git-runner.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import type {
 	WorkflowArtifact,
@@ -53,6 +55,8 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			prepareLiveOptions?: () => WorkflowTaskOptions,
 		): Promise<WorkflowTaskResult> => {
 			runtime.exit.throwIfWorkflowExitSelected();
+			if (taskOptions.worktree === true || inputsSelectGitWorktree(taskOptions))
+				await prepareTaskGit(runtime.signal);
 			let resolvedTaskOptions =
 				stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults) ?? taskOptions;
 			const stageOptions = taskStageOptions(resolvedTaskOptions);

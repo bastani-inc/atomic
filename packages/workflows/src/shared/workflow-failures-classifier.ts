@@ -1,3 +1,4 @@
+import { findGitProvisionError } from "@bastani/atomic";
 import type {
 	RunFailureClassification,
 	WorkflowFailureCode,
@@ -276,6 +277,15 @@ function structuredClassification(
 	if (typeof error === "object") seen.add(error);
 	const fixed = typeof error === "object" ? preclassified.get(error) : undefined;
 	if (fixed !== undefined) return classificationForDecision(fixed, source, undefined, "strong_signal");
+
+	const gitError = findGitProvisionError(error);
+	if (gitError !== undefined)
+		return classificationForDecision(
+			{ ...unknownDecision(), retryable: gitError.retryable },
+			source,
+			undefined,
+			"strong_signal",
+		);
 
 	const signal = structuredSignal(error);
 	const signalMessage = signal.message ?? (typeof error === "string" ? error : undefined);

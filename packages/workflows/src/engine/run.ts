@@ -1068,7 +1068,18 @@ async function executeRun(
 		if (opts.deferWorkflowStart === true) await raceAbort(nextEventLoopTurn(), ownController.signal);
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
-		await prepareRunGit(ownController.signal, inputsSelectGitWorktree(inputRuntimeDefaults));
+		await prepareRunGit(
+			ownController.signal,
+			inputsSelectGitWorktree(inputRuntimeDefaults)
+				? {
+						workflow: def.name,
+						runId,
+						source: "input",
+						field: def.inputBindings?.worktree?.gitWorktreeDir ?? "gitWorktreeDir",
+						gitWorktreeDir: inputRuntimeDefaults.gitWorktreeDir,
+					}
+				: undefined,
+		);
 		if (opts.parentRun === undefined) {
 			if (durableRootRegistration !== undefined) {
 				await durableBackend.commitWorkflowRegistration({

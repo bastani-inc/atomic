@@ -762,6 +762,13 @@ const systemGitProbes = new Map<string, SystemGitProbe>();
 const provisionedGitVersions = new Map<string, string>();
 let lastProvisionFailure: GitProvisionError | undefined;
 
+/** Forget probes and the last provisioning failure, as a new process would. Not part of the public API. */
+export function resetGitProvisionStateForTest(): void {
+	systemGitProbes.clear();
+	provisionedGitVersions.clear();
+	lastProvisionFailure = undefined;
+}
+
 function probeSystemGit(): SystemGitProbe {
 	const pathValue = pathValueOf(process.env);
 	const root = getGitInstallDir();

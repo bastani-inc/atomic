@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { isGitUnavailableError } from "../../packages/coding-agent/src/utils/git-errors.js";
+import { resetGitProvisionStateForTest } from "../../packages/coding-agent/src/utils/tools-manager.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
@@ -13,11 +14,17 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { inputsSelectGitWorktree } from "../../packages/workflows/src/runs/foreground/executor-direct-helpers.js";
 import {
 	prepareRunGit,
+	prepareTaskGit,
 	runGit,
 	withGitRunnerForTest,
 } from "../../packages/workflows/src/runs/shared/worktree-git-runner.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { classifyWorkflowFailure } from "../../packages/workflows/src/shared/workflow-failures-classifier.js";
+import {
+	isWorkflowGitRequiredError,
+	WorkflowGitRequiredError,
+} from "../../packages/workflows/src/shared/workflow-git-required-error.js";
 import { JournalTestBackend as InMemoryDurableBackend } from "../helpers/journal-backend.js";
 
 const isolatedAgentDir = await vi.hoisted(async () => {
@@ -29,6 +36,14 @@ const isolatedAgentDir = await vi.hoisted(async () => {
 	return dir;
 });
 
+const REQUEST = {
+	workflow: "needs-git",
+	runId: "run-1",
+	source: "input",
+	field: "git_worktree_dir",
+	gitWorktreeDir: "../wt",
+} as const;
+
 describe("workflow runs without git (#4322)", () => {
 	let backend: InMemoryDurableBackend;
 	let store: ReturnType<typeof createStore>;
@@ -37,6 +52,7 @@ describe("workflow runs without git (#4322)", () => {
 	let root: string;
 
 	beforeEach(async () => {
+		resetGitProvisionStateForTest();
 		backend = await InMemoryDurableBackend.create();
 		setDurableBackend(backend);
 		store = createStore();
@@ -66,57 +82,127 @@ describe("workflow runs without git (#4322)", () => {
 		};
 	}
 
-	test("a run whose inputs select a worktree fails before its body with the typed offline reason", async () => {
-		let bodyRuns = 0;
-		const fetchMock = vi.spyOn(globalThis, "fetch");
-		const def = workflow({
+	function worktreeWorkflow(onBody: () => void): WorkflowDefinition {
+		return workflow({
 			name: "git-required-worktree",
 			description: "",
 			inputs: { git_worktree_dir: Type.String() },
 			outputs: { ok: Type.Optional(Type.Boolean()) },
 			worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir" },
 			run: async () => {
-				bodyRuns += 1;
+				onBody();
 				return { ok: true };
 			},
 		}) as unknown as WorkflowDefinition;
+	}
 
-		const accepted = runDetached(def, { git_worktree_dir: "../wt" }, runOptions());
-		await jobs.get(accepted.runId)?.promise;
-
-		const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
-		assert.equal(run?.status, "failed");
-		assert.equal(bodyRuns, 0);
-		assert.equal(run?.stages.length, 0);
-		assert.match(
-			run?.error ?? "",
-			/^Git is unavailable: ATOMIC_OFFLINE is set, so no portable git is downloaded.* \(offline\)\. Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2\.30\.0 or newer\.$/,
-		);
-		assert.equal(fetchMock.mock.calls.length, 0);
-		assert.equal(backend.getWorkflow(accepted.runId)?.gitWorktreeRoot, undefined);
-	});
-
-	test("a run that never uses git still runs when git is unavailable", async () => {
-		let bodyRuns = 0;
-		const def = workflow({
+	function gitFreeWorkflow(onBody: () => void): WorkflowDefinition {
+		return workflow({
 			name: "git-free",
 			description: "",
 			inputs: {},
 			outputs: { ok: Type.Optional(Type.Boolean()) },
 			run: async (ctx) => {
-				bodyRuns += 1;
+				onBody();
 				await ctx.stage("work").complete("ok");
 				return { ok: true };
 			},
 		}) as unknown as WorkflowDefinition;
+	}
 
-		const accepted = runDetached(def, {}, runOptions());
+	async function finish(def: WorkflowDefinition, inputs: Record<string, string>) {
+		const accepted = runDetached(def, inputs, runOptions());
 		await jobs.get(accepted.runId)?.promise;
+		const run = store.runs().find((snapshot) => snapshot.id === accepted.runId);
+		assert.ok(run);
+		return { accepted, run };
+	}
 
-		const finished = store.runs().find((snapshot) => snapshot.id === accepted.runId);
-		assert.equal(finished?.error, undefined);
-		assert.equal(finished?.status, "completed");
-		assert.equal(bodyRuns, 1);
+	function failingFetch() {
+		return vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("busy", { status: 503 }));
+	}
+
+	test("a run whose inputs select a worktree fails before its body naming the input and the install fix", async () => {
+		let bodyRuns = 0;
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+		const { run } = await finish(
+			worktreeWorkflow(() => bodyRuns++),
+			{ git_worktree_dir: "../wt" },
+		);
+
+		assert.equal(run.status, "failed");
+		assert.equal(bodyRuns, 0);
+		assert.equal(run.stages.length, 0);
+		assert.match(
+			run.error ?? "",
+			/^Workflow needs git: "git-required-worktree" creates a worktree at input git_worktree_dir \(\.\.\/wt\), but git is unavailable \(offline\)\. Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2\.30\.0 or newer with .* \(git-required\)$/,
+		);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.equal(backend.getWorkflow(run.id)?.gitWorktreeRoot, undefined);
+	});
+
+	test("an online run that cannot download git makes one download cycle, then fails typed with no stages", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		let bodyRuns = 0;
+		const fetchMock = failingFetch();
+		const { run } = await finish(
+			worktreeWorkflow(() => bodyRuns++),
+			{ git_worktree_dir: "../wt" },
+		);
+
+		assert.equal(run.status, "failed");
+		assert.equal(bodyRuns, 0);
+		assert.equal(run.stages.length, 0);
+		assert.equal(fetchMock.mock.calls.length, 3);
+		assert.match(run.error ?? "", /but git is unavailable \(download-failed\)/);
+	});
+
+	test("runs that never use a worktree start no download and still run, even when git cannot be downloaded", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		let bodyRuns = 0;
+		const fetchMock = failingFetch();
+		for (const _ of [1, 2]) {
+			const { run } = await finish(
+				gitFreeWorkflow(() => bodyRuns++),
+				{},
+			);
+			assert.equal(run.error, undefined);
+			assert.equal(run.status, "completed");
+		}
+		assert.equal(bodyRuns, 2);
+		assert.equal(fetchMock.mock.calls.length, 0);
+	});
+
+	test("a task that creates its own worktree gets one download attempt before its stage, then fails typed", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = failingFetch();
+		const def = workflow({
+			name: "task-worktree",
+			description: "",
+			inputs: {},
+			outputs: { ok: Type.Optional(Type.Boolean()) },
+			run: async (ctx) => {
+				await ctx.task("edit", { prompt: "x", worktree: true });
+				return { ok: true };
+			},
+		}) as unknown as WorkflowDefinition;
+		const { run } = await finish(def, {});
+
+		assert.equal(run.status, "failed");
+		assert.equal(fetchMock.mock.calls.length, 3);
+		assert.match(run.error ?? "", /download-failed/);
+	});
+
+	test("prepareTaskGit attempts a download only when git is missing and downloadable", async () => {
+		const fetchMock = failingFetch();
+		const controller = new AbortController();
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 3);
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 3);
 	});
 
 	test("worktree git commands fail with the typed reason instead of a spawn error", () => {
@@ -130,8 +216,10 @@ describe("workflow runs without git (#4322)", () => {
 		const controller = new AbortController();
 		const reason = new Error("run cancelled");
 		controller.abort(reason);
-		for (const requiresGit of [true, false])
-			await assert.rejects(prepareRunGit(controller.signal, requiresGit), (error) => error === reason);
+		await assert.rejects(prepareRunGit(controller.signal, REQUEST), (error) => error === reason);
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		await assert.rejects(prepareTaskGit(controller.signal), (error) => error === reason);
+		assert.equal(await prepareRunGit(controller.signal, undefined), undefined);
 	});
 
 	test("only a non-blank gitWorktreeDir input makes a run require git", () => {
@@ -144,8 +232,30 @@ describe("workflow runs without git (#4322)", () => {
 	test("a fake git runner skips provisioning", async () => {
 		const runner = () => ({ stdout: "", stderr: "", status: 0, signal: null });
 		const controller = new AbortController();
-		assert.equal(await withGitRunnerForTest(runner, () => prepareRunGit(controller.signal, true)), undefined);
-		await assert.rejects(prepareRunGit(controller.signal, true), (error: Error) => isGitUnavailableError(error));
+		assert.equal(await withGitRunnerForTest(runner, () => prepareRunGit(controller.signal, REQUEST)), undefined);
+		assert.equal(await withGitRunnerForTest(runner, () => prepareTaskGit(controller.signal)), undefined);
+		await assert.rejects(prepareRunGit(controller.signal, REQUEST), (error: Error) =>
+			isWorkflowGitRequiredError(error),
+		);
+	});
+
+	test("the wrapper keeps the git error as its cause, its hint, and its retryability through classification", async () => {
+		const offline = await prepareRunGit(new AbortController().signal, REQUEST).catch((error: Error) => error);
+		assert.ok(offline instanceof WorkflowGitRequiredError);
+		assert.equal(offline.code, "git-required");
+		assert.deepEqual(offline.fields, REQUEST);
+		assert.equal(offline.retryable, false);
+		assert.equal(offline.hint, offline.cause?.hint);
+		assert.equal(offline.cause?.code, "offline");
+		assert.equal(classifyWorkflowFailure(offline).retryable, false);
+
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		failingFetch();
+		const busy = await prepareRunGit(new AbortController().signal, REQUEST).catch((error: Error) => error);
+		assert.ok(busy instanceof WorkflowGitRequiredError);
+		assert.equal(busy.cause?.code, "download-failed");
+		assert.equal(busy.retryable, true);
+		assert.equal(classifyWorkflowFailure(busy).retryable, true);
 	});
 
 	test("isolates the provisioned git location for this suite", () => {

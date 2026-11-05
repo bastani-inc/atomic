@@ -3,9 +3,11 @@ import {
 	createChildProcessEnvironment,
 	createGitEnvironment,
 	isGitProvisionError,
+	isGitUnavailableError,
 	resolveGit,
 	resolveGitSync,
 } from "@bastani/atomic";
+import { type WorkflowGitRequiredFields, wrapGitRequired } from "../../shared/workflow-git-required-error.js";
 import type { GitResult } from "./worktree-types.js";
 
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -50,17 +52,38 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 	};
 }
 /**
- * Provision git before a run's synchronous worktree helpers need it. A run whose inputs select a worktree fails here,
- * before any stage starts, when git cannot be provided. Any other run starts anyway: the typed reason is recorded and
- * thrown by the first git command it issues, and it is shown in the tools status.
+ * Provision git before a run's synchronous worktree helpers need it, only for a run whose inputs bind a worktree:
+ * it fails here, before any stage starts, with {@link WorkflowGitRequiredError} when git cannot be provided. A run
+ * with no worktree input never starts a download.
  */
-export async function prepareRunGit(signal: AbortSignal, requiresGit: boolean): Promise<void> {
-	if (gitRunnerOverride !== undefined) return;
+export async function prepareRunGit(
+	signal: AbortSignal,
+	request: WorkflowGitRequiredFields | undefined,
+): Promise<void> {
+	if (request === undefined || gitRunnerOverride !== undefined) return;
 	try {
 		await resolveGit({ signal });
 	} catch (error) {
-		if (requiresGit || !isGitProvisionError(error)) throw error;
+		throw wrapGitRequired(error, request);
 	}
+}
+
+/**
+ * Give a task that creates its own worktree the chance to download git before its stage starts. Only a missing git
+ * that can be downloaded is attempted; every other state, and a failed download, is left to the first git command,
+ * which raises the recorded typed error, so a replayed task that never touches git still completes offline.
+ */
+export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
+	if (gitRunnerOverride !== undefined) return;
+	try {
+		resolveGitSync();
+		return;
+	} catch (error) {
+		if (!isGitUnavailableError(error) || error.code !== "not-installed") return;
+	}
+	await resolveGit({ signal }).catch((error: unknown) => {
+		if (!isGitProvisionError(error)) throw error;
+	});
 }
 export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
 	const previous = gitRunnerOverride;
