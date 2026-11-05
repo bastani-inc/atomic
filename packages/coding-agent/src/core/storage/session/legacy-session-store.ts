@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
+import type { SnapshotBlobStore } from "../../worktree-snapshot/types.ts";
 import type { SqliteDatabase } from "../database.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { SessionExistsError, SessionNotFoundError } from "./errors.js";
@@ -48,6 +49,11 @@ export class LegacySessionStore implements SessionStore {
 
 	get descriptor(): StorageDescriptor {
 		return this.inner.descriptor;
+	}
+
+	/** The blob table of the wrapped store, so sessions on the default database record snapshots and collect them. */
+	get snapshotBlobs(): SnapshotBlobStore | undefined {
+		return this.inner.snapshotBlobs;
 	}
 
 	create(header: SessionRecordHeader, entries: readonly SessionEntry[]): Promise<{ readonly lastSeq: number }> {

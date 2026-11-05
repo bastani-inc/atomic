@@ -246,7 +246,7 @@ test("a leftover a rollback finds is reported with the restore it was removing, 
 	const clones = [await sandbox.remoteWithClone("a"), await sandbox.remoteWithClone("b")];
 	const run = await startRun();
 	const snapshots = [await run.record(clones[0]!.clone, "a\n"), await run.record(clones[1]!.clone, "b\n")];
-	await fixture.journal.snapshotBlobs.deleteBlobs([snapshots[1]!.chain[0]!.patch!], { olderThanSeconds: 0 });
+	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshots[1]!.chain[0]!.patch!]);
 	for (const listen of [true, false]) {
 		for (const { clone } of clones) sandbox.write(join(clone, "state.txt"), `drift ${listen}\n`);
 		const storeDir = sandbox.path(`host-${listen}`);

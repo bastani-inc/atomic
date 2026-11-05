@@ -110,7 +110,7 @@ Sessions and workflow runs that share one database share one blob table, and a c
 
 **Grace window.** Content stored or reused less than `snapshots.graceSeconds` ago (one hour by default) is never deleted, so a capture that has stored its content but not yet recorded the snapshot is safe. A capture that builds on an earlier snapshot restarts that snapshot's age before reusing its content; if the content is already gone, the capture records a full snapshot instead.
 
-**Failures.** A failed collection is reported once per process as a warning (for workflow runs, a notice on the run) with `WorkspaceCollectionError`, recorded in the database, and retried after the interval. It never affects the session or run that started it. If the warning or notice handler itself throws, that error is reported as a process warning and collection carries on.
+**Failures.** A failed collection never affects the session or run that started it. It is recorded in the database's `snapshot_collection` table (`finished_at`, `deleted` and `error_code`; the name carries the storage prefix, if any) and retried after the interval. A workflow run shows a warning notice carrying `WorkspaceCollectionError`. An SDK host gets a process warning, or its own `onFailure` handler. The `atomic` command line does not print process warnings, so there a failed collection is visible only in that table. If a warning or notice handler itself throws, that error is reported as a process warning and collection carries on.
 
 **Disk space.** SQLite reuses the space of deleted content for new content but does not shrink the file. Run `VACUUM` on the database while no Atomic process uses it to return the space to the operating system.
 
