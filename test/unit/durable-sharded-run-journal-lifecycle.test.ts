@@ -941,3 +941,107 @@ for (const [moves, outcome] of [
 		assert.ok(isJournalCatalogError(result) && result.code === "run-moved");
 		assert.equal(result.fields.lastSeq, PAGED_EVENTS);
 	});
+
+test("a new native shard never takes the path of an adopted shard whose file is gone, so that run fails typed (#4325)", async () => {
+	mkdirSync(store, { recursive: true });
+	const adoptedPath = join(store, "shard-0002.sqlite");
+	const seed = await openSqlRunJournal(adoptedPath);
+	await seed.createRun({ runId: "old", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await seed.close();
+	await adoptJournals(store, [adoptedPath]);
+	const backup = join(root, "adopted.backup");
+	copyFileSync(adoptedPath, backup);
+	rmSync(adoptedPath);
+	const journal = await open();
+	assert.equal(
+		await journal.createRun({ runId: "new", name: "wf", cwd: "/p", createdAt: 2, status: "running" }),
+		"created",
+	);
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const paths = (await catalog.shards()).map((shard) => shard.path);
+	assert.equal(new Set(paths).size, paths.length, "no two shards name one path");
+	assert.notEqual(journal.shardOf("new")?.path, adoptedPath);
+	await assert.rejects(journal.getRun("old"), (error: Error) => {
+		assert.ok(isJournalShardUnavailableError(error));
+		assert.deepEqual([error.code, error.shardPath], ["shard-missing", adoptedPath]);
+		return true;
+	});
+	assert.deepEqual(
+		(await journal.listRuns()).map((run) => run.runId),
+		["new"],
+	);
+	assert.deepEqual(
+		journal.unavailableShards().map((error) => error.shardPath),
+		[adoptedPath],
+	);
+	copyFileSync(backup, adoptedPath);
+	assert.equal(
+		(await journal.getRun("new"))?.runId,
+		"new",
+		"restoring the adopted file leaves the native shard alone",
+	);
+	assert.equal((await (await open()).getRun("old"))?.runId, "old");
+});
+
+async function adoptedFinishedRun(name: string): Promise<string> {
+	const legacy = join(root, name, "old", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	const seed = await openSqlRunJournal(legacy);
+	const lease = await start(seed, "r");
+	await seed.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await seed.release(lease);
+	await seed.close();
+	await adoptJournals(store, [legacy]);
+	return legacy;
+}
+
+test("deleting a run a consolidation moved meanwhile deletes it where it moved, and leaves no entry naming a copy (#4325)", async () => {
+	const legacy = await adoptedFinishedRun("delete-race");
+	let consolidated = false;
+	const journal = await open(async (path) => {
+		const shard = await openSqlRunJournal(path);
+		if (path !== legacy) return shard;
+		const deleteRun = shard.deleteRun.bind(shard);
+		shard.deleteRun = async (runId) => {
+			if (!consolidated) {
+				consolidated = true;
+				assert.equal((await consolidateJournalStore(store)).moved, 1);
+			}
+			return deleteRun(runId);
+		};
+		return shard;
+	});
+	await journal.deleteRun("r");
+	assert.equal(consolidated, true);
+	assert.equal(await journal.getRun("r"), undefined);
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	assert.equal(await catalog.locate("r"), undefined, "no entry is left naming the moved copy");
+	for (const shard of await catalog.shards()) {
+		const database = new DatabaseSync(shard.path, { readOnly: true });
+		assert.equal(database.prepare("SELECT count(*) AS n FROM wf_runs WHERE run_id = 'r'").get()?.n, 0, shard.path);
+		database.close();
+	}
+});
+
+test("a lease taken after a move was undone finds the run where the catalog now names it (#4325)", async () => {
+	const legacy = await adoptedFinishedRun("undone");
+	const backup = join(root, "undone.backup");
+	copyFileSync(legacy, backup);
+	const journal = await open();
+	assert.equal((await consolidateJournalStore(store)).moved, 1);
+	assert.equal((await journal.getRun("r"))?.runId, "r");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const native = (await catalog.locate("r"))!.shard;
+	assert.equal(journal.shardOf("r")?.id, native.id, "this process now caches the native copy");
+	const nativeFile = new DatabaseSync(native.path);
+	for (const table of ["wf_events", "wf_leases", "wf_runs"])
+		nativeFile.exec(`DELETE FROM ${table} WHERE run_id = 'r'`);
+	nativeFile.close();
+	for (const suffix of ["", "-wal", "-shm"]) rmSync(`${legacy}${suffix}`, { force: true });
+	copyFileSync(backup, legacy);
+	const adopted = (await catalog.shards()).find((shard) => shard.kind === "adopted")!;
+	assert.equal(await catalog.moveRun("r", native.id, adopted.id), true);
+	const outcome = await journal.acquire("r", "resumer");
+	assert.equal(outcome.status, "acquired");
+	assert.equal(journal.shardOf("r")?.kind, "adopted");
+});

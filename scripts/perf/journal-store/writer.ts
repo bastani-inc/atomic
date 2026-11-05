@@ -3,12 +3,16 @@
  * One pool process of a heavy root for the journal store benchmark: it opens the journal that holds its root's runs,
  * either the root's shard of a journal store or one single journal file, creates a run of its own beside the root,
  * waits until every process of the benchmark is ready, and appends checkpoints back to back, timing each append from
- * the call to its commit. That time is the wait for the database's write lock plus one commit.
+ * the call to its commit. That time is the wait for the database's write lock plus one commit. The wait for the lock
+ * alone is read from the database handle's own writer-queue statistics once the appends are done, so the report
+ * separates it from the commit (and its fsync) that follows.
  *
  *   bun run scripts/perf/journal-store/writer.ts <store|file> <path> <root> <worker> <appends> <payloadBytes> <ready> <peers>
  */
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { getWriterQueueStats, type SqliteDatabase } from "@bastani/atomic/storage";
+import { sqlPoolStorage } from "../../../packages/workflows/src/durable/journal/internal.js";
 import { openSelectedRunJournal } from "../../../packages/workflows/src/durable/journal/resolution.js";
 import { isShardedRunJournal } from "../../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal } from "../../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
@@ -44,7 +48,9 @@ for (let index = 0; index < appends; index++) {
 	waits.push(performance.now() - before);
 }
 const elapsedMs = performance.now() - started;
+const queue = await sqlPoolStorage(journal)!.read(async (database) => getWriterQueueStats(database as SqliteDatabase));
 await journal.release(held.lease);
 if (owner === undefined) await journal.close();
 else await owner.close();
-process.stdout.write(`${JSON.stringify({ root, worker, waits, elapsedMs })}\n`);
+const lockWait = { p50: queue.p50WaitMs, p95: queue.p95WaitMs };
+process.stdout.write(`${JSON.stringify({ root, worker, waits, elapsedMs, lockWait })}\n`);

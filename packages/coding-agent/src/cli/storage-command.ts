@@ -196,7 +196,8 @@ function failed(domain: DomainStatus): boolean {
 	return (
 		domain.error !== undefined ||
 		domain.probe?.adapter?.loaded === false ||
-		domain.probe?.connection.status === "failed"
+		domain.probe?.connection.status === "failed" ||
+		(domain.journalStore?.unavailable.length ?? 0) > 0
 	);
 }
 
@@ -239,8 +240,10 @@ export function formatStorageStatus(status: StorageStatus): string[] {
 			lines.push(
 				`  journals:    ${store.shards} shard${store.shards === 1 ? "" : "s"}, ${store.adopted} adopted journal${store.adopted === 1 ? "" : "s"}, ${store.runs} run${store.runs === 1 ? "" : "s"}`,
 			);
-			for (const shard of store.missing)
-				lines.push(`  missing:     ${shard.path} (${shard.kind}, no longer exists)`);
+			for (const shard of store.unavailable)
+				lines.push(
+					`  unavailable: ${shard.path} (${shard.kind}, ${shard.code === "shard-missing" ? "no longer exists" : "cannot be opened"}: ${shard.code})`,
+				);
 			for (const skipped of store.skipped) lines.push(`  skipped:     ${skipped.path} (${skipped.reason})`);
 		}
 	}

@@ -1,4 +1,5 @@
 import {
+	JOURNAL_COPIED_ALL_MARKER,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -12,9 +13,6 @@ const CURRENT = renderStorageIdentifiers("journal", {
 	legacyDeleted: "legacy_deleted",
 	migrations: "migrations",
 });
-/** Recorded by the earlier version that copied every legacy run at once; those runs are already in `wf_*`. */
-const COPIED_ALL_MARKER = "unprefixed-journal-tables";
-
 const LEGACY_COLUMNS: Readonly<Record<keyof typeof JOURNAL_TABLES, readonly string[]>> = {
 	meta: [c.schemaVersion],
 	runs: [c.runId, c.name, c.cwd, c.createdAt, c.status, c.headerJson],
@@ -91,7 +89,8 @@ export class LegacyJournalRuns {
 						`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
 						CURRENT.migrations,
 					)) !== undefined &&
-					(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, COPIED_ALL_MARKER)) !== undefined;
+					(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, JOURNAL_COPIED_ALL_MARKER)) !==
+						undefined;
 				if (copiedAll) return undefined;
 				await tx.exec(
 					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,

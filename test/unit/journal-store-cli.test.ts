@@ -220,7 +220,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 		shards: 0,
 		adopted: 2,
 		runs: 2,
-		missing: [{ path: lost, kind: "adopted" }],
+		unavailable: [{ path: lost, kind: "adopted", code: "shard-missing" }],
 		skipped: [{ path: join(root, "workflows", "journal.sqlite"), reason: "not-a-journal" }],
 	});
 	const lines = formatStorageStatus(after);
@@ -228,7 +228,7 @@ test("atomic storage status shows the journal store, its adopted and missing jou
 	assert.ok(at >= 0, lines.join("\n"));
 	assert.deepEqual(lines.slice(at + 3, at + 6), [
 		"  journals:    0 shards, 2 adopted journals, 2 runs",
-		`  missing:     ${lost} (adopted, no longer exists)`,
+		`  unavailable: ${lost} (adopted, no longer exists: shard-missing)`,
 		`  skipped:     ${join(root, "workflows", "journal.sqlite")} (not-a-journal)`,
 	]);
 });
@@ -246,7 +246,7 @@ test("the journal store line counts shards, adopted journals and runs in the sin
 					selection: `journal store ${store}`,
 					source: "default",
 					overridden: [],
-					journalStore: { catalog: join(store, "catalog.sqlite"), ...counts, missing: [], skipped: [] },
+					journalStore: { catalog: join(store, "catalog.sqlite"), ...counts, unavailable: [], skipped: [] },
 				},
 			],
 		}).find((line) => line.startsWith("  journals:"));
@@ -356,13 +356,23 @@ test("adopt names the journals it adopted through references; consolidate counts
 	});
 });
 
-test("atomic storage status lists a native shard whose file was deleted (#4325)", async () => {
+test("atomic storage status lists a native shard whose file was deleted or cannot be opened, and exits 1 (#4325)", async () => {
 	const catalog = await JournalCatalog.open(store);
-	const lost = (await catalog.place({ runId: "99999999-9999-4999-8999-999999999999", status: "running" })).shard.path;
+	const first = (await catalog.place({ runId: "99999999-9999-4999-8999-999999999999", status: "running" })).shard.path;
+	const second = (await catalog.place({ runId: "88888888-8888-4888-8888-888888888888", status: "running" })).shard
+		.path;
 	await catalog.close();
-	rmSync(lost);
+	assert.notEqual(first, second);
+	rmSync(first);
+	writeFileSync(second, "not a database, but long enough to be read as a file header of some kind");
 	const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
 	const journal = status.domains.find((entry) => entry.domain === "journal")!;
-	assert.deepEqual(journal.journalStore?.missing, [{ path: lost, kind: "native" }]);
-	assert.ok(formatStorageStatus(status).includes(`  missing:     ${lost} (native, no longer exists)`));
+	assert.deepEqual(journal.journalStore?.unavailable, [
+		{ path: first, kind: "native", code: "shard-missing" },
+		{ path: second, kind: "native", code: "shard-open-failed" },
+	]);
+	const lines = formatStorageStatus(status);
+	assert.ok(lines.includes(`  unavailable: ${first} (native, no longer exists: shard-missing)`));
+	assert.ok(lines.includes(`  unavailable: ${second} (native, cannot be opened: shard-open-failed)`));
+	assert.equal((await storage(["status"])).code, 1);
 });

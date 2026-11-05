@@ -3,7 +3,9 @@
  * Writer-queue wait of heavy pooled roots: one root alone, three roots sharing one journal file (the default before
  * the journal store, and the reason campaigns were split over hand-made journals), and three roots in the journal
  * store. Each root runs `--workers` pool processes that append `--appends` checkpoints of `--payload` bytes to the
- * database holding the root, all at once. The wait of one append is the time from the call to its commit.
+ * database holding the root, all at once. The wait of one append is the time from the call to its commit, which
+ * includes the commit and its fsync. The lock wait is the part spent waiting for the database's write lock, read from
+ * each process's writer-queue statistics: the median of the processes' median waits, and of their 95th percentiles.
  *
  *   bun run scripts/perf/journal-store/benchmark.ts [--workers 8] [--appends 300] [--payload 2048] [--repeats 3] [--out report.json]
  */
@@ -25,6 +27,7 @@ interface WriterResult {
 	readonly worker: string;
 	readonly waits: readonly number[];
 	readonly elapsedMs: number;
+	readonly lockWait: { readonly p50: number; readonly p95: number };
 }
 
 interface Measurement {
@@ -35,6 +38,8 @@ interface Measurement {
 	readonly p95: number;
 	readonly p99: number;
 	readonly max: number;
+	readonly lockWaitP50: number;
+	readonly lockWaitP95: number;
 	readonly meanWaitMs: number;
 	readonly wallMs: number;
 	readonly appendsPerSecond: number;
@@ -115,6 +120,8 @@ async function measure(options: Options, scenario: (typeof SCENARIOS)[number], r
 			p95: percentile(waits, 0.95),
 			p99: percentile(waits, 0.99),
 			max: waits.at(-1)!,
+			lockWaitP50: median(results.map((result) => result.lockWait.p50)),
+			lockWaitP95: median(results.map((result) => result.lockWait.p95)),
 			meanWaitMs: waits.reduce((sum, wait) => sum + wait, 0) / waits.length,
 			wallMs,
 			appendsPerSecond: (waits.length / wallMs) * 1000,
@@ -143,6 +150,8 @@ const summary = SCENARIOS.map((scenario) => {
 		p95: median(of.map((run) => run.p95)),
 		p99: median(of.map((run) => run.p99)),
 		max: median(of.map((run) => run.max)),
+		lockWaitP50: median(of.map((run) => run.lockWaitP50)),
+		lockWaitP95: median(of.map((run) => run.lockWaitP95)),
 		meanWaitMs: median(of.map((run) => run.meanWaitMs)),
 		appendsPerSecond: median(of.map((run) => run.appendsPerSecond)),
 	};
@@ -152,9 +161,11 @@ if (options.out !== undefined) writeFileSync(options.out, `${JSON.stringify(repo
 console.log(
 	`workers per root ${options.workers}, appends per worker ${options.appends}, payload ${options.payload} B, median of ${options.repeats}`,
 );
-console.log("| scenario | appends | wait p50 ms | p95 ms | p99 ms | max ms | mean ms | appends/s |");
-console.log("|---|---:|---:|---:|---:|---:|---:|---:|");
+console.log(
+	"| scenario | appends | append p50 ms | p95 ms | p99 ms | max ms | mean ms | lock wait p50 ms | lock wait p95 ms | appends/s |",
+);
+console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 for (const row of summary)
 	console.log(
-		`| ${row.scenario} | ${row.appendsPerRun} | ${row.p50.toFixed(2)} | ${row.p95.toFixed(2)} | ${row.p99.toFixed(2)} | ${row.max.toFixed(1)} | ${row.meanWaitMs.toFixed(2)} | ${row.appendsPerSecond.toFixed(0)} |`,
+		`| ${row.scenario} | ${row.appendsPerRun} | ${row.p50.toFixed(2)} | ${row.p95.toFixed(2)} | ${row.p99.toFixed(2)} | ${row.max.toFixed(1)} | ${row.meanWaitMs.toFixed(2)} | ${row.lockWaitP50.toFixed(2)} | ${row.lockWaitP95.toFixed(2)} | ${row.appendsPerSecond.toFixed(0)} |`,
 	);

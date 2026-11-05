@@ -421,10 +421,28 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.operation(async () => {
-			const located = await this.locate(runId);
-			if (located === undefined) throw new RunNotFoundError(runId);
-			return located.journal.acquire(runId, holderId);
+			return this.leaseOnLocated(runId, (journal) => journal.acquire(runId, holderId));
 		});
+	}
+
+	/**
+	 * A lease operation on the run's shard. A shard that does not hold the run, because a consolidation moved it or
+	 * undid its move since this process located it, is asked again once after looking the run up in the catalog.
+	 */
+	private async leaseOnLocated(
+		runId: string,
+		operation: (journal: RunJournal) => Promise<LeaseOutcome>,
+	): Promise<LeaseOutcome> {
+		const located = await this.locate(runId);
+		if (located === undefined) throw new RunNotFoundError(runId);
+		try {
+			return await operation(located.journal);
+		} catch (error) {
+			if (!(error instanceof RunNotFoundError)) throw error;
+			const moved = await this.relocated(runId, located.record);
+			if (moved === undefined) throw error;
+			return operation(moved.journal);
+		}
 	}
 
 	async takeover(runId: string, holderId: string, expectedHolder: string): Promise<LeaseOutcome> {
@@ -433,9 +451,7 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("holderId", holderId);
 		validateText("expectedHolder", expectedHolder);
 		return this.operation(async () => {
-			const located = await this.locate(runId);
-			if (located === undefined) throw new RunNotFoundError(runId);
-			return located.journal.takeover(runId, holderId, expectedHolder);
+			return this.leaseOnLocated(runId, (journal) => journal.takeover(runId, holderId, expectedHolder));
 		});
 	}
 
@@ -444,9 +460,7 @@ export class ShardedRunJournal implements RunJournal {
 		validateText("runId", runId);
 		validateText("holderId", holderId);
 		return this.operation(async () => {
-			const located = await this.locate(runId);
-			if (located === undefined) throw new RunNotFoundError(runId);
-			return located.journal.takeoverExpired(runId, holderId, staleAfterMs);
+			return this.leaseOnLocated(runId, (journal) => journal.takeoverExpired(runId, holderId, staleAfterMs));
 		});
 	}
 
@@ -594,10 +608,16 @@ export class ShardedRunJournal implements RunJournal {
 		this.assertOpen();
 		validateText("runId", runId);
 		return this.operation(async () => {
-			const located = await this.locate(runId);
-			if (located === undefined) return;
-			await located.journal.deleteRun(runId);
-			await this.catalog.remove(runId);
+			let located = await this.locate(runId);
+			// A consolidation can move the run between finding it and deleting it: its entry then names another shard,
+			// so it is deleted there, and the entry that names the copy is never removed while the copy stays.
+			for (let follows = 0; located !== undefined; follows++) {
+				await located.journal.deleteRun(runId);
+				if (await this.catalog.removeFrom(runId, located.record.id)) break;
+				const from = located.record;
+				located = await this.relocated(runId, from);
+				if (located !== undefined && follows + 1 > READ_FOLLOW_LIMIT) throw this.runMoved(runId, from, 0);
+			}
 			this.located.delete(runId);
 		});
 	}

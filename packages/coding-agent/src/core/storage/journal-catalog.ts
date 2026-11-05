@@ -412,11 +412,11 @@ export class JournalCatalog {
 
 	/**
 	 * Registers a native shard with its file created and prepared first, so a native shard whose file is missing was
-	 * lost. The file is always new: a name that already exists, such as an adopted journal living in the store's
-	 * directory, is skipped and never opened as a shard of its own.
+	 * lost. The file is always new: a name that already exists, or that a registered shard already names even if its file is
+	 * gone, such as an adopted journal living in the store's directory, is skipped and never taken by a shard of its own.
 	 */
 	private async addNativeShard(tx: SqliteExecutor, id: number): Promise<JournalShardRecord> {
-		const file = await this.createNativeShardFile(id);
+		const file = await this.createNativeShardFile(tx, id);
 		await this.prepareShard(join(this.directory, file));
 		await tx.run(
 			`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'native', ${STORE_NOW}, 1)`,
@@ -427,9 +427,13 @@ export class JournalCatalog {
 		return this.shardRecord(row!);
 	}
 
-	private async createNativeShardFile(from: number): Promise<string> {
+	private async createNativeShardFile(tx: SqliteExecutor, from: number): Promise<string> {
+		const registered = new Set(
+			(await tx.all<ShardRow>("SELECT * FROM catalog_shards")).map((row) => this.shardRecord(row).path),
+		);
 		for (let number = from; ; number++) {
 			const file = nativeShardFile(number);
+			if (registered.has(join(this.directory, file))) continue;
 			try {
 				await (await open(join(this.directory, file), "wx")).close();
 				return file;
@@ -470,6 +474,16 @@ export class JournalCatalog {
 
 	async remove(runId: string): Promise<void> {
 		await this.write("removing-run", (tx) => tx.run("DELETE FROM catalog_runs WHERE run_id = ?", runId), runId);
+	}
+
+	/** Removes a run's catalog entry only while it is still on `shard`; whether it was removed. */
+	async removeFrom(runId: string, shard: number): Promise<boolean> {
+		const result = await this.write(
+			"removing-run",
+			(tx) => tx.run("DELETE FROM catalog_runs WHERE run_id = ? AND shard = ?", runId, shard),
+			runId,
+		);
+		return result.changes === 1;
 	}
 
 	/** Moves a run's catalog entry from `from` to `to`, only if it is still on `from`; whether it moved. */

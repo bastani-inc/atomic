@@ -47,6 +47,9 @@ const TABLES = renderStorageIdentifiers("journal", { meta: "meta", runs: "runs",
 const POOL_ROOTS = `${TABLES.runs}_pool_roots`;
 const LEGACY_RUNS = "runs";
 const LEGACY_DELETED = renderStorageIdentifiers("journal", { legacyDeleted: "legacy_deleted" }).legacyDeleted;
+const MIGRATIONS = renderStorageIdentifiers("journal", { migrations: "migrations" }).migrations;
+/** Recorded in a journal's migrations by the earlier version that copied every pre-0.9.38 run into the current tables. */
+export const JOURNAL_COPIED_ALL_MARKER = "unprefixed-journal-tables";
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 /** What a journal file holds, read without changing it. */
@@ -163,8 +166,13 @@ export async function inspectJournalFile(path: string): Promise<JournalFileInspe
 				const rows: RunRows = current
 					? await database.all(`SELECT run_id, name, cwd, status, header_json FROM ${TABLES.runs} ORDER BY run_id`)
 					: [];
-				if (legacy) {
-					// Runs of the pre-0.9.38 tables that were not converted or deleted since: read, never converted.
+				const copiedAll =
+					names.has(MIGRATIONS) &&
+					(await database.get(`SELECT name FROM ${MIGRATIONS} WHERE name = ?`, JOURNAL_COPIED_ALL_MARKER)) !==
+						undefined;
+				if (legacy && !copiedAll) {
+					// Runs of the pre-0.9.38 tables that were not converted or deleted since: read, never converted. A journal
+					// that an earlier version copied in full has its legacy tables ignored, as the journal itself ignores them.
 					const converted = [
 						names.has(TABLES.runs) ? `AND run_id NOT IN (SELECT run_id FROM ${TABLES.runs})` : "",
 						names.has(LEGACY_DELETED) ? `AND run_id NOT IN (SELECT run_id FROM ${LEGACY_DELETED})` : "",

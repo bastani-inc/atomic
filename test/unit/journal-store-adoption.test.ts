@@ -23,6 +23,7 @@ import {
 	isJournalAdoptError,
 	isJournalShardUnavailableError,
 	JOURNAL_CONSOLIDATION_HOLDER_PREFIX,
+	JOURNAL_COPIED_ALL_MARKER,
 	JOURNAL_DISCOVERY_LIMIT,
 	JournalCatalog,
 	JournalCatalogError,
@@ -1320,4 +1321,37 @@ test("recovery refuses to settle a move into the file the run is in, and deletes
 	assert.ok(report.runs[0]?.error instanceof JournalCatalogError && report.runs[0].error.code === "corrupt");
 	assert.equal(scalar(adopted, FILE_EVENTS), events);
 	assert.equal(scalar(adopted, "SELECT count(*) FROM wf_runs"), 1);
+});
+
+test("a journal an earlier version copied in full has its legacy runs ignored, as the journal itself ignores them (#4325)", async () => {
+	const path = legacyJournal(join(root, "marked", "journal.sqlite"), ["kept", "ghost"]);
+	const current = await journal(join(root, "scratch", "journal.sqlite"), [{ runId: "kept" }]);
+	const database = new DatabaseSync(path);
+	database.exec(`ATTACH DATABASE '${current}' AS source`);
+	for (const table of ["wf_meta", "wf_runs", "wf_events", "wf_leases"])
+		database.exec(`CREATE TABLE main.${table} AS SELECT * FROM source.${table}`);
+	database.exec("CREATE TABLE wf_migrations(name TEXT PRIMARY KEY, applied_at INTEGER)");
+	database.exec(`INSERT INTO wf_migrations VALUES ('${JOURNAL_COPIED_ALL_MARKER}', 0)`);
+	database.close();
+	assert.deepEqual(
+		(await inspectJournalFile(path)).runs.map((run) => run.runId),
+		["kept"],
+	);
+	const other = legacyJournal(join(root, "other", "journal.sqlite"), ["ghost"]);
+	await adoptJournals(store, [path, other]);
+	assert.deepEqual((await withCatalog((catalog) => catalog.runs({}))).map((run) => run.runId).sort(), [
+		"ghost",
+		"kept",
+	]);
+	assert.equal((await withCatalog((catalog) => catalog.locate("ghost")))?.shard.path, other);
+	const sql = await openSqlRunJournal(path);
+	try {
+		assert.deepEqual(
+			(await sql.listRuns()).map((run) => run.runId),
+			["kept"],
+			"the catalog indexes what the journal itself lists",
+		);
+	} finally {
+		await sql.close();
+	}
 });

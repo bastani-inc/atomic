@@ -116,7 +116,7 @@ With no journal selected, workflow runs go to the journal store in `~/.atomic/wo
 - Status, stages, resume, attach, fork, `history://` and the resume picker find any run ID through the catalog, whichever shard holds it.
 - Local workers and their coordinator open only their root's shard.
 
-`atomic storage status` shows the store with its shard and adopted journal counts, adopted journal files that no longer exist, and journals the store skipped.
+`atomic storage status` shows the store with its shard and adopted journal counts, every shard file, native or adopted, that no longer exists (`shard-missing`) or cannot be opened (`shard-open-failed`), and journals the store skipped. The command exits with status 1 while any shard file is unavailable.
 
 ### Adopting existing journal files
 
