@@ -391,24 +391,31 @@ describe("the registered detachable tool (#4309)", () => {
 		assert.deepEqual(tool.aborts, []);
 	});
 
-	test("hands a signal that was already aborted, with its reason, to the work", async () => {
+	test("refuses a call whose signal was already aborted before its work starts, as every scheduled call is", async () => {
 		const tool = waitTool();
 		const harness = await harnessWith([tool.definition]);
 		harness.session.setToolDetachment({ afterMs: 0 });
 		harness.setResponses([waitForCiTurn("ci-1")]);
 		await harness.session.prompt("watch ci");
-		harness.session.takeDetachedToolCalls();
+		for (const call of harness.session.takeDetachedToolCalls()) call.abort("test over");
 
-		await settlesWithin(
-			registeredTool(harness, "wait_for_ci").execute(
-				"ci-1",
-				{ run: "7" },
-				AbortSignal.abort("stage quit"),
-				undefined,
+		await assert.rejects(
+			settlesWithin(
+				registeredTool(harness, "wait_for_ci").execute(
+					"ci-2",
+					{ run: "7" },
+					AbortSignal.abort("stage quit"),
+					undefined,
+				),
 			),
+			/Operation aborted/,
 		);
 
-		assert.deepEqual(tool.aborts, ["stage quit"]);
+		assert.deepEqual(
+			tool.calls.map((call) => call.id),
+			["ci-1"],
+		);
+		assert.deepEqual(tool.aborts, ["test over"]);
 	});
 });
 
