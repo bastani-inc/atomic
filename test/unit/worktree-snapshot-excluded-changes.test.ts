@@ -134,3 +134,51 @@ describe("a capture whose tree is unchanged but whose omissions changed (#4245)"
 		assert.equal(second.tree, first.tree);
 	});
 });
+
+describe("what counts as the same left-out content (#4245)", () => {
+	test("replacing one left-out file with another is a change", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, ".env.local"), "A=1\n");
+		const first = captured(await captureWorktreeSnapshot(clone)).snapshot;
+		const { unlinkSync } = await import("node:fs");
+		unlinkSync(join(clone, ".env.local"));
+		sandbox.write(join(clone, ".env.other"), "B=1\n");
+		const second = captured(await captureWorktreeSnapshot(clone, { previous: first })).snapshot;
+		assert.deepEqual(second.omitted, [{ reason: "denied", path: ".env.other" }]);
+	});
+
+	test("unpushed history that touches a denied path does not make an identical repeat capture a change", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "server.pem"), "PRIVATE\n");
+		await sandbox.commitAll(clone, "pem");
+		const first = captured(await captureWorktreeSnapshot(clone)).snapshot;
+		assert.equal(first.omitted[0]?.reason, "unpushed-history-denied");
+		assert.equal((await captureWorktreeSnapshot(clone, { previous: first })).status, "unchanged");
+	});
+
+	test("every recorded file that is now left out is reset, not only the first", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "a.json"), "a".repeat(100));
+		sandbox.write(join(clone, "b.json"), "b".repeat(100));
+		const snapshot = captured(await captureWorktreeSnapshot(clone, { settings: capped })).snapshot;
+		sandbox.write(join(clone, "a.json"), "x".repeat(3000));
+		sandbox.write(join(clone, "b.json"), "y".repeat(3000));
+		await assert.rejects(verifyWorktree(snapshot, clone, { settings: capped }), (error: unknown) =>
+			isWorkspaceDriftError(error),
+		);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"a left-out file whose name looks like a pattern resets only itself, never a recorded file it would match",
+		async () => {
+			const { clone } = await sandbox.remoteWithClone();
+			sandbox.write(join(clone, "n1.txt"), "recorded\n");
+			const snapshot = captured(await captureWorktreeSnapshot(clone)).snapshot;
+			sandbox.write(join(clone, "n[1].txt"), "new and left out\n");
+			assert.equal(
+				(await verifyWorktree(snapshot, clone, { settings: { includeUntracked: false } })).tree,
+				snapshot.tree,
+			);
+		},
+	);
+});

@@ -113,6 +113,16 @@ describe("capture operation counts", () => {
 		assert.equal(count("update-index"), 1);
 	});
 
+	test("a capture that leaves files out resets nothing: its index already holds HEAD's content (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, ".env.local"), "TOKEN=1\n");
+		reset();
+		const result = captured(await captureWorktreeSnapshot(clone));
+		assert.deepEqual(result.omitted, [{ reason: "denied", path: ".env.local" }]);
+		assert.equal(count("reset"), 0);
+		assert.equal(count("update-index"), 0);
+	});
+
 	test("a new capture with unchanged unpushed history reuses the bundle without creating another (#4245)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "feature.txt"), "feature\n");
