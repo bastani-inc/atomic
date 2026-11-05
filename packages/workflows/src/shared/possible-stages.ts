@@ -2177,7 +2177,7 @@ function parameterNames(tokens: readonly Token[]): string[] {
 				continue;
 			}
 		}
-		if (atStart && token.kind === "ident") names.push(token.value);
+		if (atStart) names.push(token.kind === "ident" ? token.value : "");
 		atStart = false;
 	}
 	return names;

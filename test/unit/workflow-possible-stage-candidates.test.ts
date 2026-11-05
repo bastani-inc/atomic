@@ -12,12 +12,17 @@ import { makeTempDirectory, removeTempDirectory, writeTextSync } from "../helper
 
 /** Paths mapped to how many more reads succeed before every later read fails, to simulate a file that vanishes. */
 const readBudgets = vi.hoisted(() => new Map<string, number>());
+/** Paths whose source read fails while the existence probe still succeeds. */
+const unreadableSources = vi.hoisted(() => new Set<string>());
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
 	return {
 		...fs,
 		readFileSync(...args: Parameters<typeof fs.readFileSync>) {
-			const [path] = args;
+			const [path, options] = args;
+			if (typeof path === "string" && typeof options === "string" && unreadableSources.has(path)) {
+				throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" });
+			}
 			const remaining = typeof path === "string" ? readBudgets.get(path) : undefined;
 			if (remaining !== undefined) {
 				if (remaining <= 0)
@@ -28,7 +33,10 @@ vi.mock("node:fs", async (importOriginal) => {
 		},
 	};
 });
-afterEach(() => readBudgets.clear());
+afterEach(() => {
+	readBudgets.clear();
+	unreadableSources.clear();
+});
 
 const TEST_DIR = makeTempDirectory("possible-stage-candidates");
 afterAll(() => {
@@ -361,6 +369,14 @@ describe("enum array selection", () => {
 		assert.deepEqual(candidatesIn("await ctx.task(kind, {});\nfor (const kind of KINDS) {}"), ALL_ARRAYS);
 	});
 
+	test("a for await loop does not narrow", () => {
+		assert.deepEqual(candidatesIn("for await (const kind of KINDS) await ctx.task(kind, {});"), ALL_ARRAYS);
+	});
+
+	test("a for-of loop whose parentheses never close does not narrow", () => {
+		assert.deepEqual(candidatesIn("for (const kind of (KINDS await ctx.task(kind, {});"), ALL_ARRAYS);
+	});
+
 	test("a map callback narrows to its receiver", () => {
 		assert.deepEqual(candidatesIn("await Promise.all(KINDS.map((kind) => ctx.task(kind, {})));"), ONLY_KINDS);
 	});
@@ -391,6 +407,32 @@ describe("enum array selection", () => {
 
 	test("a map property read that is not called does not narrow", () => {
 		assert.deepEqual(candidatesIn("const fn = KINDS.map;\nctx.task(kind, {});"), ALL_ARRAYS);
+	});
+
+	test("an inner callback over another array does not take over the loop variable's source", () => {
+		const result = scan(
+			workflowSource(
+				'AREAS.map(async (area) => { const skipped = SKIP.some((area) => area === "x"); return ctx.task(area, {}); });',
+				'const AREAS = ["api", "ui"];\nconst SKIP = ["legacy"];',
+			),
+		);
+		assert.deepEqual(result.uncertainties[0]!.candidates, [
+			enumArray("api", "ui"),
+			enumArray("api"),
+			enumArray("ui"),
+		]);
+	});
+
+	test("a string spelling a dot before a bare map call is not a method access", () => {
+		assert.deepEqual(candidatesIn('KINDS\n"."\nmap((kind) => ctx.task(kind, {}));'), ALL_ARRAYS);
+	});
+
+	test("a string after a dot is not a method name", () => {
+		assert.deepEqual(candidatesIn('KINDS."map"((kind) => ctx.task(kind, {}));'), ALL_ARRAYS);
+	});
+
+	test("a map property read followed by an arrow function does not narrow", () => {
+		assert.deepEqual(candidatesIn("const fn = KINDS.map; kind => ctx.task(kind, {});"), ALL_ARRAYS);
 	});
 
 	test("the nearest preceding iteration wins", () => {
@@ -560,6 +602,36 @@ describe("template helper recognition", () => {
 		assert.deepEqual(candidatesFor("function label(a) { return result; }"), [literal("x")]);
 	});
 
+	test("a function keyword followed by a string is not a declaration", () => {
+		assert.deepEqual(candidatesFor('function "label"() { return "fixed"; }'), [literal("x")]);
+	});
+
+	test("a generic function declaration is not a helper", () => {
+		assert.deepEqual(candidatesFor('function label<T>(kind) { return "fixed"; }'), [literal("x")]);
+	});
+
+	test("a function keyword at the end of the file is not a declaration", () => {
+		const result = scan("await ctx.task(label(dynamic), {});\nfunction");
+		assert.deepEqual(result.uncertainties[0]!.candidates, []);
+	});
+
+	test("a body after a destructured last parameter is found", () => {
+		const result = scan('await ctx.task(label(dynamic), {});\nfunction label({ kind }) { return "fixed"; }');
+		assert.deepEqual(result.uncertainties[0]!.candidates, [composed("fixed")]);
+	});
+
+	test("a returned literal is taken from the return statement, not from earlier literals", () => {
+		assert.deepEqual(
+			candidatesFor('function label(kind, round) { const sep = "x"; return `${kind}-${round}`; }', '"audit", 3'),
+			[literal("audit"), composed("audit-3")],
+		);
+	});
+
+	test("a block body ending in a bare return is not a helper", () => {
+		const result = scan('await ctx.task(label("a"), {});\nconst label = (n) => { return');
+		assert.deepEqual(result.uncertainties[0]!.candidates, [literal("a")]);
+	});
+
 	test("a bodiless declaration at the end of the file is not a helper", () => {
 		const result = scan('await ctx.task(label("a"), {});\ndeclare function label(kind: string): string;\n');
 		assert.deepEqual(result.uncertainties[0]!.candidates, [literal("a")]);
@@ -593,6 +665,25 @@ describe("template helper recognition", () => {
 	test("a value that is not an arrow is not a helper", () => {
 		assert.deepEqual(candidatesFor('const label = ["x"];'), [literal("x")]);
 		assert.deepEqual(candidatesFor("const label = (n);", "1"), []);
+	});
+
+	test("an arrow whose only parameter is named async is not a helper", () => {
+		assert.deepEqual(candidatesFor('const label = async => "fixed";'), [literal("x")]);
+	});
+
+	test("a parenthesised value followed by a literal is not an arrow", () => {
+		assert.deepEqual(candidatesFor('const label = (n) + "fixed";'), [literal("x")]);
+	});
+
+	test("a destructured first parameter keeps its position, so later parameters take their own arguments", () => {
+		assert.deepEqual(candidatesFor("const label = ({ a }, n) => `n-${n}`;", '"m", 5'), [
+			literal("m"),
+			composed("n-5"),
+		]);
+		assert.deepEqual(candidatesFor("const label = (n, ...rest) => `n-${n}`;", '"m", 5'), [
+			literal("m"),
+			composed("n-m"),
+		]);
 	});
 
 	test("consecutive helper declarations are all recognised", () => {
@@ -648,6 +739,22 @@ describe("enum array recognition", () => {
 			enumArray("k2"),
 		]);
 		assert.deepEqual(candidatesWith(`${KINDS}\nconst LIST = ["x", "y"] as Names;`, "LIST"), [
+			enumArray("k1", "k2"),
+			enumArray("k1"),
+			enumArray("k2"),
+		]);
+	});
+
+	test("an array followed by as const and further tokens is not an enum array", () => {
+		assert.deepEqual(candidatesWith(`${KINDS}\nconst LIST = ["x", "y"] as const satisfies Names;`, "LIST"), [
+			enumArray("k1", "k2"),
+			enumArray("k1"),
+			enumArray("k2"),
+		]);
+	});
+
+	test("an array followed by a member named const is not an enum array", () => {
+		assert.deepEqual(candidatesWith(`${KINDS}\nconst LIST = ["x", "y"].const;`, "LIST"), [
 			enumArray("k1", "k2"),
 			enumArray("k1"),
 			enumArray("k2"),
@@ -1301,5 +1408,74 @@ describe("map callbacks building steps", () => {
 			result.uncertainties.map((entry) => entry.code),
 			[],
 		);
+	});
+});
+
+describe("candidate recognition at the edges", () => {
+	const HELPER = "const label = (kind, n) => `${kind}-${n}`;";
+
+	test("a string followed by an argument list is not a helper call", () => {
+		const result = scan(workflowSource('await ctx.task("label"("scan", 3), {});', HELPER));
+		assert.deepEqual(result.uncertainties[0]!.candidates, [literal("label"), literal("scan")]);
+	});
+
+	test("an imported helper whose source cannot be read composes nothing", () => {
+		fixtureCounter += 1;
+		writeFixture("helpers.ts", `export ${HELPER}\n`);
+		const entry = writeFixture(
+			"entry.ts",
+			`import { label } from "./helpers.js";\n${workflowSource('await ctx.task(label("scan", 3), {});')}`,
+		);
+		unreadableSources.add(join(dirname(entry), "helpers.ts"));
+		const result = scanPossibleStagesFromSource(entry);
+		const named = result.uncertainties.find((entry) => entry.code === "unresolved-name");
+		assert.deepEqual(named?.candidates, [literal("scan")]);
+	});
+
+	test("a string followed by an argument list is not a factory call", () => {
+		const result = scan(
+			workflowSource('await ctx.parallel(["makeStep"()]);', 'function makeStep() { return { name: "built" }; }'),
+		);
+		assert.deepEqual(
+			result.uncertainties.map((entry) => [entry.code, entry.candidates]),
+			[["unresolved-step", []]],
+		);
+	});
+});
+
+describe("child candidates at the edges", () => {
+	test("a child module that cannot be read is not offered", () => {
+		fixtureCounter += 1;
+		writeFixture("alpha.ts", child("alpha"));
+		writeFixture("beta.ts", child("beta"));
+		const entry = writeFixture("entry.ts", parentCalling("await ctx.workflow(children[pick]);"));
+		unreadableSources.add(join(dirname(entry), "alpha.ts"));
+		const result = scanPossibleStagesFromSource(entry);
+		assert.deepEqual(childCandidatesOf(result), [{ stages: ["workflow:beta"], source: "child-definition" }]);
+	});
+
+	test("a child with a computed name and its own stages is not offered under an explicit stageName", () => {
+		const result = scanWith(
+			{
+				"alpha.ts":
+					'export default workflow({ name: computedName, run: async (ctx) => {\nawait ctx.task("inner", {});\n} });\n',
+				"beta.ts": child("beta"),
+			},
+			parentCalling('await ctx.workflow(children[pick], { stageName: "fixed" });'),
+		);
+		assert.deepEqual(childCandidatesOf(result), [{ stages: ["fixed"], source: "child-definition" }]);
+	});
+
+	test("a grandchild's stages are offered under a wildcard parent boundary", () => {
+		const result = scanWith(
+			{
+				"alpha.ts": `import gamma from "./gamma.js";\n${child("alpha", "await ctx.workflow(children[pick]);")}`,
+				"gamma.ts": child("gamma", 'await ctx.task("inner", {});'),
+			},
+			parentCalling("await ctx.workflow(alpha, { stageName: dynamicName });", 'import alpha from "./alpha.js";\n'),
+		);
+		assert.deepEqual(childCandidatesOf(result), [
+			{ stages: ["*/workflow:gamma", "*/workflow:gamma/inner"], source: "child-definition" },
+		]);
 	});
 });

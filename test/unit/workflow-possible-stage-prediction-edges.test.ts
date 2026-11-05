@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import type { DecisionQuestions, DecisionResult } from "@bastani/atomic";
 import { afterEach, describe, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
+import { currentWorkflowSessionRunState } from "../../packages/workflows/src/extension/adopt-session-run-state.js";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import type { ExtensionAPI } from "../../packages/workflows/src/extension/public-types.js";
+import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
+import type { WorkflowDecisionRequest } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { createWorkflowBoundaryHopsResolver } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import {
 	closestStagePath,
@@ -49,7 +56,11 @@ import type {
 	RunStagePredictions,
 	StageSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
-import type { WorkflowDefinition, WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
+import type {
+	WorkflowDefinition,
+	WorkflowModelCatalogPort,
+	WorkflowRuntimeConfig,
+} from "../../packages/workflows/src/shared/types.js";
 import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
@@ -338,7 +349,7 @@ describe("prediction outcomes at their edges (#4359)", () => {
 		assert.equal("stagePredictions" in summarizeRunSnapshot(rootRun(), 2), false);
 	});
 
-	test("the status card truncates a long prediction line to its width", () => {
+	test("the status card truncates a long prediction line inside the card's margin", () => {
 		const run = rootRun({
 			stagePredictions: {
 				status: "ready",
@@ -352,9 +363,8 @@ describe("prediction outcomes at their edges (#4359)", () => {
 		});
 		const lines = renderStatusList([run], { width: 60 }).split("\n");
 		const prediction = lines.find((line) => line.includes("stage predictions"));
-		assert.ok(prediction);
-		assert.ok(visibleWidth(prediction) <= 60, `${visibleWidth(prediction)}: ${prediction}`);
-		assert.ok(prediction.includes("…"));
+		assert.equal(prediction, "│   stage predictions: a-rather-long-predicted-stage\u001b[0m…\u001b[0m      │");
+		assert.equal(visibleWidth(prediction), 60);
 	});
 });
 
@@ -973,5 +983,117 @@ describe("prediction errors at their edges (#4359)", () => {
 	test("the cause finder stops at a primitive cause", () => {
 		assert.equal(findPossibleStagePredictionError(new Error("outer", { cause: "text" })), undefined);
 		assert.equal(findPossibleStagePredictionError(new Error("outer", { cause: null })), undefined);
+	});
+});
+
+describe("the session that launches runs owns their predictions (#4359)", () => {
+	function sessionState(store: ReturnType<typeof createStore>) {
+		const handlers = new Map<string, (() => unknown)[]>();
+		const pi = {
+			on(event: string, handler: () => unknown) {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+			},
+		} as unknown as ExtensionAPI;
+		const state = createWorkflowExtensionRuntimeState(pi, {} as never, {
+			runState: { ...currentWorkflowSessionRunState(), store },
+		});
+		const shutdown = async () => {
+			for (const handler of handlers.get("session_shutdown") ?? []) await handler();
+		};
+		return { state, shutdown };
+	}
+
+	test("session shutdown aborts the open decision and records nothing; the next session predicts", async () => {
+		const store = storeWith();
+		const first = sessionState(store);
+		const { port, pending } = deferredPort();
+		launch(first.state.stagePredictor, store, port, scanOf([uncertainty([["review"]])]));
+		await until(() => pending.length === 1);
+		assert.equal(pending[0]!.request.signal.aborted, false);
+		await first.shutdown();
+		assert.equal(pending[0]!.request.signal.aborted, true);
+		pending[0]!.resolve({ answers: { site0: { type: "choice", probabilities: { c0: 0.95 } } } });
+		await sleep(10);
+		assert.equal(store.run("root")?.stagePredictions, undefined);
+
+		const next = sessionState(store);
+		assert.notEqual(next.state.stagePredictor, first.state.stagePredictor);
+		launch(next.state.stagePredictor, store, answeringPort(() => 0.95).port, scanOf([uncertainty([["review"]])]));
+		await until(() => store.run("root")?.stagePredictions !== undefined);
+		assert.deepEqual(
+			store.run("root")?.stagePredictions?.entries.map((entry) => entry.path),
+			["review"],
+		);
+		await next.shutdown();
+	});
+
+	test("an answer or a failure that arrives after the run ended is not recorded", async () => {
+		const store = storeWith();
+		const predictor = new StagePredictor();
+		const { port, pending } = deferredPort();
+		launch(predictor, store, port, scanOf([uncertainty([["review"]])]));
+		await until(() => pending.length === 1);
+		predictor.classifySend(store.run("root")!, ["deploy"]);
+		await until(() => pending.length === 2);
+		store.recordRunEnd("root", "completed");
+		pending[0]!.resolve({ answers: { site0: { type: "choice", probabilities: { c0: 0.95 } } } });
+		pending[1]!.reject(new Error("provider down"));
+		await sleep(10);
+		assert.equal(store.run("root")?.stagePredictions, undefined);
+		predictor.dispose();
+	});
+
+	test("a session runtime launches predictions into the predictor it was given", async () => {
+		const store = createStore();
+		bindStoreDurableBackend(store, await createMemoryTestBackend());
+		const module = (await import(fixtureEntry("helper-names"))) as {
+			default: (factory: typeof workflow) => WorkflowDefinition;
+		};
+		const definition = module.default(workflow);
+		const predictor = new StagePredictor();
+		const requests: WorkflowDecisionRequest[] = [];
+		const runtime = createExtensionRuntime({
+			registry: createRegistry([definition]),
+			store,
+			adapters: { prompt: { prompt: async () => "ok" } },
+			resolvePossibleStageEntry: () => fixtureEntry("helper-names"),
+			stagePredictor: predictor,
+			models: {
+				listModels: async () => [],
+				decide: (async (request: WorkflowDecisionRequest) => {
+					requests.push(request);
+					return {
+						answers: {
+							site0: { type: "choice", choice: "c1", probabilities: { c1: 0.9 } },
+							site1: { type: "choice", choice: "c1", probabilities: { c1: 0.9 } },
+						},
+						source: "classifier",
+						model: "typesafe/jev-latest",
+						responseModel: "jev",
+						usage: { inputTokens: 1, outputTokens: 1 },
+					} as DecisionResult<DecisionQuestions>;
+				}) as WorkflowModelCatalogPort["decide"],
+			},
+		});
+		const result = await runtime.dispatch({ action: "run", workflow: definition.normalizedName });
+		if (result.action !== "run") assert.fail("expected a run result");
+		await until(() => store.run(result.runId)?.stagePredictions !== undefined);
+		assert.equal(requests.length, 1);
+		assert.deepEqual(predictor.classifySend(store.run(result.runId)!, ["review-1"]), { prediction: "predicted" });
+		predictor.dispose();
+	});
+
+	test("the target question allows names built at run time; the scan question keeps each site's candidates closed", async () => {
+		const store = storeWith();
+		const predictor = new StagePredictor();
+		const { port, requests } = answeringPort(() => 0.95);
+		launch(predictor, store, port, scanOf([uncertainty([["review"]])]));
+		await until(() => store.run("root")?.stagePredictions !== undefined);
+		predictor.classifySend(store.run("root")!, ["deploy"]);
+		await until(() => requests.length === 2);
+		assert.match(requests[0]!.instructions, /its listed candidates are the only names that call site can produce/);
+		assert.match(requests[1]!.instructions, /Names built at run time can produce paths that appear nowhere/);
+		assert.doesNotMatch(requests[1]!.instructions, /only names/);
+		predictor.dispose();
 	});
 });
