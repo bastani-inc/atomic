@@ -530,6 +530,7 @@ describe("workspace error messages (#3109)", () => {
 			operation: "create directory",
 			path: "/w/repos",
 			errno: "ENOSPC",
+			repository: "/store.git",
 		};
 		const binding: [string, string | null, string][] = [
 			[
@@ -601,6 +602,11 @@ describe("workspace error messages (#3109)", () => {
 				"drift",
 				"remote-changed",
 				"Workspace changed unexpectedly: /w no longer has the recorded remote E (drift). Restore the recorded repository state, or start a new run instead of resuming.",
+			],
+			[
+				"drift",
+				"branch-diverged",
+				"Workspace branch diverged from its remote: b in /store.git is at A, and origin/b at E has commits it lacks (drift). Push or rebase the local commits onto origin/b, or take the remote's history with git -C /store.git branch --force b origin/b, then retry.",
 			],
 			[
 				"writer-conflict",

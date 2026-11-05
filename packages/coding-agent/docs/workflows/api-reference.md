@@ -1391,7 +1391,7 @@ A child workflow bound to a `"workspace-write"` workspace holds the worktree's w
 
 ### Read-only sandbox
 
-A `"read-only"` session does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them, and refuses them with `WorkspaceSandboxError` (`write-denied`) if they are called anyway. A read-only binding caps everything nested in it: stages of a read-only child, stages that pass their own workspace, and child workflows started from it all run read-only. This is tool-level, not operating-system sandboxing: shell tools such as `bash` still run, and selecting a repository or worktree does not authorize or confine writes. Use a container or VM for untrusted code.
+A `"read-only"` session does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them or an extension asks to activate them, so a call to one fails as an unavailable tool. As a second line of defense, a file-writing tool that is active in a read-only session anyway is refused with `WorkspaceSandboxError` (`write-denied`). A read-only binding caps everything nested in it: stages of a read-only child, stages that pass their own workspace, and child workflows started from it all run read-only. This is tool-level, not operating-system sandboxing: shell tools such as `bash` still run, and selecting a repository or worktree does not authorize or confine writes. Use a container or VM for untrusted code.
 
 ### Change sets and pull requests
 
@@ -1440,7 +1440,7 @@ Every workspace error extends `WorkspaceError` and has a stable `code`, an optio
 | `WorkspaceRestoreError` | `restore-failed` | The recorded repository, or both branch and worktree, are gone (`reason` `repository-missing`, `branch-missing`) | `repo`, `branch`, `worktree`, `repository` | Restore the repository or push the branch, then resume |
 | `WorkspacePublicationError` | `publication-failed` | `publishPullRequest` failed (`reason` `no-remote`, `gh-unavailable`, `gh-unauthenticated`, `push-failed`, `gh-failed`); retryable for `push-failed` and `gh-failed` | `repo`, `branch`, `detail` | Follow `hint`: add `origin`, install gh, run `gh auth login`, or check push access |
 | `WorkspaceTimeoutError` | `timeout` | A git step exceeded its limit (10 minutes for clone, fetch and push, 60 seconds otherwise); retryable | `phase`, `timeoutMs`, `elapsedMs`, `command` | Check network access and retry |
-| `WorkspaceSandboxError` | `write-denied` | A read-only session called `write`, `edit` or `todo`; reported to the model as the tool result | `tool`, `worktree`, `sandbox` | Report the change instead of making it |
+| `WorkspaceSandboxError` | `write-denied` | A read-only session called `write`, `edit` or `todo` while one was active, which the tool exclusion normally prevents; reported to the model as the tool result | `tool`, `worktree`, `sandbox` | Report the change instead of making it |
 | `GitUnavailableError` | `not-installed` (also `unsupported-platform`, `offline`, `checksum-mismatch` once git provisioning reports them) | The cause of a `git-unavailable` binding error | `gitPath`, `platform`, `installCommand` | Install git with the command in `hint` |
 
 A malformed workspace, a conflicting input or a missing git fails before anything is written: no clone, worktree, boundary or session is left behind. An unresolvable base fails before any branch or worktree is created.

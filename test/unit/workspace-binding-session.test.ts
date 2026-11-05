@@ -297,6 +297,20 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		assert.equal(drifted.reason, "history-rewritten");
 	});
 
+	test("a resumed stage session without a workspace still opens in the stage's cwd (#3109)", async () => {
+		const store = new MemorySessionStore();
+		const created = await SessionManager.create(store, dirs.root);
+		await created.appendCustomEntry("marker", {});
+		const cwd = join(dirs.root, "stage-cwd");
+		mkdirSync(cwd);
+		const options = await stripWorkflowOnlyOptions(
+			{ resumeFromSessionId: created.getSessionId(), sessionStore: store, cwd },
+			undefined,
+			{ runId: "run-1", stageId: "stage-1", stageName: "work" },
+		);
+		assert.equal(options.sessionManager?.getCwd(), cwd);
+	});
+
 	test("a read-only session leaves file-writing tools out of an explicit tools list (#3109)", async () => {
 		const { session } = await createAgentSession(
 			sessionOptions({

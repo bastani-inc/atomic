@@ -67,6 +67,19 @@ function plantHolder(worktree: string, holder: { pid: number; host: string; acqu
 	}
 }
 
+/** The holder rows of a worktree's lease store. */
+function assertLeaseStore(worktree: string): readonly { readonly owner: string }[] {
+	const database = new DatabaseSync(leaseFile(worktree));
+	try {
+		return database
+			.prepare("SELECT owner FROM writer")
+			.all()
+			.map((row) => ({ owner: String(row.owner) }));
+	} finally {
+		database.close();
+	}
+}
+
 function exitedPid(): number {
 	const child = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], {
 		encoding: "utf-8",
@@ -89,6 +102,7 @@ describe("workspace writer lease (#3109)", () => {
 		assert.equal(conflict.retryable, true);
 		assert.equal(isRetryableWorkspaceError(new Error("wrapped", { cause: conflict })), true);
 		await first.release();
+		assert.deepEqual(assertLeaseStore(worktree), [], "release removes the holder row");
 		const second = await acquireWorkspaceWriterLease({ worktree }, { owner: "run-1/goal-b" });
 		await second.release();
 	});

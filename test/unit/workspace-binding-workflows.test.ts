@@ -453,6 +453,16 @@ describe("ctx.task(name, { workspace }) (#3109)", () => {
 				return {};
 			},
 		});
+		const ownGrandchild = workflow({
+			name: "own-grandchild",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("own-grandchild-task", { prompt: "x" });
+				return {};
+			},
+		});
 		const child = workflow({
 			name: "read-only-child",
 			description: "",
@@ -462,6 +472,7 @@ describe("ctx.task(name, { workspace }) (#3109)", () => {
 				await ctx.task("child-task", { prompt: "x" });
 				await ctx.task("writable-override", { prompt: "x", workspace: api });
 				await ctx.workflow(grandchild);
+				await ctx.workflow(ownGrandchild, { workspace: api });
 				return {};
 			},
 		});
@@ -493,11 +504,72 @@ describe("ctx.task(name, { workspace }) (#3109)", () => {
 				["child-task", worktree, "read-only"],
 				["writable-override", worktree, "read-only"],
 				["grandchild-task", worktree, "read-only"],
+				["own-grandchild-task", worktree, "read-only"],
 			],
 		);
 		assert.equal(
 			existsSync(join(git(worktree, "rev-parse", "--absolute-git-dir"), "atomic-writer-lease.sqlite")),
 			false,
+		);
+	});
+
+	test("a writable child does not hand its binding to nested work that did not ask for one (#3109)", async () => {
+		const repo = createRepository(dirs.root, "writable-nesting");
+		const other = createRepository(dirs.root, "writable-nesting-other");
+		const unbound = workflow({
+			name: "unbound-grandchild",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("unbound-task", { prompt: "x" });
+				return {};
+			},
+		});
+		const bound = workflow({
+			name: "bound-grandchild",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("bound-task", { prompt: "x" });
+				return {};
+			},
+		});
+		const child = workflow({
+			name: "writable-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(unbound);
+				await ctx.workflow(bound, { workspace: workspace({ repo: other, branch: "other-work" }) });
+				return {};
+			},
+		});
+		const { sessions, adapters } = recordingAdapter();
+		const parent = workflow({
+			name: "writable-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(child, { workspace: workspace({ repo, branch: "writer" }) });
+				return {};
+			},
+		});
+		const result = await run(
+			parent,
+			{},
+			{ store: createStore(), durableBackend: await createMemoryTestBackend(), adapters },
+		);
+		assert.equal(result.status, "completed", result.error);
+		assert.deepEqual(
+			sessions.map((session) => [session.stage, (session.workspace as BoundWorkspace | undefined)?.sandbox]),
+			[
+				["unbound-task", undefined],
+				["bound-task", "workspace-write"],
+			],
 		);
 	});
 

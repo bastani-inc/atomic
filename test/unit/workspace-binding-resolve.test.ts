@@ -881,7 +881,11 @@ describe("shared stores follow the remote (#3109)", () => {
 		git(first.worktree, "push", "-q", "origin", "HEAD:refs/heads/feat/ff");
 		const theirs = pushFromElsewhere(remote, dirs.root, "feat/ff", "theirs.txt");
 		rmSync(first.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-		const again = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/ff" }));
+		const { result: again, transcript } = await gitTranscript(
+			() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/ff" })),
+			[[SHA, "<sha>"]],
+		);
+		assert.ok(transcript.includes("worktree-add: branch --force feat/ff <sha>"), transcript.join("\n"));
 		assert.equal(again.worktree, first.worktree);
 		assert.equal(again.head, theirs);
 		assert.equal(existsSync(join(again.worktree, "mine.txt")), true);
@@ -891,6 +895,7 @@ describe("shared stores follow the remote (#3109)", () => {
 	test("keeps a store branch that holds commits the remote does not have yet (#3109)", async () => {
 		const remote = createRemote(dirs.root, "unpushed");
 		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/local" }));
+		git(first.worktree, "push", "-q", "origin", "HEAD:refs/heads/feat/local");
 		const local = commitFile(first.worktree, "unpushed.txt", "unpushed\n");
 		rmSync(first.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const again = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/local" }));
@@ -924,6 +929,22 @@ describe("shared stores follow the remote (#3109)", () => {
 			false,
 		);
 		assert.equal(existsSync(first.worktree), false);
+	});
+
+	test("a local repository's own branches are used as they are, ahead of its remote-tracking copies (#3109)", async () => {
+		const remote = createRemote(dirs.root, "local-clone-origin");
+		const clone = join(dirs.root, "local-clone");
+		git(dirs.root, "clone", "-q", remote.url.replace(/^file:\/\//, ""), clone);
+		git(clone, "config", "user.email", "test@example.com");
+		git(clone, "config", "user.name", "Test User");
+		git(clone, "branch", "behind");
+		const behind = git(clone, "rev-parse", "behind");
+		pushFromElsewhere(remote, dirs.root, "behind", "remote-only.txt");
+		pushFromElsewhere(remote, dirs.root, "main", "remote-main.txt");
+		git(clone, "fetch", "-q", "origin");
+		const binding = await resolveWorkspace(workspace({ repo: clone, base: "main", branch: "behind" }));
+		assert.equal(binding.head, behind, "the local branch is not moved to its remote copy");
+		assert.equal(binding.baseCommit, git(clone, "rev-parse", "main"), "base main is the repository's own main");
 	});
 
 	test("a base naming a remote branch means that branch as the remote has it (#3109)", async () => {
@@ -1170,6 +1191,17 @@ describe.skipIf(process.platform === "win32")("workspace resolution under inject
 		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "x" }));
 		assert.equal(existsSync(join(store, "HEAD")), true);
 		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), git(remote.seed, "rev-parse", "HEAD"));
+	});
+
+	test("a store whose creation fails before it exists leaves nothing to clean up (#3109)", async () => {
+		const remote = createRemote(dirs.root, "init-fails");
+		const error = await withFakeGit("init-fails", () =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "x" }))),
+		);
+		assert.ok(isWorkspaceBindingError(error));
+		assert.equal(error.fields.phase, "clone");
+		assert.equal(error.fields.detail, "injected init failure");
+		assert.equal(error.cleanupCause, undefined);
 	});
 
 	test("a snapshot that fails before its index exists reports the git failure, not the index cleanup (#3109)", async () => {

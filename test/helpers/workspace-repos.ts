@@ -143,6 +143,9 @@ case "$FAKE_GIT_MODE:$5 $6" in
 	esac
 	echo "injected fetch failure" >&2
 	exit 1 ;;
+"init-fails:init --bare")
+	echo "injected init failure" >&2
+	exit 1 ;;
 "read-tree:read-tree HEAD")
 	echo "injected read-tree failure" >&2
 	exit 1 ;;
