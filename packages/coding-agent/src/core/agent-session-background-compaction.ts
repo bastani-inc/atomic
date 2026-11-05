@@ -524,7 +524,7 @@ async function commitReady(
 			coveredThroughEntryId: ready.record.upToEntryId,
 		});
 	} catch (error) {
-		if (!session._disposed) recordCommitFailure(session, ready, error);
+		if (!session._disposed && backgroundCompactionOn(session)) recordCommitFailure(session, ready, error);
 		return undefined;
 	}
 	const result = await finishVerbatimCommit.call(session, planned, appended, "threshold");

@@ -1839,6 +1839,18 @@ describe("background compaction commit failures (#4330)", () => {
 		assert.equal(state.upToEntryId, laterId);
 	});
 
+	test("a boundary write that fails after background compaction was switched off leaves no failure behind", async () => {
+		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
+		harness.sessionManager.appendCompaction = async () => {
+			harness.session.setBackgroundCompactionEnabled(false);
+			throw new Error("injected storage write failure");
+		};
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		assert.equal(harness.session.compaction.state, "idle");
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.equal(harness.session.compaction.state, "ready", "the result waits again, not a stale failure");
+	});
+
 	test("a commit failure during disposal is not recorded", async () => {
 		const { harness } = await readyWith([...TRIGGER, ...AFTER]);
 		harness.sessionManager.appendCompaction = async () => {
