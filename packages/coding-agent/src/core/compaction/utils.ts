@@ -7,6 +7,7 @@ import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Patch } from "../tools/hashline-engine/index.ts";
 import { resolveToCwd } from "../tools/path-utils.ts";
+import { sliceHead } from "../tools/truncate.ts";
 import type { LineRange } from "./compaction-types.js";
 
 // ============================================================================
@@ -121,7 +122,7 @@ const TOOL_RESULT_MAX_CHARS = 2000;
 function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	const truncatedChars = text.length - maxChars;
-	return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+	return `${sliceHead(text, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 
 /**

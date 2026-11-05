@@ -41,6 +41,7 @@ import type {
 import { markNativeMcpToolDefinition, matchesMcpDirectToolSelection } from "../../core/mcp-child-policy.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { ModelRegistry } from "../../core/model-registry.ts";
+import { sliceHead } from "../../core/tools/truncate.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { CODEMODE_TOOL_NAME } from "../codemode/tool.js";
 import { TOOL_SEARCH_TOOL_NAME } from "../tool-search/tool.js";
@@ -189,7 +190,7 @@ function serversSectionIntro(reaches: ReadonlySet<string>): string {
 
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
-	return max <= 1 ? "" : `${text.slice(0, max - 1).trimEnd()}…`;
+	return max <= 1 ? "" : `${sliceHead(text, max - 1).trimEnd()}…`;
 }
 
 /** What the `mcp_servers` section needs of a server. */

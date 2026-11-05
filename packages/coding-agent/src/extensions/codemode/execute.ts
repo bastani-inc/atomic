@@ -24,7 +24,7 @@ import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrl, getEnvValue, getQuickJS
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
 import type { SessionEntry } from "../../core/session-manager.ts";
-import { formatSize } from "../../core/tools/truncate.ts";
+import { formatSize, sliceHead, sliceTail } from "../../core/tools/truncate.ts";
 import { combineUsage } from "../../core/usage-totals.ts";
 import { writeOutputFile } from "../../utils/output-files.js";
 import {
@@ -795,7 +795,7 @@ export async function executeCodemode(
 		content = [
 			{
 				type: "text",
-				text: `Warning: truncated output (original token count: ${Math.ceil(text.length / 4)})\n${text.slice(0, head)}\n... output truncated ...\n${tail ? text.slice(-tail) : ""}\n${notice}`,
+				text: `Warning: truncated output (original token count: ${Math.ceil(text.length / 4)})\n${sliceHead(text, head)}\n... output truncated ...\n${sliceTail(text, tail)}\n${notice}`,
 			},
 			...content.filter((block) => block.type === "image"),
 		];

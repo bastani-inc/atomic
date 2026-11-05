@@ -46,6 +46,7 @@
 - On Windows and WSL, `ctrl+v` pastes again: `app.clipboard.pasteImage` defaults to both `alt+v` and `ctrl+v` there, instead of only `alt+v` (upstream [#11780](https://github.com/earendil-works/pi/pull/11780))
 - Dart (`.dart`), Nix (`.nix`), Groovy (`.groovy`) and Gradle (`.gradle`) files are syntax-highlighted in read and write views (upstream [#11790](https://github.com/earendil-works/pi/pull/11790))
 - `atomic config` uses your `keybindings.json`, so remapped list navigation keys work in its selector (upstream [#11788](https://github.com/earendil-works/pi/pull/11788))
+- Truncated grep match lines, codemode output, compaction summaries of tool results, and MCP stderr tails and server summaries no longer cut an emoji or other non-BMP character in half, which left an invalid lone surrogate in the text (upstream [#11757](https://github.com/earendil-works/pi/pull/11757))
 
 ## [0.9.71] - 2026-11-03
 
