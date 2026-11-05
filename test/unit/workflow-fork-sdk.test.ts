@@ -331,6 +331,55 @@ test("a pooled fork refuses options bound to this process before writing, and in
 	assert.equal(typeof captured?.onStageStart, "function", "a host that binds its workers keeps the stage events");
 });
 
+test("a fork of a source that saved local workers is pooled: it refuses process-bound options before writing and installs no stage callbacks (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const savedId = testRunId("fork-sdk-saved-workers");
+	await backend.commitWorkflowRegistration({
+		workflowId: savedId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		resources: { localWorkers: { count: 2, definitions: [] }, definitions: [] },
+	});
+	const request = { durableBackend: backend, definition: eventsDefinition };
+	const refused = await forkRun(savedId, {
+		...request,
+		registry: createRegistry(),
+		onStageEnd: () => undefined,
+	}).catch((error: Error) => error);
+	assert.ok(isForkConfigError(refused), String(refused));
+	assert.deepEqual(refused.issues, [
+		{ field: "localWorkers", expected: "localWorkers without options bound to this process (registry, onStageEnd)" },
+	]);
+	assert.equal((await backend.journal.listRuns()).length, 1, "nothing was written");
+
+	let captured: Parameters<typeof run>[2];
+	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
+		captured = options;
+		return { status: "completed", stages: [] } as never;
+	});
+	const pooled = await forkRun(savedId, request);
+	await pooled.result;
+	assert.equal(captured?.localWorkers, undefined, "the saved workers are restored by run(), not passed again");
+	assert.equal(typeof captured?.onRunStart, "function");
+	assert.equal(typeof captured?.onRunEnd, "function");
+	assert.deepEqual(
+		[captured?.onStageStart, captured?.onStageEnd, captured?.onStageSessionEvent],
+		[undefined, undefined, undefined],
+		"a pooled fork installs no stage callbacks",
+	);
+	assert.equal((await backend.journal.listRuns()).length, 2, "the allowed fork was written once");
+
+	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
+		captured = options;
+		return { status: "completed", stages: [] } as never;
+	});
+	const hosted = await forkRun(savedId, { ...request, registry: createRegistry(), [hostWorkerBindings]: true });
+	await hosted.result;
+	assert.equal(typeof captured?.onStageStart, "function", "a host that binds its workers keeps the stage events");
+});
+
 test("forkRun events can be read after the run ended, without an unhandled rejection, and ignore later notifications (#4321)", async () => {
 	const { backend, runId } = await eventsSource("fork-sdk-late-events");
 	const unhandled: unknown[] = [];

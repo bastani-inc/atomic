@@ -102,6 +102,11 @@ export interface DurableForkRequest<TDefinition = WorkflowDefinition> extends Fo
 	readonly signal?: AbortSignal;
 	/** Whether this process is executing the run outside the durable backend's own leases. */
 	readonly isLiveRun?: (runId: string) => boolean;
+	/**
+	 * Called once with the source's recorded handle, after it is read and claimed and before anything is copied or
+	 * written. Throwing refuses the fork; the claim is released and nothing is left behind.
+	 */
+	readonly validateSource?: (handle: DurableWorkflowHandle) => void;
 }
 
 export interface DurableForkResult {
@@ -913,6 +918,7 @@ export async function forkDurableRun<
 	let primary: unknown;
 	try {
 		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf);
+		forkRequest.validateSource?.(source.handle);
 		request = { ...forkRequest, cwd: forkDestinationCwd(forkRequest.cwd, source.handle) };
 		request.signal?.throwIfAborted();
 		const { definition, inputs } = await resolveForkDefinition(request, source.handle);

@@ -98,11 +98,10 @@ export async function forkRun<
 	typedOptions: ForkRunOptions<WorkflowDefinition<TInputs, TOutputs, TRunInputs>> = {},
 ): Promise<ForkedRun> {
 	const options = typedOptions as never as ForkRunOptions;
-	const pooled = options.localWorkers !== undefined && options[hostWorkerBindings] !== true;
-	validateForkOptions("sdk", runId, {
-		...options,
-		processBound: pooled ? PROCESS_BOUND_RUN_OPTIONS.filter((key) => options[key] !== undefined) : [],
-	});
+	const hostBinds = options[hostWorkerBindings] === true;
+	const processBound = PROCESS_BOUND_RUN_OPTIONS.filter((key) => options[key] !== undefined);
+	let pooled = options.localWorkers !== undefined && !hostBinds;
+	validateForkOptions("sdk", runId, { ...options, processBound: pooled ? processBound : [] });
 	const {
 		fromStage,
 		inputs,
@@ -137,6 +136,11 @@ export async function forkRun<
 		sourceSessionStore,
 		modelOwner: options.modelOwner,
 		signal: options.signal,
+		validateSource: (handle) => {
+			if (hostBinds || handle.resources?.localWorkers === undefined) return;
+			pooled = true;
+			validateForkOptions("sdk", runId, { processBound });
+		},
 		isLiveRun: (id) => hasActiveLiveRun(store, id),
 		rootRunOf: (id) => store.run(id)?.rootRunId,
 	});
