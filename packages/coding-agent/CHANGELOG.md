@@ -113,6 +113,7 @@
 - `Ctrl+P` switches to the only model in scope, or the only available model, when the active model is a different one, instead of showing "Only one model in scope". Cycling forward from a model outside the scope now selects the first scoped model instead of skipping it (upstream [#11806](https://github.com/earendil-works/pi/issues/11806))
 - `/reload` and session switches no longer leave extension overlays on screen when more than one `ctx.ui.custom({ overlay: true })` was open: only the topmost overlay was removed, and the others kept focus and input although the extension that opened them was gone. All extension overlays, including hidden ones, are now removed and disposed, newest first; Atomic's own overlays stay open (upstream [#11853](https://github.com/earendil-works/pi/pull/11853))
 - MCP sign-in from `/mcp` or `atomic mcp login` no longer hangs for minutes after a successful browser sign-in, with Ctrl+C doing nothing: Atomic waited for the browser to drop an unused connection to the OAuth callback port before connecting. The callback server now closes remaining connections when it shuts down (upstream [#11311](https://github.com/earendil-works/pi/issues/11311))
+- The resume picker keeps session names readable when a project or session file path is long. In the **All** view, and with paths shown, a path that would crowd out the name is shortened from the start behind `…`, so its last folders and the message count and age stay visible ([#4406](https://github.com/bastani-inc/atomic/issues/4406))
 
 ## [0.9.71] - 2026-11-03
 

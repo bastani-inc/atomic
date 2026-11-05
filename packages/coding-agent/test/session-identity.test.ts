@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerSessionResourceCleanup } from "@bastani/pi-ai/compat";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { afterEach, test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../src/config.js";
@@ -169,18 +169,28 @@ type SelectorHost = {
 	ui: { requestRender(): void };
 	showSelector(factory: (done: () => void) => { component: SessionSelectorComponent }): void;
 };
-function renderGate() {
+function renderGate(frame: () => string) {
 	const checks = new Set<() => void>();
 	return {
 		requestRender() {
 			for (const check of [...checks]) check();
 		},
 		until(condition: () => boolean): Promise<void> {
-			return new Promise((resolve) => {
+			return new Promise((resolve, reject) => {
 				const check = () => {
-					if (!condition()) return;
+					if (condition()) {
+						checks.delete(check);
+						resolve();
+						return;
+					}
+					const shown = frame();
+					if (shown.includes("Loading") || shown.includes("Rename Session")) return;
 					checks.delete(check);
-					resolve();
+					reject(
+						new assert.AssertionError({
+							message: `The selector settled on this frame instead:\n${stripTerminalSequences(shown)}`,
+						}),
+					);
 				};
 				checks.add(check);
 				check();
@@ -199,8 +209,8 @@ test("renaming the active session in the selector appends exactly once and keeps
 	const keybindings = new KeybindingsManager();
 	setKeybindings(keybindings);
 	initTheme("dark");
-	const rendered = renderGate();
 	let selector!: SessionSelectorComponent;
+	const rendered = renderGate(() => selector.render(120).join("\n"));
 	const host: SelectorHost = {
 		sessionManager: mirror,
 		session: harness.session,
@@ -229,67 +239,81 @@ test("renaming the active session in the selector appends exactly once and keeps
 	}
 });
 
+async function renameForeignDuplicateInSelector(cwd: string, activeId: string): Promise<string> {
+	vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
+	const active = await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: activeId });
+	await active.appendMessage({ role: "user", content: "active chat", timestamp: Date.now() });
+	const foreignCwd = join(cwd, "foreign");
+	const foreign = await SessionManager.create(foreignCwd, getDefaultSessionDirPath(foreignCwd), {
+		id: "shared-id",
+	});
+	await foreign.appendSessionInfo("foreign target");
+	const allStores = await JsonlSessionStore.open(join(cwd, "agent", "sessions"));
+	const listAll = SessionManager.listAll.bind(SessionManager);
+	const listAllStores = vi
+		.spyOn(SessionManager, "listAll")
+		.mockImplementation(async (_store, onProgress) =>
+			listAll(allStores, typeof onProgress === "function" ? onProgress : undefined),
+		);
+	const harness = await createHarness({ sessionManager: active });
+	const keybindings = new KeybindingsManager();
+	setKeybindings(keybindings);
+	initTheme("dark");
+	let selector!: SessionSelectorComponent;
+	const rendered = renderGate(() => selector.render(120).join("\n"));
+	const host: SelectorHost = {
+		sessionManager: active,
+		session: harness.session,
+		keybindings,
+		ui: rendered,
+		showSelector(factory) {
+			selector = factory(() => {}).component;
+		},
+	};
+	const show = Reflect.get(InteractiveMode.prototype, "showSessionSelector") as (this: SelectorHost) => void;
+	show.call(host);
+	try {
+		await rendered.until(() => selector.getSessionList().getSelectedSessionId() === activeId);
+		if (activeId !== "shared-id")
+			await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: "shared-id" });
+		selector.handleInput("\t");
+		await rendered.until(() => /foreign target/.test(selector.render(120).join("\n")));
+		selector.handleInput("foreign target");
+		selector.handleInput("\x1b[114;5u");
+		selector.handleInput("renamed ");
+		selector.handleInput("\r");
+		await rendered.until(() => renamePanelClosed(selector));
+		assert.equal((await foreign.openSessionById("shared-id")).getSessionName(), "renamed foreign target");
+		assert.equal((await active.openSessionById("shared-id")).getSessionName(), undefined);
+		assert.equal(active.getSessionName(), undefined);
+		await active.appendSessionInfo("active writer still current");
+		assert.equal((await active.openSessionById(activeId)).getSessionName(), "active writer still current");
+		return foreign.getSessionFile()!;
+	} finally {
+		listAllStores.mockRestore();
+		await allStores.close();
+		selector.dispose();
+		await harness.cleanup();
+		vi.unstubAllEnvs();
+	}
+}
+
 test.each(["shared-id", "active-id"])(
 	"selector rename keeps duplicate project-local IDs in the selected store with active ID %s",
 	async (activeId) => {
-		const { cwd } = fixture();
-		vi.stubEnv(ENV_AGENT_DIR, join(cwd, "agent"));
-		const active = await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: activeId });
-		await active.appendMessage({ role: "user", content: "active chat", timestamp: Date.now() });
-		const foreignCwd = join(cwd, "foreign");
-		const foreign = await SessionManager.create(foreignCwd, getDefaultSessionDirPath(foreignCwd), {
-			id: "shared-id",
-		});
-		await foreign.appendSessionInfo("foreign target");
-		const allStores = await JsonlSessionStore.open(join(cwd, "agent", "sessions"));
-		const listAll = SessionManager.listAll.bind(SessionManager);
-		const listAllStores = vi
-			.spyOn(SessionManager, "listAll")
-			.mockImplementation(async (_store, onProgress) =>
-				listAll(allStores, typeof onProgress === "function" ? onProgress : undefined),
-			);
-		const harness = await createHarness({ sessionManager: active });
-		const keybindings = new KeybindingsManager();
-		setKeybindings(keybindings);
-		initTheme("dark");
-		const rendered = renderGate();
-		let selector!: SessionSelectorComponent;
-		const host: SelectorHost = {
-			sessionManager: active,
-			session: harness.session,
-			keybindings,
-			ui: rendered,
-			showSelector(factory) {
-				selector = factory(() => {}).component;
-			},
-		};
-		const show = Reflect.get(InteractiveMode.prototype, "showSessionSelector") as (this: SelectorHost) => void;
-		show.call(host);
-		try {
-			await rendered.until(() => selector.getSessionList().getSelectedSessionId() === activeId);
-			if (activeId !== "shared-id")
-				await SessionManager.create(cwd, getDefaultSessionDirPath(cwd), { id: "shared-id" });
-			selector.handleInput("\t");
-			await rendered.until(() => /foreign target/.test(selector.render(120).join("\n")));
-			selector.handleInput("foreign target");
-			selector.handleInput("\x1b[114;5u");
-			selector.handleInput("renamed ");
-			selector.handleInput("\r");
-			await rendered.until(() => renamePanelClosed(selector));
-			assert.equal((await foreign.openSessionById("shared-id")).getSessionName(), "renamed foreign target");
-			assert.equal((await active.openSessionById("shared-id")).getSessionName(), undefined);
-			assert.equal(active.getSessionName(), undefined);
-			await active.appendSessionInfo("active writer still current");
-			assert.equal((await active.openSessionById(activeId)).getSessionName(), "active writer still current");
-		} finally {
-			listAllStores.mockRestore();
-			await allStores.close();
-			selector.dispose();
-			await harness.cleanup();
-			vi.unstubAllEnvs();
-		}
+		await renameForeignDuplicateInSelector(fixture().cwd, activeId);
 	},
 );
+
+const LONG_TEMP_ROOT_LENGTH = 200;
+const WINDOWS_MAX_PATH = 260;
+test("selector rename finds and renames a duplicate ID under a long temp root (#4406)", async () => {
+	const { cwd } = fixture();
+	const longRoot = join(cwd, "p".repeat(Math.max(1, LONG_TEMP_ROOT_LENGTH - cwd.length - 1)));
+	mkdirSync(longRoot);
+	const foreignSessionFile = await renameForeignDuplicateInSelector(longRoot, "active-id");
+	assert.ok(foreignSessionFile.length > WINDOWS_MAX_PATH, foreignSessionFile);
+});
 
 test(
 	"real CLI and RPC resume an ID prefix, switch by ID and report a display-only location",
