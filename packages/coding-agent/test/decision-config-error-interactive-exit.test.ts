@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { afterEach, expect, test, vi } from "vitest";
-import { DecisionConfigError } from "../src/core/decision/errors.ts";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import type { ActivityWatchdogDiagnostic } from "../src/modes/interactive-engine/activity-watchdog.ts";
-import "../src/modes/interactive/interactive-deferred-startup.ts";
-import "../src/modes/interactive/interactive-session-runtime.ts";
-import * as refusedSetting from "../src/modes/interactive/refused-decision-setting.ts";
+import { afterEach, test, vi } from "vitest";
+import { DecisionConfigError } from "../src/core/decision/errors.js";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import type { ActivityWatchdogDiagnostic } from "../src/modes/interactive-engine/activity-watchdog.js";
+import "../src/modes/interactive/interactive-deferred-startup.js";
+import "../src/modes/interactive/interactive-session-runtime.js";
+import * as refusedSetting from "../src/modes/interactive/refused-decision-setting.js";
 
 class ExitCalled extends Error {}
 
@@ -39,10 +39,10 @@ test("a refused decision setting found after startup stops the TUI, prints its m
 			),
 		ExitCalled,
 	);
-	expect(mode.stop).toHaveBeenCalledWith("transcript");
-	expect(stderr).toHaveBeenCalledTimes(1);
-	expect(String(stderr.mock.calls[0]![0])).toContain(refused.message);
-	expect(exit).toHaveBeenCalledWith(1);
+	assert.ok(mode.stop.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "transcript"));
+	assert.equal(stderr.mock.calls.length, 1);
+	assert.ok(String(stderr.mock.calls[0]![0]).includes(refused.message));
+	assert.ok(exit.mock.calls.some((args) => args.length === 1 && args[0] === 1));
 });
 
 test("any other failure leaves the TUI running", () => {
@@ -50,9 +50,9 @@ test("any other failure leaves the TUI running", () => {
 	const mode = { stop: vi.fn() };
 	for (const error of [new Error("bad extension"), undefined])
 		refusedSetting.exitOnRefusedDecisionSetting(mode, error);
-	expect(mode.stop).not.toHaveBeenCalled();
-	expect(stderr).not.toHaveBeenCalled();
-	expect(exit).not.toHaveBeenCalled();
+	assert.equal(mode.stop.mock.calls.length, 0);
+	assert.equal(stderr.mock.calls.length, 0);
+	assert.equal(exit.mock.calls.length, 0);
 });
 
 test("deferred startup stops on a project setting refused when the project is trusted at the prompt", async () => {
@@ -68,12 +68,10 @@ test("deferred startup stops on a project setting refused when the project is tr
 		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
 		chatContainer: undefined,
 	};
-	await expect(InteractiveModeBase.prototype.completeDeferredStartup.call(mode as never)).rejects.toBeInstanceOf(
-		ExitCalled,
-	);
-	expect(mode.stop).toHaveBeenCalledWith("transcript");
-	expect(exit).toHaveBeenCalledWith(1);
-	expect(mode.showError).not.toHaveBeenCalled();
+	await assert.rejects(InteractiveModeBase.prototype.completeDeferredStartup.call(mode as never), ExitCalled);
+	assert.ok(mode.stop.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "transcript"));
+	assert.ok(exit.mock.calls.some((args) => args.length === 1 && args[0] === 1));
+	assert.equal(mode.showError.mock.calls.length, 0);
 });
 
 test("an engine diagnostic carrying a refused decision setting stops Atomic; others are shown", () => {
@@ -92,13 +90,13 @@ test("an engine diagnostic carrying a refused decision setting stops Atomic; oth
 		error: new Error("wrapped", { cause: refused }),
 	};
 	assert.throws(() => InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, failure), ExitCalled);
-	expect(exit).toHaveBeenCalledWith(1);
-	expect(mode.showError).not.toHaveBeenCalled();
+	assert.ok(exit.mock.calls.some((args) => args.length === 1 && args[0] === 1));
+	assert.equal(mode.showError.mock.calls.length, 0);
 	InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, {
 		...failure,
 		error: new Error("bad extension"),
 	});
-	expect(mode.showError).toHaveBeenCalledWith(failure.message);
+	assert.ok(mode.showError.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === failure.message));
 	InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, {
 		activity: undefined,
 		elapsedMs: 0,
@@ -106,7 +104,11 @@ test("an engine diagnostic carrying a refused decision setting stops Atomic; oth
 		source: "recovery",
 		message: "Engine restarted",
 	});
-	expect(mode.stopWorkingLoader).toHaveBeenCalledTimes(1);
-	expect(mode.showStatus).toHaveBeenCalledWith("Engine restarted", undefined);
-	expect(mode.stop).toHaveBeenCalledTimes(1);
+	assert.equal(mode.stopWorkingLoader.mock.calls.length, 1);
+	assert.ok(
+		mode.showStatus.mock.calls.some(
+			(args: unknown[]) => args.length === 2 && args[0] === "Engine restarted" && args[1] === undefined,
+		),
+	);
+	assert.equal(mode.stop.mock.calls.length, 1);
 });

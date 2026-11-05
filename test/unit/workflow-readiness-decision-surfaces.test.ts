@@ -83,11 +83,14 @@ test("the settings accessor keeps workflow paths when it writes the array form, 
 test("the host decision port binds decide() to the live context and reads the setting live", async () => {
 	const settings = { workflows: { autoAdvanceAfterSteer: true } };
 	const streamSimple = vi.fn();
-	const containsConfiguredCredential = vi.fn(async (text: string) => text.includes("configured-secret"));
+	// A configured credential is refused; any other state stalls, as a slow credential store does.
+	const containsConfiguredCredential = vi.fn((text: string) =>
+		text.includes("configured-secret") ? Promise.resolve(true) : new Promise<boolean>(() => {}),
+	);
 	const catalog = workflowModelCatalogFromContext(
 		{
 			model: decisionChatModel,
-			getDecisionModel: () => "missing/model",
+			getDecisionModel: () => "",
 			modelRegistry: {
 				getAvailable: () => [decisionChatModel],
 				getAll: () => [decisionChatModel],
@@ -107,11 +110,16 @@ test("the host decision port binds decide() to the live context and reads the se
 		(error: unknown) =>
 			error instanceof DecisionRequestError && error.reason === "credential-in-state" && error.field === "state",
 	);
-	await assert.rejects(
-		catalog.decide({ state: { note: "plain" }, questions: READINESS_DECISION_QUESTIONS }),
-		(error: unknown) => (error as { reason?: string }).reason === "not-in-catalog",
-	);
-	assert.equal(containsConfiguredCredential.mock.calls.length, 2);
+	const pause = new AbortController();
+	const reason = new Error("stage paused");
+	const stalled = catalog.decide({
+		state: { note: "plain" },
+		questions: READINESS_DECISION_QUESTIONS,
+		signal: pause.signal,
+	});
+	await vi.waitFor(() => assert.equal(containsConfiguredCredential.mock.calls.length, 2));
+	pause.abort(reason);
+	await assert.rejects(stalled, (error: unknown) => error === reason);
 	assert.equal(streamSimple.mock.calls.length, 0);
 	const withoutDecisionModel = workflowModelCatalogFromContext({
 		model: decisionChatModel,

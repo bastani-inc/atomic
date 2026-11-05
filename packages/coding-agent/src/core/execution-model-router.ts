@@ -9,7 +9,7 @@ import {
 	type Model,
 } from "@bastani/pi-ai";
 import { getDocsPath } from "../config.js";
-import { decide } from "./decision/decide.js";
+import { decide, decideWithModel } from "./decision/decide.js";
 import type { ModelRegistry } from "./model-registry.ts";
 import { resolveModelScopeFromModels } from "./model-resolver-scope.ts";
 import { ROUTING_REQUEST_BYTES } from "./model-routing-bytes.js";
@@ -356,26 +356,28 @@ export async function routeExecutionModel(input: {
 					}
 				: undefined;
 			const result = await infer((inferenceSignal) =>
-				decide({
-					settings,
-					// A classifier never receives the task: the reader is a chat model.
-					model: reader!,
-					modelRegistry: ctx.modelRegistry,
-					currentModel: ctx.model,
-					state: {
-						task,
-						agent,
-						...(callerSays && Object.keys(callerSays).length ? { caller_says: callerSays } : {}),
+				// A classifier never receives the task: the reader is a chat model.
+				decideWithModel(
+					{
+						settings,
+						modelRegistry: ctx.modelRegistry,
+						currentModel: ctx.model,
+						state: {
+							task,
+							agent,
+							...(callerSays && Object.keys(callerSays).length ? { caller_says: callerSays } : {}),
+						},
+						instructions: NEEDS_INSTRUCTIONS,
+						questions: Object.fromEntries(
+							questions.map((question) => [
+								question.id,
+								{ type: "choice" as const, instructions: question.instructions, criteria: question.criteria },
+							]),
+						),
+						...(inferenceSignal ? { signal: inferenceSignal } : {}),
 					},
-					instructions: NEEDS_INSTRUCTIONS,
-					questions: Object.fromEntries(
-						questions.map((question) => [
-							question.id,
-							{ type: "choice" as const, instructions: question.instructions, criteria: question.criteria },
-						]),
-					),
-					...(inferenceSignal ? { signal: inferenceSignal } : {}),
-				}),
+					{ kind: "chat", fullId: reader!, model: readerModel! },
+				),
 			);
 			answers = Object.fromEntries(Object.entries(result.answers).map(([id, answer]) => [id, answer.choice]));
 		}

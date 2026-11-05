@@ -391,6 +391,14 @@ export class DecisionProviderError extends DecisionError {
 	}
 }
 
+function optionalText(value: DecisionErrorFieldValue | undefined): boolean {
+	return value === undefined || typeof value === "string";
+}
+
+function optionalNonnegativeNumber(value: DecisionErrorFieldValue | undefined): boolean {
+	return value === undefined || (typeof value === "number" && value >= 0);
+}
+
 type Rebuild = (
 	code: string,
 	fields: Readonly<Record<string, DecisionErrorFieldValue>>,
@@ -398,34 +406,77 @@ type Rebuild = (
 ) => DecisionError;
 
 /** Each concrete class's name, the codes it can carry, and how to rebuild it from serialized fields. */
-const CONCRETE: Readonly<Record<string, { readonly codes: ReadonlySet<string>; readonly rebuild: Rebuild }>> = {
+const CONCRETE: Readonly<
+	Record<
+		string,
+		{
+			readonly codes: ReadonlySet<string>;
+			readonly validFields: (fields: Readonly<Record<string, DecisionErrorFieldValue>>) => boolean;
+			readonly rebuild: Rebuild;
+		}
+	>
+> = {
 	DecisionConfigError: {
 		codes: new Set(["renamed-setting", "invalid-setting"]),
+		validFields: (fields) =>
+			typeof fields.source === "string" &&
+			Object.hasOwn(CONFIG_PLACES, fields.source) &&
+			typeof fields.field === "string" &&
+			(fields.scope === undefined || fields.scope === "global" || fields.scope === "project"),
 		rebuild: (code, fields, options) =>
 			new DecisionConfigError({ ...(fields as never as DecisionConfigErrorFields), code: code as never }, options),
 	},
 	DecisionRequestError: {
 		codes: new Set(["invalid-request"]),
+		validFields: (fields) =>
+			typeof fields.field === "string" &&
+			typeof fields.reason === "string" &&
+			Object.hasOwn(REQUEST_HINTS, fields.reason),
 		rebuild: (_code, fields, options) =>
 			new DecisionRequestError(fields as never as DecisionRequestErrorFields, options),
 	},
 	DecisionModelUnavailableError: {
 		codes: new Set(["model-unavailable"]),
+		validFields: (fields) =>
+			typeof fields.reason === "string" &&
+			Object.hasOwn(UNAVAILABLE_HINTS, fields.reason) &&
+			optionalText(fields.model),
 		rebuild: (_code, fields, options) =>
 			new DecisionModelUnavailableError(fields as never as DecisionModelUnavailableErrorFields, options),
 	},
 	DecisionTimeoutError: {
 		codes: new Set(["timeout"]),
+		validFields: (fields) =>
+			typeof fields.timeoutMs === "number" &&
+			fields.timeoutMs > 0 &&
+			typeof fields.elapsedMs === "number" &&
+			fields.elapsedMs >= 0 &&
+			typeof fields.phase === "string" &&
+			Object.hasOwn(PHASE_SUBJECTS, fields.phase) &&
+			optionalText(fields.attempts),
 		rebuild: (_code, fields, options) =>
 			new DecisionTimeoutError(fields as never as DecisionTimeoutErrorFields, options),
 	},
 	DecisionOutputError: {
 		codes: new Set(["invalid-output"]),
+		validFields: (fields) => typeof fields.model === "string" && optionalText(fields.detail),
 		rebuild: (_code, fields, options) =>
 			new DecisionOutputError(fields as never as DecisionOutputErrorFields, options),
 	},
 	DecisionProviderError: {
 		codes: new Set(["provider-failure"]),
+		validFields: (fields) =>
+			optionalText(fields.model) &&
+			optionalText(fields.detail) &&
+			(fields.providerStatus === undefined ||
+				(typeof fields.providerStatus === "number" &&
+					Number.isInteger(fields.providerStatus) &&
+					fields.providerStatus >= 100 &&
+					fields.providerStatus <= 599)) &&
+			(fields.providerCode === undefined ||
+				fields.providerCode === "rate_limit_exceeded" ||
+				fields.providerCode === "insufficient_quota") &&
+			optionalNonnegativeNumber(fields.retryAfterMs),
 		rebuild: (_code, fields, options) =>
 			new DecisionProviderError(fields as never as DecisionProviderErrorFields, options),
 	},
@@ -545,7 +596,18 @@ function parseSerializedDecisionErrorAt(value: unknown, depth: number): Serializ
 		typeof hint !== "string" ||
 		typeof retryable !== "boolean" ||
 		!isRecord(fields) ||
-		!Object.values(fields).every((field) => ["string", "number", "boolean"].includes(typeof field))
+		!Object.values(fields).every(
+			(field) =>
+				typeof field === "string" ||
+				typeof field === "boolean" ||
+				(typeof field === "number" && Number.isFinite(field)),
+		)
+	)
+		return undefined;
+	const member = concrete(name);
+	if (
+		member &&
+		(!member.codes.has(code) || !member.validFields(fields as Readonly<Record<string, DecisionErrorFieldValue>>))
 	)
 		return undefined;
 	const parsedCause = cause === undefined ? undefined : parseSerializedCause(cause, depth + 1);

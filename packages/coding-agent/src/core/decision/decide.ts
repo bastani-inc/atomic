@@ -1,10 +1,20 @@
 import { type ClassifierAnswer, containsKnownEnvCredential } from "@bastani/pi-ai";
 import { type TSchema, Type } from "typebox";
+import { raceWithAbortSignal } from "../../utils/abort.js";
 import { type DecisionRunResult, decisionFailure, runDecision } from "../structured-output/index.js";
 import { resolveDecisionModel } from "../structured-output/resolver.js";
-import type { DecisionModelSelectionOptions, StructuredDecisionQuestion } from "../structured-output/types.js";
+import type {
+	DecisionModelSelectionOptions,
+	StructuredDecisionQuestion,
+	StructuredOutputModel,
+} from "../structured-output/types.js";
 import type { JsonValue } from "../tools/structured-output.ts";
-import { DecisionModelUnavailableError, DecisionRequestError, type DecisionRequestErrorReason } from "./errors.js";
+import {
+	DecisionModelUnavailableError,
+	DecisionProviderError,
+	DecisionRequestError,
+	type DecisionRequestErrorReason,
+} from "./errors.js";
 import type {
 	DecisionAnswers,
 	DecisionQuestion,
@@ -202,20 +212,57 @@ export async function decide<const Q extends DecisionQuestions>(
 ): Promise<DecisionResult<Q>> {
 	request.signal?.throwIfAborted();
 	validateRequest(request);
+	const settings = decisionSettings(request);
+	const model = resolveDecisionModel({
+		settings,
+		modelRegistry: request.modelRegistry,
+		currentModel: request.currentModel,
+	});
+	return decideOn(request, settings, model);
+}
+
+export async function decideWithModel<const Q extends DecisionQuestions>(
+	request: Omit<DecisionRequest<Q>, "model">,
+	model: StructuredOutputModel,
+): Promise<DecisionResult<Q>> {
+	request.signal?.throwIfAborted();
+	validateRequest(request);
+	return decideOn(request, decisionSettings(request), model);
+}
+
+function decisionSettings(request: Omit<DecisionRequest, "model"> & { readonly model?: string }) {
 	const source = request.settings;
 	const settings: DecisionModelSelectionOptions["settings"] = {
 		getDecisionModel: () => request.model ?? source.getDecisionModel(),
 		getRetrySettings: source.getRetrySettings?.bind(source),
 		getHttpIdleTimeoutMs: source.getHttpIdleTimeoutMs?.bind(source),
 	};
-	const model = resolveDecisionModel({
-		settings,
-		modelRegistry: request.modelRegistry,
-		currentModel: request.currentModel,
-	});
+	return settings;
+}
+
+async function decideOn<const Q extends DecisionQuestions>(
+	request: Omit<DecisionRequest<Q>, "model">,
+	settings: DecisionModelSelectionOptions["settings"],
+	model: StructuredOutputModel,
+): Promise<DecisionResult<Q>> {
 	if (request.requireProbabilities === true && model.kind !== "classifier")
 		throw new DecisionModelUnavailableError({ reason: "no-probabilities", model: model.fullId });
 	const questions = request.questions;
+	const registry = request.modelRegistry;
+	const screen = registry.containsConfiguredCredential;
+	let screeningFailure: { readonly error: unknown } | undefined;
+	const prepare = screen
+		? async (signal: AbortSignal): Promise<void> => {
+				let found: boolean;
+				try {
+					found = await raceWithAbortSignal(screen.call(registry, JSON.stringify(request.state)), signal);
+				} catch (error) {
+					if (!signal.aborted) screeningFailure = { error };
+					throw error;
+				}
+				if (found) refuse("state", "credential-in-state");
+			}
+		: undefined;
 	try {
 		const run = await runDecision<TSchema>(
 			{
@@ -236,7 +283,7 @@ export async function decide<const Q extends DecisionQuestions>(
 				retry: request.retry,
 			},
 			undefined,
-			{ model, chatFallback: request.requireProbabilities !== true },
+			{ model, chatFallback: request.requireProbabilities !== true, ...(prepare ? { prepare } : {}) },
 		);
 		const typed = run as DecisionRunResult<Record<string, JsonValue>> & { readonly source: DecisionSource };
 		return {
@@ -248,6 +295,11 @@ export async function decide<const Q extends DecisionQuestions>(
 			...(typed.fallback ? { fallback: { ...typed.fallback } } : {}),
 		};
 	} catch (error) {
+		if (screeningFailure !== undefined && !request.signal?.aborted)
+			throw new DecisionProviderError(
+				{ detail: "configured-credential screening failed before any model was asked" },
+				{ cause: screeningFailure.error },
+			);
 		throw decisionFailure(error, request.signal, model.fullId);
 	}
 }

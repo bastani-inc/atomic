@@ -90,7 +90,7 @@ export interface DecisionRequest<Q extends DecisionQuestions = DecisionQuestions
 	readonly settings: DecisionModelSelectionOptions["settings"];
 	readonly modelRegistry: DecisionModelSelectionOptions["modelRegistry"] &
 		Pick<import("../model-registry.ts").ModelRegistry, "streamSimple"> &
-		Partial<Pick<import("../model-registry.ts").ModelRegistry, "getProviderAuth">>;
+		Partial<Pick<import("../model-registry.ts").ModelRegistry, "getProviderAuth" | "containsConfiguredCredential">>;
 	/** The current chat model: the decision model when `decisionModel` is empty or `auto`, and the chat fallback. */
 	readonly currentModel?: Model<Api>;
 	readonly retry?: RetryPolicy;

@@ -434,18 +434,22 @@ async function generateWithinDeadline<T extends TSchema>(
 	const decisionModel = settings
 		? resolveDecisionModel({ settings, modelRegistry: request.modelRegistry, currentModel: current })
 		: undefined;
-	const ids = [
-		request.model ?? decisionModel?.fullId ?? (current ? `${current.provider}/${current.id}` : ""),
-		...(request.fallbackModels ?? []),
-		...(current ? [`${current.provider}/${current.id}`] : []),
-	];
-	if (!ids[0]) throw new Error("Structured output requires model or currentModel.");
-	const resolutions = [...new Set(ids)].map(
-		(id): CandidateResolution =>
-			decisionModel && id === decisionModel.fullId
-				? { candidate: decisionModel }
-				: resolveCandidateOutcome(id, request),
-	);
+	const currentId = current ? `${current.provider}/${current.id}` : "";
+	const firstId = request.model ?? decisionModel?.fullId ?? currentId;
+	if (!firstId) throw new Error("Structured output requires model or currentModel.");
+	const seen = new Set<string>();
+	const resolutions: CandidateResolution[] = [];
+	for (const resolution of [
+		decisionModel ? { candidate: decisionModel } : resolveCandidateOutcome(firstId, request),
+		...(request.fallbackModels ?? []).map((id) => resolveCandidateOutcome(id, request)),
+		...(currentId ? [resolveCandidateOutcome(currentId, request)] : []),
+	]) {
+		const key =
+			"candidate" in resolution ? `${resolution.candidate.kind}:${resolution.candidate.fullId}` : resolution.id;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		resolutions.push(resolution);
+	}
 	const resolutionFailures = resolutions.filter((resolution) => "failure" in resolution);
 	if (resolutionFailures.length === resolutions.length) throw resolutionFailures[0].failure;
 	if (!decisionModel) return inferAcrossCandidates(snapshot, resolutions);
@@ -722,6 +726,7 @@ export interface DecisionRunOptions {
 	readonly model?: StructuredOutputModel;
 	/** `false`: a classifier failure is final, and no chat model answers instead. */
 	readonly chatFallback?: boolean;
+	readonly prepare?: (signal: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -749,8 +754,10 @@ export async function runDecision<T extends TSchema>(
 			: undefined;
 	const retry = inference.retry ?? settings.getRetrySettings?.() ?? DEFAULT_DECISION_RETRY;
 	const deadlineMs = resolveDecisionDeadlineMs(timeoutMs, settings.getHttpIdleTimeoutMs?.());
-	const result = await withinDecisionDeadline(request.signal, deadlineMs, ({ signal, trace }) =>
-		inferDecision({ ...inference, model, retry, signal, trace }, 3, validateDecision, fallback),
-	);
+	const prepare = options.prepare;
+	const result = await withinDecisionDeadline(request.signal, deadlineMs, ({ signal, trace }) => {
+		const infer = () => inferDecision({ ...inference, model, retry, signal, trace }, 3, validateDecision, fallback);
+		return prepare ? prepare(signal).then(infer) : infer();
+	});
 	return { ...result, source: model.kind === "classifier" && result.fallback === undefined ? "classifier" : "chat" };
 }

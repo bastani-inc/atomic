@@ -31,6 +31,7 @@ import {
 	decisionClassifier,
 	decisionMessage,
 	decisionRequest,
+	decisionSchema,
 	messageStream,
 	registeredDecisionRuntime,
 	routeModel,
@@ -610,5 +611,49 @@ test("structured output that fails on the decision model falls back to the curre
 		["decision-test/classifier", "decision-test/chat"],
 	);
 	assert.equal(classify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 1);
+});
+
+test("structured output on a decision model registered as both classifier and current chat model keeps the chat fallback (#4358)", async () => {
+	const twin = { ...decisionClassifier, id: decisionChatModel.id, name: "Classifier twin" };
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	const failingClassify = vi.fn(async () => ({ ...CLASSIFIED_REVIEW, answers: {} }));
+	const afterFailure = await structuredOutputOnDecisionModel("decision-test/chat", {
+		streamSimple: dispatch,
+		getClassifierModel: () => twin,
+		classify: failingClassify,
+	});
+	assert.equal(afterFailure.model, "decision-test/chat");
+	assert.deepEqual(
+		afterFailure.modelAttempts?.map((attempt) => attempt.model),
+		["decision-test/chat", "decision-test/chat"],
+	);
+	assert.equal(failingClassify.mock.calls.length, 1);
+	assert.equal(dispatch.mock.calls.length, 1);
+
+	const freeFormDispatch = vi.fn(() => messageStream(decisionMessage({ route: "review", limit: 1 })));
+	const unusedClassify = vi.fn(async () => CLASSIFIED_REVIEW);
+	const freeForm = await structuredOutputOnDecisionModel(
+		"decision-test/chat",
+		{ streamSimple: freeFormDispatch, getClassifierModel: () => twin, classify: unusedClassify },
+		{ schema: decisionSchema },
+	);
+	assert.equal(freeForm.model, "decision-test/chat");
+	assert.equal(freeForm.modelAttempts?.[0]?.skipped, true);
+	assert.equal(unusedClassify.mock.calls.length, 0);
+	assert.equal(freeFormDispatch.mock.calls.length, 1);
+});
+
+test("structured output with its own model ignores a different configured decision model (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	const classify = vi.fn(async () => CLASSIFIED_REVIEW);
+	const result = await structuredOutputOnDecisionModel(
+		"decision-test/classifier",
+		{ streamSimple: dispatch, getClassifierModel: () => decisionClassifier, classify },
+		{ model: "decision-test/chat" },
+	);
+	assert.equal(result.model, "decision-test/chat");
+	assert.equal(result.modelAttempts, undefined);
+	assert.equal(classify.mock.calls.length, 0);
 	assert.equal(dispatch.mock.calls.length, 1);
 });

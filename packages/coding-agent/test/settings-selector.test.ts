@@ -6,8 +6,8 @@ import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
 import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
-import { isDecisionModelUnavailableError } from "../src/core/decision/errors.ts";
-import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.ts";
+import { isDecisionModelUnavailableError } from "../src/core/decision/errors.js";
+import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
@@ -596,30 +596,31 @@ test("/settings shows Auto-advance after steer with its scope and saves through 
 	const defaults = buildSettingsItems(settingsConfig({}), callbacks).find(
 		({ id }) => id === "auto-advance-after-steer",
 	);
-	expect(defaults?.label).toBe("Auto-advance after steer");
-	expect(defaults?.currentValue).toBe("true");
-	expect(defaults?.values).toEqual(["true", "false"]);
-	expect(defaults?.description).toContain("Saves to global settings");
+	assert.equal(defaults?.label, "Auto-advance after steer");
+	assert.equal(defaults?.currentValue, "true");
+	assert.deepEqual(defaults?.values, ["true", "false"]);
+	assert.ok(defaults?.description?.includes("Saves to global settings"));
 	const off = buildSettingsItems(
 		settingsConfig({ autoAdvanceAfterSteer: false, autoAdvanceAfterSteerScope: "project" }),
 		callbacks,
 	).find(({ id }) => id === "auto-advance-after-steer");
-	expect(off?.currentValue).toBe("false");
-	expect(off?.description).toContain("Saves to project settings");
+	assert.equal(off?.currentValue, "false");
+	assert.ok(off?.description?.includes("Saves to project settings"));
 	const change = createSettingsChangeHandler(callbacks);
 	change("auto-advance-after-steer", "false");
 	change("auto-advance-after-steer", "true");
-	expect(onAutoAdvanceAfterSteerChange.mock.calls).toEqual([[false], [true]]);
-	expect(() => createSettingsChangeHandler({} as SettingsCallbacks)("auto-advance-after-steer", "true")).not.toThrow();
+	assert.deepEqual(onAutoAdvanceAfterSteerChange.mock.calls, [[false], [true]]);
+	assert.doesNotThrow(() => createSettingsChangeHandler({} as SettingsCallbacks)("auto-advance-after-steer", "true"));
 });
 
 test("/settings shows the decision model, its scope and what Automatic means (#4358)", () => {
 	const item = (config: SettingsConfig) =>
 		buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
-	expect(item(settingsConfig({ decisionModel: "" }))?.currentValue).toBe("Automatic");
-	expect(item(settingsConfig({ decisionModel: "auto" }))?.currentValue).toBe("Automatic");
-	expect(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue).toBe("judge/custom");
-	expect(item(settingsConfig({}))?.description).toBe(
+	assert.equal(item(settingsConfig({ decisionModel: "" }))?.currentValue, "Automatic");
+	assert.equal(item(settingsConfig({ decisionModel: "auto" }))?.currentValue, "Automatic");
+	assert.equal(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue, "judge/custom");
+	assert.equal(
+		item(settingsConfig({}))?.description,
 		'Saves to global settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model',
 	);
 	const projectConfig = settingsConfig({
@@ -628,51 +629,47 @@ test("/settings shows the decision model, its scope and what Automatic means (#4
 		availableDefaultModels: [],
 	});
 	const projectItem = item(projectConfig);
-	expect(projectItem?.description).toContain("Saves to project settings;");
+	assert.ok(projectItem?.description?.includes("Saves to project settings;"));
 	const done = vi.fn();
 	const submenu = projectItem!.submenu!(projectItem!.currentValue, done) as Container;
 	const shown = render(submenu);
-	expect(shown).toContain("Decision model");
-	expect(shown).toContain("Saves to project settings. Choose a provider permitted to receive decision context.");
-	expect(shown).toContain("Automatic saves an empty decisionModel.");
-	expect(shown).toContain("→ ✓ Automatic");
+	assert.ok(shown.includes("Decision model"));
+	assert.ok(shown.includes("Saves to project settings. Choose a provider permitted to receive decision context."));
+	assert.ok(shown.includes("Automatic saves an empty decisionModel."));
+	assert.ok(shown.includes("→ ✓ Automatic"));
 	submenu.handleInput?.("\r");
-	expect(done).toHaveBeenCalledWith("Automatic");
-	expect(projectConfig.decisionModel).toBe("");
-	expect(item(settingsConfig({}))?.submenu).toBeTypeOf("function");
+	assert.ok(done.mock.calls.some((args: unknown[]) => args.length === 1 && args[0] === "Automatic"));
+	assert.equal(projectConfig.decisionModel, "");
+	assert.equal(typeof item(settingsConfig({}))?.submenu, "function");
 	const noScope = buildSettingsItems(settingsConfig({ decisionModel: "" }), {} as SettingsCallbacks).find(
 		({ id }) => id === "auto-advance-after-steer",
 	);
-	expect(noScope?.description).toContain("Saves to global settings;");
+	assert.ok(noScope?.description?.includes("Saves to global settings;"));
 });
 
 test("the decision model accessors refuse malformed values with a typed config error naming their source", () => {
 	const settings = SettingsManager.inMemory({ decisionModel: " padded" as string });
-	expect(() => settings.getDecisionModel()).toThrow(
-		expect.objectContaining({
-			name: "DecisionConfigError",
-			code: "invalid-setting",
-			source: "settings",
-			field: "decisionModel",
-		}),
-	);
-	expect(() => SettingsManager.inMemory().setDecisionModel(" x")).toThrow(
-		expect.objectContaining({
-			name: "DecisionConfigError",
-			code: "invalid-setting",
-			source: "sdk",
-			field: "decisionModel",
-		}),
-	);
+	assert.throws(() => settings.getDecisionModel(), {
+		name: "DecisionConfigError",
+		code: "invalid-setting",
+		source: "settings",
+		field: "decisionModel",
+	});
+	assert.throws(() => SettingsManager.inMemory().setDecisionModel(" x"), {
+		name: "DecisionConfigError",
+		code: "invalid-setting",
+		source: "sdk",
+		field: "decisionModel",
+	});
 });
 
 test("an unset decision model opens on Automatic and the submenu names the global scope", () => {
 	const config = settingsConfig({ decisionModel: undefined, availableDefaultModels: [] });
 	const item = buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
 	const shown = render(item!.submenu!(item!.currentValue, vi.fn()) as Container);
-	expect(shown).toContain("→ ✓ Automatic");
-	expect(shown).not.toContain("not currently available");
-	expect(shown).toContain("Saves to global settings. Choose a provider permitted to receive decision context.");
+	assert.ok(shown.includes("→ ✓ Automatic"));
+	assert.ok(!shown.includes("not currently available"));
+	assert.ok(shown.includes("Saves to global settings. Choose a provider permitted to receive decision context."));
 });
 
 test("an extension reads the session's decision model, and a host without one says so", () => {
@@ -682,12 +679,12 @@ test("an extension reads the session's decision model, and a host without one sa
 			getSessionSignal: () => new AbortController().signal,
 			...(getDecisionModel ? { getDecisionModel } : {}),
 		}) as unknown as ExtensionContextSource;
-	expect(createExtensionContext(source(() => "typesafe/jev-latest")).getDecisionModel()).toBe("typesafe/jev-latest");
+	assert.equal(createExtensionContext(source(() => "typesafe/jev-latest")).getDecisionModel(), "typesafe/jev-latest");
 	let refused: unknown;
 	try {
 		createExtensionContext(source()).getDecisionModel();
 	} catch (error) {
 		refused = error;
 	}
-	expect(isDecisionModelUnavailableError(refused) && refused.reason).toBe("host-unsupported");
+	assert.equal(isDecisionModelUnavailableError(refused) && refused.reason, "host-unsupported");
 });

@@ -305,7 +305,7 @@ test("a serialized error received across a process boundary is validated before 
 		{ ...valid, cause: { ...valid, code: 7 } },
 	])
 		assert.equal(parseSerializedDecisionError(malformed), undefined, JSON.stringify(malformed));
-	const primitiveFields = { ...valid, fields: { field: "state", count: 2, flag: true } };
+	const primitiveFields = { ...valid, fields: { ...valid.fields, count: 2, flag: true } };
 	assert.deepEqual(parseSerializedDecisionError(primitiveFields), primitiveFields);
 	let deep: object = valid;
 	for (let depth = 0; depth < 8; depth++) deep = { ...valid, cause: deep };
@@ -335,4 +335,108 @@ test("a host without decision support is a model-unavailable error that keeps it
 	assert.ok(isDecisionModelUnavailableError(restored));
 	assert.equal(restored.reason, "host-unsupported");
 	assert.equal(restored.hint, error.hint);
+});
+
+test("malformed concrete decision errors are rejected before host rehydration (#4358)", () => {
+	const wire = serializeDecisionError(
+		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }),
+	);
+	assert.equal(parseSerializedDecisionError({ ...wire, fields: {} }), undefined);
+	for (const error of Object.values(ERRORS)) {
+		const serialized = serializeDecisionError(error);
+		assert.deepEqual(parseSerializedDecisionError(serialized), serialized);
+		assert.equal(parseSerializedDecisionError({ ...serialized, code: "future-code" }), undefined);
+	}
+});
+
+test("concrete error fields reject invalid enum values, types and timing data (#4358)", () => {
+	const cases: ReadonlyArray<readonly [DecisionError, Readonly<Record<string, string | number | boolean>>]> = [
+		[ERRORS.config, { source: "other" }],
+		[ERRORS.config, { source: "constructor" }],
+		[ERRORS.config, { source: true }],
+		[ERRORS.config, { field: 1 }],
+		[ERRORS.config, { scope: "workspace" }],
+		[ERRORS.config, { scope: false }],
+		[ERRORS.request, { field: false }],
+		[ERRORS.request, { reason: "constructor" }],
+		[ERRORS.request, { reason: false }],
+		[ERRORS.unavailable, { reason: "constructor" }],
+		[ERRORS.unavailable, { reason: false }],
+		[ERRORS.unavailable, { model: 1 }],
+		[ERRORS.timeout, { timeoutMs: "5" }],
+		[ERRORS.timeout, { timeoutMs: 0 }],
+		[ERRORS.timeout, { timeoutMs: -1 }],
+		[ERRORS.timeout, { elapsedMs: "6" }],
+		[ERRORS.timeout, { elapsedMs: -1 }],
+		[ERRORS.timeout, { phase: "constructor" }],
+		[ERRORS.timeout, { phase: false }],
+		[ERRORS.timeout, { attempts: false }],
+		[ERRORS.output, { model: false }],
+		[ERRORS.output, { detail: false }],
+		[ERRORS.provider, { model: false }],
+		[ERRORS.provider, { detail: false }],
+		[ERRORS.provider, { providerStatus: false }],
+		[ERRORS.provider, { providerStatus: 99 }],
+		[ERRORS.provider, { providerStatus: 600 }],
+		[ERRORS.provider, { providerStatus: 200.5 }],
+		[ERRORS.provider, { providerCode: "other" }],
+		[ERRORS.provider, { providerCode: true }],
+		[ERRORS.provider, { retryAfterMs: false }],
+		[ERRORS.provider, { retryAfterMs: -1 }],
+		[ERRORS.provider, { retryAfterMs: Number.NaN }],
+		[ERRORS.provider, { retryAfterMs: Number.POSITIVE_INFINITY }],
+	];
+	for (const [error, patch] of cases) {
+		const serialized = serializeDecisionError(error);
+		assert.equal(
+			parseSerializedDecisionError({ ...serialized, fields: { ...serialized.fields, ...patch } }),
+			undefined,
+			`${error.name} ${Object.keys(patch).join(",")}`,
+		);
+	}
+	for (const error of [ERRORS.config, ERRORS.request, ERRORS.unavailable, ERRORS.timeout, ERRORS.output]) {
+		const serialized = serializeDecisionError(error);
+		for (const field of Object.keys(serialized.fields)) {
+			const fields = { ...serialized.fields };
+			delete fields[field];
+			assert.equal(parseSerializedDecisionError({ ...serialized, fields }), undefined, `${error.name} ${field}`);
+		}
+	}
+	assert.equal(
+		parseSerializedDecisionError({
+			...serializeDecisionError(ERRORS.provider),
+			cause: { ...serializeDecisionError(ERRORS.config), fields: {} },
+		}),
+		undefined,
+	);
+});
+
+test("valid concrete error variants and future names retain their transport fields (#4358)", () => {
+	for (const error of [
+		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel", scope: "global" }),
+		new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel", scope: "project" }),
+		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 0, phase: "classifier", attempts: "one attempt" }),
+		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "chat" }),
+		new DecisionOutputError({ model: "a/b", detail: "invalid choice" }),
+		new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "a/b" }),
+		new DecisionProviderError({
+			model: "a/b",
+			providerStatus: 100,
+			providerCode: "rate_limit_exceeded",
+			retryAfterMs: 0,
+			detail: "limited",
+		}),
+		new DecisionProviderError({ providerStatus: 599, providerCode: "insufficient_quota", retryAfterMs: 1 }),
+	]) {
+		const wire = serializeDecisionError(error);
+		assert.deepEqual(parseSerializedDecisionError(wire), wire);
+		assert.deepEqual(rehydrateDecisionError(parseSerializedDecisionError(wire)!).fields(), error.fields());
+	}
+	const future = {
+		...serializeDecisionError(ERRORS.provider),
+		name: "FutureDecisionError",
+		code: "future-code",
+		fields: { revision: 1 },
+	};
+	assert.deepEqual(parseSerializedDecisionError(future), future);
 });

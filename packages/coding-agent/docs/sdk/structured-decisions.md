@@ -48,11 +48,13 @@ if (approve >= 0.9 && (result.answers.complete.probability ?? 0) >= 0.8) {
 
 Keep code in control: compare an option's probability with a threshold per action, give actions that cannot be undone a higher bar, and route anything below the thresholds to a person or a slower step. A Choice always picks an option, even when none fits, so pair it with a yes/no question that checks it applies. `decide()` never caches; cache results in your code when you need to. Extensions read the setting with `ctx.getDecisionModel()`; workflows can call `decide` from `@bastani/atomic/workflows`.
 
-`deadline` is a wall-clock limit in milliseconds for the whole decision, every request, retry, repair and fallback included; it defaults to [`httpIdleTimeoutMs`](/settings#http). `signal` cancels it, and the call then rejects with the signal's reason. `model` names an exact model that decides instead of `decisionModel`. State that contains an environment credential or key-shaped text is refused before any request.
+`deadline` is a wall-clock limit in milliseconds for the whole decision, including configured-credential screening, every request, retry, repair and fallback; it defaults to [`httpIdleTimeoutMs`](/settings#http). `signal` cancels it, and the call then rejects with the signal's reason. `model` names an exact model that decides instead of `decisionModel`. State that contains an environment credential, key-shaped text, or a saved credential identified by the model registry is refused before any model request.
 
 ### Errors
 
 Every failure rejects with a `DecisionError`; branch on the class or `code`, never on the message. Each has a `hint` and `retryable`, and keeps the lower-level failure as `cause`. `isDecisionError(error)` and the per-class guards also recognize an error that crossed a process boundary; `serializeDecisionError()` and `rehydrateDecisionError()` carry one across. `findDecisionError(error)` and `isRetryableDecisionError(error)` search a cause chain.
+
+For untrusted error data received from another process, call `parseSerializedDecisionError()` before rehydrating it. It returns `undefined` when a known error's code or fields are malformed.
 
 | Class | Code | When | Fields | What to do |
 | --- | --- | --- | --- | --- |

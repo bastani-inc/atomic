@@ -1,7 +1,6 @@
 import {
 	type CreateAgentSessionOptions,
 	DecisionModelUnavailableError,
-	DecisionRequestError,
 	decide,
 	type ModelRoutingSettings,
 	routeExecutionModel,
@@ -90,9 +89,6 @@ export function workflowModelCatalogFromContext(
 						if (!current.getDecisionModel || !registry?.getAll || !registry.streamSimple) {
 							throw new DecisionModelUnavailableError({ reason: "host-unsupported" });
 						}
-						// decide() refuses environment credentials and key-shaped text; the host also knows its configured ones.
-						if ((await registry.containsConfiguredCredential?.(JSON.stringify(request.state))) === true)
-							throw new DecisionRequestError({ field: "state", reason: "credential-in-state" });
 						return decide({
 							...request,
 							settings: {
@@ -104,6 +100,7 @@ export function workflowModelCatalogFromContext(
 								streamSimple: (...args) => registry.streamSimple!(...args),
 								getClassifierModel: registry.getClassifierModel?.bind(registry),
 								classify: registry.classify?.bind(registry),
+								containsConfiguredCredential: registry.containsConfiguredCredential?.bind(registry),
 							},
 							currentModel: current.model as NonNullable<CreateAgentSessionOptions["model"]> | undefined,
 						});

@@ -309,6 +309,94 @@ test("cancellation rejects with the caller's reason, never a decision error", as
 	await assert.rejects(decide({ ...decision, signal: aborted.signal }), (error: unknown) => error === reason);
 });
 
+type ScreeningRegistry = DecisionRequest["modelRegistry"];
+
+function screening(registry: ScreeningRegistry, screen: (text: string) => Promise<boolean>): ScreeningRegistry {
+	return Object.assign(Object.create(registry) as ScreeningRegistry, { containsConfiguredCredential: screen });
+}
+
+async function pendingScreen(overrides: Partial<DecisionRequest<typeof READINESS_QUESTIONS>> = {}) {
+	const transport = vi.fn<typeof fetch>();
+	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
+	vi.stubGlobal("fetch", transport);
+	const { request: decision, chat } = await request({ questions: READINESS_QUESTIONS, ...overrides });
+	const screen = vi.fn((_text: string) => new Promise<boolean>(() => {}));
+	return {
+		transport,
+		chat,
+		screen,
+		decision: { ...decision, modelRegistry: screening(decision.modelRegistry, screen) },
+	};
+}
+
+test("screening state for configured credentials counts against the deadline, before any model is asked (#4358)", async () => {
+	vi.useFakeTimers();
+	const { transport, chat, screen, decision } = await pendingScreen({ deadline: 20 });
+	const outcome = decide(decision).then(
+		() => undefined,
+		(error: unknown) => error,
+	);
+	await vi.advanceTimersByTimeAsync(20);
+	const error = await outcome;
+	assert.ok(isDecisionTimeoutError(error), String(error));
+	assert.equal(error.timeoutMs, 20);
+	assert.equal(error.phase, "resolve");
+	assert.deepEqual(screen.mock.calls, [[JSON.stringify(STATE)]]);
+	assert.equal(transport.mock.calls.length, 0);
+	assert.equal(chat.mock.calls.length, 0);
+});
+
+test("cancelling while configured credentials are screened rejects with the caller's reason", async () => {
+	const controller = new AbortController();
+	const reason = new Error("paused");
+	const { transport, chat, screen, decision } = await pendingScreen({ signal: controller.signal });
+	const outcome = decide(decision);
+	await vi.waitFor(() => assert.equal(screen.mock.calls.length, 1));
+	controller.abort(reason);
+	await assert.rejects(outcome, (error: unknown) => error === reason);
+	assert.equal(transport.mock.calls.length, 0);
+	assert.equal(chat.mock.calls.length, 0);
+});
+
+test("state without configured credentials is screened once before the model answers (#4358)", async () => {
+	const { requests } = recordedClassifier(fixture("typesafe-readiness-advance.json"));
+	const { request: decision, chat } = await request({ questions: READINESS_QUESTIONS });
+	const screen = vi.fn(async (_text: string) => false);
+	const result = await decide({ ...decision, modelRegistry: screening(decision.modelRegistry, screen) });
+	assert.equal(result.source, "classifier");
+	assert.equal(result.answers.next_action.choice, "advance");
+	assert.deepEqual(screen.mock.calls, [[JSON.stringify(STATE)]]);
+	assert.equal(requests.length, 1);
+	assert.equal(chat.mock.calls.length, 0);
+});
+
+test("state with a configured credential, or a failed screen, is refused before any model is asked", async () => {
+	const { transport, chat, decision } = await pendingScreen();
+	await assert.rejects(
+		decide({ ...decision, modelRegistry: screening(decision.modelRegistry, async () => true) }),
+		(error: unknown) =>
+			isDecisionRequestError(error) && error.field === "state" && error.reason === "credential-in-state",
+	);
+	const failure = new Error("credential store unavailable");
+	await assert.rejects(
+		decide({
+			...decision,
+			modelRegistry: screening(decision.modelRegistry, async () => {
+				throw failure;
+			}),
+		}),
+		(error: unknown) => {
+			assert.ok(isDecisionProviderError(error), String(error));
+			assert.equal(error.cause, failure);
+			assert.equal(error.detail, "configured-credential screening failed before any model was asked");
+			assert.doesNotMatch(error.message, /credential store unavailable/);
+			return true;
+		},
+	);
+	assert.equal(transport.mock.calls.length, 0);
+	assert.equal(chat.mock.calls.length, 0);
+});
+
 const cyclic: Record<string, unknown> = { a: 1 };
 cyclic.self = cyclic;
 const asQuestions = (value: unknown) => value as DecisionQuestions;

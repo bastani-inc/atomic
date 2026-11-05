@@ -98,6 +98,7 @@
 - The grep tool preserves skipped matches as leading context when `offset` pages past them and avoids repeatedly scanning large leading-context windows. The plan-mode example only clears a completed plan after an affirmative final visible reply, not a negated summary or a claim made only in hidden thinking.
 - Settings files are written to a temporary file and renamed into place, keeping their mode and symbolic links, so another Atomic process never reads a half-written `settings.json`, and a killed or out-of-space write leaves the previous file intact. A settings file that cannot be replaced, such as a single file mounted into a container, is still written in place ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - An invalid `--storage`, `ATOMIC_STORAGE` or `ATOMIC_PROFILE` selection, or a missing libSQL adapter for the CI profile, now stops startup with one `Error:` line and exit code 1 instead of a stack trace ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
+- llama.cpp chat models remain available for automatic task analysis and structured-output fallbacks when a classifier shares the same model ID ([#4358](https://github.com/bastani-inc/atomic/issues/4358)).
 
 ## [0.9.71] - 2026-11-03
 

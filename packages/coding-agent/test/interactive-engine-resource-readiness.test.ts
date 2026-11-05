@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import { InteractiveEngineMonitor } from "../src/modes/interactive-engine/engine-monitor.js";
@@ -460,7 +461,7 @@ describe("interactive engine resource readiness", () => {
 		try {
 			probe.emitResourceFailure("workflow load failed");
 			await vi.waitFor(() => expect(diagnostics).toHaveBeenCalledTimes(1));
-			expect(diagnostics.mock.calls[0]![0].error).toBeInstanceOf(InteractiveEngineResourceReadinessError);
+			assert.ok(diagnostics.mock.calls[0]![0].error instanceof InteractiveEngineResourceReadinessError);
 
 			await expect(probe.runtime.session.prompt("hello")).rejects.toBeInstanceOf(
 				InteractiveEngineResourceReadinessError,

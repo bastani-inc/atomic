@@ -1,6 +1,7 @@
-import { expect, test } from "vitest";
-import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import "../src/modes/interactive/interactive-extension-runtime.ts";
+import assert from "node:assert/strict";
+import { test } from "vitest";
+import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import "../src/modes/interactive/interactive-extension-runtime.js";
 
 test("an extension shortcut reads the session's decision model (#4358)", () => {
 	let received: { getDecisionModel(): string } | undefined;
@@ -53,5 +54,5 @@ test("an extension shortcut reads the session's decision model (#4358)", () => {
 			]),
 	});
 	onExtensionShortcut?.("\x07");
-	expect(received?.getDecisionModel()).toBe("typesafe/jev-latest");
+	assert.equal(received?.getDecisionModel(), "typesafe/jev-latest");
 });
