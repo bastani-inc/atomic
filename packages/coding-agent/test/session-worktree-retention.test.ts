@@ -131,8 +131,7 @@ test("retention follows a restored checkout to its newest snapshot and lets the 
 	assert.equal(restore.status, "restored");
 	if (restore.status !== "restored") return;
 	const newer = await record(manager, store, restore.cwd, "newer\n", recorded);
-	assert.deepEqual(
-		(await listRetainedSessionSnapshots(store)).map((snapshot) => snapshot.id),
-		[newer.id],
-	);
+	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
+	assert.deepEqual(deleted, snapshotBlobHashes(recorded), "only the snapshot the restored checkout replaced goes");
+	assert.deepEqual([...(await store.snapshotBlobs.listBlobHashes())].sort(), snapshotBlobHashes(newer).sort());
 });

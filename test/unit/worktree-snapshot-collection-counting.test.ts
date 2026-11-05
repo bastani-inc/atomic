@@ -12,6 +12,7 @@ import {
 	checkpointEvent,
 	createSession,
 	fullScanRetainedHashes,
+	messageEntry,
 	openSharedSnapshotDatabase,
 	type SharedSnapshotDatabase,
 	snapshotEntry,
@@ -30,6 +31,15 @@ afterEach(async () => {
 	while (opened.length > 0) await opened.pop()?.close();
 	rmSync(directory, { recursive: true, force: true });
 });
+
+/**
+ * The only scans a collection may make: the schema and source rows its index check reads, and the structures it builds
+ * once per statement from the open leaves of session trees (the covering index of leaves with a snapshot behind them,
+ * the distinct anchors they give, the snapshot entries on their branches and the restores among them), none of which
+ * grows with messages.
+ */
+const SCANS_OF_INDEX_STRUCTURES =
+	/^SCAN (?!json_each|sqlite_schema|snapshot_index_sources|snapshot_session_links USING COVERING INDEX snapshot_session_links_leaves$|anchor$|branch$|walk$|checkout$|session_heads$)/u;
 
 /** Tables a collection must never read: the journal's and the sessions'. */
 const HISTORY_TABLES = /\b(wf_events|wf_runs|wf_leases|session_entries|session_sessions|session_search_texts)\b/u;
@@ -103,11 +113,11 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
 }
 
 /**
- * One check that the reference index is complete: which of the 3 referencing tables and 7 triggers exist (10 schema
+ * One check that the reference index is complete: which of the 3 referencing tables and 9 triggers exist (12 schema
  * rows) and how far each of the 3 sources is backfilled (3 rows). A collection makes one before it sweeps and one
  * inside each batch's own transaction.
  */
-const INDEX_CHECK = { statements: 2, rows: 13 } as const;
+const INDEX_CHECK = { statements: 2, rows: 15 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
@@ -149,12 +159,44 @@ describe("collection cost follows the number of snapshots, never the number of j
 		for (const statement of after.collection.statements) {
 			assert.doesNotMatch(statement.sql, HISTORY_TABLES);
 			for (const detail of await queryPlan(long.shared, statement))
-				assert.doesNotMatch(
-					detail,
-					/^SCAN (?!json_each|sqlite_schema|snapshot_index_sources)/u,
-					`${statement.sql}\n${detail}`,
-				);
+				assert.doesNotMatch(detail, SCANS_OF_INDEX_STRUCTURES, `${statement.sql}\n${detail}`);
 		}
+	});
+
+	test("a session tree with two branches and a hundredfold more messages costs a collection the same statements and rows", async () => {
+		const costs = [];
+		for (const messages of [200, 20_000]) {
+			const counted = countingDatabase(await openNodeSqliteDatabase(join(directory, `tree-${messages}.sqlite`)));
+			const shared = await openSharedSnapshotDatabase("", { database: counted.wrapped });
+			opened.push(shared);
+			const [early, left, right, orphan] = ["early", "left", "right", "orphan"].map((name) => textBlob(name));
+			await shared.journal.snapshotBlobs.putBlobs([early!, left!, right!, orphan!]);
+			const root = messageEntry("start");
+			const base = snapshotEntry("/repo", "early", syntheticSnapshot("early", [early!.hash]), root.id);
+			const leftEntry = snapshotEntry("/repo", "left", syntheticSnapshot("left", [left!.hash]), base.id);
+			const rightEntry = snapshotEntry("/repo", "right", syntheticSnapshot("right", [right!.hash]), base.id);
+			await createSession(shared.sessions, "session-1", [root, base, leftEntry, rightEntry]);
+			await shared.database.run(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+				INSERT INTO session_entries SELECT 'session-1', 4 + i, 'chat-' || i,
+					json_object('type', 'message', 'id', 'chat-' || i, 'parentId', CASE WHEN i = 1 THEN ? ELSE 'chat-' || (i - 1) END) FROM n`,
+				messages,
+				leftEntry.id,
+			);
+			await ageBlobs(shared.database, shared.journal.snapshotBlobs.table, 10_000);
+			counted.statements.length = 0;
+			counted.counts.transactions = 0;
+
+			const { deleted } = await collectSnapshotGarbage(shared.journal.snapshotBlobs);
+
+			assert.deepEqual([...deleted].sort(), [early!.hash, orphan!.hash].sort(), "only what no leaf's branch needs");
+			costs.push({
+				statements: counted.statements.length,
+				rows: counted.statements.reduce((sum, statement) => sum + statement.rows, 0),
+				transactions: counted.counts.transactions,
+			});
+		}
+		assert.deepEqual(costs[0], costs[1]);
 	});
 
 	test("collection rows grow with the number of snapshots, a batch of statements per 256 blobs it deletes", async () => {

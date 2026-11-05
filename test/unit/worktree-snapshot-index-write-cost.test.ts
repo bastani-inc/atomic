@@ -62,6 +62,7 @@ async function writers(name: string, indexed: boolean): Promise<{ shared: Shared
 		[],
 	);
 	let lastSeq = created.lastSeq;
+	let lastEntryId: string | null = null;
 	if (!indexed) await dropSnapshotIndex(shared.database);
 	return {
 		shared,
@@ -69,7 +70,10 @@ async function writers(name: string, indexed: boolean): Promise<{ shared: Shared
 		checkpoint: (snapshots) => shared.journal.append(lease, checkpointEvent(snapshots)),
 		status: () => shared.journal.append(lease, statusEvent("run", { status: "running" })),
 		entry: async (entry) => {
-			({ lastSeq } = await shared.sessions.append("session", [entry], { expectSeq: lastSeq }));
+			({ lastSeq } = await shared.sessions.append("session", [{ ...entry, parentId: lastEntryId } as SessionEntry], {
+				expectSeq: lastSeq,
+			}));
+			lastEntryId = entry.id;
 		},
 	};
 }
@@ -109,23 +113,32 @@ describe("what the snapshot reference index adds to each write, in rows, counted
 		assert.equal(await indexRowsOf(({ status }) => status()), 1);
 	});
 
-	test("a session entry that carries no snapshot adds no index row", async () => {
-		assert.equal(await indexRowsOf(({ entry }) => entry(messageEntry("hello"))), 0);
+	const firstMessage = ({ entry }: Writers) => entry(messageEntry("the entry before")).then(() => undefined);
+
+	test("the first entry of a session adds one row: its link in the session tree", async () => {
+		assert.equal(await indexRowsOf(({ entry }) => entry(messageEntry("hello"))), 1);
 	});
 
-	test("a session entry that carries a snapshot record adds its reference and a row for each blob: twelve", async () => {
+	test("a session entry that carries no snapshot adds two rows: its link and its parent's count of children", async () => {
+		assert.equal(await indexRowsOf(({ entry }) => entry(messageEntry("hello")), firstMessage), 2);
+	});
+
+	test("a session entry that carries a snapshot record adds its link, its parent's count, its reference and a row for each blob: fourteen", async () => {
 		const record = snapshotWith("session");
-		assert.equal(await indexRowsOf(({ entry }) => entry(snapshotEntry("/repo", record.id, record))), 12);
+		assert.equal(
+			await indexRowsOf(({ entry }) => entry(snapshotEntry("/repo", record.id, record)), firstMessage),
+			14,
+		);
 	});
 
-	test("a session entry that only refers to an earlier snapshot adds its reference alone", async () => {
+	test("a session entry that only refers to an earlier snapshot adds its link, its parent's count and its reference: three", async () => {
 		const record = snapshotWith("session");
 		assert.equal(
 			await indexRowsOf(
 				({ entry }) => entry(snapshotEntry("/repo", record.id)),
 				({ entry }) => entry(snapshotEntry("/repo", record.id, record)).then(() => undefined),
 			),
-			1,
+			3,
 		);
 	});
 });

@@ -40,8 +40,19 @@ export interface SnapshotIndexTables {
 	readonly runRefs: string;
 	/** `(run_id, retained, seq)`: whether the run's latest status keeps its snapshots, from the event at `seq`. */
 	readonly runState: string;
-	/** `(session_id, seq, root, snapshot_id)`: one row per `worktree_snapshot` session entry. */
+	/**
+	 * `(session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to)`: one row per `worktree_snapshot`
+	 * session entry, with the `seq` of the nearest snapshot entry before it on its branch and, for the entry written
+	 * when a snapshot was restored into a new worktree, the root it moved from and to.
+	 */
 	readonly sessionRefs: string;
+	/**
+	 * `(session_id, seq, entry_id, parent_id, anchor_seq, children, broken)`: one row per session entry, so that a
+	 * branch can be followed without reading entries: `anchor_seq` is the latest snapshot entry at or before the entry
+	 * on its branch, `children` counts its child entries (none: a leaf of the session tree), and `broken` marks an
+	 * entry whose parent the index could not follow, which makes the session keep every snapshot it records.
+	 */
+	readonly sessionLinks: string;
 	/** `(session_id, seq, snapshot_id, hash)`: the blobs of each snapshot record a session entry carries. */
 	readonly sessionRecords: string;
 	/** One row: the last collection's claim on the database clock and its outcome. */
@@ -57,6 +68,7 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		runRefs: `${p}snapshot_run_refs`,
 		runState: `${p}snapshot_run_state`,
 		sessionRefs: `${p}snapshot_session_refs`,
+		sessionLinks: `${p}snapshot_session_links`,
 		sessionRecords: `${p}snapshot_session_records`,
 		collection: `${p}snapshot_collection`,
 		sources: `${p}snapshot_index_sources`,
@@ -190,6 +202,13 @@ interface IndexSource {
 	readonly createTriggers: string;
 	/** Each statement indexes the rows with `rowid > ? AND rowid <= ?`, bound in that order. */
 	readonly backfill: readonly string[];
+	/**
+	 * When set, rows are indexed one at a time in rowid order, each statement bound to the row's rowid, instead of by
+	 * `backfill`: a row's index depends on its parent's, which a statement over many rows cannot see.
+	 */
+	readonly rowwise?: readonly string[];
+	/** Clears the source's index rows when its triggers are installed again, so no stale row outlives its entry. */
+	readonly reset?: readonly string[];
 }
 
 interface SourceState {
@@ -277,11 +296,26 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, ${retainedByStatus("r.payload")}, r.seq FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= ${t.runState}.seq`;
 	const runHeader = (rows: string) =>
 		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, r.status NOT IN (${RELEASED_STATUSES}), ${HEADER_SEQ} FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO NOTHING`;
-	const sessionRefs = (rows: string) => {
+	const entryRow = (name: string) => `r.${name}`;
+	const parentType = "r.parent_type";
+	const parentId = "r.parent_id";
+	const isSnapshot = snapshotEntryCondition(entryRow);
+	const parentOf = (rows: string) =>
+		`${rows} AS r LEFT JOIN ${t.sessionLinks} AS parent ON parent.session_id = r.session_id AND parent.entry_id = ${parentId} AND ${parentType} = 'text'`;
+	/**
+	 * Indexes one session entry's link in the session tree. `rows` yields that one entry as `r`; its parent was indexed
+	 * before it.
+	 */
+	const sessionLink = (rows: string) => [
+		`UPDATE ${t.sessionLinks} SET children = children + 1 FROM ${rows} AS r WHERE ${t.sessionLinks}.session_id = r.session_id AND ${t.sessionLinks}.entry_id = ${parentId} AND ${parentType} = 'text' AND NOT EXISTS (SELECT 1 FROM ${t.sessionLinks} AS own WHERE own.session_id = r.session_id AND own.seq = r.seq)`,
+		`INSERT OR IGNORE INTO ${t.sessionLinks} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN ${parentType} = 'text' THEN ${parentId} END, CASE WHEN ${isSnapshot} THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM ${t.sessionLinks} AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN ${parentType} IS NULL OR ${parentType} = 'null' THEN 0 WHEN ${parentType} = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM ${parentOf(rows)}`,
+	];
+	/** Indexes a snapshot entry's reference and the blobs of its record; any other entry adds nothing. */
+	const sessionRecord = (rows: string) => {
 		const record = (hash: string, from = "") =>
-			`INSERT OR IGNORE INTO ${t.sessionRecords} (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), ${hash} FROM ${rows} AS r${from} WHERE typeof(${hash}) = 'text'`;
+			`INSERT OR IGNORE INTO ${t.sessionRecords} (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), ${hash} FROM ${rows} AS r${from} WHERE typeof(${hash}) = 'text' AND ${isSnapshot}`;
 		return [
-			`INSERT OR REPLACE INTO ${t.sessionRefs} (session_id, seq, root, snapshot_id) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId') FROM ${rows} AS r`,
+			`INSERT OR REPLACE INTO ${t.sessionRefs} (session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId'), parent.anchor_seq, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.from') END, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.to') END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
 			record(
 				`json_extract(r.entry_json, link.fullkey || '.patch')`,
 				`, json_each(r.entry_json, '$.snapshot.chain') AS link`,
@@ -333,25 +367,52 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 		].join("\n"),
 		backfill: [runHeader(storedRows(runs, headerColumns, "1"))],
 	};
-	const entryColumns = ["session_id", "seq", "entry_json"];
+	const entryColumns = ["session_id", "seq", "entry_id", "entry_json"];
+	/** One entry as `r`, with its parent named once, so that each statement parses the entry's JSON for it only once. */
+	const parentColumns = (json: string) =>
+		`json_extract(${json}, '$.parentId') AS parent_id, json_type(${json}, '$.parentId') AS parent_type`;
+	const triggerEntry = `(SELECT ${entryColumns.map((name) => `NEW.${name} AS ${name}`).join(", ")}, ${parentColumns("NEW.entry_json")})`;
+	const storedEntry = `(SELECT ${entryColumns.join(", ")}, ${parentColumns("entry_json")} FROM ${entries} WHERE rowid = ?)`;
+	const indexComplete = `(SELECT backfilled_through >= watermark FROM ${t.sources} WHERE source = 'session-entries')`;
 	const entriesSource = {
 		name: "session-entries",
 		table: entries,
-		triggers: [`${entries}_snapshot_refs`, `${entries}_snapshot_refs_delete`],
+		triggers: [
+			`${entries}_snapshot_links`,
+			`${entries}_snapshot_refs`,
+			`${entries}_snapshot_pending`,
+			`${entries}_snapshot_refs_delete`,
+		],
 		createTriggers: [
+			// While the rows that existed first are indexed, new rows wait for that pass, which keeps parents ahead of
+			// their children: the pass reaches them by extending its watermark.
+			createTrigger(`${entries}_snapshot_links`, "INSERT", entries, sessionLink(triggerEntry), indexComplete),
 			createTrigger(
 				`${entries}_snapshot_refs`,
 				"INSERT",
 				entries,
-				sessionRefs(triggerRows(entryColumns)),
-				snapshotEntryCondition(newRow),
+				sessionRecord(triggerEntry),
+				`instr(NEW.entry_json, '"worktree_snapshot"') > 0 AND ${indexComplete}`,
+			),
+			createTrigger(
+				`${entries}_snapshot_pending`,
+				"INSERT",
+				entries,
+				[
+					`UPDATE ${t.sources} SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid`,
+				],
+				`NOT COALESCE(${indexComplete}, 1)`,
 			),
 			createTrigger(`${entries}_snapshot_refs_delete`, "DELETE", entries, [
+				`UPDATE ${t.sessionLinks} SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM ${t.sessionLinks} WHERE session_id = OLD.session_id AND seq = OLD.seq)`,
+				`DELETE FROM ${t.sessionLinks} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 			]),
 		].join("\n"),
-		backfill: sessionRefs(storedRows(entries, entryColumns, snapshotEntryCondition(storedRow))),
+		backfill: [],
+		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
+		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	return [eventsSource, runsSource, entriesSource];
 }
@@ -424,9 +485,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
 					CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
 					CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
-					CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
-					CREATE INDEX IF NOT EXISTS ${t.sessionRefs}_root ON ${t.sessionRefs} (session_id, root, seq);
-					CREATE INDEX IF NOT EXISTS ${t.sessionRefs}_snapshot ON ${t.sessionRefs} (session_id, snapshot_id);
+					CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
+					CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT;
+					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
+					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
+					CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
 					CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
 					CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
 					CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
@@ -496,6 +559,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.tables, [source]);
 				if (current === undefined || current.installed) return;
+				for (const sql of source.reset ?? []) await transaction.run(sql);
 				await transaction.exec(source.createTriggers);
 				await transaction.run(
 					`INSERT OR REPLACE INTO ${this.tables.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(rowid), 0), 0 FROM ${source.table}`,
@@ -541,6 +605,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			))!;
 			const upper = lastRow ?? progress.watermark;
 			for (const sql of source.backfill) await transaction.run(sql, progress.backfilled_through, upper);
+			if (source.rowwise !== undefined) {
+				const rows = await transaction.all<SqliteRow & { id: number }>(
+					`SELECT rowid AS id FROM ${source.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+					progress.backfilled_through,
+					upper,
+				);
+				for (const { id } of rows) for (const sql of source.rowwise) await transaction.run(sql, id);
+			}
 			await transaction.run(`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ?`, upper, source.name);
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
 			return upper >= progress.watermark;
@@ -570,9 +642,9 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
 			) AND NOT EXISTS (
 				SELECT 1 FROM ${t.sessionRecords} AS record
-				JOIN ${t.sessionRefs} AS head ON head.session_id = record.session_id AND head.snapshot_id = record.snapshot_id
-				WHERE record.hash = ${t.blobs}.hash AND head.seq = (
-					SELECT max(latest.seq) FROM ${t.sessionRefs} AS latest WHERE latest.session_id = head.session_id AND latest.root = head.root
+				WHERE record.hash = ${t.blobs}.hash AND (
+					(record.session_id, record.snapshot_id) IN (${this.sessionHeads()})
+					OR EXISTS (SELECT 1 FROM ${t.sessionLinks} AS broken WHERE broken.session_id = record.session_id AND broken.broken = 1)
 				)
 			)`;
 		const deleted: string[] = [];
@@ -612,6 +684,40 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async collectGarbage(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		await this.completeIndex(options);
 		return this.sweep(options);
+	}
+
+	/**
+	 * The snapshots sessions keep, as a subquery of `(session_id, snapshot_id)`: for every leaf of every session tree,
+	 * the latest snapshot entry of each checkout on the leaf's branch, followed through each entry's link to the
+	 * nearest snapshot entry before it. A leaf costs the snapshot entries on its branch and never a message, and leaves
+	 * that share their latest snapshot are followed once. Roots are grouped into checkouts the way resume does: a root
+	 * a restore moved to is the root it moved from, taking the branch's restores from the newest back. Resume compares
+	 * canonical paths where this compares the recorded ones, so a checkout reached through a symbolic link can keep one
+	 * snapshot more than resume needs and never fewer.
+	 */
+	private sessionHeads(): string {
+		const t = this.tables;
+		return `WITH RECURSIVE
+			open_anchors(session_id, seq) AS (SELECT DISTINCT session_id, anchor_seq FROM ${t.sessionLinks} WHERE children = 0 AND anchor_seq IS NOT NULL),
+			branch(session_id, start_seq, root, snapshot_id, restore_from, restore_to, prev_seq, depth) AS (
+				SELECT ref.session_id, ref.seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, 0 FROM open_anchors AS anchor JOIN ${t.sessionRefs} AS ref ON ref.session_id = anchor.session_id AND ref.seq = anchor.seq
+				UNION ALL
+				SELECT branch.session_id, branch.start_seq, ref.root, ref.snapshot_id, ref.restore_from, ref.restore_to, ref.prev_seq, branch.depth + 1 FROM branch JOIN ${t.sessionRefs} AS ref ON ref.session_id = branch.session_id AND ref.seq = branch.prev_seq
+			),
+			walk(session_id, start_seq, root, current, position) AS (
+				SELECT DISTINCT session_id, start_seq, root, root, -1 FROM branch
+				UNION ALL
+				SELECT walk.session_id, walk.start_seq, walk.root, CASE WHEN restore.restore_to = walk.current THEN restore.restore_from ELSE walk.current END, restore.depth
+				FROM walk JOIN branch AS restore ON restore.session_id = walk.session_id AND restore.start_seq = walk.start_seq AND restore.restore_to IS NOT NULL
+					AND restore.depth = (SELECT min(later.depth) FROM branch AS later WHERE later.session_id = walk.session_id AND later.start_seq = walk.start_seq AND later.restore_to IS NOT NULL AND later.depth > walk.position)
+			),
+			checkout(session_id, start_seq, root, original) AS (
+				SELECT session_id, start_seq, root, current FROM walk AS last WHERE position = (SELECT max(other.position) FROM walk AS other WHERE other.session_id = last.session_id AND other.start_seq = last.start_seq AND other.root = last.root)
+			),
+			session_heads(session_id, snapshot_id, depth) AS (
+				SELECT branch.session_id, branch.snapshot_id, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
+			)
+			SELECT session_id, snapshot_id FROM session_heads`;
 	}
 
 	/** The next {@link SNAPSHOT_COLLECTION_BATCH} blobs old enough and `unreferenced`, oldest first, after `after`. */

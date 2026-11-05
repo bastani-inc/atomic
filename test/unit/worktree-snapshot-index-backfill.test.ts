@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
 	SqliteDatabase,
 	SqliteExecutor,
@@ -31,6 +32,7 @@ import {
 	createSession,
 	dropSnapshotIndex,
 	fullScanRetainedHashes,
+	messageEntry,
 	snapshotEntry,
 	startRun,
 	statusEvent,
@@ -652,6 +654,185 @@ describe("the backfill works in short transactions that resume where they stoppe
 		assert.ok(remaining.has(textBlob("referenced after the upgrade").hash));
 		for (const progress of await sourceProgress(database))
 			assert.equal(progress.backfilled_through, progress.watermark, progress.source);
+	});
+});
+
+describe("a long session tree written before the index existed is linked in order across backfill batches (#4355)", () => {
+	test("each entry meets its parent's link, so only the latest snapshot of the one branch is kept", async () => {
+		const ENTRIES = SNAPSHOT_INDEX_BACKFILL_BATCH * 2 + 100;
+		const database = await openDatabase();
+		const before = await openStores(database);
+		const snapshots = Array.from({ length: 11 }, (_, index) => ({
+			hash: `snapshot-patch-${index + 1}`,
+			data: new Uint8Array([index]),
+		}));
+		await before.blobs.putBlobs(snapshots);
+		await createSession(before.sessions, "session-1", []);
+		await before.close();
+		await dropSnapshotIndex(database);
+		await database.run(
+			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+			INSERT INTO session_entries SELECT 'session-1', i, 'entry-' || i,
+				CASE WHEN i % 100 = 0
+					THEN json_object('type', 'worktree_snapshot', 'id', 'entry-' || i, 'parentId', CASE WHEN i = 1 THEN NULL ELSE 'entry-' || (i - 1) END,
+						'root', '/repo', 'snapshotId', 'snapshot-' || (i / 100), 'snapshot', json_object('chain', json_array(json_object('patch', 'snapshot-patch-' || (i / 100)))))
+					ELSE json_object('type', 'message', 'id', 'entry-' || i, 'parentId', CASE WHEN i = 1 THEN NULL ELSE 'entry-' || (i - 1) END) END FROM n`,
+			ENTRIES,
+		);
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+		const counted = countingDatabase(database);
+		const upgraded = await openStores(counted.wrapped);
+		counted.counts.transactions = 0;
+
+		await upgraded.blobs.completeIndex();
+
+		const entryBatches = Math.ceil(ENTRIES / SNAPSHOT_INDEX_BACKFILL_BATCH);
+		assert.ok(counted.counts.transactions >= entryBatches, "the entries took one transaction per batch");
+		const links = await database.get<{ broken: number; leaves: number }>(
+			"SELECT sum(broken) AS broken, count(*) FILTER (WHERE children = 0) AS leaves FROM snapshot_session_links",
+		);
+		assert.deepEqual({ ...links }, { broken: 0, leaves: 1 });
+		const { deleted } = await collectSnapshotGarbage(upgraded.blobs);
+		assert.deepEqual(
+			[...deleted].sort(),
+			snapshots
+				.slice(0, -1)
+				.map((blob) => blob.hash)
+				.sort(),
+			"every snapshot but the latest one is released",
+		);
+	});
+});
+
+describe("session entries written while their table is being backfilled (#4355)", () => {
+	test("wait for the backfill, which reaches them in order, so a child never meets an index without its parent", async () => {
+		const database = await openDatabase();
+		const before = await openStores(database);
+		const [kept, released] = [textBlob("kept"), textBlob("released")];
+		await before.blobs.putBlobs([kept, released]);
+		const root = messageEntry("start");
+		const first = {
+			...snapshotEntry("/repo", "first", syntheticSnapshot("first", [released.hash])),
+			parentId: root.id,
+		};
+		const last = { ...snapshotEntry("/repo", "last", syntheticSnapshot("last", [kept.hash])), parentId: first.id };
+		await createSession(before.sessions, "session-1", [root, first, last]);
+		await before.close();
+		await dropSnapshotIndex(database);
+		const upgraded = await openStores(database);
+		const sourceRow = () =>
+			database.get<{ watermark: number; backfilled_through: number }>(
+				"SELECT watermark, backfilled_through FROM snapshot_index_sources WHERE source = 'session-entries'",
+			);
+		const rows = async () =>
+			Number((await database.get<{ n: number }>("SELECT max(rowid) AS n FROM session_entries"))?.n);
+		assert.equal((await sourceRow())?.watermark, await rows(), "installed at the highest rowid the table held");
+
+		const { lastSeq } = await upgraded.sessions.load("session-1");
+		const appended = { ...messageEntry("written during the backfill"), parentId: last.id } as SessionEntry;
+		await upgraded.sessions.append("session-1", [appended], { expectSeq: lastSeq });
+
+		assert.equal(
+			(await sourceRow())?.watermark,
+			await rows(),
+			"the new row extended the pass instead of being indexed",
+		);
+		assert.equal(
+			Number((await database.get<{ n: number }>("SELECT count(*) AS n FROM snapshot_session_links"))?.n),
+			0,
+		);
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+
+		await collectSnapshotGarbage(upgraded.blobs);
+
+		assert.deepEqual(await stored(upgraded), [kept.hash], "the later snapshot is kept and the earlier one released");
+		const links = await database.all<{ entry_id: string; children: number; broken: number }>(
+			"SELECT entry_id, children, broken FROM snapshot_session_links ORDER BY seq",
+		);
+		assert.deepEqual(
+			links.map((link) => [link.entry_id, link.children, link.broken]),
+			[
+				[root.id, 1, 0],
+				[first.id, 1, 0],
+				[last.id, 1, 0],
+				[appended.id, 0, 0],
+			],
+		);
+	});
+
+	test("an index reinstalled after its entries were rewritten without it keeps no row of the entries it replaced", async () => {
+		const database = await openDatabase();
+		const stores = await openStores(database);
+		const [old, fresh] = [textBlob("recorded before the rewrite"), textBlob("recorded after the rewrite")];
+		await stores.blobs.putBlobs([old, fresh]);
+		const root = messageEntry("start");
+		const first = {
+			...snapshotEntry("/repo", "old", syntheticSnapshot("old", [old.hash])),
+			parentId: root.id,
+		} as SessionEntry;
+		await createSession(stores.sessions, "session-1", [
+			root,
+			first,
+			{ ...messageEntry("end"), parentId: first.id } as SessionEntry,
+		]);
+		for (const name of [
+			"session_entries_snapshot_links",
+			"session_entries_snapshot_refs",
+			"session_entries_snapshot_pending",
+			"session_entries_snapshot_refs_delete",
+		])
+			await database.exec(`DROP TRIGGER ${name}`);
+		const start = messageEntry("a new start");
+		const second = { ...messageEntry("a message"), parentId: start.id } as SessionEntry;
+		const third = {
+			...snapshotEntry("/repo", "fresh", syntheticSnapshot("fresh", [fresh.hash])),
+			parentId: second.id,
+		} as SessionEntry;
+		await database.exec("DELETE FROM session_entries");
+		for (const [index, entry] of [start, second, third].entries())
+			await database.run(
+				"INSERT INTO session_entries (session_id, seq, entry_id, entry_json) VALUES ('session-1', ?, ?, ?)",
+				index + 1,
+				entry.id,
+				JSON.stringify(entry),
+			);
+		await ageBlobs(database, "snapshot_blobs", 10_000);
+
+		const { deleted } = await collectSnapshotGarbage(stores.blobs);
+
+		assert.deepEqual(
+			deleted,
+			[old.hash],
+			"the snapshot the rewrite dropped is released and the one it wrote is kept",
+		);
+		assert.deepEqual(await stored(stores), [fresh.hash]);
+	});
+
+	test("an index reinstalled over rows it already holds rebuilds them with the same child counts", async () => {
+		const database = await openDatabase();
+		const stores = await openStores(database);
+		const root = messageEntry("start");
+		const entries = [
+			root,
+			{ ...messageEntry("one"), parentId: root.id },
+			{ ...messageEntry("two"), parentId: root.id },
+		] as SessionEntry[];
+		await createSession(stores.sessions, "session-1", entries);
+		const children = () =>
+			database.all<{ entry_id: string; children: number }>(
+				"SELECT entry_id, children FROM snapshot_session_links ORDER BY seq",
+			);
+		const expected = await children();
+		assert.deepEqual(
+			expected.map((row) => row.children),
+			[2, 0, 0],
+		);
+		await database.exec("DROP TRIGGER session_entries_snapshot_pending");
+
+		await stores.blobs.completeIndex();
+		await stores.blobs.completeIndex();
+
+		assert.deepEqual(await children(), expected);
 	});
 });
 

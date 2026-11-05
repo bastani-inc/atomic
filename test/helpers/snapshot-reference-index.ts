@@ -1,4 +1,6 @@
+import { getBranchPath } from "../../packages/coding-agent/src/core/session-manager-history.ts";
 import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
+import { currentWorktreeSnapshots } from "../../packages/coding-agent/src/core/session-worktree-snapshots.ts";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
@@ -120,13 +122,21 @@ export async function startRun(journal: SqlRunJournal, runId: string, status = "
 
 let entryCounter = 0;
 
-/** A `worktree_snapshot` session entry; pass `snapshot` for an entry that carries the record. */
-export function snapshotEntry(root: string, snapshotId: string, snapshot?: WorktreeSnapshot): SessionEntry {
+/**
+ * A `worktree_snapshot` session entry; pass `snapshot` for an entry that carries the record, and `parentId` for the
+ * entry it follows (`createSession` chains entries that name none).
+ */
+export function snapshotEntry(
+	root: string,
+	snapshotId: string,
+	snapshot?: WorktreeSnapshot,
+	parentId: string | null = null,
+): SessionEntry {
 	entryCounter++;
 	return {
 		type: "worktree_snapshot",
 		id: `entry-${entryCounter}`,
-		parentId: null,
+		parentId,
 		timestamp: "2026-01-01T00:00:00.000Z",
 		root,
 		snapshotId,
@@ -135,15 +145,22 @@ export function snapshotEntry(root: string, snapshotId: string, snapshot?: Workt
 }
 
 /** A plain message entry, for padding sessions with entries that reference nothing. */
-export function messageEntry(text: string): SessionEntry {
+export function messageEntry(text: string, parentId: string | null = null): SessionEntry {
 	entryCounter++;
 	return {
 		type: "message",
 		id: `entry-${entryCounter}`,
-		parentId: null,
+		parentId,
 		timestamp: "2026-01-01T00:00:00.000Z",
 		message: { role: "user", content: text, timestamp: 1 },
 	} as SessionEntry;
+}
+
+/** Entries that name no parent follow the entry before them, as a session records them; the first one is the root. */
+export function chained(entries: readonly SessionEntry[]): SessionEntry[] {
+	return entries.map((entry, index) =>
+		entry.parentId === null && index > 0 ? ({ ...entry, parentId: entries[index - 1]!.id } as SessionEntry) : entry,
+	);
 }
 
 export async function createSession(
@@ -153,14 +170,15 @@ export async function createSession(
 ): Promise<{ readonly lastSeq: number }> {
 	return sessions.create(
 		{ id: sessionId, version: SESSION_FORMAT_VERSION, createdAt: "2026-01-01T00:00:00.000Z", cwd: "/repo" },
-		entries,
+		chained(entries),
 	);
 }
 
 /**
  * The blobs retention keeps, computed the way the full-scan retention functions did before the reference index:
- * every snapshot of each resumable root run, read event by event, and the latest snapshot of each checkout in every
- * session, read entry by entry. The reference index must keep exactly these.
+ * every snapshot of each resumable root run, read event by event, and, for every leaf of every session tree, the
+ * latest snapshot of each checkout on the leaf's branch, read entry by entry as retention first did (the rule resume
+ * itself follows). The reference index keeps these and, for a checkout reached under two roots, possibly one more.
  */
 export async function fullScanRetainedHashes(journal: RunJournal, sessions: SessionStore): Promise<Set<string>> {
 	const retained = new Set<string>();
@@ -199,16 +217,21 @@ export async function fullScanRetainedHashes(journal: RunJournal, sessions: Sess
 	}
 	for await (const summary of sessions.list({ includeInternal: true })) {
 		const { entries } = await sessions.load(summary.id);
+		const byId = new Map(entries.map((entry) => [entry.id, entry]));
+		const parents = new Set(entries.map((entry) => entry.parentId));
 		const records = new Map<string, WorktreeSnapshot>();
-		const latest = new Map<string, string>();
 		for (const entry of entries) {
-			if (entry.type !== "worktree_snapshot") continue;
-			if (entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
-			latest.set(entry.root, entry.snapshotId);
+			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
 		}
-		for (const snapshotId of latest.values()) {
-			const snapshot = records.get(snapshotId);
-			if (snapshot) for (const hash of snapshotBlobHashes(snapshot)) retained.add(hash);
+		for (const leaf of entries.filter((entry) => !parents.has(entry.id))) {
+			const branch = getBranchPath(leaf.id, byId);
+			const current = currentWorktreeSnapshots({
+				getBranch: () => branch,
+				getWorktreeRootMappings: () =>
+					branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),
+				getWorktreeSnapshotRecords: () => records,
+			});
+			for (const snapshot of current.values()) for (const hash of snapshotBlobHashes(snapshot)) retained.add(hash);
 		}
 	}
 	return retained;
@@ -228,6 +251,7 @@ export async function dropSnapshotIndex(database: SqliteDatabase, prefix = ""): 
 		"snapshot_run_refs",
 		"snapshot_run_state",
 		"snapshot_session_refs",
+		"snapshot_session_links",
 		"snapshot_session_records",
 		"snapshot_collection",
 		"snapshot_index_sources",

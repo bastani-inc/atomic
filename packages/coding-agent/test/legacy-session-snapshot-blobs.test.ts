@@ -76,7 +76,7 @@ async function defaultStoreWithSupersededSnapshot() {
 		{ id: "session-1", version: SESSION_FORMAT_VERSION, createdAt: "2026-01-01T00:00:00.000Z", cwd: root },
 		[
 			snapshotEntry("entry-1", snapshotOf("older", released.hash)),
-			snapshotEntry("entry-2", snapshotOf("latest", kept.hash)),
+			{ ...snapshotEntry("entry-2", snapshotOf("latest", kept.hash)), parentId: "entry-1" } as SessionEntry,
 		],
 	);
 	const databasePath = join(root, "workflows", "journal.sqlite");

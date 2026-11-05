@@ -3,13 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
+import type { SessionEntry } from "../../packages/coding-agent/src/core/session-manager-types.ts";
 import type {
 	SqliteDatabase,
 	SqliteRow,
 	SqliteStatement,
 } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
-import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import {
+	SqlSnapshotBlobStore,
+	snapshotIndexTables,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -20,6 +24,7 @@ import {
 	ageBlobs,
 	checkpointEvent,
 	createSession,
+	dropSnapshotIndex,
 	fullScanRetainedHashes,
 	messageEntry,
 	type RunStatusPayload,
@@ -91,7 +96,12 @@ const STATUSES: readonly RunStatusPayload[] = [
 
 type AppendPath = "append" | "appendMany" | "batch" | "raw";
 
-async function writeRandomHistory(seed: number) {
+/**
+ * `restores` adds entries written when a snapshot was restored into a new worktree, which merge roots into one
+ * checkout; `dangling` adds entries whose parent was never written, which make their session keep every snapshot, so
+ * the index keeps more than a full scan.
+ */
+async function writeRandomHistory(seed: number, { restores = false, dangling = false } = {}) {
 	const rng = random(seed);
 	const database = await openNodeSqliteDatabase(join(directory, `parity-${seed}.sqlite`));
 	const batchDatabase = batching(await openNodeSqliteDatabase(join(directory, `parity-${seed}.sqlite`)));
@@ -179,25 +189,57 @@ async function writeRandomHistory(seed: number) {
 	const roots = ["/a", "/b", "/c"];
 	const sessionIds = Array.from({ length: 4 + rng.int(4) }, (_, index) => `session-${index}`);
 	const recorded: WorktreeSnapshot[] = [];
-	const sessionEntries = () =>
-		Array.from({ length: 1 + rng.int(5) }, () => {
-			if (rng.chance(0.25)) return messageEntry("hello");
-			const root = rng.pick(roots);
-			if (recorded.length > 0 && rng.chance(0.3)) {
-				const earlier = rng.pick(recorded);
-				return snapshotEntry(earlier.root, earlier.id);
+	/** Entries of a session tree: most follow the entry before them, some branch from an earlier one. */
+	const sessionEntries = (known: readonly SessionEntry[]): SessionEntry[] => {
+		const made: SessionEntry[] = [];
+		for (let index = 0; index < 1 + rng.int(5); index++) {
+			const pool = [...known, ...made];
+			const parentId =
+				pool.length === 0
+					? null
+					: dangling && rng.chance(0.08)
+						? "parent-never-written"
+						: rng.chance(0.65)
+							? pool.at(-1)!.id
+							: rng.pick(pool).id;
+			let entry: SessionEntry;
+			if (rng.chance(0.25)) entry = messageEntry("hello", parentId);
+			else {
+				const root = rng.pick(roots);
+				if (recorded.length > 0 && rng.chance(0.3)) {
+					const earlier = rng.pick(recorded);
+					entry = snapshotEntry(earlier.root, earlier.id, undefined, parentId);
+				} else {
+					const record = snapshot(root);
+					recorded.push(record);
+					entry = snapshotEntry(root, record.id, record, parentId);
+				}
+				if (restores && rng.chance(0.25)) {
+					const from = rng.pick([...roots, ...roots.map((each) => `${each}-restored`)]);
+					entry = {
+						...entry,
+						root: `${from}-restored`,
+						restore: { from, to: `${from}-restored`, snapshotId: "restore", tree: "tree", restoredAt: "now" },
+					} as unknown as SessionEntry;
+				}
 			}
-			const record = snapshot(root);
-			recorded.push(record);
-			return snapshotEntry(root, record.id, record);
-		});
+			made.push(entry);
+		}
+		return made;
+	};
 	for (const sessionId of sessionIds) {
-		let { lastSeq } = await createSession(sessions, sessionId, sessionEntries());
+		let known = sessionEntries([]);
+		let { lastSeq } = await createSession(sessions, sessionId, known);
 		for (let write = 0; write < rng.int(4); write++) {
 			if (rng.chance(0.25)) {
 				const { header } = await sessions.load(sessionId);
-				({ lastSeq } = await sessions.replace(sessionId, header, sessionEntries(), { expectSeq: lastSeq }));
-			} else ({ lastSeq } = await sessions.append(sessionId, sessionEntries(), { expectSeq: lastSeq }));
+				known = sessionEntries([]);
+				({ lastSeq } = await sessions.replace(sessionId, header, known, { expectSeq: lastSeq }));
+			} else {
+				const added = sessionEntries(known);
+				known = [...known, ...added];
+				({ lastSeq } = await sessions.append(sessionId, added, { expectSeq: lastSeq }));
+			}
 		}
 		if (rng.chance(0.2)) await sessions.delete(sessionId);
 	}
@@ -208,7 +250,7 @@ describe("the reference index keeps exactly what a full scan of every journal an
 	test.each(Array.from({ length: 24 }, (_, index) => index + 1))(
 		"random history %i, written through single appends, savepoint and batched appendMany, raw inserts, and every session write",
 		async (seed) => {
-			const { database, sessions, journal, blobs, paths } = await writeRandomHistory(seed);
+			const { database, sessions, journal, blobs, paths } = await writeRandomHistory(seed, { restores: true });
 			const expected = await fullScanRetainedHashes(journal, sessions);
 			await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
 
@@ -224,6 +266,40 @@ describe("the reference index keeps exactly what a full scan of every journal an
 					.sort(),
 			);
 			assert.ok(Object.values(paths).reduce((sum, count) => sum + count, 0) > 0);
+		},
+	);
+
+	test.each(Array.from({ length: 12 }, (_, index) => index + 1))(
+		"random history %i with entries whose parent was never written never keeps less than a full scan",
+		async (seed) => {
+			const { database, sessions, journal, blobs } = await writeRandomHistory(seed, {
+				restores: true,
+				dangling: true,
+			});
+			const expected = await fullScanRetainedHashes(journal, sessions);
+			await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
+
+			const { deleted } = await collectSnapshotGarbage(journal.snapshotBlobs);
+
+			const remaining = new Set(await journal.snapshotBlobs.listBlobHashes());
+			for (const hash of expected) assert.ok(remaining.has(hash), `${hash} was needed and collected`);
+			for (const hash of deleted) assert.equal(expected.has(hash), false);
+			assert.equal(remaining.size + deleted.length, new Set(blobs.map((blob) => blob.hash)).size);
+		},
+	);
+
+	test.each(Array.from({ length: 12 }, (_, index) => index + 1))(
+		"random history %i, written before the index existed, is indexed by the backfill to what a full scan retains",
+		async (seed) => {
+			const { database, sessions, journal } = await writeRandomHistory(seed, { restores: true });
+			const expected = await fullScanRetainedHashes(journal, sessions);
+			await dropSnapshotIndex(database);
+			await ageBlobs(database, journal.snapshotBlobs.table, 10_000);
+			const upgraded = await SqlSnapshotBlobStore.open(database);
+
+			await collectSnapshotGarbage(upgraded);
+
+			assert.deepEqual([...(await upgraded.listBlobHashes())].sort(), [...expected].sort());
 		},
 	);
 
@@ -299,6 +375,8 @@ test("reopening a session store and run journal finds their index triggers and c
 			)
 		).map((row) => [row.name, row.tbl_name]),
 		[
+			["session_entries_snapshot_links", "session_entries"],
+			["session_entries_snapshot_pending", "session_entries"],
 			["session_entries_snapshot_refs", "session_entries"],
 			["session_entries_snapshot_refs_delete", "session_entries"],
 			["wf_events_snapshot_refs", "wf_events"],
@@ -316,6 +394,7 @@ test("the index tables are named under the storage prefix, and under none by def
 		runRefs: "snapshot_run_refs",
 		runState: "snapshot_run_state",
 		sessionRefs: "snapshot_session_refs",
+		sessionLinks: "snapshot_session_links",
 		sessionRecords: "snapshot_session_records",
 		collection: "snapshot_collection",
 		sources: "snapshot_index_sources",

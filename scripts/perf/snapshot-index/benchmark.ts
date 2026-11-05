@@ -92,9 +92,10 @@ const status = (index: number) =>
 		payload: { workflowId: RUN, status: "running", completedCheckpoints: index, pendingPrompts: 0 },
 	}) as unknown as RunEvent;
 
+/** Entries follow each other, as a session records them: each one's parent is the one before it. */
 const entryBase = (index: number) => ({
 	id: `entry-${index}`,
-	parentId: null,
+	parentId: index === 1 ? null : `entry-${index - 1}`,
 	timestamp: "2026-01-01T00:00:00.000Z",
 });
 

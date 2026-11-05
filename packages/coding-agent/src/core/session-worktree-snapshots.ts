@@ -2,7 +2,6 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionManager } from "./session-manager.ts";
-import { getBranchPath } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
