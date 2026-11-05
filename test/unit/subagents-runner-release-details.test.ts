@@ -128,6 +128,16 @@ test(
 	LIVE_CHILD_TIMEOUT_MS,
 );
 
+/** A manager whose store does not hold its session, so reopening it fails before any session exists. */
+async function sessionNotInItsStore(root: string): Promise<SessionManager> {
+	const saved = await SessionManager.create(new MemorySessionStore(), root);
+	const elsewhere = await SessionManager.create(new MemorySessionStore(), root);
+	return Object.assign(Object.create(saved) as SessionManager, {
+		getSessionStore: () => elsewhere.getSessionStore(),
+		getSessionId: () => saved.getSessionId(),
+	});
+}
+
 test("a child that never opened its session binds no transcript and still returns its failure (#4326)", async () => {
 	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-no-session-"));
 	cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -138,7 +148,8 @@ test("a child that never opened its session binds no transcript and still return
 		cwd: root,
 		runId: "no-session",
 		sessionDir: join(root, "sessions"),
-		sessionStartTimeoutMs: 0,
+		sessionManager: await sessionNotInItsStore(root),
+		resumeSession: true,
 		taskExecution: {
 			...transcriptHooks(bound, pending),
 			clearExtensionStatuses: () => void cleared.push(1),
