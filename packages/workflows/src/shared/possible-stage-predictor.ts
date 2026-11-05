@@ -9,7 +9,6 @@ import {
 	decodeScanAnswers,
 	decodeTargetAnswer,
 	scanDecisionState,
-	scanNeedsPrediction,
 	scanQuestionPlan,
 	stagePathsOverlap,
 	stagePredictionDefinitionHash,
@@ -106,9 +105,8 @@ export class StagePredictor {
 			definitionHash,
 			decisions: input.decisions,
 			state,
-			knownPaths: input.scan.stages.filter((stage) => !stage.includes("*")),
+			knownPaths: input.scan.stages,
 		});
-		if (!scanNeedsPrediction(input.scan)) return;
 		const plan = scanQuestionPlan(input.scan.uncertainties);
 		if (plan.options.size === 0) return;
 		const answers = this.definition(definitionHash);
@@ -120,7 +118,7 @@ export class StagePredictor {
 			answers.scan = asked;
 			pending = asked;
 			asked.then(undefined, () => {
-				if (answers.scan === asked) answers.scan = undefined;
+				answers.scan = undefined;
 			});
 		}
 		const recorded = pending.then(
@@ -128,7 +126,7 @@ export class StagePredictor {
 				if (await input.admitted) this.mergeEntries(input.store, input.runId, entries);
 			},
 			async (error: unknown) => {
-				if (await input.admitted) this.recordFallback(input.store, input.runId, error);
+				if (await input.admitted) this.recordFallback(input.store, input.runId, "scan", error);
 			},
 		);
 		recorded.catch(reportUnrecorded);
@@ -139,9 +137,8 @@ export class StagePredictor {
 	 * target is asked in the background, so a later send (or a later run of the same definition) sees the answer.
 	 */
 	classifySend(rootRun: RunSnapshot, targetSegments: readonly string[]): StageSendClassification {
-		if (rootRun.stagePredictions?.entries.some((entry) => stagePathsOverlap(targetSegments, entry.path)) === true) {
-			return { prediction: "predicted" };
-		}
+		const predicted = rootRun.stagePredictions?.entries ?? [];
+		if (predicted.some((entry) => stagePathsOverlap(targetSegments, entry.path))) return { prediction: "predicted" };
 		const context = this.roots.get(rootRun.id);
 		if (context === undefined) return { prediction: "unknown" };
 		const path = targetSegments.join("/");
@@ -156,7 +153,7 @@ export class StagePredictor {
 		if (probability > POSSIBLE_STAGE_PREDICTION_THRESHOLDS.unlikely) return { prediction: "unknown" };
 		const suggestion = closestStagePath(path, [
 			...context.knownPaths,
-			...(rootRun.stagePredictions?.entries ?? []).map((entry) => entry.path),
+			...predicted.map((entry) => entry.path),
 			...rootRun.stages.map((stage) => stage.name),
 		]);
 		return { prediction: "unknown", unexpected: true, ...(suggestion === undefined ? {} : { suggestion }) };
@@ -188,7 +185,7 @@ export class StagePredictor {
 			},
 			(error: unknown) => {
 				answers.targets.delete(path);
-				this.recordFallback(context.store, runId, error);
+				this.recordFallback(context.store, runId, "target", error);
 			},
 		);
 		recorded.catch(reportUnrecorded);
@@ -206,7 +203,7 @@ export class StagePredictor {
 			() => deadline.abort(new StageDecisionTimeoutError(phase, this.deadlineMs, Date.now() - startedAt)),
 			this.deadlineMs,
 		);
-		timer.unref?.();
+		timer.unref();
 		const signal = AbortSignal.any([deadline.signal, this.disposed.signal]);
 		try {
 			const decided = decisions.decide({
@@ -219,16 +216,16 @@ export class StagePredictor {
 			return await new Promise<StageDecisionResult>((resolve, reject) => {
 				const onAbort = (): void => reject(signal.reason);
 				if (signal.aborted) onAbort();
-				signal.addEventListener("abort", onAbort, { once: true });
-				decided.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+				signal.addEventListener("abort", onAbort);
+				decided.then(resolve, reject);
 			});
 		} catch (error) {
+			// A cancellation stays a cancellation; the deadline's own reason is already a typed timeout.
 			if (this.disposed.signal.aborted) throw this.disposed.signal.reason;
-			if (deadline.signal.aborted) throw deadline.signal.reason;
 			if (isPossibleStagePredictionError(error)) throw error;
 			if (isDecisionModelUnavailableError(error)) throw new StageDecisionUnavailableError(phase, { cause: error });
 			if (isDecisionTimeoutError(error)) {
-				throw new StageDecisionTimeoutError(phase, this.deadlineMs, Date.now() - startedAt, { cause: error });
+				throw new StageDecisionTimeoutError(phase, error.timeoutMs, error.elapsedMs, { cause: error });
 			}
 			throw new StageDecisionFailedError(phase, error);
 		} finally {
@@ -261,11 +258,7 @@ export class StagePredictor {
 		const current = this.current(store, runId);
 		const merged = new Map(current.entries.map((entry) => [entry.path, entry]));
 		for (const entry of entries) if (!merged.has(entry.path)) merged.set(entry.path, entry);
-		store.recordRunStagePredictions?.(runId, {
-			...current,
-			status: current.fallback === undefined ? "ready" : current.status,
-			entries: [...merged.values()],
-		});
+		store.recordRunStagePredictions?.(runId, { ...current, entries: [...merged.values()] });
 	}
 
 	private recordTarget(store: Store, runId: string, path: string, probability: number): void {
@@ -282,17 +275,27 @@ export class StagePredictor {
 		});
 	}
 
-	private recordFallback(store: Store, runId: string, error: unknown): void {
-		if (this.disposed.signal.aborted) return;
+	private recordFallback(store: Store, runId: string, phase: PossibleStagePredictionPhase, error: unknown): void {
+		if ((error as { readonly name?: unknown }).name === "AbortError") return;
 		const current = this.current(store, runId);
 		if (current.fallback !== undefined) return;
 		const failure: PossibleStagePredictionError = isPossibleStagePredictionError(error)
 			? error
-			: new StageDecisionFailedError("scan", error);
+			: new StageDecisionFailedError(phase, error);
+		const cause = failure.cause as { readonly name?: unknown; readonly code?: unknown } | undefined;
 		store.recordRunStagePredictions?.(runId, {
 			...current,
 			status: "fallback",
-			fallback: { name: failure.name, code: failure.code, hint: failure.hint },
+			fallback: {
+				name: failure.name,
+				code: failure.code,
+				hint: failure.hint,
+				phase: failure.phase,
+				retryable: failure.retryable,
+				...(typeof cause?.name === "string"
+					? { cause: { name: cause.name, ...(typeof cause.code === "string" ? { code: cause.code } : {}) } }
+					: {}),
+			},
 		});
 	}
 }

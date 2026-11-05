@@ -26,7 +26,6 @@ import {
 	inputsShape,
 	knownScanEntries,
 	scanDecisionState,
-	scanNeedsPrediction,
 	scanQuestionPlan,
 	stagePredictionDefinitionHash,
 	stagePredictionOutcome,
@@ -175,14 +174,6 @@ describe("prediction policy (#4359)", () => {
 		assert.equal(sdk.POSSIBLE_STAGE_PREDICTION_THRESHOLDS, POSSIBLE_STAGE_PREDICTION_THRESHOLDS);
 		assert.equal(sdk.PossibleStagePredictionError, PossibleStagePredictionError);
 		assert.equal(sdk.findPossibleStagePredictionError, findPossibleStagePredictionError);
-	});
-
-	test("prediction triggers only on an uncertain scan", () => {
-		assert.equal(scanNeedsPrediction(scanOf([], ["review", "summary"])), false);
-		assert.equal(scanNeedsPrediction(scanOf([], ["review-*"])), false);
-		assert.equal(scanNeedsPrediction(scanOf([], ["review", "*"])), true);
-		assert.equal(scanNeedsPrediction(scanOf([], ["workflow:child/*"])), true);
-		assert.equal(scanNeedsPrediction(scanOf([uncertainty([])], ["review"])), true);
 	});
 
 	test("choice questions offer only source candidates under opaque keys, plus none", () => {
@@ -460,7 +451,13 @@ describe("prediction outcomes (#4359)", () => {
 					{ path: "summary-2", probability: 0.912, source: "send" },
 				],
 				targets: {},
-				fallback: { name: "StageDecisionTimeoutError", code: "decision-timeout", hint: "Later runs ask again." },
+				fallback: {
+					name: "StageDecisionTimeoutError",
+					code: "decision-timeout",
+					hint: "Later runs ask again.",
+					phase: "scan",
+					retryable: true,
+				},
 			},
 		});
 		const status = stagePredictionStatus(run, [run]);
@@ -676,19 +673,37 @@ describe("stage predictor (#4359)", () => {
 				name: "StageDecisionUnavailableError",
 				code: "decision-unavailable",
 				hint: "Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.",
+				phase: "scan",
+				retryable: false,
 			},
 		});
 		const failed = await fallbackFor({
 			decide: () => {
-				throw new Error("provider down");
+				throw Object.assign(new Error("provider down"), { code: "rate_limit", retryable: true });
 			},
 		});
-		assert.equal(failed.fallback?.code, "decision-failed");
-		assert.equal(failed.fallback?.name, "StageDecisionFailedError");
+		assert.deepEqual(failed.fallback, {
+			name: "StageDecisionFailedError",
+			code: "decision-failed",
+			hint: "Check the decision model's provider status; the static scan still applies.",
+			phase: "scan",
+			retryable: true,
+			cause: { name: "Error", code: "rate_limit" },
+		});
 		const timeout = await fallbackFor(stalledPort().port, 5);
-		assert.equal(timeout.fallback?.code, "decision-timeout");
+		assert.deepEqual(timeout.fallback, {
+			name: "StageDecisionTimeoutError",
+			code: "decision-timeout",
+			hint: "The decision model was slow; a later run of the same workflow asks again.",
+			phase: "scan",
+			retryable: true,
+		});
 		const invalid = await fallbackFor({ decide: async () => ({ answers: {} }) });
 		assert.equal(invalid.fallback?.code, "invalid-answer");
+		assert.equal(invalid.fallback?.retryable, false);
+		const malformed = await fallbackFor({ decide: async () => ({}) as StageDecisionResult });
+		assert.equal(malformed.fallback?.code, "decision-failed", "a result without answers is a failed decision");
+		assert.equal(malformed.fallback?.cause?.name, "TypeError");
 	});
 
 	test("a failure is not cached: the next launch of the definition asks again", async () => {
@@ -1092,6 +1107,7 @@ describe("the host decision service as the prediction port (#4359)", () => {
 					answers: {
 						site0: { type: "choice", choice: "c0", probabilities: { c0: 0.9, none: 0.1 }, confidence: 0.9 },
 						target: { type: "bool", value: true, probability: 0.85 },
+						graded: { type: "score", score: 1, confidence: 0.5 },
 					},
 					source: "classifier",
 					model: "typesafe/jev-latest",
@@ -1155,15 +1171,25 @@ describe("the host decision service as the prediction port (#4359)", () => {
 				name: "StageDecisionUnavailableError",
 				code: "decision-unavailable",
 				hint: "Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.",
+				phase: "scan",
+				retryable: false,
+				cause: { name: "DecisionModelUnavailableError", code: "model-unavailable" },
 			},
 		);
-		assert.equal(
-			(await fallbackOf(new DecisionTimeoutError({ timeoutMs: 10, elapsedMs: 11, phase: "classifier" })))?.code,
-			"decision-timeout",
+		assert.deepEqual(
+			await fallbackOf(new DecisionTimeoutError({ timeoutMs: 10, elapsedMs: 11, phase: "classifier" })),
+			{
+				name: "StageDecisionTimeoutError",
+				code: "decision-timeout",
+				hint: "The decision model was slow; a later run of the same workflow asks again.",
+				phase: "scan",
+				retryable: true,
+				cause: { name: "DecisionTimeoutError", code: "timeout" },
+			},
 		);
-		assert.equal(
-			(await fallbackOf(new DecisionOutputError({ model: "typesafe/jev-latest", detail: "bad" } as never)))?.code,
-			"decision-failed",
+		assert.deepEqual(
+			(await fallbackOf(new DecisionOutputError({ model: "typesafe/jev-latest", detail: "bad" } as never)))?.cause,
+			{ name: "DecisionOutputError", code: "invalid-output" },
 		);
 	});
 
@@ -1209,6 +1235,8 @@ describe("the host decision service as the prediction port (#4359)", () => {
 					name: "StageDecisionUnavailableError",
 					code: "decision-unavailable",
 					hint: "Set decisionModel.",
+					phase: "scan",
+					retryable: false,
 				},
 			},
 		});

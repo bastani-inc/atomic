@@ -287,10 +287,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					maxDepth: opts.config?.maxDepth,
 					inputs,
 					decisions,
-					admitted: launch.wait.then(
-						(admission) => admission.started,
-						() => false,
-					),
+					admitted: launch.wait.then((admission) => admission.started),
 				});
 			}
 			opts.onRunAccepted?.(accepted.runId);

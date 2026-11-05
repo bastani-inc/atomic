@@ -236,8 +236,8 @@ function isWorkflowFutureStageRosterEntries(value: unknown): value is WorkflowFu
 				typeof (entry as WorkflowFutureStageRosterEntry).queuedCount === "number" &&
 				Number.isInteger((entry as WorkflowFutureStageRosterEntry).queuedCount) &&
 				(entry as WorkflowFutureStageRosterEntry).queuedCount >= 0 &&
-				typeof (entry as WorkflowFutureStageRosterEntry).group === "string" &&
-				isWorkflowFutureStagePredictionFields(entry as WorkflowFutureStageRosterEntry),
+				isWorkflowFutureStagePredictionFields(entry as WorkflowFutureStageRosterEntry) &&
+				typeof (entry as WorkflowFutureStageRosterEntry).group === "string",
 		)
 	);
 }

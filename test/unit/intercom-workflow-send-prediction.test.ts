@@ -8,6 +8,7 @@ import type { SessionInfo, WorkflowFutureStageRosterEntry } from "../../packages
 import {
 	isWorkflowFutureStagePredictionFields,
 	isWorkflowSendPredictionFields,
+	workflowFutureStagePredictionFields,
 	workflowSendPredictionFields,
 } from "../../packages/intercom/workflow-prediction-fields.js";
 
@@ -130,6 +131,37 @@ describe("queued workflow sends (#4359)", () => {
 		);
 	});
 
+	test("the typo line names a nested stage path, and details carry only the fields that are set", async () => {
+		assert.equal(
+			queuedSendText(`workflow:${RUN_ID}/workflow:child/reviwe`, { prediction: "unknown", unexpected: true }, false),
+			`Message queued for workflow:${RUN_ID}/workflow:child/reviwe\nNo stage named workflow:child/reviwe is expected.`,
+		);
+		const plain = await send({});
+		assert.deepEqual(plain.details, {
+			messageId: "message-id",
+			delivered: false,
+			queued: true,
+			target: TARGET,
+			position: 1,
+		});
+		const typo = await send({ prediction: "unknown", unexpected: true, suggestion: "review-1" });
+		assert.deepEqual(typo.details, {
+			messageId: "message-id",
+			delivered: false,
+			queued: true,
+			target: TARGET,
+			position: 1,
+			prediction: "unknown",
+			unexpected: true,
+			suggestion: "review-1",
+		});
+	});
+
+	test("settings without an intercom section leave the default plain result", async () => {
+		const result = await send({ prediction: "unknown" }, {});
+		assert.equal(result.content[0]?.text, `Message queued for ${TARGET}`);
+	});
+
 	test("a non-workflow target keeps its name in the typo line", () => {
 		assert.equal(
 			queuedSendText("peer", { unexpected: true, suggestion: "pear" }, false),
@@ -151,6 +183,7 @@ describe("queued workflow sends (#4359)", () => {
 			row("lint", { prediction: "confirmed", probability: 0.99, queuedCount: 1 }),
 			row("workflow:child-beta", { prediction: "unused", probability: 0.81 }),
 			row("summary-*", {}),
+			row("lint-*", { prediction: "predicted" }),
 		]).execute("list", { action: "list" }, undefined, undefined, context);
 		const text = listed.content[0]?.text ?? "";
 		assert.match(
@@ -163,6 +196,7 @@ describe("queued workflow sends (#4359)", () => {
 			new RegExp(`- \`workflow:${RUN_ID}/workflow:child-beta\` \\[future, unused\\] 0 queued messages\\n`),
 		);
 		assert.match(text, new RegExp(`- \`workflow:${RUN_ID}/summary-\\*\` \\[future\\] 0 queued messages`));
+		assert.match(text, new RegExp(`- \`workflow:${RUN_ID}/lint-\\*\` \\[future, predicted\\] 0 queued messages`));
 	});
 });
 
@@ -184,6 +218,7 @@ describe("workflow prediction wire fields (#4359)", () => {
 			{ suggestion: "" },
 			{ suggestion: 7 },
 			{ suggestion: "x".repeat(513) },
+			{ suggestion: ["x"] },
 		]) {
 			assert.equal(isWorkflowSendPredictionFields(invalid), false, JSON.stringify(invalid));
 		}
@@ -215,8 +250,19 @@ describe("workflow prediction wire fields (#4359)", () => {
 			{ probability: -0.01 },
 			{ probability: Number.NaN },
 			{ probability: "0.9" },
+			{ probability: Number.POSITIVE_INFINITY },
 		]) {
 			assert.equal(isWorkflowFutureStagePredictionFields(invalid), false, JSON.stringify(invalid));
 		}
+	});
+
+	test("a roster entry copies only the prediction fields a row sets", () => {
+		assert.deepEqual(workflowFutureStagePredictionFields({}), {});
+		assert.deepEqual(workflowFutureStagePredictionFields({ prediction: "confirmed" }), { prediction: "confirmed" });
+		assert.deepEqual(workflowFutureStagePredictionFields({ probability: 0.5 }), { probability: 0.5 });
+		assert.deepEqual(
+			workflowFutureStagePredictionFields({ prediction: "unused", probability: 0.81, target: "x" } as never),
+			{ prediction: "unused", probability: 0.81 },
+		);
 	});
 });

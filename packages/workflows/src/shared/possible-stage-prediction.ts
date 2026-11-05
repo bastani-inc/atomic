@@ -45,16 +45,11 @@ export function stagePredictionDefinitionHash(
 /** Each input's type, never its value. */
 export function inputsShape(inputs: WorkflowSerializableObject): WorkflowSerializableObject {
 	const shape: Record<string, string> = {};
-	for (const key of Object.keys(inputs).sort()) {
+	for (const key of Object.keys(inputs)) {
 		const value = inputs[key];
 		shape[key] = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
 	}
 	return shape;
-}
-
-/** Whether the scan is uncertain enough to ask: a typed uncertainty, or a bare `*` stage pattern. */
-export function scanNeedsPrediction(scan: Pick<PossibleStagesScanResult, "uncertainties" | "stages">): boolean {
-	return scan.uncertainties.length > 0 || scan.stages.some((stage) => splitStagePathSegments(stage).includes("*"));
 }
 
 interface ScanQuestionPlan {
@@ -123,7 +118,7 @@ export function scanDecisionState(
 }
 
 function isProbability(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+	return Number.isFinite(value) && (value as number) >= 0 && (value as number) <= 1;
 }
 
 /** Accept every candidate at or above the `predicted` threshold; any malformed answer refuses the whole result. */
@@ -198,20 +193,13 @@ function editDistance(left: string, right: string): number {
  */
 export function closestStagePath(path: string, names: readonly string[]): string | undefined {
 	const limit = Math.floor(path.length * 0.4);
-	let best: string | undefined;
-	let bestDistance = Number.POSITIVE_INFINITY;
-	let tied = false;
-	for (const name of new Set(names)) {
-		if (name === path || name.includes("*")) continue;
-		const distance = editDistance(path, name);
-		if (distance > limit) continue;
-		if (distance < bestDistance) {
-			best = name;
-			bestDistance = distance;
-			tied = false;
-		} else if (distance === bestDistance) tied = true;
-	}
-	return tied ? undefined : best;
+	const near = [...new Set(names)]
+		.filter((name) => name !== path && !name.includes("*"))
+		.map((name) => ({ name, distance: editDistance(path, name) }))
+		.filter((entry) => entry.distance <= limit);
+	const best = Math.min(...near.map((entry) => entry.distance));
+	const closest = near.filter((entry) => entry.distance === best);
+	return closest.length === 1 ? closest[0]!.name : undefined;
 }
 
 /**
@@ -254,21 +242,21 @@ export function stagePredictionOutcome(
 ): StagePredictionOutcome {
 	const segments = splitStagePathSegments(path);
 	const boundary = segments.slice(0, -1);
-	let boundaries = 0;
-	let openBoundaries = 0;
+	let boundaryStarted = false;
+	let boundaryOpen = false;
 	for (const run of invocationRuns) {
 		const hops = hopsOf(run.id);
 		if (hops === undefined) continue;
 		for (const stage of run.stages) {
 			const spellings = [stage.id, stage.name];
 			if (stageMatchesPathPattern(segments, hops, spellings)) return "confirmed";
-			if (boundary.length === 0 || !stageMatchesPathPattern(boundary, hops, spellings)) continue;
-			boundaries += 1;
-			if (!ENDED_STAGE_STATUSES.has(stage.status)) openBoundaries += 1;
+			if (!stageMatchesPathPattern(boundary, hops, spellings)) continue;
+			boundaryStarted = true;
+			if (!ENDED_STAGE_STATUSES.has(stage.status)) boundaryOpen = true;
 		}
 	}
 	if (isTerminalRunStatus(rootRun.status)) return "unused";
-	return boundaries > 0 && openBoundaries === 0 ? "unused" : "predicted";
+	return boundaryStarted && !boundaryOpen ? "unused" : "predicted";
 }
 
 /** A root run's predictions with what became of each, as workflow status reports them. */
@@ -305,8 +293,9 @@ const STATUS_PREDICTION_LIMIT = 5;
  * and one `stage predictions unavailable (<code>): <hint>` line when prediction failed. `decision-unavailable` stays
  * in the structured status only.
  */
-export function formatStagePredictionStatus(status: StagePredictionStatus): string[] {
+export function formatStagePredictionStatus(status: StagePredictionStatus | undefined): string[] {
 	const lines: string[] = [];
+	if (status === undefined) return lines;
 	if (status.entries.length > 0) {
 		const shown = status.entries
 			.slice(0, STATUS_PREDICTION_LIMIT)

@@ -2170,6 +2170,29 @@ test("an invalid possible-stage roster is refused orderly without registering th
 	});
 	await owner2.closed;
 	assert.deepEqual(owner2.rejectionLifecycle, ["registration_failed", "end", "close"]);
+
+	// A row's decision-model prediction must be one of its three states with a probability between 0 and 1 (#4359).
+	for (const [index, row] of [
+		{ prediction: "known", probability: 0.9 },
+		{ prediction: "predicted", probability: 1.5 },
+	].entries()) {
+		const owner3 = new WireClient();
+		await register(owner3, `future-invalid-prediction-${index}`, group);
+		owner3.sendBatch([
+			{
+				type: "register_pending_stage_route",
+				runId,
+				group,
+				capability: `future-invalid-prediction-capability-${index}`,
+				possibleStages: [{ target: `workflow:${runId}/review-1`, queuedCount: 0, ...row }],
+			},
+		]);
+		assert.deepEqual(await owner3.next("registration_failed"), {
+			type: "registration_failed",
+			reason: "Invalid workflow possible-stage roster",
+		});
+		await owner3.closed;
+	}
 });
 
 test("a member of an owned subgroup sees the invocation's future rows; a lateral member does not", async () => {

@@ -57,9 +57,17 @@ export function isWorkflowFutureStagePredictionFields(row: object): boolean {
 	return (
 		(value.prediction === undefined || FUTURE_STAGE_PREDICTIONS.has(value.prediction)) &&
 		(value.probability === undefined ||
-			(typeof value.probability === "number" &&
-				Number.isFinite(value.probability) &&
-				value.probability >= 0 &&
-				value.probability <= 1))
+			(Number.isFinite(value.probability) && (value.probability as number) >= 0 && (value.probability as number) <= 1))
 	);
+}
+
+/** Only the prediction fields a possible-stage row carries, for copying into a roster entry. */
+export function workflowFutureStagePredictionFields(row: {
+	readonly prediction?: WorkflowFutureStagePrediction;
+	readonly probability?: number;
+}): { readonly prediction?: WorkflowFutureStagePrediction; readonly probability?: number } {
+	return {
+		...(row.prediction === undefined ? {} : { prediction: row.prediction }),
+		...(row.probability === undefined ? {} : { probability: row.probability }),
+	};
 }

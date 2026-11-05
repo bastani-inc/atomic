@@ -23,6 +23,7 @@ import {
 	isWorkflowFutureStagePredictionFields,
 	isWorkflowSendPredictionFields,
 	type WorkflowSendPredictionFields,
+	workflowFutureStagePredictionFields,
 	workflowSendPredictionFields,
 } from "../workflow-prediction-fields.js";
 import { isSocketAnswering } from "./socket-liveness.js";
@@ -821,8 +822,7 @@ class IntercomBroker {
 					...(row.deliveryStateCounts === undefined ? {} : { deliveryStateCounts: row.deliveryStateCounts }),
 					...(row.omittedDeliveryStates === undefined ? {} : { omittedDeliveryStates: row.omittedDeliveryStates }),
 					...(row.deliveryOnly === undefined ? {} : { deliveryOnly: row.deliveryOnly }),
-					...(row.prediction === undefined ? {} : { prediction: row.prediction }),
-					...(row.probability === undefined ? {} : { probability: row.probability }),
+					...workflowFutureStagePredictionFields(row),
 					group: roster.group,
 				});
 			}

@@ -184,13 +184,9 @@ function renderRunEntry(
 	const poolText = poolCoordinationLine(run.pool);
 	const poolLine =
 		poolText === undefined ? [] : [`   ${muted}${truncateToWidth(poolText, interior - 3, ELLIPSIS)}${reset}`];
-	const predictions = stagePredictionStatus(run, allRuns);
-	const predictionLines =
-		predictions === undefined
-			? []
-			: formatStagePredictionStatus(predictions).map(
-					(line) => `   ${muted}${truncateToWidth(line, interior - 3, ELLIPSIS)}${reset}`,
-				);
+	const predictionLines = formatStagePredictionStatus(stagePredictionStatus(run, allRuns)).map(
+		(line) => `   ${muted}${truncateToWidth(line, interior - 3, ELLIPSIS)}${reset}`,
+	);
 	return [
 		...identityRows,
 		identity,

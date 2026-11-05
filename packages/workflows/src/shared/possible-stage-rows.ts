@@ -678,12 +678,11 @@ export class PossibleStageRowsIndex {
 			rows.push({ slot: `s${position}`, target, queuedCount });
 			rowTargets.add(target);
 		}
-		const scanned = new Set(rootRun.possibleStages ?? []);
-		const invocationRuns = (rootRun.stagePredictions?.entries.length ?? 0) > 0 ? this.invocationRuns(runs) : [];
+		const scanned = new Set(rootRun.possibleStages);
+		let invocationRuns: readonly RunSnapshot[] | undefined;
 		for (const entry of rootRun.stagePredictions?.entries ?? []) {
 			if (scanned.has(entry.path)) continue;
 			const rowSegments = splitStagePathSegments(entry.path);
-			if (rowSegments.some((segment) => segment.length === 0)) continue;
 			let queuedCount = 0;
 			for (const state of scanTargets) {
 				const segments = state.segments!;
@@ -693,6 +692,7 @@ export class PossibleStageRowsIndex {
 			}
 			const target = formatWorkflowStageTarget(this.rootRunId, ...rowSegments);
 			if (rowTargets.has(target)) continue;
+			invocationRuns ??= this.invocationRuns(runs);
 			const prediction = stagePredictionOutcome(entry.path, rootRun, invocationRuns, (runId) =>
 				this.topology.hopsOf(runId),
 			);
@@ -743,9 +743,9 @@ export class PossibleStageRowsIndex {
 			cached !== undefined &&
 			cached.row.target === target &&
 			cached.row.queuedCount === queuedCount &&
-			cached.row.deliveryOnly === deliveryOnly &&
 			cached.row.prediction === prediction.prediction &&
-			cached.row.probability === prediction.probability;
+			cached.row.probability === prediction.probability &&
+			cached.row.deliveryOnly === deliveryOnly;
 		if (same && cached.statuses === deliveryStates) return cached.row;
 		const bounded = deliveryStates === undefined ? undefined : this.bounded(deliveryStates);
 		// A change the bound hides (an omitted state) leaves the announced row as it was.

@@ -1025,7 +1025,7 @@ class PossibleStagesScanner {
 	sourceDigests(): PossibleStageSourceDigest[] {
 		return [...this.digests]
 			.map(([path, sha256]) => ({ file: this.relativeFile(path), sha256 }))
-			.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
+			.sort((left, right) => (left.file < right.file ? -1 : 1));
 	}
 
 	/** Record a `zero-stages` uncertainty when the whole scan found no tracked call site and no stage. */
@@ -1097,7 +1097,7 @@ class PossibleStagesScanner {
 		}
 		if (tokens.length === 1 && head?.kind === "ident") {
 			for (const elements of this.selectEnumArrays(head, site)) {
-				if (elements.length > 1) add(elements, "enum-array");
+				add(elements, "enum-array");
 				for (const element of elements) add([element], "enum-array");
 			}
 		}
@@ -1119,10 +1119,9 @@ class PossibleStagesScanner {
 		const binding = site.unit.imports.get(localName);
 		if (binding?.importedName === undefined) return undefined;
 		const target = resolveRelativeSpecifier(binding.specifier, site.path);
-		const unit = target === undefined ? undefined : this.unitFor(target);
-		return target === undefined || unit === undefined
-			? undefined
-			: { unit, exportName: binding.importedName, path: target };
+		if (target === undefined) return undefined;
+		const unit = this.unitFor(target);
+		return unit === undefined ? undefined : { unit, exportName: binding.importedName, path: target };
 	}
 
 	/** Enum-like arrays in scope of the unit, in source order, then named imports in import order. */
@@ -1139,7 +1138,6 @@ class PossibleStagesScanner {
 	/** Arrays a bare identifier may range over: its loop/callback source's arrays, else every visible array. */
 	private selectEnumArrays(identifier: Token, site: UncertaintySite): (readonly string[])[] {
 		const arrays = this.visibleEnumArrays(site);
-		if (arrays.size === 0) return [];
 		const mentioned = (tokens: readonly Token[]): (readonly string[])[] => {
 			const names = new Set<string>();
 			for (const token of tokens) {
@@ -1203,7 +1201,7 @@ class PossibleStagesScanner {
 			if (target === undefined || seenTargets.has(target)) continue;
 			seenTargets.add(target);
 			const child = this.unitFor(target);
-			if (child === undefined || !child.hasWorkflowCall || child.definitionName === undefined) continue;
+			if (child?.definitionName === undefined) continue;
 			const segment = explicitSegment ?? `workflow:${safeNormalize(child.definitionName)}`;
 			if (segment === "workflow:" || !isCandidateName(segment)) continue;
 			const boundaryPath = joinBoundary(site.boundary, segment);
@@ -1214,13 +1212,11 @@ class PossibleStagesScanner {
 					: [];
 			const stages = [
 				boundaryPath,
-				...nested.filter(
-					(stage) =>
-						stage.startsWith(`${boundaryPath}/`) &&
-						stage
-							.slice(boundaryPath.length + 1)
-							.split("/")
-							.every(isCandidateName),
+				...nested.filter((stage) =>
+					stage
+						.slice(boundaryPath.length + 1)
+						.split("/")
+						.every(isCandidateName),
 				),
 			];
 			out.push({ stages, source: "child-definition" });
@@ -1254,7 +1250,8 @@ class PossibleStagesScanner {
 			childStages = [...this.stages].sort();
 			// A file first read here stays cached, so its read failure must still reach the real output.
 			unreadableWarnings = this.warnings.filter((warning) => warning.startsWith("possible-stages: failed to read"));
-			unreadable = this.uncertainties.filter((uncertainty) => uncertainty.code === "unreadable-file");
+			// A quiet scan records no uncertainty other than an unreadable file.
+			unreadable = this.uncertainties;
 		} finally {
 			this.stages = saved.stages;
 			this.warnings = saved.warnings;
@@ -1435,9 +1432,7 @@ class PossibleStagesScanner {
 			boundary: boundaryPrefix,
 		};
 		let childUncertain = false;
-		const warningsBeforeResolve = this.warnings.length;
 		const childPath = this.resolveChildPath(binding, path);
-		if (this.warnings.length > warningsBeforeResolve) childUncertain = true;
 		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
 		// definition itself lives in the module the wrapper re-exports, so the
 		// boundary name and the subtree follow that chain instead of the empty
@@ -2149,7 +2144,7 @@ function parameterNames(tokens: readonly Token[]): string[] {
 				continue;
 			}
 		}
-		if (atStart && depth === 0 && token.kind === "ident") names.push(token.value);
+		if (atStart && token.kind === "ident") names.push(token.value);
 		atStart = false;
 	}
 	return names;
@@ -2226,9 +2221,8 @@ function functionDeclarations(tokens: readonly Token[]): FunctionDeclaration[] {
 		if (!isPunct(tokens[open], "(")) continue;
 		const close = matchBracket(tokens, open, "(", ")");
 		if (close === undefined) continue;
-		let bodyOpen = close + 1;
-		while (bodyOpen < tokens.length && !isPunct(tokens[bodyOpen], "{")) bodyOpen += 1;
-		const body = balancedRange(tokens, bodyOpen, "{", "}");
+		// The body is the first balanced `{...}` after the parameters; a return type annotation may sit between.
+		const body = balancedRange(tokens, close + 1, "{", "}");
 		if (body === undefined) continue;
 		declarations.push({
 			name: tokens[index + 1]!.value,
@@ -2259,7 +2253,6 @@ function collectEnumArrays(tokens: readonly Token[]): Map<string, readonly strin
 		const declaration = matchVariableDeclaration(tokens, index);
 		if (declaration === undefined) continue;
 		index = declaration.end - 1;
-		if (!isPunct(declaration.init[0], "[")) continue;
 		const array = balancedRange(declaration.init, 0, "[", "]");
 		if (array === undefined) continue;
 		const rest = declaration.init.slice(array.length);
@@ -2349,22 +2342,15 @@ function substituteHelperCall(helper: TemplateHelper, args: readonly (readonly T
 			break;
 		}
 		composed += body.slice(cursor, hole).replace(/\\([$`\\])/g, "$1");
-		let depth = 1;
-		let scan = hole + 2;
-		while (scan < body.length && depth > 0) {
-			const char = body[scan]!;
-			if (char === "{") depth += 1;
-			else if (char === "}") depth -= 1;
-			scan += 1;
-		}
-		const parameter = helper.params.indexOf(body.slice(hole + 2, scan - 1).trim());
-		const argument = parameter >= 0 ? args[parameter] : undefined;
+		// A hole holding a nested brace is never a plain parameter, so the first `}` ends every hole that can compose.
+		const end = body.indexOf("}", hole + 2);
+		const argument = args[helper.params.indexOf(body.slice(hole + 2, end).trim())];
 		if (argument?.length !== 1) return undefined;
 		const only = argument[0]!;
 		if (only.kind === "string") composed += only.value;
-		else if (only.kind === "ident" && /^[0-9]+$/.test(only.value)) composed += only.value;
+		else if (/^[0-9]+$/.test(only.value)) composed += only.value;
 		else return undefined;
-		cursor = scan;
+		cursor = end + 1;
 	}
 	return composed;
 }

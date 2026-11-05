@@ -639,16 +639,20 @@ export interface RunStagePrediction {
 	readonly source: "scan" | "send";
 }
 
-/** The typed reason a prediction fell back to the static known set. */
+/** The typed reason a prediction fell back to the static known set, serialized from its error. */
 export interface RunStagePredictionFallback {
 	readonly name: string;
 	readonly code: import("./possible-stage-prediction-errors.js").PossibleStagePredictionErrorCode;
 	readonly hint: string;
+	readonly phase: import("./possible-stage-prediction-errors.js").PossibleStagePredictionPhase;
+	readonly retryable: boolean;
+	/** The decision service's error that caused it, by name and code. */
+	readonly cause?: { readonly name: string; readonly code?: string };
 }
 
 export interface RunStagePredictions {
-	/** `pending` while the launch-time question is open. */
-	readonly status: "pending" | "ready" | "fallback";
+	/** `fallback` once a prediction failed; the scan alone then decides what it did not predict. */
+	readonly status: "ready" | "fallback";
 	readonly entries: readonly RunStagePrediction[];
 	/** The yes-probability of every judged send target, by stage path. */
 	readonly targets: Readonly<Record<string, number>>;
