@@ -49,6 +49,7 @@ export class SqlPoolUsage {
 	private readonly totals: string;
 	private constructor(
 		private readonly transaction: SqlPoolStorage["transaction"],
+		private readonly read: SqlPoolStorage["read"],
 		private readonly journal: SqlPoolStorage["tables"],
 	) {
 		this.table = poolUsageTable(journal.runs);
@@ -56,26 +57,29 @@ export class SqlPoolUsage {
 	}
 	static async open(
 		transaction: SqlPoolStorage["transaction"],
+		read: SqlPoolStorage["read"],
 		journal: SqlPoolStorage["tables"],
 	): Promise<SqlPoolUsage> {
-		const usage = new SqlPoolUsage(transaction, journal);
+		const usage = new SqlPoolUsage(transaction, read, journal);
 		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs)));
 		return usage;
+	}
+	private async keptTotal(executor: SqliteExecutor, root: string): Promise<PoolUsage | undefined> {
+		const columns = FIELDS.map((field) => field.toLowerCase());
+		const kept = await executor.get(`SELECT * FROM ${this.totals} WHERE root = ?`, root);
+		if (!kept) return undefined;
+		return Object.fromEntries(
+			FIELDS.map((field, index) => [field, Number(kept[columns[index]!]) + Number(kept[`${columns[index]}_err`])]),
+		) as PoolUsage;
 	}
 	/**
 	 * The root's running total, which triggers keep equal to `SUM()` over its usage rows. A root without one gets it
 	 * once, from its rows, provided the root has a pool for the total to belong to.
 	 */
 	private async totalIn(tx: SqliteExecutor, root: string): Promise<PoolUsage> {
+		const kept = await this.keptTotal(tx, root);
+		if (kept) return kept;
 		const columns = FIELDS.map((field) => field.toLowerCase());
-		const kept = await tx.get(`SELECT * FROM ${this.totals} WHERE root = ?`, root);
-		if (kept)
-			return Object.fromEntries(
-				FIELDS.map((field, index) => [
-					field,
-					Number(kept[columns[index]!]) + Number(kept[`${columns[index]}_err`]),
-				]),
-			) as PoolUsage;
 		const row = await tx.get(
 			`SELECT ${FIELDS.map((field) => `COALESCE(SUM(u.${field.toLowerCase()}), 0) AS ${field}`).join(", ")}
 			 FROM ${this.table} u JOIN ${this.journal.runs}_work w ON w.id = u.work WHERE w.root = ?`,
@@ -149,8 +153,9 @@ export class SqlPoolUsage {
 			return this.totalIn(tx, lease.runId);
 		};
 	}
-	total(root: string): Promise<PoolUsage> {
-		return this.transaction((tx) => this.totalIn(tx, root));
+	async total(root: string): Promise<PoolUsage> {
+		const kept = await this.read((executor) => this.keptTotal(executor, root));
+		return kept ?? this.transaction((tx) => this.totalIn(tx, root));
 	}
 }
 
@@ -158,5 +163,5 @@ export async function openSqlPoolUsage(journal: RunJournal): Promise<SqlPoolUsag
 	const storage = sqlPoolStorage(journal);
 	if (!storage) throw new Error("Worker pool requires a SQL run journal");
 	await openSqlPoolQueue(journal);
-	return SqlPoolUsage.open(storage.transaction, storage.tables);
+	return SqlPoolUsage.open(storage.transaction, storage.read, storage.tables);
 }

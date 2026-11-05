@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
 	type SqliteExecutor,
@@ -77,6 +78,36 @@ function entryFromRow(row: EventRow): JournalEntry {
 	};
 }
 
+async function sharedFile(database: SqliteDatabase, tx: SqliteExecutor): Promise<string | undefined> {
+	if (database.descriptor.adapter !== "node-sqlite") return undefined;
+	const { file } = (await tx.get<SqliteRow & { file: string }>(
+		"SELECT file FROM pragma_database_list WHERE name = 'main'",
+	))!;
+	return file === "" ? undefined : file;
+}
+
+/** A failed read keeps its own error; a rollback that also fails is attached to it, never thrown in its place. */
+async function readTransaction<T>(reader: SqliteDatabase, body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
+	await reader.exec("BEGIN");
+	try {
+		const value = await body(reader);
+		await reader.exec("COMMIT");
+		return value;
+	} catch (error) {
+		try {
+			await reader.exec("ROLLBACK");
+		} catch (cleanupCause) {
+			const primary =
+				error instanceof Error
+					? error
+					: new StorageUnavailableError(reader.descriptor, error as StorageFailureCause);
+			Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, configurable: true });
+			throw primary;
+		}
+		throw error;
+	}
+}
+
 export class SqlRunJournal implements RunJournal {
 	private closed = false;
 	private tail: Promise<void> = Promise.resolve();
@@ -85,14 +116,23 @@ export class SqlRunJournal implements RunJournal {
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
+	private readonly readerFile: string | undefined;
+	private reader?: Promise<SqliteDatabase | undefined>;
+	private readerTail: Promise<void> = Promise.resolve();
 
-	private constructor(database: SqliteDatabase, tables: Tables, legacy: LegacyJournalRuns | undefined) {
+	private constructor(
+		database: SqliteDatabase,
+		tables: Tables,
+		legacy: LegacyJournalRuns | undefined,
+		readerFile: string | undefined,
+	) {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
+		this.readerFile = readerFile;
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.transaction(body)),
-			read: (body) => this.operation(() => body(this.database)),
+			read: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
 		});
@@ -104,8 +144,9 @@ export class SqlRunJournal implements RunJournal {
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
 		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t);
+		const readerFile = await sharedFile(database, database);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
-		return new SqlRunJournal(database, t, legacy);
+		return new SqlRunJournal(database, t, legacy, readerFile);
 	}
 
 	/**
@@ -175,6 +216,29 @@ export class SqlRunJournal implements RunJournal {
 	/** A journal write transaction, waiting out a write lock held by a stalled process (`JOURNAL_TRANSACTION`). */
 	private transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T> {
 		return this.database.transaction(body, JOURNAL_TRANSACTION);
+	}
+
+	private async readSnapshot<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
+		const reader = await this.openedReader();
+		if (reader === undefined) return body(this.database);
+		const result = this.readerTail.then(() => readTransaction(reader, body));
+		this.readerTail = Promise.allSettled([result]).then(() => {});
+		return result;
+	}
+
+	/** A reader that failed to open fails the reads waiting for it, and the next read opens another. */
+	private async openedReader(): Promise<SqliteDatabase | undefined> {
+		if (this.reader === undefined)
+			this.reader =
+				this.readerFile === undefined
+					? Promise.resolve(undefined)
+					: openNodeSqliteDatabase(this.readerFile, { readOnly: true });
+		try {
+			return await this.reader;
+		} catch (error) {
+			this.reader = undefined;
+			throw error;
+		}
 	}
 
 	private operation<T>(action: () => Promise<T>): Promise<T> {
@@ -823,7 +887,7 @@ export class SqlRunJournal implements RunJournal {
 	close(): Promise<void> {
 		if (!this.closePromise) {
 			this.closed = true;
-			this.closePromise = this.tail;
+			this.closePromise = this.tail.then(async () => (await this.reader)?.close());
 		}
 		return this.closePromise;
 	}

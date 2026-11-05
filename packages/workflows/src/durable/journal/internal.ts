@@ -67,7 +67,12 @@ export type JournalAppendGuard = (tx: SqliteExecutor, runId: string) => Promise<
 
 export interface SqlPoolStorage {
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
-	/** Statements outside any transaction: they read the last commit without taking the shared write lock. */
+	/**
+	 * A read that never takes the shared write lock: one read transaction on a read-only connection to the journal's
+	 * file, so it reads the last commit while another connection holds the lock and never waits behind this journal's
+	 * own writes. A journal no other connection can open (in memory, or another adapter) reads with statements outside
+	 * any transaction on its own connection.
+	 */
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
