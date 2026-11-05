@@ -307,27 +307,18 @@ export async function resolveAdapterOptions(
 	return options;
 }
 
-/**
- * Stops every automatic snapshot blob collection this process runs on `database` at its next batch, and closes the
- * database once they have ended, so that closing the last store of a session or journal never closes a database under a
- * batch in progress, and no collection holds the process or a remote connection open after the close. The caller never waits for the collection;
- * a failure to close afterwards cannot reach it, so it is reported once as a process warning: the storage error
- * itself, or a {@link StorageUnavailableError} naming the database when the failure was not one.
- */
-function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
+async function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
 	const running = runningSnapshotCollectionsOn(database.descriptor);
-	if (running.length === 0) return database.close();
-	abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
-	void Promise.all(running)
-		.then(() => database.close())
-		.catch((cause: unknown) =>
-			process.emitWarning(
-				cause instanceof StorageError
-					? cause
-					: new StorageUnavailableError(database.descriptor, cause as StorageFailureCause),
-			),
-		);
-	return Promise.resolve();
+	if (running.length > 0) {
+		abortSnapshotCollectionsOn(database.descriptor, new StoreClosedError(database.descriptor));
+		await Promise.all(running);
+	}
+	try {
+		await database.close();
+	} catch (cause) {
+		if (cause instanceof StorageError) throw cause;
+		throw new StorageUnavailableError(database.descriptor, cause as StorageFailureCause);
+	}
 }
 
 function withIdempotentClose<T extends { close(): Promise<void> }>(store: T, release?: () => Promise<void>): T {

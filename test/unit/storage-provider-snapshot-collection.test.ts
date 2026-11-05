@@ -55,30 +55,37 @@ test("closing the last store of a database stops a collection running on it at i
 	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, {
 		onFailure: (error) => failures.push(error),
 	});
+	let collectionSettled = false;
+	void collection.then(() => {
+		collectionSettled = true;
+	});
+	const close = database.close.bind(database);
+	let stoppedBeforeClose = false;
+	vi.spyOn(database, "close").mockImplementation(async () => {
+		stoppedBeforeClose = collectionSettled;
+		await close();
+	});
 
 	await store.close();
+	assert.equal(stoppedBeforeClose, true, "collection stopped before the database started closing");
 
 	const outcome = await collection;
 	assert.equal(outcome.status, "interrupted", "a cancellation, not a failure");
 	const deleted = (outcome as { deleted: readonly string[] }).deleted.length;
 	assert.ok(deleted < SNAPSHOT_COLLECTION_BATCH * 3, "it stopped before collecting everything");
 	assert.deepEqual(failures, []);
-	await vi.waitFor(async () => {
-		await assert.rejects(database.get("SELECT 1"), (error: unknown) => error instanceof StoreClosedError);
-	});
+	await assert.rejects(database.get("SELECT 1"), (error: unknown) => error instanceof StoreClosedError);
 });
 
-test("closing the last store does not wait for the batch in progress, and the database closes once the collection has stopped (#4355)", async () => {
+test("closing the last store aborts collection and resolves only after the database closes (#4355)", async () => {
 	const store = await sessionStoreWithOrphans(SNAPSHOT_COLLECTION_BATCH * 3);
 	const database = databaseOf(store);
 	const { closed } = slowClose(database);
 	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
 
 	await store.close();
-	assert.equal(closed(), false, "the close does not wait for the batch in progress");
-	await collection;
-
-	await vi.waitFor(() => assert.equal(closed(), true));
+	assert.equal(closed(), true, "the awaited close released the underlying database");
+	assert.equal((await collection).status, "interrupted");
 });
 
 /** Makes closing `database` take a moment, and records when it has finished. */
@@ -138,39 +145,40 @@ test("a database another store still uses is not closed by one store's close, co
 	await journal.close();
 });
 
-test("a storage error that fails the database's close after its collection is reported once as that error (#4355)", async () => {
+test("a storage error closing the database after collection rejects close with that error (#4355)", async () => {
 	const store = await sessionStoreWithOrphans(3);
+	const database = databaseOf(store);
 	const failure = new StorageUnavailableError(
 		{ adapter: "node-sqlite", location: "shared.sqlite" },
 		new Error("busy"),
 	);
-	vi.spyOn(databaseOf(store), "close").mockRejectedValue(failure);
-	const warnings: unknown[] = [];
-	vi.spyOn(process, "emitWarning").mockImplementation((warning) => void warnings.push(warning));
+	const close = vi.spyOn(database, "close").mockRejectedValue(failure);
 	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
-
-	await store.close();
-	await collection;
-
-	await vi.waitFor(() => assert.equal(warnings.length, 1));
-	assert.equal(warnings[0], failure);
+	try {
+		await assert.rejects(store.close(), (error) => error === failure);
+		assert.equal((await collection).status, "interrupted");
+	} finally {
+		close.mockRestore();
+		await database.close();
+	}
 });
 
-test("any other failure to close the database is reported once as a typed storage error naming the database (#4355)", async () => {
+test("any other database close failure rejects with a typed storage error naming the database (#4355)", async () => {
 	const store = await sessionStoreWithOrphans(3);
 	const database = databaseOf(store);
 	const failure = new Error("disk full");
-	vi.spyOn(database, "close").mockRejectedValue(failure);
-	const warnings: unknown[] = [];
-	vi.spyOn(process, "emitWarning").mockImplementation((warning) => void warnings.push(warning));
+	const close = vi.spyOn(database, "close").mockRejectedValue(failure);
 	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
-
-	await store.close();
-	await collection;
-
-	await vi.waitFor(() => assert.equal(warnings.length, 1));
-	const [warning] = warnings;
-	assert.ok(warning instanceof StorageUnavailableError);
-	assert.deepEqual([warning.adapter, warning.location], [database.descriptor.adapter, database.descriptor.location]);
-	assert.equal(warning.cause, failure);
+	try {
+		await assert.rejects(store.close(), (error) => {
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.deepEqual([error.adapter, error.location], [database.descriptor.adapter, database.descriptor.location]);
+			assert.equal(error.cause, failure);
+			return true;
+		});
+		assert.equal((await collection).status, "interrupted");
+	} finally {
+		close.mockRestore();
+		await database.close();
+	}
 });

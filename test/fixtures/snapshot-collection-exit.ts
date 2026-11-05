@@ -8,13 +8,13 @@
  * The connection waits up to ten minutes for a write lock another process holds, so a collection that waited for the
  * lock would keep this process alive far longer than any test waits.
  */
-import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
-import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { SqlSnapshotBlobStore } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
 	runningSnapshotCollection,
 	scheduleSnapshotCollection,
-} from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.js";
-import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.js";
+} from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
 
 const PATIENT_LOCK_WAIT_MS = 600_000;
 

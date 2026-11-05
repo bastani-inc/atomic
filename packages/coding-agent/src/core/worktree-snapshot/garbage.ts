@@ -90,9 +90,9 @@ function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollecti
  * clock. This process asks the database at most once per interval. A failure is recorded in the table's collection
  * row and reported once through `onFailure`.
  *
- * The collection never keeps the process alive: it waits between batches, and for a write lock another connection
- * holds, on timers the process does not wait for, so a process with nothing else to do exits after the batch in
- * progress and a later trigger carries on. {@link runningSnapshotCollection} makes the process wait for it.
+ * Collection timers do not keep an otherwise idle process alive. Storage close aborts collection at its next batch
+ * boundary and waits for database cleanup, not the remaining collection. A remote connection or the batch already in
+ * progress can keep the process alive until cleanup finishes. {@link runningSnapshotCollection} waits for completion.
  *
  * Throws {@link WorkspaceConfigError} before reading the store when a setting is invalid: `autoCollect` not a boolean,
  * `collectIntervalSeconds` not a positive integer, or `graceSeconds` not a non-negative integer. Everything else is an
@@ -131,7 +131,7 @@ export function scheduleSnapshotCollection(
  * The automatic collection of `store`'s blob table that this process is running, if any, as a promise that settles
  * when it ends and never rejects. Asking for it makes the process wait for the collection, which otherwise lets the
  * process exit between batches. Close a database you opened yourself only after it settles, so the close does not
- * cut the collection short; storage that Atomic opened itself waits for it on its own.
+ * cut the collection short. Storage that Atomic opened aborts collection and waits for it to stop before closing.
  */
 export function runningSnapshotCollection(
 	store: SnapshotBlobStore | undefined,
