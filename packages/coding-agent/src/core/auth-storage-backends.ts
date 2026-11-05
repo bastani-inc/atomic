@@ -312,8 +312,15 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		return this.readPaths.map((path) => describeFileVersion(path)).join("|");
 	}
 
+	/** Each existing auth file once, by its real path, so a symlinked alias is never locked twice (pi #11655). */
+	private existingResolvedReadPaths(): string[] {
+		return [
+			...new Set(this.readPaths.filter((path) => existsSync(path)).map((path) => resolveExistingAuthPath(path))),
+		].sort();
+	}
+
 	deleteProvider(provider: string): string | undefined {
-		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const paths = this.existingResolvedReadPaths();
 		const releases: Array<() => void> = [];
 		try {
 			for (const path of paths) releases.push(this.acquireLockSyncWithRetry(path));
@@ -330,7 +337,7 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	}
 
 	async deleteProviderAsync(provider: string): Promise<string | undefined> {
-		const paths = [...new Set(this.readPaths.filter((path) => existsSync(path)))].sort();
+		const paths = this.existingResolvedReadPaths();
 		const releases: Array<() => Promise<void>> = [];
 		try {
 			for (const path of paths) {

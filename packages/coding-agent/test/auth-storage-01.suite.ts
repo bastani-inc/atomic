@@ -1,6 +1,7 @@
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -184,6 +185,47 @@ describe("AuthStorage file backend regressions", () => {
 		}
 		await pending;
 		expect(update).toHaveBeenCalledTimes(1);
+	});
+
+	test("logout removes a credential when one auth path is a symlink to another (pi #11655)", async () => {
+		const aliasPath = join(tempDir, "alias.json");
+		symlinkSync(authPath, aliasPath);
+		writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "anthropic-key" } }));
+		const backend = new FileAuthStorageBackend(aliasPath, [aliasPath, authPath]);
+
+		expect(JSON.parse(backend.deleteProvider("anthropic") ?? "{}")).toEqual({});
+		writeFileSync(authPath, JSON.stringify({ openai: { type: "api_key", key: "openai-key" } }));
+		expect(JSON.parse((await backend.deleteProviderAsync("openai")) ?? "{}")).toEqual({});
+		expect(JSON.parse(readFileSync(authPath, "utf8"))).toEqual({});
+		expect(lstatSync(aliasPath).isSymbolicLink()).toBe(true);
+	});
+
+	test("logout skips a layered auth path that does not exist", async () => {
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				anthropic: { type: "api_key", key: "anthropic-key" },
+				openai: { type: "api_key", key: "openai-key" },
+			}),
+		);
+		const backend = new FileAuthStorageBackend(authPath, [authPath, join(tempDir, "missing", "auth.json")]);
+
+		expect(JSON.parse(backend.deleteProvider("anthropic") ?? "{}")).toEqual({
+			openai: { type: "api_key", key: "openai-key" },
+		});
+		expect(JSON.parse((await backend.deleteProviderAsync("openai")) ?? "{}")).toEqual({});
+	});
+
+	test("concurrent logouts lock layered auth files in the same order", async () => {
+		const otherPath = join(tempDir, "other.json");
+		writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "anthropic-key" } }));
+		writeFileSync(otherPath, JSON.stringify({ openai: { type: "api_key", key: "openai-key" } }));
+		const forward = new FileAuthStorageBackend(authPath, [authPath, otherPath]);
+		const reverse = new FileAuthStorageBackend(otherPath, [otherPath, authPath]);
+
+		await Promise.all([forward.deleteProviderAsync("anthropic"), reverse.deleteProviderAsync("openai")]);
+		expect(JSON.parse(readFileSync(authPath, "utf8"))).toEqual({});
+		expect(JSON.parse(readFileSync(otherPath, "utf8"))).toEqual({});
 	});
 
 	test("many fresh storage reads succeed while the write lock is held", async () => {
