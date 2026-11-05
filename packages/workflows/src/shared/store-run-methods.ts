@@ -27,6 +27,7 @@ type RunStoreMethods = Pick<
 	| "notices"
 	| "activeRunId"
 	| "recordRunStart"
+	| "editRun"
 	| "recordRunSummary"
 	| "recordRunExecutionState"
 	| "recordRunPool"
@@ -94,6 +95,18 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			// Resume replaces the snapshot, not the identity's prompt answers or notices.
 			context.placeRun(run);
 			context.bumpAndNotify({ runId: run.id });
+		},
+
+		editRun(runId, edit): boolean {
+			const run = context.findRun(runId);
+			if (run === undefined) return false;
+			context.batch(() => {
+				const edited = edit(run);
+				if (edited.run === true) context.bumpAndNotify({ runId });
+				for (const stageId of edited.stageIds ?? []) context.bumpAndNotify({ runId, stageId });
+				for (const toolNodeId of edited.toolNodeIds ?? []) context.bumpAndNotify({ runId, toolNodeId });
+			});
+			return true;
 		},
 
 		recordRunSummary(runId, summary, summarizedThrough): void {

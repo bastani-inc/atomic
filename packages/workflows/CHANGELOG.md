@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Large local worker pools no longer spend most of their journal's write lock on worker heartbeats. Each worker used to send a lease renewal, a control poll and a usage report every second, as three journal transactions. It now sends one heartbeat every quarter of its lease that does all three in one transaction. With 450 workers and a 60 s lease, that is 30 heartbeat writes per second instead of 1,350, and leases are renewed well before they expire. Pause, resume and quit are pushed to workers as soon as they are committed, so they reach running children no later than before ([#4313](https://github.com/bastani-inc/atomic/issues/4313))
+- A root hosting large local-worker pools no longer pins its main thread applying worker activity, which delayed its lease renewals and new stages' routing. Each publication now carries only the stages, tool nodes and run fields that changed since the attempt's previous one, and the root updates its copy of the run in place instead of copying and comparing every stage it holds: a batch that changes one stage costs the same whether the run has 250 or 4,000 stages. A large batch is applied over several turns of the event loop, so timers such as lease renewal run while it applies ([#4317](https://github.com/bastani-inc/atomic/issues/4317))
 
 ## [0.9.71] - 2026-11-03
 

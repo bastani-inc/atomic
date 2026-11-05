@@ -64,6 +64,7 @@ import {
 	SqlResourceAdmission,
 	unconfirmedProcessGroups,
 } from "./resource-admission.js";
+import { RunChangesEncoder } from "./run-changes.js";
 import { runsWhilePaused } from "./stage-session-commands.js";
 import { StageEventBacklog } from "./stage-watch-coalesce.js";
 import type {
@@ -431,6 +432,7 @@ export class PoolCoordinator {
 	 */
 	private readonly awaiting = new Map<string, number>();
 	private readonly pendingActivity = new Map<string, PoolActivityEntry>();
+	private readonly sentRuns = new RunChangesEncoder();
 	private readonly batches = new Map<number, { readonly entries: readonly PoolActivityEntry[]; settle(): void }>();
 	private readonly publicationFailures = new Map<string, { readonly generation: number; readonly error: string }>();
 	private readonly requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -995,11 +997,12 @@ export class PoolCoordinator {
 		}
 		this.lastFlushAt = performance.now();
 		const batch = ++this.batchSequence;
-		const entries = [...this.pendingActivity.values()];
+		const published = [...this.pendingActivity.values()];
 		this.pendingActivity.clear();
 		const usage = this.usageChanged ? this.usageTotal : undefined;
 		this.usageChanged = false;
-		const settled = new Promise<void>((resolve) => this.batches.set(batch, { entries, settle: resolve }));
+		const settled = new Promise<void>((resolve) => this.batches.set(batch, { entries: published, settle: resolve }));
+		const entries = published.map(({ work, runs }) => ({ work, runs: this.sentRuns.encode(work, runs) }));
 		this.port.send({ kind: "activity", batch, entries, ...(usage === undefined ? {} : { usage }) });
 		return settled;
 	}
@@ -1022,6 +1025,7 @@ export class PoolCoordinator {
 		const result = await this.queue!.result(this.root!, workId);
 		if (result === undefined) return false;
 		this.flush();
+		this.sentRuns.forget(workId);
 		this.port.send({
 			kind: "result",
 			workId,
@@ -1311,6 +1315,7 @@ export class PoolCoordinator {
 			"attempt_fenced",
 		);
 		this.pendingActivity.delete(work.id);
+		this.sentRuns.forget(work.id);
 		this.routes?.fence(work);
 		this.port.send({ kind: "fence", work: { id: work.id, generation: work.generation } });
 	}

@@ -210,6 +210,7 @@ const store: Store = {
 	notices: () => [],
 	activeRunId: () => run?.id ?? null,
 	recordRunStart: () => {},
+	editRun: () => false,
 	batch: (update) => update(),
 	recordRunExecutionState: () => {},
 	queueStageMessage: async () => undefined,

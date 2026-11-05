@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers";
 import { pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import type { PoolWork, SqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
@@ -12,8 +13,9 @@ import {
 import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-readiness.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus, isTerminalStageStatus } from "../shared/store-internal.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
 import { authoritativeWorkflowChildRunId } from "../shared/workflow-run-ownership.js";
+import { isRunChanges, type PublishedRun, type RunChanges, type RunHeader } from "./run-changes.js";
 
 type PendingDelivery = ReturnType<typeof createWorkflowPendingStageDelivery>;
 type PendingDeliver = Parameters<PendingDelivery["deliverPending"]>[0];
@@ -26,7 +28,36 @@ export type PoolStageQueue = Pick<SqlPoolQueue, "assertCurrent" | "withCurrentAp
 
 export interface PoolStagePublication {
 	readonly work: PoolWork;
-	readonly runs: readonly RunSnapshot[];
+	readonly runs: readonly PublishedRun[];
+}
+
+/**
+ * Stage and tool-node snapshots a batch writes to the store before it lets the event loop turn (#4317): a large
+ * batch takes several turns, so the root's lease renewals and other timers run between them.
+ */
+export const PUBLICATION_TURN_WRITES = 1_000;
+
+/** What the handoff wrote of one run, to apply the run's next changes without reading its other stages. */
+interface RunView {
+	readonly stages: readonly StageSnapshot[];
+	readonly stagePositions: Map<string, number>;
+	stageCount: number;
+	readonly toolNodes: readonly ToolNodeSnapshot[];
+	readonly toolPositions: Map<string, number>;
+	toolCount: number;
+	/** Stages the attempt has not ended, which each lease renewal relabels. */
+	readonly open: Set<string>;
+	/** Stages of earlier attempts the replacement has not republished yet (#4009). */
+	readonly reconnecting: number;
+}
+
+/** A published run as validation sees it: its parent links, the store's for a run published as changes. */
+interface Member {
+	readonly published: PublishedRun;
+	readonly id: string;
+	readonly parentRunId: string | undefined;
+	readonly parentStageId: string | undefined;
+	readonly rootRunId: string | undefined;
 }
 
 interface Attempt {
@@ -34,8 +65,15 @@ interface Attempt {
 	readonly runs: Set<string>;
 	readonly deliveries: Map<string, PendingDelivery>;
 	readonly sessions: Map<string, string>;
+	readonly views: Map<string, RunView>;
+	/** The run each published run hangs from a stage of, by that run and stage, as the last full publication showed. */
+	readonly hosts: Map<string, string>;
+	/** Runs with stages the attempt has not ended: a renewal relabels them whether a publication names them or not. */
+	readonly openRuns: Set<string>;
 	fenced: boolean;
 }
+
+type Execution = NonNullable<StageSnapshot["workerExecution"]>;
 
 const STALE = "Stale work lease";
 
@@ -44,6 +82,10 @@ export class PoolStageHandoff {
 	private readonly owners = new Map<string, string>();
 	private readonly publications = new Map<string, Promise<void>>();
 	private readonly drains = new Map<string, Promise<void>>();
+	/** Where each work's boundary stage stood in the root run's stages when last found. */
+	private readonly boundaryPositions = new Map<string, number>();
+	/** The attempt of each work that had a publication refused, and the reason (#4317). */
+	private readonly refusals = new Map<string, { readonly generation: number; readonly error: Error }>();
 	/** Failed stage drains of this root, summarized on its run by {@link recordDeliveryIssue}. */
 	private deliveryIssues = 0;
 
@@ -56,13 +98,19 @@ export class PoolStageHandoff {
 		private readonly claimRun?: (runId: string) => void,
 	) {}
 
-	publish(work: PoolWork, runs: readonly RunSnapshot[]): Promise<void> {
+	publish(work: PoolWork, runs: readonly PublishedRun[]): Promise<void> {
 		const previous = this.publications.get(work.id) ?? Promise.resolve();
 		const publication = previous
 			.catch(() => undefined)
 			.then(async () => {
-				const commit = await this.prepare(work, runs);
-				this.store.batch(commit);
+				try {
+					const commit = await this.prepare(work, runs);
+					this.store.batch(commit);
+					this.rebase(work, runs);
+				} catch (error) {
+					this.refuse(work, error as Error);
+					throw error;
+				}
 			});
 		const settled = publication.catch(() => undefined);
 		this.publications.set(work.id, settled);
@@ -73,24 +121,62 @@ export class PoolStageHandoff {
 	}
 
 	/**
-	 * Publish the latest activity of several attempts with one store invalidation, in order.
-	 * Returns each publication's rejection, or undefined for an accepted one.
+	 * Publish the latest activity of several attempts, in order, with one store invalidation per turn of the event
+	 * loop: the batch yields once a turn wrote {@link PUBLICATION_TURN_WRITES} snapshots, and stops with `signal`'s
+	 * reason before any turn that starts once it was aborted, the first included. Returns each publication's
+	 * rejection, or undefined for an accepted one.
 	 */
-	async publishBatch(publications: readonly PoolStagePublication[]): Promise<(Error | undefined)[]> {
-		const prepared: ((() => void) | Error)[] = [];
+	async publishBatch(
+		publications: readonly PoolStagePublication[],
+		signal?: AbortSignal,
+	): Promise<(Error | undefined)[]> {
+		const prepared: ((() => number) | Error)[] = [];
 		for (const { work, runs } of publications)
 			prepared.push(await this.prepare(work, runs).catch((error: Error) => error));
-		return this.store.batch(() =>
-			prepared.map((commit) => {
-				if (commit instanceof Error) return commit;
-				try {
-					commit();
-					return undefined;
-				} catch (error) {
-					return error instanceof Error ? error : new Error(String(error));
+		const outcomes: (Error | undefined)[] = [];
+		while (outcomes.length < prepared.length) {
+			if (outcomes.length > 0) await nextTurn();
+			signal?.throwIfAborted();
+			this.store.batch(() => {
+				for (let written = 0; written < PUBLICATION_TURN_WRITES && outcomes.length < prepared.length; ) {
+					const { work, runs } = publications[outcomes.length]!;
+					const commit = this.refusal(work, runs) ?? prepared[outcomes.length]!;
+					try {
+						if (commit instanceof Error) throw commit;
+						written += 1 + commit();
+						this.rebase(work, runs);
+						outcomes.push(undefined);
+					} catch (error) {
+						const refused = error instanceof Error ? error : new Error(String(error));
+						this.refuse(work, refused);
+						outcomes.push(refused);
+					}
 				}
-			}),
-		);
+			});
+		}
+		return outcomes;
+	}
+
+	/**
+	 * Records that a publication of this attempt was refused, and why. Changes apply to what the attempt published
+	 * before them, so the attempt's later changes are refused with this first reason until it publishes in full (#4317).
+	 */
+	refuse(work: Pick<PoolWork, "id" | "generation">, error: Error): void {
+		const known = this.refusals.get(work.id);
+		if (known === undefined || known.generation < work.generation)
+			this.refusals.set(work.id, { generation: work.generation, error });
+	}
+
+	/** An accepted publication in full is what the attempt's next changes apply to, refused or not before it. */
+	private rebase(work: Pick<PoolWork, "id" | "generation">, runs: readonly PublishedRun[]): void {
+		if (this.refusals.get(work.id)?.generation === work.generation && !runs.some(isRunChanges))
+			this.refusals.delete(work.id);
+	}
+
+	/** Why a publication carrying changes is refused: an earlier publication of its attempt was. */
+	private refusal(work: Pick<PoolWork, "id" | "generation">, runs: readonly PublishedRun[]): Error | undefined {
+		const known = this.refusals.get(work.id);
+		return known?.generation === work.generation && runs.some(isRunChanges) ? known.error : undefined;
 	}
 
 	async route(work: PoolWork, runId: string): Promise<string> {
@@ -244,7 +330,9 @@ export class PoolStageHandoff {
 	}
 
 	/** Validates a publication and returns the store update that applies it; the update re-checks ownership. */
-	private async prepare(work: PoolWork, runs: readonly RunSnapshot[]): Promise<() => void> {
+	private async prepare(work: PoolWork, runs: readonly PublishedRun[]): Promise<() => number> {
+		const refused = this.refusal(work, runs);
+		if (refused !== undefined) throw refused;
 		const subtree = this.subtree(work, runs);
 		const root = this.lease.runId;
 		const owned = (known: ReadonlyMap<string, RunSnapshot>) => {
@@ -253,6 +341,7 @@ export class PoolStageHandoff {
 				const owner = this.owners.get(run.id);
 				if (
 					(owner !== undefined && owner !== work.id) ||
+					(isRunChanges(run.published) && (existing === undefined || !this.holds(work, run.id))) ||
 					(owner === undefined &&
 						existing !== undefined &&
 						(existing.parentRunId !== run.parentRunId || existing.parentStageId !== run.parentStageId))
@@ -267,11 +356,17 @@ export class PoolStageHandoff {
 		return () => this.commit(work, subtree, owned);
 	}
 
+	/** Whether the work's current attempt published the run in full, which its changes apply to. */
+	private holds(work: Pick<PoolWork, "id" | "generation">, runId: string): boolean {
+		const attempt = this.attempts.get(work.id);
+		return attempt?.generation === work.generation && attempt.views.has(runId);
+	}
+
 	/**
 	 * The store's current copy of each published run, looked up by id: a publication costs what it publishes, not
 	 * what the store holds, which in a long-lived host is thousands of finished runs (#4182).
 	 */
-	private known(subtree: readonly RunSnapshot[]): ReadonlyMap<string, RunSnapshot> {
+	private known(subtree: readonly Member[]): ReadonlyMap<string, RunSnapshot> {
 		const known = new Map<string, RunSnapshot>();
 		for (const run of subtree) {
 			const existing = this.store.run(run.id);
@@ -280,91 +375,283 @@ export class PoolStageHandoff {
 		return known;
 	}
 
+	/** Applies a validated publication and returns how many stage and tool-node snapshots it wrote. */
 	private commit(
 		work: PoolWork,
-		subtree: readonly RunSnapshot[],
+		subtree: readonly Member[],
 		owned: (known: ReadonlyMap<string, RunSnapshot>) => void,
-	): void {
-		const root = this.lease.runId;
+	): number {
 		const known = this.known(subtree);
 		owned(known);
 		const attempt = this.enter(work);
-		const execution = {
+		const execution: Execution = {
 			worker: work.worker ?? "",
 			generation: work.generation,
 			renewedAt: work.renewedAt,
 			expiresAt: work.expiresAt,
 		};
-		const published = subtree.map((run) => ({
+		for (const run of subtree) this.claimRun?.(run.id);
+		const full = !subtree.some((run) => isRunChanges(run.published));
+		if (full) hold(attempt, subtree);
+		let changed = false;
+		let written = 0;
+		for (const { published } of subtree) {
+			attempt.runs.add(published.id);
+			this.owners.set(published.id, work.id);
+			const stored = known.get(published.id);
+			const outcome = isRunChanges(published)
+				? this.change(attempt, stored!, published, execution)
+				: this.replace(attempt, stored, published, execution);
+			changed ||= outcome.changed;
+			written += outcome.written;
+		}
+		if (!full) {
+			// Runs a publication of changes leaves out did not change, but their open stages show the attempt's lease.
+			const named = new Set(subtree.map((run) => run.id));
+			for (const id of [...attempt.openRuns]) if (!named.has(id)) written += this.relabel(attempt, id, execution);
+		}
+		if (changed) this.store.recordRunExecutionState(this.lease.runId, { lastProgressAt: Date.now() });
+		return written;
+	}
+
+	/** Replaces the store's copy of a run published in full. */
+	private replace(
+		attempt: Attempt,
+		known: RunSnapshot | undefined,
+		run: RunSnapshot,
+		execution: Execution,
+	): { readonly changed: boolean; readonly written: number } {
+		const root = this.lease.runId;
+		const previous = known === undefined ? new Map<string, StageSnapshot>() : byId(known.stages);
+		const published: RunSnapshot = {
 			...run,
 			rootRunId: root,
 			pendingStageMessages: [
-				...(known.get(run.id)?.pendingStageMessages ??
-					pendingStageMessagesForDurableRun(this.backend, run.id, root)),
+				...(known?.pendingStageMessages ?? pendingStageMessagesForDurableRun(this.backend, run.id, root)),
 			],
 			stages: withReconnectingStages(
-				known.get(run.id),
+				known,
 				run,
-				run.stages.map((stage) => ({ ...stage, workerExecution: endedUnder(known.get(run.id), stage, execution) })),
-				work.generation,
+				run.stages.map((stage) => ({
+					...stage,
+					workerExecution: endedUnder(previous.get(stage.id), stage, execution),
+				})),
+				attempt.generation,
 			),
-		}));
-		const changed = published.some((run) => activity(known.get(run.id)) !== activity(run));
-		for (const run of published) this.claimRun?.(run.id);
-		for (const run of published) {
-			attempt.runs.add(run.id);
-			this.owners.set(run.id, work.id);
-			for (const stage of run.stages) {
-				const key = JSON.stringify([run.id, stage.id]);
-				if (attempt.sessions.get(key) !== stage.sessionId) {
-					attempt.deliveries.get(key)?.fail(new Error(`Stage session ${attempt.sessions.get(key)} was replaced`));
-					attempt.deliveries.delete(key);
-				}
-				if (stage.sessionId === undefined) attempt.sessions.delete(key);
-				else attempt.sessions.set(key, stage.sessionId);
-			}
-			// Whether a chat in this process is attached to a stage is the root's own state: a worker's
-			// republished run never knows it, and dropping it would stop the chat answering prompts.
-			const previous = this.store.run(run.id);
-			for (const stage of run.stages)
-				if (previous?.stages.find((candidate) => candidate.id === stage.id)?.attached === true)
-					stage.attached = true;
-			this.store.recordRunStart(run);
-		}
-		if (changed) this.store.recordRunExecutionState(root, { lastProgressAt: Date.now() });
+		};
+		const changed = activity(known) !== activity(published);
+		for (const stage of published.stages) this.trackSession(attempt, run.id, stage);
+		// Whether a chat in this process is attached to a stage is the root's own state: a worker's
+		// republished run never knows it, and dropping it would stop the chat answering prompts.
+		for (const stage of published.stages) if (previous.get(stage.id)?.attached === true) stage.attached = true;
+		this.store.recordRunStart(published);
+		open(attempt, run.id, viewOf(published));
+		return { changed, written: published.stages.length + published.toolNodes.length };
 	}
 
-	private subtree(work: PoolWork, runs: readonly RunSnapshot[]): readonly RunSnapshot[] {
+	/** Relabels the open stages of a run the attempt holds with its current lease, as a publication without changes. */
+	private relabel(attempt: Attempt, runId: string, execution: Execution): number {
+		const stored = this.store.run(runId);
+		if (stored === undefined) {
+			attempt.openRuns.delete(runId);
+			return 0;
+		}
+		return this.change(attempt, stored, { kind: "changes", id: runId, stages: [], toolNodes: [] }, execution).written;
+	}
+
+	/**
+	 * Applies a run's changes to the store's copy in place: only the changed stages, and the open stages a lease
+	 * renewal relabels, are written. A run still showing stages of an earlier attempt is replaced instead.
+	 */
+	private change(
+		attempt: Attempt,
+		stored: RunSnapshot,
+		changes: RunChanges,
+		execution: Execution,
+	): { readonly changed: boolean; readonly written: number } {
+		const view = this.view(attempt, stored, changes);
+		if (view.reconnecting > 0) return this.replace(attempt, stored, workerRun(stored, changes), execution);
+		const stageIds: string[] = [];
+		const toolNodeIds: string[] = [];
+		this.store.editRun(stored.id, (run) => {
+			if (changes.header !== undefined) replaceHeader(run, changes.header, this.lease.runId);
+			for (const stage of changes.stages) {
+				const position = view.stagePositions.get(stage.id) ?? run.stages.length;
+				const previous = run.stages[position];
+				const published: StageSnapshot = {
+					...stage,
+					workerExecution: endedUnder(previous, stage, execution),
+				};
+				if (previous?.attached === true) published.attached = true;
+				this.trackSession(attempt, run.id, published);
+				view.stagePositions.set(stage.id, position);
+				run.stages[position] = published;
+				if (isTerminalStageStatus(published.status)) view.open.delete(stage.id);
+				else view.open.add(stage.id);
+				stageIds.push(stage.id);
+			}
+			const changed = new Set(stageIds);
+			for (const id of view.open) {
+				const position = view.stagePositions.get(id)!;
+				const stage = run.stages[position]!;
+				if (changed.has(id) || sameExecution(stage.workerExecution, execution)) continue;
+				run.stages[position] = { ...stage, workerExecution: execution };
+				stageIds.push(id);
+			}
+			for (const node of changes.toolNodes) {
+				const position = view.toolPositions.get(node.id) ?? run.toolNodes.length;
+				view.toolPositions.set(node.id, position);
+				run.toolNodes[position] = node;
+				toolNodeIds.push(node.id);
+			}
+			return { run: changes.header !== undefined, stageIds, toolNodeIds };
+		});
+		view.stageCount = stored.stages.length;
+		view.toolCount = stored.toolNodes.length;
+		open(attempt, stored.id, view);
+		return {
+			changed: changes.header !== undefined || changes.stages.length > 0 || changes.toolNodes.length > 0,
+			written: stageIds.length + toolNodeIds.length,
+		};
+	}
+
+	/**
+	 * The view of a stored run, rebuilt when the store replaced or grew its stages or tool nodes, or moved one the
+	 * changes or a lease renewal write, since the handoff last wrote it.
+	 */
+	private view(attempt: Attempt, run: RunSnapshot, changes: RunChanges): RunView {
+		const known = attempt.views.get(run.id);
+		const placed = (
+			positions: ReadonlyMap<string, number>,
+			nodes: readonly { readonly id: string }[],
+			id: string,
+		) => {
+			const position = positions.get(id);
+			return position === undefined || nodes[position]!.id === id;
+		};
+		if (
+			known !== undefined &&
+			known.stages === run.stages &&
+			known.stageCount === run.stages.length &&
+			known.toolNodes === run.toolNodes &&
+			known.toolCount === run.toolNodes.length &&
+			changes.stages.every((stage) => placed(known.stagePositions, run.stages, stage.id)) &&
+			[...known.open].every((id) => placed(known.stagePositions, run.stages, id)) &&
+			changes.toolNodes.every((node) => placed(known.toolPositions, run.toolNodes, node.id))
+		)
+			return known;
+		return open(attempt, run.id, viewOf(run));
+	}
+
+	private trackSession(attempt: Attempt, runId: string, stage: StageSnapshot): void {
+		const key = JSON.stringify([runId, stage.id]);
+		if (attempt.sessions.get(key) !== stage.sessionId) {
+			attempt.deliveries.get(key)?.fail(new Error(`Stage session ${attempt.sessions.get(key)} was replaced`));
+			attempt.deliveries.delete(key);
+		}
+		if (stage.sessionId === undefined) attempt.sessions.delete(key);
+		else attempt.sessions.set(key, stage.sessionId);
+	}
+
+	private subtree(work: PoolWork, runs: readonly PublishedRun[]): readonly Member[] {
 		const root = this.lease.runId;
-		const byId = new Map<string, RunSnapshot>();
+		const ids = new Set<string>();
 		for (const run of runs) {
-			if (run.id === root || byId.has(run.id)) throw outside(run.id);
-			byId.set(run.id, run);
+			if (run.id === root || ids.has(run.id)) throw outside(run.id);
+			ids.add(run.id);
 		}
 		if (runs.length === 0) return [];
-		const rootRun = this.store.run(root);
-		const boundary = rootRun?.stages.find((stage) => stage.id === work.boundaryId);
+		const boundary = this.boundary(work.boundaryId);
 		if (authoritativeWorkflowChildRunId(boundary) !== work.childRunId)
 			throw new Error(`Pool work boundary ${work.boundaryId} is not linked to ${work.childRunId} in the root run`);
-		const ordered: RunSnapshot[] = [];
-		const top = byId.get(work.childRunId);
-		if (top !== undefined) {
+		return runs.some(isRunChanges) ? this.changed(work, runs) : this.tree(work, runs as readonly RunSnapshot[]);
+	}
+
+	/** The runs of a full publication in the order they hang from the work's boundary, each reached once. */
+	private tree(work: PoolWork, runs: readonly RunSnapshot[]): readonly Member[] {
+		const root = this.lease.runId;
+		const children = new Map<string | undefined, RunSnapshot[]>();
+		for (const run of runs) {
+			const siblings = children.get(run.parentRunId);
+			if (siblings === undefined) children.set(run.parentRunId, [run]);
+			else siblings.push(run);
+		}
+		const ordered = runs.filter((run) => run.id === work.childRunId);
+		for (const top of ordered)
 			if (top.parentRunId !== root || top.parentStageId !== work.boundaryId) throw outside(top.id);
-			const pending = [top];
-			for (let run = pending.shift(); run !== undefined; run = pending.shift()) {
-				if (run.rootRunId !== undefined && run.rootRunId !== root) throw outside(run.id);
-				ordered.push(run);
-				for (const child of runs) {
-					if (child.parentRunId !== run.id) continue;
-					const parentStage = run.stages.find((stage) => stage.id === child.parentStageId);
-					if (authoritativeWorkflowChildRunId(parentStage) !== child.id) throw outside(child.id);
-					pending.push(child);
-				}
+		for (let index = 0; index < ordered.length; index++) {
+			const run = ordered[index]!;
+			if (run.rootRunId !== undefined && run.rootRunId !== root) throw outside(run.id);
+			let stages: ReadonlyMap<string | undefined, StageSnapshot> | undefined;
+			for (const child of children.get(run.id) ?? []) {
+				stages ??= byId(run.stages);
+				if (authoritativeWorkflowChildRunId(stages.get(child.parentStageId)) !== child.id) throw outside(child.id);
+				ordered.push(child);
 			}
 		}
-		const stray = runs.find((run) => !ordered.includes(run));
+		const reached = new Set(ordered);
+		const stray = runs.find((run) => !reached.has(run));
 		if (stray !== undefined) throw outside(stray.id);
-		return ordered;
+		return ordered.map((run) => this.member(run));
+	}
+
+	/**
+	 * The runs of a publication of changes, each checked on its own: its links cannot move and every run in it was
+	 * published in full by the attempt, so only a changed stage that other runs hang from can break the tree.
+	 */
+	private changed(work: PoolWork, runs: readonly PublishedRun[]): readonly Member[] {
+		const root = this.lease.runId;
+		const hosts = this.attempts.get(work.id)?.hosts;
+		return runs.map((run) => {
+			if (!isRunChanges(run)) throw outside(run.id);
+			const member = this.member(run);
+			if (member.rootRunId !== undefined && member.rootRunId !== root) throw outside(run.id);
+			for (const stage of run.stages) {
+				const hosted = hosts?.get(hostKey(run.id, stage.id));
+				if (hosted !== undefined && authoritativeWorkflowChildRunId(stage) !== hosted) throw outside(hosted);
+			}
+			return member;
+		});
+	}
+
+	/**
+	 * A published run as validation sees it. A run published as changes keeps the parent links of the store's copy,
+	 * which a change to its own fields may not move.
+	 */
+	private member(published: PublishedRun): Member {
+		if (!isRunChanges(published))
+			return {
+				published,
+				id: published.id,
+				parentRunId: published.parentRunId,
+				parentStageId: published.parentStageId,
+				rootRunId: published.rootRunId,
+			};
+		const stored = this.store.run(published.id);
+		const header = published.header;
+		if (
+			stored === undefined ||
+			(header !== undefined &&
+				(header.parentRunId !== stored.parentRunId || header.parentStageId !== stored.parentStageId))
+		)
+			throw outside(published.id);
+		return {
+			published,
+			id: published.id,
+			parentRunId: stored.parentRunId,
+			parentStageId: stored.parentStageId,
+			rootRunId: header === undefined ? stored.rootRunId : header.rootRunId,
+		};
+	}
+
+	/** The root's boundary stage of a work, found by its last known position before any scan of the root's stages. */
+	private boundary(boundaryId: string): StageSnapshot | undefined {
+		const stages = this.store.run(this.lease.runId)?.stages ?? [];
+		const known = stages[this.boundaryPositions.get(boundaryId) ?? -1];
+		if (known?.id === boundaryId) return known;
+		const position = stages.findIndex((stage) => stage.id === boundaryId);
+		this.boundaryPositions.set(boundaryId, position);
+		return stages[position];
 	}
 
 	private async begin(work: PoolWork): Promise<Attempt> {
@@ -389,6 +676,9 @@ export class PoolStageHandoff {
 			runs: previous?.runs ?? new Set(),
 			deliveries: new Map(),
 			sessions: new Map(),
+			views: new Map(),
+			hosts: new Map(),
+			openRuns: new Set(),
 			fenced: false,
 		};
 		this.attempts.set(work.id, attempt);
@@ -473,19 +763,109 @@ function isLive(stage: StageSnapshot): boolean {
  * under this attempt, which keeps the lease it ended under. The attempt goes on renewing for its other stages, and a
  * renewal after a stage ended must not read as that stage still holding its worker.
  */
-function endedUnder(
-	known: RunSnapshot | undefined,
-	stage: StageSnapshot,
-	execution: NonNullable<StageSnapshot["workerExecution"]>,
-): NonNullable<StageSnapshot["workerExecution"]> {
+function endedUnder(previous: StageSnapshot | undefined, stage: StageSnapshot, execution: Execution): Execution {
 	if (!isTerminalStageStatus(stage.status)) return execution;
-	const previous = known?.stages.find((candidate) => candidate.id === stage.id);
 	return previous !== undefined &&
 		isTerminalStageStatus(previous.status) &&
 		previous.workerExecution?.generation === execution.generation &&
 		previous.workerExecution.worker === execution.worker
 		? previous.workerExecution
 		: execution;
+}
+
+function sameExecution(shown: StageSnapshot["workerExecution"], execution: Execution): boolean {
+	return shown?.renewedAt === execution.renewedAt && shown.expiresAt === execution.expiresAt;
+}
+
+/** Each node by id, the first one where several share an id. */
+function byId<T extends { readonly id: string }>(nodes: readonly T[]): ReadonlyMap<string | undefined, T> {
+	const found = new Map<string | undefined, T>();
+	for (const node of nodes) if (!found.has(node.id)) found.set(node.id, node);
+	return found;
+}
+
+function hostKey(runId: string | undefined, stageId: string | undefined): string {
+	return JSON.stringify([runId, stageId]);
+}
+
+/**
+ * A full publication is the attempt's runs from now on: it records their views anew, and each run's link to the stage
+ * hosting it is its. The work's own run hangs from the root's boundary, which no publication of changes can name.
+ */
+function hold(attempt: Attempt, subtree: readonly Member[]): void {
+	attempt.views.clear();
+	attempt.openRuns.clear();
+	attempt.hosts.clear();
+	for (const run of subtree) attempt.hosts.set(hostKey(run.parentRunId, run.parentStageId), run.id);
+}
+
+/** Records a run's view, and whether the run still has open stages a renewal relabels. */
+function open(attempt: Attempt, runId: string, view: RunView): RunView {
+	attempt.views.set(runId, view);
+	if (view.open.size > 0) attempt.openRuns.add(runId);
+	else attempt.openRuns.delete(runId);
+	return view;
+}
+
+function positionsOf(nodes: readonly { readonly id: string }[]): Map<string, number> {
+	const positions = new Map<string, number>();
+	nodes.forEach((node, position) => {
+		if (!positions.has(node.id)) positions.set(node.id, position);
+	});
+	return positions;
+}
+
+function viewOf(run: RunSnapshot): RunView {
+	const open = new Set<string>();
+	let reconnecting = 0;
+	for (const stage of run.stages) {
+		if (stage.workerExecution?.reconnecting === true) reconnecting++;
+		else if (!isTerminalStageStatus(stage.status)) open.add(stage.id);
+	}
+	return {
+		stages: run.stages,
+		stagePositions: positionsOf(run.stages),
+		stageCount: run.stages.length,
+		toolNodes: run.toolNodes,
+		toolPositions: positionsOf(run.toolNodes),
+		toolCount: run.toolNodes.length,
+		open,
+		reconnecting,
+	};
+}
+
+/** The run as its worker holds it: the store's copy with the changes applied and no stage of an earlier attempt. */
+function workerRun(stored: RunSnapshot, changes: RunChanges): RunSnapshot {
+	const { stages, toolNodes, pendingStageMessages: _queue, ...header } = stored;
+	return {
+		...(changes.header ?? header),
+		stages: upserted(
+			stages.filter((stage) => stage.workerExecution?.reconnecting !== true),
+			changes.stages,
+		),
+		toolNodes: upserted(toolNodes, changes.toolNodes),
+	};
+}
+
+/** `nodes` with each changed node in the place of the node with its id, or after them all when none has it. */
+function upserted<T extends { readonly id: string }>(nodes: readonly T[], changed: readonly T[]): T[] {
+	const next = [...nodes];
+	const positions = positionsOf(next);
+	for (const node of changed) next[positions.get(node.id) ?? next.length] = node;
+	return next;
+}
+
+/** Replaces a run's own fields with a worker's, keeping its stages, tool nodes and the root's queue of messages. */
+function replaceHeader(run: RunSnapshot, header: RunHeader, root: string): void {
+	const fields = run as Partial<RunSnapshot>;
+	for (const key of Object.keys(run) as (keyof RunSnapshot)[])
+		if (!(key in header) && key !== "stages" && key !== "toolNodes" && key !== "pendingStageMessages")
+			delete fields[key];
+	Object.assign(run, header, { rootRunId: root });
+}
+
+function nextTurn(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
 }
 
 /**

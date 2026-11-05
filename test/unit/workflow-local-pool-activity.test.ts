@@ -1,0 +1,260 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { afterEach, test, vi } from "vitest";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import {
+	openSqlPoolQueue,
+	type PoolWork,
+	STALE_WORK_LEASE,
+} from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { bindRunDurableBackend } from "../../packages/workflows/src/durable/run-owner-backend.js";
+import { bindStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
+import type { DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import type {
+	CoordinatorEvent,
+	CoordinatorNotice,
+	PoolActivityUpdate,
+} from "../../packages/workflows/src/workers/coordinator-protocol.js";
+import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import type { PublishedStages } from "../../packages/workflows/src/workers/open-stages.js";
+import type { PublishedRun } from "../../packages/workflows/src/workers/run-changes.js";
+import { PoolStageHandoff, type PoolStageQueue } from "../../packages/workflows/src/workers/stage-handoff.js";
+import { poolWorkFixture } from "../helpers/pool-journal.js";
+import { testRunId } from "../helpers/run-id.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+const ROOT = testRunId("local-pool-activity-root");
+const fixtureBoundary = poolWorkFixture();
+const descriptor = fixtureBoundary.work;
+const boundary: DurableStageCheckpoint = JSON.parse(
+	JSON.stringify(fixtureBoundary.boundary).replaceAll('"root"', `"${ROOT}"`),
+);
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+function stage(id: string, overrides: Partial<StageSnapshot> = {}): StageSnapshot {
+	return { id, name: id, status: "running", parentIds: [], toolEvents: [], ...overrides };
+}
+
+function childRun(stages: StageSnapshot[]): RunSnapshot {
+	return {
+		id: descriptor.childRunId,
+		name: descriptor.childRunId,
+		inputs: {},
+		status: "running",
+		stages,
+		toolNodes: [],
+		startedAt: 0,
+		parentRunId: ROOT,
+		parentStageId: descriptor.boundaryId,
+		rootRunId: ROOT,
+	};
+}
+
+/** The parts of a pool this file drives directly, as its coordinator and the root's store would. */
+interface PoolInternals {
+	coordinator?: { readonly port: { send(message: CoordinatorNotice): void } };
+	handoff?: PoolStageHandoff;
+	readonly works: Map<string, PoolWork>;
+	queueView(): PoolStageQueue;
+	receive(event: CoordinatorEvent): Promise<void>;
+	routePrompts(publications: readonly { readonly work: PoolWork; readonly runs: readonly PublishedStages[] }[]): void;
+}
+
+/** The pool's side of activity a coordinator sends, with the pool's handoff over a real root journal. */
+async function activityPool() {
+	const directory = makeTempDirectory("local-pool-activity-");
+	const path = join(directory, "journal.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	const journal = await SqlRunJournal.open(database);
+	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
+	await backend.commitWorkflowRegistration({
+		workflowId: ROOT,
+		name: ROOT,
+		inputs: {},
+		createdAt: 0,
+		status: "running",
+	});
+	const acquired = await journal.acquire(ROOT, backend.holderId);
+	if (acquired.status !== "acquired") throw new Error("No root lease");
+	const queue = await openSqlPoolQueue(journal);
+	await queue.initialize(acquired.lease, 60_000);
+	await queue.enqueue(acquired.lease, descriptor, boundary);
+	const work = await queue.claim(acquired.lease, "worker-one", [descriptor], 60_000);
+	assert.ok(work);
+	const store = createStore();
+	const root: RunSnapshot = {
+		id: ROOT,
+		name: ROOT,
+		inputs: {},
+		status: "running",
+		rootRunId: ROOT,
+		toolNodes: [],
+		startedAt: 0,
+		stages: [
+			stage(descriptor.boundaryId, {
+				name: "child",
+				workflowChildRun: { alias: "child", workflow: "child", runId: descriptor.childRunId },
+			}),
+		],
+	};
+	bindRunDurableBackend(root, backend);
+	bindStoreDurableBackend(store, backend);
+	store.recordRunStart(root);
+	const pool = new LocalWorkerPool(backend, { journalPath: path, workers: 1, definitions: [] });
+	const internals = pool as never as PoolInternals;
+	const notices: CoordinatorNotice[] = [];
+	internals.coordinator = { port: { send: (message) => notices.push(message) } };
+	internals.handoff = new PoolStageHandoff(backend, store, internals.queueView(), acquired.lease);
+	const routed = vi.spyOn(internals, "routePrompts");
+	let batch = 0;
+	return {
+		store,
+		work,
+		notices,
+		/** The stages of each run the latest accepted publications handed prompt routing, by run. */
+		routed: () =>
+			(routed.mock.lastCall?.[0] ?? []).flatMap(({ runs }) =>
+				runs.map((run) => [run.id, run.stages.map((entry) => entry.id)]),
+			),
+		known: () => internals.works.set(work.id, work),
+		receive: (event: CoordinatorEvent) => internals.receive(event),
+		async publish(runs: readonly PublishedRun[]) {
+			const token = (({ id, generation, worker, epoch, renewedAt, expiresAt }: PoolWork) => ({
+				id,
+				generation,
+				worker,
+				epoch,
+				renewedAt,
+				expiresAt,
+			}))(work);
+			const entries: PoolActivityUpdate[] = [{ work: token, runs }];
+			await internals.receive({ kind: "activity", batch: ++batch, entries });
+			const published = notices.at(-1);
+			assert.equal(published?.kind, "published");
+			return published.kind === "published" ? published.rejected : [];
+		},
+		close() {
+			// No coordinator ever ran to answer the pool's close.
+			internals.coordinator = undefined;
+			return pool.close();
+		},
+		async dispose() {
+			internals.coordinator = undefined;
+			await pool.close();
+			await backend.close();
+			await journal.close();
+			await database.close();
+			removeTempDirectory(directory);
+		},
+	};
+}
+
+test("an attempt refused before the root knew its work keeps that refusal for its later changes (#4317)", async () => {
+	const pool = await activityPool();
+	try {
+		const stale = [{ workId: pool.work.id, generation: pool.work.generation, error: STALE_WORK_LEASE }];
+		assert.deepEqual(await pool.publish([childRun([stage("a")])]), stale);
+		pool.known();
+		const changed = { kind: "changes" as const, id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] };
+		assert.deepEqual(await pool.publish([changed]), stale, "not refused as outside the work's runs");
+		assert.deepEqual(pool.routed(), [], "a refused publication reaches no prompt routing");
+		assert.deepEqual(await pool.publish([childRun([stage("a")])]), []);
+		assert.deepEqual(await pool.publish([changed]), []);
+		assert.equal(pool.store.run(descriptor.childRunId)?.stages[0]?.id, "a");
+	} finally {
+		await pool.dispose();
+	}
+});
+
+test("prompt routing gets a changed run's changed stages and its other open stages, until its work ends (#4317)", async () => {
+	const pool = await activityPool();
+	try {
+		pool.known();
+		const published = [stage("done", { status: "completed" }), stage("open"), stage("asked")];
+		assert.deepEqual(await pool.publish([childRun(published)]), []);
+		assert.deepEqual(pool.routed(), [[descriptor.childRunId, ["done", "open", "asked"]]]);
+		const changed = {
+			kind: "changes" as const,
+			id: descriptor.childRunId,
+			stages: [stage("asked", { status: "completed" })],
+			toolNodes: [],
+		};
+		assert.deepEqual(await pool.publish([changed]), []);
+		assert.deepEqual(pool.routed(), [[descriptor.childRunId, ["asked", "open"]]]);
+		await pool.receive({ kind: "result", workId: pool.work.id, result: {} });
+		assert.deepEqual(await pool.publish([{ ...changed, stages: [] }]), []);
+		assert.deepEqual(pool.routed(), [[descriptor.childRunId, []]], "a work that ended hands over nothing it held");
+	} finally {
+		await pool.dispose();
+	}
+});
+
+/** Prompt routing's stages for one change to a child whose `size` nested runs ended but the first. */
+async function routedForNestedChange(size: number) {
+	const pool = await activityPool();
+	try {
+		pool.known();
+		const nested = Array.from({ length: size }, (_, index) => ({
+			...childRun([stage(`work-${index}`, index === 0 ? {} : { status: "completed" })]),
+			id: `nested-${index}`,
+			parentRunId: descriptor.childRunId,
+			parentStageId: `host-${index}`,
+		}));
+		const hosts = Array.from({ length: size }, (_, index) =>
+			stage(`host-${index}`, {
+				status: "completed",
+				workflowChildRun: { alias: `n${index}`, workflow: "nested", runId: `nested-${index}` },
+			}),
+		);
+		assert.deepEqual(await pool.publish([childRun(hosts), ...nested]), []);
+		assert.deepEqual(
+			await pool.publish([{ kind: "changes", id: descriptor.childRunId, stages: [stage("next")], toolNodes: [] }]),
+			[],
+		);
+		return pool.routed();
+	} finally {
+		await pool.dispose();
+	}
+}
+
+test("prompt routing gets the open stages of the nested runs a change leaves out, however many ended (#4317)", async () => {
+	const small = await routedForNestedChange(100);
+	assert.deepEqual(small, [
+		[descriptor.childRunId, ["next"]],
+		["nested-0", ["work-0"]],
+	]);
+	assert.deepEqual(await routedForNestedChange(1_000), small);
+});
+
+test("a pool that closes stops applying an activity batch between turns (#4317)", async () => {
+	const pool = await activityPool();
+	try {
+		pool.known();
+		const stages = Array.from({ length: 600 }, (_, index) => stage(`stage-${index}`, { status: "completed" }));
+		assert.deepEqual(await pool.publish([childRun(stages)]), []);
+		const token = (({ id, generation, worker, epoch, renewedAt, expiresAt }: PoolWork) => ({
+			id,
+			generation,
+			worker,
+			epoch,
+			renewedAt,
+			expiresAt,
+		}))(pool.work);
+		const entries = ["first", "second", "third"].map((label) => ({
+			work: token,
+			runs: [{ ...childRun(stages), label }],
+		}));
+		setImmediate(() => void pool.close());
+		await assert.rejects(pool.receive({ kind: "activity", batch: 99, entries }), { name: "AbortError" });
+		assert.equal(pool.store.run(descriptor.childRunId)?.label, "second");
+	} finally {
+		await pool.dispose();
+	}
+});

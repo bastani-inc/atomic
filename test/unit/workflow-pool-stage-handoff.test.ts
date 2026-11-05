@@ -19,8 +19,13 @@ import { workflowPendingStageRouteCapability } from "../../packages/workflows/sr
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { asWorkflowInfrastructureError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
-import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
-import { holdFinishedRuns } from "../helpers/finished-runs.js";
+import { isRunChanges, type RunChanges, RunChangesEncoder } from "../../packages/workflows/src/workers/run-changes.js";
+import {
+	PoolStageHandoff,
+	type PoolStageQueue,
+	PUBLICATION_TURN_WRITES,
+} from "../../packages/workflows/src/workers/stage-handoff.js";
+import { countFieldReads, holdFinishedRuns } from "../helpers/finished-runs.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { testRunId } from "../helpers/run-id.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -1800,4 +1805,1565 @@ test("a durable owner is found by exact id, unique prefix and unknown id the sam
 	} finally {
 		await f.close();
 	}
+});
+
+function header(run: RunSnapshot): RunChanges["header"] {
+	const { stages: _stages, toolNodes: _tools, pendingStageMessages: _queue, ...own } = run;
+	return own;
+}
+
+test("a run published as changes is updated in place: unchanged stages keep their identity (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const publish = (stages: StageSnapshot[], overrides: Partial<RunSnapshot> = {}) => {
+			const runs = encoder.encode(f.first, [childRun(stages, overrides)]);
+			return f.handoff.publishBatch([{ work: f.first, runs }]).then((outcomes) => ({ runs, outcomes }));
+		};
+		const done = stage("done", { status: "completed", endedAt: 1, sessionId: "session-done" });
+		assert.deepEqual(
+			(await publish([done, stage("live", { sessionId: "session-a" })], { label: "first" })).outcomes,
+			[undefined],
+		);
+		const stored = f.store.run(descriptor.childRunId)!;
+		const kept = stored.stages[0];
+		stored.stages[1]!.attached = true;
+		const firstProgress = f.store.run(ROOT)?.lastProgressAt;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const second = await publish([done, stage("live", { sessionId: "session-b" }), stage("next")], {
+			label: "second",
+		});
+		assert.deepEqual(second.outcomes, [undefined]);
+		assert.equal(isRunChanges(second.runs[0]!), true);
+		const run = f.store.run(descriptor.childRunId)!;
+		assert.equal(run, stored, "the run keeps its identity");
+		assert.equal(run.stages[0], kept, "an unchanged stage is neither replaced nor relabelled");
+		assert.deepEqual(
+			run.stages.map((entry) => [entry.id, entry.sessionId, entry.attached, entry.workerExecution?.generation]),
+			[
+				["done", "session-done", undefined, f.first.generation],
+				["live", "session-b", true, f.first.generation],
+				["next", undefined, undefined, f.first.generation],
+			],
+		);
+		assert.equal(run.label, "second");
+		assert.equal(run.rootRunId, ROOT);
+		assert.ok((f.store.run(ROOT)?.lastProgressAt ?? 0) > (firstProgress ?? 0), "a change marks root progress");
+		await assert.rejects(
+			f.handoff.deliver(
+				f.first,
+				descriptor.childRunId,
+				"live",
+				"live",
+				{ sessionId: "session-a", receivedMessageIds: [] },
+				async () => {},
+			),
+			/not the published session/,
+		);
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"live",
+			"live",
+			{ sessionId: "session-b", receivedMessageIds: [] },
+			async () => {},
+		);
+		const graphLabel = () => f.store.graphSnapshot().runs.find((entry) => entry.id === descriptor.childRunId)?.label;
+		assert.equal(graphLabel(), "second");
+		await publish([done, stage("live", { sessionId: "session-b" }), stage("next")]);
+		assert.equal("label" in f.store.run(descriptor.childRunId)!, false, "a field the worker dropped is dropped");
+		assert.equal(graphLabel(), undefined, "a change to the run's own fields reaches its observers");
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0], kept);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a lease renewal relabels only the stages still running, and is no progress (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const stages = [stage("done", { status: "completed", endedAt: 1 }), stage("live")];
+		await f.handoff.publish(f.first, encoder.encode(f.first, [childRun(stages)]));
+		const before = [...f.store.run(descriptor.childRunId)!.stages];
+		const progress = f.store.run(ROOT)?.lastProgressAt;
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 60_000, expiresAt: f.first.expiresAt + 60_000 };
+		const runs = encoder.encode(renewed, [childRun(stages)]);
+		assert.deepEqual(runs, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await f.handoff.publish(renewed, runs);
+		const after = [...f.store.run(descriptor.childRunId)!.stages];
+		assert.equal(after[0], before[0]);
+		assert.equal(after[0]?.workerExecution?.renewedAt, f.first.renewedAt);
+		assert.notEqual(after[1], before[1]);
+		assert.deepEqual(after[1]?.workerExecution, {
+			worker: "worker-one",
+			generation: f.first.generation,
+			renewedAt: renewed.renewedAt,
+			expiresAt: renewed.expiresAt,
+		});
+		assert.equal(f.store.run(ROOT)?.lastProgressAt, progress);
+		await f.handoff.publish(renewed, encoder.encode(renewed, [childRun(stages)]));
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[1], after[1], "the same lease is not written again");
+		for (const token of [
+			{ ...renewed, renewedAt: renewed.renewedAt + 1 },
+			{ ...renewed, renewedAt: renewed.renewedAt + 1, expiresAt: renewed.expiresAt + 1 },
+			// A coordinator whose clock stepped back still relabels: leases are compared for equality, never order.
+			{ ...renewed, renewedAt: renewed.renewedAt - 5_000, expiresAt: renewed.expiresAt - 5_000 },
+		]) {
+			await f.handoff.publish(token, encoder.encode(token, [childRun(stages)]));
+			const shown = f.store.run(descriptor.childRunId)?.stages[1]?.workerExecution;
+			assert.deepEqual([shown?.renewedAt, shown?.expiresAt], [token.renewedAt, token.expiresAt]);
+		}
+		const ended = [stages[0]!, stage("live", { status: "completed", endedAt: 2 })];
+		await f.handoff.publish(renewed, encoder.encode(renewed, [childRun(ended)]));
+		const later = { ...renewed, renewedAt: renewed.renewedAt + 60_000, expiresAt: renewed.expiresAt + 60_000 };
+		const unlabelled = f.store.run(descriptor.childRunId)!;
+		f.store.recordRunStart({ ...unlabelled, stages: [...unlabelled.stages, stage("root-side")] });
+		await f.handoff.publish(later, encoder.encode(later, [childRun(ended)]));
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[1]?.workerExecution?.renewedAt,
+			renewed.renewedAt,
+			"a stage that ended keeps the lease it ended under",
+		);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[2]?.workerExecution?.renewedAt,
+			later.renewedAt,
+			"an open stage without a lease takes the current one",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes to a run the attempt does not hold, or that move it, are refused without changing the store (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		const before = JSON.stringify(f.store.runs());
+		const own = header(childRun([stage("stage")]));
+		const refused: readonly RunChanges[] = [
+			{ kind: "changes", id: "unknown-run", stages: [], toolNodes: [] },
+			{
+				kind: "changes",
+				id: descriptor.childRunId,
+				header: { ...own!, parentStageId: "other" },
+				stages: [],
+				toolNodes: [],
+			},
+			{
+				kind: "changes",
+				id: descriptor.childRunId,
+				header: { ...own!, parentRunId: "other" },
+				stages: [],
+				toolNodes: [],
+			},
+			{
+				kind: "changes",
+				id: descriptor.childRunId,
+				header: { ...own!, rootRunId: "other-root" },
+				stages: [],
+				toolNodes: [],
+			},
+			{ kind: "changes", id: ROOT, stages: [stage("injected")], toolNodes: [] },
+		];
+		for (const change of refused) {
+			// Each case on a base the attempt published in full, so no earlier refusal decides it.
+			await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+			let first: Error | undefined;
+			await assert.rejects(f.handoff.publish(f.first, [change]), (error: Error) => {
+				first = error;
+				return /outside the work subtree/.test(error.message);
+			});
+			await assert.rejects(
+				f.handoff.publish(f.first, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]),
+				(error) => error === first,
+				`the attempt's later changes keep the refusal of ${change.id}`,
+			);
+		}
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		await assert.rejects(
+			f.handoff.publish(f.first, [childRun([stage("stage")]), childRun([stage("stage")])]),
+			/outside/,
+		);
+		const unchanged: RunChanges = { kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] };
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		await assert.rejects(f.handoff.publish(f.first, [unchanged, unchanged]), /outside/);
+		await f.handoff.publish(f.first, [childRun([stage("stage")])]);
+		await assert.rejects(
+			f.handoff.publish({ ...f.first, id: "another-work" }, [childRun([stage("stage")])]),
+			/outside the work subtree/,
+			"a run another work published is not this work's",
+		);
+		const sibling = poolWorkFixture("sibling", "child-sibling", "workflow:sibling:1");
+		await assert.rejects(
+			f.handoff.publish({ ...f.first, id: sibling.work.boundaryId }, [
+				{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] },
+			]),
+		);
+		assert.equal(JSON.stringify(f.store.runs()), before);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a replacement's changes republish the stages an earlier attempt left reconnecting (#4009, #4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [
+			childRun([stage("plan", { status: "completed" }), stage("work", { sessionId: "old" })]),
+		]);
+		const next = await f.replacement();
+		const encoder = new RunChangesEncoder();
+		await f.handoff.publish(next, encoder.encode(next, [childRun([stage("plan", { status: "completed" })])]));
+		const reconnecting = () =>
+			f.store
+				.run(descriptor.childRunId)
+				?.stages.map((entry) => [entry.id, entry.workerExecution?.generation, entry.workerExecution?.reconnecting]);
+		assert.deepEqual(reconnecting(), [
+			["plan", next.generation, undefined],
+			["work", f.first.generation, true],
+		]);
+		const runs = encoder.encode(next, [
+			childRun([stage("plan", { status: "completed" }), stage("work", { sessionId: "new" })]),
+		]);
+		assert.equal(isRunChanges(runs[0]!), true);
+		// A stage another writer added stays where it is, under the attempt that now publishes the run.
+		f.store.run(descriptor.childRunId)!.stages.splice(1, 0, stage("root-side", { status: "completed" }));
+		await f.handoff.publish(next, runs);
+		assert.deepEqual(reconnecting(), [
+			["plan", next.generation, undefined],
+			["root-side", next.generation, undefined],
+			["work", next.generation, undefined],
+		]);
+		const plan = f.store.run(descriptor.childRunId)?.stages[0];
+		await f.handoff.publish(
+			next,
+			encoder.encode(next, [
+				childRun([stage("plan", { status: "completed" }), stage("work", { sessionId: "new" }), stage("more")]),
+			]),
+		);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[0],
+			plan,
+			"with nothing reconnecting, changes apply in place",
+		);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)?.stages.map((entry) => entry.id),
+			["plan", "root-side", "work", "more"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stored run another writer replaced or grew is read again before changes apply to it (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const stages = [stage("a", { status: "completed" }), stage("b")];
+		await f.handoff.publish(f.first, encoder.encode(f.first, [childRun(stages)]));
+		const stored = f.store.run(descriptor.childRunId)!;
+		f.store.recordRunStart({ ...stored, stages: [...stored.stages].reverse() });
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [childRun([stages[0]!, stage("b", { sessionId: "s" })])]),
+		);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)?.stages.map((entry) => [entry.id, entry.sessionId]),
+			[
+				["b", "s"],
+				["a", undefined],
+			],
+		);
+		f.store.run(descriptor.childRunId)!.stages.push(stage("root-side"));
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [childRun([stages[0]!, stage("b", { sessionId: "s" }), stage("c")])]),
+		);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)?.stages.map((entry) => entry.id),
+			["b", "a", "root-side", "c"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("tool nodes published as changes replace or follow the stored ones in place (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const node = (id: string, status: "running" | "completed") =>
+			({ id, name: id, status, parentIds: [] }) as unknown as RunSnapshot["toolNodes"][number];
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [childRun([], { toolNodes: [node("t1", "completed"), node("t2", "running")] })]),
+		);
+		const first = f.store.run(descriptor.childRunId)!.toolNodes[0];
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [
+				childRun([], { toolNodes: [node("t1", "completed"), node("t2", "completed"), node("t3", "running")] }),
+			]),
+		);
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [
+				childRun([], { toolNodes: [node("t1", "completed"), node("t2", "completed"), node("t3", "completed")] }),
+			]),
+		);
+		const nodes = f.store.run(descriptor.childRunId)!.toolNodes;
+		assert.equal(nodes[0], first);
+		assert.deepEqual(
+			nodes.map((entry) => [entry.id, entry.status]),
+			[
+				["t1", "completed"],
+				["t2", "completed"],
+				["t3", "completed"],
+			],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+/** Publishes a child of `size` ended stages and two running ones, then measures one batch that changes one of them. */
+async function measureChangedBatch(size: number) {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const stages = (live: Partial<StageSnapshot> = {}, added: StageSnapshot[] = []) => [
+			...Array.from({ length: size }, (_, index) =>
+				stage(`done-${index}`, { status: "completed", endedAt: 1, sessionId: `session-${index}` }),
+			),
+			stage("live", { sessionId: "live", ...live }),
+			stage("idle", { sessionId: "idle" }),
+			...added,
+		];
+		type Status = "pending" | "running" | "completed";
+		const tool = (id: string, status: Status) =>
+			({ id, name: id, status, parentIds: [] }) as unknown as RunSnapshot["toolNodes"][number];
+		const tools = (last: Status = "pending") => [
+			...Array.from({ length: size }, (_, index) => tool(`tool-${index}`, "completed")),
+			tool("tool-live", last),
+		];
+		const run = (live: Partial<StageSnapshot> = {}, added: StageSnapshot[] = [], last?: Status) =>
+			childRun(stages(live, added), { toolNodes: tools(last) });
+		await f.handoff.publishBatch([{ work: f.first, runs: encoder.encode(f.first, [run()]) }]);
+		// Another writer replaces the stored run; the next change reads its lists whole once, to index them again.
+		const replaced = f.store.run(descriptor.childRunId)!;
+		f.store.recordRunStart({ ...replaced, stages: [...replaced.stages], toolNodes: [...replaced.toolNodes] });
+		const warm = { ...f.first, renewedAt: f.first.renewedAt + 500, expiresAt: f.first.expiresAt + 500 };
+		await f.handoff.publishBatch([{ work: warm, runs: encoder.encode(warm, [run({}, [], "running")]) }]);
+		const before = [...f.store.run(descriptor.childRunId)!.stages];
+		const stored = countFieldReads(before);
+		countFieldReads(f.store.run(descriptor.childRunId)!.toolNodes, stored);
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		const runs = encoder.encode(renewed, [
+			run({ toolEvents: [{ name: "read" } as StageSnapshot["toolEvents"][number]] }, [stage("next")], "completed"),
+		]);
+		stored.reads = 0;
+		assert.deepEqual(await f.handoff.publishBatch([{ work: renewed, runs }]), [undefined]);
+		const firstReads = stored.reads;
+		const after = f.store.run(descriptor.childRunId)!.stages;
+		assert.equal(after.length, size + 3);
+		assert.equal(after[size]?.toolEvents.length, 1);
+		assert.equal(after[size + 1]?.workerExecution?.renewedAt, renewed.renewedAt);
+		assert.equal(after[0]?.workerExecution?.renewedAt, f.first.renewedAt);
+		assert.equal(after[0], before[0]);
+		// The batch after it, which follows a stage it added, costs the same again.
+		const following = encoder.encode(renewed, [
+			run(
+				{ toolEvents: [{ name: "read" }, { name: "write" }] as StageSnapshot["toolEvents"] },
+				[stage("next"), stage("last")],
+				"completed",
+			),
+		]);
+		stored.reads = 0;
+		assert.deepEqual(await f.handoff.publishBatch([{ work: renewed, runs: following }]), [undefined]);
+		assert.equal(f.store.run(descriptor.childRunId)!.stages.length, size + 4);
+		assert.equal(f.store.run(descriptor.childRunId)!.toolNodes.at(-1)?.status, "completed");
+		return {
+			carried: runs.flatMap((published) => published.stages).length,
+			storedReads: firstReads,
+			followingReads: stored.reads,
+			replaced: before.filter((entry, index) => after[index] !== entry).length,
+		};
+	} finally {
+		await f.close();
+	}
+}
+
+test("one batch changing one stage of a run costs the same at 250, 1,000 and 4,000 stages (#4317)", async () => {
+	const sizes = [250, 1_000, 4_000];
+	const measured: Awaited<ReturnType<typeof measureChangedBatch>>[] = [];
+	for (const size of sizes) measured.push(await measureChangedBatch(size));
+	assert.deepEqual(
+		measured,
+		sizes.map(() => measured[0]),
+		`per-batch work grew with the run: ${JSON.stringify(measured)}`,
+	);
+	assert.deepEqual(measured[0], {
+		carried: 2,
+		storedReads: measured[0]!.storedReads,
+		followingReads: measured[0]!.followingReads,
+		replaced: 2,
+	});
+	assert.ok(measured[0]!.storedReads <= 40, `the batch read ${measured[0]!.storedReads} fields of stored stages`);
+});
+
+test("a large batch yields the event loop between slices, so a due lease-renewal timer runs before it ends (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const queue: PoolStageQueue = {
+			assertCurrent: async () => {},
+			withCurrentAppend: f.queue.withCurrentAppend.bind(f.queue),
+			result: f.queue.result.bind(f.queue),
+		};
+		const handoff = new PoolStageHandoff(f.backend, f.store, queue, f.lease);
+		const stages = Array.from({ length: 500 }, (_, index) => stage(`stage-${index}`, { status: "completed" }));
+		const toolNodes = Array.from(
+			{ length: 100 },
+			(_, index) => ({ id: `tool-${index}`, name: "tool", status: "completed", parentIds: [] }) as never,
+		);
+		await handoff.publish(f.first, [childRun(stages, { toolNodes })]);
+		// Each publication writes 600 snapshots, so two fill a turn's budget of 1,000 and 20 take 10 turns.
+		const publications = Array.from({ length: 20 }, () => ({
+			work: f.first,
+			runs: [childRun(stages, { toolNodes })],
+		}));
+		const slices: number[] = [];
+		const unsubscribe = f.store.subscribeInvalidation(() => slices.push(slices.length));
+		let renewals = 0;
+		let settled = false;
+		const renewal = setInterval(() => {
+			if (!settled) renewals++;
+		}, 1);
+		const started = performance.now();
+		while (performance.now() - started < 5) {
+			// The renewal is due before the batch starts.
+		}
+		try {
+			const outcomes = await handoff.publishBatch(publications);
+			settled = true;
+			assert.deepEqual(
+				outcomes,
+				publications.map(() => undefined),
+			);
+		} finally {
+			clearInterval(renewal);
+			unsubscribe();
+		}
+		assert.equal(slices.length, publications.length / Math.ceil(PUBLICATION_TURN_WRITES / 601));
+		assert.ok(renewals > 0, "the renewal timer ran while the batch was being applied");
+		// A publication that writes nothing still takes its share of a turn.
+		const unchanged = { kind: "changes" as const, id: descriptor.childRunId, stages: [], toolNodes: [] };
+		const idle = Array.from({ length: PUBLICATION_TURN_WRITES + 1 }, () => ({ work: f.first, runs: [unchanged] }));
+		let turns = 0;
+		let applying = true;
+		const tick = () => {
+			if (!applying) return;
+			turns++;
+			setImmediate(tick);
+		};
+		setImmediate(tick);
+		try {
+			await handoff.publishBatch(idle);
+		} finally {
+			applying = false;
+		}
+		assert.ok(turns > 0, "the event loop turned while the batch was being applied");
+		// A tool node written counts toward the turn's budget like a stage does.
+		const toolChanges = Array.from({ length: PUBLICATION_TURN_WRITES / 2 + 1 }, (_, index) => ({
+			work: f.first,
+			runs: [
+				{
+					kind: "changes" as const,
+					id: descriptor.childRunId,
+					stages: [],
+					toolNodes: [
+						{
+							id: "tool-0",
+							name: "tool",
+							status: index % 2 === 0 ? "running" : "completed",
+							parentIds: [],
+						} as never,
+					],
+				},
+			],
+		}));
+		const toolSlices: number[] = [];
+		const stopCounting = f.store.subscribeInvalidation(() => toolSlices.push(toolSlices.length));
+		try {
+			await handoff.publishBatch(toolChanges);
+		} finally {
+			stopCounting();
+		}
+		assert.equal(toolSlices.length, 2, "two writes per publication fill a turn after half the budget");
+		// A batch within one turn's budget applies before the event loop turns.
+		let turned = false;
+		setImmediate(() => {
+			turned = true;
+		});
+		await handoff.publishBatch([{ work: f.first, runs: [unchanged] }]);
+		assert.equal(turned, false);
+	} finally {
+		await f.close();
+	}
+});
+
+for (const kind of ["full", "renewal"] as const) {
+	test(`an oversized ${kind} publication is visible atomically and yields before the next publication (#4317)`, async () => {
+		const f = await fixture();
+		try {
+			const size = PUBLICATION_TURN_WRITES * 4;
+			const stages = Array.from({ length: size }, (_, index) => stage(`stage-${index}`));
+			const child = childRun([
+				stage("host", { workflowChildRun: { alias: "nested", workflow: "nested", runId: "nested" } }),
+				...stages,
+			]);
+			const nested = snapshot("nested", {
+				parentRunId: child.id,
+				parentStageId: "host",
+				rootRunId: ROOT,
+				stages: [stage("nested-stage")],
+			});
+			await f.handoff.publish(f.first, [child, nested]);
+			const renewed = {
+				...f.first,
+				renewedAt: f.first.renewedAt + 1_000,
+				expiresAt: f.first.expiresAt + 1_000,
+			};
+			const unchanged: RunChanges = { kind: "changes", id: child.id, stages: [], toolNodes: [] };
+			const observe = () => ({
+				name: f.store.run(child.id)!.name,
+				renewedStages: f.store
+					.run(child.id)!
+					.stages.filter((stage) => stage.workerExecution?.renewedAt === renewed.renewedAt).length,
+				nestedRenewedAt: f.store.run(nested.id)!.stages[0]!.workerExecution?.renewedAt,
+			});
+			const invalidations: ReturnType<typeof observe>[] = [];
+			const betweenTurns: ReturnType<typeof observe>[] = [];
+			const unsubscribe = f.store.subscribeInvalidation(() => {
+				invalidations.push(observe());
+				if (invalidations.length === 1) setImmediate(() => betweenTurns.push(observe()));
+			});
+			try {
+				assert.deepEqual(
+					await f.handoff.publishBatch([
+						{ work: renewed, runs: kind === "full" ? [child, nested] : [unchanged] },
+						{ work: renewed, runs: [{ ...unchanged, header: { ...header(child)!, name: "following" } }] },
+					]),
+					[undefined, undefined],
+				);
+			} finally {
+				unsubscribe();
+			}
+			const published = { name: child.name, renewedStages: size + 1, nestedRenewedAt: renewed.renewedAt };
+			assert.deepEqual(invalidations, [published, { ...published, name: "following" }]);
+			assert.deepEqual(betweenTurns, [published]);
+		} finally {
+			await f.close();
+		}
+	});
+}
+
+test("after one refused publication an attempt's later changes are refused with the same reason (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		await f.handoff.publish(f.first, encoder.encode(f.first, [childRun([stage("a")])]));
+		const unchanged: RunChanges = { kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] };
+		const moved: RunChanges = {
+			...unchanged,
+			header: { ...header(childRun([]))!, parentStageId: "elsewhere" },
+		};
+		const changed: RunChanges = { ...unchanged, stages: [stage("a", { sessionId: "s" })] };
+		const [first, second] = await f.handoff.publishBatch([
+			{ work: f.first, runs: [moved] },
+			{ work: f.first, runs: [changed] },
+		]);
+		assert.match(first?.message ?? "", /outside the work subtree/);
+		assert.equal(second, first, "a later change is refused with the first refusal itself");
+		await assert.rejects(
+			f.handoff.publish(f.first, [childRun([stage("a")], { rootRunId: "other-root" })]),
+			/outside the work subtree/,
+		);
+		await assert.rejects(f.handoff.publish(f.first, [changed]), (error) => error === first);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, undefined);
+		await f.handoff.publish(f.first, [childRun([stage("a", { sessionId: "full" })])]);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[0]?.sessionId,
+			"full",
+			"a full publication does not depend on the refused one",
+		);
+		await f.handoff.publish(f.first, [changed]);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[0]?.sessionId,
+			"s",
+			"changes after an accepted full publication apply to it",
+		);
+		const stale = new Error("Stale work lease");
+		const next = await f.replacement();
+		f.handoff.refuse(next, stale);
+		f.handoff.refuse(f.first, new Error("an older attempt's refusal"));
+		await assert.rejects(f.handoff.publish(next, [changed]), (error) => error === stale);
+		await f.handoff.publish(next, [childRun([stage("a", { sessionId: "replacement" })])]);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "replacement");
+		await f.queue.complete(f.lease, next, {
+			runId: descriptor.childRunId,
+			status: "completed",
+			result: {},
+			stages: [],
+			toolNodes: [],
+		} as never);
+		await f.handoff.complete(next);
+		await assert.rejects(f.handoff.publish(next, [changed]), (error) => error !== stale, "completion forgets it");
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes apply only to a run the current attempt published in full (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const changed: RunChanges = {
+			kind: "changes",
+			id: descriptor.childRunId,
+			stages: [stage("a", { sessionId: "s" })],
+			toolNodes: [],
+		};
+		await f.handoff.publish(f.first, [childRun([stage("a")])]);
+		await f.handoff.publish(f.first, [changed]);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
+		const next = await f.replacement();
+		await assert.rejects(f.handoff.publish(next, [changed]), /outside the work subtree/);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
+	} finally {
+		await f.close();
+	}
+});
+
+function seeded(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6d2b79f5) >>> 0;
+		let value = state;
+		value = Math.imul(value ^ (value >>> 15), value | 1);
+		value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+		return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+test("a refusal holds only for its own attempt's changes, and outlives a newer attempt's publication (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const changed: RunChanges = {
+			kind: "changes",
+			id: descriptor.childRunId,
+			stages: [stage("a", { sessionId: "s" })],
+			toolNodes: [],
+		};
+		await f.handoff.publish(f.first, [childRun([stage("a")])]);
+		const refused = new Error("refused for the first attempt");
+		f.handoff.refuse(f.first, refused);
+		const next = await f.replacement();
+		await f.handoff.publish(next, [childRun([stage("a")])]);
+		await f.handoff.publish(next, [changed]);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
+		await assert.rejects(f.handoff.publish(f.first, [changed]), (error) => error === refused);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes to a run removed while they were validated are refused (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("a")])]);
+		const assertCurrent = f.queue.assertCurrent.bind(f.queue);
+		vi.spyOn(f.queue, "assertCurrent").mockImplementationOnce(async (...args) => {
+			await assertCurrent(...args);
+			f.store.removeRun(descriptor.childRunId);
+		});
+		await assert.rejects(
+			f.handoff.publish(f.first, [
+				{ kind: "changes", id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] },
+			]),
+			/outside the work subtree/,
+		);
+		assert.equal(f.store.run(descriptor.childRunId), undefined);
+	} finally {
+		vi.restoreAllMocks();
+		await f.close();
+	}
+});
+
+test("changes find their stages again after another writer reordered the stored lists in place (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const node = (id: string, status: "running" | "completed") =>
+			({ id, name: id, status, parentIds: [] }) as unknown as RunSnapshot["toolNodes"][number];
+		const stages = [stage("a", { status: "completed" }), stage("b"), stage("c")];
+		const tools = [node("t1", "completed"), node("t2", "running")];
+		await f.handoff.publish(f.first, encoder.encode(f.first, [childRun(stages, { toolNodes: [...tools] })]));
+		const stored = f.store.run(descriptor.childRunId)!;
+		stored.stages.reverse();
+		stored.toolNodes.reverse();
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		await f.handoff.publish(
+			renewed,
+			encoder.encode(renewed, [
+				childRun([stages[0]!, stage("b", { sessionId: "s" }), stages[2]!], {
+					toolNodes: [tools[0]!, node("t2", "completed")],
+				}),
+			]),
+		);
+		const run = f.store.run(descriptor.childRunId)!;
+		assert.deepEqual(
+			run.stages.map((entry) => [entry.id, entry.sessionId, entry.workerExecution?.renewedAt]),
+			[
+				["c", undefined, renewed.renewedAt],
+				["b", "s", renewed.renewedAt],
+				["a", undefined, f.first.renewedAt],
+			],
+		);
+		assert.deepEqual(
+			run.toolNodes.map((entry) => [entry.id, entry.status]),
+			[
+				["t2", "completed"],
+				["t1", "completed"],
+			],
+		);
+		run.stages.reverse();
+		const later = { ...renewed, renewedAt: renewed.renewedAt + 1_000, expiresAt: renewed.expiresAt + 1_000 };
+		await f.handoff.publish(
+			later,
+			encoder.encode(later, [
+				childRun([stages[0]!, stage("b", { sessionId: "s" }), stages[2]!], {
+					toolNodes: [tools[0]!, node("t2", "completed")],
+				}),
+			]),
+		);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)?.stages.map((entry) => [entry.id, entry.workerExecution?.renewedAt]),
+			[
+				["a", f.first.renewedAt],
+				["b", later.renewedAt],
+				["c", later.renewedAt],
+			],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a work's boundary is found again when the root's stages before it change (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("a")])]);
+		const root = f.store.run(ROOT)!;
+		f.store.recordRunStart({ ...root, stages: [stage("earlier"), ...root.stages] });
+		await f.handoff.publish(f.first, [childRun([stage("a", { sessionId: "s" })])]);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
+		f.store.recordRunStart({ ...root, stages: [] });
+		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")])]), /is not linked to/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a later attempt's refusal replaces an earlier attempt's, and a mixed publication counts as changes (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const host = stage("host", { workflowChildRun: { alias: "n", workflow: "n", runId: "nested" } });
+		const nested = snapshot("nested", { parentRunId: descriptor.childRunId, parentStageId: "host", rootRunId: ROOT });
+		await f.handoff.publish(f.first, [childRun([host]), nested]);
+		const earlier = new Error("refused for the first attempt");
+		f.handoff.refuse(f.first, earlier);
+		const mixed = [{ kind: "changes" as const, id: descriptor.childRunId, stages: [], toolNodes: [] }, nested];
+		await assert.rejects(f.handoff.publish(f.first, mixed), (error) => error === earlier);
+		const next = await f.replacement();
+		const later = new Error("refused for the replacement");
+		f.handoff.refuse(next, later);
+		await assert.rejects(
+			f.handoff.publish(next, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]),
+			(error) => error === later,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes are validated with the stages they carry: a host stage that lost its run is refused (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const link = { workflowChildRun: { alias: "n", workflow: "n", runId: "nested" } };
+		const nested = snapshot("nested", { parentRunId: descriptor.childRunId, parentStageId: "host", rootRunId: ROOT });
+		await f.handoff.publish(f.first, [childRun([stage("host", link)]), nested]);
+		const unchanged = { kind: "changes" as const, id: "nested", stages: [], toolNodes: [] };
+		await assert.rejects(
+			f.handoff.publish(f.first, [
+				{
+					kind: "changes",
+					id: descriptor.childRunId,
+					stages: [stage("host", { ...link, status: "failed" })],
+					toolNodes: [],
+				},
+				unchanged,
+			]),
+			/outside the work subtree: nested/,
+		);
+		await f.handoff.publish(f.first, [childRun([stage("host", link)]), nested]);
+		await assert.rejects(
+			f.handoff.publish(f.first, [
+				{
+					kind: "changes",
+					id: descriptor.childRunId,
+					stages: [stage("host", { ...link, workflowChildRun: { ...link.workflowChildRun, runId: "other" } })],
+					toolNodes: [],
+				},
+			]),
+			/outside the work subtree: nested/,
+			"a host stage is checked whether or not the run it hosts is in the publication",
+		);
+		await f.handoff.publish(f.first, [childRun([stage("host", link)]), nested]);
+		await f.handoff.publish(f.first, [
+			{
+				kind: "changes",
+				id: descriptor.childRunId,
+				stages: [stage("host", { ...link, sessionId: "s" })],
+				toolNodes: [],
+			},
+			unchanged,
+		]);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.sessionId, "s");
+		await assert.rejects(
+			f.handoff.publish(f.first, [{ ...unchanged, id: descriptor.childRunId }, nested]),
+			/outside the work subtree: nested/,
+			"a publication of changes carries no run in full",
+		);
+		await f.handoff.publish(f.first, [childRun([stage("host", link)])]);
+		const relinked = { workflowChildRun: { ...link.workflowChildRun, runId: "other" } };
+		await f.handoff.publish(f.first, [
+			{ kind: "changes", id: descriptor.childRunId, stages: [stage("host", relinked)], toolNodes: [] },
+		]);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.stages[0]?.workflowChildRun?.runId,
+			"other",
+			"a host stage whose run the last full publication left out changes, now linking a run never published",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a publication naming a run twice is refused, in full or as changes (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const twice = new RegExp(`outside the work subtree: ${descriptor.childRunId}$`);
+		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")]), childRun([stage("b")])]), twice);
+		await f.handoff.publish(f.first, [childRun([stage("a")])]);
+		const unchanged = { kind: "changes" as const, id: descriptor.childRunId, stages: [], toolNodes: [] };
+		await assert.rejects(f.handoff.publish(f.first, [unchanged, unchanged]), twice);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes for a run the store holds but this handoff never published are refused (#4317)", async () => {
+	const f = await fixture();
+	try {
+		f.store.recordRunStart(childRun([stage("a")]));
+		await assert.rejects(
+			f.handoff.publish(f.first, [
+				{ kind: "changes", id: descriptor.childRunId, stages: [stage("a")], toolNodes: [] },
+			]),
+			/outside the work subtree/,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a publication is refused when the root run is gone (#4317)", async () => {
+	const f = await fixture();
+	try {
+		f.store.removeRun(ROOT);
+		await assert.rejects(f.handoff.publish(f.first, [childRun([stage("a")])]), /is not linked to/);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a work's boundary is found by its last position, without reading the root's other stages (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const root = f.store.run(ROOT)!;
+		const siblings = Array.from({ length: 1_000 }, (_, index) => stage(`sibling-${index}`, { status: "completed" }));
+		f.store.recordRunStart({ ...root, stages: [...siblings, ...root.stages] });
+		await f.handoff.publish(f.first, [childRun([stage("a", { status: "completed" })])]);
+		const reads = countFieldReads(f.store.run(ROOT)!.stages);
+		await f.handoff.publish(f.first, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]);
+		assert.ok(reads.reads <= 5, `the publication read ${reads.reads} fields of the root's stages`);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a stage's session follows its changes: a removed session is refused and an unchanged one keeps its delivery (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("stage", { sessionId: "session-a" })])]);
+		await f.queueDirect("stage", "direct-1");
+		const ready = f.handoff.ready(f.first, descriptor.childRunId, "stage", "stage", "session-a");
+		const progressed = stage("stage", { sessionId: "session-a", toolEvents: [{ name: "read" } as never] });
+		await f.handoff.publish(f.first, [
+			{ kind: "changes", id: descriptor.childRunId, stages: [progressed], toolNodes: [] },
+		]);
+		const received: string[] = [];
+		await f.handoff.deliver(
+			f.first,
+			descriptor.childRunId,
+			"stage",
+			"stage",
+			{ sessionId: "session-a", receivedMessageIds: [] },
+			async (_from, delivered) => {
+				received.push(delivered.id);
+			},
+		);
+		await ready;
+		assert.deepEqual(received, ["direct-1"]);
+		await f.handoff.publish(f.first, [
+			{ kind: "changes", id: descriptor.childRunId, stages: [stage("stage")], toolNodes: [] },
+		]);
+		await assert.rejects(
+			f.handoff.deliver(
+				f.first,
+				descriptor.childRunId,
+				"stage",
+				"stage",
+				{ sessionId: "session-a", receivedMessageIds: [] },
+				async () => {},
+			),
+			/not the published session/,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes read the stored run again when another writer replaced or grew its lists (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const node = (id: string, status: "running" | "completed") =>
+			({ id, name: id, status, parentIds: [] }) as unknown as RunSnapshot["toolNodes"][number];
+		const changes = (stages: StageSnapshot[], toolNodes: RunSnapshot["toolNodes"] = []): RunChanges => ({
+			kind: "changes",
+			id: descriptor.childRunId,
+			stages,
+			toolNodes,
+		});
+		const ids = () => f.store.run(descriptor.childRunId)!.stages.map((entry) => entry.id);
+		const tools = () => f.store.run(descriptor.childRunId)!.toolNodes.map((entry) => entry.id);
+		await f.handoff.publish(f.first, [childRun([stage("a", { status: "completed" })])]);
+		let stored = f.store.run(descriptor.childRunId)!;
+		f.store.recordRunStart({ ...stored, stages: [stage("b")] });
+		await f.handoff.publish(f.first, [changes([stage("b", { sessionId: "s" })])]);
+		assert.deepEqual(ids(), ["b"], "a stage the replaced list holds is replaced, not added again");
+		f.store.run(descriptor.childRunId)!.stages.push(stage("c"));
+		await f.handoff.publish(f.first, [changes([stage("c", { sessionId: "s" })])]);
+		assert.deepEqual(ids(), ["b", "c"], "a stage another writer added is replaced, not added again");
+		await f.handoff.publish(f.first, [
+			childRun(
+				[
+					stage("x", { status: "completed" }),
+					stage("y", { status: "completed" }),
+					stage("z", { status: "completed" }),
+				],
+				{ toolNodes: [node("t1", "completed")] },
+			),
+		]);
+		stored = f.store.run(descriptor.childRunId)!;
+		[stored.stages[1], stored.stages[2]] = [stored.stages[2]!, stored.stages[1]!];
+		await f.handoff.publish(f.first, [
+			changes([stage("x", { status: "completed", name: "x2" }), stage("y", { status: "completed", name: "y2" })]),
+		]);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)!.stages.map((entry) => [entry.id, entry.name]),
+			[
+				["x", "x2"],
+				["z", "z"],
+				["y", "y2"],
+			],
+		);
+		f.store.recordRunStart({ ...stored, toolNodes: [node("t2", "running")] });
+		await f.handoff.publish(f.first, [changes([], [node("t2", "completed")])]);
+		assert.deepEqual(tools(), ["t2"], "a tool node the replaced list holds is replaced, not added again");
+		f.store.run(descriptor.childRunId)!.toolNodes.push(node("t3", "running"));
+		await f.handoff.publish(f.first, [changes([], [node("t3", "completed")])]);
+		assert.deepEqual(tools(), ["t2", "t3"], "a tool node another writer added is replaced, not added again");
+	} finally {
+		await f.close();
+	}
+});
+
+test("stages that share an id are matched by the first of them, as the store finds them (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("dup", { status: "completed" }), stage("dup")])]);
+		const stored = f.store.run(descriptor.childRunId)!;
+		stored.stages[0]!.attached = true;
+		await f.handoff.publish(f.first, [childRun([stage("dup", { status: "completed" }), stage("dup")])]);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)!.stages.map((entry) => entry.attached),
+			[true, true],
+		);
+		await f.handoff.publish(f.first, [
+			{ kind: "changes", id: descriptor.childRunId, stages: [stage("dup", { name: "first" })], toolNodes: [] },
+		]);
+		assert.deepEqual(
+			f.store.run(descriptor.childRunId)!.stages.map((entry) => entry.name),
+			["first", "dup"],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("changes keep the run under the root even when the worker's own fields do not name it (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const run = (label: string) => childRun([stage("a")], { rootRunId: undefined, label });
+		await f.handoff.publish(f.first, encoder.encode(f.first, [run("first")]));
+		const runs = encoder.encode(f.first, [run("second")]);
+		assert.equal(isRunChanges(runs[0]!), true);
+		await f.handoff.publish(f.first, runs);
+		assert.deepEqual(
+			[f.store.run(descriptor.childRunId)?.label, f.store.run(descriptor.childRunId)?.rootRunId],
+			["second", ROOT],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("observers are told exactly which stages, tool nodes and fields a change wrote (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		const node = (id: string, status: "running" | "completed") =>
+			({ id, name: id, status, parentIds: [] }) as unknown as RunSnapshot["toolNodes"][number];
+		const run = (stages: StageSnapshot[], toolNodes: RunSnapshot["toolNodes"], label?: string) =>
+			childRun(stages, { toolNodes, ...(label === undefined ? {} : { label }) });
+		await f.handoff.publish(
+			f.first,
+			encoder.encode(f.first, [
+				run([stage("done", { status: "completed" }), stage("live"), stage("idle")], [node("t1", "running")]),
+			]),
+		);
+		const told: unknown[] = [];
+		const unsubscribe = f.store.subscribeInvalidation((changes) => told.push(changes));
+		const progress = () => f.store.run(ROOT)?.lastProgressAt;
+		try {
+			const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+			await f.handoff.publish(
+				renewed,
+				encoder.encode(renewed, [
+					run(
+						[
+							stage("done", { status: "completed" }),
+							stage("live", { sessionId: "s" }),
+							stage("idle"),
+							stage("new"),
+						],
+						[node("t1", "completed"), node("t2", "running")],
+						"label",
+					),
+				]),
+			);
+			const child = descriptor.childRunId;
+			assert.deepEqual(told, [
+				[
+					{ runId: child },
+					{ runId: child, stageId: "live" },
+					{ runId: child, stageId: "new" },
+					{ runId: child, stageId: "idle" },
+					{ runId: child, toolNodeId: "t1" },
+					{ runId: child, toolNodeId: "t2" },
+					{ runId: ROOT },
+				],
+			]);
+			for (const toolNodes of [[node("t1", "completed"), node("t2", "completed")]]) {
+				const before = progress();
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				await f.handoff.publish(
+					renewed,
+					encoder.encode(renewed, [
+						run(
+							[
+								stage("done", { status: "completed" }),
+								stage("live", { sessionId: "s" }),
+								stage("idle"),
+								stage("new"),
+							],
+							toolNodes,
+							"label",
+						),
+					]),
+				);
+				assert.ok((progress() ?? 0) > (before ?? 0), "a tool node that changed is progress");
+			}
+			const before = progress();
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			await f.handoff.publish(
+				renewed,
+				encoder.encode(renewed, [
+					run(
+						[
+							stage("done", { status: "completed" }),
+							stage("live", { sessionId: "s" }),
+							stage("idle"),
+							stage("new"),
+						],
+						[node("t1", "completed"), node("t2", "completed")],
+						"another",
+					),
+				]),
+			);
+			assert.ok((progress() ?? 0) > (before ?? 0), "a changed own field is progress");
+			const beforeStage = progress();
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			await f.handoff.publish(
+				renewed,
+				encoder.encode(renewed, [
+					run(
+						[
+							stage("done", { status: "completed" }),
+							stage("live", { sessionId: "t" }),
+							stage("idle"),
+							stage("new"),
+						],
+						[node("t1", "completed"), node("t2", "completed")],
+						"another",
+					),
+				]),
+			);
+			assert.ok((progress() ?? 0) > (beforeStage ?? 0), "a changed stage is progress");
+		} finally {
+			unsubscribe();
+		}
+	} finally {
+		await f.close();
+	}
+});
+
+/** Runs of a child with `size` ended host stages, each hosting a nested run; the first `open` nested runs still run. */
+function nestedRuns(size: number, open: number, live: Partial<StageSnapshot> = {}): RunSnapshot[] {
+	return [
+		childRun(
+			Array.from({ length: size }, (_, index) =>
+				stage(`host-${index}`, {
+					status: "completed",
+					endedAt: 1,
+					workflowChildRun: { alias: `n${index}`, workflow: "nested", runId: `nested-${index}` },
+				}),
+			),
+		),
+		...Array.from({ length: size }, (_, index) =>
+			snapshot(`nested-${index}`, {
+				parentRunId: descriptor.childRunId,
+				parentStageId: `host-${index}`,
+				rootRunId: ROOT,
+				stages: [
+					stage(`work-${index}`, index < open ? (index === 0 ? live : {}) : { status: "completed", endedAt: 1 }),
+				],
+			}),
+		),
+	];
+}
+
+/** One change to the first nested run, then one lease renewal alone, over a child with `size` nested runs. */
+async function measureNestedBatches(size: number) {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		await f.handoff.publish(f.first, encoder.encode(f.first, nestedRuns(size, 3)));
+		const stored = f.store.runs().filter((run) => run.id !== ROOT);
+		const before = stored.flatMap((run) => run.stages);
+		const reads = countFieldReads(before);
+		countFieldReads(stored, reads);
+		const measure = async (work: PoolWork, live: Partial<StageSnapshot>) => {
+			const runs = encoder.encode(work, nestedRuns(size, 3, live));
+			reads.reads = 0;
+			await f.handoff.publish(work, runs);
+			const counted = reads.reads;
+			const after = f.store.runs().filter((run) => run.id !== ROOT);
+			return {
+				entries: runs.length,
+				stages: runs.flatMap((run) => run.stages).length,
+				reads: counted,
+				relabelled: after
+					.flatMap((run) => run.stages)
+					.filter((entry) => entry.workerExecution?.renewedAt === work.renewedAt).length,
+			};
+		};
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		const changed = await measure(renewed, { toolEvents: [{ name: "read" } as never] });
+		const later = { ...renewed, renewedAt: renewed.renewedAt + 1_000, expiresAt: renewed.expiresAt + 1_000 };
+		const renewal = await measure(later, { toolEvents: [{ name: "read" } as never] });
+		assert.equal(f.store.run("nested-1")?.stages[0]?.workerExecution?.renewedAt, later.renewedAt);
+		assert.equal(f.store.run("nested-3")?.stages[0]?.workerExecution?.renewedAt, f.first.renewedAt);
+		return { changed, renewal };
+	} finally {
+		await f.close();
+	}
+}
+
+/** Field reads of a first full publication of a child with `size` nested runs, of the runs and stages it carries. */
+async function measureNestedFullPublication(size: number) {
+	const f = await fixture();
+	try {
+		const runs = nestedRuns(size, 3);
+		const reads = countFieldReads(runs);
+		countFieldReads(
+			runs.flatMap((run) => run.stages),
+			reads,
+		);
+		await f.handoff.publish(f.first, runs);
+		assert.equal(f.store.childRuns(descriptor.childRunId).length, size);
+		return reads.reads;
+	} finally {
+		await f.close();
+	}
+}
+
+test("a change to one of thousands of nested runs carries and reads the same as one of hundreds (#4317)", async () => {
+	const sizes = [250, 1_000, 4_000];
+	const measured: Awaited<ReturnType<typeof measureNestedBatches>>[] = [];
+	for (const size of sizes) measured.push(await measureNestedBatches(size));
+	assert.deepEqual(
+		measured,
+		sizes.map(() => measured[0]),
+		`per-batch work grew with the nested runs: ${JSON.stringify(measured)}`,
+	);
+	assert.deepEqual(
+		[measured[0]!.changed.entries, measured[0]!.changed.stages, measured[0]!.changed.relabelled],
+		[2, 1, 3],
+		"the first run names the publication, the changed run carries its stage, and the open stages show the lease",
+	);
+	assert.deepEqual(
+		[measured[0]!.renewal.entries, measured[0]!.renewal.stages, measured[0]!.renewal.relabelled],
+		[1, 0, 3],
+	);
+});
+
+test("a full publication of a child and its nested runs reads each of them a fixed number of times (#4317)", async () => {
+	const [small, medium, large] = [
+		await measureNestedFullPublication(250),
+		await measureNestedFullPublication(1_000),
+		await measureNestedFullPublication(4_000),
+	];
+	assert.equal(large! - medium!, 4 * (medium! - small!), `reads ${small} / ${medium} / ${large} are not linear`);
+});
+
+test("a batch stops before any turn once its signal aborts, the first included, so a run its pool ended is not written again (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const queue: PoolStageQueue = {
+			assertCurrent: async () => {},
+			withCurrentAppend: f.queue.withCurrentAppend.bind(f.queue),
+			result: f.queue.result.bind(f.queue),
+		};
+		const handoff = new PoolStageHandoff(f.backend, f.store, queue, f.lease);
+		const stages = Array.from({ length: 600 }, (_, index) => stage(`stage-${index}`, { status: "completed" }));
+		await handoff.publish(f.first, [childRun(stages)]);
+		const publications = ["first", "second", "third"].map((label) => ({
+			work: f.first,
+			runs: [childRun(stages, { label })],
+		}));
+		const disposal = new AbortController();
+		setImmediate(() => {
+			disposal.abort();
+			f.store.recordRunEnd(descriptor.childRunId, "failed", undefined, "pool failed");
+		});
+		await assert.rejects(
+			handoff.publishBatch(publications, disposal.signal),
+			(error) => error === disposal.signal.reason,
+		);
+		const run = f.store.run(descriptor.childRunId)!;
+		assert.deepEqual([run.status, run.label], ["failed", "second"]);
+		const closed = new AbortController();
+		closed.abort();
+		await assert.rejects(
+			handoff.publishBatch([{ work: f.first, runs: [childRun(stages, { label: "after close" })] }], closed.signal),
+			(error) => error === closed.signal.reason,
+		);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.label,
+			"second",
+			"a batch its pool closed before writes nothing",
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a full publication is the attempt's runs from then on, and open runs the store dropped are not relabelled (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const link = { workflowChildRun: { alias: "n", workflow: "n", runId: "nested" } };
+		const nested = snapshot("nested", {
+			parentRunId: descriptor.childRunId,
+			parentStageId: "host",
+			rootRunId: ROOT,
+			stages: [stage("open")],
+		});
+		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")]), nested]);
+		f.store.removeRun("nested");
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		await f.handoff.publish(renewed, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]);
+		assert.equal(f.store.run("nested"), undefined);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[1]?.workerExecution?.renewedAt, renewed.renewedAt);
+		const reads = vi.spyOn(f.store, "run");
+		const again = { ...renewed, renewedAt: renewed.renewedAt + 500, expiresAt: renewed.expiresAt + 500 };
+		await f.handoff.publish(again, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]);
+		const read = reads.mock.calls.map(([id]) => id);
+		reads.mockRestore();
+		assert.ok(!read.includes("nested"), "a run the store dropped is looked for once, then forgotten");
+		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")]), nested]);
+		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")])]);
+		await assert.rejects(
+			f.handoff.publish(f.first, [{ kind: "changes", id: "nested", stages: [], toolNodes: [] }]),
+			/outside the work subtree: nested/,
+		);
+		await f.handoff.publish(f.first, [childRun([stage("host", link), stage("live")])]);
+		const later = { ...f.first, renewedAt: f.first.renewedAt + 2_000, expiresAt: f.first.expiresAt + 2_000 };
+		const dropped = f.store.run("nested")!.stages[0];
+		await f.handoff.publish(later, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]);
+		assert.equal(f.store.run("nested")?.stages[0], dropped, "a run the attempt no longer publishes is left alone");
+	} finally {
+		await f.close();
+	}
+});
+
+test("an empty publication holds no runs: it ends a refusal, and nothing it left out is relabelled or changed (#4317)", async () => {
+	const f = await fixture();
+	try {
+		await f.handoff.publish(f.first, [childRun([stage("live")])]);
+		await assert.rejects(
+			f.handoff.publish(f.first, [{ kind: "changes", id: "stranger", stages: [], toolNodes: [] }]),
+			/outside the work subtree: stranger$/,
+		);
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		await f.handoff.publish(renewed, []);
+		assert.equal(f.store.run(descriptor.childRunId)?.stages[0]?.workerExecution?.renewedAt, f.first.renewedAt);
+		await assert.rejects(
+			f.handoff.publish(renewed, [{ kind: "changes", id: descriptor.childRunId, stages: [], toolNodes: [] }]),
+			new RegExp(`outside the work subtree: ${descriptor.childRunId}$`),
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a renewal after nested runs ended reads none of them (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const encoder = new RunChangesEncoder();
+		await f.handoff.publish(f.first, encoder.encode(f.first, nestedRuns(50, 50)));
+		await f.handoff.publish(f.first, encoder.encode(f.first, nestedRuns(50, 0)));
+		const renewed = { ...f.first, renewedAt: f.first.renewedAt + 1_000, expiresAt: f.first.expiresAt + 1_000 };
+		const reads = vi.spyOn(f.store, "run");
+		await f.handoff.publish(renewed, encoder.encode(renewed, nestedRuns(50, 0)));
+		const read = reads.mock.calls.map(([id]) => id);
+		reads.mockRestore();
+		assert.deepEqual(
+			read.filter((id) => id.startsWith("nested-")),
+			[],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("stages a renewal relabels in runs its publication leaves out count toward the turn's budget (#4317)", async () => {
+	const f = await fixture();
+	try {
+		const link = { workflowChildRun: { alias: "n", workflow: "n", runId: "nested" } };
+		const nested = snapshot("nested", {
+			parentRunId: descriptor.childRunId,
+			parentStageId: "host",
+			rootRunId: ROOT,
+			stages: Array.from({ length: PUBLICATION_TURN_WRITES / 2 }, (_, index) => stage(`open-${index}`)),
+		});
+		await f.handoff.publish(f.first, [childRun([stage("host", { ...link, status: "completed" })]), nested]);
+		const renewals = Array.from({ length: 4 }, (_, index) => ({
+			work: {
+				...f.first,
+				renewedAt: f.first.renewedAt + (index + 1) * 1_000,
+				expiresAt: f.first.expiresAt + (index + 1) * 1_000,
+			},
+			runs: [{ kind: "changes" as const, id: descriptor.childRunId, stages: [], toolNodes: [] }],
+		}));
+		const slices: number[] = [];
+		const unsubscribe = f.store.subscribeInvalidation(() => slices.push(slices.length));
+		try {
+			assert.deepEqual(
+				await f.handoff.publishBatch(renewals),
+				renewals.map(() => undefined),
+			);
+		} finally {
+			unsubscribe();
+		}
+		assert.equal(slices.length, 2, "each renewal relabels half a turn's budget, so two of them fill a turn");
+		assert.equal(f.store.run("nested")?.stages[0]?.workerExecution?.renewedAt, renewals[3]!.work.renewedAt);
+	} finally {
+		await f.close();
+	}
+});
+
+const MODEL_SEEDS = 40;
+const MODEL_STEPS = 80;
+
+test("a root fed changes holds what a root fed full publications holds, through renewals, replays and replacements (#4317)", async () => {
+	let compared = 0;
+	let incremental = 0;
+	for (let seed = 1; seed <= MODEL_SEEDS; seed++) {
+		const f = await fixture();
+		try {
+			const queue: PoolStageQueue = {
+				assertCurrent: async () => {},
+				withCurrentAppend: f.queue.withCurrentAppend.bind(f.queue),
+				result: f.queue.result.bind(f.queue),
+			};
+			const reference = createStore();
+			bindStoreDurableBackend(reference, f.backend);
+			const rootRun = structuredClone(f.store.run(ROOT)!);
+			bindRunDurableBackend(rootRun, f.backend);
+			reference.recordRunStart(rootRun);
+			const changes = new PoolStageHandoff(f.backend, f.store, queue, f.lease);
+			const full = new PoolStageHandoff(f.backend, reference, queue, f.lease);
+			const encoder = new RunChangesEncoder();
+			const next = seeded(seed);
+			const pick = <T>(items: readonly T[]): T | undefined => items[Math.floor(next() * items.length)];
+			let counter = 0;
+			const worker = { generation: f.first.generation, name: "worker-one", renewedAt: f.first.renewedAt };
+			let runs: RunSnapshot[] = [childRun([])];
+			let pending: { readonly work: PoolWork; readonly runs: RunSnapshot[] } | undefined;
+			for (let step = 0; step < MODEL_STEPS; step++) {
+				const child = runs[0]!;
+				const id = `n${counter++}`;
+				switch (Math.floor(next() * 10)) {
+					case 0:
+					case 1:
+						child.stages.push(stage(id, next() < 0.5 ? { sessionId: `session-${id}` } : {}));
+						break;
+					case 2: {
+						const index = Math.floor(next() * child.stages.length);
+						const target = child.stages[index];
+						if (target === undefined) break;
+						const status = pick(["running", "completed", "failed", "paused"] as const)!;
+						child.stages[index] = {
+							...target,
+							status,
+							...(status === "completed" || status === "failed" ? { endedAt: step } : {}),
+							...(next() < 0.3 ? { sessionId: `session-${id}` } : {}),
+						};
+						break;
+					}
+					case 3: {
+						const index = Math.floor(next() * child.stages.length);
+						const target = child.stages[index];
+						if (target !== undefined)
+							child.stages[index] = { ...target, toolEvents: [...target.toolEvents, { name: id } as never] };
+						break;
+					}
+					case 4:
+						runs[0] =
+							next() < 0.5 ? { ...child, label: id } : childRun(child.stages, { toolNodes: child.toolNodes });
+						break;
+					case 5:
+						child.toolNodes.push({ id, name: id, status: "running", parentIds: [] } as never);
+						break;
+					case 6:
+						if (runs.length < 7) {
+							const nested = `nested-${id}`;
+							child.stages.push(stage(id, { workflowChildRun: { alias: id, workflow: id, runId: nested } }));
+							runs.push(
+								snapshot(nested, {
+									parentRunId: child.id,
+									parentStageId: id,
+									rootRunId: ROOT,
+									stages: [stage(`${id}-a`)],
+								}),
+							);
+						}
+						break;
+					case 7: {
+						// Nested runs open and end stages of their own, which publications of changes leave out.
+						const nested = runs[1 + Math.floor(next() * (runs.length - 1))];
+						if (nested === undefined || nested === child) break;
+						const last = nested.stages.length - 1;
+						if (next() < 0.5) nested.stages.push(stage(id));
+						else
+							nested.stages[last] = {
+								...nested.stages[last]!,
+								status: nested.stages[last]!.status === "running" ? "completed" : "running",
+							};
+						break;
+					}
+					case 8:
+						worker.renewedAt += 1_000;
+						break;
+					case 9:
+						if (next() < 0.4) {
+							// A replacement replays the child from the start: it publishes fewer stages at first.
+							worker.generation++;
+							worker.name = `worker-${worker.generation}`;
+							runs = [
+								childRun(
+									child.stages
+										.slice(0, Math.floor(next() * child.stages.length))
+										.map((kept) => stage(kept.id, { replayKey: kept.replayKey })),
+								),
+							];
+						}
+						break;
+				}
+				if (next() < 0.6)
+					pending = {
+						work: {
+							...f.first,
+							generation: worker.generation,
+							worker: worker.name,
+							renewedAt: worker.renewedAt,
+							expiresAt: worker.renewedAt + 60_000,
+						},
+						runs: structuredClone(runs),
+					};
+				if (pending === undefined || next() < 0.6) continue;
+				const sent = encoder.encode(pending.work, pending.runs);
+				if (sent.some(isRunChanges)) incremental++;
+				const outcomes = await changes.publishBatch([{ work: pending.work, runs: sent }]);
+				assert.deepEqual(
+					outcomes,
+					await full.publishBatch([{ work: pending.work, runs: structuredClone(pending.runs) }]),
+					`seed ${seed} step ${step}`,
+				);
+				pending = undefined;
+				const published = (store: typeof reference) =>
+					JSON.parse(JSON.stringify(store.runs().filter((run) => run.id !== ROOT)));
+				assert.deepEqual(published(f.store), published(reference), `seed ${seed} step ${step}`);
+				compared++;
+			}
+		} finally {
+			await f.close();
+		}
+	}
+	assert.ok(compared > MODEL_SEEDS * 10, `only ${compared} publications compared`);
+	assert.ok(incremental > compared / 2, `only ${incremental} of ${compared} publications carried changes`);
 });

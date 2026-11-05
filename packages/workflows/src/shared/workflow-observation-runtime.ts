@@ -28,6 +28,47 @@ interface ChangedNodes {
 /** A run changed as a whole, or only in the named stages and tool nodes. */
 type RunChange = "run" | ChangedNodes;
 
+/** Where each node of a run's stage or tool-node list stands by id, as far as the list was read (#4317). */
+interface NodePositions {
+	readonly positions: Map<string, number>;
+	indexed: number;
+}
+
+const nodePositions = new WeakMap<readonly { readonly id: string }[], NodePositions>();
+
+function indexOf(nodes: readonly { readonly id: string }[]): NodePositions {
+	const index = { positions: new Map<string, number>(), indexed: 0 };
+	nodePositions.set(nodes, index);
+	return index;
+}
+
+/** The node's position, reading on past what the index read when it has not met the id yet. */
+function positionOf(nodes: readonly { readonly id: string }[], index: NodePositions, id: string): number | undefined {
+	for (; !index.positions.has(id) && index.indexed < nodes.length; index.indexed++)
+		index.positions.set(nodes[index.indexed]!.id, index.indexed);
+	const position = index.positions.get(id);
+	return position !== undefined && nodes[position]?.id === id ? position : undefined;
+}
+
+/**
+ * The nodes of `nodes` with these ids, in list order, found without reading the others: each list keeps the
+ * positions it was read at and reads on past them only for an id it has not met, as a store list grows at its end.
+ * An id it cannot place, because the list was edited otherwise or no longer holds it, reads the whole list again.
+ */
+function named<T extends { readonly id: string }>(nodes: readonly T[], ids: ReadonlySet<string>): readonly T[] {
+	let index = nodePositions.get(nodes) ?? indexOf(nodes);
+	const found: number[] = [];
+	for (const id of ids) {
+		let position = positionOf(nodes, index, id);
+		if (position === undefined) {
+			index = indexOf(nodes);
+			position = positionOf(nodes, index, id);
+		}
+		if (position !== undefined) found.push(position);
+	}
+	return found.sort((left, right) => left - right).map((position) => nodes[position]!);
+}
+
 /** The store's runs: all of them in store order, and one by id or by position without a scan (#4182). */
 export interface ObservedRuns {
 	all(): readonly RunSnapshot[];
@@ -260,8 +301,7 @@ export class WorkflowObservationRuntime {
 			}
 		};
 		visit("run", `run:${run.id}`, { kind: "run", runId: run.id, status: run.status });
-		for (const stage of run.stages) {
-			if (nodes !== undefined && !nodes.stages.has(stage.id)) continue;
+		for (const stage of nodes === undefined ? run.stages : named(run.stages, nodes.stages)) {
 			const owner = `stage:${stage.id}`;
 			visit(
 				owner,
@@ -283,8 +323,7 @@ export class WorkflowObservationRuntime {
 					!existing,
 				);
 		}
-		for (const tool of run.toolNodes) {
-			if (nodes !== undefined && !nodes.tools.has(tool.id)) continue;
+		for (const tool of nodes === undefined ? run.toolNodes : named(run.toolNodes, nodes.tools)) {
 			visit(
 				`tool:${tool.id}`,
 				`tool:${workflowActivityNodeKey(run.id, tool.id)}`,

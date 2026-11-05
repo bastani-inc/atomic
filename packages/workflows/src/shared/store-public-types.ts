@@ -92,6 +92,13 @@ export interface StoreRunChange {
  */
 export type StoreInvalidationListener = (changes?: readonly StoreRunChange[]) => void;
 
+/** What one in-place edit of a run changed: its own fields, and the stages and tool nodes it replaced or added. */
+export interface RunEdit {
+	readonly run?: boolean;
+	readonly stageIds?: readonly string[];
+	readonly toolNodeIds?: readonly string[];
+}
+
 export interface PromptAnswerRecord {
 	readonly runId: string;
 	readonly stageId: string;
@@ -132,6 +139,12 @@ export interface Store {
 	notices(): readonly WorkflowNotice[];
 	activeRunId(): string | null;
 	recordRunStart(run: RunSnapshot): void;
+	/**
+	 * Lets `edit` change a run in place, other than its id and parent links, and returns false when the store does not
+	 * hold it. Observers re-read only what the edit reports, so its other stages and tool nodes keep their identity
+	 * and are not read again (#4317).
+	 */
+	editRun(runId: string, edit: (run: RunSnapshot) => RunEdit): boolean;
 	recordRunSummary?(runId: string, summary: string, summarizedThrough: number): void;
 	recordRunExecutionState(runId: string, update: RunExecutionState): void;
 	/** Replaces the run's local worker pool snapshot, as its pool's coordinator reports it. */

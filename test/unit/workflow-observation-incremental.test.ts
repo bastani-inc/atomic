@@ -146,7 +146,7 @@ function mutate(
 	const target = pick(runs);
 	const stage = target === undefined ? undefined : pick(target.stages);
 	const tool = target === undefined ? undefined : pick(target.toolNodes);
-	const op = Math.floor(next() * 22);
+	const op = Math.floor(next() * 25);
 	const id = `n${Math.floor(next() * 1e9)}`;
 	switch (op) {
 		case 0:
@@ -323,6 +323,49 @@ function mutate(
 					pendingPrompt: reopen(target.pendingPrompt, `q-${target.id}-${Math.floor(next() * 2)}`),
 				});
 			}
+			return;
+		case 22:
+		case 23:
+			if (target !== undefined)
+				// A pool's root applies a worker's changes in place: stages and tool nodes replaced or added (#4317).
+				store.editRun(target.id, (edited) => {
+					const stageIds: string[] = [];
+					const toolNodeIds: string[] = [];
+					if (stage !== undefined && next() < 0.7) {
+						edited.stages[edited.stages.indexOf(stage)] = { ...stage, status: pick(STAGE_STATUSES) ?? "running" };
+						stageIds.push(stage.id);
+					}
+					if (next() < 0.5) {
+						edited.stages.push({
+							id,
+							name: `stage-${id}`,
+							status: pick(STAGE_STATUSES) ?? "running",
+							parentIds: [],
+							toolEvents: [],
+							...(next() < 0.3 ? { pendingPrompt: prompt(`p-${target.id}-${id}`) } : {}),
+						});
+						stageIds.push(id);
+					}
+					if (tool !== undefined && next() < 0.5) {
+						edited.toolNodes[edited.toolNodes.indexOf(tool)] = {
+							...tool,
+							status: pick(TOOL_END_STATUSES) ?? "completed",
+						};
+						toolNodeIds.push(tool.id);
+					}
+					const run = target.endedAt === undefined && next() < 0.2;
+					if (run) edited.status = pick(RUN_STATUSES) ?? "completed";
+					return { run, stageIds, toolNodeIds };
+				});
+			return;
+		case 24:
+			if (target !== undefined && stage !== undefined && target.stages[0] !== stage)
+				// Another writer moves stages in place and names only the one whose content changed (#4317).
+				store.editRun(target.id, (edited) => {
+					edited.stages[edited.stages.indexOf(stage)] = edited.stages[0]!;
+					edited.stages[0] = { ...stage, status: pick(STAGE_STATUSES) ?? "running" };
+					return { run: false, stageIds: [stage.id], toolNodeIds: [] };
+				});
 			return;
 	}
 }

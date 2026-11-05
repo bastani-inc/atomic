@@ -58,3 +58,26 @@ export function countRunListScans(store: Store): { store: Store; scans: { reads:
 	});
 	return { store: Object.assign(Object.create(store) as Store, { runs: () => counted }), scans };
 }
+
+/**
+ * Makes every own field of these snapshots count its reads, keeping their values and identity, so a test sees which
+ * stored stages or tool nodes a store update reads at all.
+ */
+export function countFieldReads<T extends object>(nodes: readonly T[], counter = { reads: 0 }): { reads: number } {
+	for (const node of nodes)
+		for (const field of Object.keys(node) as (keyof T)[]) {
+			let value = node[field];
+			Object.defineProperty(node, field, {
+				enumerable: true,
+				configurable: true,
+				get: () => {
+					counter.reads++;
+					return value;
+				},
+				set: (next: T[keyof T]) => {
+					value = next;
+				},
+			});
+		}
+	return counter;
+}
