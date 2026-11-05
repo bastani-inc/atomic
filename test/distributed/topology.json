@@ -1,0 +1,70 @@
+{
+	"schemaVersion": 1,
+	"repository": "https://github.com/bastani-inc/atomic.git",
+	"regions": [
+		"eastus2",
+		"westus3"
+	],
+	"ttlHours": 6,
+	"image": "Canonical:ubuntu-26_04-lts:server:latest",
+	"adminUser": "atomic",
+	"addressPool": {
+		"firstSecondOctet": 60,
+		"lastSecondOctet": 255
+	},
+	"node": {
+		"version": "v24.22.0"
+	},
+	"database": {
+		"version": "v0.24.33",
+		"image": "ghcr.io/tursodatabase/libsql-server:v0.24.33@sha256:f8ca0134cdded747793888e48591aece07647d9d598d3ac229aabfa93159ca88",
+		"namespaces": [
+			"smoke"
+		],
+		"gatewayPort": 8443,
+		"replicationPort": 5001,
+		"storage": "premium-ssd",
+		"dataDiskGb": 64,
+		"primary": {
+			"region": "eastus2",
+			"size": "Standard_D2s_v7"
+		},
+		"replica": {
+			"region": "westus3",
+			"size": "Standard_D2s_v7"
+		},
+		"localNvmeSize": "Standard_D2ds_v7"
+	},
+	"nodes": [
+		{
+			"name": "large",
+			"roles": [
+				"large"
+			],
+			"size": "Standard_E8s_v7"
+		},
+		{
+			"name": "small",
+			"roles": [
+				"small-memory"
+			],
+			"size": "Standard_D2ls_v7"
+		},
+		{
+			"name": "gitless",
+			"roles": [
+				"git-less",
+				"vm-faults"
+			],
+			"size": "Standard_D2s_v7",
+			"secondaryNic": true
+		}
+	],
+	"extraNode": {
+		"name": "node",
+		"roles": [
+			"standard"
+		],
+		"size": "Standard_D2s_v7"
+	}
+}
