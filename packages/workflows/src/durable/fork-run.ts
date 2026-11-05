@@ -345,6 +345,14 @@ function forkPointRecords(checkpoints: readonly CheckpointEvent[]): readonly For
 	return records;
 }
 
+function forkKeepsWorkspace(source: DurableWorkflowHandle, cwd: string): boolean {
+	return (source.invocationCwd ?? cwd) === cwd;
+}
+
+function forkSessionStoreCwd(source: DurableWorkflowHandle, cwd: string): string {
+	return forkKeepsWorkspace(source, cwd) ? (source.workflowCwd ?? cwd) : cwd;
+}
+
 async function sourceSessionStoreFor(handle: DurableWorkflowHandle, options: ForkSourceOptions, cwd: string) {
 	return options.sourceSessionStore === undefined
 		? { store: await stageSessionStore({ cwd: handle.workflowCwd ?? handle.invocationCwd ?? cwd }), owned: true }
@@ -829,7 +837,7 @@ function forkHandle(
 		gitWorktreeRoot,
 		...carried
 	} = source;
-	const sameCwd = (source.invocationCwd ?? request.cwd) === request.cwd;
+	const sameCwd = forkKeepsWorkspace(source, request.cwd);
 	const now = Date.now();
 	return {
 		...carried,
@@ -1112,7 +1120,8 @@ async function copySessions(
 	const created: string[] = [];
 	let destination: SessionStore | undefined;
 	try {
-		destination = request.sessionStore ?? (await stageSessionStore({ cwd: request.cwd }));
+		destination =
+			request.sessionStore ?? (await stageSessionStore({ cwd: forkSessionStoreCwd(source.handle, request.cwd) }));
 		for (const [sessionId, { entries, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
 			const id = randomUUID();

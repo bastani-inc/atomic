@@ -36,6 +36,8 @@ import {
 
 const opened = vi.hoisted(() => ({
 	store: undefined as SessionStore | undefined,
+	/** Session stores by the directory they are selected for; any other directory gets `store`. */
+	byCwd: new Map<string, SessionStore>(),
 	stores: [] as { cwd: string | undefined; closes: number }[],
 }));
 
@@ -46,7 +48,7 @@ vi.mock("../../packages/workflows/src/shared/stage-session-store.js", async (imp
 		stageSessionStore: async (options: { cwd?: string }) => {
 			const entry = { cwd: options.cwd, closes: 0 };
 			opened.stores.push(entry);
-			return new Proxy(opened.store!, {
+			return new Proxy(opened.byCwd.get(options.cwd ?? "") ?? opened.store!, {
 				get(target, property) {
 					if (property === "close")
 						return async () => {
@@ -65,6 +67,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	opened.stores.length = 0;
 	opened.store = undefined;
+	opened.byCwd.clear();
 	await closeMemoryTestBackends();
 });
 
@@ -898,4 +901,40 @@ test("a fork in progress holds its source against a second fork until it finishe
 	open();
 	await first;
 	assert.equal(claimsOf(pendingForks, backend).has(sourceId), false);
+});
+
+test("a fork of a run with an input worktree copies its sessions into the store a later fork reads, across two generations (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const invocationStore = new MemorySessionStore();
+	const worktreeStore = new MemorySessionStore();
+	opened.byCwd.set("/source", invocationStore);
+	opened.byCwd.set("/source/worktree", worktreeStore);
+	opened.byCwd.set("/elsewhere", new MemorySessionStore());
+	const session = await SessionManager.create(worktreeStore, "/source/worktree");
+	await session.appendMessage({ role: "user", content: "saved", timestamp: 1 });
+	const sourceId = testRunId("worktree-generations");
+	await register(backend, sourceId, { workflowCwd: "/source/worktree" });
+	await commit(backend, [
+		stage(sourceId, "stage:saved", "saved", "stage:saved:1", { output: "saved", sessionId: session.getSessionId() }),
+	]);
+	const sessionIds = async (store: MemorySessionStore) => {
+		const ids: string[] = [];
+		for await (const summary of store.list({ includeInternal: true })) ids.push(summary.id);
+		return ids;
+	};
+
+	const first = await forkDurableRun(backend, request(sourceId));
+	assert.equal(backend.getWorkflow(first.runId)?.workflowCwd, "/source/worktree", "the worktree is kept");
+	assert.equal((await sessionIds(worktreeStore)).length, 2, "the copy is in the store the worktree selects");
+	assert.deepEqual(await sessionIds(invocationStore), [], "not in the invocation directory's store");
+
+	const second = await forkDurableRun(backend, request(first.runId));
+	assert.equal(backend.getWorkflow(second.runId)?.workflowCwd, "/source/worktree");
+	assert.equal((await sessionIds(worktreeStore)).length, 3, "the second generation found and copied the session");
+	assert.deepEqual(await sessionIds(invocationStore), []);
+
+	const elsewhere = await forkDurableRun(backend, { ...request(sourceId), cwd: "/elsewhere" });
+	assert.equal(backend.getWorkflow(elsewhere.runId)?.workflowCwd, undefined, "a fork in another directory drops it");
+	assert.deepEqual(opened.stores.at(-2)?.cwd, "/source/worktree", "its sessions are read from the worktree's store");
+	assert.equal(opened.stores.at(-1)?.cwd, "/elsewhere", "and written to the new directory's own store");
 });
