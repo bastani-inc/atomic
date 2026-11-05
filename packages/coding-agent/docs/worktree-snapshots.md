@@ -102,7 +102,7 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 - `restoreWorktreeSnapshot(bindingOrSnapshot, { into?, blobs?, snapshots?, storeDir?, settings?, onWarning?, signal? })` resolves to the path of a new, verified worktree. `into` must be a new or empty directory. A binding is restored from a matching entry of `snapshots`, or from a host whose object store already holds its tree. Restore checks the target and every blob before writing, and removes what it created when it fails.
 - `verifyWorktree(binding, dir)` resolves to the checkout's current binding when its `HEAD` and tree match, and rejects with `WorkspaceDriftError` otherwise.
 - `removeRestoredWorktree(path, { storeDir? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other directory.
-- `collectSnapshotGarbage(blobs, retained)` deletes blobs that none of the retained snapshots needs; pass the snapshots referenced by resumable checkpoints and the latest snapshot of each session.
+- `collectSnapshotGarbage(blobs, retained)` deletes blobs that none of the retained snapshots needs. Retain the latest snapshot of each session (`listRetainedSessionSnapshots(sessionStore)`) and the snapshots resumable workflow runs reference (`listResumableWorkflowSnapshots(journal)` from `@bastani/atomic/workflows`). When sessions and runs share one database they share one blob table, so pass both sets together. Atomic does not run this collection on its own yet.
 
 ## Errors
 
