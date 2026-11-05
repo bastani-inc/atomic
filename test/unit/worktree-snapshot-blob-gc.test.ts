@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
-	collectSnapshotGarbage,
-	DEFAULT_BLOB_GRACE_SECONDS,
 	MemorySnapshotBlobStore,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+import {
+	collectSnapshotGarbage,
+	DEFAULT_BLOB_GRACE_SECONDS,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import {
 	isWorkspaceConfigError,
 	type SnapshotBlob,
