@@ -47,7 +47,6 @@ type GitUnavailableCaseFields =
 			readonly code: "unsupported-platform";
 			readonly reason: GitUnsupportedPlatformReason;
 			readonly libc?: string;
-			readonly installCommand?: string;
 	  }
 	| { readonly code: "offline"; readonly offlineVariable: string }
 	| { readonly code: "not-installed"; readonly installDir: string }
@@ -67,10 +66,15 @@ type GitUnavailableCaseFields =
 			readonly detail?: string;
 	  };
 
-/** The facts behind a {@link GitUnavailableError}, discriminated by `code`. `platform` and `arch` are Node's values. */
+/**
+ * The facts behind a {@link GitUnavailableError}, discriminated by `code`. `platform` and `arch` are Node's values.
+ * `installCommand` is the command that installs git on the machine that raised the error, when its distribution is
+ * known; it is stored, never recomputed, so a rehydrated error keeps the original machine's command.
+ */
 export type GitUnavailableFields = GitUnavailableCaseFields & {
 	readonly platform: string;
 	readonly arch: string;
+	readonly installCommand?: string;
 	readonly systemGit?: GitRejectedSystemGit;
 };
 
@@ -78,6 +82,7 @@ export type GitProvisionTimeoutFields = {
 	readonly phase: GitProvisionPhase;
 	readonly timeoutMs: number;
 	readonly elapsedMs: number;
+	readonly installCommand?: string;
 };
 
 export type GitProvisionConfigFields = {
@@ -167,7 +172,11 @@ function systemGitClause(systemGit: GitRejectedSystemGit | undefined): string {
 		: `; ${systemGit.path} did not report a usable git version`;
 }
 
-const INSTALL_YOURSELF = `install git ${GIT_MINIMUM_VERSION} or newer`;
+function installYourself(installCommand: string | undefined): string {
+	return installCommand === undefined
+		? `install git ${GIT_MINIMUM_VERSION} or newer with your system package manager (https://git-scm.com/downloads)`
+		: `install git ${GIT_MINIMUM_VERSION} or newer with \`${installCommand}\``;
+}
 
 function unavailableSubject(fields: GitUnavailableFields): string {
 	switch (fields.code) {
@@ -188,24 +197,26 @@ function unavailableSubject(fields: GitUnavailableFields): string {
 	}
 }
 
+function capitalize(text: string): string {
+	return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function unavailableHint(fields: GitUnavailableFields): string {
 	switch (fields.code) {
 		case "unsupported-platform":
-			return fields.installCommand === undefined
-				? `Install git ${GIT_MINIMUM_VERSION} or newer with your system package manager.`
-				: `Install git ${GIT_MINIMUM_VERSION} or newer with \`${fields.installCommand}\`.`;
+			return capitalize(installYourself(fields.installCommand)) + ".";
 		case "offline":
-			return `Unset ${fields.offlineVariable} so Atomic can download a portable git, or ${INSTALL_YOURSELF}.`;
+			return `Unset ${fields.offlineVariable} so Atomic can download a portable git, or ${installYourself(fields.installCommand)}.`;
 		case "not-installed":
-			return `Call resolveGit() to download a portable git (interactive Atomic does this at startup), or ${INSTALL_YOURSELF}.`;
+			return `Call resolveGit() to download a portable git (interactive Atomic does this at startup), or ${installYourself(fields.installCommand)}.`;
 		case "checksum-mismatch":
-			return `Check for a proxy or firewall that alters downloads from github.com, or ${INSTALL_YOURSELF}.`;
+			return `Check for a proxy or firewall that alters downloads from github.com, or ${installYourself(fields.installCommand)}.`;
 		case "download-failed":
-			return `Check that github.com is reachable from this machine and try again, or ${INSTALL_YOURSELF}.`;
+			return `Check that github.com is reachable from this machine and try again, or ${installYourself(fields.installCommand)}.`;
 		case "install-failed":
 			return fields.phase === "verify"
-				? `This system cannot run the portable git build; ${INSTALL_YOURSELF} with your system package manager.`
-				: `Check free disk space and write access to ${fields.installDir} and try again, or ${INSTALL_YOURSELF}.`;
+				? `This system cannot run the portable git build; ${installYourself(fields.installCommand)}.`
+				: `Check free disk space and write access to ${fields.installDir} and try again, or ${installYourself(fields.installCommand)}.`;
 	}
 }
 
@@ -246,7 +257,7 @@ export class GitProvisionTimeoutError extends GitProvisionError {
 	declare readonly retryable: true;
 
 	constructor(fields: GitProvisionTimeoutFields, options?: ErrorOptions) {
-		const hint = `Check the network connection to github.com and try again, or ${INSTALL_YOURSELF}.`;
+		const hint = `Check the network connection to github.com and try again, or ${installYourself(fields.installCommand)}.`;
 		super(
 			{
 				code: "provision-timeout",

@@ -51,8 +51,8 @@ describe("git provisioning errors (#4322)", () => {
 		[
 			"unsupported architecture without a command",
 			{ code: "unsupported-platform", reason: "architecture", platform: "linux", arch: "ppc64" },
-			"Git is unavailable: automatic provisioning does not support linux/ppc64 (unsupported-platform). Install git 2.30.0 or newer with your system package manager.",
-			"Install git 2.30.0 or newer with your system package manager.",
+			"Git is unavailable: automatic provisioning does not support linux/ppc64 (unsupported-platform). Install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"offline with an old system git",
@@ -63,8 +63,8 @@ describe("git provisioning errors (#4322)", () => {
 				arch: "x64",
 				systemGit: { path: "/usr/bin/git", problem: "below-minimum", version: "2.25.1" },
 			},
-			"Git is unavailable: ATOMIC_OFFLINE is set, so no portable git is downloaded; /usr/bin/git is git 2.25.1, older than 2.30.0 (offline). Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer.",
-			"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer.",
+			"Git is unavailable: ATOMIC_OFFLINE is set, so no portable git is downloaded; /usr/bin/git is git 2.25.1, older than 2.30.0 (offline). Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"not installed after a failed probe",
@@ -74,20 +74,20 @@ describe("git provisioning errors (#4322)", () => {
 				installDir: "/home/u/.atomic/agent/bin/git",
 				systemGit: { path: "/usr/bin/git", problem: "probe-failed" },
 			},
-			"Git is unavailable: no git 2.30.0 or newer is on PATH; /usr/bin/git did not report a usable git version, and no portable git is installed in /home/u/.atomic/agent/bin/git (not-installed). Call resolveGit() to download a portable git (interactive Atomic does this at startup), or install git 2.30.0 or newer.",
-			"Call resolveGit() to download a portable git (interactive Atomic does this at startup), or install git 2.30.0 or newer.",
+			"Git is unavailable: no git 2.30.0 or newer is on PATH; /usr/bin/git did not report a usable git version, and no portable git is installed in /home/u/.atomic/agent/bin/git (not-installed). Call resolveGit() to download a portable git (interactive Atomic does this at startup), or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Call resolveGit() to download a portable git (interactive Atomic does this at startup), or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"checksum mismatch",
 			CHECKSUM_FIELDS,
-			`Git is unavailable: ${CHECKSUM_FIELDS.code === "checksum-mismatch" ? CHECKSUM_FIELDS.asset : ""} has SHA-256 0000000000000000000000000000000000000000000000000000000000000000, expected 1efd8ce0516b670b6b6d0f49ecaf395ceb8cf7fff3f5857259763d97a1238df9; nothing was installed (checksum-mismatch). Check for a proxy or firewall that alters downloads from github.com, or install git 2.30.0 or newer.`,
-			"Check for a proxy or firewall that alters downloads from github.com, or install git 2.30.0 or newer.",
+			`Git is unavailable: ${CHECKSUM_FIELDS.code === "checksum-mismatch" ? CHECKSUM_FIELDS.asset : ""} has SHA-256 0000000000000000000000000000000000000000000000000000000000000000, expected 1efd8ce0516b670b6b6d0f49ecaf395ceb8cf7fff3f5857259763d97a1238df9; nothing was installed (checksum-mismatch). Check for a proxy or firewall that alters downloads from github.com, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).`,
+			"Check for a proxy or firewall that alters downloads from github.com, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"download failure",
 			{ ...HOST, code: "download-failed", asset: "a.tar.gz", url: "https://example.test/a.tar.gz", httpStatus: 404 },
-			"Git is unavailable: a.tar.gz could not be downloaded (HTTP 404) (download-failed). Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer.",
-			"Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer.",
+			"Git is unavailable: a.tar.gz could not be downloaded (HTTP 404) (download-failed). Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"extraction failure",
@@ -99,14 +99,14 @@ describe("git provisioning errors (#4322)", () => {
 				installDir: "/agent/bin/git",
 				detail: "tar exited with status 2",
 			},
-			"Git is unavailable: a.tar.gz could not be extracted into /agent/bin/git: tar exited with status 2 (install-failed). Check free disk space and write access to /agent/bin/git and try again, or install git 2.30.0 or newer.",
-			"Check free disk space and write access to /agent/bin/git and try again, or install git 2.30.0 or newer.",
+			"Git is unavailable: a.tar.gz could not be extracted into /agent/bin/git: tar exited with status 2 (install-failed). Check free disk space and write access to /agent/bin/git and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Check free disk space and write access to /agent/bin/git and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 		[
 			"verification failure",
 			{ ...HOST, code: "install-failed", phase: "verify", asset: "a.tar.gz", installDir: "/agent/bin/git" },
-			"Git is unavailable: a.tar.gz could not be verified into /agent/bin/git (install-failed). This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager.",
-			"This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager.",
+			"Git is unavailable: a.tar.gz could not be verified into /agent/bin/git (install-failed). This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 	])("renders %s from its fields with the remediation as hint", (_label, fields, message, hint) => {
 		const error = new GitUnavailableError(fields);
@@ -133,7 +133,7 @@ describe("git provisioning errors (#4322)", () => {
 		});
 		assert.equal(
 			error.message,
-			`Git is unavailable: a.tar.gz could not be ${verb} into /d (install-failed). Check free disk space and write access to /d and try again, or install git 2.30.0 or newer.`,
+			`Git is unavailable: a.tar.gz could not be ${verb} into /d (install-failed). Check free disk space and write access to /d and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).`,
 		);
 	});
 
@@ -175,7 +175,7 @@ describe("git provisioning errors (#4322)", () => {
 		const error = new GitProvisionTimeoutError({ phase: "download", timeoutMs: 600000, elapsedMs: 600012 });
 		assert.equal(
 			error.message,
-			"Git provisioning timed out: download did not finish within 600000ms (stopped after 600012ms) (provision-timeout). Check the network connection to github.com and try again, or install git 2.30.0 or newer.",
+			"Git provisioning timed out: download did not finish within 600000ms (stopped after 600012ms) (provision-timeout). Check the network connection to github.com and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		);
 		assert.equal(error.name, "GitProvisionTimeoutError");
 		assert.equal(error.code, "provision-timeout");
@@ -357,7 +357,7 @@ describe("git provisioning error edges (#4322)", () => {
 		const error = new GitUnavailableError({ ...HOST, code: "download-failed", asset: "a.tar.gz", url: "u" });
 		assert.equal(
 			error.message,
-			"Git is unavailable: a.tar.gz could not be downloaded (download-failed). Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer.",
+			"Git is unavailable: a.tar.gz could not be downloaded (download-failed). Check that github.com is reachable from this machine and try again, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		);
 	});
 
@@ -432,5 +432,63 @@ describe("git provisioning error edges (#4322)", () => {
 		assert.equal(restored.name, name);
 		assert.equal(restored.code, code);
 		assert.equal("cause" in restored, false);
+	});
+});
+
+describe("git install command in errors (#4322)", () => {
+	const APT = "apt-get install git";
+	const withCommand: GitUnavailableFields[] = [
+		{ ...HOST, installCommand: APT, code: "offline", offlineVariable: "ATOMIC_OFFLINE" },
+		{ ...HOST, installCommand: APT, code: "not-installed", installDir: "/d" },
+		{ ...HOST, installCommand: APT, code: "unsupported-platform", reason: "architecture" },
+		{ ...CHECKSUM_FIELDS, installCommand: APT },
+		{ ...HOST, installCommand: APT, code: "download-failed", asset: "a", url: "u", httpStatus: 503 },
+		{ ...HOST, installCommand: APT, code: "install-failed", phase: "extract", asset: "a", installDir: "/d" },
+		{ ...HOST, installCommand: APT, code: "install-failed", phase: "verify", asset: "a", installDir: "/d" },
+	];
+
+	it.each(withCommand)("ends the $code hint with the install command", (fields) => {
+		const error = new GitUnavailableError(fields);
+		assert.ok(
+			error.hint.toLowerCase().endsWith("install git 2.30.0 or newer with `apt-get install git`."),
+			error.hint,
+		);
+		assert.ok(error.message.endsWith(error.hint));
+		assert.equal(error.fields.installCommand, APT);
+	});
+
+	it("puts the install command in a timeout's hint", () => {
+		const error = new GitProvisionTimeoutError({ phase: "lock", timeoutMs: 1, elapsedMs: 2, installCommand: APT });
+		assert.ok(error.hint.endsWith("or install git 2.30.0 or newer with `apt-get install git`."));
+		assert.equal(error.fields.installCommand, APT);
+	});
+
+	it("keeps the originating machine's command when rehydrated elsewhere", () => {
+		const original = new GitUnavailableError({
+			...HOST,
+			installCommand: "dnf install git",
+			code: "offline",
+			offlineVariable: "V",
+		});
+		const restored = rehydrateGitProvisionError(JSON.parse(JSON.stringify(original)));
+		assert.ok(restored instanceof GitUnavailableError);
+		assert.equal(restored.hint, original.hint);
+		assert.equal(restored.fields.installCommand, "dnf install git");
+		assert.ok(restored.hint.includes("`dnf install git`"));
+	});
+
+	it("renders the Ubuntu 20.04 case as one full message", () => {
+		const ppa = "add-apt-repository ppa:git-core/ppa && apt update && apt install git";
+		const error = new GitUnavailableError({
+			...HOST,
+			installCommand: ppa,
+			code: "unsupported-platform",
+			reason: "glibc-too-old",
+			libc: "glibc 2.31",
+		});
+		assert.equal(
+			error.message,
+			`Git is unavailable: automatic provisioning does not support linux/x64 with glibc 2.31 (unsupported-platform). Install git 2.30.0 or newer with \`${ppa}\`.`,
+		);
 	});
 });

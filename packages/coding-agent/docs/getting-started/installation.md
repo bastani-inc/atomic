@@ -127,15 +127,23 @@ Atomic needs git 2.30.0 or newer for workflow worktrees, git packages, and the f
 - **Agent shells:** when no `git` is on your `PATH` at all, the `bash` tool puts the portable git first on `PATH`, so agents run the same git Atomic uses. An older system git stays on `PATH` for your shells; Atomic uses the portable copy only for its own git commands.
 - **Offline:** with `ATOMIC_OFFLINE=1` Atomic never downloads git. A portable git that is already installed keeps working.
 
-On other systems install git yourself:
+When no git is available and Atomic cannot download one, the error names the command for your system and `/tools` shows it:
 
 | System | Command |
 |---|---|
+| macOS | `xcode-select --install` |
+| Windows | `winget install --id Git.Git -e --source winget` |
+| Ubuntu 22.04 and newer, Debian and derivatives | `apt-get install git` |
+| Ubuntu earlier than 22.04 | `add-apt-repository ppa:git-core/ppa && apt update && apt install git` (its own package is older than 2.30) |
+| Fedora, RHEL, Rocky, Alma, Oracle Linux | `dnf install git` |
+| Amazon Linux 2 and 2023 | `yum install git` and `dnf install git` |
+| openSUSE, SLES | `zypper install git` |
+| Arch, Manjaro | `pacman -S git` |
 | Alpine and other musl distributions | `apk add git` |
-| Termux (Android) | `pkg install git` |
-| FreeBSD | `pkg install git` |
-| OpenBSD | `pkg_add git` |
-| Linux with glibc older than 2.34, or another CPU | your distribution's package manager, for example `apt install git` or `dnf install git` |
+| Void, Gentoo, Mageia, NixOS | `xbps-install git`, `emerge --ask --verbose dev-vcs/git`, `urpmi git`, `nix-env -i git` |
+| Termux, FreeBSD, OpenBSD, illumos | `pkg install git`, `pkg install git`, `pkg_add git`, `pkg install developer/versioning/git` |
+
+Linux commands are for a root shell. Other systems: see [git-scm.com/downloads](https://git-scm.com/downloads).
 
 Certificates and HTTPS differ by platform:
 

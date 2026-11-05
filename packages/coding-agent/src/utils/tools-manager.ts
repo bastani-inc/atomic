@@ -34,6 +34,7 @@ import {
 	isGitProvisionError,
 	type SerializedGitProvisionError,
 } from "./git-errors.ts";
+import { gitInstallCommand, type OsRelease, readOsRelease } from "./git-install-command.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
@@ -525,12 +526,6 @@ export async function withGitProvisionSettingsForTest<T>(
 	}
 }
 
-const GIT_INSTALL_COMMANDS: Readonly<Record<string, string>> = {
-	android: "pkg install git",
-	freebsd: "pkg install git",
-	openbsd: "pkg_add git",
-};
-
 export type GitLibc = { readonly family: "glibc"; readonly version?: string } | { readonly family: "musl" };
 
 export interface GitDistributionTarget {
@@ -579,19 +574,27 @@ export function getGitDistributionTarget(
 	architecture: string,
 	libc: GitLibc | undefined,
 	release: GitRelease = GIT_RELEASE,
+	osRelease?: OsRelease,
 ): GitTargetResolution {
 	const unsupported = (
 		reason: UnsupportedPlatformFields["reason"],
-		extra: { readonly libc?: string; readonly installCommand?: string } = {},
-	): GitTargetResolution => ({
-		supported: false,
-		fields: { code: "unsupported-platform", reason, platform: plat, arch: architecture, ...extra },
-	});
-	if (plat !== "darwin" && plat !== "linux" && plat !== "win32") {
-		const installCommand = GIT_INSTALL_COMMANDS[plat];
-		return unsupported("platform", installCommand === undefined ? {} : { installCommand });
-	}
-	if (libc?.family === "musl") return unsupported("musl", { libc: "musl", installCommand: "apk add git" });
+		extra: { readonly libc?: string } = {},
+	): GitTargetResolution => {
+		const installCommand = gitInstallCommand(plat, osRelease, libc?.family === "musl");
+		return {
+			supported: false,
+			fields: {
+				code: "unsupported-platform",
+				reason,
+				platform: plat,
+				arch: architecture,
+				...extra,
+				...(installCommand === undefined ? {} : { installCommand }),
+			},
+		};
+	};
+	if (plat !== "darwin" && plat !== "linux" && plat !== "win32") return unsupported("platform");
+	if (libc?.family === "musl") return unsupported("musl", { libc: "musl" });
 	if (libc?.version !== undefined && compareVersions(libc.version, GIT_GLIBC_MINIMUM) < 0)
 		return unsupported("glibc-too-old", { libc: `glibc ${libc.version}` });
 	if (!supportedArchitecture(plat, architecture)) return unsupported("architecture");
@@ -630,8 +633,20 @@ export function detectLinuxLibc(): GitLibc {
 	return detectedLibc;
 }
 
-function hostPlatform(): { readonly platform: string; readonly arch: string } {
-	return { platform: platform(), arch: arch() };
+/** The command that installs git on this machine, as an error field (os-release is read once per process). */
+function installCommandField(): { readonly installCommand?: string } {
+	const plat = platform();
+	const installCommand = gitInstallCommand(
+		plat,
+		plat === "linux" ? readOsRelease() : undefined,
+		plat === "linux" && detectLinuxLibc().family === "musl",
+	);
+	return installCommand === undefined ? {} : { installCommand };
+}
+
+/** Where this error happened, and the command that installs git here. */
+function hostPlatform(): { readonly platform: string; readonly arch: string; readonly installCommand?: string } {
+	return { platform: platform(), arch: arch(), ...installCommandField() };
 }
 
 function currentGitTarget(): GitTargetResolution {
@@ -641,6 +656,7 @@ function currentGitTarget(): GitTargetResolution {
 		arch(),
 		plat === "linux" ? detectLinuxLibc() : undefined,
 		gitProvisionSettings.release,
+		plat === "linux" ? readOsRelease() : undefined,
 	);
 }
 
@@ -1105,6 +1121,7 @@ async function acquireGitInstallLock(
 				phase: "lock",
 				timeoutMs: gitProvisionSettings.lockWaitTimeoutMs,
 				elapsedMs,
+				...installCommandField(),
 			});
 		if (!announced) {
 			announced = true;
@@ -1168,7 +1185,12 @@ async function downloadGitArchive(target: GitDistributionTarget, signal: AbortSi
 		if (signal.aborted) throw signal.reason;
 		if (timeout.aborted)
 			throw new GitProvisionTimeoutError(
-				{ phase: "download", timeoutMs: gitProvisionSettings.downloadTimeoutMs, elapsedMs: Date.now() - startedAt },
+				{
+					phase: "download",
+					timeoutMs: gitProvisionSettings.downloadTimeoutMs,
+					elapsedMs: Date.now() - startedAt,
+					...installCommandField(),
+				},
 				{ cause: error },
 			);
 		if (isGitProvisionError(error)) throw error;
@@ -1213,7 +1235,12 @@ function runProvisionStep(
 				if (timeout.aborted) {
 					rejectPromise(
 						new GitProvisionTimeoutError(
-							{ phase: options.phase, timeoutMs: options.timeoutMs, elapsedMs: Date.now() - startedAt },
+							{
+								phase: options.phase,
+								timeoutMs: options.timeoutMs,
+								elapsedMs: Date.now() - startedAt,
+								...installCommandField(),
+							},
 							{ cause: error },
 						),
 					);

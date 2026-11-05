@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => ({
 	rmSync: vi.fn(),
 	renameSync: vi.fn(),
 	existsSync: vi.fn(),
+	osRelease: undefined as import("../src/utils/git-install-command.ts").OsRelease | undefined,
+	osReleaseReads: 0,
 	lock: undefined as
 		| ((
 				actual: typeof import("proper-lockfile"),
@@ -65,6 +67,14 @@ vi.mock("child_process", async () => {
 	};
 	return { ...actual, spawnSync };
 });
+
+vi.mock("../src/utils/git-install-command.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/utils/git-install-command.ts")>()),
+	readOsRelease: () => {
+		mocks.osReleaseReads += 1;
+		return mocks.osRelease;
+	},
+}));
 
 vi.mock("fs/promises", async () => {
 	const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises");
@@ -250,6 +260,8 @@ beforeEach(async () => {
 	mocks.rmSync.mockImplementation(actualFs.rmSync);
 	mocks.renameSync.mockReset();
 	mocks.renameSync.mockImplementation(actualFs.renameSync);
+	mocks.osRelease = undefined;
+	mocks.osReleaseReads = 0;
 	mocks.existsSync.mockReset();
 	mocks.existsSync.mockImplementation(actualFs.existsSync);
 	mocks.spawnSyncOptions.length = 0;
@@ -308,12 +320,18 @@ describe("git target mapping (#4322)", () => {
 		["linux", "arm64", { family: "glibc", version: "2.4" }, { reason: "glibc-too-old", libc: "glibc 2.4" }],
 		["linux", "ia32", { family: "glibc" }, { reason: "architecture" }],
 		["linux", "ppc64", { family: "glibc", version: "2.39" }, { reason: "architecture" }],
-		["darwin", "ia32", undefined, { reason: "architecture" }],
-		["win32", "arm", undefined, { reason: "architecture" }],
+		["darwin", "ia32", undefined, { reason: "architecture", installCommand: "xcode-select --install" }],
+		[
+			"win32",
+			"arm",
+			undefined,
+			{ reason: "architecture", installCommand: "winget install --id Git.Git -e --source winget" },
+		],
 		["android", "arm64", undefined, { reason: "platform", installCommand: "pkg install git" }],
 		["freebsd", "x64", undefined, { reason: "platform", installCommand: "pkg install git" }],
 		["openbsd", "x64", undefined, { reason: "platform", installCommand: "pkg_add git" }],
 		["aix", "ppc64", undefined, { reason: "platform" }],
+		["sunos", "x64", undefined, { reason: "platform", installCommand: "pkg install developer/versioning/git" }],
 	] as const)("refuses %s/%s (%o) without falling back to another build", (plat, architecture, libc, expected) => {
 		const resolution = tools.getGitDistributionTarget(plat, architecture, libc);
 		assert.equal(resolution.supported, false);
@@ -454,7 +472,7 @@ describe("git resolution (#4322)", () => {
 		});
 		assert.equal(
 			error.hint,
-			"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer.",
+			"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		);
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(mocks.spawnSyncCommands.length, 0);
@@ -1715,5 +1733,60 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		mkdirSync(abandoned, { recursive: true });
 		await provision({ release: fake.release });
 		assert.equal(actualExists(abandoned), false);
+	});
+});
+
+describe("git install command on this machine (#4322)", () => {
+	const ubuntu = (versionId: string) => ({ id: "ubuntu", idLike: ["debian"], versionId });
+
+	it("names the distribution's command in an offline error, reading os-release once and fetching nothing", async () => {
+		mocks.osRelease = ubuntu("24.04");
+		vi.stubEnv(ENV_OFFLINE, "1");
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+		const error = await tools.resolveGit().catch((caught: Error) => caught);
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(
+			error.fields.installCommand,
+			process.platform === "linux" ? "apt-get install git" : error.fields.installCommand,
+		);
+		if (process.platform === "linux") assert.ok(error.hint.endsWith("with `apt-get install git`."), error.hint);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.equal(mocks.osReleaseReads, process.platform === "linux" ? 2 : 0);
+	});
+
+	it("names the command in a too-old-glibc error on an old Ubuntu", async () => {
+		mocks.platform.mockReturnValue("linux");
+		mocks.osRelease = ubuntu("20.04");
+		vi.spyOn(process.report, "getReport").mockReturnValue({ header: { glibcVersionRuntime: "2.31" } });
+		const error = await tools.resolveGit().catch((caught: Error) => caught);
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(error.fields.installCommand, "add-apt-repository ppa:git-core/ppa && apt update && apt install git");
+		assert.ok(error.hint.startsWith("Install git 2.30.0 or newer with `add-apt-repository"));
+	});
+
+	it("names apk on Alpine whether or not os-release was readable", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
+		mocks.readdirSync.mockImplementation((path: string) => (path === "/lib" ? ["ld-musl-x86_64.so.1"] : []));
+		for (const osRelease of [undefined, { id: "alpine", idLike: [] }]) {
+			mocks.osRelease = osRelease;
+			vi.resetModules();
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const error = fresh.getGitStatus();
+			assert.equal(error.source, "unavailable");
+			assert.equal(error.source === "unavailable" ? error.error.fields.installCommand : undefined, "apk add git");
+		}
+	});
+
+	it("carries the command on checksum, download and install failures", async () => {
+		mocks.platform.mockReturnValue("linux");
+		vi.spyOn(process.report, "getReport").mockReturnValue({ header: { glibcVersionRuntime: "2.39" } });
+		mocks.osRelease = { id: "fedora", idLike: [] };
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("tampered"));
+		const error = await tools.resolveGit().catch((caught: Error) => caught);
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(error.code, "checksum-mismatch");
+		assert.equal(error.fields.installCommand, "dnf install git");
+		assert.ok(error.hint.endsWith("with `dnf install git`."));
 	});
 });

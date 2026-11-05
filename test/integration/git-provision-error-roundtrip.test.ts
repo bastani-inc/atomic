@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import {
@@ -11,6 +12,7 @@ import {
 	rehydrateGitProvisionError,
 	type SerializedGitProvisionError,
 } from "../../packages/coding-agent/src/utils/git-errors.js";
+import { gitInstallCommand, readOsRelease } from "../../packages/coding-agent/src/utils/git-install-command.js";
 import type { GitToolStatus } from "../../packages/coding-agent/src/utils/tools-manager.js";
 import {
 	bunExecutable,
@@ -44,6 +46,11 @@ test(
 				status: GitToolStatus;
 			};
 
+			const installCommand = gitInstallCommand(
+				process.platform,
+				readOsRelease(),
+				process.platform === "linux" && existsSync("/lib/ld-musl-x86_64.so.1"),
+			);
 			const offline = rehydrateGitProvisionError(wire.offline);
 			assert.ok(offline instanceof GitUnavailableError);
 			assert.ok(isGitUnavailableError(wire.offline));
@@ -54,12 +61,19 @@ test(
 				offlineVariable: "ATOMIC_OFFLINE",
 				platform: process.platform,
 				arch: process.arch,
+				...(installCommand === undefined ? {} : { installCommand }),
 			});
+			assert.equal(offline.fields.installCommand, installCommand);
 			assert.equal(offline.message, wire.offline.message);
 			assert.equal(
 				offline.hint,
-				"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer.",
+				`Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with ${
+					installCommand === undefined
+						? "your system package manager (https://git-scm.com/downloads)"
+						: `\`${installCommand}\``
+				}.`,
 			);
+			assert.equal(offline.hint, wire.offline.hint);
 
 			const timeout = rehydrateGitProvisionError(wire.timeout);
 			assert.ok(timeout instanceof GitProvisionTimeoutError);
