@@ -52,7 +52,7 @@ function contend(worktree: string, owner: string): Contender {
 			const line = buffered.split("\n")[0];
 			if (buffered.includes("\n") && line !== undefined) resolve(JSON.parse(line) as Outcome);
 		});
-		child.once("exit", () => resolve(undefined));
+		child.once("close", () => resolve(undefined));
 	});
 	return { child, first, exited };
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
@@ -402,7 +402,7 @@ describe("ctx.task(name, { workspace }) (#3109)", () => {
 			{ store: createStore(), durableBackend: await createMemoryTestBackend(), adapters },
 		);
 		assert.equal(result.status, "completed", result.error);
-		assert.equal(sessions[0]?.cwd, git(repo, "rev-parse", "--show-toplevel"));
+		assert.equal(sessions[0]?.cwd, realpathSync.native(repo));
 		assert.equal((sessions[0]!.workspace as BoundWorkspace).sandbox, "read-only");
 	});
 

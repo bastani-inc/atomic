@@ -72,6 +72,7 @@ const NETWORK_TIMEOUT_MS = 10 * 60_000;
 const LOCAL_TIMEOUT_MS = 60_000;
 const NETWORK_PHASES: ReadonlySet<WorkspaceGitPhase> = new Set(["clone", "fetch", "push"]);
 const DISABLED_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
+const WINDOWS_LONG_PATHS: readonly string[] = process.platform === "win32" ? ["-c", "core.longpaths=true"] : [];
 const MAX_DETAIL_LENGTH = 400;
 
 function commandLabel(args: readonly string[]): string {
@@ -104,7 +105,14 @@ export async function runWorkspaceGit(command: WorkspaceGitCommand): Promise<Wor
 	command.signal?.throwIfAborted();
 	for (const observer of observers) observer({ cwd: command.cwd, args: command.args, phase: command.phase });
 	const timeoutMs = command.timeoutMs ?? (NETWORK_PHASES.has(command.phase) ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS);
-	const argv = ["-c", `core.hooksPath=${DISABLED_HOOKS_PATH}`, "-c", "core.fsmonitor=false", ...command.args];
+	const argv = [
+		"-c",
+		`core.hooksPath=${DISABLED_HOOKS_PATH}`,
+		"-c",
+		"core.fsmonitor=false",
+		...WINDOWS_LONG_PATHS,
+		...command.args,
+	];
 	const env = {
 		...createGitEnvironment(
 			{ GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", ...git.env },

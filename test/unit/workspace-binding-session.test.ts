@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { inheritChildSessionOptions } from "../../packages/coding-agent/src/core/child-session-options.ts";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.ts";
 import { createAgentSession, createUnstartedAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
+import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	isBoundWorkspace,
@@ -85,6 +86,7 @@ function sessionOptions(extra: Parameters<typeof createAgentSession>[0]) {
 		model: faux.getModel(),
 		modelRuntime,
 		settingsManager: SettingsManager.inMemory({ retry: { enabled: false } }),
+		sessionStore: new MemorySessionStore(),
 		builtins: BUILTINS,
 		...extra,
 	};
@@ -495,11 +497,11 @@ describe("sessions without a workspace (#3109)", () => {
 
 	test("child sessions without workspaces resolve cwd as before (#3109)", () => {
 		const parent = { cwd: "/parent" };
-		assert.equal(inheritChildSessionOptions(parent, {}).cwd, "/parent");
-		assert.equal(inheritChildSessionOptions(parent, { cwd: "sub" }).cwd, join("/parent", "sub"));
+		assert.equal(inheritChildSessionOptions(parent, {}).cwd, resolve("/parent"));
+		assert.equal(inheritChildSessionOptions(parent, { cwd: "sub" }).cwd, resolve("/parent", "sub"));
 		assert.equal(
 			inheritChildSessionOptions(parent, { sessionManager: SessionManager.inMemory("/elsewhere") }).cwd,
-			"/elsewhere",
+			resolve("/elsewhere"),
 		);
 		assert.equal(inheritChildSessionOptions(parent, { workspace: workspace({ repo: "/r" }), cwd: "pkg" }).cwd, "pkg");
 	});

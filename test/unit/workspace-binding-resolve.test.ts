@@ -526,7 +526,7 @@ describe("workspace git runner (#3109)", () => {
 			assert.equal(result.cause.platform, process.platform);
 			assert.equal((result.cause.cause as { code?: string }).code, "ENOENT");
 			assert.equal(result.fields.gitPath, join(dirs.root, "no-such-git"));
-			assert.match(String(result.fields.installCommand), /git/);
+			assert.match(String(result.fields.installCommand), /git/i);
 			assert.ok(result.hint.includes(String(result.fields.installCommand)));
 			assert.equal(commands.length, 1, "one --version probe, nothing else");
 			assert.deepEqual(readdirSync(dirs.home), ["agent"], "no store or worktree directories were created");
@@ -594,7 +594,7 @@ describe("workspace git runner (#3109)", () => {
 	test("times out a slow command with WorkspaceTimeoutError carrying phase and timings (#3109)", async () => {
 		const error = await rejection(
 			runWorkspaceGit({
-				cwd: dirs.root,
+				cwd: tmpdir(),
 				args: ["-c", "alias.slow=!sleep 5", "slow"],
 				phase: "clone",
 				timeoutMs: 100,
@@ -612,7 +612,7 @@ describe("workspace git runner (#3109)", () => {
 		const controller = new AbortController();
 		const reason = new Error("stop requested");
 		const pending = runWorkspaceGit({
-			cwd: dirs.root,
+			cwd: tmpdir(),
 			args: ["-c", "alias.slow=!sleep 5", "slow"],
 			phase: "clone",
 			signal: controller.signal,
@@ -712,22 +712,13 @@ describe("workspace git runner (#3109)", () => {
 		},
 	);
 
-	test("tells a missing working directory and an unrunnable executable apart from a missing git (#3109)", async () => {
+	test("tells a missing working directory apart from a missing git (#3109)", async () => {
 		const missingCwd = await rejection(
 			runWorkspaceGit({ cwd: join(dirs.root, "gone"), args: ["--version"], phase: "probe" }),
 		);
 		assert.ok(isWorkspaceBindingError(missingCwd));
 		assert.equal(missingCwd.code, "git-failed");
 		assert.equal(missingCwd.fields.status, null);
-		const restore = setWorkspaceGitExecutableResolver(async () => ({ path: dirs.root, env: {} }));
-		try {
-			const directory = await rejection(runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" }));
-			assert.ok(isWorkspaceBindingError(directory));
-			assert.equal(directory.code, "git-failed");
-			assert.match(String(directory.fields.detail), /EACCES/);
-		} finally {
-			restore();
-		}
 		const longPath = join(dirs.root, "g".repeat(200), "i".repeat(200), "git");
 		const undo = setWorkspaceGitExecutableResolver(async () => ({ path: longPath, env: {} }));
 		try {
@@ -742,10 +733,26 @@ describe("workspace git runner (#3109)", () => {
 		}
 	});
 
+	// POSIX: spawning a directory fails with EACCES there; Windows reports ENOENT, which reads as a missing git.
+	test.skipIf(process.platform === "win32")(
+		"tells an executable that cannot run apart from a missing git (#3109)",
+		async () => {
+			const restore = setWorkspaceGitExecutableResolver(async () => ({ path: dirs.root, env: {} }));
+			try {
+				const directory = await rejection(runWorkspaceGit({ cwd: dirs.root, args: ["--version"], phase: "probe" }));
+				assert.ok(isWorkspaceBindingError(directory));
+				assert.equal(directory.code, "git-failed");
+				assert.match(String(directory.fields.detail), /EACCES/);
+			} finally {
+				restore();
+			}
+		},
+	);
+
 	test("reports elapsed time of a timeout within its bound and leaves no abort listener behind (#3109)", async () => {
 		const error = await rejection(
 			runWorkspaceGit({
-				cwd: dirs.root,
+				cwd: tmpdir(),
 				args: ["-c", "alias.slow=!sleep 5", "slow"],
 				phase: "fetch",
 				timeoutMs: 50,
