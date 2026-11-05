@@ -259,6 +259,40 @@ test("a fork nobody reads keeps no stage session events while the caller's own c
 	);
 });
 
+test("delayed fork event readers receive lifecycle snapshots from emission time, before caller mutations (#4321)", async () => {
+	const { backend, runId } = await eventsSource("fork-sdk-snapshot-events");
+	const expected: WorkflowRunEvent[] = [];
+	const forked = await forkRun(runId, {
+		fromStage: "worker",
+		durableBackend: backend,
+		definition: eventsDefinition,
+		store: createStore(),
+		adapters,
+		onRunStart: (snapshot) => expected.push({ type: "run_start", run: structuredClone(snapshot) }),
+		onStageStart: (id, stage) => expected.push({ type: "stage_start", runId: id, stage: structuredClone(stage) }),
+		onStageEnd: (id, stage) => {
+			expected.push({ type: "stage_end", runId: id, stage: structuredClone(stage) });
+			stage.toolEvents.push({ name: "caller-owned-update", input: { nested: { changed: true } } });
+		},
+	});
+	assert.equal((await forked.result).status, "completed");
+	const events = await collect(forked.events);
+	const snapshots = events.filter((event) => ["run_start", "stage_start", "stage_end"].includes(event.type));
+	assert.deepEqual(snapshots, expected);
+	const started = events.find((event) => event.type === "run_start");
+	assert.equal(started?.run.status, "running");
+	assert.equal(started?.run.endedAt, undefined);
+	assert.equal(started?.run.result, undefined);
+	const stageStart = events.find((event) => event.type === "stage_start");
+	assert.equal(stageStart?.stage.status, "pending");
+	assert.equal(stageStart?.stage.endedAt, undefined);
+	assert.equal(stageStart?.stage.result, undefined);
+	const stageEnd = events.find((event) => event.type === "stage_end");
+	assert.equal(stageEnd?.stage.status, "completed");
+	assert.equal(stageEnd?.stage.result, "done");
+	assert.ok(stageEnd?.stage.endedAt !== undefined);
+});
+
 test("a pooled fork refuses options bound to this process before writing, and installs no stage callbacks (#4321)", async () => {
 	const { backend, runId } = await eventsSource("fork-sdk-pooled");
 	const localWorkers = { count: 1, definitions: [] };

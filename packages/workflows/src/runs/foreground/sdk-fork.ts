@@ -181,18 +181,18 @@ export async function forkRun<
 		store,
 		durableBackend: backend,
 		onRunStart: (snapshot) => {
-			channel.push({ type: "run_start", run: snapshot });
+			channel.push({ type: "run_start", run: structuredClone(snapshot) });
 			onRunStart?.(snapshot);
 		},
 		...(pooled
 			? {}
 			: {
 					onStageStart: (id: string, stage: StageSnapshot) => {
-						channel.push({ type: "stage_start", runId: id, stage });
+						channel.push({ type: "stage_start", runId: id, stage: structuredClone(stage) });
 						onStageStart?.(id, stage);
 					},
 					onStageEnd: (id: string, stage: StageSnapshot) => {
-						channel.push({ type: "stage_end", runId: id, stage });
+						channel.push({ type: "stage_end", runId: id, stage: structuredClone(stage) });
 						return onStageEnd?.(id, stage);
 					},
 					onStageSessionEvent: (id: string, stageId: string, event: AgentSessionEvent) => {
