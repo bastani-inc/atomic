@@ -533,6 +533,82 @@ test.each(["memory", "facade"] as const)(
 	},
 );
 
+test("closing drains pending and queued pool reads after a concurrent write fails (#4314)", async () => {
+	const f = await pooledRoot();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const pending: Promise<unknown>[] = [];
+	try {
+		const read = sqlPoolStorage(f.journal)!.read(async (executor) => {
+			const before = await executor.get("SELECT state FROM wf_runs_work WHERE id = ?", f.attempt.id);
+			entered.resolve();
+			await release.promise;
+			return [before, await executor.get("SELECT state FROM wf_runs_work WHERE id = ?", f.attempt.id)];
+		});
+		pending.push(read);
+		await entered.promise;
+		const queued = f.pool.control(f.lease);
+		pending.push(queued);
+		await assert.rejects(f.pool.setControl({ ...f.lease, epoch: f.lease.epoch + 1 }, "paused"), StaleLeaseError);
+		let closed = false;
+		const closing = f.journal.close();
+		pending.push(closing);
+		assert.equal(f.journal.close(), closing, "close is idempotent while reads drain");
+		const onCloseSettled = () => {
+			closed = true;
+		};
+		void closing.then(onCloseSettled, onCloseSettled);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(closed, false, "a failed write must not let shutdown overtake an unfinished read");
+		release.resolve();
+		assert.deepEqual(await read, [{ state: "leased" }, { state: "leased" }]);
+		assert.deepEqual(await queued, { state: "running", revision: 0 });
+		await closing;
+		assert.equal(closed, true);
+	} finally {
+		release.resolve();
+		await Promise.allSettled(pending);
+		await f.close();
+	}
+});
+
+test("closing drains an accepted write after a concurrent pool read fails (#4314)", async () => {
+	const f = await pooledRoot();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const pending: Promise<unknown>[] = [];
+	try {
+		const writing = sqlPoolStorage(f.journal)!.transaction(async (executor) => {
+			await executor.run("UPDATE wf_runs_work SET generation = generation + 1 WHERE id = ?", f.attempt.id);
+			entered.resolve();
+			await release.promise;
+		});
+		pending.push(writing);
+		await entered.promise;
+		await assert.rejects(f.pool.control({ ...f.lease, epoch: f.lease.epoch + 1 }), StaleLeaseError);
+		let closed = false;
+		const closing = f.journal.close();
+		pending.push(closing);
+		const onCloseSettled = () => {
+			closed = true;
+		};
+		void closing.then(onCloseSettled, onCloseSettled);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(closed, false, "a failed read must not let shutdown overtake an unfinished write");
+		release.resolve();
+		await writing;
+		await closing;
+		assert.equal(closed, true);
+		assert.deepEqual(await f.database.get("SELECT generation FROM wf_runs_work WHERE id = ?", f.attempt.id), {
+			generation: f.attempt.generation + 1,
+		});
+	} finally {
+		release.resolve();
+		await Promise.allSettled(pending);
+		await f.close();
+	}
+});
+
 test("a pool read on a closed journal fails as storage unavailable (#4314)", async () => {
 	const f = await pooledRoot();
 	try {

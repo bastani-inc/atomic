@@ -265,10 +265,7 @@ export class SqlRunJournal implements RunJournal {
 	private operation<T>(action: () => Promise<T>): Promise<T> {
 		this.assertOpen();
 		const result = action();
-		this.tail = Promise.all([this.tail, result]).then(
-			() => {},
-			() => {},
-		);
+		this.tail = Promise.allSettled([this.tail, result]).then(() => {});
 		return result;
 	}
 

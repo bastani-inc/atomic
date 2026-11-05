@@ -210,6 +210,8 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(extended.generation, f.attempt.generation);
 			await f.pool.assertCurrent(f.lease, extended);
 		} finally {
+			holder.kill("SIGKILL");
+			await holder.exited;
 			await f.close();
 		}
 	},
