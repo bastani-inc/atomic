@@ -11,6 +11,7 @@ import {
 	WorkspaceSnapshotError,
 } from "./errors.ts";
 import { type GitRunOptions, gitText, nulFields, redactUrlCredentials, runGit } from "./git.ts";
+import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath, loadSnapshotPathPolicy, type SnapshotPathPolicy } from "./policy.ts";
 import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
 import type {
@@ -94,7 +95,7 @@ export async function locateCheckout(
 	try {
 		const top = await runGit(["rev-parse", "--show-toplevel"], { cwd: dir, signal, allowExitCodes: [128] });
 		if (top.exitCode !== 0) return new WorkspaceSnapshotError("not-a-repository", dir);
-		const root = top.stdout.toString("utf8").replace(/\n$/, "");
+		const root = canonicalizeWorktreePath(top.stdout.toString("utf8").replace(/\n$/, ""));
 		const head = await runGit(["rev-parse", "-q", "--verify", "HEAD^{commit}"], {
 			cwd: root,
 			signal,
