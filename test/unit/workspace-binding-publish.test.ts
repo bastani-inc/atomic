@@ -46,11 +46,23 @@ afterEach(() => {
 	dirs.cleanup();
 });
 
-function ghLog(): { args: string[]; prompt: string | null }[] {
+function ghLog(): { args: string[]; prompt: string | null; pid: number }[] {
 	return readFileSync(log, "utf-8")
 		.split("\n")
 		.filter((line) => line.length > 0)
-		.map((line) => JSON.parse(line) as { args: string[]; prompt: string | null });
+		.map((line) => JSON.parse(line) as { args: string[]; prompt: string | null; pid: number });
+}
+
+/** Generous for a loaded Windows runner; a cancelled gh normally exits within milliseconds. */
+const GH_EXIT_WAIT_MS = 10_000;
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as { readonly code?: unknown }).code === "EPERM";
+	}
 }
 
 function ghCalls(): string[][] {
@@ -257,6 +269,11 @@ describe("publishPullRequest (#3109)", () => {
 		const pending = publishPullRequest(changeSet, { signal: controller.signal });
 		setTimeout(() => controller.abort(reason), 300);
 		assert.equal(await rejection(pending), reason);
+		const hung = ghLog().at(-1)?.pid;
+		assert.ok(hung !== undefined);
+		const deadline = Date.now() + GH_EXIT_WAIT_MS;
+		while (processAlive(hung) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(processAlive(hung), false, "cancellation terminates the gh process");
 	});
 
 	test("publishes under a live signal, running origin lookup and push as network commands (#3109)", async () => {

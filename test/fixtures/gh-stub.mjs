@@ -2,7 +2,10 @@
 import { appendFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
-appendFileSync(process.env.GH_STUB_LOG, `${JSON.stringify({ args, prompt: process.env.GH_PROMPT_DISABLED ?? null })}\n`);
+appendFileSync(
+	process.env.GH_STUB_LOG,
+	`${JSON.stringify({ args, prompt: process.env.GH_PROMPT_DISABLED ?? null, pid: process.pid })}\n`,
+);
 const mode = process.env.GH_STUB_MODE ?? "create";
 if (args[0] === "auth") {
 	if (mode === "hang") setTimeout(() => process.exit(0), 30_000);
