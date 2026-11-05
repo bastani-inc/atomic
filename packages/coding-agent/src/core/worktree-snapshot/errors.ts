@@ -91,7 +91,7 @@ export class WorkspaceConfigError extends WorkspaceError {
 const GIT_INSTALL_COMMANDS: Readonly<Partial<Record<NodeJS.Platform, string>>> = {
 	darwin: "xcode-select --install",
 	win32: "winget install --id Git.Git -e",
-	linux: "sudo apt-get install git (or your distribution's package manager)",
+	linux: "sudo apt-get install git",
 };
 
 /** The command that installs Git on `platform`. */
@@ -121,7 +121,8 @@ export class GitUnavailableError extends Error {
 	readonly fields: WorkspaceErrorFields;
 
 	constructor(code: GitUnavailableErrorCode, executable: string, options?: { cause?: Error }) {
-		const hint = `Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`;
+		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
+		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
 		super(
 			`Git is unavailable: ${executable} ${GIT_UNAVAILABLE_SUMMARIES[code]}, and worktree snapshots need it to read and rebuild repository state (${code}). ${hint}`,
 			options?.cause === undefined ? undefined : { cause: options.cause },

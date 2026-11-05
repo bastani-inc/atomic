@@ -49,11 +49,13 @@ const drift = () =>
 describe("WorkspaceError rendering", () => {
 	test("each class renders <what failed>: <subject> (<code>). <hint>", () => {
 		const git = new GitUnavailableError("not-installed", "/opt/git/bin/git");
+		const alternative = process.platform === "linux" ? " (or your distribution's package manager)" : "";
+		const hint = `Install Git with \`${gitInstallCommand()}\`${alternative} or put it on PATH, then retry.`;
 		assert.equal(
 			git.message,
-			`Git is unavailable: /opt/git/bin/git could not be started, and worktree snapshots need it to read and rebuild repository state (not-installed). Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`,
+			`Git is unavailable: /opt/git/bin/git could not be started, and worktree snapshots need it to read and rebuild repository state (not-installed). ${hint}`,
 		);
-		assert.equal(git.hint, `Install Git with \`${gitInstallCommand()}\` or put it on PATH, then retry.`);
+		assert.equal(git.hint, hint);
 		assert.equal(gitInstallCommand("darwin"), "xcode-select --install");
 		assert.equal(gitInstallCommand("win32"), "winget install --id Git.Git -e");
 		assert.equal(gitInstallCommand("aix"), "install Git from https://git-scm.com/downloads");
