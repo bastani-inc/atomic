@@ -123,7 +123,14 @@ describe("/workflow resume — overlay integration", () => {
 
 		assert.equal(customCalls.length, 0);
 		// PR #2968: finish the command before teardown releases its test backend.
-		assert.ok(messages.includes(`No resumable workflow found for id: ${unknownRunId}`), messages.join("\n"));
+		assert.ok(
+			messages.some((message) =>
+				message.startsWith(
+					`Workflow run not found: ${unknownRunId} in this session's workflow store (run-not-found).`,
+				),
+			),
+			messages.join("\n"),
+		);
 	});
 
 	test("resume with no runId prints usage", async () => {
@@ -449,7 +456,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 		assert.equal(customCalls.length, 0);
 		assert.match(
 			messages.join("\n"),
-			/No resumable workflow|No durable workflow|No completed durable workflow|stale/,
+			/No resumable workflow|No durable workflow|No completed durable workflow|stale|\(run-not-found\)/,
 		);
 	});
 });

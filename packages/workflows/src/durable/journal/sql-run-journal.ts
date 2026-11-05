@@ -6,6 +6,7 @@ import {
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
+	type SqliteValue,
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageSchemaVersionError,
@@ -104,6 +105,41 @@ export class SqlRunJournal implements RunJournal {
 
 	static async open(database: SqliteDatabase, options: { readonly prefix?: string } = {}): Promise<SqlRunJournal> {
 		const t = renderStorageIdentifiers("journal", JOURNAL_TABLES, options.prefix);
+		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t);
+		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
+		return new SqlRunJournal(database, t, legacy);
+	}
+
+	/**
+	 * Whether the journal's tables already exist with one supported schema version, read without the write lock: a
+	 * process that opens a journal only to read it, such as a journal store listing every shard, never takes the lock
+	 * of a database another process writes (#4325).
+	 */
+	private static async initialized(database: SqliteDatabase, t: Tables): Promise<boolean> {
+		const tables = await database.all<SqliteRow & { name: string }>(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
+			t.meta,
+			t.runs,
+			t.events,
+			t.leases,
+		);
+		if (tables.length !== 4) return false;
+		const versions = await database.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
+		if (versions.length !== 1) return false;
+		SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
+		return true;
+	}
+
+	private static assertSchemaVersion(found: SqliteValue): void {
+		try {
+			assertStorageSchemaVersion("journal", found, JOURNAL_SCHEMA_VERSION);
+		} catch (error) {
+			if (error instanceof StorageSchemaVersionError) throw new JournalSchemaVersionError(error.found);
+			throw error;
+		}
+	}
+
+	private static async initialize(database: SqliteDatabase, t: Tables): Promise<void> {
 		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
@@ -111,14 +147,7 @@ export class SqlRunJournal implements RunJournal {
 			if (versions.length > 1) throw new JournalMetaCorruptError(database.descriptor.location, versions.length);
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
-			} else {
-				try {
-					assertStorageSchemaVersion("journal", versions[0]![c.schemaVersion]!, JOURNAL_SCHEMA_VERSION);
-				} catch (error) {
-					if (error instanceof StorageSchemaVersionError) throw new JournalSchemaVersionError(error.found);
-					throw error;
-				}
-			}
+			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
 			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${t.runs}(
 					${c.runId} TEXT PRIMARY KEY, ${c.name} TEXT NOT NULL, ${c.cwd} TEXT NOT NULL,
@@ -136,8 +165,6 @@ export class SqlRunJournal implements RunJournal {
 				);
 			`);
 		}, JOURNAL_TRANSACTION);
-		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
-		return new SqlRunJournal(database, t, legacy);
 	}
 
 	get descriptor(): StorageDescriptor {

@@ -932,7 +932,10 @@ describe("/workflow resume completed target", () => {
 		const missingTarget = testRunId("missing-workflow");
 		const result = await resume(missingTarget, createExtensionRuntime({ store }));
 
-		assert.match(result.errors.join("\n"), new RegExp(`No resumable workflow found for id: ${missingTarget}`));
+		assert.match(
+			result.errors.join("\n"),
+			new RegExp(`Workflow run not found: ${missingTarget} in this session's workflow store \\(run-not-found\\)`),
+		);
 	});
 
 	test("explicit resume of a non-resumable run keeps the explanatory error", async () => {

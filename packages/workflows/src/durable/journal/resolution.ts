@@ -1,12 +1,14 @@
 import { dirname, isAbsolute, join } from "node:path";
 import { getAgentDir, selectProcessStorage } from "@bastani/atomic";
 import {
+	defaultJournalStoreDirectory,
 	type RunJournalOption,
 	StorageConfigError,
 	StorageProvider,
 	type StorageSelection,
 	type StorageSettingsSelection,
 	selectStorage,
+	selectsDefaultJournalStore,
 } from "@bastani/atomic/storage";
 import { MemoryRunJournal } from "./memory-run-journal.js";
 import { SqlRunJournal } from "./sql-run-journal.js";
@@ -34,6 +36,8 @@ export function provideRunJournalHostModules(modules: Readonly<Record<string, ob
 const provider = new StorageProvider({
 	memory: (descriptor) => new MemoryRunJournal(descriptor),
 	sql: SqlRunJournal.open,
+	store: async (directory, openShard, legacyJournal) =>
+		(await import("./sharded-run-journal.js")).ShardedRunJournal.open({ directory, openShard, legacyJournal }),
 	get hostModules() {
 		return hostModules;
 	},
@@ -50,6 +54,7 @@ export interface RunJournalResolutionOptions {
 export function selectRunJournal(options: RunJournalResolutionOptions = {}): StorageSelection | RunJournal {
 	const agentDir = options.agentDir ?? getAgentDir();
 	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
+	const defaultStore: StorageSelection = { kind: "sharded", dir: defaultJournalStoreDirectory(agentDir) };
 	if (options.journal !== undefined) {
 		if (options.journal !== null && typeof options.journal === "object" && "createRun" in options.journal) {
 			const journal = options.journal;
@@ -86,7 +91,7 @@ export function selectRunJournal(options: RunJournalResolutionOptions = {}): Sto
 	const workflows = options.settings?.workflows;
 	const journal = Array.isArray(workflows) ? undefined : workflows?.journal;
 	const value = journal !== undefined ? journal : options.settings?.storage;
-	if (value === undefined) return { kind: "sqlite", path: defaultPath };
+	if (value === undefined || (journal !== undefined && selectsDefaultJournalStore(journal))) return defaultStore;
 	const selection = selectStorage(
 		value,
 		"settings",

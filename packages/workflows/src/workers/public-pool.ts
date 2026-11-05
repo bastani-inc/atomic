@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
+import { isShardedRunJournal, rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { admissionBootIdentity } from "./admission-host.js";
@@ -168,13 +169,16 @@ export async function activatePublicPool(
 	)
 		throw new Error("Local worker containment requires native process identity support");
 	if (!(backend instanceof JournalDurableBackend)) throw new Error("Local workers require a journal backend");
-	// A journal that is a default-prefix SQLite file is shared with the pool as it is. Any other journal, such as a
-	// libSQL database or another storage adapter, stays the root's durable record, and the pool keeps its queue,
-	// leases, usage, admission and pooled-stage sessions in a SQLite database on this machine.
-	const local = isLocalPoolJournal(backend.journal);
+	// A journal that is a default-prefix SQLite file is shared with the pool as it is; in the journal store that is the
+	// root's own shard, so the pool's processes open only that file. Any other journal, such as a libSQL database or
+	// another storage adapter, stays the root's durable record, and the pool keeps its queue, leases, usage, admission
+	// and pooled-stage sessions in a SQLite database on this machine.
+	const rootJournal = await rootRunJournal(backend.journal, options.runId!);
+	const local = isLocalPoolJournal(rootJournal);
+	const journalShard = isShardedRunJournal(backend.journal) ? backend.journal.shardOf(options.runId!)?.id : undefined;
 	let durable: PoolDurableJournal | undefined;
-	let poolJournal: RunJournal = backend.journal;
-	let poolPath = local ? backend.journal.path : "";
+	let poolJournal: RunJournal = rootJournal;
+	let poolPath = local ? rootJournal.path : "";
 	if (!local) {
 		durable = poolDurableJournal(backend.journal);
 		poolPath = coordinationPath(durable);
@@ -269,6 +273,7 @@ export async function activatePublicPool(
 	const pool = new LocalWorkerPool(backend, {
 		rootId: options.runId!,
 		journalPath: poolPath,
+		...(journalShard === undefined ? {} : { journalShard }),
 		...(durable === undefined ? {} : { durable }),
 		workers: localWorkers.count,
 		definitions,

@@ -1,9 +1,9 @@
 import type { RunEventType } from "@bastani/atomic/storage";
-import { StorageSchemaVersionError } from "@bastani/atomic/storage";
+import { RUN_JOURNAL_SCHEMA_VERSION, StorageSchemaVersionError } from "@bastani/atomic/storage";
 
 export { StorageUnavailableError } from "@bastani/atomic/storage";
 
-export const JOURNAL_SCHEMA_VERSION = 1;
+export const JOURNAL_SCHEMA_VERSION = RUN_JOURNAL_SCHEMA_VERSION;
 export type JournalSchemaVersion = typeof JOURNAL_SCHEMA_VERSION;
 export const JOURNAL_PAYLOAD_ENCODING = "json-text";
 export type JournalPayloadEncoding = typeof JOURNAL_PAYLOAD_ENCODING;

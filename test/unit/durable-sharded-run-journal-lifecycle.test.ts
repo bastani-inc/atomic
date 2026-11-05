@@ -1,0 +1,299 @@
+import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import {
+	adoptJournals,
+	isJournalCatalogError,
+	JournalCatalog,
+	openNodeSqliteDatabase,
+	type SqliteDatabase,
+} from "@bastani/atomic/storage";
+import { afterEach, beforeEach, test } from "vitest";
+import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
+import { openSqlRunJournal, SqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import {
+	JournalClosedError,
+	JournalSchemaVersionError,
+	type Lease,
+	type RunJournal,
+	StorageUnavailableError,
+} from "../../packages/workflows/src/durable/journal/types.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+
+let root: string;
+let store: string;
+const closing: (() => Promise<void>)[] = [];
+beforeEach(() => {
+	root = makeTempDirectory("journal-store-lifecycle-");
+	store = join(root, "journal");
+});
+afterEach(async () => {
+	for (const close of closing.splice(0).reverse()) await close().catch(() => {});
+	removeTempDirectory(root);
+});
+
+async function open(openShard: (path: string) => Promise<RunJournal> = (path) => openSqlRunJournal(path)) {
+	const journal = await ShardedRunJournal.open({ directory: store, openShard });
+	closing.push(() => journal.close());
+	return journal;
+}
+
+async function start(journal: RunJournal, runId: string): Promise<Lease> {
+	await journal.createRun({ runId, name: "wf", cwd: "/p", createdAt: 1, status: "running" });
+	const outcome = await journal.acquire(runId, "owner");
+	if (outcome.status !== "acquired") throw new Error("not acquired");
+	return outcome.lease;
+}
+
+function countCalls<T extends object>(target: T, methods: readonly (keyof T & string)[]): Record<string, number> {
+	const counts: Record<string, number> = {};
+	for (const method of methods) {
+		counts[method] = 0;
+		const original = (target[method] as (...args: never[]) => unknown).bind(target);
+		Reflect.set(target, method, (...args: never[]) => {
+			counts[method]!++;
+			return original(...args);
+		});
+	}
+	return counts;
+}
+
+test("opening an initialized journal takes no write lock; a new one is initialized once (#4325)", async () => {
+	const database = await openNodeSqliteDatabase(join(root, "journal.sqlite"));
+	try {
+		const counted: SqliteDatabase = database;
+		const counts = countCalls(database, ["transaction"]);
+		const first = await SqlRunJournal.open(counted);
+		assert.equal(counts.transaction, 1, "a new journal creates its tables in one transaction");
+		await first.close();
+		const second = await SqlRunJournal.open(counted);
+		await second.close();
+		assert.equal(counts.transaction, 1, "an initialized journal opens without a transaction");
+		await database.run("UPDATE wf_meta SET schema_version = 2");
+		await assert.rejects(SqlRunJournal.open(counted), (error: Error) => {
+			assert.ok(error instanceof JournalSchemaVersionError);
+			assert.deepEqual([error.domain, error.found, error.supported], ["journal", 2, 1]);
+			return true;
+		});
+		assert.equal(counts.transaction, 1, "an unsupported version is refused without a transaction");
+		await database.run("DELETE FROM wf_meta");
+		await (await SqlRunJournal.open(counted)).close();
+		assert.equal(counts.transaction, 2, "missing metadata goes through the initializing transaction");
+	} finally {
+		await database.close();
+	}
+});
+
+test("listings across many shards come back in run ID order (#4325)", async () => {
+	const journal = await open();
+	for (const runId of ["d-root", "b-root", "e-root", "a-root", "c-root"]) await start(journal, runId);
+	assert.equal(
+		new Set(["a-root", "b-root", "c-root", "d-root", "e-root"].map((id) => journal.shardOf(id)!.id)).size,
+		5,
+	);
+	assert.deepEqual(
+		(await journal.listRuns()).map((run) => run.runId),
+		["a-root", "b-root", "c-root", "d-root", "e-root"],
+	);
+});
+
+test("a located run is not looked up in the catalog again, and an existing root is not placed again (#4325)", async () => {
+	const journal = await open();
+	const lease = await start(journal, "r");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const counts = countCalls(catalog, ["locate", "place", "shards"]);
+	await journal.getRun("r");
+	await journal.append(lease, { type: "SummaryRecorded", payload: 1 });
+	await journal.journalFor("r");
+	await journal.existingJournalFor("r");
+	assert.deepEqual(counts, { locate: 0, place: 0, shards: 0 });
+	const fresh = await open();
+	const freshCatalog = Reflect.get(fresh, "catalog") as JournalCatalog;
+	const freshCounts = countCalls(freshCatalog, ["locate", "place"]);
+	await fresh.journalFor("r");
+	assert.deepEqual(freshCounts, { locate: 1, place: 0 });
+});
+
+test("a run the catalog does not list is looked for only in adopted journals, past one that cannot open (#4325)", async () => {
+	const missing = join(root, "missing", "journal.sqlite");
+	const found = join(root, "found", "journal.sqlite");
+	for (const path of [missing, found]) {
+		mkdirSync(join(path, ".."), { recursive: true });
+		await (await openSqlRunJournal(path)).close();
+	}
+	await adoptJournals(store, [missing, found]);
+	const late = await openSqlRunJournal(found);
+	await late.createRun({ runId: "late", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await late.close();
+	removeTempDirectory(join(root, "missing"));
+	const opened: string[] = [];
+	const journal = await open(async (path) => {
+		opened.push(path);
+		return openSqlRunJournal(path);
+	});
+	await start(journal, "native-root");
+	opened.length = 0;
+	assert.equal((await journal.getRun("late"))?.runId, "late");
+	assert.deepEqual(opened, [found], "only the adopted journals were searched, the missing one skipped");
+	assert.equal(journal.shardOf("late")?.path, found);
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	assert.equal((await catalog.locate("late"))?.shard.path, found, "the run is indexed where it was found");
+});
+
+test("a run indexed elsewhere meanwhile is routed to the shard the catalog chose (#4325)", async () => {
+	const first = join(root, "first", "journal.sqlite");
+	const second = join(root, "second", "journal.sqlite");
+	for (const path of [first, second]) {
+		mkdirSync(join(path, ".."), { recursive: true });
+		await (await openSqlRunJournal(path)).close();
+	}
+	await adoptJournals(store, [first, second]);
+	const seed = await openSqlRunJournal(first);
+	await seed.createRun({ runId: "raced", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await seed.close();
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const shards = await catalog.shards();
+	Reflect.set(catalog, "index", async () => shards[1]!.id);
+	assert.equal(await journal.getRun("raced"), undefined, "the shard the catalog chose does not hold it");
+	assert.equal(journal.shardOf("raced")?.id, shards[1]!.id);
+	Reflect.set(catalog, "index", async () => 99);
+	Reflect.get(journal, "located").delete("raced");
+	assert.equal(await journal.getRun("raced"), undefined, "a shard the catalog does not register is no location");
+});
+
+test("a run deleted from its shard behind the catalog's back reads as absent, not as an error (#4325)", async () => {
+	const journal = await open();
+	await start(journal, "gone");
+	const shard = new DatabaseSync(journal.shardOf("gone")!.path);
+	shard.exec("DELETE FROM wf_runs; DELETE FROM wf_events; DELETE FROM wf_leases");
+	shard.close();
+	assert.equal(await journal.getRun("gone"), undefined);
+	assert.equal(await journal.snapshotTail("gone"), undefined);
+	const entries = [];
+	for await (const entry of journal.read("gone")) entries.push(entry);
+	assert.deepEqual(entries, []);
+});
+
+test("shards without the optional change tracking still list, version and tail (#4325)", async () => {
+	const journal = await open(async (path) => {
+		const shard = await openSqlRunJournal(path);
+		for (const method of ["changeToken", "runVersions", "snapshotTail"]) Reflect.set(shard, method, undefined);
+		return shard;
+	});
+	await start(journal, "plain");
+	assert.ok((JSON.parse(await journal.changeToken()) as string[]).includes("untracked"));
+	assert.deepEqual(await journal.runVersions(), new Map([["plain", { seq: 0, at: 0 }]]));
+	assert.equal(await journal.snapshotTail("plain"), undefined);
+});
+
+test("the catalog records a status only for a status change that was appended (#4325)", async () => {
+	const journal = await open();
+	const lease = await start(journal, "status");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const status = async () => (await catalog.locate("status"))?.run.status;
+	await journal.append(lease, { type: "SummaryRecorded", payload: "no status" });
+	assert.equal(await status(), "running");
+	await journal.append(lease, { type: "StatusChanged", payload: { status: "paused" } }, { key: "status" });
+	assert.equal(await status(), "paused");
+	const existing = await journal.append(
+		lease,
+		{ type: "StatusChanged", payload: { status: "failed" } },
+		{ key: "status" },
+	);
+	assert.equal(existing.status, "exists");
+	assert.equal(await status(), "paused", "a status whose key already exists was not appended");
+	const context = <R>(action: () => R): R => action();
+	await journal.appendMany(lease, [
+		{ event: { type: "StatusChanged", payload: { status: "failed" } }, key: "status", context },
+		{ event: { type: "SummaryRecorded", payload: null }, context },
+	]);
+	assert.equal(await status(), "paused", "a batch whose only status change already exists records nothing");
+	await journal.appendMany(lease, [
+		{ event: { type: "StatusChanged", payload: { status: "bad\u0000" } }, context },
+		{ event: { type: "SummaryRecorded", payload: null }, context },
+	]);
+	assert.equal(await status(), "paused", "a rejected status change records nothing");
+});
+
+test("close waits for operations in flight, closes every shard and the catalog, and reports a failed close (#4325)", async () => {
+	let release: () => void = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const shards: RunJournal[] = [];
+	const journal = await ShardedRunJournal.open({
+		directory: store,
+		openShard: async (path) => {
+			await gate;
+			const shard = await openSqlRunJournal(path);
+			shards.push(shard);
+			return shard;
+		},
+	});
+	const pending = start(journal, "slow");
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	let closed = false;
+	const closing = journal.close().then(() => {
+		closed = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(closed, false, "close waits for the operation in flight");
+	release();
+	await pending.catch(() => {});
+	await closing;
+	assert.equal(shards.length, 1);
+	await assert.rejects(
+		shards[0]!.getRun("slow"),
+		(error: Error) => error instanceof StorageUnavailableError && error.cause instanceof JournalClosedError,
+	);
+	await assert.rejects(
+		(Reflect.get(journal, "catalog") as JournalCatalog).shards(),
+		(error: Error) => isJournalCatalogError(error) && error.code === "catalog-unavailable",
+	);
+
+	const failing = await ShardedRunJournal.open({
+		directory: join(root, "other"),
+		openShard: async (path) => {
+			const shard = await openSqlRunJournal(path);
+			const close = shard.close.bind(shard);
+			shard.close = async () => {
+				await close();
+				throw new Error("shard close failed");
+			};
+			return shard;
+		},
+	});
+	await start(failing, "x");
+	await assert.rejects(failing.close(), /shard close failed/);
+});
+
+test("a store whose legacy journal cannot be registered fails to open and closes its catalog (#4325)", async () => {
+	const legacy = join(root, "journal.sqlite");
+	const seed = await openSqlRunJournal(legacy);
+	await seed.createRun({ runId: "legacy-run", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await seed.close();
+	const catalog = await JournalCatalog.open(store);
+	await catalog.close();
+	const database = new DatabaseSync(join(store, "catalog.sqlite"));
+	database.exec("CREATE TRIGGER refuse BEFORE INSERT ON catalog_shards BEGIN SELECT RAISE(ABORT, 'refused'); END");
+	database.close();
+	await assert.rejects(
+		ShardedRunJournal.open({ directory: store, openShard: (path) => openSqlRunJournal(path), legacyJournal: legacy }),
+		(error: Error) => isJournalCatalogError(error) && error.code === "write-failed",
+	);
+	const check = new DatabaseSync(join(store, "catalog.sqlite"));
+	check.exec("DROP TRIGGER refuse");
+	check.close();
+	const reopened = await ShardedRunJournal.open({
+		directory: store,
+		openShard: (path) => openSqlRunJournal(path),
+		legacyJournal: legacy,
+	});
+	closing.push(() => reopened.close());
+	assert.deepEqual(
+		(await reopened.listRuns()).map((run) => run.runId),
+		["legacy-run"],
+	);
+});

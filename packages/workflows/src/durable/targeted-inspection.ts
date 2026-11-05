@@ -1,9 +1,11 @@
+import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { inspectRun, type RunDetail } from "../runs/background/run-inspect.js";
 import { isFullRunId, isRunIdPrefix, resolveRunIdTarget } from "../shared/run-id.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { type DurableWorkflowBackend, readDurableCheckpoints } from "./backend.js";
 import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
+import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { bindStoreDurableBackend } from "./store-backend.js";
 
 export type TargetedDurableInspection =
@@ -13,7 +15,13 @@ export type TargetedDurableInspection =
 			readonly runs: readonly RunSnapshot[];
 			readonly store: Store;
 	  }
-	| { readonly kind: "absent" | "deleted" | "malformed"; readonly message: string };
+	| {
+			readonly kind: "absent";
+			readonly message: string;
+			/** Why the run is absent and how to reach it: `run-not-found`, naming the storage searched. */
+			readonly error: JournalCatalogError;
+	  }
+	| { readonly kind: "deleted" | "malformed"; readonly message: string };
 
 /**
  * Hydrate and reconstruct one exact or uniquely-prefixed durable root for inspection only.
@@ -37,7 +45,7 @@ export async function inspectTargetedDurableWorkflow(
 			...catalog.resumable.map((entry) => entry.workflowId),
 			...catalog.completed.map((entry) => entry.workflowId),
 		]);
-		if (resolution.kind === "not_found") return hydrationFailure(workflowId, "absent");
+		if (resolution.kind === "not_found") return absent(backend, workflowId);
 		if (resolution.kind === "malformed" || resolution.kind === "ambiguous") {
 			return { kind: "malformed", message: resolution.message };
 		}
@@ -45,7 +53,7 @@ export async function inspectTargetedDurableWorkflow(
 	}
 	await backend.hydrateWorkflow(resolvedWorkflowId);
 	const handle = backend.getLoadableWorkflow(resolvedWorkflowId);
-	if (handle === undefined) return hydrationFailure(resolvedWorkflowId, "absent");
+	if (handle === undefined) return absent(backend, resolvedWorkflowId);
 	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== handle.workflowId) {
 		return malformed(resolvedWorkflowId, "the requested id belongs to a nested workflow rather than a durable root");
 	}
@@ -98,21 +106,9 @@ function terminalGuidance(status: string, workflowId: string, resumable: boolean
 	return `This retained workflow is ${status} and available for read-only inspection.`;
 }
 
-function hydrationFailure(
-	workflowId: string,
-	kind: Exclude<TargetedDurableInspection["kind"], "found">,
-): TargetedDurableInspection {
-	switch (kind) {
-		case "absent":
-			return {
-				kind,
-				message: `Run not found: ${workflowId} (not present in the current session or durable store).`,
-			};
-		case "deleted":
-			return { kind, message: `Durable workflow was deleted: ${workflowId}` };
-		case "malformed":
-			return malformed(workflowId, "journal metadata or checkpoints are malformed");
-	}
+function absent(backend: DurableWorkflowBackend, workflowId: string): TargetedDurableInspection {
+	const error = durableRunNotFoundError(backend, workflowId);
+	return { kind: "absent", message: formatRunNotFound(error), error };
 }
 
 function malformed(workflowId: string, reason: string): TargetedDurableInspection {

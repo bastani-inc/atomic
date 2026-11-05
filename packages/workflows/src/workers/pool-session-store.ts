@@ -1,6 +1,7 @@
 import type { SessionStore, SqliteDatabase } from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
+import { existingRootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import { poolJournalOf } from "./pool-journal.js";
 
 /**
@@ -10,12 +11,17 @@ import { poolJournalOf } from "./pool-journal.js";
  * not the host's session store. This opens those tables over the journal's own connection,
  * so a finished pooled stage's transcript can be read and reopened for post-mortem chat,
  * in the same process and after a restart. Undefined when no pool ever ran on the journal.
+ * In the journal store those tables are in the shard of `rootRunId`.
  * The caller owns the returned store.
  */
-export async function poolSessionStore(backend: DurableWorkflowBackend): Promise<SessionStore | undefined> {
+export async function poolSessionStore(
+	backend: DurableWorkflowBackend,
+	rootRunId: string,
+): Promise<SessionStore | undefined> {
 	const journal = (backend as { readonly journal?: Parameters<typeof sqlPoolStorage>[0] }).journal;
+	if (journal === undefined) return undefined;
 	// A journal in another database keeps its pool's sessions in the machine's coordination database.
-	return journal === undefined ? undefined : openPoolSessionStore(await poolJournalOf(journal));
+	return openPoolSessionStore(await poolJournalOf(await existingRootRunJournal(journal, rootRunId)));
 }
 
 async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0]): Promise<SessionStore | undefined> {

@@ -70,6 +70,13 @@ export class LegacyJournalRuns {
 	/** Present only for the unprefixed journal in a database that still has version-1 legacy tables. */
 	static async open(database: SqliteDatabase): Promise<LegacyJournalRuns | undefined> {
 		try {
+			const legacyTables = await database.all(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+				JOURNAL_TABLES.meta,
+				JOURNAL_TABLES.runs,
+				JOURNAL_TABLES.events,
+			);
+			if (legacyTables.length < 3) return undefined;
 			return await database.transaction(async (tx) => {
 				for (const table of ["meta", "runs", "events"] as const) {
 					if (!(await hasLegacyTable(tx, table))) return undefined;
