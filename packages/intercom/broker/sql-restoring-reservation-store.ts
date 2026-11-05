@@ -11,10 +11,13 @@ import type {
 	RestoringReservationReadResult,
 	RestoringReservationReleaseResult,
 	RestoringReservationRenewResult,
+	RestoringReservationRequestWakeResult,
 	RestoringReservationReserveResult,
 	RestoringReservationStore,
+	RestoringReservationTakeWakeResult,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { isReleasedReservationKey } from "./released-children.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -25,6 +28,7 @@ type ReservationRow = SqliteRow & {
 	targets_json: string;
 	reservation_group: string;
 	dormant: number;
+	wake: number;
 	fencing_token: number;
 	gone_json: string | null;
 	end_json: string | null;
@@ -47,6 +51,7 @@ function reservationOf(row: ReservationRow): RestoringReservation {
 		targets: JSON.parse(row.targets_json) as string[],
 		group: row.reservation_group,
 		dormant: row.dormant === 1,
+		wake: row.wake === 1,
 		fencingToken: row.fencing_token,
 		...(row.gone_json === null ? {} : { gone: JSON.parse(row.gone_json) as string }),
 	};
@@ -57,6 +62,10 @@ function endOf(endJson: string): RestoringReservationEnd {
 	if (end.outcome === "consumed") return { outcome: "consumed" };
 	if (end.outcome === "superseded") return { outcome: "superseded", by: end.by };
 	return end.refusal === undefined ? { outcome: "released" } : { outcome: "released", refusal: end.refusal };
+}
+
+function replacementTargets(childTarget: string, aliases: readonly string[]): string[] {
+	return mergeTargets([childTarget], aliases);
 }
 
 function mergeTargets(targets: string[], added: readonly string[]): string[] {
@@ -104,13 +113,37 @@ export async function openSqlRestoringReservationStore({
 			INSERT INTO ${counters}(name, value) VALUES ('order', 0), ('token', 0) ON CONFLICT(name) DO NOTHING;
 		`),
 	);
+	// #4326: added later; a table from an older broker gets the columns, and an older broker ignores them.
+	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
+	for (const column of ["wake", "wake_requested"]) {
+		if (known.some((existing) => existing.name === column)) continue;
+		try {
+			await database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+		} catch (error) {
+			if (!/duplicate column/i.test(error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : ""))
+				throw error;
+		}
+	}
+	await database.exec(
+		`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`,
+	);
+	await database.exec(
+		`CREATE INDEX IF NOT EXISTS ${table}_wake_requested ON ${table}(owner_broker_id) WHERE wake_requested = 1`,
+	);
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
-		targets_json, "group" AS reservation_group, dormant, fencing_token, gone AS gone_json, end_json,
+		targets_json, "group" AS reservation_group, dormant, wake, fencing_token, gone AS gone_json, end_json,
 		MAX(0, ${STORE_NOW} - renewed_at) AS age_ms`;
 	const readRow = (executor: SqliteExecutor, reservationKey: string) =>
 		executor.get<ReservationRow>(`SELECT ${columns} FROM ${table} WHERE reservation_key = ?`, reservationKey);
 	const activeRows = (executor: SqliteExecutor) =>
 		executor.all<ReservationRow>(`SELECT ${columns} FROM ${table} WHERE end_json IS NULL ORDER BY "order"`);
+	const activeRowsForChild = (executor: SqliteExecutor, childTarget: string, reservationKey?: string) =>
+		executor.all<ReservationRow>(
+			`SELECT ${columns} FROM ${table}
+			 WHERE end_json IS NULL AND (child_target = ? OR reservation_key = ?) ORDER BY "order"`,
+			childTarget,
+			reservationKey ?? childTarget,
+		);
 	const next = async (executor: SqliteExecutor, counter: Counter): Promise<number> => {
 		const row = await executor.get<SqliteRow & { value: number }>(
 			`UPDATE ${counters} SET value = value + 1 WHERE name = ? RETURNING value`,
@@ -157,21 +190,26 @@ export async function openSqlRestoringReservationStore({
 							? existing.fencing_token
 							: await next(tx, "token");
 					await tx.run(
-						`UPDATE ${table} SET owner_session_id = ?, owner_broker_id = ?, "group" = ?, dormant = ?,
+						`UPDATE ${table} SET owner_session_id = ?, owner_broker_id = ?, "group" = ?, dormant = ?, wake = ?,
 						 fencing_token = ?, targets_json = ?, renewed_at = ${STORE_NOW} WHERE reservation_key = ?`,
 						request.ownerSessionId,
 						request.ownerBrokerId,
 						request.group,
 						request.dormant ? 1 : 0,
+						request.wake ? 1 : 0,
 						fencingToken,
-						JSON.stringify(mergeTargets(JSON.parse(existing.targets_json) as string[], request.aliases)),
+						JSON.stringify(
+							request.replaceAliases === true
+								? replacementTargets(request.childTarget, request.aliases)
+								: mergeTargets(JSON.parse(existing.targets_json) as string[], request.aliases),
+						),
 						request.reservationKey,
 					);
 				} else {
 					const order = await next(tx, "order");
 					fencingToken = await next(tx, "token");
 					const targets = [request.childTarget];
-					for (const previous of await activeRows(tx)) {
+					for (const previous of await activeRowsForChild(tx, request.childTarget)) {
 						if (previous.child_target !== request.childTarget) continue;
 						const sameOwner = previous.owner_session_id === request.ownerSessionId;
 						const dormantInGroup = previous.dormant === 1 && previous.reservation_group === request.group;
@@ -182,9 +220,9 @@ export async function openSqlRestoringReservationStore({
 					}
 					await tx.run(
 						`INSERT OR REPLACE INTO ${table}(reservation_key, "order", owner_session_id, owner_broker_id,
-						 child_name, child_target, targets_json, "group", dormant, fencing_token, gone, renewed_at,
+						 child_name, child_target, targets_json, "group", dormant, wake, fencing_token, gone, renewed_at,
 						 end_json, ended_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ${STORE_NOW}, NULL, NULL)`,
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ${STORE_NOW}, NULL, NULL)`,
 						request.reservationKey,
 						order,
 						request.ownerSessionId,
@@ -194,6 +232,7 @@ export async function openSqlRestoringReservationStore({
 						JSON.stringify(mergeTargets(targets, request.aliases)),
 						request.group,
 						request.dormant ? 1 : 0,
+						request.wake ? 1 : 0,
 						fencingToken,
 					);
 				}
@@ -219,6 +258,36 @@ export async function openSqlRestoringReservationStore({
 			);
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone_json === null ? "reserved" : "gone", reservation: reservationOf(found) };
+		},
+		async requestWake(reservationKey): Promise<RestoringReservationRequestWakeResult> {
+			if (reservationKey.length === 0) return invalid("empty-reservation-key");
+			const { changes } = await database.run(
+				`UPDATE ${table} SET wake_requested = 1
+				 WHERE reservation_key = ? AND end_json IS NULL AND gone IS NULL AND wake = 1`,
+				reservationKey,
+			);
+			return { status: changes > 0 ? "requested" : "not-wakeable" };
+		},
+		async takeWakeRequests(ownerBrokerId): Promise<RestoringReservationTakeWakeResult> {
+			if (ownerBrokerId.length === 0) return invalid("empty-broker-id");
+			return database.transaction(async (tx) => {
+				const rows = await tx.all<ReservationRow>(
+					`SELECT ${columns} FROM ${table}
+					 WHERE owner_broker_id = ? AND wake_requested = 1 AND end_json IS NULL ORDER BY "order"`,
+					ownerBrokerId,
+				);
+				for (const row of rows) {
+					await tx.run(`UPDATE ${table} SET wake_requested = 0 WHERE reservation_key = ?`, row.reservation_key);
+				}
+				return {
+					status: "taken",
+					requests: rows.map((row) => ({
+						reservationKey: row.reservation_key,
+						ownerSessionId: row.owner_session_id,
+						childName: JSON.parse(row.child_name_json) as string,
+					})),
+				};
+			});
 		},
 		async renew(lease): Promise<RestoringReservationRenewResult> {
 			const bad = invalidLease(lease);
@@ -262,12 +331,16 @@ export async function openSqlRestoringReservationStore({
 			if (registered !== undefined && registered.childTarget.length === 0) return invalid("empty-target");
 			return database.transaction(async (tx) => {
 				const ended: string[] = [];
-				for (const row of await activeRows(tx)) {
+				const candidates =
+					registered === undefined
+						? await activeRowsForChild(tx, reservationKey, reservationKey)
+						: await activeRowsForChild(tx, registered.childTarget, reservationKey);
+				for (const row of candidates) {
 					if (row.gone_json !== null) continue;
-					const own = row.reservation_key === reservationKey;
+					const own = row.reservation_key === reservationKey && !isReleasedReservationKey(row.reservation_key);
 					const dormantChild =
 						registered !== undefined &&
-						row.dormant === 1 &&
+						(isReleasedReservationKey(row.reservation_key) || (row.dormant === 1 && registered.releasedOnly !== true)) &&
 						row.child_target === registered.childTarget &&
 						registered.groups.includes(row.reservation_group);
 					if (!own && !dormantChild) continue;

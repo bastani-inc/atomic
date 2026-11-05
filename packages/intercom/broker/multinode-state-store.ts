@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SqliteDatabase } from "@bastani/atomic/storage";
 import type { BrokerMessage, ClientMessage, SessionInfo } from "../types.js";
+import { isReleasedReservationKey } from "./released-children.js";
 
 /**
  * Multi-node broker state seams (specs/2026-10-19-intercom-multi-node.md). Brokers on different hosts share this
@@ -246,9 +247,11 @@ export interface OutboxStore {
 
 /**
  * The shared key of a restoring-recipient reservation: the lowercase hex SHA-256 of the supervisor capability.
- * The capability is a bearer secret with a random nonce, so the shared database stores only this digest.
+ * The capability is a bearer secret with a random nonce, so the shared database stores only this digest. A released
+ * child's reservation is made by child name, not capability, and keeps its `released:<name>` key as it is.
  */
 export function reservationKeyFor(capability: string): string {
+	if (isReleasedReservationKey(capability)) return capability;
 	return createHash("sha256").update(capability, "utf8").digest("hex");
 }
 
@@ -294,6 +297,10 @@ export interface RestoringReservationRequest {
 	readonly group: string;
 	/** Kept only until the supervisor that restores the child reserves it or the child registers. */
 	readonly dormant: boolean;
+	/** The child is released: the first send held for it asks the owner's broker to wake it (#4326). */
+	readonly wake: boolean;
+	/** The aliases given are all the child has, not additions to those reserved before. */
+	readonly replaceAliases?: boolean;
 }
 
 export interface RestoringReservation {
@@ -306,6 +313,7 @@ export interface RestoringReservation {
 	readonly targets: string[];
 	readonly group: string;
 	readonly dormant: boolean;
+	readonly wake: boolean;
 	readonly fencingToken: number;
 	/** Set once the owner reports the child gone; verbatim. */
 	readonly gone?: string;
@@ -338,6 +346,8 @@ export interface RestoringReservationRegistration {
 	readonly childTarget: string;
 	/** The registered child's normalized groups. */
 	readonly groups: readonly string[];
+	/** The child registered without a supervisor capability: only released children's reservations end with it. */
+	readonly releasedOnly?: true;
 }
 
 export interface RestoringReservationReleaseOutcome {
@@ -361,6 +371,19 @@ export type RestoringReservationReleaseResult =
 	| { readonly status: "released" }
 	| { readonly status: "gone" }
 	| LeaseStaleResult
+	| InvalidStateInput;
+/** A reservation whose owner's broker should wake its released child, because a send started holding for it. */
+export interface RestoringReservationWakeRequest {
+	readonly reservationKey: string;
+	readonly ownerSessionId: string;
+	readonly childName: string;
+}
+export type RestoringReservationRequestWakeResult =
+	| { readonly status: "requested" }
+	| { readonly status: "not-wakeable" }
+	| InvalidStateInput;
+export type RestoringReservationTakeWakeResult =
+	| { readonly status: "taken"; readonly requests: RestoringReservationWakeRequest[] }
 	| InvalidStateInput;
 export type RestoringReservationConsumeResult =
 	/** The reservations this registration ended, in insertion order; empty when none. */
@@ -401,8 +424,16 @@ export interface RestoringReservationStore {
 		outcome?: RestoringReservationReleaseOutcome,
 	): Promise<RestoringReservationReleaseResult>;
 	/**
+	 * Ask the broker that owns this active, non-gone `wake` reservation to wake its child: the request stays until
+	 * that broker takes it. Asking again before then is the same single request.
+	 */
+	requestWake(reservationKey: string): Promise<RestoringReservationRequestWakeResult>;
+	/** Atomically remove and return the wake requests of the active reservations owned by this broker, once each. */
+	takeWakeRequests(ownerBrokerId: string): Promise<RestoringReservationTakeWakeResult>;
+	/**
 	 * The child registered with this key through any broker: end its reservation unless it is a gone marker, and
-	 * with `registered`, every other dormant, non-gone reservation of that child in one of its groups. Age is ignored.
+	 * with `registered`, every other dormant or released, non-gone reservation of that child in one of its groups.
+	 * Age is ignored.
 	 */
 	consume(
 		reservationKey: string,

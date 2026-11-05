@@ -445,3 +445,59 @@ test("on resume, a saved message from a live sender on the other node replays ex
 	);
 	assert.deepEqual(plan.notices ?? [], []);
 });
+
+test("a remote sender's send and ask wake a released child on the owner's broker once, and arrive once each, in order (#4326)", async ({
+	annotate,
+}) => {
+	const owner = await harness.connect("b", unique("released-owner"));
+	const sender = await harness.connect("a", unique("released-sender"));
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: a released child is reserved on one broker only");
+		return;
+	}
+	const childName = unique("subagent-released");
+	const wakes: Array<{ childName: string }> = [];
+	owner.client.on("restoring_recipient_wake", (notice: { childName: string }) => wakes.push(notice));
+	await owner.client.reserveReleasedChildren([{ childName, wake: true }]);
+	const shared = await harness.openSharedStorage("a");
+	const count = async (table: string): Promise<number> =>
+		Number((await shared.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`))?.n);
+	await vi.waitFor(async () => assert.equal(await count("mn_intercom_restoring_reservations"), 1), {
+		timeout: DELIVERY_WAIT_MS,
+		interval: 25,
+	});
+
+	const sendId = randomUUID();
+	const askId = randomUUID();
+	const sends = Promise.all([
+		sender.client.send(childName, { text: "first", messageId: sendId }),
+		sender.client.send(childName, { text: "second", messageId: askId, expectsReply: true }),
+	]);
+	await vi.waitFor(async () => assert.equal(await count("mn_intercom_held_sends"), 2), {
+		timeout: DELIVERY_WAIT_MS,
+		interval: 25,
+	});
+	await vi.waitFor(() => assert.equal(wakes.length, 1), { timeout: DELIVERY_WAIT_MS, interval: 25 });
+	assert.deepEqual(wakes, [{ childName }], "one wake notice for the hold that started empty");
+
+	const child = await harness.connect("b", childName);
+	const results = await sends;
+	assert.deepEqual(
+		results.map((result) => result.delivered),
+		[true, true],
+		JSON.stringify(results),
+	);
+	await waitForMessage(child, askId);
+	assert.deepEqual(
+		child.received.map((frame) => frame.message.id),
+		[sendId, askId],
+		"each held send arrives once, in the order it was sent",
+	);
+	assert.equal(wakes.length, 1);
+
+	const nextId = randomUUID();
+	const later = await sender.client.send(childName, { text: "after", messageId: nextId });
+	assert.equal(later.delivered, true, JSON.stringify(later));
+	await waitForMessage(child, nextId);
+	assert.equal(wakes.length, 1, "a send to the live child wakes nothing");
+});

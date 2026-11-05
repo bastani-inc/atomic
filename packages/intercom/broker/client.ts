@@ -20,10 +20,16 @@ import type {
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
 	IntercomDeliveryMode,
+	DeliveryFailureReasonCode,
+	ReleasedChildRefusal,
+	ReleasedChildRefusalCode,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
 import { isMessage, isSessionInfo } from "./client-message-validation.js";
+import { isDeliveryFailureReasonCode } from "./delivery-failure-reason.js";
+import { ReleasedChildReservationError, releasedChildErrorFor } from "./released-child-errors.js";
+import { RELEASED_CHILD_FRAME_MAX, validateReleasedChildFrame } from "./released-children.js";
 import { normalizeGroups } from "../group.js";
 import {
 	BROKER_RETIRING_CODE,
@@ -151,12 +157,46 @@ export interface IntercomClientOptions {
 	readonly multiplexesPendingStageRoutes?: true;
 }
 
+/** A released subagent to keep addressable through its owner, by name (#4326). */
+export interface ReleasedChildReservation {
+	readonly childName: string;
+	readonly group?: string;
+	readonly aliases?: readonly string[];
+	/** true: the first send held for it asks this owner to wake it; false: parked (paused or quit): sends are held but the owner is never asked. */
+	readonly wake: boolean;
+}
+
+export {
+	isReleasedChildError,
+	ReleasedChildError,
+	ReleasedChildReservationError,
+	UnknownReleasedChildError,
+} from "./released-child-errors.js";
+export type { ReleasedChildErrorCode } from "./released-child-errors.js";
+
+function readReleasedChildRefusal(value: unknown): ReleasedChildRefusal | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { code, childName } = value as { code?: unknown; childName?: unknown };
+	if (typeof code !== "string" || !RELEASED_CHILD_REFUSAL_CODES.has(code)) return undefined;
+	if (childName !== undefined && typeof childName !== "string") return undefined;
+	return childName === undefined ? { code: code as ReleasedChildRefusalCode } : { code: code as ReleasedChildRefusalCode, childName };
+}
+
+const RELEASED_CHILD_REFUSAL_CODES: ReadonlySet<string> = new Set<ReleasedChildRefusalCode>([
+	"invalid_frame",
+	"invalid_child_name",
+	"invalid_alias",
+	"too_many_aliases",
+	"invalid_group",
+	"unknown_released_child",
+]);
+
 export interface SendResult {
   id: string;
   delivered: boolean;
   queued?: boolean;
   reason?: string;
-	reasonCode?: "message_id_conflict" | "session_not_found";
+	reasonCode?: DeliveryFailureReasonCode;
 	target?: string;
   position?: number;
   /** How a queued workflow target relates to the run's stages (#4359). */
@@ -982,11 +1022,24 @@ export class IntercomClient extends EventEmitter {
       }
       case "restoring_recipient_wake": {
         const { capability, childName } = brokerMessage;
-        if (typeof capability !== "string" || typeof childName !== "string") {
+        if (typeof childName !== "string" || (capability !== undefined && typeof capability !== "string")) {
           throw new Error("Invalid restoring_recipient_wake message");
         }
         // #4326: a send waits at the broker for a released child this session reserved; its owner wakes it.
-        this.emit("restoring_recipient_wake", { capability, childName });
+        this.emit("restoring_recipient_wake", capability === undefined ? { childName } : { childName, capability });
+        break;
+      }
+      case "released_children_ack": {
+        const { requestId, refusal } = brokerMessage;
+        const parsed = refusal === undefined ? undefined : readReleasedChildRefusal(refusal);
+        if (typeof requestId !== "string" || (refusal !== undefined && parsed === undefined)) {
+          throw new Error("Invalid released_children_ack message");
+        }
+        const pending = this.pendingRestoringRecipientRequests.get(requestId);
+        if (!pending) return;
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        if (parsed === undefined) pending.resolve();
+        else pending.reject(releasedChildErrorFor(parsed));
         break;
       }
       case "restoring_recipient_ack": {
@@ -1017,7 +1070,7 @@ export class IntercomClient extends EventEmitter {
 			typeof messageId !== "string" ||
 			(attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof reason !== "string" ||
-			(reasonCode !== undefined && reasonCode !== "message_id_conflict" && reasonCode !== "session_not_found")
+			(reasonCode !== undefined && (typeof reasonCode !== "string" || !isDeliveryFailureReasonCode(reasonCode)))
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
@@ -1353,6 +1406,56 @@ export class IntercomClient extends EventEmitter {
       ...(gone === undefined ? {} : { gone }),
       ...(refusal === undefined ? {} : { refusal }),
     });
+  }
+
+  /**
+   * #4326: reserve released subagents by child name for this connection, which becomes their owner: sends to
+   * them are held, and the first one held asks this session to wake the child when `wake` is true. Children go in
+   * frames of at most 500. Every item is validated before any frame is sent; an invalid item fails the call with a
+   * `ReleasedChildReservationError` naming its child, and reserves nothing from its frame or any later one.
+   * Reserving a child again replaces its aliases, group and wake flag and keeps the sends held for it.
+   */
+  async reserveReleasedChildren(children: readonly ReleasedChildReservation[]): Promise<void> {
+    const wireChildren = children.map((child) => ({
+      childName: child.childName,
+      ...(child.group === undefined ? {} : { group: child.group }),
+      ...(child.aliases === undefined ? {} : { aliases: [...child.aliases] }),
+      wake: child.wake,
+    }));
+    const frames: (typeof wireChildren)[] = [];
+    for (let start = 0; start < wireChildren.length; start += RELEASED_CHILD_FRAME_MAX) {
+      const frame = wireChildren.slice(start, start + RELEASED_CHILD_FRAME_MAX);
+      const validation = validateReleasedChildFrame(frame);
+      if (!validation.ok) throw new ReleasedChildReservationError(validation.refusal);
+      frames.push(frame);
+    }
+    for (const frame of frames) {
+      await this.restoringRecipientRequest({ type: "reserve_released_children", children: frame });
+    }
+  }
+
+  /**
+   * #4326: end this connection's reservations for these child names, in frames of at most 500. `gone` and
+   * `refusal` behave as they do for `releaseRestoringRecipient`. A child this connection did not reserve is skipped.
+   */
+  async dropReleasedChildren(childNames: readonly string[], outcome: { gone?: string; refusal?: string } = {}): Promise<void> {
+    for (let start = 0; start < childNames.length; start += RELEASED_CHILD_FRAME_MAX) {
+      await this.restoringRecipientRequest({
+        type: "drop_released_children",
+        childNames: childNames.slice(start, start + RELEASED_CHILD_FRAME_MAX),
+        ...(outcome.gone === undefined ? {} : { gone: outcome.gone }),
+        ...(outcome.refusal === undefined ? {} : { refusal: outcome.refusal }),
+      });
+    }
+  }
+
+  /**
+   * #4326: confirm this session is waking `childName`: the broker lengthens the hold of every send waiting for it,
+   * once per wake, up to 120 seconds from each send's admission. Fails with `UnknownReleasedChildError` when this
+   * connection holds no reservation for the child.
+   */
+  acknowledgeReleasedChildWake(childName: string): Promise<void> {
+    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
   }
 
   private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {

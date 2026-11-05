@@ -234,12 +234,12 @@ test("a client passes on a broker's wake notice for its released child and rejec
 	const notices: object[] = [];
 	client.on("restoring_recipient_wake", (notice: object) => notices.push(notice));
 	internals.handleBrokerMessage({ type: "restoring_recipient_wake", capability: "capability", childName: CHILD });
-	assert.deepEqual(notices, [{ capability: "capability", childName: CHILD }]);
+	internals.handleBrokerMessage({ type: "restoring_recipient_wake", childName: CHILD });
+	assert.deepEqual(notices, [{ capability: "capability", childName: CHILD }, { childName: CHILD }]);
 	for (const malformed of [
-		{ type: "restoring_recipient_wake", childName: CHILD },
 		{ type: "restoring_recipient_wake", capability: "capability" },
 		{ type: "restoring_recipient_wake", capability: 1, childName: CHILD },
 	])
 		assert.throws(() => internals.handleBrokerMessage(malformed), /Invalid restoring_recipient_wake message/);
-	assert.equal(notices.length, 1);
+	assert.equal(notices.length, 2);
 });

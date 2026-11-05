@@ -14,6 +14,9 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - The broker follows `ATOMIC_PROFILE=ci` like `ATOMIC_STORAGE` ([#4320](https://github.com/bastani-inc/atomic/issues/4320))
 - `intercom list` labels future rows the decision model predicted as `predicted <probability>`, `confirmed` or `unused` ([#4359](https://github.com/bastani-inc/atomic/issues/4359))
 - A released subagent stays addressable without a connection: the broker holds sends and asks to it, asks its owner to wake it, and delivers them once each, in the order they were sent, when it is back ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A released subagent's owner can reserve any number of children by name in one call (`reserveReleasedChildren`, in frames of up to 500) instead of one round trip per child, park a child so sends are held without asking the owner to wake it, and confirm a wake (`acknowledgeReleasedChildWake`) so the sends waiting for it are held for up to 120 seconds instead of 20. A frame with an invalid child is refused whole with a typed error that names the child ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- A send or ask held for a released subagent on another machine now wakes it on its owner's machine, and the sender's delivery failure carries a `reasonCode` of `recipient_not_restored` (the hold ended while the subagent was being restored or woken) or `recipient_parked` (the subagent is parked and is not woken for a send) alongside the existing text ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
+- `broker_status` reports how many reservations the broker holds and how many sends are waiting on them ([#4326](https://github.com/bastani-inc/atomic/issues/4326))
 
 ### Changed
 

@@ -28,6 +28,7 @@ import type {
 	SentQuestionRoute,
 	StateStoreInvalidReason,
 } from "../../packages/intercom/broker/multinode-state-store.js";
+import { isReleasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpListener } from "../../packages/intercom/broker/wake-up-bus.js";
 import type { SharedStoreFixture, WakeUpBusFixture } from "./intercom-multinode-contract.js";
 
@@ -371,6 +372,8 @@ interface ReservationRecord {
 	targets: string[];
 	group: string;
 	dormant: boolean;
+	wake: boolean;
+	wakeRequested: boolean;
 	fencingToken: number;
 	gone?: string;
 	renewedAt: number;
@@ -394,6 +397,7 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 		targets: [...record.targets],
 		group: record.group,
 		dormant: record.dormant,
+		wake: record.wake,
 		fencingToken: record.fencingToken,
 		...(record.gone === undefined ? {} : { gone: record.gone }),
 	});
@@ -446,6 +450,8 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 					targets: [request.childTarget],
 					group: request.group,
 					dormant: request.dormant,
+					wake: request.wake,
+					wakeRequested: false,
 					fencingToken: shared.nextToken++,
 					renewedAt: Date.now(),
 				};
@@ -466,7 +472,9 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 			record.ownerBrokerId = request.ownerBrokerId;
 			record.group = request.group;
 			record.dormant = request.dormant;
+			record.wake = request.wake;
 			record.renewedAt = Date.now();
+			if (request.replaceAliases === true) record.targets = [record.childTarget];
 			addTargets(record, request.aliases);
 			return {
 				status: "reserved",
@@ -489,6 +497,28 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 			);
 			if (found === undefined) return { status: "none" };
 			return { status: found.gone === undefined ? "reserved" : "gone", reservation: reservation(found) };
+		},
+		async requestWake(reservationKey) {
+			if (reservationKey.length === 0) return invalid("empty-reservation-key");
+			const record = shared.records.get(reservationKey);
+			if (record === undefined || record.end !== undefined || record.gone !== undefined || !record.wake) {
+				return { status: "not-wakeable" };
+			}
+			record.wakeRequested = true;
+			return { status: "requested" };
+		},
+		async takeWakeRequests(ownerBrokerId) {
+			if (ownerBrokerId.length === 0) return invalid("empty-broker-id");
+			const requests = active().filter((record) => record.ownerBrokerId === ownerBrokerId && record.wakeRequested);
+			for (const record of requests) record.wakeRequested = false;
+			return {
+				status: "taken",
+				requests: requests.map((record) => ({
+					reservationKey: record.reservationKey,
+					ownerSessionId: record.ownerSessionId,
+					childName: record.childName,
+				})),
+			};
 		},
 		async renew(lease) {
 			const record = owned(lease);
@@ -519,9 +549,10 @@ function restoringReservationStore(shared: ReservationState): RestoringReservati
 			const candidates = active().filter(
 				(record) =>
 					record.gone === undefined &&
-					(record === own ||
+					((record === own && !isReleasedReservationKey(record.reservationKey)) ||
 						(registered !== undefined &&
-							record.dormant &&
+							(isReleasedReservationKey(record.reservationKey) ||
+								(record.dormant && registered.releasedOnly !== true)) &&
 							record.childTarget === registered.childTarget &&
 							registered.groups.includes(record.group))),
 			);
