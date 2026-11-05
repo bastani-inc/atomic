@@ -140,15 +140,20 @@ export function wakeDriver(options: {
 	readonly wake: (id: string) => Promise<number>;
 	readonly script: (requests: number) => void;
 }) {
-	let woken = 0;
-	/** The next `count` released agents not woken yet, spread over the population. */
+	let offset = 0;
+	const taken = new Set<string>();
+	/** The next `count` released agents not picked before, spread over the population. */
 	function nextToWake(count: number): string[] {
 		const ids = options.ids();
 		const stride = Math.max(1, Math.floor(ids.length / Math.max(1, count * 2)));
 		const picked: string[] = [];
-		for (let index = woken; index < ids.length && picked.length < count; index += stride)
-			picked.push(ids[index] as string);
-		woken += 1;
+		for (let index = offset; index < ids.length && picked.length < count; index += stride) {
+			const id = ids[index] as string;
+			if (taken.has(id)) continue;
+			taken.add(id);
+			picked.push(id);
+		}
+		offset += 1;
 		return picked;
 	}
 	async function timedWakes(targets: readonly string[], concurrent: boolean): Promise<WakeResult> {
