@@ -10,7 +10,7 @@ import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
-import { sessionContinuesIn, sessionRestoresOnOpen } from "./core/session-worktree-snapshots.ts";
+import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
@@ -292,7 +292,7 @@ async function createSessionManagerWithStore(
 				if (
 					(await sessionContinuesIn(store, resolved.id, cwd)) ||
 					(settingsManager.getWorktreeSnapshotSettings().enabled &&
-						(await sessionRestoresOnOpen(store, resolved.id)))
+						(await sessionRunsInRecordedCheckout(store, resolved.id)))
 				) {
 					return openSessionOrExit(resolved.id, store);
 				}
