@@ -80,20 +80,24 @@ export function childCommandRouteCount(host: AgentTaskHost): number {
 	return routesByHost.get(host)?.routeCount ?? 0;
 }
 
-/** Resolve the parent's live owner per call so session replacement is followed like the parent's own shells. */
+/**
+ * Resolve the parent's live owner per bind so session replacement is followed like the parent's own shells. A child's
+ * route is dropped from the owner it was bound to, which stays known while the child is bound: unbinding needs no
+ * live parent, so a child closing after its parent closed or was retired still leaves nothing behind.
+ */
 export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): ChildCommandTaskOwner {
+	const boundHosts = new Map<string, AgentTaskHost>();
+	const dropRoute = (childId: string): void => {
+		const host = boundHosts.get(childId);
+		boundHosts.delete(childId);
+		if (host !== undefined) routesByHost.get(host)?.unbind(childId);
+	};
 	return {
-		unbind(childId) {
-			let host: AgentTaskHost;
-			try {
-				host = resolveHost();
-			} catch {
-				return;
-			}
-			routesByHost.get(host)?.unbind(childId);
-		},
+		unbind: dropRoute,
 		bind(childId, route, waits) {
 			const host = resolveHost();
+			if (boundHosts.get(childId) !== host) dropRoute(childId);
+			boundHosts.set(childId, host);
 			const routes = routesFor(host);
 			routes.bind(childId, route);
 			const { supervisor, owner } = host.ownerBinding;

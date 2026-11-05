@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import type { AgentSession } from "../src/core/agent-session.ts";
+import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
+import { createAgentSession } from "../src/core/sdk.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { AgentTaskHost } from "../src/core/tasks/agent-adapter.ts";
 import {
+	type ChildCommandTaskOwner,
 	ChildTaskWaits,
 	childCommandRouteCount,
 	createChildCommandTaskOwner,
@@ -9,11 +18,31 @@ import {
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const harnesses: Harness[] = [];
+const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
 	while (harnesses.length > 0) await harnesses.pop()?.cleanup();
+	while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 const route = { isOpen: () => true, deliver: async () => {} };
+
+async function parentSession(): Promise<{ session: AgentSession; owner: ChildCommandTaskOwner }> {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-child-command-owner-"));
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir: join(cwd, "agent"),
+		sessionManager: SessionManager.inMemory(cwd),
+		settingsManager: SettingsManager.inMemory(),
+		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
+	});
+	cleanups.push(async () => {
+		await session.dispose();
+		rmSync(cwd, { recursive: true, force: true });
+	});
+	const owner = (session as unknown as AgentSessionInternalSurface)._childSessionOptions?.({}).parentCommandTaskOwner;
+	assert.ok(owner);
+	return { session, owner };
+}
 
 describe("a child's completion route in its parent's command owner (#4326)", () => {
 	test("is held from bind until unbind, and unbinding a child nobody bound is harmless", () => {
@@ -32,11 +61,47 @@ describe("a child's completion route in its parent's command owner (#4326)", () 
 		assert.equal(childCommandRouteCount(host), 0);
 	});
 
-	test("a child closing after its parent's session closed has no route to drop and does not fail", () => {
-		const owner = createChildCommandTaskOwner(() => {
-			throw new Error("the parent's session is closed");
-		});
+	test("a child closing after its parent's session closed has no route to drop and does not fail (#4326)", async () => {
+		const { session, owner } = await parentSession();
+		owner.bind("child-a", route, new ChildTaskWaits());
+		const host = session.getAgentTaskHost();
+		assert.equal(childCommandRouteCount(host), 1);
+		await session.dispose();
+
+		assert.throws(() => session.getAgentTaskHost());
 		assert.doesNotThrow(() => owner.unbind("child-a"));
+		assert.equal(childCommandRouteCount(host), 0, "the route left the owner it was bound to");
+		assert.throws(() => owner.bind("child-b", route, new ChildTaskWaits()));
+	});
+
+	test("a live parent drops the child's route on unbind (#4326)", async () => {
+		const { session, owner } = await parentSession();
+		owner.bind("child-a", route, new ChildTaskWaits());
+		owner.unbind("child-a");
+		assert.equal(childCommandRouteCount(session.getAgentTaskHost()), 0);
+	});
+
+	test("a child's route follows its parent to a new owner and is dropped from the last one without asking the parent (#4326)", () => {
+		const first = new AgentTaskHost({ scope: { kind: "session", sessionId: "owner-1" }, authorizeLaunch() {} });
+		const second = new AgentTaskHost({ scope: { kind: "session", sessionId: "owner-2" }, authorizeLaunch() {} });
+		cleanups.push(() => void first.close("session-close"));
+		cleanups.push(() => void second.close("session-close"));
+		let current = first;
+		let resolved = 0;
+		const owner = createChildCommandTaskOwner(() => {
+			resolved += 1;
+			return current;
+		});
+		owner.bind("child-a", route, new ChildTaskWaits());
+		current = second;
+		owner.bind("child-a", route, new ChildTaskWaits());
+		assert.deepEqual([childCommandRouteCount(first), childCommandRouteCount(second)], [0, 1]);
+
+		owner.unbind("child-a");
+		owner.unbind("child-a");
+
+		assert.deepEqual([childCommandRouteCount(first), childCommandRouteCount(second)], [0, 0]);
+		assert.equal(resolved, 2, "only binding looks the parent's owner up");
 	});
 
 	test("is dropped when the child's session closes, so a released child holds nothing in its parent", async () => {
