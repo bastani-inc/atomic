@@ -1,7 +1,6 @@
 /** Durable workflow contract and private journal projection. */
 import { closeSync, openSync, readSync } from "node:fs";
-import type { JournalShardUnavailableError } from "@bastani/atomic/storage";
-import type { RunJournal } from "@bastani/atomic/storage";
+import type { JournalShardUnavailableError, RunJournal } from "@bastani/atomic/storage";
 
 import type { PendingStageMessage, PendingStageMessageDelivery } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";

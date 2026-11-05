@@ -1,5 +1,5 @@
-import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { findWorkspaceError, isWorkspaceDriftError, resolveWorktreeSnapshotSettings } from "@bastani/atomic";
+import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
