@@ -266,11 +266,14 @@ describe("publishPullRequest (#3109)", () => {
 		process.env.GH_STUB_MODE = "hang";
 		const controller = new AbortController();
 		const reason = new Error("stop publishing");
+		const calls = ghLog().length;
 		const pending = publishPullRequest(changeSet, { signal: controller.signal });
-		setTimeout(() => controller.abort(reason), 300);
+		const started = Date.now() + GH_EXIT_WAIT_MS;
+		while (ghLog().length === calls && Date.now() < started) await new Promise((resolve) => setTimeout(resolve, 20));
+		const hung = ghLog().at(calls)?.pid;
+		assert.ok(hung !== undefined, "gh started and is hanging on auth status");
+		controller.abort(reason);
 		assert.equal(await rejection(pending), reason);
-		const hung = ghLog().at(-1)?.pid;
-		assert.ok(hung !== undefined);
 		const deadline = Date.now() + GH_EXIT_WAIT_MS;
 		while (processAlive(hung) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.equal(processAlive(hung), false, "cancellation terminates the gh process");
