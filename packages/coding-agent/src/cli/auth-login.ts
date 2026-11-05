@@ -3,7 +3,7 @@ import { replaceControlCharacters } from "@earendil-works/pi-tui";
 import { APP_NAME, getAuthPath } from "../config.js";
 import { CredentialSynchronizationError, type ModelRuntime } from "../core/model-runtime.js";
 import { isOAuthLoginCancelled } from "../core/oauth-login.ts";
-import { findMatchingProviders } from "../core/provider-matching.js";
+import { resolveProviderReference } from "../core/provider-matching.js";
 import { displayUrl, webUrl } from "../utils/web-url.js";
 import type { LoginTerminal } from "./auth-terminal.js";
 
@@ -38,8 +38,13 @@ export async function runAuthLogin(args: string[], options: AuthLoginOptions): P
 	const { request } = parsed;
 	const { providerRef } = request;
 
-	const provider = findMatchingProviders(modelRuntime.getProviders(), providerRef)[0];
-	if (!provider) {
+	const resolution = resolveProviderReference(modelRuntime.getProviders(), providerRef);
+	if (resolution.type === "ambiguous") {
+		terminal.error(`"${replaceControlCharacters(providerRef)}" matches more than one provider. Use a provider ID.`);
+		terminal.error(`Matching providers: ${resolution.providerIds.join(", ")}`);
+		return 1;
+	}
+	if (resolution.type === "none") {
 		const loginProviders = modelRuntime
 			.getProviders()
 			.filter((candidate) => candidate.auth.oauth || candidate.auth.apiKey?.login)
@@ -49,6 +54,7 @@ export async function runAuthLogin(args: string[], options: AuthLoginOptions): P
 		terminal.error(`Providers: ${loginProviders.join(", ")}`);
 		return 1;
 	}
+	const { provider } = resolution;
 	if (!terminal.interactive) {
 		terminal.error(`"${AUTH_LOGIN_USAGE}" requires an interactive terminal`);
 		return 1;

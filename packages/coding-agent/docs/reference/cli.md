@@ -57,14 +57,14 @@ atomic auth print-api-key --model <model> [--provider <p>]
 atomic auth print-bearer-token --model <model> [--provider <p>] [--min-expiry <dur>]
 ```
 
-`atomic auth login <provider>` signs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`; when the provider offers another sign-in method, it prints how to use it instead. Providers without account sign-in ask for an API key. `<provider>` is a provider ID or display name, such as `openai` or `OpenAI`. After signing in, it refreshes that provider's model catalog; if the refresh fails, times out after 15 seconds, or you press Ctrl+C, the login is kept and the catalog refreshes on the next start. It requires an interactive terminal.
+`atomic auth login <provider>` signs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`; when the provider offers another sign-in method, it prints how to use it instead. Providers without account sign-in ask for an API key. `<provider>` is a provider ID or display name, such as `openai` or `OpenAI`. A name that matches more than one provider, such as a `models.json` provider named like a built-in one, is rejected with the matching provider IDs; the exact provider ID always selects that provider. After signing in, it refreshes that provider's model catalog; if the refresh fails, times out after 15 seconds, or you press Ctrl+C, the login is kept and the catalog refreshes on the next start. It requires an interactive terminal.
 
 | Option | Description |
 |---|---|
 | `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
 | `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
 
-`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`. Environment variables and `models.json` config are unchanged. It exits with status `0` when nothing is stored, so it is safe to repeat. Credentials of an extension provider are removed by provider ID.
+`atomic auth logout <provider>` removes the credentials that `atomic auth login` or `/login` stored, like `/logout`, and takes `<provider>` the same way. Environment variables and `models.json` config are unchanged. It exits with status `0` when nothing is stored, so it is safe to repeat. Credentials of an extension provider are removed by provider ID.
 
 `atomic auth check` verifies the effective credential a provider or model would use before a session starts. It requires at least one of `--provider` or `--model`, prints `ready`, `not_ready`, or `invalid` to stdout, and exits `0`, `1`, or `2` for those states. `--json` adds the resolved provider when one is found, credential kind, and any reason. By default, a check never emits credential material.
 

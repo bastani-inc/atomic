@@ -211,6 +211,27 @@ describe("atomic auth login", () => {
 		assert.deepEqual(listed, [...listed].sort());
 	});
 
+	test("rejects a name shared by several providers and signs in to the provider named by its id", async () => {
+		const { credentials, modelRuntime } = await setup(bothMethods);
+		modelRuntime.registerNativeProvider(testProvider({ apiKey: apiKeyAuth }, "login-gateway"));
+		vi.spyOn(modelRuntime, "refresh").mockResolvedValue(refreshResult());
+
+		const ambiguous = scriptedTerminal([]);
+		assert.equal(await run(["Login Test"], modelRuntime, ambiguous), 1);
+		assert.deepEqual(ambiguous.errors, [
+			'"Login Test" matches more than one provider. Use a provider ID.',
+			"Matching providers: login-gateway, login-test",
+		]);
+		assert.deepEqual(ambiguous.lines, []);
+		assert.equal(await stored(credentials), undefined);
+		assert.equal(await stored(credentials, "login-gateway"), undefined);
+
+		const byId = scriptedTerminal(["sk-gateway"]);
+		assert.equal(await run(["login-gateway"], modelRuntime, byId), 0);
+		assert.deepEqual(await stored(credentials, "login-gateway"), { type: "api_key", key: "sk-gateway" });
+		assert.equal(await stored(credentials), undefined);
+	});
+
 	test("requires an interactive terminal after checking the arguments", async () => {
 		const { modelRuntime } = await setup(bothMethods);
 		const terminal = scriptedTerminal([], false);
