@@ -8,6 +8,7 @@ import {
 } from "../../core/agent-session-runtime.ts";
 import type { SessionManager } from "../../core/session-manager.ts";
 import { canIsolateSessionStore } from "../../core/session-storage.js";
+import { startupBenchmarkEngineEnv } from "../../main-startup-benchmark.js";
 import { RpcClient } from "../rpc/rpc-client.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { buildInteractiveEngineArgs, type InteractiveEngineResourcePaths } from "./engine-args.ts";
@@ -38,6 +39,7 @@ export async function createIsolatedInteractiveRuntime(options: {
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
 		env: {
 			...(explicitAgentDir !== undefined ? { [ENV_AGENT_DIR]: explicitAgentDir } : {}),
+			...startupBenchmarkEngineEnv(),
 		},
 		interactiveEngine: {
 			onDiagnostic: (diagnostic) =>
