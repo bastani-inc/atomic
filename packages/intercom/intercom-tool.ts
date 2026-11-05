@@ -6,8 +6,7 @@ import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStag
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
-import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
-import { ReleasedReplyHandoff } from "./reply-waiter.js";
+import { ReleasedReplyHandoff, type ReplyWait, type ReplyWaitAdmission } from "./reply-waiter.ts";
 import { prepareReleasedReplyWait, releasedReplyHandoffResult } from "./released-reply-wait.js";
 import { renderIntercomResult } from "./result-renderers.js";
 import {

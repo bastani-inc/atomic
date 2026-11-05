@@ -1,6 +1,6 @@
 import { markToolCallReadyForDetachment, toolCallNeedsDetachmentHandoff, type ExtensionAPI } from "@bastani/atomic";
 import type { JsonValue } from "@bastani/pi-ai";
-import type { ReplyWait } from "./reply-waiter.js";
+import type { ReplyWait } from "./reply-waiter.ts";
 import type { Message } from "./types.js";
 
 /** Child-session entry written before an acknowledged question may detach. */
