@@ -76,9 +76,24 @@ test("the writers'-queue degradation names its reason and the remedy", () => {
 	assert.equal(error.location, "/data/journal.sqlite");
 	assert.equal(
 		error.message,
-		"Storage writers' queue degraded: node-sqlite at /data/journal.sqlite (writer-queue-degraded, watch-unavailable). Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is readable and writable",
+		"Storage writers' queue degraded: node-sqlite at /data/journal.sqlite (writer-queue-degraded, watch-unavailable). Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux)",
 	);
+	assert.ok(error.message.endsWith(error.hint));
 	assert.equal(isRetryableStorageError(error), false);
+});
+
+test("each way the writers' queue degrades has its own remedy", () => {
+	const hints = (["watch-unavailable", "wake-failed", "stale-ticket-kept"] as const).map((reason) => {
+		const error = new StorageWriterQueueDegradedError(descriptor, reason);
+		assert.equal(error.reason, reason);
+		assert.ok(error.message.includes(`(writer-queue-degraded, ${reason})`));
+		assert.ok(error.message.endsWith(error.hint));
+		return error.hint;
+	});
+	assert.equal(new Set(hints).size, 3);
+	assert.match(hints[0]!, /file-watch limits/);
+	assert.match(hints[1]!, /readable and writable/);
+	assert.match(hints[2]!, /remove them by hand/);
 });
 
 test("a storage configuration error keeps its message without a hint and has a stable code", () => {
@@ -156,6 +171,12 @@ test("each storage error survives a JSON round trip as the same class with its f
 			Object.assign(new Error("EACCES"), { code: "EACCES" }),
 		),
 		new StorageWriterQueueDegradedError(descriptor, "watch-unavailable"),
+		new StorageWriterQueueDegradedError(
+			descriptor,
+			"stale-ticket-kept",
+			Object.assign(new Error("EPERM: operation not permitted, unlink"), { code: "EPERM" }),
+		),
+		new StorageUnsupportedOperationError({ adapter: "custom", location: "remote://db" }, "getWriterQueueDegradation"),
 		new StorageWriterQueueUnusableError(
 			descriptor,
 			Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }),
@@ -424,4 +445,21 @@ test("each storage class rebuilt without the facts its sender left out gets empt
 	const unusable = bare("StorageWriterQueueUnusableError");
 	assert.ok(unusable instanceof StorageWriterQueueUnusableError);
 	assert.deepEqual([unusable.adapter, unusable.location, unusable.errno], ["unknown", "unknown", undefined]);
+});
+
+test("an operation or degradation reason this version does not know rehydrates as the first one it knows", () => {
+	const operation = rehydrateStorageError({
+		name: "StorageUnsupportedOperationError",
+		message: "",
+		fields: { operation: "getFutureThing" },
+	});
+	assert.ok(operation instanceof StorageUnsupportedOperationError);
+	assert.equal(operation.operation, "getWriterQueueStats");
+	const degraded = rehydrateStorageError({
+		name: "StorageWriterQueueDegradedError",
+		message: "",
+		fields: { reason: "future-reason" },
+	});
+	assert.ok(degraded instanceof StorageWriterQueueDegradedError);
+	assert.equal(degraded.reason, "watch-unavailable");
 });

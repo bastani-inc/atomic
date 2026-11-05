@@ -11,6 +11,7 @@ export type {
 export * from "./errors.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
+	getWriterQueueDegradation,
 	getWriterQueueStats,
 	openNodeSqliteDatabase,
 	type WriterQueueStats,

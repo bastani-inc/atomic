@@ -201,7 +201,8 @@ export class StorageWriteLockTimeoutError extends StorageUnavailableError {
 
 export type StorageUnsupportedOperationCode = "unsupported-operation";
 /** Operations that only some database handles support. */
-export type StorageOperation = "getWriterQueueStats";
+const STORAGE_OPERATIONS = ["getWriterQueueStats", "getWriterQueueDegradation"] as const;
+export type StorageOperation = (typeof STORAGE_OPERATIONS)[number];
 
 /** The database handle does not support the operation, for example a handle from another adapter. */
 export class StorageUnsupportedOperationError extends StorageError {
@@ -224,15 +225,28 @@ export class StorageUnsupportedOperationError extends StorageError {
 }
 
 export type StorageWriterQueueDegradedCode = "writer-queue-degraded";
-/** Writers cannot watch their tickets for release notices, or a releasing writer could not notify the next one. */
-export type StorageWriterQueueDegradedReason = "watch-unavailable" | "wake-failed";
+const WRITER_QUEUE_DEGRADED_REASONS = ["watch-unavailable", "wake-failed", "stale-ticket-kept"] as const;
+/**
+ * What degraded: `"watch-unavailable"`, a waiting writer cannot watch its ticket for release notices and polls
+ * instead; `"wake-failed"`, a writer letting go of the lock could not read the queue or notify the next writer;
+ * `"stale-ticket-kept"`, a long-abandoned ticket could not be removed and stays in the queue directory, ignored.
+ */
+export type StorageWriterQueueDegradedReason = (typeof WRITER_QUEUE_DEGRADED_REASONS)[number];
 
-const WRITER_QUEUE_DEGRADED_HINT =
-	"Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux) and that the writers' queue directory next to the database is readable and writable";
+const WRITER_QUEUE_DEGRADED_HINTS: Readonly<Record<StorageWriterQueueDegradedReason, string>> = {
+	"watch-unavailable":
+		"Writers still take the lock in turn but notice a released lock by polling; check file-watch limits (fs.inotify.max_user_instances and max_user_watches on Linux)",
+	"wake-failed":
+		"Writers still take the lock in turn, but the next writer notices a released lock at its next check instead of at once; make the writers' queue directory next to the database readable and writable",
+	"stale-ticket-kept":
+		"Abandoned entries stay in the writers' queue directory next to the database and are ignored; remove them by hand, or make the directory writable for every process that writes the database",
+};
 
 /**
- * Not a failure: a node-sqlite connection fell back to polling for the write lock. It is reported once per connection
- * as a process warning (`process.on("warning")`); transactions keep working.
+ * Not a failure: a node-sqlite connection fell back from the prompt handoff of the write lock, or kept an abandoned
+ * ticket it could not remove. Transactions keep working. Each reason is recorded once on the connection, readable with
+ * `getWriterQueueDegradation`, and emitted once as a process warning (`process.on("warning")`), which Atomic's own
+ * processes suppress.
  */
 export class StorageWriterQueueDegradedError extends StorageError {
 	override readonly name = "StorageWriterQueueDegradedError" as const;
@@ -240,13 +254,15 @@ export class StorageWriterQueueDegradedError extends StorageError {
 	readonly reason: StorageWriterQueueDegradedReason;
 	readonly adapter: string;
 	readonly location: string;
-	readonly hint: string = WRITER_QUEUE_DEGRADED_HINT;
+	readonly hint: string;
 	declare readonly cause: StorageFailureCause;
 	constructor(descriptor: StorageDescriptor, reason: StorageWriterQueueDegradedReason, cause?: StorageFailureCause) {
+		const hint = WRITER_QUEUE_DEGRADED_HINTS[reason];
 		super(
-			`Storage writers' queue degraded: ${descriptor.adapter} at ${descriptor.location} (writer-queue-degraded, ${reason}). ${WRITER_QUEUE_DEGRADED_HINT}`,
+			`Storage writers' queue degraded: ${descriptor.adapter} at ${descriptor.location} (writer-queue-degraded, ${reason}). ${hint}`,
 			{ cause },
 		);
+		this.hint = hint;
 		this.reason = reason;
 		this.adapter = descriptor.adapter;
 		this.location = descriptor.location;
@@ -463,14 +479,21 @@ function knownStorageError(
 				},
 				cause,
 			);
-		case "StorageUnsupportedOperationError":
-			return new StorageUnsupportedOperationError(descriptorOf(serialized), "getWriterQueueStats");
-		case "StorageWriterQueueDegradedError":
+		case "StorageUnsupportedOperationError": {
+			const operation = field<string>(serialized, "operation", "string");
+			return new StorageUnsupportedOperationError(
+				descriptorOf(serialized),
+				STORAGE_OPERATIONS.find((known) => known === operation) ?? STORAGE_OPERATIONS[0],
+			);
+		}
+		case "StorageWriterQueueDegradedError": {
+			const reason = field<string>(serialized, "reason", "string");
 			return new StorageWriterQueueDegradedError(
 				descriptorOf(serialized),
-				field<string>(serialized, "reason", "string") === "wake-failed" ? "wake-failed" : "watch-unavailable",
+				WRITER_QUEUE_DEGRADED_REASONS.find((known) => known === reason) ?? WRITER_QUEUE_DEGRADED_REASONS[0],
 				cause,
 			);
+		}
 		case "StorageWriterQueueUnusableError":
 			return new StorageWriterQueueUnusableError(descriptorOf(serialized), cause);
 		case "StorageUnavailableError":

@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test, vi } from "vitest";
 import {
+	isStorageUnsupportedOperationError,
 	isStorageWriterQueueDegradedError,
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
@@ -18,12 +19,13 @@ vi.mock("node:fs", async (importOriginal) => {
 		utimesSync: vi.fn(actual.utimesSync),
 		readdirSync: vi.fn(actual.readdirSync),
 		statSync: vi.fn(actual.statSync),
+		unlinkSync: vi.fn(actual.unlinkSync),
 	};
 });
 
 // The setup files already loaded the adapter with the real node:fs; load a copy that imports the mocked one.
 vi.resetModules();
-const { getWriterQueueStats, openNodeSqliteDatabase } = await import(
+const { getWriterQueueDegradation, getWriterQueueStats, openNodeSqliteDatabase, wrapNodeSqliteDatabase } = await import(
 	"../../packages/coding-agent/src/core/storage/node-sqlite.js"
 );
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -31,6 +33,7 @@ const watch = vi.mocked(fs.watch);
 const utimesSync = vi.mocked(fs.utimesSync);
 const readdirSync = vi.mocked(fs.readdirSync);
 const statSync = vi.mocked(fs.statSync);
+const unlinkSync = vi.mocked(fs.unlinkSync);
 
 const cleanups: (() => Promise<void> | void)[] = [];
 
@@ -40,6 +43,7 @@ afterEach(async () => {
 	utimesSync.mockImplementation(actual.utimesSync);
 	readdirSync.mockImplementation(actual.readdirSync);
 	statSync.mockImplementation(actual.statSync);
+	unlinkSync.mockImplementation(actual.unlinkSync);
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
@@ -63,6 +67,28 @@ function failTicketStat(writers: string, code: string, names?: readonly string[]
 		if (dirname(entry) === writers && (names === undefined || names.includes(basename(entry)))) throw failure(code);
 		return actual.statSync(path, options);
 	}) as typeof fs.statSync);
+}
+
+/** Makes removing the named queue entries fail with `code`, as another user's entries in a shared directory would. */
+function failUnlink(writers: string, code: string): void {
+	unlinkSync.mockImplementation(((path: fs.PathLike) => {
+		if (dirname(String(path)) === writers) throw failure(code);
+		actual.unlinkSync(path);
+	}) as typeof fs.unlinkSync);
+}
+
+/** A ticket its writer abandoned long ago: stale for longer than the queue keeps tickets before removing them. */
+function abandonedTicket(writers: string, pid: number): string {
+	const name = liveTicket(writers, pid);
+	const old = new Date(Date.now() - 30_000);
+	actual.utimesSync(join(writers, name), old, old);
+	return name;
+}
+
+/** What Atomic's own entry points do before anything else loads: process warnings go nowhere. */
+function suppressWarnings(): void {
+	const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+	cleanups.push(() => spy.mockRestore());
 }
 
 function liveTicket(writers: string, pid: number, offsetMs = 0): string {
@@ -452,5 +478,161 @@ test("a release wakes the oldest live ticket whatever order the directory lists 
 		[events.get(oldest)! > 0, events.get(later)],
 		[true, 0],
 		"the oldest was woken, not the one listed first",
+	);
+});
+
+test("a writer that cannot watch its ticket leaves the degradation readable on the handle where warnings are suppressed (#4316)", async () => {
+	const { database, holder, path, warnings } = await fixture();
+	suppressWarnings();
+	watch.mockImplementation(() => {
+		throw failure("ENOSPC");
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	let recorded: StorageWriterQueueDegradedError | undefined;
+	for (const value of ["first", "second"]) {
+		holder.exec("BEGIN IMMEDIATE");
+		const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
+		await untilWaiting();
+		holder.exec("COMMIT");
+		await vi.advanceTimersByTimeAsync(20);
+		await write;
+		const [degraded, ...more] = getWriterQueueDegradation(database);
+		assert.ok(degraded && isStorageWriterQueueDegradedError(degraded), "recorded on the handle");
+		assert.deepEqual(more, []);
+		recorded ??= degraded;
+		assert.equal(degraded, recorded, "the first record is kept, not replaced");
+	}
+	assert.ok(recorded, "the fallback was recorded");
+	assert.deepEqual(
+		[recorded.code, recorded.reason, recorded.adapter, recorded.location, (recorded.cause as { code?: string }).code],
+		["writer-queue-degraded", "watch-unavailable", "node-sqlite", path, "ENOSPC"],
+	);
+	await turn();
+	assert.deepEqual(warnings, [], "no warning reached the process: the record does not depend on one");
+	assert.deepEqual(
+		(await database.all<{ value: string }>("SELECT value FROM items")).map((row) => row.value),
+		["first", "second"],
+	);
+});
+
+test("a release that cannot notify the next writer leaves the degradation readable on the handle where warnings are suppressed (#4316)", async () => {
+	const { database, path, warnings, writers } = await fixture();
+	suppressWarnings();
+	for (const code of ["EMFILE", "EACCES"]) {
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES (?)", code);
+			fs.mkdirSync(writers, { recursive: true });
+			failListing(writers, code);
+		});
+		readdirSync.mockImplementation(actual.readdirSync);
+	}
+	const [degraded, ...more] = getWriterQueueDegradation(database);
+	assert.ok(degraded && isStorageWriterQueueDegradedError(degraded));
+	assert.deepEqual(more, []);
+	assert.deepEqual(
+		[degraded.reason, degraded.adapter, degraded.location, (degraded.cause as { code?: string }).code],
+		["wake-failed", "node-sqlite", path, "EMFILE"],
+		"the second failure did not replace the first",
+	);
+	await turn();
+	assert.deepEqual(warnings, []);
+	assert.equal(
+		((await database.all("SELECT value FROM items")) as unknown[]).length,
+		2,
+		"both transactions committed",
+	);
+});
+
+test("an abandoned ticket that cannot be removed is recorded once and never fails a transaction (#4316)", async () => {
+	const { database, path, warnings, writers } = await fixture();
+	suppressWarnings();
+	const abandoned = abandonedTicket(writers, 999_999_961);
+	failUnlink(writers, "EACCES");
+	for (const value of ["first", "second"])
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES (?)", value));
+	assert.equal(getWriterQueueStats(database).waiters, 0, "the abandoned ticket is ignored");
+	const [degraded, ...more] = getWriterQueueDegradation(database);
+	assert.ok(degraded && isStorageWriterQueueDegradedError(degraded));
+	assert.deepEqual(more, []);
+	assert.deepEqual(
+		[degraded.code, degraded.reason, degraded.adapter, degraded.location, (degraded.cause as { code?: string }).code],
+		["writer-queue-degraded", "stale-ticket-kept", "node-sqlite", path, "EACCES"],
+	);
+	assert.match(degraded.hint, /remove them by hand/);
+	assert.ok(fs.existsSync(join(writers, abandoned)), "it stays where it is");
+	await turn();
+	assert.deepEqual(warnings, []);
+});
+
+test("an abandoned ticket that another writer removed first, or that is going, records nothing (#4316)", async () => {
+	const { database, warnings, writers } = await fixture();
+	const racing = abandonedTicket(writers, 999_999_962);
+	failUnlink(writers, "ENOENT");
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('raced')"));
+	assert.ok(fs.existsSync(join(writers, racing)), "the failed removal left it, as the race would have removed it");
+	failUnlink(writers, "EPERM");
+	await onWindows(async () => {
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('deleted while open')"));
+	});
+	assert.deepEqual(getWriterQueueDegradation(database), []);
+	await onWindows(async () => {});
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('elsewhere')"));
+	const [degraded] = getWriterQueueDegradation(database);
+	assert.equal(degraded?.reason, "stale-ticket-kept", "EPERM is a failure to remove anywhere but Windows");
+	await turn();
+	assert.equal(degradations(warnings).length, 1);
+});
+
+test("each degradation is recorded once, in the order it first happened, and emitted once as a process warning (#4316)", async () => {
+	const { database, warnings, writers } = await fixture();
+	abandonedTicket(writers, 999_999_963);
+	failUnlink(writers, "EACCES");
+	for (let round = 0; round < 2; round++) getWriterQueueStats(database);
+	for (let round = 0; round < 2; round++) {
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES (?)", String(round));
+			failListing(writers, "EACCES");
+		});
+		readdirSync.mockImplementation(actual.readdirSync);
+	}
+	assert.deepEqual(
+		getWriterQueueDegradation(database).map((degraded) => degraded.reason),
+		["stale-ticket-kept", "wake-failed"],
+	);
+	await turn();
+	assert.deepEqual(
+		degradations(warnings).map((degraded) => degraded.reason),
+		["stale-ticket-kept", "wake-failed"],
+		"one warning per reason",
+	);
+});
+
+test("a healthy file handle, an in-memory one and a wrapped one have no degradation, and a foreign one is unsupported (#4316)", async () => {
+	const { database, path } = await fixture();
+	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('healthy')"));
+	assert.deepEqual(getWriterQueueDegradation(database), []);
+	const memory = await openNodeSqliteDatabase(":memory:");
+	const connection = new DatabaseSync(path);
+	const wrapped = wrapNodeSqliteDatabase(connection);
+	cleanups.push(async () => {
+		await memory.close();
+		await wrapped.close();
+		connection.close();
+	});
+	assert.deepEqual(getWriterQueueDegradation(memory), []);
+	assert.deepEqual(getWriterQueueDegradation(wrapped), []);
+	const foreign = { ...database, descriptor: { adapter: "custom", location: "remote://db" } };
+	const error = (() => {
+		try {
+			getWriterQueueDegradation(foreign as typeof database);
+		} catch (cause) {
+			return cause;
+		}
+		return assert.fail("returned a degradation for another adapter");
+	})();
+	assert.ok(isStorageUnsupportedOperationError(error), String(error));
+	assert.deepEqual(
+		[error.code, error.operation, error.adapter, error.location],
+		["unsupported-operation", "getWriterQueueDegradation", "custom", "remote://db"],
 	);
 });

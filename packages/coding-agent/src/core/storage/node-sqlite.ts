@@ -93,9 +93,12 @@ function isVanishedTicket(error: unknown): boolean {
  */
 class SqliteWriteQueue {
 	private readonly directory: string;
+	private readonly degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void;
 
-	constructor(databasePath: string) {
+	/** `degraded` records what the queue had to give up on without failing the transaction that met it. */
+	constructor(databasePath: string, degraded: (reason: StorageWriterQueueDegradedReason, cause: unknown) => void) {
 		this.directory = `${databasePath}-writers`;
+		this.degraded = degraded;
 	}
 
 	join(live = this.liveTickets()): SqliteWriteTicket {
@@ -131,7 +134,9 @@ class SqliteWriteQueue {
 	/**
 	 * Live tickets, oldest first; stale ones long abandoned are removed on the way. A queue directory or a ticket that
 	 * vanishes while it is read counts as absent; any other failure to read the queue is thrown, so no caller takes a
-	 * queue it cannot read for an empty one.
+	 * queue it cannot read for an empty one. Removing an abandoned ticket is housekeeping: it is ignored whether or not
+	 * it goes, so a failure other than the ticket having vanished (another user's ticket in a shared directory, say)
+	 * is recorded as degraded, once, and never fails a transaction.
 	 */
 	private liveTicketEntries(except?: string): { readonly name: string; readonly mtimeMs: number }[] {
 		let names: string[];
@@ -159,9 +164,8 @@ class SqliteWriteQueue {
 			else if (Math.abs(age) > TICKET_REMOVE_AFTER_MS) {
 				try {
 					unlinkSync(join(this.directory, name));
-				} catch {
-					// Removing it is housekeeping: the ticket is stale and ignored whether or not it goes. Another writer
-					// may have removed it first, or it may belong to another user of a shared directory.
+				} catch (error) {
+					if (!isVanishedTicket(error)) this.degraded("stale-ticket-kept", error);
 				}
 			}
 		}
@@ -611,7 +615,8 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/** This connection's record of when it holds the write lock, named in the error of a writer that gives up. */
 	private readonly holderRecord?: SqliteHolderRecord;
 	private readonly lockUse = new WriteLockUse();
-	private degradationReported = false;
+	/** What the writers' queue gave up on, once per reason, in the order it first happened. */
+	private readonly degradations = new Map<StorageWriterQueueDegradedReason, StorageWriterQueueDegradedError>();
 
 	constructor(
 		connection: DatabaseSync,
@@ -629,7 +634,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		this.descriptor = descriptor;
 		this.executor = this.createExecutor(() => true);
 		if (typeof transactionIdentity === "string") {
-			this.writeQueue = new SqliteWriteQueue(transactionIdentity);
+			this.writeQueue = new SqliteWriteQueue(transactionIdentity, (reason, cause) => this.degraded(reason, cause));
 			this.holderRecord = new SqliteHolderRecord(transactionIdentity);
 		}
 	}
@@ -796,11 +801,20 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		}
 	}
 
-	/** Polling instead of release notices is reported once per connection, as a process warning; nothing fails. */
+	/**
+	 * Records a degradation of the writers' queue once per reason, then emits it as a process warning for hosts that
+	 * listen for one. The record is what stays readable where warnings are suppressed, as in Atomic's own processes;
+	 * nothing fails.
+	 */
 	private degraded(reason: StorageWriterQueueDegradedReason, cause: unknown): void {
-		if (this.degradationReported) return;
-		this.degradationReported = true;
-		process.emitWarning(new StorageWriterQueueDegradedError(this.descriptor, reason, cause as StorageFailureCause));
+		if (this.degradations.has(reason)) return;
+		const degradation = new StorageWriterQueueDegradedError(this.descriptor, reason, cause as StorageFailureCause);
+		this.degradations.set(reason, degradation);
+		process.emitWarning(degradation);
+	}
+
+	writerQueueDegradation(): readonly StorageWriterQueueDegradedError[] {
+		return [...this.degradations.values()];
 	}
 
 	/** Runs a writers'-queue file operation; a failure (an unwritable queue directory, say) is a typed storage failure. */
@@ -1165,4 +1179,19 @@ export function getWriterQueueStats(database: SqliteDatabase): WriterQueueStats 
 	if (!(database instanceof NodeSqliteDatabase))
 		throw new StorageUnsupportedOperationError(database.descriptor, "getWriterQueueStats");
 	return database.writerQueueStats();
+}
+
+/**
+ * What the writers' queue of a database handle has given up on, once per reason in the order it first happened, as
+ * `StorageWriterQueueDegradedError`s: a waiting writer that cannot watch its ticket, a writer that could not notify
+ * the next one, an abandoned ticket that could not be removed. Empty while the queue is healthy, and for a handle
+ * without a cross-process queue (in-memory or wrapped). Transactions keep working through each of them; the same
+ * errors are also emitted as process warnings, which Atomic's own processes suppress. Throws
+ * `StorageUnsupportedOperationError` for a handle that `openNodeSqliteDatabase` or `wrapNodeSqliteDatabase` did not
+ * return.
+ */
+export function getWriterQueueDegradation(database: SqliteDatabase): readonly StorageWriterQueueDegradedError[] {
+	if (!(database instanceof NodeSqliteDatabase))
+		throw new StorageUnsupportedOperationError(database.descriptor, "getWriterQueueDegradation");
+	return database.writerQueueDegradation();
 }
