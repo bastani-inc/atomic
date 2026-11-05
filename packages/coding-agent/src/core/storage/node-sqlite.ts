@@ -75,6 +75,19 @@ const TICKET_TIME = /^(\d{15})-/;
 /** Now on the database's clock, in milliseconds: the clock tickets are stamped and aged on (see `SqliteWriteQueue`). */
 const DATABASE_NOW = "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS now";
 
+/** An in-memory connection of the process's own, which the database clock is read through. */
+let clockConnection: DatabaseSync | undefined;
+
+/**
+ * Now on the clock SQLite reads for `unixepoch()`: the system clock, which every process shares, whatever this
+ * process's own says. SQLite reads it from the operating system, not from a database file, so a connection of the
+ * process's own reads the same time as every handle's, and a handle can read it after it is closed.
+ */
+function databaseNow(Database: typeof DatabaseSync): number {
+	clockConnection ??= new Database(":memory:");
+	return Number(clockConnection.prepare(DATABASE_NOW).get()!.now);
+}
+
 let ticketSequence = 0;
 
 /**
@@ -697,7 +710,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			this.writeQueue = new SqliteWriteQueue(
 				transactionIdentity,
 				(reason, cause) => this.degraded(reason, cause),
-				() => this.databaseNow(),
+				() => databaseNow(connection.constructor as typeof DatabaseSync),
 			);
 			this.holderRecord = new SqliteHolderRecord(transactionIdentity);
 		}
@@ -746,11 +759,6 @@ class NodeSqliteDatabase implements SqliteDatabase {
 	/** Changes whenever another connection commits to the database: the lock is being used, not held idle. */
 	private dataVersion(): number {
 		return this.driver(() => Number(this.connection.prepare("PRAGMA data_version").get()?.data_version ?? 0));
-	}
-
-	/** Now on the clock SQLite reads, the system clock every process shares, whatever this process's own says. */
-	private databaseNow(): number {
-		return Number(this.connection.prepare(DATABASE_NOW).get()!.now);
 	}
 
 	/**

@@ -878,6 +878,13 @@ test("the database clock is read once per look at a queue with tickets, and neve
 	assert.equal(clock.reads - before, 1, "one read for both tickets");
 });
 
+test("getWriterQueueStats still counts the writers waiting in the queue after the handle is closed (#4387)", async () => {
+	const { database, writers } = await fixture();
+	ticket(writers, Date.now(), 999_999_874);
+	await database.close();
+	assert.equal(getWriterQueueStats(database).waiters, 1);
+});
+
 test("an uncontended transaction neither creates a writers' queue nor takes a ticket (#4316)", async () => {
 	const { database, writers } = await fixture();
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));

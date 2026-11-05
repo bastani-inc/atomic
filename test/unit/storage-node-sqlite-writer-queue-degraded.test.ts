@@ -140,6 +140,22 @@ function liveTicket(writers: string, pid: number, offsetMs = 0): string {
 }
 
 /**
+ * The writers'-queue degradations emitted as process warnings for the database at `location` until the test ends:
+ * only that database's, since any other connection in the process may emit its own, and emits them later.
+ */
+function degradationWarnings(location: string): StorageWriterQueueDegradedError[] {
+	const warnings: StorageWriterQueueDegradedError[] = [];
+	const onWarning = (warning: Error) => {
+		if (isStorageWriterQueueDegradedError(warning) && warning.location === location) warnings.push(warning);
+	};
+	process.on("warning", onWarning);
+	cleanups.push(() => {
+		process.off("warning", onWarning);
+	});
+	return warnings;
+}
+
+/**
  * A database and a raw connection to it. The database clock stands still for the test, so a ticket's age is whatever
  * the test sets: neither a loaded runner nor a step of the system clock can age a live ticket into a stale one.
  */
@@ -151,14 +167,8 @@ async function fixture() {
 	const database = await openNodeSqliteDatabase(path);
 	await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
 	const holder = new DatabaseSync(path);
-	// Only this database's warnings: any other connection in the process may emit its own, and emits them later.
-	const warnings: StorageWriterQueueDegradedError[] = [];
-	const onWarning = (warning: Error) => {
-		if (isStorageWriterQueueDegradedError(warning) && warning.location === path) warnings.push(warning);
-	};
-	process.on("warning", onWarning);
+	const warnings = degradationWarnings(path);
 	cleanups.push(async () => {
-		process.off("warning", onWarning);
 		if (holder.isTransaction) holder.exec("ROLLBACK");
 		holder.close();
 		await releaseWaiters(`${path}-writers`);
@@ -275,9 +285,10 @@ test("a writer keeps one watch on its release notice for its whole wait and clos
 });
 
 test("connections without a writers' queue report no fallback when they let go of the lock (#4316)", async () => {
-	const { warnings } = await fixture();
 	const memory = await openNodeSqliteDatabase(":memory:");
+	const warnings = degradationWarnings(memory.descriptor.location);
 	await memory.transaction((tx) => tx.exec("CREATE TABLE items (value TEXT)"));
+	assert.deepEqual(getWriterQueueDegradation(memory), []);
 	await memory.close();
 	await turn();
 	assert.deepEqual(warnings, []);

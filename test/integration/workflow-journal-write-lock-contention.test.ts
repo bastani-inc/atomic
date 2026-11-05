@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -141,15 +142,6 @@ test(
 	LOCK_CONTENTION_TEST_TIMEOUT_MS,
 );
 
-/** How long another process holds the lock while this one waits for it. */
-const EVENT_LOOP_HOLD_MS = 5_000;
-/**
- * A wait that blocks synchronously stalls the event loop for about the whole hold; half of it stays clear of a loaded
- * runner starving the process. With 50 copies of this file at once on a 32-core Windows runner, other tests' child
- * processes kept the waiting process off the CPU for up to 0.8 s.
- */
-const MAX_EVENT_LOOP_STALL_MS = EVENT_LOOP_HOLD_MS / 2;
-
 test(
 	"a transaction waiting for another process's write lock leaves the event loop running",
 	async () => {
@@ -160,31 +152,28 @@ test(
 		let ticker: ReturnType<typeof setInterval> | undefined;
 		try {
 			await database.exec("CREATE TABLE probe(x)");
-			holder = await holdWriteLock(path, EVENT_LOOP_HOLD_MS);
-			let last = performance.now();
-			let maxGapMs = 0;
-			let acquiredAt = Number.NaN;
+			holder = await holdWriteLock(path, 2_500);
+			// What a wait that blocks synchronously adds is time the event loop spends running, not waiting for events;
+			// a loaded runner keeping an idle process off the CPU adds none of it.
+			let last = performance.eventLoopUtilization();
+			let maxBusyMs = 0;
 			ticker = setInterval(() => {
-				if (!Number.isNaN(acquiredAt)) return;
-				const now = performance.now();
-				maxGapMs = Math.max(maxGapMs, now - last);
+				const now = performance.eventLoopUtilization();
+				maxBusyMs = Math.max(maxBusyMs, performance.eventLoopUtilization(now, last).active);
 				last = now;
 			}, 20);
 			const started = performance.now();
-			await database.transaction((tx) => {
-				acquiredAt = performance.now();
-				return tx.run("INSERT INTO probe VALUES (1)");
-			});
+			await database.transaction((tx) => tx.run("INSERT INTO probe VALUES (1)"));
+			const finished = performance.now();
+			const waitedMs = finished - started;
 			clearInterval(ticker);
-			// Only the wait for the lock counts, not the commit after it, which syncs the file to disk.
-			const waitedMs = acquiredAt - started;
-			// The gap still open when the lock was taken counts: a wait that blocks synchronously lets no tick fire at all.
-			maxGapMs = Math.max(maxGapMs, acquiredAt - last);
-			assert.ok(waitedMs >= EVENT_LOOP_HOLD_MS / 2, `took the lock after ${waitedMs} ms while it was held`);
-			assert.ok(
-				maxGapMs < MAX_EVENT_LOOP_STALL_MS,
-				`event loop stalled for ${Math.round(maxGapMs)} ms while waiting for the lock`,
+			// The interval still open at commit counts: a wait that blocks synchronously lets no tick fire at all.
+			maxBusyMs = Math.max(
+				maxBusyMs,
+				performance.eventLoopUtilization(performance.eventLoopUtilization(), last).active,
 			);
+			assert.ok(waitedMs >= 1_000, `committed after ${waitedMs} ms while the lock was held`);
+			assert.ok(maxBusyMs < 500, `event loop blocked for ${Math.round(maxBusyMs)} ms while waiting for the lock`);
 			assert.deepEqual(await database.get("SELECT COUNT(*) AS count FROM probe"), { count: 1 });
 			assert.deepEqual(await database.get("PRAGMA busy_timeout"), { timeout: 5_000 });
 			assert.equal(await holder.exited, 0, await readStreamText(holder.stderr));
