@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test, vi } from "vitest";
+import { ENV_DEBUG, getEnvNames } from "../../packages/coding-agent/src/config.js";
 import {
 	appendDebugRecord,
 	DEBUG_AREA_VARIABLES,
@@ -19,6 +20,7 @@ import {
 	isDebugLogUnwritableError,
 } from "../../packages/coding-agent/src/core/debug-errors.js";
 import {
+	DEBUG_SETTING_ENV,
 	inheritsDebugSetting,
 	onDebugSettingChange,
 	setDebugSetting,
@@ -33,6 +35,7 @@ import {
 	configurePooledWatchTrace,
 	tracePooledWatch,
 } from "../../packages/workflows/src/workers/pooled-watch-trace.js";
+import { DEBUG_ENV_VARS } from "../helpers/debug-env.js";
 import { areaRecords, DEBUG_MODE_SOURCES, withDebugLog } from "../helpers/debug-mode.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -51,6 +54,7 @@ describe("isDebugEnabled (#4360)", () => {
 			"model-routing": "ATOMIC_MODEL_ROUTING_DEBUG",
 			"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
 			pool: undefined,
+			storage: undefined,
 		});
 	});
 
@@ -81,8 +85,21 @@ describe("isDebugEnabled (#4360)", () => {
 		},
 	);
 
-	test("the pool area has no variable of its own, whatever the environment holds", () => {
+	test("tests start with every variable that turns debug output on cleared", () => {
+		const names = [
+			...Object.values(DEBUG_AREA_VARIABLES).filter((name) => name !== undefined),
+			DEBUG_SETTING_ENV,
+			...getEnvNames(ENV_DEBUG),
+		];
+		assert.deepEqual(
+			names.filter((name) => !DEBUG_ENV_VARS.includes(name)),
+			[],
+		);
+	});
+
+	test("the pool and storage areas have no variable of their own, whatever the environment holds", () => {
 		assert.equal(isDebugEnabled("pool", { undefined: "1", "": "1" }), false);
+		assert.equal(isDebugEnabled("storage", { undefined: "1", "": "1" }), false);
 	});
 
 	test("a process starts with the setting its parent passed down", async () => {

@@ -41,6 +41,25 @@ import {
 } from "./errors.js";
 import { isSqliteBusy, switchToWriteAheadLog, switchToWriteAheadLogSync } from "./write-ahead-log.js";
 
+/** Loaded at the first degradation only, so opening a database does not load debug output. */
+let debugOutput: Promise<typeof import("../debug.ts")> | undefined;
+
+function reportDegradationInDebugMode(degradation: StorageWriterQueueDegradedError): void {
+	const errno = (degradation.cause as { readonly code?: unknown } | undefined)?.code;
+	debugOutput ??= import("../debug.ts");
+	void debugOutput.then(
+		({ reportDebug }) =>
+			reportDebug("storage", "writer-queue-degraded", {
+				code: degradation.code,
+				reason: degradation.reason,
+				adapter: degradation.adapter,
+				location: degradation.location,
+				errno: typeof errno === "string" ? errno : undefined,
+			}),
+		(error: unknown) => process.emitWarning(error instanceof Error ? error : String(error)),
+	);
+}
+
 /**
  * A ticket its owner has not refreshed for this long belongs to a process that died or stopped waiting. A ticket
  * refreshed this far in the future is stale too: its owner's clock, or the system clock since, jumped.
@@ -833,6 +852,7 @@ class NodeSqliteDatabase implements SqliteDatabase {
 		const degradation = new StorageWriterQueueDegradedError(this.descriptor, reason, cause as StorageFailureCause);
 		this.degradations.set(reason, degradation);
 		process.emitWarning(degradation);
+		reportDegradationInDebugMode(degradation);
 	}
 
 	writerQueueDegradation(): readonly StorageWriterQueueDegradedError[] {

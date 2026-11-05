@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { vi } from "vitest";
 import { setDebugSetting } from "../../packages/coding-agent/src/core/debug-setting.js";
+import { DEBUG_ENV_VARS } from "./debug-env.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 
 /** How a test turns debug mode on: the `debug` setting, or `ATOMIC_DEBUG=1`. */
@@ -37,15 +38,7 @@ export async function withDebugLog<T>(
 	const agentDir = makeTempDirectory("atomic-debug-log-");
 	const path = join(agentDir, "atomic-debug.log");
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
-	for (const name of [
-		"ATOMIC_DEBUG",
-		"PI_DEBUG",
-		"ATOMIC_DEBUG_SETTING",
-		"ATOMIC_WORKFLOW_DEBUG",
-		"ATOMIC_MODEL_ROUTING_DEBUG",
-		"ATOMIC_DEBUG_POOLED_WATCH",
-	])
-		vi.stubEnv(name, undefined);
+	for (const name of DEBUG_ENV_VARS) vi.stubEnv(name, undefined);
 	if (source === "ATOMIC_DEBUG") vi.stubEnv("ATOMIC_DEBUG", "1");
 	setDebugSetting(source === "setting");
 	const log: DebugLogFixture = {

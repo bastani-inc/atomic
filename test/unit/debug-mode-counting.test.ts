@@ -1,18 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
-import { reportModelRoutingDebug } from "../../packages/coding-agent/src/core/model-routing-debug.js";
-import { installWorkflowLifecycleNotifications } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
-import { nextWorkflowHeartbeatBoundary } from "../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js";
-import { poolCoordinationLine } from "../../packages/workflows/src/shared/pool-coordination.js";
-import { createStore } from "../../packages/workflows/src/shared/store.js";
-import {
-	configurePooledWatchTrace,
-	tracePooledWatch,
-} from "../../packages/workflows/src/workers/pooled-watch-trace.js";
-import { type DebugModeSource, withDebugLog } from "../helpers/debug-mode.js";
 
-const appends = vi.hoisted(() => ({ count: 0 }));
+const appends = vi.hoisted(() => ({ count: 0, failListingOf: undefined as string | undefined }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -22,17 +13,48 @@ vi.mock("node:fs", async (importOriginal) => {
 			appends.count += 1;
 			return actual.appendFileSync(...args);
 		},
+		readdirSync: ((path: import("node:fs").PathLike, ...rest: unknown[]) => {
+			if (String(path) === appends.failListingOf)
+				throw Object.assign(new Error("EMFILE: injected"), { code: "EMFILE" });
+			return (actual.readdirSync as (...args: unknown[]) => unknown)(path, ...rest);
+		}) as typeof actual.readdirSync,
 	};
 });
 
+// The setup files loaded the storage adapter with the real node:fs. Load every module this test drives afresh, in one
+// module graph, so the adapter sees the mocked node:fs and every area shares one debug setting.
+vi.resetModules();
+const { reportModelRoutingDebug } = await import("../../packages/coding-agent/src/core/model-routing-debug.js");
+const { openNodeSqliteDatabase } = await import("../../packages/coding-agent/src/core/storage/node-sqlite.js");
+const { installWorkflowLifecycleNotifications } = await import(
+	"../../packages/workflows/src/extension/lifecycle-notifications.js"
+);
+const { nextWorkflowHeartbeatBoundary } = await import(
+	"../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js"
+);
+const { poolCoordinationLine } = await import("../../packages/workflows/src/shared/pool-coordination.js");
+const { createStore } = await import("../../packages/workflows/src/shared/store.js");
+const { configurePooledWatchTrace, tracePooledWatch } = await import(
+	"../../packages/workflows/src/workers/pooled-watch-trace.js"
+);
+const { withDebugLog } = await import("../helpers/debug-mode.js");
+
+type DebugModeSource = "setting" | "ATOMIC_DEBUG";
+
 afterEach(() => {
 	vi.restoreAllMocks();
+	appends.failListingOf = undefined;
 });
 
 const stats = { since: 0, requests: { claim: { count: 1, perSecond: 1 } }, writes: {} };
 
-/** One trigger of every debug surface: model routing, pooled watch, workflow notices and heartbeats, the pool line. */
-function triggerEveryArea(agentDir: string): { readonly writers: number; readonly poolLine: string | undefined } {
+/**
+ * One trigger of every debug surface: model routing, pooled watch, workflow notices and heartbeats, a writers'-queue
+ * degradation, and the pool line.
+ */
+async function triggerEveryArea(
+	agentDir: string,
+): Promise<{ readonly writers: number; readonly poolLine: string | undefined }> {
 	reportModelRoutingDebug("routing fallback");
 	configurePooledWatchTrace(join(agentDir, "journal.sqlite"), "root");
 	tracePooledWatch("root.reconnect.start", { key: "k" });
@@ -56,14 +78,29 @@ function triggerEveryArea(agentDir: string): { readonly writers: number; readonl
 	store.recordRunEnd("run", "completed", {});
 	unsubscribe();
 	nextWorkflowHeartbeatBoundary(1_000, Number.MAX_VALUE, 1_000);
-	return { writers: 4, poolLine: poolCoordinationLine({ coordination: stats }) };
+	vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+	const path = join(agentDir, "queue.sqlite");
+	const database = await openNodeSqliteDatabase(path);
+	try {
+		await database.exec("CREATE TABLE items (value TEXT NOT NULL)");
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('degraded')");
+			mkdirSync(`${path}-writers`, { recursive: true });
+			appends.failListingOf = `${path}-writers`;
+		});
+		appends.failListingOf = undefined;
+		for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+	} finally {
+		await database.close();
+	}
+	return { writers: 5, poolLine: poolCoordinationLine({ coordination: stats }) };
 }
 
 async function count(source: DebugModeSource | "off") {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-	return withDebugLog(source, (log) => {
+	return withDebugLog(source, async (log) => {
 		appends.count = 0;
-		const { writers, poolLine } = triggerEveryArea(log.agentDir);
+		const { writers, poolLine } = await triggerEveryArea(log.agentDir);
 		return {
 			writers,
 			poolLine,

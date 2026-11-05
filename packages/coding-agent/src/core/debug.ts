@@ -6,14 +6,15 @@ import { DebugLogUnwritableError } from "./debug-errors.ts";
 import { isDebugSettingOn } from "./debug-setting.ts";
 
 /** A diagnostic area. Each is on in debug mode, or while its own environment variable is set. */
-export type DebugArea = "workflow" | "model-routing" | "pooled-watch" | "pool";
+export type DebugArea = "workflow" | "model-routing" | "pooled-watch" | "pool" | "storage";
 
-/** Each area's own environment variable; `pool` has none. */
+/** Each area's own environment variable; `pool` and `storage` have none. */
 export const DEBUG_AREA_VARIABLES: Readonly<Record<DebugArea, string | undefined>> = {
 	workflow: "ATOMIC_WORKFLOW_DEBUG",
 	"model-routing": "ATOMIC_MODEL_ROUTING_DEBUG",
 	"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
 	pool: undefined,
+	storage: undefined,
 };
 
 export type DebugValue = string | number | boolean | null | undefined | readonly (string | number)[];

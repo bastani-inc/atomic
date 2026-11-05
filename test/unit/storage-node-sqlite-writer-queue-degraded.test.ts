@@ -9,6 +9,7 @@ import {
 	isStorageWriterQueueUnusableError,
 	type StorageWriterQueueDegradedError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { areaRecords, withDebugLog } from "../helpers/debug-mode.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -773,4 +774,63 @@ test("an uncontended transaction does not list a queue directory that does not e
 	await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('alone')"));
 	assert.equal(fs.existsSync(writers), false);
 	assert.deepEqual(listed, [], "no listing, not even a failed one");
+});
+
+test("in debug mode each writers'-queue degradation reaches the debug log once, without its message (#4360)", async () => {
+	await withDebugLog("ATOMIC_DEBUG", async (log) => {
+		const { database, path, writers } = await fixture();
+		suppressWarnings();
+		for (const code of ["EMFILE", "EACCES"]) {
+			await database.transaction(async (tx) => {
+				await tx.run("INSERT INTO items VALUES (?)", code);
+				fs.mkdirSync(writers, { recursive: true });
+				failListing(writers, code);
+			});
+			readdirSync.mockImplementation(actual.readdirSync);
+		}
+		abandonedTicket(writers, 999_999_963);
+		unlinkSync.mockImplementation(((target: fs.PathLike) => {
+			if (dirname(String(target)) === writers) throw new Error("removal refused for a secret reason");
+			actual.unlinkSync(target);
+		}) as typeof fs.unlinkSync);
+		await database.transaction((tx) => tx.run("INSERT INTO items VALUES ('kept')"));
+		await vi.waitFor(() => assert.equal(areaRecords(log, "storage").length, 2));
+		assert.deepEqual(areaRecords(log, "storage"), [
+			{
+				event: "writer-queue-degraded",
+				data: {
+					code: "writer-queue-degraded",
+					reason: "wake-failed",
+					adapter: "node-sqlite",
+					location: path,
+					errno: "EMFILE",
+				},
+			},
+			{
+				event: "writer-queue-degraded",
+				data: {
+					code: "writer-queue-degraded",
+					reason: "stale-ticket-kept",
+					adapter: "node-sqlite",
+					location: path,
+				},
+			},
+		]);
+		assert.equal(JSON.stringify(log.records()).includes("secret reason"), false, "the cause's message stays out");
+	});
+});
+
+test("with debug mode off a writers'-queue degradation writes no debug log (#4360)", async () => {
+	await withDebugLog("off", async (log) => {
+		const { database, writers } = await fixture();
+		suppressWarnings();
+		await database.transaction(async (tx) => {
+			await tx.run("INSERT INTO items VALUES ('off')");
+			fs.mkdirSync(writers, { recursive: true });
+			failListing(writers, "EMFILE");
+		});
+		assert.equal(getWriterQueueDegradation(database).length, 1);
+		for (let index = 0; index < 10; index++) await turn();
+		assert.equal(log.exists(), false);
+	});
 });
