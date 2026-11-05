@@ -8,6 +8,8 @@ import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/e
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
 	MemorySnapshotBlobStore,
+	runningSnapshotCollectionsOn,
+	SNAPSHOT_COLLECTION_LEASE_SECONDS,
 	SqlSnapshotBlobStore,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
@@ -17,6 +19,7 @@ import {
 } from "../../packages/coding-agent/src/core/worktree-snapshot/errors.ts";
 import {
 	resetSnapshotCollectionScheduleForTesting,
+	runningSnapshotCollection,
 	scheduleSnapshotCollection,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/src/core/worktree-snapshot/settings.ts";
@@ -42,7 +45,7 @@ const silent = { onFailure: () => {} };
 type Fault = (sql: string) => Error | undefined;
 
 /** A connection to the shared test file whose statements can be counted and made to fail. */
-async function connection(options: { fault?: { current?: Fault }; file?: string } = {}) {
+async function connection(options: { fault?: { current?: Fault }; file?: string; gate?: Promise<void> } = {}) {
 	const database = await openNodeSqliteDatabase(join(directory, options.file ?? "shared.sqlite"));
 	const fail = (sql: string) => {
 		const error = options.fault?.current?.(sql);
@@ -59,6 +62,7 @@ async function connection(options: { fault?: { current?: Fault }; file?: string 
 		},
 		get: async (sql, ...params) => {
 			fail(sql);
+			if (sql.startsWith("SELECT id FROM snapshot_collection")) await options.gate;
 			return executor.get(sql, ...params);
 		},
 		all: async (sql, ...params) => {
@@ -80,6 +84,15 @@ async function connection(options: { fault?: { current?: Fault }; file?: string 
 		counted.counts.transactions = 0;
 	};
 	return { database, store, counted, reset };
+}
+
+/** Moves the last collection's claim and finish back by `seconds`, as that much time passing would. */
+async function ageClaim(database: SqliteDatabase, seconds: number): Promise<void> {
+	await database.run(
+		"UPDATE snapshot_collection SET claimed_at = claimed_at - ?, finished_at = finished_at - ?",
+		seconds,
+		seconds,
+	);
 }
 
 async function claimRow(database: SqliteDatabase) {
@@ -162,7 +175,7 @@ describe("automatic collection runs only when enabled, supported and due (#4355)
 	test("a claim older than the interval on the database clock makes the next collection due", async () => {
 		const { database, store } = await connection();
 		await scheduleSnapshotCollection(store, settings, silent);
-		await database.run("UPDATE snapshot_collection SET claimed_at = claimed_at - ?", settings.collectIntervalSeconds);
+		await ageClaim(database, settings.collectIntervalSeconds);
 		resetSnapshotCollectionScheduleForTesting();
 		const orphans = await agedOrphans(store, database, 1);
 
@@ -177,7 +190,7 @@ describe("automatic collection runs only when enabled, supported and due (#4355)
 		const clock = vi.spyOn(performance, "now");
 		clock.mockReturnValue(1_000);
 		await scheduleSnapshotCollection(store, { ...settings, collectIntervalSeconds: 60 }, silent);
-		await database.run("UPDATE snapshot_collection SET claimed_at = claimed_at - 60");
+		await ageClaim(database, 60);
 		clock.mockReturnValue(1_000 + 59_999);
 		assert.deepEqual(await scheduleSnapshotCollection(store, { ...settings, collectIntervalSeconds: 60 }, silent), {
 			status: "skipped",
@@ -248,7 +261,7 @@ describe("an automatic collection that fails is an outcome, reported once and re
 
 		assert.equal((await scheduleSnapshotCollection(store, settings, { onFailure })).status, "failed");
 		fault.current = undefined;
-		await database.run("UPDATE snapshot_collection SET claimed_at = claimed_at - ?", settings.collectIntervalSeconds);
+		await ageClaim(database, settings.collectIntervalSeconds);
 		fault.current = (sql) => (sql.startsWith("DELETE") ? new Error("locked") : undefined);
 		clock.mockReturnValue(settings.collectIntervalSeconds * 1000);
 		assert.equal((await scheduleSnapshotCollection(store, settings, { onFailure })).status, "failed");
@@ -256,7 +269,7 @@ describe("an automatic collection that fails is an outcome, reported once and re
 
 		resetSnapshotCollectionScheduleForTesting();
 		fault.current = undefined;
-		await database.run("UPDATE snapshot_collection SET claimed_at = claimed_at - ?", settings.collectIntervalSeconds);
+		await ageClaim(database, settings.collectIntervalSeconds);
 		fault.current = (sql) => (sql.startsWith("DELETE") ? new Error("locked") : undefined);
 		assert.equal((await scheduleSnapshotCollection(store, settings, { onFailure })).status, "failed");
 		assert.equal(reported.length, 2, "forgetting reported failures reports the next one again");
@@ -285,6 +298,26 @@ describe("an automatic collection that fails is an outcome, reported once and re
 			deleted: null,
 			error_code: null,
 		});
+	});
+
+	test("a failure while indexing existing references is reported with phase index, and nothing was deleted", async () => {
+		const fault: { current?: Fault } = {};
+		const { database, store } = await connection({ fault });
+		await agedOrphans(store, database, 2);
+		fault.current = (sql) =>
+			sql.startsWith("SELECT source, watermark, backfilled_through FROM")
+				? new Error("schema read failed")
+				: undefined;
+
+		const outcome = await scheduleSnapshotCollection(store, settings, silent);
+
+		assert.equal(outcome.status, "failed");
+		const { error } = outcome as { error: WorkspaceCollectionError };
+		assert.deepEqual(error.fields, { table: "snapshot_blobs", phase: "index", deleted: 0 });
+		assert.ok(error.summary.endsWith("while indexing existing snapshot references of snapshot_blobs"));
+		fault.current = undefined;
+		assert.equal((await store.listBlobHashes()).length, 2);
+		assert.equal((await claimRow(database))?.error_code, "collection-failed");
 	});
 
 	test("a failure to record a failure is kept as the cleanup cause, never in place of the failure", async () => {
@@ -377,4 +410,191 @@ test("each database is collected and its failures reported on its own, in one pr
 	);
 	assert.equal(reported.length, 2);
 	assert.notEqual(first.store.identity, second.store.identity);
+});
+
+describe("the claim is a lease every batch renews, and the interval runs from the last finish (#4355)", () => {
+	const interval = settings.collectIntervalSeconds;
+	const lease = SNAPSHOT_COLLECTION_LEASE_SECONDS;
+	const ago = (seconds: number | null) => (seconds === null ? "NULL" : `unixepoch() - ${seconds}`);
+
+	test.each([
+		["no collection was ever claimed", null, null, true],
+		["an unfinished claim renewed within the lease", 10, null, false],
+		["an unfinished claim that stopped renewing past the lease", lease + 5, null, true],
+		["a collection that finished within the interval", 20, 10, false],
+		["a collection that finished past the interval", interval + 30, interval + 5, true],
+		["a collection claimed long ago that finished within the interval", interval + 100, 10, false],
+	] as const)("%s", async (_name, claimedAgo, finishedAgo, due) => {
+		const { database, store } = await connection();
+		await database.run(
+			`UPDATE snapshot_collection SET claimed_at = ${ago(claimedAgo)}, finished_at = ${ago(finishedAgo)}, holder = 'previous'`,
+		);
+
+		assert.equal(await store.claimCollection(interval, "claimant"), due);
+
+		const row = await database.get<{ holder: string; finished_at: number | null; fresh: number }>(
+			"SELECT holder, finished_at, unixepoch() - claimed_at < 5 AS fresh FROM snapshot_collection",
+		);
+		if (due) {
+			assert.equal(row?.holder, "claimant", "a due claim takes the row");
+			assert.equal(row?.finished_at, null, "and starts it unfinished");
+			assert.equal(row?.fresh, 1);
+		} else {
+			assert.equal(row?.holder, "previous", "a claim that is not due leaves the row alone");
+		}
+	});
+
+	test("a collection that failed backs off for the whole interval, not just the lease", async () => {
+		const { database, store } = await connection();
+		await database.run(
+			`UPDATE snapshot_collection SET claimed_at = ${ago(lease + 60)}, finished_at = ${ago(lease + 30)}, error_code = 'collection-failed', holder = 'previous'`,
+		);
+
+		assert.equal(await store.claimCollection(interval, "claimant"), false);
+	});
+
+	test("a sweep renews its own holder's claim in every batch, and no other holder's", async () => {
+		const { database, store } = await connection();
+		await agedOrphans(store, database, 1);
+		const claimAge = async () =>
+			Number(
+				(await database.get<{ age: number }>("SELECT unixepoch() - claimed_at AS age FROM snapshot_collection"))
+					?.age,
+			);
+		await database.run("UPDATE snapshot_collection SET holder = 'owner', claimed_at = unixepoch() - 100");
+
+		await store.sweep({ graceSeconds: 0, holder: "someone else" });
+		assert.ok((await claimAge()) >= 99, "another holder's sweep leaves the claim alone");
+
+		await store.sweep({ graceSeconds: 0, holder: "owner" });
+		assert.ok((await claimAge()) < 5, "the owner's sweep renews it");
+	});
+
+	test("an interrupted collection is resumed by the next process once its lease has expired, not once its interval has", async () => {
+		const fault: { current?: Fault } = {};
+		const { database, store } = await connection({ fault });
+		const orphans = await agedOrphans(store, database, 300);
+		let pages = 0;
+		fault.current = (sql) => {
+			if (!sql.startsWith("SELECT created_at, hash")) return undefined;
+			return ++pages === 2 ? new StoreClosedError(database.descriptor) : undefined;
+		};
+		const interrupted = await scheduleSnapshotCollection(store, settings, silent);
+		assert.equal(interrupted.status, "interrupted");
+		fault.current = undefined;
+
+		resetSnapshotCollectionScheduleForTesting();
+		assert.deepEqual(await scheduleSnapshotCollection(store, settings, silent), {
+			status: "skipped",
+			reason: "not-due",
+		});
+		await database.run("UPDATE snapshot_collection SET claimed_at = claimed_at - ?", lease + 5);
+		resetSnapshotCollectionScheduleForTesting();
+		const resumed = await scheduleSnapshotCollection(store, settings, silent);
+
+		assert.equal(resumed.status, "collected");
+		assert.equal((resumed as { deleted: readonly string[] }).deleted.length, orphans.length - 256);
+		assert.deepEqual(await store.listBlobHashes(), []);
+	});
+
+	test("after an interrupted collection this process asks the database again at the next trigger, not after its interval", async () => {
+		const fault: { current?: Fault } = {};
+		const { database, store, counted, reset } = await connection({ fault });
+		await agedOrphans(store, database, 300);
+		let pages = 0;
+		fault.current = (sql) =>
+			sql.startsWith("SELECT created_at, hash") && ++pages === 2
+				? new StoreClosedError(database.descriptor)
+				: undefined;
+		await scheduleSnapshotCollection(store, settings, silent);
+		fault.current = undefined;
+		reset();
+
+		const next = await scheduleSnapshotCollection(store, settings, silent);
+
+		assert.deepEqual(next, { status: "skipped", reason: "not-due" });
+		assert.equal(counted.statements.length, 1, "it read the claim row instead of trusting its own throttle");
+	});
+});
+
+describe("the collection a process is running, and a failure listener that throws (#4355)", () => {
+	test("runningSnapshotCollection returns the collection of that database until it settles, whichever store asks", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { store } = await connection({ gate });
+		const { store: sibling } = await connection();
+
+		const running = scheduleSnapshotCollection(store, settings, silent);
+
+		assert.equal(runningSnapshotCollection(store), running);
+		assert.equal(runningSnapshotCollection(sibling), running, "a store of the same database and prefix shares it");
+		assert.equal(runningSnapshotCollection(new MemorySnapshotBlobStore()), undefined);
+		assert.equal(runningSnapshotCollection(undefined), undefined);
+		release();
+		await running;
+		assert.equal(runningSnapshotCollection(store), undefined);
+	});
+
+	test("runningSnapshotCollectionsOn lists the collections of the database it names and no other", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const held = await connection({ gate, file: "held.sqlite" });
+		const other = await connection({ file: "other.sqlite" });
+
+		const running = scheduleSnapshotCollection(held.store, settings, silent);
+
+		assert.deepEqual(runningSnapshotCollectionsOn(held.database.descriptor), [running]);
+		assert.deepEqual(runningSnapshotCollectionsOn(other.database.descriptor), []);
+		release();
+		await running;
+		assert.deepEqual(runningSnapshotCollectionsOn(held.database.descriptor), []);
+	});
+
+	test.each([
+		["an error", new Error("listener failed"), "listener failed"],
+		["something that is not an error", "listener text", "listener text"],
+	] as const)(
+		"a listener that throws %s changes neither the outcome nor later collections, and is reported as a warning",
+		async (_name, thrown, message) => {
+			const fault: { current?: Fault } = {
+				current: (sql) => (sql.startsWith("DELETE") ? new Error("locked") : undefined),
+			};
+			const { database, store } = await connection({ fault });
+			await agedOrphans(store, database, 1);
+			const warnings: unknown[] = [];
+			vi.spyOn(process, "emitWarning").mockImplementation((warning) => void warnings.push(warning));
+			const unhandled: unknown[] = [];
+			const onUnhandled = (reason: unknown) => unhandled.push(reason);
+			process.on("unhandledRejection", onUnhandled);
+			closers.push(async () => void process.off("unhandledRejection", onUnhandled));
+			const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+			const onFailure = () => {
+				throw thrown;
+			};
+
+			const outcome = await scheduleSnapshotCollection(store, settings, { onFailure });
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			assert.equal(outcome.status, "failed");
+			assert.equal(warnings.length, 1);
+			assert.ok(warnings[0] instanceof Error);
+			assert.equal(warnings[0].message, message);
+			assert.deepEqual(unhandled, []);
+			assert.equal(runningSnapshotCollection(store), undefined, "the table is not stuck in progress");
+
+			await database.run(
+				"UPDATE snapshot_collection SET claimed_at = claimed_at - ?, finished_at = finished_at - ?",
+				settings.collectIntervalSeconds,
+				settings.collectIntervalSeconds,
+			);
+			clock.mockReturnValue(settings.collectIntervalSeconds * 1000);
+			const again = await scheduleSnapshotCollection(store, settings, { onFailure });
+			assert.equal(again.status, "failed", "the next due trigger runs a collection");
+			assert.equal(warnings.length, 1, "the same failure is reported once");
+		},
+	);
 });

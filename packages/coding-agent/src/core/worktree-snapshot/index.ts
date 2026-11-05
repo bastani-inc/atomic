@@ -59,6 +59,7 @@ export {
 	type CollectSnapshotGarbageOptions,
 	collectSnapshotGarbage,
 	DEFAULT_BLOB_GRACE_SECONDS,
+	runningSnapshotCollection,
 	type ScheduleSnapshotCollectionOptions,
 	type SnapshotCollectionOutcome,
 	type SnapshotCollectionSkipReason,

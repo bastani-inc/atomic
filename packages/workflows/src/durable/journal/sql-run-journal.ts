@@ -11,7 +11,6 @@ import {
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageUnavailableError,
-	snapshotIndexTables,
 } from "@bastani/atomic/storage";
 import {
 	JOURNAL_READ_PAGE_SIZE,
@@ -26,7 +25,6 @@ import {
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
-import { indexJournalSnapshotReferences } from "./snapshot-reference-index.js";
 import {
 	type AppendOutcome,
 	JOURNAL_COLUMNS as c,
@@ -174,7 +172,6 @@ export class SqlRunJournal implements RunJournal {
 		const readerFile = await sharedFile(database, database);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
 		const snapshotBlobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		await indexJournalSnapshotReferences(database, t, snapshotIndexTables(options.prefix));
 		return new SqlRunJournal(database, t, legacy, readerFile, snapshotBlobs);
 	}
 

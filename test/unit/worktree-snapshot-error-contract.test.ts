@@ -922,6 +922,7 @@ describe("WorkspaceCollectionError (#4355)", () => {
 		assert.match(error.hint, /^No blob a retained snapshot needs was deleted/u);
 		for (const [phase, words] of [
 			["claim", "while claiming team_snapshot_blobs"],
+			["index", "while indexing existing snapshot references of team_snapshot_blobs"],
 			["record", "while recording its outcome for team_snapshot_blobs"],
 		] as const)
 			assert.ok(

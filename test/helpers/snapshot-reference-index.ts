@@ -213,3 +213,24 @@ export async function fullScanRetainedHashes(journal: RunJournal, sessions: Sess
 	}
 	return retained;
 }
+
+/**
+ * Strips `database` back to what a build without the reference index left: every index trigger and index table is
+ * dropped, while the blob table, journal and session tables stay as they were written. Reopening the stores then
+ * meets a database whose existing references the index has never seen.
+ */
+export async function dropSnapshotIndex(database: SqliteDatabase, prefix = ""): Promise<void> {
+	const triggers = await database.all<{ name: string }>(
+		"SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE '%snapshot%'",
+	);
+	for (const { name } of triggers) await database.exec(`DROP TRIGGER ${name}`);
+	for (const table of [
+		"snapshot_run_refs",
+		"snapshot_run_state",
+		"snapshot_session_refs",
+		"snapshot_session_records",
+		"snapshot_collection",
+		"snapshot_index_sources",
+	])
+		await database.exec(`DROP TABLE IF EXISTS ${prefix}${table}`);
+}

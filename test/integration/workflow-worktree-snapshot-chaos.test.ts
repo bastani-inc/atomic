@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { openNodeSqliteDatabase, SqlSnapshotBlobStore } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
+import { SNAPSHOT_INDEX_BACKFILL_BATCH } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
 	collectSnapshotGarbage,
 	snapshotBlob,
@@ -22,6 +24,7 @@ import {
 	ageBlobs,
 	checkpointEvent,
 	createSession,
+	dropSnapshotIndex,
 	fullScanRetainedHashes,
 	openSharedSnapshotDatabase,
 	snapshotEntry,
@@ -395,6 +398,144 @@ describe.each([
 				await writer.close();
 				await writerDatabase.close();
 				await shared.close();
+				await rm(directory, { recursive: true, force: true });
+			}
+		},
+		REAL_PROCESS_TIMEOUT_MS,
+	);
+});
+
+/**
+ * A process that opens a database whose index was never built, as the new build, and backfills it, until it stops for
+ * good partway: in `mid-batch` mode inside its `FIXTURE_KILL_AT`th batch, before that batch commits; in
+ * `between-batches` mode right after that many batches have committed.
+ */
+const BACKFILL_CHILD = `
+import { openNodeSqliteDatabase } from "./packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { SqlSnapshotBlobStore } from "./packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
+const database = await openNodeSqliteDatabase(process.env.FIXTURE_DATABASE);
+const killAt = Number(process.env.FIXTURE_KILL_AT);
+const midBatch = process.env.FIXTURE_MODE === "mid-batch";
+const hang = (marker) => {
+  process.stdout.write(marker + "\\n");
+  return new Promise(() => {});
+};
+let armed = false;
+let batches = 0;
+const advances = (sql) => sql.startsWith("UPDATE snapshot_index_sources SET backfilled_through");
+const wrapped = {
+  descriptor: database.descriptor,
+  exec: (sql) => database.exec(sql),
+  run: (sql, ...params) => database.run(sql, ...params),
+  get: (sql, ...params) => database.get(sql, ...params),
+  all: (sql, ...params) => database.all(sql, ...params),
+  close: () => database.close(),
+  async transaction(callback, options) {
+    if (armed && !midBatch && batches === killAt) await hang("BETWEEN_BATCHES");
+    return database.transaction((tx) => callback({
+      exec: (sql) => tx.exec(sql),
+      get: (sql, ...params) => tx.get(sql, ...params),
+      all: (sql, ...params) => tx.all(sql, ...params),
+      async run(sql, ...params) {
+        const result = await tx.run(sql, ...params);
+        if (armed && advances(sql) && ++batches === killAt && midBatch) await hang("MID_BATCH");
+        return result;
+      },
+    }), options);
+  },
+};
+const store = await SqlSnapshotBlobStore.open(wrapped);
+armed = true;
+await store.completeIndex({});
+process.stdout.write("FINISHED\\n");
+`;
+
+describe.each([
+	["mid-batch", "MID_BATCH", 1],
+	["between-batches", "BETWEEN_BATCHES", 2],
+] as const)("SIGKILL during an index backfill (%s) (#4355)", (mode, marker, committedBatches) => {
+	test(
+		"never deletes a referenced blob, and the next collection resumes the backfill and finishes it",
+		async () => {
+			const EVENTS = SNAPSHOT_INDEX_BACKFILL_BATCH * 3 + 100;
+			const directory = await mkdtemp(join(tmpdir(), "snapshot-backfill-kill-"));
+			const databasePath = join(directory, "shared.sqlite");
+			const database = await openNodeSqliteDatabase(databasePath);
+			let child: ReturnType<typeof spawnProcess> | undefined;
+			let stores: { journal: SqlRunJournal; sessions: SqlSessionStore } | undefined;
+			try {
+				const written = {
+					sessions: await SqlSessionStore.open(database),
+					journal: await SqlRunJournal.open(database),
+				};
+				const lease = await startRun(written.journal, "big");
+				await written.journal.append(lease, statusEvent("big", { status: "running" }, "RunStarted"));
+				await database.run(
+					`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+					INSERT INTO snapshot_blobs (hash, bytes, data, created_at) SELECT 'padded-' || i, 1, x'00', 0 FROM n`,
+					EVENTS,
+				);
+				await database.run(
+					`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+					INSERT INTO wf_events SELECT 'big', 1 + i, ?, NULL, 'CheckpointRecorded',
+						json_object('kind', 'tool', 'checkpointId', 'c' || i, 'worktreeSnapshots',
+							json_array(json_object('chain', json_array(json_object('patch', 'padded-' || i))))), 0 FROM n`,
+					EVENTS,
+					lease.epoch,
+				);
+				await written.journal.append(lease, statusEvent("big", { status: "failed" }));
+				await written.journal.snapshotBlobs.putBlobs([textBlob("unreferenced a"), textBlob("unreferenced b")]);
+				await database.run("UPDATE snapshot_blobs SET created_at = 0");
+				await written.journal.close();
+				await written.sessions.close();
+				await dropSnapshotIndex(database);
+
+				child = spawnProcess([bunExecutable(), "-e", BACKFILL_CHILD], {
+					cwd: process.cwd(),
+					env: { ...process.env, FIXTURE_DATABASE: databasePath, FIXTURE_MODE: mode, FIXTURE_KILL_AT: "2" },
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				assert.ok(child.stdout);
+				const message = await child.stdout.getReader().read();
+				assert.equal(new TextDecoder().decode(message.value), `${marker}\n`);
+				child.kill("SIGKILL");
+				await child.exited;
+				assert.equal(child.signalCode, "SIGKILL");
+				child = undefined;
+
+				const [events] = await database.all<{ watermark: number; backfilled_through: number }>(
+					"SELECT watermark, backfilled_through FROM snapshot_index_sources WHERE source = 'journal-events'",
+				);
+				assert.equal(
+					events!.backfilled_through,
+					SNAPSHOT_INDEX_BACKFILL_BATCH * committedBatches,
+					"only the batches that committed before the kill are recorded",
+				);
+				assert.ok(events!.backfilled_through < events!.watermark);
+				stores = { sessions: await SqlSessionStore.open(database), journal: await SqlRunJournal.open(database) };
+
+				const { deleted } = await collectSnapshotGarbage(stores.journal.snapshotBlobs);
+
+				assert.deepEqual(
+					[...deleted].sort(),
+					[textBlob("unreferenced a").hash, textBlob("unreferenced b").hash].sort(),
+					"only the unreferenced blobs go",
+				);
+				assert.equal((await stores.journal.snapshotBlobs.listBlobHashes()).length, EVENTS);
+				assert.deepEqual(await database.all("PRAGMA integrity_check"), [{ integrity_check: "ok" }]);
+				for (const progress of await database.all<{ watermark: number; backfilled_through: number }>(
+					"SELECT watermark, backfilled_through FROM snapshot_index_sources",
+				))
+					assert.equal(progress.backfilled_through, progress.watermark);
+			} finally {
+				if (child) {
+					child.kill("SIGKILL");
+					await child.exited;
+				}
+				await stores?.journal.close();
+				await stores?.sessions.close();
+				await database.close();
 				await rm(directory, { recursive: true, force: true });
 			}
 		},

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
+import { runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
 import {
 	StorageAdapterLoadError,
@@ -305,6 +306,21 @@ export async function resolveAdapterOptions(
 	return options;
 }
 
+/**
+ * Closes `database` once every automatic snapshot blob collection this process runs on it has ended, so that closing
+ * the last store of a session or journal does not cut a collection short. The caller never waits for the collection;
+ * a failure to close afterwards cannot reach it, so it is reported once as a process warning with the storage error
+ * as its cause.
+ */
+function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
+	const running = runningSnapshotCollectionsOn(database.descriptor);
+	if (running.length === 0) return database.close();
+	void Promise.all(running)
+		.then(() => database.close())
+		.catch((cause: unknown) => process.emitWarning(new Error("storage", { cause })));
+	return Promise.resolve();
+}
+
 function withIdempotentClose<T extends { close(): Promise<void> }>(store: T, release?: () => Promise<void>): T {
 	const close = store.close.bind(store);
 	let closing: Promise<void> | undefined;
@@ -488,7 +504,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		const release = async () => {
 			if (--entry.references === 0) {
 				if (this.databases.get(key) === entry) this.databases.delete(key);
-				await database.close();
+				await closeAfterSnapshotCollections(database);
 			}
 		};
 		try {

@@ -379,8 +379,11 @@ export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDrif
 	}
 }
 
-/** The step a failed snapshot blob collection was in: taking its claim, deleting blobs, or recording its outcome. */
-export type SnapshotCollectionPhase = "claim" | "sweep" | "record";
+/**
+ * The step a failed snapshot blob collection was in: taking its claim, indexing references written before the index
+ * existed, deleting blobs, or recording its outcome.
+ */
+export type SnapshotCollectionPhase = "claim" | "index" | "sweep" | "record";
 
 export interface WorkspaceCollectionErrorFields {
 	/** The blob table being collected, such as `snapshot_blobs`. */
@@ -392,6 +395,7 @@ export interface WorkspaceCollectionErrorFields {
 
 const COLLECTION_PHASES: Record<SnapshotCollectionPhase, string> = {
 	claim: "claiming",
+	index: "indexing existing snapshot references of",
 	sweep: "deleting unreferenced blobs from",
 	record: "recording its outcome for",
 };

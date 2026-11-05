@@ -9,6 +9,7 @@ import type {
 	SqliteStatement,
 } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { snapshotIndexTables } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -286,7 +287,11 @@ test("reopening a session store and run journal finds their index triggers and c
 	const database = await openNodeSqliteDatabase(path);
 	closers.push(() => database.close());
 
-	assert.deepEqual(opens, [2, 0], "the first open creates both trigger sets, the second finds them");
+	assert.deepEqual(
+		opens,
+		[3, 0],
+		"the first opens install the triggers of each of the three sources, the second none",
+	);
 	assert.deepEqual(
 		(
 			await database.all<{ name: string; tbl_name: string }>(
@@ -302,5 +307,21 @@ test("reopening a session store and run journal finds their index triggers and c
 			["wf_runs_snapshot_state_insert", "wf_runs"],
 			["wf_runs_snapshot_state_status", "wf_runs"],
 		],
+	);
+});
+
+test("the index tables are named under the storage prefix, and under none by default (#4355)", () => {
+	assert.deepEqual(snapshotIndexTables(), {
+		blobs: "snapshot_blobs",
+		runRefs: "snapshot_run_refs",
+		runState: "snapshot_run_state",
+		sessionRefs: "snapshot_session_refs",
+		sessionRecords: "snapshot_session_records",
+		collection: "snapshot_collection",
+		sources: "snapshot_index_sources",
+	});
+	assert.deepEqual(
+		Object.values(snapshotIndexTables("team_")),
+		Object.values(snapshotIndexTables()).map((name) => `team_${name}`),
 	);
 });

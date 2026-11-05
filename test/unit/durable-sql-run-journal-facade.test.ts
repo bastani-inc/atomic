@@ -111,6 +111,7 @@ test("session and journal stores isolate records in one caller-owned database ac
 			"session_sessions",
 			"snapshot_blobs",
 			"snapshot_collection",
+			"snapshot_index_sources",
 			"snapshot_run_refs",
 			"snapshot_run_state",
 			"snapshot_session_records",

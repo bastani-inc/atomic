@@ -102,6 +102,13 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
 	return rows.map((row) => row.detail);
 }
 
+/**
+ * One check that the reference index is complete: which of the 3 referencing tables and 7 triggers exist (10 schema
+ * rows) and how far each of the 3 sources is backfilled (3 rows). A collection makes one before it sweeps and one
+ * inside each batch's own transaction.
+ */
+const INDEX_CHECK = { statements: 2, rows: 13 } as const;
+
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
 	rows: measured.rows,
@@ -125,9 +132,14 @@ describe("collection cost follows the number of snapshots, never the number of j
 		// The full scan the reference index replaces reads every event and entry: 40,025 rows at 20,000 events.
 		assert.deepEqual(summary(before.fullScan), { statements: 7, rows: 425, transactions: 1 });
 		assert.deepEqual(summary(after.fullScan), { statements: 85, rows: 40_025, transactions: 1 });
-		// Collection examines the 16 aged blobs and returns the 7 it deletes, in one batch, at either length.
+		// Collection checks the index twice, examines the 16 aged blobs and returns the 7 it deletes, in one batch, at
+		// either length.
 		for (const { collection } of measured) {
-			assert.deepEqual(summary(collection), { statements: 2, rows: 23, transactions: 1 });
+			assert.deepEqual(summary(collection), {
+				statements: 2 * INDEX_CHECK.statements + 2,
+				rows: 2 * INDEX_CHECK.rows + 16 + 7,
+				transactions: 1,
+			});
 			assert.equal(collection.result.deleted.length, 7);
 		}
 		assert.deepEqual(
@@ -137,7 +149,11 @@ describe("collection cost follows the number of snapshots, never the number of j
 		for (const statement of after.collection.statements) {
 			assert.doesNotMatch(statement.sql, HISTORY_TABLES);
 			for (const detail of await queryPlan(long.shared, statement))
-				assert.doesNotMatch(detail, /^SCAN (?!json_each)/u, `${statement.sql}\n${detail}`);
+				assert.doesNotMatch(
+					detail,
+					/^SCAN (?!json_each|sqlite_schema|snapshot_index_sources)/u,
+					`${statement.sql}\n${detail}`,
+				);
 		}
 	});
 
@@ -148,12 +164,20 @@ describe("collection cost follows the number of snapshots, never the number of j
 		const small = await few.measure(() => collectSnapshotGarbage(few.shared.journal.snapshotBlobs));
 		const large = await many.measure(() => collectSnapshotGarbage(many.shared.journal.snapshotBlobs));
 
-		assert.deepEqual(summary(small), { statements: 2, rows: 16 + 7, transactions: 1 });
+		assert.deepEqual(summary(small), {
+			statements: 2 * INDEX_CHECK.statements + 2,
+			rows: 2 * INDEX_CHECK.rows + 16 + 7,
+			transactions: 1,
+		});
 		assert.equal(large.result.deleted.length, 150 + 149);
-		assert.deepEqual(summary(large), { statements: 6, rows: 600 + 299, transactions: 3 });
+		assert.deepEqual(summary(large), {
+			statements: INDEX_CHECK.statements + 3 * (INDEX_CHECK.statements + 2),
+			rows: INDEX_CHECK.rows + 3 * INDEX_CHECK.rows + 600 + 299,
+			transactions: 3,
+		});
 	});
 
-	test("with nothing old enough to collect, a collection reads one empty page and deletes nothing", async () => {
+	test("with nothing old enough to collect, a collection reads no blob rows and deletes nothing", async () => {
 		const fixture = await history("fresh", 16, 200);
 		await fixture.shared.database.run(
 			`UPDATE ${fixture.shared.journal.snapshotBlobs.table} SET created_at = unixepoch()`,
@@ -161,7 +185,11 @@ describe("collection cost follows the number of snapshots, never the number of j
 
 		const fresh = await fixture.measure(() => collectSnapshotGarbage(fixture.shared.journal.snapshotBlobs));
 
-		assert.deepEqual(summary(fresh), { statements: 1, rows: 0, transactions: 1 });
+		assert.deepEqual(summary(fresh), {
+			statements: 2 * INDEX_CHECK.statements + 1,
+			rows: 2 * INDEX_CHECK.rows,
+			transactions: 1,
+		});
 		assert.deepEqual(fresh.result.deleted, []);
 	});
 

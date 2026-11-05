@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { StoreClosedError } from "../storage/errors.js";
-import { SqlSnapshotBlobStore } from "./blob-store.ts";
+import {
+	runningSnapshotCollectionOf,
+	type SnapshotCollectionOutcome,
+	type SnapshotCollectionSkipReason,
+	SqlSnapshotBlobStore,
+	trackSnapshotCollection,
+} from "./blob-store.ts";
 import { type SnapshotCollectionPhase, WorkspaceCollectionError, WorkspaceConfigError } from "./errors.ts";
 import type { SnapshotBlobStore, WorktreeSnapshotSettings } from "./types.ts";
 
@@ -27,8 +33,10 @@ export interface CollectSnapshotGarbageOptions {
  * Deletes every blob in `store` that no retained snapshot references and that was last stored at least
  * `graceSeconds` ago, and resolves with the hashes it deleted. Retained snapshots are those of resumable root
  * workflow runs and the latest snapshot of each checkout in every session that shares the blob table, read from the
- * reference index the run journal and session store keep as they write, so the cost follows the number of blobs and
- * references, never the length of a journal. Batches commit one at a time; stopping part way leaves only garbage.
+ * reference index that triggers keep as the journal and session store write, so the cost follows the number of blobs
+ * and references, never the length of a journal. A database written before the index existed has its existing rows
+ * indexed first, once, in short transactions, and nothing is deleted until that is done. Batches commit one at a
+ * time; stopping part way leaves only garbage.
  *
  * Throws {@link WorkspaceConfigError} before reading the store when `graceSeconds` is not a non-negative integer.
  */
@@ -43,30 +51,20 @@ export async function collectSnapshotGarbage(
 	return { deleted: await store.collectGarbage({ graceSeconds, signal: options.signal }) };
 }
 
-export type SnapshotCollectionSkipReason = "disabled" | "unsupported" | "in-progress" | "not-due";
-
-/** How one automatic collection ended. It never rejects: a failure is an outcome, reported once. */
-export type SnapshotCollectionOutcome =
-	| { readonly status: "skipped"; readonly reason: SnapshotCollectionSkipReason }
-	| { readonly status: "collected"; readonly deleted: readonly string[] }
-	/** The storage closed before the collection finished; what it deleted stays deleted. */
-	| { readonly status: "interrupted"; readonly deleted: readonly string[] }
-	| { readonly status: "failed"; readonly error: WorkspaceCollectionError };
+export type { SnapshotCollectionOutcome, SnapshotCollectionSkipReason };
 
 export interface ScheduleSnapshotCollectionOptions {
-	/** Called once per process for each blob table and error code. Default: `process.emitWarning`. */
+	/**
+	 * Called once per process for each blob table and error code. Default: `process.emitWarning`. A listener that
+	 * throws does not change the outcome: its own error becomes a process warning.
+	 */
 	readonly onFailure?: (error: WorkspaceCollectionError) => void;
 }
 
 type CollectionSettings = Pick<WorktreeSnapshotSettings, "autoCollect" | "collectIntervalSeconds" | "graceSeconds">;
 
-interface TableSchedule {
-	running?: Promise<SnapshotCollectionOutcome>;
-	/** `performance.now()` when this process last asked the database whether a collection is due. */
-	checkedAt: number;
-}
-
-const schedules = new Map<string, TableSchedule>();
+/** `performance.now()` when this process last asked the database, by blob table, whether a collection is due. */
+const lastAskedAt = new Map<string, number>();
 const reportedFailures = new Set<string>();
 
 function skipped(reason: SnapshotCollectionSkipReason): Promise<SnapshotCollectionOutcome> {
@@ -88,18 +86,28 @@ export function scheduleSnapshotCollection(
 ): Promise<SnapshotCollectionOutcome> {
 	if (!settings.autoCollect) return skipped("disabled");
 	if (!(store instanceof SqlSnapshotBlobStore)) return skipped("unsupported");
-	const schedule = schedules.get(store.identity) ?? { checkedAt: Number.NEGATIVE_INFINITY };
-	schedules.set(store.identity, schedule);
-	if (schedule.running) return skipped("in-progress");
+	if (runningSnapshotCollectionOf(store)) return skipped("in-progress");
 	const now = performance.now();
-	if (now - schedule.checkedAt < settings.collectIntervalSeconds * 1000) return skipped("not-due");
-	schedule.checkedAt = now;
+	if (now - (lastAskedAt.get(store.identity) ?? Number.NEGATIVE_INFINITY) < settings.collectIntervalSeconds * 1000)
+		return skipped("not-due");
+	lastAskedAt.set(store.identity, now);
 	const running = collectIfDue(store, settings, options.onFailure ?? ((error) => process.emitWarning(error)));
-	schedule.running = running;
-	void running.then(() => {
-		schedule.running = undefined;
+	trackSnapshotCollection(store, running);
+	void running.then((outcome) => {
+		if (outcome.status === "interrupted") lastAskedAt.delete(store.identity);
 	});
 	return running;
+}
+
+/**
+ * The automatic collection of `store`'s blob table that this process is running, if any, as a promise that settles
+ * when it ends and never rejects. Close a database you opened yourself only after it settles, so the close does not
+ * cut the collection short; storage that Atomic opened itself waits for it on its own.
+ */
+export function runningSnapshotCollection(
+	store: SnapshotBlobStore | undefined,
+): Promise<SnapshotCollectionOutcome> | undefined {
+	return store instanceof SqlSnapshotBlobStore ? runningSnapshotCollectionOf(store) : undefined;
 }
 
 async function collectIfDue(
@@ -113,8 +121,10 @@ async function collectIfDue(
 	try {
 		if (!(await store.claimCollection(settings.collectIntervalSeconds, holder)))
 			return { status: "skipped", reason: "not-due" };
+		phase = "index";
+		await store.completeIndex({ holder });
 		phase = "sweep";
-		await store.collectGarbage({ graceSeconds: settings.graceSeconds, onBatch: (batch) => deleted.push(...batch) });
+		await store.sweep({ graceSeconds: settings.graceSeconds, holder, onBatch: (batch) => deleted.push(...batch) });
 		phase = "record";
 		await store.recordCollection(holder, { deleted: deleted.length, errorCode: null });
 		return { status: "collected", deleted };
@@ -134,7 +144,11 @@ async function collectIfDue(
 		const key = `${store.identity}\0${error.code}`;
 		if (!reportedFailures.has(key)) {
 			reportedFailures.add(key);
-			onFailure(error);
+			try {
+				onFailure(error);
+			} catch (listenerError) {
+				process.emitWarning(listenerError instanceof Error ? listenerError : new Error(String(listenerError)));
+			}
 		}
 		return { status: "failed", error };
 	}
@@ -142,6 +156,6 @@ async function collectIfDue(
 
 /** Test seam: forget which tables this process collected and which failures it reported. */
 export function resetSnapshotCollectionScheduleForTesting(): void {
-	schedules.clear();
+	lastAskedAt.clear();
 	reportedFailures.clear();
 }
