@@ -18,8 +18,8 @@ A crabbox runner (Azure D16ads_v6: AMD EPYC 9V74, 16 vCPU), Linux 7.0, Bun 1.4.4
 
 | variant | revision | definitions with uncertainties | median ms/round | min | max | median ms/definition |
 |---|---|---:|---:|---:|---:|---:|
-| base (before #4359) | eaa6768a7 | — | 73.5 | 70.6 | 76.2 | 5.248 |
-| eager candidate index | 653c380b1 | 14 | 92.3 | 88.8 | 100.2 | 6.592 |
-| lazy candidate index | 42d8642c9 | 14 | 81.6 | 76.9 | 89.1 | 5.826 |
+| base (before #4359) | 004ea6443 | — | 73.5 | 70.6 | 76.2 | 5.248 |
+| eager candidate index | 220ba7e12 | 14 | 92.3 | 88.8 | 100.2 | 6.592 |
+| lazy candidate index | 31b20dab1 | 14 | 81.6 | 76.9 | 89.1 | 5.826 |
 
-The measured runs used earlier commits whose scanner sources are byte-identical to these revisions. Every revision returned the same `stages` and `warnings` for every definition. Building the candidate index only for files with an uncertain call site cuts the scan time this change added from 18.8 ms to 8.1 ms per round (25.6% to 11.0% over the base). Every definition measured has at least one uncertain call site, so the remaining time is candidate extraction for those sites. A file without an uncertain call site no longer builds the index at all; this set has no fully readable definition, so that case is not timed here.
+The measured runs used earlier commits whose scanner sources are byte-identical to these revisions. Every revision returned the same `stages` and `warnings` for every definition. Building the candidate index only for files with an uncertain call site cuts the scan time this change added from 18.8 ms to 8.1 ms per round (25.6% to 11.0% over the base). Every definition measured has at least one uncertain call site, so the remaining time is candidate extraction for those sites.

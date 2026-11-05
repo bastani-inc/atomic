@@ -115,6 +115,11 @@ export interface PossibleStagesScanResult {
 	readonly warnings: readonly string[];
 	/** Typed uncertainty records in deterministic traversal order (one per uncertain call site). */
 	readonly uncertainties: readonly PossibleStageUncertainty[];
+	/**
+	 * Wildcard entries of `stages` (`*` or `workflow:*` under a boundary) that a source without an uncertainty record
+	 * added, such as `possibleStageNames: ["*"]` or a stage record whose name is a template; in traversal order.
+	 */
+	readonly wildcardsWithoutUncertainty: readonly string[];
 	/** Every file the scan read, sorted by `file`. */
 	readonly sources: readonly PossibleStageSourceDigest[];
 }
@@ -148,6 +153,7 @@ export function scanPossibleStagesFromSource(
 		stages: [...scanner.stages].sort(),
 		warnings: scanner.warnings,
 		uncertainties: scanner.uncertainties,
+		wildcardsWithoutUncertainty: [...scanner.wildcardsWithoutUncertainty],
 		sources: scanner.sourceDigests(),
 	};
 }
@@ -1024,6 +1030,7 @@ class PossibleStagesScanner {
 	hasTrackedNodes = false;
 	warnings: string[] = [];
 	uncertainties: PossibleStageUncertainty[] = [];
+	readonly wildcardsWithoutUncertainty = new Set<string>();
 	private readonly maxDepth: number;
 	private readonly entryDirectory: string;
 	private readonly units = new Map<string, FileUnit | undefined>();
@@ -1091,6 +1098,16 @@ class PossibleStagesScanner {
 			candidates: capCandidates(candidates?.() ?? []),
 			...(placeholder === undefined ? {} : { placeholder }),
 		});
+	}
+
+	/** Names a source that records no uncertainty adds under `boundaryPrefix`, with any wildcard among them kept. */
+	private withoutUncertainty(boundaryPrefix: string, names: readonly string[]): readonly string[] {
+		if (this.quiet) return names;
+		for (const name of names) {
+			if (name === "*" || name === "workflow:*")
+				this.wildcardsWithoutUncertainty.add(joinBoundary(boundaryPrefix, name));
+		}
+		return names;
 	}
 
 	private noteName(tokens: readonly Token[], site: UncertaintySite): void {
@@ -1713,7 +1730,7 @@ class PossibleStagesScanner {
 		site: UncertaintySite,
 	): readonly string[] {
 		const declared = this.discoveryNames(call, unit, path);
-		if (declared !== undefined) return declared;
+		if (declared !== undefined) return this.withoutUncertainty(site.boundary, declared);
 		const first = firstArgumentTokens(call, unit.tokens);
 		if (first === undefined || first.length === 0) return [];
 		const head = first[0]!;
@@ -1738,8 +1755,10 @@ class PossibleStagesScanner {
 				if (mapped !== undefined) return mapped;
 			}
 			const localValue = unit.localValues.get(head.value);
-			if (localValue?.kind === "string") return [localValue.value];
-			if (localValue?.kind === "template") return [templateToPattern(localValue.value)];
+			if (localValue?.kind === "string") return this.withoutUncertainty(site.boundary, [localValue.value]);
+			if (localValue?.kind === "template") {
+				return this.withoutUncertainty(site.boundary, [templateToPattern(localValue.value)]);
+			}
 			this.warnings.push(
 				`possible-stages: ${call.method} steps argument "${head.value}" at ${path} is not statically visible; its step names were not extracted`,
 			);
@@ -1812,6 +1831,7 @@ class PossibleStagesScanner {
 					const frame = stack.pop();
 					groupDepth = Math.max(0, groupDepth - 1);
 					if (frame !== undefined && frame.name !== undefined && frame.stageName !== undefined) {
+						this.withoutUncertainty(boundaryPrefix, [frame.name]);
 						this.stages.add(joinBoundary(boundaryPrefix, frame.name));
 					}
 					continue;

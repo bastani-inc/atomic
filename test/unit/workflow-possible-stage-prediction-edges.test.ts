@@ -93,6 +93,7 @@ function scanOf(
 		hasTrackedNodes: true,
 		warnings: [],
 		uncertainties,
+		wildcardsWithoutUncertainty: [],
 		sources: [{ file: "workflow.mjs", sha256: digest }],
 	};
 }
@@ -191,12 +192,14 @@ afterEach(() => {
 
 describe("prediction questions and answers at their edges (#4359)", () => {
 	test("a child candidate without scanned stages is described by its boundary alone", () => {
-		const plan = scanQuestionPlan([
-			uncertainty([], {
-				code: "unresolved-child",
-				candidates: [{ stages: ["workflow:child-x"], source: "child-definition" }],
-			}),
-		]);
+		const plan = scanQuestionPlan(
+			scanOf([
+				uncertainty([], {
+					code: "unresolved-child",
+					candidates: [{ stages: ["workflow:child-x"], source: "child-definition" }],
+				}),
+			]),
+		);
 		assert.equal(plan.questions.site0?.type, "choice");
 		assert.deepEqual(plan.questions.site0?.criteria, {
 			c0: "child workflow workflow:child-x",
@@ -205,12 +208,14 @@ describe("prediction questions and answers at their edges (#4359)", () => {
 	});
 
 	test("a child candidate lists every scanned stage it brings", () => {
-		const plan = scanQuestionPlan([
-			uncertainty([], {
-				code: "unresolved-child",
-				candidates: [{ stages: ["workflow:c", "workflow:c/a", "workflow:c/b"], source: "child-definition" }],
-			}),
-		]);
+		const plan = scanQuestionPlan(
+			scanOf([
+				uncertainty([], {
+					code: "unresolved-child",
+					candidates: [{ stages: ["workflow:c", "workflow:c/a", "workflow:c/b"], source: "child-definition" }],
+				}),
+			]),
+		);
 		assert.deepEqual(plan.questions.site0?.criteria, {
 			c0: "child workflow workflow:c with stages workflow:c/a, workflow:c/b",
 			none: "none of these candidates",
@@ -240,7 +245,7 @@ describe("prediction questions and answers at their edges (#4359)", () => {
 	});
 
 	test("a probability of exactly 1 is accepted; text, missing or misplaced probabilities are refused", () => {
-		const plan = scanQuestionPlan([uncertainty([["review"]])]);
+		const plan = scanQuestionPlan(scanOf([uncertainty([["review"]])]));
 		assert.deepEqual(decodeScanAnswers(plan, { answers: { site0: { type: "choice", probabilities: { c0: 1 } } } }), {
 			entries: [{ path: "review", probability: 1, source: "scan" }],
 			resolvedPlaceholders: [],

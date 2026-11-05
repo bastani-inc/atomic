@@ -31,7 +31,10 @@ export interface StageDecisionRequest {
 	readonly instructions: string;
 	/** Wall-clock limit in milliseconds for the whole decision. */
 	readonly deadline: number;
-	/** Aborts when the run ends, the extension is disposed, or the prediction deadline passes. */
+	/**
+	 * Aborts when the session that launched the run shuts down or the prediction deadline passes. An answer that arrives
+	 * after the run ended is not recorded on it.
+	 */
 	readonly signal: AbortSignal;
 }
 

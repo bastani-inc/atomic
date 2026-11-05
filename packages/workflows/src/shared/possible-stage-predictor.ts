@@ -112,7 +112,7 @@ export class StagePredictor {
 			state,
 			knownPaths: input.scan.stages,
 		});
-		const plan = scanQuestionPlan(input.scan.uncertainties);
+		const plan = scanQuestionPlan(input.scan);
 		if (plan.options.size === 0) return;
 		const answers = this.definition(definitionHash);
 		let pending = answers.scan;

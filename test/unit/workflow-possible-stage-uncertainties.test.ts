@@ -491,3 +491,89 @@ describe("candidate invariants", () => {
 		assert.ok(long.uncertainties[0]!.excerpt.length <= 1200);
 	});
 });
+
+describe("wildcards without an uncertainty record", () => {
+	for (const [source, prelude, body, wildcards] of [
+		[
+			"a declared step name",
+			"",
+			'await ctx.parallel(shards(ctx.inputs), { possibleStageNames: ["*", "lint"] });',
+			["*"],
+		],
+		["a local template step value", `const ONE = \`\${kind}\`;`, "await ctx.chain(ONE);", ["*"]],
+		["a local string step value", 'const TWO = "*";', "await ctx.chain(TWO);", ["*"]],
+		[
+			"a stage record with a template name",
+			`const fallback = { name: \`\${kind}\`, stageName: "fallback" };`,
+			"",
+			["*"],
+		],
+		[
+			"a stage record named workflow:*",
+			'const boundary = { name: "workflow:*", stageName: "child" };',
+			"",
+			["workflow:*"],
+		],
+		[
+			"a stage record whose name only partly varies",
+			`const partial = { name: \`\${kind}-x\`, stageName: "x" };`,
+			"",
+			[],
+		],
+	] as const) {
+		test(`records exactly the wildcards ${source} adds without an uncertainty record`, () => {
+			const result = scanFile(
+				`unnoted-${source.replaceAll(" ", "-").replaceAll(":", "").replaceAll("*", "star")}.ts`,
+				`${prelude}\nexport default workflow({ name: "p", run: async (ctx) => { ${body} await ctx.task(reviewName(1), {}); }});\n`,
+			);
+			assert.deepEqual(result.wildcardsWithoutUncertainty, wildcards);
+			assert.deepEqual(
+				result.uncertainties.map((entry) => [entry.code, entry.placeholder]),
+				[["unresolved-name", "*"]],
+			);
+		});
+	}
+
+	test("a call site that records an uncertainty adds none", () => {
+		const result = scanFile(
+			"noted-only.ts",
+			`export default workflow({ name: "p", run: async (ctx) => { await ctx.task(name, {}); await ctx.workflow(children[k]); }});`,
+		);
+		assert.deepEqual(result.stages, ["*", "workflow:*"]);
+		assert.deepEqual(result.wildcardsWithoutUncertainty, []);
+	});
+
+	test("a declared wildcard inside a scanned child sits under the child's boundary", () => {
+		writeFixture(
+			"unnoted-child.ts",
+			`export default workflow({ name: "child-b", run: async (ctx) => { await ctx.parallel(s, { possibleStageNames: ["*"] }); }});\n`,
+		);
+		const result = scanFile(
+			"unnoted-parent.ts",
+			`
+			import child from "./unnoted-child.js";
+			export default workflow({ name: "p", run: async (ctx) => { await ctx.workflow(child); }});
+		`,
+		);
+		assert.deepEqual(result.wildcardsWithoutUncertainty, ["workflow:child-b/*"]);
+	});
+
+	test("a child scanned only for candidates adds none", () => {
+		writeFixture(
+			"candidate-child.ts",
+			`export default workflow({ name: "child-c", run: async (ctx) => { await ctx.parallel(s, { possibleStageNames: ["*"] }); }});\n`,
+		);
+		const result = scanFile(
+			"candidate-parent.ts",
+			`
+			import child from "./candidate-child.js";
+			export default workflow({ name: "p", run: async (ctx) => { await ctx.workflow(children[kind]); }});
+		`,
+			{ maxDepth: 3 },
+		);
+		assert.deepEqual(result.uncertainties[0]?.candidates, [
+			{ stages: ["workflow:child-c"], source: "child-definition" },
+		]);
+		assert.deepEqual(result.wildcardsWithoutUncertainty, []);
+	});
+});

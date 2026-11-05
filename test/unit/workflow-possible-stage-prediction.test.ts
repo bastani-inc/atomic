@@ -100,6 +100,7 @@ function scanOf(uncertainties: readonly PossibleStageUncertainty[], stages: read
 		hasTrackedNodes: true,
 		warnings: [],
 		uncertainties,
+		wildcardsWithoutUncertainty: [],
 		sources: [{ file: "workflow.mjs", sha256: "a".repeat(64) }],
 	} satisfies PossibleStagesScanResult;
 }
@@ -180,15 +181,17 @@ describe("prediction policy (#4359)", () => {
 	});
 
 	test("choice questions offer only source candidates under opaque keys, plus none", () => {
-		const plan = scanQuestionPlan([
-			uncertainty([["review-1"], ["api", "ui"]]),
-			uncertainty([]),
-			uncertainty([["workflow:child-a", "workflow:child-a/draft"]], {
-				code: "unresolved-child",
-				line: 9,
-				candidates: [{ stages: ["workflow:child-a", "workflow:child-a/draft"], source: "child-definition" }],
-			}),
-		]);
+		const plan = scanQuestionPlan(
+			scanOf([
+				uncertainty([["review-1"], ["api", "ui"]]),
+				uncertainty([]),
+				uncertainty([["workflow:child-a", "workflow:child-a/draft"]], {
+					code: "unresolved-child",
+					line: 9,
+					candidates: [{ stages: ["workflow:child-a", "workflow:child-a/draft"], source: "child-definition" }],
+				}),
+			]),
+		);
 		assert.deepEqual(Object.keys(plan.questions), ["site0", "site1"]);
 		const first = plan.questions.site0!;
 		assert.equal(first.type, "choice");
@@ -207,7 +210,9 @@ describe("prediction policy (#4359)", () => {
 	});
 
 	test("at most twelve call sites are asked about", () => {
-		const plan = scanQuestionPlan(Array.from({ length: 14 }, (_, index) => uncertainty([[`stage-${index}`]])));
+		const plan = scanQuestionPlan(
+			scanOf(Array.from({ length: 14 }, (_, index) => uncertainty([[`stage-${index}`]]))),
+		);
 		assert.equal(Object.keys(plan.questions).length, 12);
 		assert.equal(plan.options.size, 12);
 	});
@@ -231,7 +236,7 @@ describe("prediction policy (#4359)", () => {
 	});
 
 	test("accepts a candidate at the predicted threshold, rejects one just below, and expands groups", () => {
-		const plan = scanQuestionPlan([uncertainty([["review-1"], ["review"], ["api", "ui"]])]);
+		const plan = scanQuestionPlan(scanOf([uncertainty([["review-1"], ["review"], ["api", "ui"]])]));
 		const decoded = decodeScanAnswers(plan, {
 			answers: { site0: { type: "choice", probabilities: { c0: 0.8, c1: 0.79, c2: 0.9, none: 0 } } },
 		});
@@ -243,7 +248,7 @@ describe("prediction policy (#4359)", () => {
 	});
 
 	test("a path two call sites accept keeps its highest probability", () => {
-		const plan = scanQuestionPlan([uncertainty([["review"]]), uncertainty([["review"], ["other"]])]);
+		const plan = scanQuestionPlan(scanOf([uncertainty([["review"]]), uncertainty([["review"], ["other"]])]));
 		const decoded = decodeScanAnswers(plan, {
 			answers: {
 				site0: { type: "choice", probabilities: { c0: 0.85 } },
@@ -260,7 +265,7 @@ describe("prediction policy (#4359)", () => {
 		const site = (stage: string, placeholder?: string) =>
 			uncertainty([[stage]], placeholder === undefined ? {} : { placeholder });
 		const resolved = (uncertainties: readonly PossibleStageUncertainty[], accepted: readonly number[]) => {
-			const plan = scanQuestionPlan(uncertainties);
+			const plan = scanQuestionPlan(scanOf(uncertainties));
 			const answers = Object.fromEntries(
 				[...plan.options.keys()].map((key, index) => [
 					key,
@@ -291,7 +296,7 @@ describe("prediction policy (#4359)", () => {
 	});
 
 	test("every malformed scan answer is refused with a typed reason", () => {
-		const plan = scanQuestionPlan([uncertainty([["review"]])]);
+		const plan = scanQuestionPlan(scanOf([uncertainty([["review"]])]));
 		const cases: readonly [StageDecisionResult, string][] = [
 			[{ answers: {} }, "missing"],
 			[{ answers: { site0: { type: "bool", probability: 1 } } }, "wrong-type"],
@@ -342,6 +347,23 @@ describe("prediction policy (#4359)", () => {
 		assert.equal(closestStagePath("review-1", ["review-1"]), undefined);
 		assert.equal(closestStagePath("abcde", ["abcxy"]), "abcxy");
 		assert.equal(closestStagePath("abcde", ["axyze"]), undefined);
+	});
+
+	test("a wildcard that a source without an uncertainty record also added is never resolved", () => {
+		const plan = scanQuestionPlan({
+			...scanOf([
+				uncertainty([["review"]], { placeholder: "*" }),
+				uncertainty([["lint"]], { placeholder: "workflow:c/*" }),
+			]),
+			wildcardsWithoutUncertainty: ["*"],
+		});
+		const decoded = decodeScanAnswers(plan, {
+			answers: {
+				site0: { type: "choice", probabilities: { c0: 0.95 } },
+				site1: { type: "choice", probabilities: { c0: 0.95 } },
+			},
+		});
+		assert.deepEqual(decoded.resolvedPlaceholders, ["workflow:c/*"]);
 	});
 
 	test("only the wildcards the model resolved leave the known set", () => {
@@ -1082,15 +1104,31 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 		dispose();
 	});
 
-	for (const [shape, helper, call] of [
+	for (const [shape, helper, call, unasked, withoutUncertainty] of [
 		[
 			"a helper that receives the name",
 			"async function step(ctx, name) {\n\treturn ctx.task(name, { prompt: name });\n}",
 			'await step(ctx, "deploy");',
+			1,
+			[],
 		],
-		["a name built from the run's inputs", "", 'await ctx.task(deployName(ctx.inputs), { prompt: "Deploy." });'],
+		[
+			"a name built from the run's inputs",
+			"",
+			'await ctx.task(deployName(ctx.inputs), { prompt: "Deploy." });',
+			1,
+			[],
+		],
+		["declared step names", "", 'await ctx.parallel(shards(ctx.inputs), { possibleStageNames: ["*"] });', 0, ["*"]],
+		[
+			"a stage record whose name is a template",
+			`const fallback = { name: \`\${kind}\`, stageName: "fallback" };`,
+			"",
+			0,
+			["*"],
+		],
 	] as const) {
-		test(`a wildcard a call site without candidates added keeps covering its targets: ${shape}`, async () => {
+		test(`a wildcard the model cannot resolve keeps covering its targets: ${shape}`, async () => {
 			const directory = mkdtempSync(join(tmpdir(), "stage-prediction-repro-"));
 			try {
 				const entry = join(directory, "workflow.mjs");
@@ -1110,12 +1148,13 @@ export default workflow({ name: "repro", run: async (ctx) => {
 				assert.deepEqual(scan.stages, ["*"]);
 				assert.deepEqual(
 					scan.uncertainties.map((uncertainty) => uncertainty.placeholder),
-					["*", "*"],
+					Array(1 + unasked).fill("*"),
 				);
-				assert.deepEqual(scan.uncertainties.map((uncertainty) => uncertainty.candidates.length > 0).sort(), [
-					false,
-					true,
-				]);
+				assert.equal(
+					scan.uncertainties.filter((uncertainty) => uncertainty.candidates.length === 0).length,
+					unasked,
+				);
+				assert.deepEqual(scan.wildcardsWithoutUncertainty, withoutUncertainty);
 				const { port, requests } = recordedPort({ "stage review-1": 0.95 }, () => 0.1);
 				const predictor = new StagePredictor();
 				const store = createStore();
@@ -1270,7 +1309,7 @@ describe("the host decision service as the prediction port (#4359)", () => {
 		assert.ok(port);
 		const signal = new AbortController().signal;
 		const questions = {
-			site0: scanQuestionPlan([uncertainty([["review-1"]])]).questions.site0!,
+			site0: scanQuestionPlan(scanOf([uncertainty([["review-1"]])])).questions.site0!,
 			target: targetQuestion("x"),
 		};
 		const result = await port.decide({

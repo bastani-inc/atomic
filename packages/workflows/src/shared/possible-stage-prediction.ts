@@ -75,8 +75,14 @@ function describeCandidate(candidate: PossibleStageCandidate): string {
 	return `stage ${first}`;
 }
 
-/** One choice question per uncertain call site that has candidates; option keys never carry names. */
-export function scanQuestionPlan(uncertainties: readonly PossibleStageUncertainty[]): ScanQuestionPlan {
+/**
+ * One choice question per uncertain call site that has candidates; option keys never carry names. A wildcard that a
+ * source without an uncertainty record also added is never resolved by an answer.
+ */
+export function scanQuestionPlan(
+	scan: Pick<PossibleStagesScanResult, "uncertainties" | "wildcardsWithoutUncertainty">,
+): ScanQuestionPlan {
+	const { uncertainties, wildcardsWithoutUncertainty } = scan;
 	const questions: Record<string, StageDecisionQuestion> = {};
 	const options = new Map<string, ReadonlyMap<string, PossibleStageCandidate>>();
 	const placeholders = new Map<string, string | undefined>();
@@ -98,9 +104,12 @@ export function scanQuestionPlan(uncertainties: readonly PossibleStageUncertaint
 		options.set(key, siteOptions);
 		placeholders.set(key, uncertainty.placeholder);
 	});
-	const unaskedPlaceholders = new Set(
-		uncertainties.filter((uncertainty) => !asked.includes(uncertainty)).map((uncertainty) => uncertainty.placeholder),
-	);
+	const unaskedPlaceholders = new Set([
+		...uncertainties
+			.filter((uncertainty) => !asked.includes(uncertainty))
+			.map((uncertainty) => uncertainty.placeholder),
+		...wildcardsWithoutUncertainty,
+	]);
 	return { questions, options, placeholders, unaskedPlaceholders };
 }
 
