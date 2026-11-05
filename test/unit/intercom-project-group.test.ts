@@ -203,7 +203,7 @@ describe("project groups (#4320)", () => {
 });
 
 type LifecycleHandler = (event: { type: string; reason: string }, ctx: ExtensionContext) => unknown;
-type ToolResult = { isError: boolean; content: Array<{ text: string }> };
+type ToolResult = { isError: boolean; content: Array<{ text: string }>; details?: { group?: string } };
 interface IntercomTool {
 	name: string;
 	execute(
@@ -318,6 +318,28 @@ describe("a session's home group (#4320)", () => {
 		await named.fire("session_shutdown", "quit", ctx);
 		assert.deepEqual(registrations, [["default"], ["reviewers"]]);
 		assert.deepEqual(notices, [`warning: ${DEFAULT_GROUP_WARNING}`]);
+	});
+
+	test("a running session keeps the home group it started with when its environment changes (#4320)", async () => {
+		const alpha = repository("alpha", "https://github.com/acme/alpha.git");
+		selectSharedStorage();
+		recordRegistrations();
+		const presence: string[][] = [];
+		vi.spyOn(IntercomClient.prototype, "updatePresenceAcked").mockImplementation(async (updates) => {
+			presence.push([...(updates.groups ?? [])]);
+			return "ok";
+		});
+		vi.spyOn(IntercomClient.prototype, "groups", "get").mockImplementation(() => presence.at(-1) ?? []);
+		const extension = loadExtension();
+		const ctx = sessionContext(alpha, []);
+		await extension.fire("session_start", "startup", ctx);
+		await extension.run({ action: "join", group: "reviewers" }, ctx);
+		vi.stubEnv("ATOMIC_INTERCOM_GROUP", "elsewhere");
+		const left = await extension.run({ action: "leave" }, ctx);
+		await extension.fire("session_shutdown", "quit", ctx);
+		assert.equal(left.isError, false, left.content[0]?.text);
+		assert.equal(left.details?.group, "project:acme/alpha");
+		assert.deepEqual(presence, [["project:acme/alpha"]]);
 	});
 });
 
