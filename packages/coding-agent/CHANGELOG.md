@@ -12,6 +12,7 @@
 - `WriteOperations` has pi's shape again: `writeFile(path, content)` and `mkdir(dir)`. Remove `readFile` and the `exclusive` option from custom implementations; the `WriteFileOptions` type is gone ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
 - Removed SDK exports: `FileMutationConflict`, `FILE_MUTATION_CONFLICT_CODE` and their detail, reason, evidence and requester types, and the `hashlineStore` and `resolveMutationRequester` tool options ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
 - Removed the bash interceptor: the `bashInterceptor.enabled` setting, its **Bash Interceptor** `/settings` item, and the `interceptor`, `interceptorEnabled`, `interceptorRules` and `availableTools` options of `createBashToolDefinition`. Model `bash` calls always run, and extensions no longer receive them as `user_bash` events; interactive `!` commands still do. An existing `bashInterceptor` entry in `settings.json` is ignored ([#4328](https://github.com/bastani-inc/atomic/issues/4328))
+- `admission.userLimits` now needs an explicit journal file. The default journal store keeps each root on its own shard, so a run with `userLimits` on it fails before it starts with `WorkflowAdmissionConfigError` (`user-limits-need-one-journal`); a `userDatabase` that is not the run's journal file fails with `user-database-mismatch` instead of a plain error. Set `workflows.journal.path` (or `RunOpts.journal`) and `userDatabase` to the same SQLite file, or remove `userLimits`.
 
 ### Added
 

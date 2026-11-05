@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { statSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -275,5 +275,29 @@ test("a new native shard's file is prepared before the catalog registers it, and
 		assert.equal(statSync(placed.shard.path).size, 0, "by default the file is created empty");
 	} finally {
 		await plain.close();
+	}
+});
+
+test("a consolidation destination skips a native shard whose file was lost, and adds a shard when none is left (#4325)", async () => {
+	const catalog = await JournalCatalog.open(store);
+	try {
+		const first = await catalog.place({ runId: "first", status: "running" });
+		assert.equal((await catalog.homeShard("moving")).id, first.shard.id);
+		rmSync(first.shard.path);
+		const home = await catalog.homeShard("moving");
+		assert.notEqual(home.id, first.shard.id);
+		assert.equal(existsSync(home.path), true, "the added shard's file exists");
+		assert.deepEqual(
+			(await catalog.shards()).map((shard) => [shard.id, shard.acceptsNewRoots]),
+			[
+				[first.shard.id, false],
+				[home.id, true],
+			],
+		);
+		assert.equal((await catalog.locate("first"))?.shard.id, first.shard.id, "its registered run is still there");
+		const second = await catalog.place({ runId: "second", status: "running" });
+		assert.equal(second.shard.id, home.id);
+	} finally {
+		await catalog.close();
 	}
 });

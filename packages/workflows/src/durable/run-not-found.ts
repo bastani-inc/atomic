@@ -1,4 +1,9 @@
-import { JournalCatalogError, type StorageSelection } from "@bastani/atomic/storage";
+import {
+	JournalCatalogError,
+	type SerializedJournalStoreError,
+	type StorageSelection,
+	serializeJournalStoreError,
+} from "@bastani/atomic/storage";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
 import { runJournalOrigin } from "./journal/resolution.js";
@@ -45,4 +50,30 @@ function runNotFound(runId: string, catalogPath: string, selection: StorageSelec
 /** A run-not-found error as the CLI and TUI show it: the message, then what to do. */
 export function formatRunNotFound(error: JournalCatalogError): string {
 	return `${error.message}\n${error.hint}`;
+}
+
+/**
+ * The `resume` result of the workflow tool for a run this machine's storage does not hold: the message and hint as the
+ * CLI shows them, and the typed error serialized so an SDK caller receives it as the cause of its failure.
+ */
+export function runNotFoundResumeResult(
+	backend: DurableWorkflowBackend,
+	runId: string,
+): {
+	readonly action: "resume";
+	readonly runId: string;
+	readonly status: "noop";
+	readonly message: string;
+	readonly code: "run_not_found";
+	readonly failure: SerializedJournalStoreError;
+} {
+	const error = durableRunNotFoundError(backend, runId);
+	return {
+		action: "resume",
+		runId,
+		status: "noop",
+		message: formatRunNotFound(error),
+		code: "run_not_found",
+		failure: serializeJournalStoreError(error),
+	};
 }

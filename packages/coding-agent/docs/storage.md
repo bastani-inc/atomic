@@ -112,7 +112,7 @@ When the shared `storage` selection (global settings, `--storage`, or `ATOMIC_ST
 With no journal selected, workflow runs go to the journal store in `~/.atomic/workflows/journal/` (under the agent directory's parent when `ATOMIC_CODING_AGENT_DIR` is set). It is one logical journal: a small catalog, `catalog.sqlite`, and SQLite shard files, `shard-0001.sqlite` and up. You never choose or create these files. `{}` as `workflows.journal` or `ATOMIC_WORKFLOWS_JOURNAL` also selects the store.
 
 - Each root run, with everything recorded for its child runs and its local workers, lives on one shard, so runs on different shards never wait for each other's write lock.
-- A new root goes to a shard with no running root. When every shard has one, Atomic adds a shard, up to 32. Runs never move to another shard on their own.
+- A new root goes to a shard with no running root. When every shard has one, Atomic adds a shard, up to 32. Runs never move to another shard on their own. A shard file that is lost stops taking new roots, and its runs fail with `shard-missing` until the file is restored.
 - Status, stages, resume, attach, fork, `history://` and the resume picker find any run ID through the catalog, whichever shard holds it.
 - Local workers and their coordinator open only their root's shard.
 

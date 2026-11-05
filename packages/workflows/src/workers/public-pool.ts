@@ -6,6 +6,7 @@ import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import { isShardedRunJournal, rootRunJournal } from "../durable/journal/sharded-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
+import { WorkflowAdmissionConfigError } from "./admission-errors.js";
 import { admissionBootIdentity } from "./admission-host.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
 import { hostWorkerBindings } from "./host-options.js";
@@ -160,6 +161,15 @@ export async function activatePublicPool(
 	options: RunOpts,
 ): Promise<LocalWorkerPool | undefined> {
 	if (!options.localWorkers && !options.admission) return;
+	const admissionSource = options[hostWorkerBindings] ? "settings" : "sdk";
+	// User limits count across the runs of one file, and each root of the journal store has a shard of its own. This
+	// is refused before the root is placed on a shard, so nothing is written for it.
+	if (
+		options.admission?.userLimits &&
+		backend instanceof JournalDurableBackend &&
+		isShardedRunJournal(backend.journal)
+	)
+		throw new WorkflowAdmissionConfigError({ code: "user-limits-need-one-journal", source: admissionSource });
 	if (process.platform === "win32")
 		throw new Error("Local worker containment is unavailable on Windows; pooled tool processes cannot be enabled");
 	if (
@@ -265,6 +275,7 @@ export async function activatePublicPool(
 			root: options.runId!,
 			holder: "preflight",
 			rootLimits: "unchanged",
+			source: admissionSource,
 		});
 	if (!localWorkers) return;
 	const definitions = await Promise.all(

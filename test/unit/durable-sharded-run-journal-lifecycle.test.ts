@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -616,4 +616,81 @@ test("a run a consolidation moves between finding and reading it is read where i
 		assert.equal(consolidated, true, `${method} raced a consolidation`);
 		assert.equal(observed, expected[method], method);
 	}
+});
+
+async function finish(journal: ShardedRunJournal, runId: string): Promise<void> {
+	const lease = await start(journal, runId);
+	await journal.append(lease, { type: "StatusChanged", payload: { status: "completed" } });
+	await journal.release(lease);
+}
+
+test("new roots are never placed on a native shard whose file was lost, and that shard stops taking roots (#4325)", async () => {
+	const first = await open();
+	await start(first, "busy-a");
+	await finish(first, "finished-b");
+	const lost = first.shardOf("busy-a")!;
+	assert.notEqual(first.shardOf("finished-b")!.id, lost.id);
+	await first.close();
+	const backup = join(root, "lost-shard.backup");
+	copyFileSync(lost.path, backup);
+	rmSync(lost.path);
+	const reopened = await open();
+	const placed = new Set<number>();
+	for (const runId of ["new-1", "new-2", "new-3"]) {
+		assert.equal(
+			await reopened.createRun({ runId, name: "wf", cwd: "/p", createdAt: 1, status: "running" }),
+			"created",
+		);
+		placed.add(reopened.shardOf(runId)!.id);
+		assert.equal((await reopened.getRun(runId))?.runId, runId);
+	}
+	assert.equal(placed.has(lost.id), false, "no new root went to the lost shard");
+	const catalog = new DatabaseSync(join(store, "catalog.sqlite"), { readOnly: true });
+	try {
+		assert.equal(
+			catalog.prepare("SELECT accepts_new_roots AS accepts FROM catalog_shards WHERE id = ?").get(lost.id)?.accepts,
+			0,
+			"the lost shard takes no more roots",
+		);
+		assert.equal(
+			catalog.prepare("SELECT shard FROM catalog_runs WHERE run_id = 'busy-a'").get()?.shard,
+			lost.id,
+			"its registered run stays where it was",
+		);
+	} finally {
+		catalog.close();
+	}
+	await assert.rejects(reopened.getRun("busy-a"), (error: Error) => {
+		assert.ok(isJournalShardUnavailableError(error));
+		assert.equal(error.code, "shard-missing");
+		return true;
+	});
+	copyFileSync(backup, lost.path);
+	assert.equal((await (await open()).getRun("busy-a"))?.runId, "busy-a", "restoring the file restores the run");
+});
+
+test("a root whose shard refuses it is only reserved, then recorded once its shard accepted it (#4325)", async () => {
+	let refuse = true;
+	const prepared = new Set<string>();
+	const journal = await open(async (path) => {
+		if (refuse && prepared.has(path)) throw new Error("shard refused to open");
+		prepared.add(path);
+		return openSqlRunJournal(path);
+	});
+	const header = { runId: "reserved-root", name: "wf", cwd: "/p", createdAt: 1, status: "running" } as const;
+	await assert.rejects(journal.createRun(header), (error: Error) => {
+		assert.ok(isJournalShardUnavailableError(error));
+		assert.equal(error.code, "shard-open-failed");
+		return true;
+	});
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const reserved = await catalog.locate("reserved-root");
+	assert.equal(reserved?.run.status, undefined, "the failed creation left a reservation, not a running root");
+	refuse = false;
+	assert.equal(await journal.createRun(header), "created");
+	assert.equal((await catalog.locate("reserved-root"))?.run.status, "running");
+	assert.equal(await journal.createRun(header), "exists");
+	const counts = countCalls(catalog, ["place"]);
+	await journal.createRun(header);
+	assert.equal(counts.place, 1, "an existing root is looked up once, and its status is not written again");
 });

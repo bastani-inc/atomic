@@ -9,6 +9,11 @@ import { SqlRunJournal } from "../durable/journal/sql-run-journal.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import { WorkflowInfrastructureError } from "../shared/workflow-infrastructure-error.js";
 import {
+	WorkflowAdmissionConfigError,
+	type WorkflowAdmissionMismatchReason,
+	type WorkflowAdmissionSource,
+} from "./admission-errors.js";
+import {
 	admissionBootIdentity,
 	admissionHost,
 	admissionProcessStopped,
@@ -125,6 +130,8 @@ export interface AdmissionOptions extends AdmissionConfiguration {
 	 * checks them, for a check made before the root is admitted.
 	 */
 	readonly rootLimits?: "check" | "replace" | "unchanged";
+	/** Where the admission settings came from, for the error naming a refused `userLimits`; `"sdk"` when omitted. */
+	readonly source?: WorkflowAdmissionSource;
 }
 type PermitRow = SqliteRow & {
 	operation: string;
@@ -161,6 +168,24 @@ function processGroupStopped(encoded: string): boolean {
 	);
 }
 
+/** `userLimits` count across the runs of one SQLite file, so `userDatabase` must be this journal's own file. */
+async function assertUserDatabase(journal: RunJournal, runsTable: string, options: AdmissionOptions): Promise<void> {
+	const source = options.source ?? "sdk";
+	const refused = (reason: WorkflowAdmissionMismatchReason) =>
+		new WorkflowAdmissionConfigError({
+			code: "user-database-mismatch",
+			source,
+			reason,
+			...(options.userDatabase === undefined ? {} : { userDatabase: options.userDatabase }),
+			...(journal instanceof SqlRunJournal ? { journalPath: journal.path } : {}),
+		});
+	if (!(journal instanceof SqlRunJournal) || runsTable !== "wf_runs" || journal.path === ":memory:")
+		throw refused("unsupported-journal");
+	if (!options.userDatabase) throw refused("missing");
+	if ((await realpath(options.userDatabase).catch(() => undefined)) !== (await realpath(journal.path)))
+		throw refused("other-file");
+}
+
 export class SqlResourceAdmission {
 	private readonly permits: string;
 	private readonly configuration: string;
@@ -178,15 +203,7 @@ export class SqlResourceAdmission {
 	static async open(journal: RunJournal, options: AdmissionOptions): Promise<SqlResourceAdmission> {
 		const storage = sqlPoolStorage(journal);
 		if (!storage) throw new Error("Resource admission requires a SQL journal");
-		if (
-			options.userLimits &&
-			(!(journal instanceof SqlRunJournal) ||
-				storage.tables.runs !== "wf_runs" ||
-				journal.path === ":memory:" ||
-				!options.userDatabase ||
-				(await realpath(options.userDatabase).catch(() => undefined)) !== (await realpath(journal.path)))
-		)
-			throw new Error("User admission requires the canonical journal database");
+		if (options.userLimits) await assertUserDatabase(journal, storage.tables.runs, options);
 		for (const limits of [options.limits, options.userLimits])
 			for (const value of Object.values(limits ?? {}))
 				if (!Number.isSafeInteger(value) || value < 1) throw new Error("Invalid resource limit");

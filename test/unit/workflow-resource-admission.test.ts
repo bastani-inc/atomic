@@ -7,6 +7,7 @@ import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/sto
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { isRetryableWorkflowError } from "../../packages/workflows/src/shared/workflow-infrastructure-error.js";
+import { isWorkflowAdmissionConfigError } from "../../packages/workflows/src/workers/admission-errors.js";
 import * as admissionHost from "../../packages/workflows/src/workers/admission-host.js";
 import {
 	QUARANTINED_CAPACITY_WAIT_MS,
@@ -112,7 +113,7 @@ test("independent connections share root/user caps and FIFO cancellation (#3869)
 		assert.equal((await first.inspect()).filter((row) => row.state === "granted").length, 0);
 		await assert.rejects(
 			SqlResourceAdmission.open(f.journals[0]!, { ...options, holder: "bad", userDatabase: "elsewhere" }),
-			/canonical/,
+			(error: Error) => isWorkflowAdmissionConfigError(error) && error.code === "user-database-mismatch",
 		);
 		await assert.rejects(
 			SqlResourceAdmission.open(f.journals[0]!, { ...options, holder: "bad", userLimits: { session: 3 } }),

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { attachCleanupCause } from "./cleanup.js";
@@ -319,7 +320,9 @@ export class JournalCatalog {
 	 * when every such shard is busy a new shard is added, up to `JOURNAL_SHARD_LIMIT`, and past that the root shares the
 	 * least busy one. A placed run never moves to another shard while it can still write.
 	 */
-	async place(header: JournalCatalogRunHeader): Promise<{ shard: JournalShardRecord; placed: boolean }> {
+	async place(
+		header: JournalCatalogRunHeader,
+	): Promise<{ shard: JournalShardRecord; placed: boolean; status: string | undefined }> {
 		return this.write(
 			"placing-run",
 			async (tx) => {
@@ -342,7 +345,11 @@ export class JournalCatalog {
 							shardId: Number(existing.shard),
 							rule: `run ${header.runId} names shard ${existing.shard}, which is not registered`,
 						});
-					return { shard: this.shardRecord(row), placed: false };
+					return {
+						shard: this.shardRecord(row),
+						placed: false,
+						status: existing.status === null ? header.status : existing.status,
+					};
 				}
 				const shard = await this.choose(tx, header.runId);
 				await tx.run(
@@ -354,16 +361,30 @@ export class JournalCatalog {
 					header.name ?? null,
 					header.status ?? null,
 				);
-				return { shard, placed: true };
+				return { shard, placed: true, status: header.status };
 			},
 			header.runId,
 		);
 	}
 
+	/**
+	 * The shards a new root can go to. A native shard whose file is gone was lost: it stops taking new roots here, and
+	 * its registered runs stay where they are and keep failing with `shard-missing` until the file is restored.
+	 */
+	private async acceptingShards(tx: SqliteExecutor): Promise<JournalShardRecord[]> {
+		const accepting: JournalShardRecord[] = [];
+		for (const row of await tx.all<ShardRow>(
+			"SELECT * FROM catalog_shards WHERE accepts_new_roots = 1 ORDER BY id",
+		)) {
+			const shard = this.shardRecord(row);
+			if (existsSync(shard.path)) accepting.push(shard);
+			else await tx.run("UPDATE catalog_shards SET accepts_new_roots = 0 WHERE id = ?", shard.id);
+		}
+		return accepting;
+	}
+
 	private async choose(tx: SqliteExecutor, runId: string): Promise<JournalShardRecord> {
-		const accepting = (
-			await tx.all<ShardRow>("SELECT * FROM catalog_shards WHERE accepts_new_roots = 1 ORDER BY id")
-		).map((row) => this.shardRecord(row));
+		const accepting = await this.acceptingShards(tx);
 		const busyRows = await tx.all<SqliteRow & { shard: number; busy: number }>(
 			`SELECT shard, count(*) AS busy FROM catalog_runs
 			WHERE status IN (${JOURNAL_BUSY_STATUSES.map(() => "?").join(", ")})
@@ -409,9 +430,7 @@ export class JournalCatalog {
 		return this.write(
 			"moving-run",
 			async (tx) => {
-				const accepting = (
-					await tx.all<ShardRow>("SELECT * FROM catalog_shards WHERE accepts_new_roots = 1 ORDER BY id")
-				).map((row) => this.shardRecord(row));
+				const accepting = await this.acceptingShards(tx);
 				if (accepting.length > 0) return accepting[journalShardHash(runId) % accepting.length]!;
 				const next = await tx.get<SqliteRow & { next: number }>(
 					"SELECT COALESCE(MAX(id), 0) + 1 AS next FROM catalog_shards",

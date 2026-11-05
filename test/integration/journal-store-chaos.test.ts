@@ -1,11 +1,12 @@
 /**
  * Contention and chaos for the journal store (#4325): many writer processes on one shard and across shards, writers
  * killed while they hold a shard's write lock, a catalog writer killed mid-transaction or stalled past a connection's
- * lock wait, a lock holder stopped with SIGSTOP, a full disk, and clock skew on lease renewal. After each, no checkpoint is lost or written twice, every
- * shard and the catalog pass `PRAGMA integrity_check`, and no writer waited longer than the connection's lock wait.
+ * lock wait, a lock holder stopped with SIGSTOP, a full disk, a shard file deleted before roots are created, and clock
+ * skew on lease renewal. After each, no checkpoint is lost or written twice, every shard and the catalog pass
+ * `PRAGMA integrity_check`, and no writer waited longer than the connection's lock wait.
  */
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -346,6 +347,41 @@ test(
 		assertIntact(join(store, "catalog.sqlite"));
 	},
 	STALLED_CATALOG_TIMEOUT_MS,
+);
+
+test(
+	"a shard file deleted before concurrent roots are created takes none of them, loses nothing else and fails its own run typed (#4325)",
+	async () => {
+		const seeded = testRunId("chaos-lost-seed");
+		await finished(startWriter("router", store, seeded));
+		const catalog = await JournalCatalog.open(store);
+		const lost = (await catalog.locate(seeded))!.shard;
+		await catalog.close();
+		rmSync(lost.path);
+		const roots = Array.from({ length: 4 }, (_, index) => testRunId(`chaos-lost-new-${index}`));
+		const barrier = { directory: join(directory, "barrier"), peers: roots.length };
+		mkdirSync(barrier.directory);
+		const summaries = await Promise.all(
+			roots.map((runId) => startWriter("router", store, runId, barrier)).map(finished),
+		);
+		for (const summary of summaries) assert.deepEqual([summary.appended, summary.existed], [CHECKPOINTS, 0]);
+		const reopened = await JournalCatalog.open(store);
+		try {
+			for (const runId of roots) {
+				const located = await reopened.locate(runId);
+				assert.ok(located);
+				assert.notEqual(located.shard.id, lost.id, `${runId} was not placed on the lost shard`);
+				assertRunIntact(located.shard.path, runId);
+			}
+			assert.equal((await reopened.locate(seeded))?.shard.id, lost.id, "the lost shard's run stays registered");
+			assert.equal((await reopened.shards()).find((shard) => shard.id === lost.id)?.acceptsNewRoots, false);
+		} finally {
+			await reopened.close();
+		}
+		assertIntact(join(store, "catalog.sqlite"));
+		assert.equal(existsSync(lost.path), false, "no empty file was created in its place");
+	},
+	CHAOS_SCENARIO_TIMEOUT_MS,
 );
 
 test.skipIf(process.platform === "win32")(

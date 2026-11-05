@@ -1,5 +1,6 @@
 import { resumableEntryFromHandle } from "../durable/backend.js";
 import { isDurableWorkflowResumable, isWorkflowRunResumable } from "../durable/resume-eligibility.js";
+import { runNotFoundResumeResult } from "../durable/run-not-found.js";
 import { requireStoreDurableBackend } from "../durable/store-backend.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
@@ -631,13 +632,7 @@ async function resolveExplicitDurableTarget(
 		if (refusal !== undefined) return refusal;
 		return resumePreparedDurableTarget(target, deps, args.budget);
 	}
-	return {
-		action: "resume",
-		runId: target,
-		status: "noop",
-		message: `Run not found: ${target}`,
-		code: "run_not_found",
-	};
+	return runNotFoundResumeResult(runtime.durableBackend(), target);
 }
 
 export async function workflowResumeAction(
@@ -729,13 +724,7 @@ export async function workflowResumeAction(
 		deps.signal?.throwIfAborted();
 		if (!backend.isWorkflowLoadable(target.runId)) {
 			store.removeRun(target.runId);
-			return {
-				action: "resume",
-				runId: target.runId,
-				status: "noop",
-				message: `Run not found: ${target.runId}`,
-				code: "run_not_found",
-			};
+			return runNotFoundResumeResult(backend, target.runId);
 		}
 	}
 	let warning: string | undefined;
