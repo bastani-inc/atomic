@@ -617,7 +617,7 @@ function heldSourceClaim(
 				},
 			);
 		}, SOURCE_CLAIM_RENEW_MS);
-		timer.unref?.();
+		timer.unref();
 	};
 	schedule();
 	return {
@@ -1293,6 +1293,8 @@ async function copySessions(
 			await closeCopies(partial, ids.forkRunId, cleanup);
 		}
 		if (request.signal?.aborted === true && error === request.signal.reason) throw error;
+		// A source taken over mid-copy is the claim's failure, not a failure of the copy itself.
+		if (error instanceof ForkSourceBusyError) throw error;
 		throw new ForkCopyFailedError(
 			{ runId: source.runId, forkRunId: ids.forkRunId, phase: "sessions" },
 			{ cause: error as Error },
