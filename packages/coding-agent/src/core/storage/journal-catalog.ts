@@ -7,7 +7,6 @@ import {
 	JournalCatalogError,
 	type JournalCatalogPhase,
 	JournalStoreError,
-	StorageError,
 	type StorageFailureCause,
 } from "./errors.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
@@ -210,14 +209,13 @@ export class JournalCatalog {
 		try {
 			return await this.database.transaction(body, { lockWaitMs: JOURNAL_CATALOG_LOCK_WAIT_MS });
 		} catch (cause) {
-			if (cause instanceof JournalStoreError || !(cause instanceof StorageError || cause instanceof Error))
-				throw cause;
+			if (cause instanceof JournalStoreError) throw cause;
 			throw new JournalCatalogError({
 				code: "write-failed",
 				catalogPath: this.path,
 				phase,
-				...(runId === undefined ? {} : { runId }),
-				cause,
+				runId,
+				cause: cause as StorageFailureCause,
 			});
 		}
 	}
@@ -227,7 +225,6 @@ export class JournalCatalog {
 		try {
 			return await body(this.database);
 		} catch (cause) {
-			if (cause instanceof JournalStoreError) throw cause;
 			throw new JournalCatalogError({
 				code: "catalog-unavailable",
 				catalogPath: this.path,

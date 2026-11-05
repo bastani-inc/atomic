@@ -352,10 +352,186 @@ test("consolidation leaves a run in place when the catalog moved it meanwhile or
 	await catalog.close();
 	mkdirSync(destination.path, { recursive: true });
 	const report = await consolidateJournalStore(fresh);
-	assert.equal(report.runs[0]?.reason, "shard-unavailable");
+	assert.deepEqual([report.runs[0]?.outcome, report.runs[0]?.reason], ["skipped", "shard-unavailable"]);
 	assert.ok(isJournalShardUnavailableError(report.runs[0]?.error));
 	assert.equal(report.runs[0].error.code, "shard-open-failed");
 	const stuck = new DatabaseSync(blocked, { readOnly: true });
 	assert.equal(stuck.prepare("SELECT holder_id FROM wf_leases").get()?.holder_id, null);
 	stuck.close();
 });
+
+test("inspection tells a plain file from a broken database, and leaves a rollback-journal file as it is (#4325)", async () => {
+	writeFileSync(join(root, "plain.sqlite"), "this is not a database, only text that is long enough");
+	const plain = await inspectJournalFile(join(root, "plain.sqlite")).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(plain));
+	assert.deepEqual([plain.code, plain.reason, plain.cause], ["not-a-journal", "not-sqlite", undefined]);
+	const rollback = join(root, "rollback.sqlite");
+	raw(rollback, "PRAGMA journal_mode = DELETE");
+	raw(rollback, "CREATE TABLE wf_meta(schema_version INTEGER NOT NULL)");
+	raw(
+		rollback,
+		"CREATE TABLE wf_runs(run_id TEXT PRIMARY KEY, name TEXT, cwd TEXT, created_at INTEGER, status TEXT, header_json TEXT)",
+	);
+	raw(rollback, "INSERT INTO wf_meta VALUES (1)");
+	await inspectJournalFile(rollback);
+	const after = new DatabaseSync(rollback, { readOnly: true });
+	assert.equal(
+		after.prepare("PRAGMA journal_mode").get()?.journal_mode,
+		"delete",
+		"inspection never switches the journal mode",
+	);
+	after.close();
+});
+
+test("inspection needs a journal's meta and runs tables, or all three legacy tables (#4325)", async () => {
+	const half = join(root, "half.sqlite");
+	raw(half, "CREATE TABLE wf_meta(schema_version INTEGER NOT NULL)");
+	raw(half, "INSERT INTO wf_meta VALUES (1)");
+	const noRuns = await inspectJournalFile(half).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(noRuns));
+	assert.deepEqual([noRuns.code, noRuns.reason], ["not-a-journal", "no-journal-tables"]);
+	const legacyHalf = join(root, "legacy-half.sqlite");
+	raw(legacyHalf, "CREATE TABLE meta(schema_version INTEGER NOT NULL)");
+	raw(legacyHalf, "CREATE TABLE runs(run_id TEXT)");
+	raw(legacyHalf, "INSERT INTO meta VALUES (1)");
+	const noEvents = await inspectJournalFile(legacyHalf).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(noEvents));
+	assert.deepEqual([noEvents.code, noEvents.reason], ["not-a-journal", "no-journal-tables"]);
+	const twice = await journal(join(root, "twice", "journal.sqlite"), []);
+	raw(twice, "INSERT INTO wf_meta VALUES (1)");
+	const duplicate = await inspectJournalFile(twice).catch((error: Error) => error);
+	assert.ok(
+		isJournalAdoptError(duplicate) && duplicate.code === "schema-version",
+		"two valid version rows are not one",
+	);
+	const blob = await journal(join(root, "blob", "journal.sqlite"), []);
+	raw(blob, "UPDATE wf_meta SET schema_version = X'01'");
+	const binary = await inspectJournalFile(blob).catch((error: Error) => error);
+	assert.ok(isJournalAdoptError(binary));
+	assert.deepEqual([binary.code, binary.fields.found], ["schema-version", "1"]);
+});
+
+test("discovery considers a journal referenced twice once, and legacy discovery records each file it skips (#4325)", async () => {
+	const missing = join(root, "missing", "journal.sqlite");
+	const one = await journal(join(root, "one", "journal.sqlite"), [{ runId: "one", references: missing }]);
+	const two = await journal(join(root, "two", "journal.sqlite"), [{ runId: "two", references: missing }]);
+	const report = await adoptJournals(store, [one, two]);
+	assert.deepEqual(
+		report.discovered.map((record) => [record.path, record.reason]),
+		[[missing, "path-not-found"]],
+	);
+	await withCatalog(async (catalog) => {
+		const first = join(root, "first.sqlite");
+		const second = join(root, "second.sqlite");
+		raw(first, "CREATE TABLE notes(id TEXT)");
+		raw(second, "CREATE TABLE notes(id TEXT)");
+		assert.deepEqual(await discoverLegacyJournal(catalog, first), { adopted: [], discovered: [] });
+		await discoverLegacyJournal(catalog, second);
+		const skipped = (await catalog.discoveries())
+			.filter((record) => record.outcome === "skipped")
+			.map((record) => record.path);
+		assert.deepEqual(skipped.sort(), [first, missing, second].sort());
+		const legacy = await journal(join(root, "legacy.sqlite"), [{ runId: "legacy" }]);
+		const adopted = await discoverLegacyJournal(catalog, legacy);
+		assert.deepEqual(
+			adopted.adopted.map((outcome) => outcome.status),
+			["adopted"],
+			"other registered shards do not hide it",
+		);
+	});
+});
+
+test("consolidation fences with an epoch above the run's, moves runs without a lease, and finishes a move it crashed in (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "fenced" }]);
+	const noLease = new DatabaseSync(path);
+	noLease
+		.prepare("INSERT INTO wf_runs VALUES ('no-lease', 'wf', '/p', 1, 'completed', ?)")
+		.run(JSON.stringify({ runId: "no-lease" }));
+	noLease.prepare("UPDATE wf_leases SET epoch = 4 WHERE run_id = 'fenced'").run();
+	noLease.close();
+	await adoptJournals(store, [path]);
+	await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async () => {
+			throw new Error("crashed after the copy");
+		});
+		await assert.rejects(consolidateJournalStore(catalog), /crashed after the copy/);
+		const source = new DatabaseSync(path, { readOnly: true });
+		const lease = source.prepare("SELECT holder_id, epoch FROM wf_leases WHERE run_id = 'fenced'").get();
+		source.close();
+		assert.equal(lease?.epoch, 5, "the fence is one epoch above the run's lease");
+		assert.ok(String(lease?.holder_id).startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX));
+		Reflect.set(catalog, "moveRun", moveRun);
+		const report = await consolidateJournalStore(catalog);
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome]),
+			[
+				["fenced", "moved"],
+				["no-lease", "moved"],
+			],
+		);
+	});
+	const { openSelectedRunJournal } = await import("../../packages/workflows/src/durable/journal/resolution.js");
+	const reopened = await openSelectedRunJournal({ kind: "sharded", dir: store }, root);
+	try {
+		assert.deepEqual(
+			(await reopened.listRuns()).map((run) => run.runId),
+			["fenced", "no-lease"],
+		);
+		assert.equal(
+			(await reopened.acquire("fenced", "resumer")).status,
+			"acquired",
+			"a moved run resumes on its new shard",
+		);
+	} finally {
+		await reopened.close();
+	}
+});
+
+test("consolidation never deletes a fenced run the catalog does not list (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "listed" }]);
+	await adoptJournals(store, [path]);
+	const seed = await openSqlRunJournal(path);
+	await seed.createRun({ runId: "unlisted", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await seed.close();
+	raw(path, "INSERT INTO wf_leases VALUES ('unlisted', ?, 2, 0)", `${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other`);
+	await consolidateJournalStore(store);
+	const source = new DatabaseSync(path, { readOnly: true });
+	assert.deepEqual(
+		source
+			.prepare("SELECT run_id FROM wf_runs")
+			.all()
+			.map((row) => row.run_id),
+		["unlisted"],
+	);
+	source.close();
+});
+
+for (const [label, change] of [
+	["header", "UPDATE wf_runs SET header_json = '{\"other\":true}'"],
+	["payload", "UPDATE wf_events SET payload = '\"other\"'"],
+	["key", "UPDATE wf_events SET key = 'other'"],
+	["type", "UPDATE wf_events SET type = 'SummaryRecorded'"],
+	["seq", "UPDATE wf_events SET seq = seq + 10"],
+] as const)
+	test(`consolidation treats a destination copy with another ${label} as a conflict (#4325)`, async () => {
+		const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "copy" }]);
+		await adoptJournals(store, [path]);
+		const target = await withCatalog((catalog) => catalog.homeShard("copy"));
+		await journal(target.path, []);
+		const copy = new DatabaseSync(target.path);
+		copy.exec(`ATTACH DATABASE '${path}' AS source`);
+		for (const table of ["wf_runs", "wf_events"])
+			copy.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
+		copy.exec(change);
+		copy.close();
+		const report = await consolidateJournalStore(store);
+		assert.deepEqual(
+			report.runs.map((run) => [run.outcome, run.reason]),
+			[["skipped", "conflict"]],
+		);
+		const source = new DatabaseSync(path, { readOnly: true });
+		const lease = source.prepare("SELECT holder_id, epoch FROM wf_leases").get();
+		assert.deepEqual([lease?.holder_id, lease?.epoch], [null, 2], "the fence was lifted and its epoch kept");
+		source.close();
+	});

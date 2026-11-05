@@ -1008,7 +1008,7 @@ function versionField(fields: JournalStoreFields): string | number | null | unde
 export function rehydrateJournalStoreError(serialized: SerializedJournalStoreError): JournalStoreError {
 	const error = rebuild(serialized);
 	// The message was built from the same fields; keep the sender's text exactly, whatever its cause looked like here.
-	if (error.message !== serialized.message) error.message = serialized.message;
+	error.message = serialized.message;
 	return error;
 }
 

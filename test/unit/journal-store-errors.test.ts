@@ -4,6 +4,7 @@ import {
 	isJournalCatalogError,
 	isJournalShardUnavailableError,
 	isJournalStoreError,
+	isRetryableJournalStoreError,
 	JournalAdoptError,
 	JournalCatalogError,
 	JournalShardUnavailableError,
@@ -277,4 +278,84 @@ test("serialization bounds the cause chain, keeps string codes, and stringifies 
 	const back = rehydrateJournalStoreError({ ...coded, message: "changed by the sender" });
 	assert.equal(back.message, "changed by the sender", "the sender's text is kept exactly");
 	assert.equal((back.cause as { code?: string }).code, "ENOSPC");
+});
+
+test("rehydration keeps what was sent and drops fields of the wrong type (#4325)", () => {
+	const base = new JournalStoreError({ code: "c", message: "m", hint: "kept hint", fields: {}, retryable: false });
+	const sent = serializeJournalStoreError(base);
+	assert.equal("cause" in sent, false);
+	assert.equal(rehydrateJournalStoreError(sent).hint, "kept hint");
+	const typed = rehydrateJournalStoreError({
+		name: "JournalCatalogError",
+		code: "run-not-found",
+		message: "sent text",
+		retryable: false,
+		fields: { catalogPath: 5, runId: 7, shardId: "two", selection: 3, localOnly: "yes", found: true, supported: "1" },
+	});
+	assert.ok(typed instanceof JournalCatalogError);
+	assert.deepEqual(
+		[
+			typed.catalogPath,
+			typed.runId,
+			typed.fields.shardId,
+			typed.fields.selection,
+			typed.fields.localOnly,
+			typed.fields.found,
+			typed.fields.supported,
+		],
+		["", undefined, undefined, undefined, undefined, undefined, undefined],
+	);
+	assert.equal(typed.message, "sent text");
+	const shard = rehydrateJournalStoreError({
+		name: "JournalShardUnavailableError",
+		code: "shard-missing",
+		message: "x",
+		retryable: false,
+		fields: {},
+	});
+	assert.ok(shard instanceof JournalShardUnavailableError);
+	assert.deepEqual([shard.shardId, shard.shardPath], [-1, ""]);
+	const adopt = rehydrateJournalStoreError({
+		name: "JournalAdoptError",
+		code: "path-not-found",
+		message: "x",
+		retryable: false,
+		fields: {},
+	});
+	assert.ok(adopt instanceof JournalAdoptError);
+	assert.equal(adopt.path, "");
+	const plain = rehydrateJournalStoreError(
+		serializeJournalStoreError(
+			new JournalAdoptError({ code: "not-a-journal", path: "/x", cause: new Error("no table") }),
+		),
+	);
+	assert.equal(plain.fields.detail, "no table", "an adoption error keeps its cause's detail");
+	const cause = plain.cause as Error;
+	assert.deepEqual(["cause" in cause, "code" in cause], [false, false]);
+	const coded = rehydrateJournalStoreError(
+		serializeJournalStoreError(
+			new JournalAdoptError({
+				code: "not-a-journal",
+				path: "/x",
+				cause: Object.assign(new Error("e"), { code: "EACCES" }),
+			}),
+		),
+	);
+	assert.ok(Object.keys(coded.cause as object).includes("code"), "a cause's code is enumerable, as Node's are");
+	assert.equal((coded.cause as { code?: string }).code, "EACCES");
+});
+
+test("the guards match plain objects of every class by name and code, and only store errors count as retryable (#4325)", () => {
+	assert.ok(isJournalCatalogError({ name: "JournalCatalogError", code: "write-failed" }));
+	assert.ok(isJournalShardUnavailableError({ name: "JournalShardUnavailableError", code: "shard-missing" }));
+	assert.equal(isJournalShardUnavailableError({ name: "JournalCatalogError", code: "shard-missing" }), false);
+	assert.equal(isRetryableJournalStoreError(new Error("plain")), false);
+	assert.equal(
+		isRetryableJournalStoreError({ name: "WorkflowInfrastructureError", code: "worker_lost", retryable: true }),
+		false,
+	);
+	assert.equal(
+		isRetryableJournalStoreError(new Error("outer", { cause: { name: "Other", code: "x", retryable: true } })),
+		false,
+	);
 });

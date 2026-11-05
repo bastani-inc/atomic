@@ -208,9 +208,19 @@ test("listings order runs across shards and list a run once, from the shard the 
 		(await journal.listRuns({ cwd: "/elsewhere" })).map((run) => run.runId),
 		[],
 	);
+	const earlier = await openSqlRunJournal(bShard.path);
+	await earlier.createRun({ runId: "a-root", name: "stray copy", cwd: "/elsewhere", createdAt: 1, status: "running" });
+	const strayLease = await earlier.acquire("a-root", "stray");
+	if (strayLease.status === "acquired") {
+		await earlier.append(strayLease.lease, { type: "SummaryRecorded", payload: 1 });
+		await earlier.append(strayLease.lease, { type: "SummaryRecorded", payload: 2 });
+	}
+	await earlier.close();
+	assert.equal((await journal.listRuns()).find((run) => run.runId === "a-root")?.name, "wf");
 	const versions = await journal.runVersions();
 	assert.deepEqual([...versions.keys()].sort(), ["a-root", "b-root"]);
 	assert.equal(versions.get("b-root")?.seq, 1, "the owner's version, not the stray copy's");
+	assert.equal(versions.get("a-root")?.seq, 0, "the owner's version even when a stray copy's shard comes first");
 });
 
 test("a run no catalog lists that two adopted journals hold is listed once, from the first (#4325)", async () => {

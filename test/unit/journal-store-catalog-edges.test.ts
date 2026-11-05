@@ -203,3 +203,39 @@ test("discovery records keep where a journal was referenced from when a later re
 		);
 	});
 });
+
+test("a fresh reservation holds its shard against a new root; a store's catalog reports odd schema versions as found (#4325)", async () => {
+	await withCatalog(async (catalog) => {
+		await catalog.place({ runId: "reserved" });
+		const next = await catalog.place({ runId: "next", status: "running" });
+		assert.equal(next.shard.id, 2, "a reservation a second old still holds shard 1");
+	});
+	raw("UPDATE catalog_meta SET schema_version = X'02'");
+	const blob = await JournalCatalog.open(store).catch((error: Error) => error);
+	assert.ok(isJournalCatalogError(blob));
+	assert.deepEqual([blob.code, blob.fields.found], ["schema-version", "2"]);
+	raw("UPDATE catalog_meta SET schema_version = 'one'");
+	const text = await JournalCatalog.open(store).catch((error: Error) => error);
+	assert.ok(isJournalCatalogError(text));
+	assert.equal(text.fields.found, "one");
+});
+
+test("a catalog row created by a reservation takes the root's details when the root is created, and only then (#4325)", async () => {
+	await withCatalog(async (catalog) => {
+		await catalog.place({ runId: "r" });
+		await catalog.place({ runId: "r" });
+		assert.equal(
+			(await catalog.locate("r"))!.run.status,
+			undefined,
+			"placing again without a status keeps the reservation",
+		);
+		await catalog.place({ runId: "r", name: "wf", cwd: "/p", status: "running" });
+		await catalog.place({ runId: "r", name: "other", cwd: "/q", status: "paused" });
+		const run = (await catalog.locate("r"))!.run;
+		assert.deepEqual(
+			[run.workflow, run.cwd, run.status],
+			["wf", "/p", "running"],
+			"a created root's row is not overwritten",
+		);
+	});
+});

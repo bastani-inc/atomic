@@ -205,11 +205,6 @@ async function withCatalog<T>(store: string | JournalCatalog, body: (catalog: Jo
 }
 
 async function register(catalog: JournalCatalog, inspection: JournalFileInspection): Promise<JournalAdoptionOutcome> {
-	const native = (await catalog.shards()).find(
-		(shard) => shard.kind === "native" && resolve(shard.path) === inspection.path,
-	);
-	if (native !== undefined)
-		return { path: inspection.path, status: "already-registered", shardId: native.id, runs: 0 };
 	const { shard, status } = await catalog.registerAdopted(inspection.path, inspection.runs);
 	return { path: inspection.path, status, shardId: shard.id, runs: status === "adopted" ? inspection.runs.length : 0 };
 }
@@ -373,7 +368,7 @@ async function openShardFile(record: JournalShardRecord, runId?: string): Promis
 			code: "shard-missing",
 			shardId: record.id,
 			shardPath: record.path,
-			...(runId === undefined ? {} : { runId }),
+			runId,
 		});
 	try {
 		return await openNodeSqliteDatabase(record.path);
@@ -382,14 +377,13 @@ async function openShardFile(record: JournalShardRecord, runId?: string): Promis
 			code: "shard-open-failed",
 			shardId: record.id,
 			shardPath: record.path,
-			...(runId === undefined ? {} : { runId }),
+			runId,
 			cause: cause as StorageFailureCause,
 		});
 	}
 }
 
 async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecutor): Promise<void> {
-	const present = await tableNames(target);
 	const definitions = await source.all<SqliteRow & { name: string; sql: string }>(
 		`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)`,
 		TABLES.meta,
@@ -398,8 +392,7 @@ async function ensureJournalTables(source: SqliteExecutor, target: SqliteExecuto
 		TABLES.leases,
 	);
 	for (const definition of definitions)
-		if (!present.has(definition.name))
-			await target.exec(definition.sql.replace(/^CREATE TABLE /i, "CREATE TABLE IF NOT EXISTS "));
+		await target.exec(definition.sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS "));
 	const meta = await target.all(`SELECT schema_version FROM ${TABLES.meta}`);
 	if (meta.length === 0) await target.run(`INSERT INTO ${TABLES.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
 }
