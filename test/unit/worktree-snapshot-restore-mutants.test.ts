@@ -49,7 +49,7 @@ import {
 	type WorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/index.ts";
-import { GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
+import { BELOW_FILE_ERRNO, GitSandbox, lfsPointer } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
 beforeEach(() => {
@@ -525,17 +525,20 @@ describe("one restore at a time per shared store", () => {
 		const until = async (condition: () => boolean) => {
 			while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5));
 		};
-		const initsDone = () => spawned.closed.filter((args) => command(args)[0] === "init").length;
 		const firstGate = gates.get(first.bundle.blob)!;
 		const secondGate = gates.get(second.bundle.blob)!;
 		const storeDir = sandbox.path("host");
 
 		const holder = restoreWorktree(first, { blobs, storeDir });
 		await until(() => firstGate.entered);
-		const queuedInits = initsDone();
+		const callsWhileFirstHeld = spawned.calls.length;
 		const queued = restoreWorktree(second, { blobs, storeDir });
-		await until(() => initsDone() > queuedInits);
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.deepEqual(
+			spawned.calls.slice(callsWhileFirstHeld).map(command),
+			[],
+			"the queued restore waits for the store",
+		);
 		firstGate.open();
 		await holder;
 		await until(() => secondGate.entered);
@@ -546,9 +549,8 @@ describe("one restore at a time per shared store", () => {
 			events.push("late restore finished");
 			return restored;
 		});
-		await until(() => initsDone() > 0);
 		await new Promise((resolve) => setTimeout(resolve, 1000));
-		const startedWhileHeld = spawned.calls.map(command).filter((rest) => rest[0] !== "init");
+		const startedWhileHeld = spawned.calls.map(command);
 		events.push("store released");
 		secondGate.open();
 		await Promise.all([queued, late]);
@@ -583,7 +585,7 @@ describe("restore inputs", () => {
 			assert.ok(isWorkspaceSnapshotError(error));
 			assert.equal(error.code, "unreadable-path");
 			assert.equal(error.subject, into);
-			assert.equal((error.cause as NodeJS.ErrnoException).code, "ENOTDIR");
+			assert.equal((error.cause as NodeJS.ErrnoException).code, BELOW_FILE_ERRNO);
 			return true;
 		});
 		assert.deepEqual(spawned.calls, []);
