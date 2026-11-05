@@ -1091,3 +1091,19 @@ test("a lease operation on a run its shard does not hold, and the catalog does n
 	shard.close();
 	await assert.rejects(journal.acquire("vanished", "resumer"), (error: Error) => error instanceof RunNotFoundError);
 });
+
+test("deleting a run that vanishes while it is followed through three moves ends without an error (#4325)", async () => {
+	await start(await open(), "vanishing");
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const locate = catalog.locate.bind(catalog);
+	let located = 0;
+	Reflect.set(catalog, "locate", async (runId: string) => {
+		const found = await locate(runId);
+		const call = located++;
+		if (call >= 4) return undefined;
+		return found === undefined || call === 0 ? found : { ...found, shard: { ...found.shard, id: 100 + call } };
+	});
+	Reflect.set(catalog, "removeFrom", async () => false);
+	await journal.deleteRun("vanishing");
+});

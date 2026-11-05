@@ -1360,8 +1360,23 @@ test("a journal whose migrations hold only other markers still has its legacy ru
 	const path = legacyJournal(join(root, "other-marker", "journal.sqlite"), ["old"]);
 	raw(path, "CREATE TABLE wf_migrations(name TEXT PRIMARY KEY, applied_at INTEGER)");
 	raw(path, "INSERT INTO wf_migrations VALUES ('another-migration', 0)");
+	raw(
+		path,
+		"UPDATE runs SET header_json = ?",
+		JSON.stringify({ runId: "old", name: "wf", cwd: "/p", createdAt: 1, status: "failed" }),
+	);
 	assert.deepEqual(
 		(await inspectJournalFile(path)).runs.map((run) => run.runId),
 		["old"],
 	);
+	const sql = await openSqlRunJournal(path);
+	try {
+		assert.deepEqual(
+			(await sql.listRuns()).map((run) => run.runId),
+			["old"],
+			"the journal itself still lists its legacy run, as the catalog does",
+		);
+	} finally {
+		await sql.close();
+	}
 });
