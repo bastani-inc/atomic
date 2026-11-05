@@ -263,7 +263,7 @@ async function createProbe() {
 		getCommands: async () => [],
 		stop: async () => {},
 	};
-	const services = { cwd: first.tempDir, agentDir: first.tempDir };
+	const services = { cwd: first.tempDir, agentDir: first.tempDir, settingsManager: first.settingsManager };
 	const runtime = new IsolatedInteractiveRuntime(
 		new AgentSessionRuntime(first.session, services as never, async () => {
 			throw new Error("unused runtime factory");
