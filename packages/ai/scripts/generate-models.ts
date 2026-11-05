@@ -3810,6 +3810,10 @@ async function generateModels() {
 		"gpt-5.6-luna": 1050000,
 		"gpt-5.6-sol": 1050000,
 		"gpt-5.6-terra": 1050000,
+		"gpt-6-luna": 1050000,
+		"gpt-6-sol": 1050000,
+		"gpt-6.1-sol": 1050000,
+		"gpt-6.1-terra": 1050000,
 	};
 	const azureOpenAiModels: Model<Api>[] = allModels
 		.filter(
