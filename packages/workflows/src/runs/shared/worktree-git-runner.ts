@@ -81,8 +81,8 @@ export async function prepareTaskGit(signal: AbortSignal): Promise<void> {
 		resolveGitSync();
 		return;
 	} catch (error) {
-		if (!isGitUnavailableError(error) || (error.code !== "not-installed" && !isRetryableGitProvisionError(error)))
-			return;
+		const notInstalled = isGitUnavailableError(error) && error.code === "not-installed";
+		if (!isGitProvisionError(error) || !(notInstalled || isRetryableGitProvisionError(error))) return;
 	}
 	await resolveGit({ signal }).catch((error: unknown) => {
 		if (!isGitProvisionError(error)) throw error;

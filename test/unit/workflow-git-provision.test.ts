@@ -4,8 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { isGitUnavailableError } from "../../packages/coding-agent/src/utils/git-errors.js";
-import { resetGitProvisionStateForTest } from "../../packages/coding-agent/src/utils/tools-manager.js";
+import { isGitProvisionTimeoutError, isGitUnavailableError } from "../../packages/coding-agent/src/utils/git-errors.js";
+import {
+	resetGitProvisionStateForTest,
+	resolveGit,
+	resolveGitSync,
+	withGitProvisionSettingsForTest,
+} from "../../packages/coding-agent/src/utils/tools-manager.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
@@ -257,6 +262,30 @@ describe("workflow runs without git (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 6);
 	});
 
+	test("prepareTaskGit retries after a retryable timeout, not only after a download failure", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		let stalled = true;
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+			(_input, init) =>
+				new Promise((resolve, reject) => {
+					if (!stalled) return resolve(new Response("gone", { status: 404 }));
+					init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+				}),
+		);
+		const timedOut = await withGitProvisionSettingsForTest({ downloadTimeoutMs: 30 }, () => resolveGit()).catch(
+			(error: Error) => error,
+		);
+		assert.ok(isGitProvisionTimeoutError(timedOut));
+		assert.throws(
+			() => resolveGitSync(),
+			(error: Error) => error === timedOut,
+		);
+		const requestsAfterTimeout = fetchMock.mock.calls.length;
+		stalled = false;
+		await prepareTaskGit(new AbortController().signal);
+		assert.equal(fetchMock.mock.calls.length, requestsAfterTimeout + 1);
+	});
+
 	test("prepareTaskGit does not retry a failure that retrying cannot fix", async () => {
 		vi.stubEnv("ATOMIC_OFFLINE", "");
 		const fetchMock = vi
@@ -314,57 +343,6 @@ describe("workflow runs without git (#4322)", () => {
 			assert.equal(thrown.cause.code, "offline");
 		},
 	);
-
-	test("prepareTaskGit attempts a download when git is missing and downloadable, and again after a retryable failure", async () => {
-		const fetchMock = failingFetch();
-		const controller = new AbortController();
-		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 0);
-		vi.stubEnv("ATOMIC_OFFLINE", "");
-		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 3);
-		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 6);
-	});
-
-	test("prepareTaskGit does not retry a failure that retrying cannot fix", async () => {
-		vi.stubEnv("ATOMIC_OFFLINE", "");
-		const fetchMock = vi
-			.spyOn(globalThis, "fetch")
-			.mockImplementation(async () => new Response("gone", { status: 404 }));
-		const controller = new AbortController();
-		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 1);
-		await prepareTaskGit(controller.signal);
-		assert.equal(fetchMock.mock.calls.length, 1);
-	});
-
-	test.each([
-		["worktree: true", { prompt: "x", worktree: true }, /creates a worktree, but git is unavailable \(offline\)/],
-		[
-			"a gitWorktreeDir option",
-			{ prompt: "x", gitWorktreeDir: "../named" },
-			/creates a worktree \(\.\.\/named\), but git is unavailable \(offline\)/,
-		],
-	])("a task with %s fails with a git-required error naming the task", async (_label, taskOptions, creates) => {
-		const fetchMock = vi.spyOn(globalThis, "fetch");
-		const def = workflow({
-			name: "taskneedsworktree",
-			description: "",
-			inputs: {},
-			outputs: { ok: Type.Optional(Type.Boolean()) },
-			run: async (ctx) => {
-				await ctx.task("edit", taskOptions);
-				return { ok: true };
-			},
-		}) as unknown as WorkflowDefinition;
-		const { run } = await finish(def, {});
-		assert.equal(run.status, "failed");
-		assert.match(run.error ?? "", /Workflow needs git: task "edit" of "taskneedsworktree"/);
-		assert.match(run.error ?? "", creates);
-		assert.match(run.error ?? "", /\(git-required\)$/);
-		assert.equal(fetchMock.mock.calls.length, 0);
-	});
 
 	test("worktree git commands fail with the typed reason instead of a spawn error", () => {
 		assert.throws(
