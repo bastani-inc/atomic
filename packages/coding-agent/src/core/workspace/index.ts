@@ -20,6 +20,7 @@ export { isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
 export type { RestoreWorkspaceOptions } from "./restore.ts";
 export { restoreWorkspace } from "./restore.ts";
 export {
+	bindSessionWorkspace,
 	inheritWorkspace,
 	WORKSPACE_BINDING_ENTRY_TYPE,
 	WORKSPACE_WRITE_TOOL_NAMES,

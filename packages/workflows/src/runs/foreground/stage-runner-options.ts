@@ -1,4 +1,10 @@
-import { type CreateAgentSessionOptions, resolveWorkspace, SessionManager, workspaceSessionCwd } from "@bastani/atomic";
+import {
+	bindSessionWorkspace,
+	type CreateAgentSessionOptions,
+	resolveWorkspace,
+	SessionManager,
+	workspaceSessionCwd,
+} from "@bastani/atomic";
 import { resolveStageGroup, stageHasIntercomAccess } from "../../shared/intercom-group.js";
 import { forkStageSession, migrateLegacyStageSession, stageSessionStore } from "../../shared/stage-session-store.js";
 import type { StageExecutionMeta, StageOptions } from "../../shared/types.js";
@@ -28,6 +34,16 @@ function workflowOrchestrationContext(
 		: undefined;
 	const context = intercomGroup ? { ...base, intercomGroup } : base;
 	return pendingStageDelivery === undefined ? context : { ...context, pendingStageDelivery };
+}
+
+/** The saved session a stage resumes, opened to read the workspace binding it recorded. */
+async function openResumedStageSession(
+	options: StageOptions,
+	defaultSessionDir: string | undefined,
+): Promise<SessionManager> {
+	const store = await stageSessionStore(options, defaultSessionDir);
+	await migrateLegacyStageSession(store, options.resumeFromSessionId!, options.resumeFromLegacySessionFile);
+	return SessionManager.open(store, options.resumeFromSessionId!);
 }
 
 export async function stripWorkflowOnlyOptions(
@@ -71,23 +87,26 @@ export async function stripWorkflowOnlyOptions(
 		group: _group,
 		...sessionOptions
 	} = options;
-	// A resumed session restores the binding it recorded when the session opens; a new one is bound here, so the
-	// session store, the session and its tools all use the bound worktree.
-	const restoresRecordedBinding = sessionOptions.workspace !== undefined && resumeFromSessionId !== undefined;
-	if (sessionOptions.workspace !== undefined && !restoresRecordedBinding) {
-		const binding = await resolveWorkspace(sessionOptions.workspace);
+	// Bound here, before the session opens, so the session store, the session and its tools all use the bound worktree.
+	// A resumed session restores the binding its session recorded instead of resolving the workspace again.
+	const resumed =
+		resumeFromSessionId === undefined || sessionOptions.workspace === undefined
+			? undefined
+			: await openResumedStageSession(options, defaultSessionDir);
+	if (sessionOptions.workspace !== undefined) {
+		const binding =
+			resumed === undefined
+				? await resolveWorkspace(sessionOptions.workspace)
+				: await bindSessionWorkspace(sessionOptions.workspace, resumed);
 		sessionOptions.workspace = binding;
 		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
 	}
 	const cwd = sessionOptions.cwd ?? process.cwd();
 	if (resumeFromSessionId !== undefined) {
 		const store = await stageSessionStore(options, defaultSessionDir);
-		await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
-		sessionOptions.sessionManager = await SessionManager.open(
-			store,
-			resumeFromSessionId,
-			restoresRecordedBinding ? undefined : cwd,
-		);
+		if (resumed === undefined)
+			await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
+		sessionOptions.sessionManager = await SessionManager.open(store, resumeFromSessionId, cwd);
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),

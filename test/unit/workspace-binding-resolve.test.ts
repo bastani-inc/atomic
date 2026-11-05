@@ -329,9 +329,17 @@ describe("workspace resolution details (#3109)", () => {
 		assert.equal(bound.worktree, join(dirs.home, "worktrees", "file", fileKey, "main"));
 		assert.equal(bound.branch, "main", "a remote without a branch binds the branch of its default base");
 		assert.equal(bound.base, "origin/main");
+		const short = (name: string) => createHash("sha256").update(name).digest("hex").slice(0, 12);
 		assert.equal(
 			sharedStorePath({ kind: "remote", url: "x", host: "git.example.com:8443", segments: ["team a", "svc"] }),
-			join(dirs.home, "repos", "git.example.com_8443", "team_a", "svc.git"),
+			join(
+				dirs.home,
+				"repos",
+				`git.example.com_8443-${short("git.example.com:8443")}`,
+				`team_a-${short("team a")}`,
+				"svc.git",
+			),
+			"safe names stay readable; unsafe ones keep a digest of the original",
 		);
 	});
 
@@ -950,6 +958,30 @@ describe("shared stores follow the remote (#3109)", () => {
 		assert.notEqual(onRemote.baseCommit, git(clone, "rev-parse", "origin/main"));
 	});
 
+	test("remotes whose names differ only in unsafe characters get separate stores (#3109)", async () => {
+		const plus = createRemote(dirs.root, "foo+bar");
+		const underscore = createRemote(dirs.root, "foo_bar");
+		const a = await resolveWorkspace(workspace({ repo: plus.url, branch: "x" }));
+		const b = await resolveWorkspace(workspace({ repo: underscore.url, branch: "x" }));
+		assert.notEqual(a.repository, b.repository);
+		assert.deepEqual(a.remotes, [plus.url]);
+		assert.deepEqual(b.remotes, [underscore.url]);
+		const scp = sharedStorePath({ kind: "remote", url: "x", host: "host", segments: ["..", "..", "escape"] });
+		assert.ok(scp.startsWith(join(dirs.home, "repos", "host")), "dot segments never climb out of the store root");
+	});
+
+	test("a remote whose HEAD names no branch still binds explicit refs and names the missing default (#3109)", async () => {
+		const remote = createRemote(dirs.root, "dangling-head");
+		const bare = remote.url.replace(/^file:\/\//, "");
+		git(bare, "symbolic-ref", "HEAD", "refs/heads/master");
+		const explicit = await resolveWorkspace(workspace({ repo: remote.url, base: "origin/main", branch: "explicit" }));
+		assert.equal(explicit.baseCommit, git(remote.seed, "rev-parse", "HEAD"));
+		const missing = await rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "needs-default" })));
+		assert.ok(isWorkspaceBindingError(missing));
+		assert.equal(missing.code, "unknown-base");
+		assert.equal(missing.fields.base, "origin/HEAD");
+	});
+
 	test("a base naming a remote branch means that branch as the remote has it (#3109)", async () => {
 		const remote = createRemote(dirs.root, "base-name");
 		await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
@@ -998,7 +1030,7 @@ describe("workspace git phases (#3109)", () => {
 			"clone: remote add origin <url>",
 			"fetch: fetch origin",
 			"fetch: remote set-head origin --auto",
-			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
+			"probe: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
 			"probe: rev-parse --verify origin/main^{commit}",
 			"worktree-add: worktree prune",
@@ -1009,7 +1041,7 @@ describe("workspace git phases (#3109)", () => {
 		]);
 		const existing = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "main" })));
 		assert.deepEqual(existing.transcript, [
-			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
+			"probe: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
 			"fetch: fetch origin",
 			"probe: rev-parse --verify origin/main^{commit}",
@@ -1021,7 +1053,7 @@ describe("workspace git phases (#3109)", () => {
 		]);
 		const fetched = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/y" })));
 		assert.deepEqual(fetched.transcript.slice(0, 3), [
-			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
+			"probe: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
 			"fetch: fetch origin",
 		]);

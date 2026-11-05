@@ -92,6 +92,15 @@ function safeSegment(segment: string): string {
 	return segment.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
+/**
+ * A path segment that names `name` alone: kept when it is already safe, else made safe and suffixed with a digest of
+ * `name`, so remotes whose names differ only in unsafe characters never share a store, and `.` or `..` never climb.
+ */
+function storeSegment(name: string): string {
+	const safe = safeSegment(name);
+	return safe === name && name !== "." && name !== ".." ? name : `${safe}-${shortDigest(name)}`;
+}
+
 function shortDigest(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
@@ -101,8 +110,8 @@ function shortDigest(text: string): string {
  * segment and a digest of its path instead, so a deeply nested source does not nest the store and its worktrees.
  */
 function remoteKey(remote: Extract<WorkspaceRepository, { kind: "remote" }>): string[] {
-	const segments = remote.segments.map(safeSegment);
-	if (remote.host !== "file") return [safeSegment(remote.host), ...segments];
+	const segments = remote.segments.map(storeSegment);
+	if (remote.host !== "file") return [storeSegment(remote.host), ...segments];
 	return ["file", `${segments.at(-1)}-${shortDigest(remote.segments.join("/"))}`];
 }
 
@@ -173,7 +182,13 @@ async function createStore(spec: Extract<WorkspaceRepository, { kind: "remote" }
 		await git(dirname(store), ["init", "--bare", staging], "clone");
 		await git(staging, ["remote", "add", "origin", spec.url], "clone");
 		await git(staging, ["fetch", "origin"], "fetch");
-		await git(staging, ["remote", "set-head", "origin", "--auto"], "fetch");
+		// A remote whose HEAD names no branch still binds explicit refs; only a default base then fails.
+		await runWorkspaceGit({
+			cwd: staging,
+			args: ["remote", "set-head", "origin", "--auto"],
+			phase: "fetch",
+			allowFailure: true,
+		});
 		await filesystem("move clone to", store, () => rename(staging, store));
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
@@ -241,9 +256,11 @@ async function isAncestor(repository: OpenRepository, ancestor: string, descenda
 	return (await probe(repository.root, ["merge-base", "--is-ancestor", ancestor, descendant])).status === 0;
 }
 
-async function defaultBase(repository: OpenRepository): Promise<string> {
+async function defaultBase(repository: OpenRepository, repo: string): Promise<string> {
 	if (repository.spec.kind === "local") return "HEAD";
-	return git(repository.root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], "validate");
+	const head = await probe(repository.root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+	if (head.status === 0) return head.stdout.trim();
+	throw new WorkspaceBindingError({ code: "unknown-base", fields: { repo, base: "origin/HEAD" } });
 }
 
 async function currentBranch(worktree: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -487,7 +504,7 @@ const resolutions = new WeakMap<Workspace, Promise<Resolution>>();
 async function bindNew(input: Workspace): Promise<Resolution> {
 	const repo = recordedRepo(input.repo);
 	const repository = await openWorkspaceRepository(input.repo);
-	const base = input.base ?? (await defaultBase(repository));
+	const base = input.base ?? (await defaultBase(repository, repo));
 	const branch = input.branch ?? (await defaultBranch(repository, repo, base));
 	let baseTip: Promise<string> | undefined;
 	const tipOfBase = () => {

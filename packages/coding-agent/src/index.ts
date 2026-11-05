@@ -826,6 +826,7 @@ export {
 	type AcquireWorkspaceWriterLeaseOptions,
 	acquireWorkspaceWriterLease,
 	assertWorkspace,
+	bindSessionWorkspace,
 	attachCleanupCause,
 	type BoundWorkspace,
 	findWorkspaceError,

@@ -9,6 +9,7 @@ import { createAgentSession, createUnstartedAgentSession } from "../../packages/
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
+	type BoundWorkspace,
 	isBoundWorkspace,
 	isWorkspaceBindingError,
 	isWorkspaceConfigError,
@@ -257,39 +258,40 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		commitFile(repo, "base-moved.txt", "main moved on\n");
 
 		const resumedSpec = workspace({ repo, branch: "stage-work" });
-		const options = await stripWorkflowOnlyOptions(
-			{ workspace: resumedSpec, resumeFromSessionId: sessionId, sessionStore: store },
-			undefined,
-			meta,
+		const { result: options, commands } = await countGitCommands(() =>
+			stripWorkflowOnlyOptions(
+				{ workspace: resumedSpec, resumeFromSessionId: sessionId, sessionStore: store },
+				undefined,
+				meta,
+			),
 		);
-		assert.equal(options.workspace, resumedSpec, "the session binds it when it opens, from its own record");
-		const { result: resumed, commands } = await countGitCommands(() => createAgentSession(sessionOptions(options)));
+		const restored = options.workspace as BoundWorkspace;
+		assert.equal(restored.baseCommit, recorded.baseCommit);
+		assert.equal(restored.label, "first", "the recorded label survives");
+		assert.equal(options.cwd, recorded.worktree, "an adapter's host directory cannot replace the worktree");
+		assert.ok(
+			commands.some((args) => args[0] === "merge-base" && args[1] === "--is-ancestor"),
+			"the recorded binding was restored and checked for drift",
+		);
+		assert.equal(await resolveWorkspace(resumedSpec), restored, "later resolutions reuse it");
+		const resumed = await createAgentSession(sessionOptions({ ...options, cwd: options.cwd }));
 		try {
-			assert.equal(resumed.workspace?.baseCommit, recorded.baseCommit);
-			assert.equal(resumed.workspace?.label, "first", "the recorded label survives");
-			assert.ok(
-				commands.some((args) => args[0] === "merge-base" && args[1] === "--is-ancestor"),
-				"the recorded binding was restored and checked for drift",
-			);
-			assert.equal(await resolveWorkspace(resumedSpec), resumed.workspace, "later resolutions reuse it");
+			assert.equal(resumed.workspace, restored);
+			assert.equal(resumed.session.sessionManager.getSessionId(), sessionId);
 		} finally {
 			resumed.session.dispose();
 		}
 
 		git(recorded.worktree, "commit", "-q", "--allow-empty", "--amend", "-m", "rewritten");
 		const drifted = await rejection(
-			createAgentSession(
-				sessionOptions(
-					await stripWorkflowOnlyOptions(
-						{
-							workspace: workspace({ repo, branch: "stage-work" }),
-							resumeFromSessionId: sessionId,
-							sessionStore: store,
-						},
-						undefined,
-						meta,
-					),
-				),
+			stripWorkflowOnlyOptions(
+				{
+					workspace: workspace({ repo, branch: "stage-work" }),
+					resumeFromSessionId: sessionId,
+					sessionStore: store,
+				},
+				undefined,
+				meta,
 			),
 		);
 		assert.ok(isWorkspaceBindingError(drifted));
