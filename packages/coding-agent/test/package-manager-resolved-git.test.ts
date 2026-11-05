@@ -6,16 +6,22 @@ import { afterEach, beforeEach, describe, it, vi } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { runCommand } from "../src/core/package-manager-command.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { GitUnavailableError } from "../src/utils/git-errors.ts";
 
 const resolved = vi.hoisted(() => ({
 	path: "/opt/atomic/bin/git/bin/git",
 	env: { GIT_EXEC_PATH: "/opt/atomic/bin/git/libexec/git-core" } as Record<string, string>,
+	failure: undefined as Error | undefined,
 }));
 
 vi.mock("../src/utils/tools-manager.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/utils/tools-manager.ts")>();
 	const getToolPath = ((tool: "fd" | "rg" | "git") =>
-		tool === "git" ? Promise.resolve(resolved.path) : actual.getToolPath(tool)) as typeof actual.getToolPath;
+		tool === "git"
+			? resolved.failure
+				? Promise.reject(resolved.failure)
+				: Promise.resolve(resolved.path)
+			: actual.getToolPath(tool)) as typeof actual.getToolPath;
 	const getToolEnv = async (tool: "fd" | "rg" | "git") => (tool === "git" ? resolved.env : {});
 	return { ...actual, getToolPath, getToolEnv };
 });
@@ -235,5 +241,121 @@ describe("package manager git call sites (#4322)", () => {
 			[resolved.path, ["rev-parse", "HEAD"], { cwd: tempDir, timeoutMs: 10_000, env: resolved.env }],
 		]);
 		assert.equal(runCommand.mock.calls.length, 0);
+	});
+});
+
+describe("package manager without git (#4322)", () => {
+	let tempDir: string;
+	let packageManager: DefaultPackageManager;
+	let internals: CommandInternals;
+	const unavailable = new GitUnavailableError({
+		code: "offline",
+		offlineVariable: "ATOMIC_OFFLINE",
+		platform: "linux",
+		arch: "x64",
+		installCommand: "apt-get install git",
+	});
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "atomic-pm-no-git-"));
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		packageManager = new DefaultPackageManager({
+			cwd: tempDir,
+			agentDir: join(tempDir, "agent"),
+			settingsManager: SettingsManager.inMemory(),
+		});
+		internals = packageManager as unknown as CommandInternals;
+		resolved.failure = unavailable;
+	});
+
+	afterEach(() => {
+		resolved.failure = undefined;
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	const isUnavailable = (error: Error) => error === unavailable;
+
+	it("reports git as unavailable instead of an update target it could not read", async () => {
+		const run = vi.spyOn(internals, "runCommand");
+		const capture = vi.spyOn(internals, "runCommandCapture");
+		await assert.rejects(
+			(
+				packageManager as unknown as { getLocalGitUpdateTarget(path: string): Promise<object> }
+			).getLocalGitUpdateTarget(tempDir),
+			isUnavailable,
+		);
+		assert.equal(run.mock.calls.length + capture.mock.calls.length, 0);
+	});
+
+	it.each([
+		[
+			"gitHasAvailableUpdate",
+			(pm: DefaultPackageManager, dir: string) =>
+				(pm as never as { gitHasAvailableUpdate(p: string): Promise<boolean> }).gitHasAvailableUpdate(dir),
+		],
+		[
+			"refreshTemporaryGitSource",
+			(pm: DefaultPackageManager, dir: string) =>
+				(
+					pm as never as {
+						refreshTemporaryGitSource(source: object, sourceStr: string, path: string): Promise<void>;
+					}
+				).refreshTemporaryGitSource(
+					{
+						type: "git",
+						repo: "https://github.com/user/repo",
+						host: "github.com",
+						path: "user/repo",
+						pinned: false,
+					},
+					"git:github.com/user/repo",
+					dir,
+				),
+		],
+	])("does not hide an unavailable git behind %s's best-effort result", async (_name, call) => {
+		await assert.rejects(call(packageManager, tempDir), isUnavailable);
+	});
+
+	it("does not call a missing git a failed clean", async () => {
+		const progress: string[] = [];
+		packageManager.setProgressCallback((event) => progress.push(event.message ?? ""));
+		const targetDir = join(tempDir, "agent", "git", "github.com", "user", "repo");
+		mkdirSync(join(targetDir, ".git"), { recursive: true });
+		await assert.rejects(
+			(
+				packageManager as never as {
+					updateGit(source: object, scope: string): Promise<void>;
+				}
+			).updateGit(
+				{ type: "git", repo: "https://github.com/user/repo", host: "github.com", path: "user/repo", pinned: false },
+				"user",
+			),
+			isUnavailable,
+		);
+		assert.deepEqual(
+			progress.filter((message) => message.includes("untracked")),
+			[],
+		);
+	});
+
+	it("reports a failing set-head once and still reads the update target", async () => {
+		resolved.failure = undefined;
+		const progress: string[] = [];
+		packageManager.setProgressCallback((event) => progress.push(event.message ?? ""));
+		vi.spyOn(internals, "runCommand").mockRejectedValue(new Error("remote refused"));
+		vi.spyOn(internals, "runCommandCapture").mockImplementation(async (_command, args) => {
+			if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") throw new Error("no upstream");
+			if (args[0] === "symbolic-ref") return "refs/remotes/origin/main";
+			return "abc123";
+		});
+		const target = await (
+			packageManager as never as { getLocalGitUpdateTarget(path: string): Promise<{ ref: string; head: string }> }
+		).getLocalGitUpdateTarget(tempDir);
+		assert.equal(target.head, "abc123");
+		assert.deepEqual(progress, [
+			`Could not refresh the default branch of ${tempDir} (remote refused); using the last known one.`,
+		]);
 	});
 });

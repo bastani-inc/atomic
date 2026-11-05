@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { APP_NAME, getProjectConfigDirs } from "../config.js";
 import type { GitSource } from "../utils/git.ts";
+import { isGitProvisionError } from "../utils/git-errors.ts";
 import { stripBom } from "../utils/text.ts";
 import { getToolEnv, getToolPath } from "../utils/tools-manager.ts";
 import { runCommand, runCommandCapture } from "./package-manager-command.ts";
@@ -16,6 +17,11 @@ import type {
 	PackageManagerContext,
 	SourceScope,
 } from "./package-manager-types.ts";
+
+/** A failure to provide git is never a best-effort miss: callers see it, with its code and install command. */
+function rethrowGitProvisionError(error: unknown): void {
+	if (isGitProvisionError(error)) throw error;
+}
 
 /** The resolved git and, for a provisioned copy, the portable variables it needs. */
 async function resolveGitCommand(): Promise<{ readonly path: string; readonly env?: Record<string, string> }> {
@@ -131,6 +137,7 @@ async function cleanAndInstallGitDependencies(
 	try {
 		await runGitProcess(context, ["clean", "-fdx"], { cwd: targetDir });
 	} catch (error) {
+		rethrowGitProvisionError(error);
 		cleaned = false;
 		const reason = error instanceof Error ? error.message : String(error);
 		emitProgress(context, {
@@ -209,7 +216,8 @@ export async function getInstalledGitHead(
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		return head.trim() || undefined;
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return undefined;
 	}
 }
@@ -287,7 +295,9 @@ export async function refreshTemporaryGitSource(
 		await withProgress(context, "pull", sourceStr, `Refreshing ${sourceStr}...`, async () => {
 			await updateGit(context, source, "temporary");
 		});
-	} catch {}
+	} catch (error) {
+		rethrowGitProvisionError(error);
+	}
 }
 
 export async function removeGit(context: PackageManagerContext, source: GitSource, scope: SourceScope): Promise<void> {
@@ -328,7 +338,8 @@ export async function gitHasAvailableUpdate(context: PackageManagerContext, inst
 		});
 		const remoteHead = await getRemoteGitHead(context, installedPath);
 		return localHead.trim() !== remoteHead.trim();
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return false;
 	}
 }
@@ -371,8 +382,17 @@ export async function getLocalGitUpdateTarget(
 			head,
 			fetchArgs: ["fetch", "--prune", "--no-tags", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
 		};
-	} catch {
-		await runGitProcess(context, ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch(() => {});
+	} catch (upstreamError) {
+		rethrowGitProvisionError(upstreamError);
+		await runGitProcess(context, ["remote", "set-head", "origin", "-a"], { cwd: installedPath }).catch((error) => {
+			rethrowGitProvisionError(error);
+			emitProgress(context, {
+				type: "progress",
+				action: "update",
+				source: installedPath,
+				message: `Could not refresh the default branch of ${installedPath} (${error instanceof Error ? error.message : String(error)}); using the last known one.`,
+			});
+		});
 		const head = await captureGitProcess(context, ["rev-parse", "origin/HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
@@ -380,7 +400,10 @@ export async function getLocalGitUpdateTarget(
 		const originHeadRef = await captureGitProcess(context, ["symbolic-ref", "refs/remotes/origin/HEAD"], {
 			cwd: installedPath,
 			timeoutMs: NETWORK_TIMEOUT_MS,
-		}).catch(() => "");
+		}).catch((error) => {
+			rethrowGitProvisionError(error);
+			return "";
+		});
 		const branch = originHeadRef.trim().replace(/^refs\/remotes\/origin\//, "");
 		if (branch) {
 			return {
@@ -413,7 +436,8 @@ async function getGitUpstreamRef(context: PackageManagerContext, installedPath: 
 		if (!trimmed.startsWith("origin/")) return undefined;
 		const branch = trimmed.slice("origin/".length);
 		return branch ? `refs/heads/${branch}` : undefined;
-	} catch {
+	} catch (error) {
+		rethrowGitProvisionError(error);
 		return undefined;
 	}
 }
