@@ -237,7 +237,7 @@ describe("Coding Agent Tools", () => {
 			const ranged = getTextOutput(await readTool.execute("test-call-selector", { path: `${testFile}:2-3` }));
 			expect(ranged).toBe("one\ntwo\nthree\nfour");
 			const counted = getTextOutput(await readTool.execute("test-call-selector-plus", { path: `${testFile}:3+1` }));
-			expect(counted).toBe("two\nthree\nfour");
+			expect(counted).toBe("[Lines 2-4 of 4]\ntwo\nthree\nfour");
 			const outOfRange = getTextOutput(
 				await readTool.execute("test-call-selector-oob", { path: `${testFile}:5-5` }),
 			);

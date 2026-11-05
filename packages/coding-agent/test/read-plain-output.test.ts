@@ -43,10 +43,10 @@ describe("read returns plain text (#4328)", () => {
 		expect(await readFixture("plain.txt", "alpha\nbeta\n")).toBe("alpha\nbeta");
 	});
 
-	it("bounded selectors include one line before and three after, as plain text", async () => {
-		expect(await readFixture("lines.txt", SIX_LINES, "lines.txt:5-5")).toBe("four\nfive\nsix");
+	it("bounded selectors include one line before and three after, under a label naming those lines", async () => {
+		expect(await readFixture("lines.txt", SIX_LINES, "lines.txt:5-5")).toBe("[Lines 4-6 of 6]\nfour\nfive\nsix");
 		expect(await readFixture("lines.txt", SIX_LINES, "lines.txt:2-2")).toBe(
-			"one\ntwo\nthree\nfour\nfive\n\n[1 more lines in file. Continue with path selector :6.]",
+			"[Lines 1-5 of 6]\none\ntwo\nthree\nfour\nfive\n\n[1 more lines in file. Continue with path selector :6.]",
 		);
 		expect(splitReadLineSelector("http://localhost:3000")).toMatchObject({ path: "http://localhost:3000" });
 	});
@@ -66,7 +66,7 @@ describe("read returns plain text (#4328)", () => {
 	it("a limited read names the next selector to continue with", async () => {
 		const lines = Array.from({ length: 30 }, (_, index) => `line-${index + 1}`).join("\n");
 		expect(await readFixture("long.txt", `${lines}\n`, "long.txt:1+2")).toBe(
-			"line-1\nline-2\nline-3\nline-4\nline-5\n\n[25 more lines in file. Continue with path selector :6.]",
+			"[Lines 1-5 of 30]\nline-1\nline-2\nline-3\nline-4\nline-5\n\n[25 more lines in file. Continue with path selector :6.]",
 		);
 	});
 
@@ -88,7 +88,7 @@ describe("read returns plain text (#4328)", () => {
 
 	it("line selectors on a conflict view count lines of the view", async () => {
 		expect(await readFixture("conflict.txt", CONFLICT, "conflict.txt:conflicts:3+1")).toBe(
-			"left\n=======\nright\n>>>>>>> theirs",
+			"[Lines 2-5 of 5]\nleft\n=======\nright\n>>>>>>> theirs",
 		);
 		expect(await readFixture("conflict.txt", CONFLICT, "conflict.txt:conflicts:3")).toBe(
 			"=======\nright\n>>>>>>> theirs",
@@ -147,6 +147,54 @@ describe("read returns plain text (#4328)", () => {
 		expect(await readFixture("crlf.txt", source, "crlf.txt:raw")).toBe(source);
 		expect(await readFixture("crlf.txt", source, "crlf.txt:4")).toBe(
 			"Requested line 4 is beyond end of file (3 lines total). Use crlf.txt:3 to read the final line.",
+		);
+	});
+});
+
+const FORTY_LINES = `${Array.from({ length: 40 }, (_, index) => `row${index + 1}`).join("\n")}\n`;
+const rows = (from: number, to: number) =>
+	Array.from({ length: to - from + 1 }, (_, index) => `row${from + index}`).join("\n");
+
+describe("range selections label their lines (#4328)", () => {
+	it("labels each range of a discontiguous selection and continues after the last one", async () => {
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-11,30-31")).toBe(
+			`[Lines 9-14 of 40]\n${rows(9, 14)}\n[Lines 29-34 of 40]\n${rows(29, 34)}\n\n[6 more lines in file. Continue with path selector :35.]`,
+		);
+	});
+
+	it("merges adjacent and overlapping ranges under one label", async () => {
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-11,12-13")).toBe(
+			`[Lines 9-16 of 40]\n${rows(9, 16)}\n\n[24 more lines in file. Continue with path selector :17.]`,
+		);
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-10,15-15")).toBe(
+			`[Lines 9-18 of 40]\n${rows(9, 18)}\n\n[22 more lines in file. Continue with path selector :19.]`,
+		);
+	});
+
+	it("labels a gap of a single line", async () => {
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-10,16-16")).toBe(
+			`[Lines 9-13 of 40]\n${rows(9, 13)}\n[Lines 15-19 of 40]\n${rows(15, 19)}\n\n[21 more lines in file. Continue with path selector :20.]`,
+		);
+	});
+
+	it("labels ranges near the end and stops the hint at the last line", async () => {
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:36-36")).toBe(
+			`[Lines 35-39 of 40]\n${rows(35, 39)}\n\n[1 more lines in file. Continue with path selector :40.]`,
+		);
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:38-39")).toBe(`[Lines 37-40 of 40]\n${rows(37, 40)}`);
+	});
+
+	it("keeps raw multi-range reads to the exact lines, unlabelled", async () => {
+		expect(await readFixture("big.txt", FORTY_LINES, "big.txt:10-11,30-31:raw")).toBe("row10\nrow11\nrow30\nrow31");
+	});
+
+	it("continues a truncated selection after the last line shown", async () => {
+		const huge = `${Array.from({ length: 6000 }, (_, index) => `L${index + 1}`).join("\n")}\n`;
+		const output = await readFixture("huge.txt", huge, "huge.txt:1-2000,4000-5000");
+		expect(output.startsWith("[Lines 1-2003 of 6000]\nL1\n")).toBe(true);
+		expect(output).toContain("\nL2003\n[Lines 3999-4995 of 6000]\nL3999\n");
+		expect(output.endsWith("\nL4995\n\n[Showing lines 1-4995 of 6000. Continue with path selector :4996.]")).toBe(
+			true,
 		);
 	});
 });

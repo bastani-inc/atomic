@@ -194,7 +194,7 @@ Directory reads show a depth-2 tree sorted by most-recent modification time, wit
 
 ### Lines and local resources
 
-`read` returns plain text without line numbers. Line endings are shown as LF and a file's final newline is dropped. `read` and `search` accept selectors such as `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, and `https://example.test/page:5-8`. Bounded reads include one leading and three trailing context lines, and a limited read ends with the selector that continues it. Use `:raw` for the exact bytes, including CRLF line endings and a notebook's JSON. Out-of-range selectors report that the range is beyond EOF.
+`read` returns plain text without line numbers. Line endings are shown as LF and a file's final newline is dropped. `read` and `search` accept selectors such as `file.ts:5-16`, `file.ts:5+3`, `file.ts:5-16,960-973`, and `https://example.test/page:5-8`. Bounded reads include one leading and three trailing context lines. Unless a selection is the whole file, each run of consecutive lines starts with a label such as `[Lines 9-14 of 40]`, so the start of every range and every gap between ranges is visible, and a limited read ends with the selector that continues after its last line. Use `:raw` for the exact requested lines and bytes, including CRLF line endings and a notebook's JSON, without labels. Out-of-range selectors report that the range is beyond EOF.
 
 `read` and `search` support the following, and `write` supports all of them except `skill://`, `artifact://` and `history://`:
 

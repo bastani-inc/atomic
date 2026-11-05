@@ -309,7 +309,7 @@ export function selectReadRanges(
 			selectedLines: string[];
 			selectedContent: string;
 			firstLine: number;
-			lineNumbers?: number[];
+			lineNumbers: number[];
 			userLimitedLines?: number;
 	  }
 	| undefined {
@@ -342,4 +342,27 @@ export function selectReadRanges(
 		lineNumbers,
 		userLimitedLines: selectedLines.length,
 	};
+}
+
+/**
+ * Plain text for lines picked by a range selector. A selection that is the whole file reads as the file; any other
+ * selection labels each run of consecutive lines `[Lines S-E of N]`, so the start of every range and every gap
+ * between ranges stays visible.
+ */
+export function formatSelectedLines(
+	lines: readonly string[],
+	lineNumbers: readonly number[],
+	totalLines: number,
+): string {
+	const output: string[] = [];
+	let runStart = 0;
+	for (let index = 1; index <= lines.length; index++) {
+		if (index < lines.length && lineNumbers[index] === lineNumbers[index - 1]! + 1) continue;
+		const start = lineNumbers[runStart]!;
+		const end = lineNumbers[index - 1]!;
+		if (start !== 1 || end !== totalLines) output.push(`[Lines ${start}-${end} of ${totalLines}]`);
+		output.push(...lines.slice(runStart, index));
+		runStart = index;
+	}
+	return output.join("\n");
 }

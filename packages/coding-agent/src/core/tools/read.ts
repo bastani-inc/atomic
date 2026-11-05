@@ -24,6 +24,7 @@ import { isNotebookPath, readEditableNotebookText } from "./notebook.ts";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import {
+	formatSelectedLines,
 	isReadResourceSelector,
 	type ReadLineSelector,
 	selectExactReadRanges,
@@ -808,7 +809,17 @@ export function createReadToolDefinition(
 									content = [{ type: "text", text: buildOversizedReadMessage(oversizedRead) }];
 								} else {
 									const truncation = truncateHead(selectedContent);
-									let outputText = truncation.content;
+									const shownLines = truncation.truncated ? truncation.outputLines : selectedLines.length;
+									const shownLineNumbers = rangeSelection?.lineNumbers.slice(0, shownLines);
+									const lastShownLine = shownLineNumbers?.at(-1) ?? startLine + shownLines;
+									let outputText =
+										shownLineNumbers && !rawOutput
+											? formatSelectedLines(
+													selectedLines.slice(0, shownLines),
+													shownLineNumbers,
+													totalFileLines,
+												)
+											: truncation.content;
 									if (truncation.firstLineExceedsLimit) {
 										const firstLineSize = formatSize(Buffer.byteLength(allLines[startLine], "utf-8"));
 										outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${effectivePath} | head -c ${DEFAULT_MAX_BYTES}]`;
@@ -817,24 +828,18 @@ export function createReadToolDefinition(
 											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
 										};
 									} else if (truncation.truncated) {
-										const endLineDisplay = startLineDisplay + truncation.outputLines - 1;
-										const nextOffset = endLineDisplay + 1;
+										const nextOffset = lastShownLine + 1;
 										outputText +=
 											truncation.truncatedBy === "lines"
-												? `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines}. Continue with path selector :${nextOffset}.]`
-												: `\n\n[Showing lines ${startLineDisplay}-${endLineDisplay} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
+												? `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines}. Continue with path selector :${nextOffset}.]`
+												: `\n\n[Showing lines ${startLineDisplay}-${lastShownLine} of ${totalFileLines} (${formatSize(DEFAULT_MAX_BYTES)} limit). Continue with path selector :${nextOffset}.]`;
 										details = {
 											truncation,
 											meta: { source: absolutePath, sourcePath: absolutePath, truncation },
 										};
-									} else if (
-										!rawOutput &&
-										userLimitedLines !== undefined &&
-										startLine + userLimitedLines < allLines.length
-									) {
-										const remaining = allLines.length - (startLine + userLimitedLines);
-										const nextOffset = startLine + userLimitedLines + 1;
-										outputText = `${truncation.content}\n\n[${remaining} more lines in file. Continue with path selector :${nextOffset}.]`;
+									} else if (!rawOutput && userLimitedLines !== undefined && lastShownLine < allLines.length) {
+										const remaining = allLines.length - lastShownLine;
+										outputText += `\n\n[${remaining} more lines in file. Continue with path selector :${lastShownLine + 1}.]`;
 									}
 									content = [{ type: "text", text: outputText }];
 								}

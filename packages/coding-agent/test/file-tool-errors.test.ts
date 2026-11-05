@@ -520,6 +520,11 @@ describe("edit-diff invariants", () => {
 		expect(() =>
 			applyReplacementsPreservingUnchangedLines("a\n", "a\n", [{ matchIndex: 0, matchLength: 9, newText: "x" }]),
 		).toThrow("Replacement range is outside the base content.");
+		expect(() =>
+			applyReplacementsPreservingUnchangedLines("a\nb\n", "a\nb\n", [
+				{ matchIndex: -5, matchLength: 1, newText: "x" },
+			]),
+		).toThrow("Replacement range is outside the base content.");
 	});
 });
 
