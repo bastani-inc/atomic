@@ -16,6 +16,108 @@ export function expectedForkRetryable(code, phase) {
 		: code === "source-busy" || code === "copy-failed" || code === "session-unavailable";
 }
 
+/**
+ * Log records that end a fork attempt. `aborted-after-write` is not one: a cancellation after the fork's write was
+ * attempted ends only once the written fork is adopted (`done`) or the journal confirms it absent (`aborted`).
+ */
+export const ATTEMPT_TERMINALS = Object.freeze([
+	"done",
+	"aborted",
+	"probe-ok",
+	"failed-nonretryable",
+	"gave-up",
+	"probe-unexpected-success",
+]);
+
+/**
+ * What a fork attempt does after `forkRun` rejected with its own `signal.reason`. A cancellation before any write
+ * (`candidate` undefined) ends the attempt. After a write was attempted, the fork the write named is adopted when the
+ * journal holds it, so the attempt never forks again; when the journal confirms it absent, the attempt ends and keeps
+ * the candidate, the only fork a later-landing write could add for it.
+ *
+ * @param {{ readonly forkRunId: string } | undefined} candidate the fork this try began writing
+ * @param {boolean | undefined} exists whether the journal holds `candidate` (unread when there is none)
+ * @returns {"aborted-before-write" | "adopt-written-fork" | "aborted-write-unconfirmed"}
+ */
+export function abortDisposition(candidate, exists) {
+	if (candidate === undefined) return "aborted-before-write";
+	return exists === true ? "adopt-written-fork" : "aborted-write-unconfirmed";
+}
+
+/**
+ * Folds one attempt's log records, in order, into what recovery needs: its plan, whether a terminal record ended it,
+ * the fork runs its copies began, and its cancellation. The workload writes `abort-requested` (durably, before it
+ * aborts the signal) with the write in progress, if any; `aborted-after-write` names the write the rejection found.
+ * A copy that begins after the request becomes the cancellation's candidate, since its write may land.
+ *
+ * @template P
+ * @param {readonly { readonly t?: unknown, readonly plan?: P, readonly forkRunId?: unknown, readonly phase?: unknown }[]} records
+ * @returns {{ plan?: P, terminal: boolean, forkRunIds: Set<string>, cancelled?: { forkRunId?: string, phase?: string } }}
+ */
+export function foldAttempt(records) {
+	/** @type {{ plan?: P, terminal: boolean, forkRunIds: Set<string>, cancelled?: { forkRunId?: string, phase?: string } }} */
+	const state = { terminal: false, forkRunIds: new Set() };
+	/** @param {{ readonly forkRunId?: unknown, readonly phase?: unknown }} record */
+	const candidate = (record) => ({
+		...(typeof record.forkRunId === "string" ? { forkRunId: record.forkRunId } : {}),
+		...(typeof record.phase === "string" ? { phase: record.phase } : {}),
+	});
+	for (const record of records) {
+		if (record.t === "intent" && record.plan !== undefined) state.plan = record.plan;
+		if (record.t === "copy-begin" && typeof record.forkRunId === "string") {
+			state.forkRunIds.add(record.forkRunId);
+			if (state.cancelled !== undefined) state.cancelled = { forkRunId: record.forkRunId, phase: "begun" };
+		}
+		if (record.t === "abort-requested" || record.t === "aborted-after-write") {
+			const next = candidate(record);
+			state.cancelled = next.forkRunId === undefined && state.cancelled !== undefined ? state.cancelled : next;
+		}
+		// ATTEMPT_TERMINALS holds strings only, so a missing or non-string `t` never matches.
+		if (ATTEMPT_TERMINALS.includes(/** @type {string} */ (record.t))) state.terminal = true;
+	}
+	return state;
+}
+
+/**
+ * What recovery does with an attempt a killed process left without a terminal record. Forks of the attempt that the
+ * journal holds are adopted. A cancelled attempt is never forked again: one cancelled before any write ends `aborted`
+ * with no candidate; one cancelled after a write was attempted ends `aborted` with that candidate even when it is
+ * absent, since the write may still land and the global sweep recovers a late fork. Only an attempt with neither a
+ * held fork nor a cancellation is driven again.
+ *
+ * @param {{ readonly forkRunId?: string, readonly phase?: string } | undefined} cancelled the attempt's cancellation
+ * @param {readonly string[]} existing the attempt's copied forks the journal holds
+ * @returns {{ readonly action: "adopt", readonly forkRunIds: readonly string[] }
+ *   | { readonly action: "end-aborted", readonly forkRunId?: string, readonly phase?: string }
+ *   | { readonly action: "drive" }}
+ */
+export function redriveDecision(cancelled, existing) {
+	if (existing.length > 0) return { action: "adopt", forkRunIds: [...existing] };
+	if (cancelled !== undefined)
+		return {
+			action: "end-aborted",
+			...(cancelled.forkRunId === undefined ? {} : { forkRunId: cancelled.forkRunId }),
+			...(cancelled.phase === undefined ? {} : { phase: cancelled.phase }),
+		};
+	return { action: "drive" };
+}
+
+/**
+ * The fork runs an attempt ending in `aborted` created that no cancelled write explains. Only the candidate an
+ * `aborted` record names is explained: the workload and recovery put it there whenever a write was attempted before
+ * the cancellation, and a cancellation before any write names none, so any fork it left is reported. Other records
+ * that name a fork (`copy-begin`, `abort-requested`, `aborted-after-write`) explain nothing.
+ *
+ * @param {readonly { readonly t?: unknown, readonly forkRunId?: unknown }[]} records the attempt's log records
+ * @param {Iterable<string>} created the fork runs the attempt's copies created
+ * @returns {string[]}
+ */
+export function unexplainedAbortForks(records, created) {
+	// A record without a string `forkRunId` adds a value no created fork id equals, so it explains nothing.
+	/** @type {Set<unknown>} */
+	const candidates = new Set(records.filter((record) => record.t === "aborted").map((record) => record.forkRunId));
+	return [...created].filter((forkRunId) => !candidates.has(forkRunId));
+}
 
 /** The invariants every report must carry, each with `pass: true`, for the round to pass. */
 export const CHAOS_INVARIANTS = Object.freeze([

@@ -29,6 +29,7 @@ import { run } from "../../../packages/workflows/src/runs/foreground/sdk-run.js"
 import { createStore } from "../../../packages/workflows/src/shared/store.js";
 import type { WorkflowInputValues } from "../../../packages/workflows/src/shared/types.js";
 import {
+	type AttemptScope,
 	attemptScope,
 	chaosWorkflows,
 	describeError,
@@ -47,7 +48,13 @@ import {
 	STORE_NOW_SQL,
 	sleep,
 } from "./shared.js";
-import { assertLocalSqliteReport, ChaosInvariantError } from "./verdict.mjs";
+import {
+	abortDisposition,
+	assertLocalSqliteReport,
+	ChaosInvariantError,
+	foldAttempt,
+	redriveDecision,
+} from "./verdict.mjs";
 
 /** What the controller steers at runtime; re-read before every attempt and at every hook. */
 interface Control {
@@ -213,13 +220,17 @@ const hooks = {
 			const scope = attemptScope.getStore();
 			if (scope === undefined) return createRunWithEvents(header, events);
 			scope.log.write({ t: "copy-begin", id: scope.attemptId, forkRunId: header.runId, events: events.length });
+			const copy: NonNullable<typeof scope.lastCopy> = { forkRunId: header.runId, phase: "begun" };
+			scope.lastCopy = copy;
 			try {
 				const result = await copyScope.run({ forkRunId: header.runId }, () => createRunWithEvents(header, events));
+				copy.phase = result === "created" ? "committed" : "not-created";
 				scope.log.write({ t: "copy-end", id: scope.attemptId, forkRunId: header.runId, result });
 				if (result === "created" && Math.random() < control().killAfterCommitP)
 					selfKill("after-commit", { forkRunId: header.runId });
 				return result;
 			} catch (error) {
+				copy.phase = "rejected";
 				scope.log.write({
 					t: "copy-end",
 					id: scope.attemptId,
@@ -370,6 +381,11 @@ async function resumeUntilComplete(attemptId: string, forkRunId: string, why: st
 	return false;
 }
 
+/** The fork write the journal hook recorded during this try's `forkRun`, if it began one. */
+function writeAttempted(scope: AttemptScope): AttemptScope["lastCopy"] {
+	return scope.lastCopy;
+}
+
 /** One logical fork attempt: retries retryable failures until the fork exists and its execution completed. */
 async function driveAttempt(attemptId: string, plan: AttemptPlan, backend: JournalDurableBackend): Promise<void> {
 	const scope = attemptScope.getStore()!;
@@ -402,9 +418,24 @@ async function driveAttempt(attemptId: string, plan: AttemptPlan, backend: Journ
 		}
 		const abort = plan.abortAfterMs === undefined ? undefined : new AbortController();
 		const reason = new Error(`chaos abort of attempt ${attemptId}`);
-		const timer = abort === undefined ? undefined : setTimeout(() => abort.abort(reason), plan.abortAfterMs);
+		// The cancellation is recorded durably, with any write in progress, before the signal aborts: a process killed
+		// before the rejection is logged is still known to recovery as cancelled, so it is never forked again.
+		const timer =
+			abort === undefined
+				? undefined
+				: setTimeout(() => {
+						const copy = writeAttempted(scope);
+						scope.log.write({
+							t: "abort-requested",
+							id: attemptId,
+							n: tryNumber,
+							...(copy === undefined ? {} : { forkRunId: copy.forkRunId, phase: copy.phase }),
+						});
+						abort.abort(reason);
+					}, plan.abortAfterMs);
 		const started = performance.now();
 		let forkRunId: string;
+		scope.lastCopy = undefined;
 		try {
 			const forked = await forkRun(sourceId, {
 				...(fromStage === undefined ? {} : { fromStage }),
@@ -453,7 +484,33 @@ async function driveAttempt(attemptId: string, plan: AttemptPlan, backend: Journ
 		} catch (error) {
 			const latencyMs = Math.round(performance.now() - started);
 			if (abort?.signal.aborted === true && error === reason) {
-				scope.log.write({ t: "aborted", id: attemptId, n: tryNumber, latencyMs });
+				// A cancellation after the fork's write was attempted may still have written it (a shared commit whose reply
+				// and read-back failed). Adopt that exact fork if the journal holds it; never fork the attempt again.
+				const candidate = writeAttempted(scope);
+				if (candidate !== undefined)
+					scope.log.write({
+						t: "aborted-after-write",
+						id: attemptId,
+						n: tryNumber,
+						forkRunId: candidate.forkRunId,
+						phase: candidate.phase,
+						latencyMs,
+					});
+				const exists = candidate === undefined ? undefined : await runExists(journal, candidate.forkRunId);
+				const disposition = abortDisposition(candidate, exists);
+				if (disposition === "adopt-written-fork" && candidate !== undefined) {
+					scope.log.write({ t: "adopted", id: attemptId, forkRunId: candidate.forkRunId });
+					const done = await resumeUntilComplete(attemptId, candidate.forkRunId, "adopted-after-abort");
+					scope.log.write({ t: done ? "done" : "gave-up", id: attemptId, forkRunId: candidate.forkRunId });
+					return;
+				}
+				scope.log.write({
+					t: "aborted",
+					id: attemptId,
+					n: tryNumber,
+					latencyMs,
+					...(candidate === undefined ? {} : { forkRunId: candidate.forkRunId, phase: candidate.phase }),
+				});
 				return;
 			}
 			const failure: ErrorRecord = describeError(error);
@@ -504,50 +561,38 @@ async function runExists(journal: RunJournal, runId: string): Promise<boolean> {
 	}
 }
 
-interface AttemptState {
-	intent?: { readonly plan: AttemptPlan };
-	terminal: boolean;
-	readonly forkRunIds: Set<string>;
-}
+type AttemptState = ReturnType<typeof foldAttempt<AttemptPlan>>;
 
 /** Folds every attempt log this node wrote, by attempt id. */
 function attemptStates(): Map<string, AttemptState> {
-	const states = new Map<string, AttemptState>();
+	const records = new Map<string, { t?: string; plan?: AttemptPlan; forkRunId?: string; phase?: string }[]>();
 	for (const file of readdirSync(config.stateDir)) {
 		if (!/^(attempts|stopper|resume)-/.test(file) || !file.endsWith(".jsonl")) continue;
 		for (const line of readFileSync(join(config.stateDir, file), "utf8").split("\n")) {
 			if (line.length === 0) continue;
-			let record: { t?: string; id?: string; plan?: AttemptPlan; forkRunId?: string };
+			let record: { t?: string; id?: string; plan?: AttemptPlan; forkRunId?: string; phase?: string };
 			try {
 				record = JSON.parse(line) as typeof record;
 			} catch {
 				continue;
 			}
 			if (typeof record.id !== "string") continue;
-			let state = states.get(record.id);
-			if (state === undefined) {
-				state = { terminal: false, forkRunIds: new Set() };
-				states.set(record.id, state);
-			}
-			if (record.t === "intent" && record.plan !== undefined) state.intent = { plan: record.plan };
-			if (record.t === "copy-begin" && typeof record.forkRunId === "string") state.forkRunIds.add(record.forkRunId);
-			if (
-				["done", "aborted", "probe-ok", "failed-nonretryable", "gave-up", "probe-unexpected-success"].includes(
-					record.t ?? "",
-				)
-			)
-				state.terminal = true;
+			const list = records.get(record.id) ?? [];
+			list.push(record);
+			records.set(record.id, list);
 		}
 	}
-	return states;
+	return new Map([...records].map(([attemptId, list]) => [attemptId, foldAttempt<AttemptPlan>(list)]));
 }
 
 /**
  * Recovery with no manual steps: every attempt a killed process left unfinished is driven again. A fork whose copy
- * transaction committed before the kill is adopted and its execution resumed, never forked a second time.
+ * transaction committed before the kill is adopted and its execution resumed, never forked a second time. An attempt
+ * cancelled after its write was attempted is never forked again either: if its candidate is absent, it ends `aborted`
+ * with the candidate, and the global sweep recovers that fork should the write land later.
  */
 async function redrive(backend: JournalDurableBackend): Promise<number> {
-	const incomplete = [...attemptStates()].filter(([, state]) => !state.terminal && state.intent !== undefined);
+	const incomplete = [...attemptStates()].filter(([, state]) => !state.terminal && state.plan !== undefined);
 	await Promise.all(
 		incomplete.map(([attemptId, state]) =>
 			attemptScope.run({ attemptId, log }, async () => {
@@ -565,17 +610,28 @@ async function redrive(backend: JournalDurableBackend): Promise<number> {
 						}
 					}
 				}
-				if (existing.length > 1) log.write({ t: "multiple-created", id: attemptId, forkRunIds: existing });
-				if (existing.length > 0) {
+				const decision = redriveDecision(state.cancelled, existing);
+				if (decision.action === "adopt") {
+					if (existing.length > 1) log.write({ t: "multiple-created", id: attemptId, forkRunIds: existing });
 					let done = true;
-					for (const forkRunId of existing) {
+					for (const forkRunId of decision.forkRunIds) {
 						log.write({ t: "adopted", id: attemptId, forkRunId });
 						done = (await resumeUntilComplete(attemptId, forkRunId, "adopted-after-kill")) && done;
 					}
-					log.write({ t: done ? "done" : "gave-up", id: attemptId, forkRunId: existing[0]! });
+					log.write({ t: done ? "done" : "gave-up", id: attemptId, forkRunId: decision.forkRunIds[0]! });
 					return;
 				}
-				await driveAttempt(attemptId, state.intent!.plan, backend);
+				if (decision.action === "end-aborted") {
+					log.write({
+						t: "aborted",
+						id: attemptId,
+						...(decision.forkRunId === undefined ? {} : { forkRunId: decision.forkRunId }),
+						phase: decision.phase ?? null,
+						redriven: true,
+					});
+					return;
+				}
+				await driveAttempt(attemptId, state.plan!, backend);
 			}),
 		),
 	);

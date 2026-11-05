@@ -4,15 +4,20 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import {
+	abortDisposition,
 	assertChaosInvariants,
 	assertLocalSqliteReport,
+	ATTEMPT_TERMINALS,
 	CHAOS_ERROR_CAUSE_DEPTH,
 	CHAOS_INVARIANTS,
 	ChaosInvariantError,
 	expectedForkRetryable,
 	findChaosInvariantError,
+	foldAttempt,
 	isChaosInvariantError,
 	readChaosReport,
+	redriveDecision,
+	unexplainedAbortForks,
 } from "../distributed/fork-chaos/verdict.mjs";
 import { makeTempDirectory, removeTempDirectory, spawnSyncCollect } from "../helpers/runtime.js";
 
@@ -32,6 +37,169 @@ test("fork chaos retryability follows the journal phase, including uncertain and
 		assert.equal(expectedForkRetryable(code, undefined), true, code);
 	for (const code of ["invalid-option", "source-not-found", "cleanup-failed", undefined])
 		assert.equal(expectedForkRetryable(code, undefined), false, code);
+});
+
+describe("fork chaos cancellation bookkeeping", () => {
+	// Attempt logs as workload.ts writes them for one cancelled attempt.
+	const beforeWrite = [{ t: "intent" }, { t: "try", n: 1 }, { t: "aborted", n: 1 }];
+	const adoptedAfterWrite = [
+		{ t: "intent" },
+		{ t: "copy-begin", forkRunId: "fork-1" },
+		{ t: "copy-end", forkRunId: "fork-1", error: { code: "journal-unavailable" } },
+		{ t: "aborted-after-write", forkRunId: "fork-1", phase: "rejected" },
+		{ t: "adopted", forkRunId: "fork-1" },
+		{ t: "done", forkRunId: "fork-1" },
+	];
+	const unconfirmedWrite = [
+		{ t: "intent" },
+		{ t: "copy-begin", forkRunId: "fork-1" },
+		{ t: "aborted-after-write", forkRunId: "fork-1", phase: "rejected" },
+		{ t: "aborted", forkRunId: "fork-1", phase: "rejected" },
+	];
+	// What recovery does with an attempt's log, given which of its copied forks the journal holds.
+	const recover = (records: readonly { readonly t: string }[], held: readonly string[]) => {
+		const state = foldAttempt(records);
+		if (state.terminal) return { action: "none" };
+		return redriveDecision(
+			state.cancelled,
+			[...state.forkRunIds].filter((id) => held.includes(id)),
+		);
+	};
+
+	test("a cancellation adopts the fork its write named when the journal holds it, and never forks again (#4321)", () => {
+		assert.equal(abortDisposition(undefined, undefined), "aborted-before-write");
+		assert.equal(abortDisposition({ forkRunId: "fork-1" }, true), "adopt-written-fork");
+		assert.equal(abortDisposition({ forkRunId: "fork-1" }, false), "aborted-write-unconfirmed");
+	});
+
+	test("recovery adopts a killed cancelled write's fork if present, and otherwise ends the attempt without forking again (#4321)", () => {
+		const killedAfterCancelledWrite = adoptedAfterWrite.slice(0, 4);
+		assert.deepEqual(recover(killedAfterCancelledWrite, ["fork-1"]), { action: "adopt", forkRunIds: ["fork-1"] });
+		// The write may still land: the attempt ends with its candidate, for the global sweep, and issues no new fork.
+		assert.deepEqual(recover(killedAfterCancelledWrite, []), {
+			action: "end-aborted",
+			forkRunId: "fork-1",
+			phase: "rejected",
+		});
+		// Without a cancellation, a kill mid-copy whose fork is absent is driven again, as before.
+		assert.deepEqual(recover(adoptedAfterWrite.slice(0, 2), []), { action: "drive" });
+		for (const ended of [adoptedAfterWrite, unconfirmedWrite, beforeWrite])
+			assert.deepEqual(recover(ended, ["fork-1"]), { action: "none" });
+	});
+
+	test("a process killed right after requesting the cancellation is never forked again (#4321)", () => {
+		// abort-requested is fsynced before the signal aborts; the kill lands before the rejection is logged.
+		const killedBeforeWrite = [{ t: "intent" }, { t: "try", n: 1 }, { t: "abort-requested", n: 1 }];
+		const killedDuringWrite = [
+			{ t: "intent" },
+			{ t: "try", n: 1 },
+			{ t: "copy-begin", forkRunId: "fork-1" },
+			{ t: "abort-requested", n: 1, forkRunId: "fork-1", phase: "begun" },
+		];
+		// The write began after the request: its fork is the candidate.
+		const writeAfterRequest = [
+			{ t: "intent" },
+			{ t: "abort-requested", n: 1 },
+			{ t: "copy-begin", forkRunId: "fork-2" },
+		];
+		assert.deepEqual(recover(killedBeforeWrite, []), { action: "end-aborted" });
+		assert.deepEqual(recover(killedDuringWrite, ["fork-1"]), { action: "adopt", forkRunIds: ["fork-1"] });
+		assert.deepEqual(recover(killedDuringWrite, []), { action: "end-aborted", forkRunId: "fork-1", phase: "begun" });
+		assert.deepEqual(recover(writeAfterRequest, []), { action: "end-aborted", forkRunId: "fork-2", phase: "begun" });
+
+		// The checker then accepts only the candidate recovery recorded.
+		const endedBeforeWrite = [...killedBeforeWrite, { t: "aborted", redriven: true }];
+		const endedDuringWrite = [...killedDuringWrite, { t: "aborted", forkRunId: "fork-1", redriven: true }];
+		assert.deepEqual(unexplainedAbortForks(endedBeforeWrite, ["fork-9"]), ["fork-9"]);
+		assert.deepEqual(unexplainedAbortForks(endedDuringWrite, ["fork-1"]), []);
+		assert.deepEqual(unexplainedAbortForks(endedDuringWrite, ["fork-2"]), ["fork-2"]);
+	});
+
+	test("the checker accepts only the candidate fork of a cancelled write, never a fork after a cancellation before writing (#4321)", () => {
+		assert.deepEqual(unexplainedAbortForks(unconfirmedWrite, ["fork-1"]), [], "a cancelled write that landed later");
+		assert.deepEqual(unexplainedAbortForks(unconfirmedWrite, []), []);
+		assert.deepEqual(
+			unexplainedAbortForks(unconfirmedWrite, ["fork-2"]),
+			["fork-2"],
+			"a fork other than the candidate",
+		);
+		assert.deepEqual(
+			unexplainedAbortForks(beforeWrite, ["fork-1"]),
+			["fork-1"],
+			"a fork after a cancellation before writing",
+		);
+		assert.deepEqual(unexplainedAbortForks(beforeWrite, []), []);
+	});
+
+	test("only aborted records explain a cancelled attempt's fork, never records of other types (#4321)", () => {
+		const otherRecords = [
+			{ t: "copy-begin", forkRunId: "fork-2" },
+			{ t: "abort-requested", forkRunId: "fork-2", phase: "begun" },
+			{ t: "aborted-after-write", forkRunId: "fork-2", phase: "rejected" },
+			{ t: "aborted" },
+		];
+		assert.deepEqual(unexplainedAbortForks(otherRecords, ["fork-2"]), ["fork-2"]);
+		assert.deepEqual(unexplainedAbortForks([{ t: "aborted", forkRunId: "fork-2" }], ["fork-2", "fork-3"]), [
+			"fork-3",
+		]);
+	});
+
+	test("an attempt ends at each terminal record and at no other (#4321)", () => {
+		assert.deepEqual(ATTEMPT_TERMINALS, [
+			"done",
+			"aborted",
+			"probe-ok",
+			"failed-nonretryable",
+			"gave-up",
+			"probe-unexpected-success",
+		]);
+		for (const t of ["done", "aborted", "probe-ok", "failed-nonretryable", "gave-up", "probe-unexpected-success"])
+			assert.equal(foldAttempt([{ t: "intent" }, { t }]).terminal, true, t);
+		for (const t of [
+			"intent",
+			"try",
+			"copy-begin",
+			"abort-requested",
+			"aborted-after-write",
+			"adopted",
+			"redrive",
+			"",
+		])
+			assert.equal(foldAttempt([{ t }]).terminal, false, t);
+	});
+
+	test("folding keeps the intent's plan and only valid copy-begin ids (#4321)", () => {
+		const plan = { source: "run-1" };
+		const state = foldAttempt([
+			{ t: "try", plan: { source: "not-a-plan" } },
+			{ t: "intent", plan },
+			{ t: "intent" },
+			{ t: "try", plan: { source: "must-not-replace-intent" } },
+			{ t: "copy-begin", forkRunId: "fork-1" },
+			{ t: "copy-begin", forkRunId: 7 },
+			{ t: "copy-begin" },
+			{ t: "copy-end", forkRunId: "fork-x" },
+			{ t: "aborted", forkRunId: "fork-y" },
+		]);
+		assert.equal(state.plan, plan);
+		assert.deepEqual([...state.forkRunIds], ["fork-1"]);
+		assert.equal(state.cancelled, undefined, "no cancellation was requested");
+		assert.equal(foldAttempt([{ t: "copy-begin", forkRunId: "fork-1" }]).plan, undefined);
+	});
+
+	test("a cancellation keeps its candidate when a later marker names none, and takes a newly named one (#4321)", () => {
+		assert.deepEqual(foldAttempt([{ t: "abort-requested", forkRunId: 7, phase: 3 }]).cancelled, {});
+		const kept = foldAttempt([
+			{ t: "abort-requested", forkRunId: "fork-1", phase: "begun" },
+			{ t: "aborted-after-write", phase: "rejected" },
+		]);
+		assert.deepEqual(kept.cancelled, { forkRunId: "fork-1", phase: "begun" });
+		const replaced = foldAttempt([
+			{ t: "abort-requested", forkRunId: "fork-1", phase: "begun" },
+			{ t: "aborted-after-write", forkRunId: "fork-3", phase: "rejected" },
+		]);
+		assert.deepEqual(replaced.cancelled, { forkRunId: "fork-3", phase: "rejected" });
+	});
 });
 
 const BRANCH = "feat-issue-4321-fork-and-time-travel";

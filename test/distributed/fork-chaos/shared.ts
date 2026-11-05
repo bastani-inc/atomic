@@ -64,6 +64,8 @@ export class JsonlLog {
 export interface AttemptScope {
 	readonly attemptId: string;
 	readonly log: JsonlLog;
+	/** The fork run the current try began writing and how that write ended; reset before each `forkRun`. */
+	lastCopy?: { readonly forkRunId: string; phase: "begun" | "committed" | "not-created" | "rejected" };
 }
 /** The fork attempt the current async context works for; tool callbacks and journal hooks read it. */
 export const attemptScope = new AsyncLocalStorage<AttemptScope>();

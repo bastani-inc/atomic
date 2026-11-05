@@ -14,7 +14,13 @@ import { join } from "node:path";
 import type { SqliteDatabase } from "../../../packages/coding-agent/src/core/storage/index.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "../../../packages/workflows/src/durable/run-result.js";
 import { type Json, LEDGER_TABLE, loadConfig, NAMED_TOOLS, openSharedStorage } from "./shared.js";
-import { assertChaosInvariants, ChaosInvariantError, expectedForkRetryable } from "./verdict.mjs";
+import {
+	ATTEMPT_TERMINALS,
+	assertChaosInvariants,
+	ChaosInvariantError,
+	expectedForkRetryable,
+	unexplainedAbortForks,
+} from "./verdict.mjs";
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
 
@@ -315,12 +321,7 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 		}
 		attempt.records.push(record);
 		if (record.t === "intent") attempt.plan = record.plan as Record<string, Json>;
-		if (
-			["done", "aborted", "probe-ok", "failed-nonretryable", "gave-up", "probe-unexpected-success"].includes(
-				record.t,
-			)
-		)
-			attempt.terminal = record.t;
+		if (ATTEMPT_TERMINALS.includes(record.t)) attempt.terminal = record.t;
 		if (record.t === "copy-begin" && typeof record.forkRunId === "string") {
 			const list = copyBegins.get(record.forkRunId) ?? [];
 			list.push({ attemptId: record.id, pid: record.pid });
@@ -590,8 +591,10 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 		bump(copiesPerAttempt, String(created.size));
 		if (created.size > 1)
 			work.fail({ attempt: attempt.id, problem: "one attempt created several forks", forkRunIds: [...created] });
-		if (attempt.terminal === "aborted" && created.size > 0)
-			work.fail({ attempt: attempt.id, problem: "abort reported but a fork run exists", forkRunIds: [...created] });
+		// A cancellation after the write was attempted may leave its candidate fork; one before any write leaves none.
+		const unexplained = attempt.terminal === "aborted" ? unexplainedAbortForks(attempt.records, created) : [];
+		if (unexplained.length > 0)
+			work.fail({ attempt: attempt.id, problem: "abort reported but a fork run exists", forkRunIds: unexplained });
 		for (const record of attempt.records) {
 			if (record.t !== "forked") continue;
 			const forkRunId = record.forkRunId as string;
@@ -621,6 +624,9 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 		const adoptedAfterTypedError = attempt.records.some(
 			(record) => record.t === "created-despite-error" && record.forkRunId === run.runId,
 		);
+		const abortedAfterWrite = attempt.records.some(
+			(record) => record.t === "aborted-after-write" && record.forkRunId === run.runId,
+		);
 		const pid = begins[0]!.pid;
 		const ended = attempt.records.find(
 			(record) => record.pid === pid && record.t === "copy-end" && record.forkRunId === run.runId,
@@ -628,6 +634,11 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 		if (reported) bump(categories, "reported-success");
 		else if (copyFailed) bump(categories, "copy-failed-but-created");
 		else if (adoptedAfterTypedError) bump(categories, "written-then-typed-error-adopted");
+		else if (abortedAfterWrite)
+			bump(
+				categories,
+				attempt.terminal === "aborted" ? "cancelled-write-landed-later" : "written-then-cancelled-adopted",
+			);
 		else if (deadPids.has(pid) || !pidEnds.has(pid))
 			bump(categories, ended === undefined ? "killed-mid-copy-committed" : "killed-after-commit");
 		else {
@@ -669,7 +680,13 @@ async function check(collectedDir: string, beforeFile: string, timelineFile: str
 	let aborted = 0;
 	for (const record of records) {
 		if (record.t === "try" && Number(record.n) > 1) retries++;
-		if (record.t === "aborted") aborted++;
+		// One count per rejection a caller saw: after a write, or before any write. A cancellation that recovery ended for
+		// a killed process (`redriven`) saw no rejection and is not counted.
+		if (
+			record.t === "aborted-after-write" ||
+			(record.t === "aborted" && record.forkRunId === undefined && record.redriven !== true)
+		)
+			aborted++;
 		if (record.t === "release" && record.ok === false) bump(cleanup, `${(record.error as { name?: string }).name}`);
 		if (record.t === "resume-error") bump(execution, `${(record.error as { name?: string }).name}`);
 		if (record.t !== "error") continue;
