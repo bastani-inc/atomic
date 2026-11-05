@@ -628,24 +628,34 @@ test("the benchmark CLI rejects --holds -1 at once with a typed message, exit 1 
 	assert.deepEqual(result.leftovers, []);
 });
 
-test("the benchmark CLI fails fast instead of hanging when its writers exit before ready, and cleans up (#4316)", () => {
-	const result = runScript("benchmark.ts", ["--scenarios", "serial-30", "--holds", "25", "--repeats", "1"], {
-		NODE_OPTIONS: "--no-such-flag",
-	});
-	assert.equal(result.status, 1);
-	assert.match(result.stderr, /\(worker-exited\)/);
-	assert.match(result.stderr, /waited for ready/);
-	assert.doesNotMatch(result.stderr, /\n\s+at /);
-	assert.deepEqual(result.leftovers, []);
-}, 90_000);
+const REAL_WRITER_QUEUE_CLI_TEST_TIMEOUT_MS = 90_000;
 
-test("the dead-head CLI fails fast instead of hanging when its holder exits before locking, and cleans up (#4316)", () => {
-	const result = runScript("dead-head.ts", ["--gaps", "0", "--repeats", "1"], { NODE_OPTIONS: "--no-such-flag" });
-	assert.equal(result.status, 1);
-	assert.match(result.stderr, /\(worker-exited\)/);
-	assert.match(result.stderr, /waited for locked/);
-	assert.deepEqual(result.leftovers, []);
-}, 90_000);
+test(
+	"the benchmark CLI fails fast instead of hanging when its writers exit before ready, and cleans up (#4316)",
+	() => {
+		const result = runScript("benchmark.ts", ["--scenarios", "serial-30", "--holds", "25", "--repeats", "1"], {
+			NODE_OPTIONS: "--no-such-flag",
+		});
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /\(worker-exited\)/);
+		assert.match(result.stderr, /waited for ready/);
+		assert.doesNotMatch(result.stderr, /\n\s+at /);
+		assert.deepEqual(result.leftovers, []);
+	},
+	REAL_WRITER_QUEUE_CLI_TEST_TIMEOUT_MS,
+);
+
+test(
+	"the dead-head CLI fails fast instead of hanging when its holder exits before locking, and cleans up (#4316)",
+	() => {
+		const result = runScript("dead-head.ts", ["--gaps", "0", "--repeats", "1"], { NODE_OPTIONS: "--no-such-flag" });
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /\(worker-exited\)/);
+		assert.match(result.stderr, /waited for locked/);
+		assert.deepEqual(result.leftovers, []);
+	},
+	REAL_WRITER_QUEUE_CLI_TEST_TIMEOUT_MS,
+);
 
 test("the dead-head CLI rejects a bad flag before starting anything (#4316)", () => {
 	const result = runScript("dead-head.ts", ["--gaps", "-1"]);
