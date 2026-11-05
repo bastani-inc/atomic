@@ -16,10 +16,10 @@ Each revision's `possible-stages.ts` and the one module it imports are written t
 
 A crabbox runner (Azure D16ads_v6: AMD EPYC 9V74, 16 vCPU), Linux 7.0, Bun 1.4.4, 14 definitions (10 builtin workflows and 4 prediction fixtures), 25 rounds after 5 warm-up rounds, 2026-11-05.
 
-| variant | revision | definitions with uncertainties | median ms/round | min | max | median ms/definition |
+| variant | scanner sources measured | definitions with uncertainties | median ms/round | min | max | median ms/definition |
 |---|---|---:|---:|---:|---:|---:|
-| base (before #4359) | 004ea6443 | — | 73.5 | 70.6 | 76.2 | 5.248 |
-| eager candidate index | 220ba7e12 | 14 | 92.3 | 88.8 | 100.2 | 6.592 |
-| lazy candidate index | 31b20dab1 | 14 | 81.6 | 76.9 | 89.1 | 5.826 |
+| base | #4358's decision-service branch, before #4359 | — | 73.5 | 70.6 | 76.2 | 5.248 |
+| eager candidate index | #4359 commit "show stage predictions in the run detail and prove them live" | 14 | 92.3 | 88.8 | 100.2 | 6.592 |
+| lazy candidate index | #4359 commit "pin stage-prediction edges that survived mutation, and fix helper parameter positions" | 14 | 81.6 | 76.9 | 89.1 | 5.826 |
 
-The measured runs used earlier commits whose scanner sources are byte-identical to these revisions. Every revision returned the same `stages` and `warnings` for every definition. Building the candidate index only for files with an uncertain call site cuts the scan time this change added from 18.8 ms to 8.1 ms per round (25.6% to 11.0% over the base). Every definition measured has at least one uncertain call site, so the remaining time is candidate extraction for those sites.
+Every revision returned the same `stages` and `warnings` for every definition. Building the candidate index only for files with an uncertain call site cuts the scan time this change added from 18.8 ms to 8.1 ms per round (25.6% to 11.0% over the base). Every definition measured has at least one uncertain call site, so the remaining time is candidate extraction for those sites.

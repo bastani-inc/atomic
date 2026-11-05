@@ -2389,15 +2389,21 @@ function substituteHelperCall(helper: TemplateHelper, args: readonly (readonly T
 	let composed = "";
 	let cursor = 0;
 	while (cursor < body.length) {
-		const hole = body.indexOf("${", cursor);
-		if (hole < 0) {
-			composed += body.slice(cursor).replace(/\\([$`\\])/g, "$1");
-			break;
+		if (body[cursor] === "\\") {
+			const escaped = body.slice(cursor + 1, cursor + 2);
+			composed += "$`\\".includes(escaped) ? escaped : `\\${escaped}`;
+			cursor += 2;
+			continue;
 		}
-		composed += body.slice(cursor, hole).replace(/\\([$`\\])/g, "$1");
+		if (!body.startsWith("${", cursor)) {
+			composed += body[cursor];
+			cursor += 1;
+			continue;
+		}
 		// A hole holding a nested brace is never a plain parameter, so the first `}` ends every hole that can compose.
-		const end = body.indexOf("}", hole + 2);
-		const argument = args[helper.params.indexOf(body.slice(hole + 2, end).trim())];
+		const end = body.indexOf("}", cursor + 2);
+		if (end < 0) return undefined;
+		const argument = args[helper.params.indexOf(body.slice(cursor + 2, end).trim())];
 		if (argument?.length !== 1) return undefined;
 		const only = argument[0]!;
 		if (only.kind === "string") composed += only.value;

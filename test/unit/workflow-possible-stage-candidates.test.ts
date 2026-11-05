@@ -313,6 +313,32 @@ describe("template helper composition", () => {
 		]);
 	});
 
+	test("an escaped hole is static text, so it never takes an argument", () => {
+		assert.deepEqual(candidatesFor("const label = (n) => `a-\\${n}`;", '"x"'), [
+			literal("x"),
+			{ stages: ["a-${n}"], source: "template" },
+		]);
+	});
+
+	test("an escaped hole that never closes is static text and the scan ends", () => {
+		assert.deepEqual(candidatesFor("const label = (n) => `cost-\\${nn`;", '"x"'), [
+			literal("x"),
+			{ stages: ["cost-${nn"], source: "template" },
+		]);
+	});
+
+	test("a hole that never closes composes nothing and the scan ends", () => {
+		const result = scan(`${workflowSource('await ctx.task(label("x"), {});')}const label = (n) => \`a-\${nn\n`);
+		assert.deepEqual(result.uncertainties[0]?.candidates, [literal("x")]);
+	});
+
+	test("an escaped backslash before a hole leaves the hole open", () => {
+		assert.deepEqual(candidatesFor("const label = (n) => `a\\\\${n}`;", '"x"'), [
+			literal("x"),
+			{ stages: ["a\\x"], source: "template" },
+		]);
+	});
+
 	test("trailing static text after the last hole is kept", () => {
 		assert.deepEqual(candidatesFor("const label = (n) => `${n}-tail\\`s`;", "3"), [
 			{ stages: ["3-tail`s"], source: "template" },
