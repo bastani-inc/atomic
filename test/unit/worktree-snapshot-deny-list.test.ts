@@ -9,6 +9,7 @@ import {
 import {
 	isDeniedSnapshotPath,
 	SNAPSHOT_DENY_PATTERNS,
+	SNAPSHOT_KEY_FILE_PATTERNS,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/policy.ts";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
@@ -18,17 +19,37 @@ beforeEach(() => {
 });
 afterEach(() => sandbox.dispose());
 
+const PRIVATE_KEYS = [
+	"id_rsa.key",
+	"id_server.pem",
+	"certs/id_client.pem",
+	"id_token.p12",
+	"keys/id_rsa.pfx",
+	"id_rsa.bak",
+] as const;
+
+const marker = (path: string) => `PRIVATE-KEY-BYTES-${path.replace(/[^a-z0-9]/gi, "-")}`;
+
+async function assertNoKeyBytes(blobs: MemorySnapshotBlobStore): Promise<void> {
+	for (const hash of await blobs.listBlobHashes()) {
+		assert.doesNotMatch(Buffer.from((await blobs.getBlob(hash))!).toString("latin1"), /PRIVATE-KEY-BYTES/);
+	}
+}
+
+function snapshotOf(result: Awaited<ReturnType<typeof captureWorktreeSnapshot>>): WorktreeSnapshot {
+	assert.equal(result.status, "captured");
+	return (result as { snapshot: WorktreeSnapshot }).snapshot;
+}
+
 describe("the built-in deny list (#4245)", () => {
-	test("SSH and TLS private keys are denied whatever their name, while public keys and source files are kept", () => {
+	test("private keys are denied whatever an id_ name suggests, and only .pub key files are kept", () => {
 		const denied = [
+			...PRIVATE_KEYS,
 			"id_rsa",
 			"id_ed25519",
 			"keys/id_ecdsa_sk",
-			"id_rsa.key",
-			"id_server.pem",
-			"certs/id_client.pem",
-			"id_token.p12",
-			"keys/id_x.pfx",
+			"id_ed25519_sk.old",
+			"id_mldsa44_ed25519",
 			"id_rsa.pub.pem",
 			"id_rsa.pub.key",
 			"server.key",
@@ -46,45 +67,62 @@ describe("the built-in deny list (#4245)", () => {
 		assert.deepEqual(
 			denied.filter((path) => !isDeniedSnapshotPath(path)),
 			[],
-			"denied paths",
 		);
 		assert.deepEqual(
 			kept.filter((path) => isDeniedSnapshotPath(path)),
 			[],
-			"kept paths",
 		);
 	});
 
-	test("every key-file extension stays denied on a name that starts with id_", () => {
-		const extensions = SNAPSHOT_DENY_PATTERNS.filter((pattern) => /^\*\.[a-z0-9]+$/.test(pattern));
-		assert.deepEqual(extensions, ["*.pem", "*.key", "*.p12", "*.pfx"]);
-		for (const pattern of extensions) {
-			for (const path of [`id_x${pattern.slice(1)}`, `nested/dir/id_rsa${pattern.slice(1)}`]) {
+	test("the always-denied list has no negation, so no rule can take a key-file extension back", () => {
+		assert.deepEqual(
+			SNAPSHOT_DENY_PATTERNS.filter((pattern) => pattern.startsWith("!")),
+			[],
+		);
+		assert.equal(SNAPSHOT_KEY_FILE_PATTERNS.at(-1), "!id_*.pub", "only public keys are exempt last");
+		for (const pattern of SNAPSHOT_DENY_PATTERNS.filter((candidate) => candidate.startsWith("*."))) {
+			const extension = pattern.slice(1);
+			for (const path of [`id_x${extension}`, `id_rsa.pub${extension}`, `nested/dir/id_rsa${extension}`]) {
 				assert.equal(isDeniedSnapshotPath(path), true, path);
 			}
 		}
 	});
 
-	test("a private key named id_*.pem is left out of capture and of the unpushed bundle", async () => {
+	test("working-tree capture leaves out every private key, keeps the public one, and stores no key bytes", async () => {
 		const { clone } = await sandbox.remoteWithClone();
-		sandbox.write(join(clone, "certs", "id_client.pem"), "PRIVATE-PEM-MARKER\n");
+		for (const path of PRIVATE_KEYS) sandbox.write(join(clone, path), `${marker(path)}\n`);
+		sandbox.write(join(clone, "id_rsa.pub"), "ssh-ed25519 PUBLIC\n");
 		const blobs = new MemorySnapshotBlobStore();
-		const working = await captureWorktreeSnapshot(clone, { blobs });
-		assert.equal(working.status, "captured");
-		assert.deepEqual((working as { snapshot: WorktreeSnapshot }).snapshot.omitted, [
-			{ reason: "denied", path: "certs/id_client.pem" },
-		]);
-		sandbox.write(join(clone, "id_rsa.key"), "PRIVATE-KEY-MARKER\n");
+		const snapshot = snapshotOf(await captureWorktreeSnapshot(clone, { blobs }));
+		assert.deepEqual(
+			snapshot.omitted,
+			[...PRIVATE_KEYS].sort().map((path) => ({ reason: "denied", path })),
+		);
+		assert.equal(await sandbox.git(clone, "cat-file", "-p", `${snapshot.tree}:id_rsa.pub`), "ssh-ed25519 PUBLIC");
+		await assertNoKeyBytes(blobs);
+	});
+
+	test("unpushed history that adds a private key is never bundled, and names the key", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		for (const path of PRIVATE_KEYS) sandbox.write(join(clone, path), `${marker(path)}\n`);
+		sandbox.write(join(clone, "id_rsa.pub"), "ssh-ed25519 PUBLIC\n");
 		const commit = await sandbox.commitAll(clone, "add keys");
-		const history = await captureWorktreeSnapshot(clone, { blobs });
-		assert.equal(history.status, "captured");
-		const snapshot = (history as { snapshot: WorktreeSnapshot }).snapshot;
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = snapshotOf(await captureWorktreeSnapshot(clone, { blobs }));
 		assert.equal(snapshot.bundle, null);
 		assert.deepEqual(snapshot.omitted, [
-			{ reason: "unpushed-history-denied", commits: [commit], paths: ["certs/id_client.pem", "id_rsa.key"] },
+			{ reason: "unpushed-history-denied", commits: [commit], paths: [...PRIVATE_KEYS].sort() },
 		]);
-		for (const hash of await blobs.listBlobHashes()) {
-			assert.doesNotMatch(Buffer.from((await blobs.getBlob(hash))!).toString("latin1"), /PRIVATE-(PEM|KEY)-MARKER/);
-		}
+		await assertNoKeyBytes(blobs);
+	});
+
+	test("unpushed history that adds only a public key and an id_ source file is bundled", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "id_rsa.pub"), "ssh-ed25519 PUBLIC\n");
+		sandbox.write(join(clone, "id_utils.ts"), "export const id = 1;\n");
+		await sandbox.commitAll(clone, "add a public key and a source file");
+		const snapshot = snapshotOf(await captureWorktreeSnapshot(clone, { blobs: new MemorySnapshotBlobStore() }));
+		assert.notEqual(snapshot.bundle, null);
+		assert.deepEqual(snapshot.omitted, []);
 	});
 });
