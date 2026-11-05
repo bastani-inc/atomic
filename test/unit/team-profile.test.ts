@@ -9,7 +9,12 @@ import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-c
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import type { CreateAgentSessionOptions } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { resolveSessionStore, selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
-import { StorageConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	isTeamProfileConfigError,
+	isTeamProfileError,
+	StorageConfigError,
+	type TeamProfileConfigError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -18,23 +23,19 @@ import {
 	validateProcessStorage,
 } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { StorageProvider, storageSelectionKey } from "../../packages/coding-agent/src/core/storage/provider.js";
-import { inMemorySecret, REDACTED_SECRET } from "../../packages/coding-agent/src/core/storage/secret.js";
-import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
+import {
+	environmentTeamProfile,
+	getTeamProfile,
+	inMemorySecret,
+	LIBSQL_ADAPTER_PACKAGE,
+	REDACTED_SECRET,
+	selectStorage,
+	teamProfileSelection,
+} from "../../packages/coding-agent/src/core/storage/selection.js";
 import {
 	collectStorageStatus,
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
-import { getTeamProfile } from "../../packages/coding-agent/src/core/storage/team.js";
-import {
-	isTeamProfileConfigError,
-	isTeamProfileError,
-	type TeamProfileConfigError,
-} from "../../packages/coding-agent/src/core/storage/team-errors.js";
-import {
-	environmentTeamProfile,
-	LIBSQL_ADAPTER_PACKAGE,
-	teamProfileSelection,
-} from "../../packages/coding-agent/src/core/storage/team-profile.js";
 import { readSharedStorageSetting } from "../../packages/intercom/broker/shared-storage-setting.js";
 import { getBrokerSpawnOptions } from "../../packages/intercom/broker/spawn.js";
 import type { RunOpts } from "../../packages/workflows/src/authoring.js";
@@ -142,7 +143,7 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 				["intercom", "ATOMIC_PROFILE=ci", `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`],
 			],
 		);
-		assert.deepEqual(getTeamProfile({ agentDir, cwd: project }), {
+		assert.deepEqual(await getTeamProfile({ agentDir, cwd: project }), {
 			profile: "ci",
 			sessions: `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`,
 			journal: `adapter ${LIBSQL_ADAPTER_PACKAGE} (prefix team_)`,
@@ -169,7 +170,7 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 		});
 	});
 
-	test("more specific process selections outrank the profile (#4320)", () => {
+	test("more specific process selections outrank the profile (#4320)", async () => {
 		assert.equal(selectProcessStorage("sessions", agentDir, project), undefined);
 		assert.equal(processSharedStorageSelection(), undefined);
 		assert.equal(hasProcessStorageSelection("sessions"), false);
@@ -182,7 +183,7 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", JSON.stringify({ dir: join(root, "sessions") }));
 		assert.equal(selectProcessStorage("sessions", agentDir)?.field, "ATOMIC_SESSIONS_STORAGE");
 		assert.equal(selectProcessStorage("journal", agentDir)?.field, "ATOMIC_PROFILE");
-		assert.equal(getTeamProfile({ agentDir, cwd: project }).profile, "custom");
+		assert.equal((await getTeamProfile({ agentDir, cwd: project })).profile, "custom");
 	});
 
 	test("bad profile input is a typed StorageConfigError at startup, naming the variable (#4320)", () => {

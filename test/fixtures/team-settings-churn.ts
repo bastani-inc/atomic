@@ -6,7 +6,7 @@
 import type { IntercomBrokerControl } from "../../packages/coding-agent/src/core/intercom-broker-control.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { joinTeamWith, leaveTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
-import { isTeamProfileConfigError, isTeamProfileError } from "../../packages/coding-agent/src/core/storage/team-errors.js";
+import { isTeamProfileConfigError, isTeamProfileError } from "../../packages/coding-agent/src/core/storage/errors.js";
 
 const [role, agentDir, project, url, tokenFile] = process.argv.slice(2) as [string, string, string, string, string];
 const control = { restartIntercomBroker: async () => ({ status: "not-running" }) } as unknown as IntercomBrokerControl;

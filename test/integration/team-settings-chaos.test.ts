@@ -6,12 +6,9 @@ import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { IntercomBrokerControl } from "../../packages/coding-agent/src/core/intercom-broker-control.js";
-import {
-	joinTeamWith,
-	LOCAL_SESSIONS_STORAGE,
-	leaveTeamWith,
-} from "../../packages/coding-agent/src/core/storage/team.js";
-import { isTeamProfileError } from "../../packages/coding-agent/src/core/storage/team-errors.js";
+import { isTeamProfileError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { LOCAL_SESSIONS_STORAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
+import { joinTeamWith, leaveTeamWith } from "../../packages/coding-agent/src/core/storage/team.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { bunExecutable, makeTempDirectory, moduleDir, removeTempDirectory, sleep } from "../helpers/runtime.js";
 

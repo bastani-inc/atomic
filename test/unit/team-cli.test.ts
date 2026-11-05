@@ -13,25 +13,23 @@ import {
 import { selectSessionStorage } from "../../packages/coding-agent/src/core/session-storage.js";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import {
-	collectStorageStatus,
-	type StorageStatus,
-} from "../../packages/coding-agent/src/core/storage/storage-status.js";
-import {
-	getTeamProfile,
-	joinTeam,
-	LOCAL_SESSIONS_STORAGE,
-	leaveTeam,
-} from "../../packages/coding-agent/src/core/storage/team.js";
-import {
 	isRetryableTeamProfileError,
 	isTeamProfileConfigError,
 	isTeamProfileError,
 	TeamProfileError,
-} from "../../packages/coding-agent/src/core/storage/team-errors.js";
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
+	getTeamProfile,
+	joinTeam,
 	LIBSQL_ADAPTER_PACKAGE,
+	LOCAL_SESSIONS_STORAGE,
+	leaveTeam,
 	STORAGE_TOKEN_FILE,
-} from "../../packages/coding-agent/src/core/storage/team-profile.js";
+} from "../../packages/coding-agent/src/core/storage/selection.js";
+import {
+	collectStorageStatus,
+	type StorageStatus,
+} from "../../packages/coding-agent/src/core/storage/storage-status.js";
 import { selectRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
@@ -207,7 +205,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 		async () => {
 			writeSettings({ ...UNRELATED, packages: [packageRoot] });
 			const before = settingsText();
-			assert.equal(getTeamProfile({ agentDir, cwd: project }).profile, "individual");
+			assert.equal((await getTeamProfile({ agentDir, cwd: project })).profile, "individual");
 
 			assert.equal((await team(["join", databaseUrl, "--token-file", tokenFile])).code, 0);
 			const joinedOnce = settingsText();
@@ -238,7 +236,7 @@ describe("atomic team join, status and leave (#4320)", () => {
 			assert.match(leftAgain.out, /^Nothing to remove: /m);
 			assert.deepEqual(JSON.parse(settingsText()), JSON.parse(before));
 			assert.deepEqual(restarts, [agentDir, agentDir, agentDir]);
-			assert.equal(getTeamProfile({ agentDir, cwd: project }).profile, "individual");
+			assert.equal((await getTeamProfile({ agentDir, cwd: project })).profile, "individual");
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);

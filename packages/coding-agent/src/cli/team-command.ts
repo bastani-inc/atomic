@@ -1,23 +1,27 @@
 /**
  * `atomic team join|status|leave`: the recommended team layout as one command, over the SDK's `joinTeam`,
- * `getTeamProfile` and `leaveTeam`. Workflow runs and Intercom routing share a team database; sessions stay local.
+ * `selectTeamProfile` and `leaveTeam`. Workflow runs and Intercom routing share a team database; sessions stay local.
  */
 
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
-import { StorageError } from "../core/storage/errors.js";
+import {
+	isTeamProfileConfigError,
+	isTeamProfileError,
+	StorageError,
+	TeamProfileConfigError,
+} from "../core/storage/errors.js";
 import { processStorageEnvironment } from "../core/storage/process-selection.js";
+import { LIBSQL_ADAPTER_PACKAGE } from "../core/storage/selection.js";
 import { collectStorageStatus, describeStorageError, type StorageStatus } from "../core/storage/storage-status.js";
 import {
-	getTeamProfile,
 	joinTeamWith,
 	leaveTeamWith,
+	selectTeamProfile,
 	type TeamBrokerRestart,
 	type TeamProfile,
 	type TeamProfileName,
 } from "../core/storage/team.js";
-import { isTeamProfileConfigError, isTeamProfileError, TeamProfileConfigError } from "../core/storage/team-errors.js";
-import { LIBSQL_ADAPTER_PACKAGE } from "../core/storage/team-profile.js";
 import { createGitEnvironment } from "../utils/git-env.ts";
 import { failed, formatStorageStatus, loadBrokerControl } from "./storage-command.js";
 
@@ -178,7 +182,7 @@ async function report(
 	let profile: TeamProfile | undefined;
 	let profileError: string | undefined;
 	try {
-		profile = getTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
+		profile = selectTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
 	} catch (caught) {
 		if (!(caught instanceof StorageError)) throw caught;
 		profileError = caught.message;
@@ -273,7 +277,7 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 		for (const path of left.deletedTokenFiles) log(`Deleted the token file ${path}.`);
 		for (const path of left.keptTokenFiles) log(`Kept the token file ${path}: another setting still references it.`);
 		const restarted = left.broker === undefined || describeRestart(left.broker, log, error);
-		const profile = getTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
+		const profile = selectTeamProfile({ agentDir: options.agentDir, cwd: options.cwd });
 		log(`Profile: ${profile.profile} (${PROFILE_DESCRIPTIONS[profile.profile]})`);
 		return restarted ? 0 : 1;
 	} catch (caught) {

@@ -23,18 +23,23 @@ import type { Settings, SettingsFieldOrigin, SettingsScope, SettingsStorage } fr
 const RENAME_ATTEMPTS = 10;
 const RENAME_RETRY_MS = 20;
 
-function renameReplacing(from: string, to: string): void {
+/**
+ * Rename `from` over `to`. On Windows, a rename that another process's open handle blocks (EPERM, EACCES, EBUSY) is
+ * retried up to ten times, 20 ms apart; elsewhere, and for any other error, it throws at once.
+ */
+export function renameReplacing(
+	from: string,
+	to: string,
+	platform: NodeJS.Platform = process.platform,
+	rename: (from: string, to: string) => void = renameSync,
+): void {
 	for (let attempt = 1; ; attempt++) {
 		try {
-			renameSync(from, to);
+			rename(from, to);
 			return;
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (
-				process.platform !== "win32" ||
-				attempt === RENAME_ATTEMPTS ||
-				!["EPERM", "EACCES", "EBUSY"].includes(code ?? "")
-			) {
+			const code = (error as NodeJS.ErrnoException).code ?? "";
+			if (platform !== "win32" || attempt === RENAME_ATTEMPTS || !["EPERM", "EACCES", "EBUSY"].includes(code)) {
 				throw error;
 			}
 			const start = Date.now();
@@ -50,7 +55,7 @@ function renameReplacing(from: string, to: string): void {
  * write a sibling temporary file with the same mode, then rename it over the file. A symbolic link stays a link; its
  * target is replaced.
  */
-function writeSettingsFile(path: string, content: string): void {
+export function writeSettingsFile(path: string, content: string): void {
 	const target = existsSync(path) ? realpathSync(path) : path;
 	const mode = existsSync(target) ? statSync(target).mode & 0o777 : undefined;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;

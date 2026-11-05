@@ -26,8 +26,7 @@ import {
 	type StorageSelection,
 	storageSelectionKey,
 } from "./provider.js";
-import { type StorageSettingsSelection, selectStorage } from "./selection.js";
-import { TEAM_PROFILE_ENV } from "./team-profile.js";
+import { type StorageSettingsSelection, selectStorage, TEAM_PROFILE_ENV } from "./selection.js";
 
 export type StorageStatusDomain = "sessions" | "journal" | "intercom";
 

@@ -15,7 +15,7 @@ import {
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { RunJournal } from "./run-journal.js";
-import type { InMemorySecretRef } from "./secret.js";
+import type { InMemorySecretRef } from "./selection.js";
 import { selectStorage } from "./selection.js";
 import type { SessionStore } from "./session/types.js";
 

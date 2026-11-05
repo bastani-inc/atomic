@@ -8,8 +8,7 @@ import { SessionStorageSelectionSchema, StorageSelectionSchema } from "../settin
 import { StorageConfigError, StoragePrefixError } from "./errors.js";
 import { validateStoragePrefix } from "./prefix.js";
 import type { StorageSelection } from "./provider.js";
-import { selectStorage } from "./selection.js";
-import { environmentTeamProfile, TEAM_PROFILE_ENV } from "./team-profile.js";
+import { environmentTeamProfile, selectStorage, TEAM_PROFILE_ENV } from "./selection.js";
 
 export const STORAGE_ENV = "ATOMIC_STORAGE";
 export const SESSIONS_STORAGE_ENV = "ATOMIC_SESSIONS_STORAGE";

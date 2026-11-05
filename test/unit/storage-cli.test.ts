@@ -12,13 +12,13 @@ import {
 	STORAGE_TOKEN_FILE,
 } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
+import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	checkSharedStorageAdapter,
 	collectStorageStatus,
 	type DomainStatus,
 	type StorageStatus,
 } from "../../packages/coding-agent/src/core/storage/storage-status.js";
-import { isTeamProfileConfigError } from "../../packages/coding-agent/src/core/storage/team-errors.js";
 import { ProjectTrustStore } from "../../packages/coding-agent/src/core/trust-manager.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";

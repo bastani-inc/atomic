@@ -7,6 +7,14 @@
 import { join } from "node:path";
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
+import { isTeamProfileConfigError, isTeamProfileError } from "../core/storage/errors.js";
+import {
+	checkTeamUrl,
+	isFileUrl,
+	LIBSQL_ADAPTER_PACKAGE,
+	missingTeamToken,
+	STORAGE_TOKEN_FILE,
+} from "../core/storage/selection.js";
 import {
 	collectStorageStatus,
 	type DomainStatus,
@@ -14,14 +22,6 @@ import {
 	type StorageStatus,
 } from "../core/storage/storage-status.js";
 import { joinSharedDatabase } from "../core/storage/team.js";
-import { isTeamProfileConfigError, isTeamProfileError } from "../core/storage/team-errors.js";
-import {
-	checkTeamUrl,
-	isFileUrl,
-	LIBSQL_ADAPTER_PACKAGE,
-	missingTeamToken,
-	STORAGE_TOKEN_FILE,
-} from "../core/storage/team-profile.js";
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 

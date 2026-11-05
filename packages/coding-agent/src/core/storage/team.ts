@@ -13,11 +13,8 @@ import { resolvePackageStorageAdapter } from "../package-manager-storage-adapter
 import { selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
-import { describeStorageError, StorageAdapterLoadError, StorageError } from "./errors.js";
+import { describeStorageError, StorageAdapterLoadError, StorageError, TeamProfileError } from "./errors.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
-import { type StorageSettingsSelection, selectStorage } from "./selection.js";
-import { describeStorageSelection, projectTrust, selectIntercomStorage, selectJournal } from "./storage-status.js";
-import { TeamProfileError } from "./team-errors.js";
 import {
 	checkTeamPrefix,
 	checkTeamUrl,
@@ -26,14 +23,15 @@ import {
 	environmentTeamProfile,
 	isFileUrl,
 	LIBSQL_ADAPTER_PACKAGE,
+	LOCAL_SESSIONS_STORAGE,
 	missingTeamToken,
 	readTeamTokenFile,
 	STORAGE_TOKEN_FILE,
+	type StorageSettingsSelection,
+	selectStorage,
 	type TeamInputSource,
-} from "./team-profile.js";
-
-/** The `sessions.storage` value `team join` writes: the local default store, named explicitly. */
-export const LOCAL_SESSIONS_STORAGE = { path: "workflows/journal.sqlite" } as const;
+} from "./selection.js";
+import { describeStorageSelection, projectTrust, selectIntercomStorage, selectJournal } from "./storage-status.js";
 
 export interface JoinTeamOptions {
 	/** `libsql://`, `https://`, `wss://` or absolute `file:` URL, without a credential. */
@@ -50,6 +48,11 @@ export interface JoinTeamOptions {
 	readonly cwd?: string;
 	/** Progress lines while the Intercom broker restarts. */
 	readonly onProgress?: (line: string) => void;
+}
+
+export interface TeamProfileOptions {
+	readonly agentDir?: string;
+	readonly cwd?: string;
 }
 
 export interface LeaveTeamOptions {
@@ -540,7 +543,7 @@ function isLocalDefault(selection: StorageSelection, agentDir: string): boolean 
  * selections, `ATOMIC_PROFILE=ci`, trusted project settings and global settings, as sessions, the workflows extension
  * and the Intercom broker resolve them). Reads only; an invalid selection throws its `StorageConfigError`.
  */
-export function getTeamProfile(options: { readonly agentDir?: string; readonly cwd?: string } = {}): TeamProfile {
+export function selectTeamProfile(options: TeamProfileOptions = {}): TeamProfile {
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
 	const cwd = resolve(options.cwd ?? process.cwd());
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: projectTrust(cwd, agentDir) });

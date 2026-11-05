@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { StorageConfigError, StorageError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	isRetryableTeamProfileError,
 	isTeamProfileConfigError,
 	isTeamProfileError,
+	StorageConfigError,
+	StorageError,
 	TEAM_PROFILE_CONFIG_ERROR_CODES,
 	TEAM_PROFILE_ERROR_CODES,
 	TeamProfileConfigError,
 	TeamProfileError,
-} from "../../packages/coding-agent/src/core/storage/team-errors.js";
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 
 test("team errors carry an explicit name, a stable code, safe fields and a hint (#4320)", () => {
 	const cause = new Error("EACCES: permission denied");
