@@ -81,10 +81,7 @@ test("only a shell wait without a budget may detach; commands and budgeted waits
 });
 
 test("a model's shell wait detaches under a release policy and its result arrives once the task finishes (#4326)", async () => {
-	const harness = await createHarness({
-		settings: { bashInterceptor: { enabled: false } },
-		initialActiveToolNames: ["bash", "powershell"],
-	});
+	const harness = await createHarness({ initialActiveToolNames: ["bash", "powershell"] });
 	const { session } = harness;
 	try {
 		const shell = session.agent.state.tools.find((item) => item.name === launchShell);
@@ -132,7 +129,7 @@ test("a model's shell wait detaches under a release policy and its result arrive
 });
 
 test("a session's own shell task owner, and a subagent child's owner in its parent, both wait until settled under a policy (#4326)", async () => {
-	const harness = await createHarness({ settings: { bashInterceptor: { enabled: false } } });
+	const harness = await createHarness();
 	try {
 		const internal = harness.session as unknown as AgentSessionInternalSurface;
 		const settled: WaitOutcome = {
