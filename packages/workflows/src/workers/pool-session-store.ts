@@ -11,8 +11,8 @@ import { poolJournalOf } from "./pool-journal.js";
  * not the host's session store. This opens those tables over the journal's own connection,
  * so a finished pooled stage's transcript can be read and reopened for post-mortem chat,
  * in the same process and after a restart. Undefined when no pool ever ran on the journal.
- * In the journal store those tables are in the shard of `rootRunId`. A root with shared placement keeps them in the
- * journal itself, whatever other pools ran on this machine (#4310).
+ * In the journal store those tables are in the shard of `rootRunId`. A root whose pool runs in the journal itself, as a
+ * root with shared placement does, keeps them there, whatever other pools ran on this machine (#4310).
  * The caller owns the returned store.
  */
 export async function poolSessionStore(
@@ -22,14 +22,23 @@ export async function poolSessionStore(
 	const journal = (backend as { readonly journal?: Parameters<typeof sqlPoolStorage>[0] }).journal;
 	if (journal === undefined) return undefined;
 	const rootJournal = await existingRootRunJournal(journal, rootRunId);
-	// A journal in another database keeps its pool's sessions in the machine's coordination database, except a shared
-	// root's pool, which keeps them in the journal every host opens.
-	return openPoolSessionStore((await sharedRoot(backend, rootRunId)) ? rootJournal : await poolJournalOf(rootJournal));
+	// A journal in another database keeps its pool's sessions in the machine's coordination database, except for a root
+	// whose pool runs in the journal itself, which every host opens.
+	return openPoolSessionStore(
+		(await poolRunsIn(rootJournal, rootRunId)) ? rootJournal : await poolJournalOf(rootJournal),
+	);
 }
 
-async function sharedRoot(backend: DurableWorkflowBackend, rootRunId: string): Promise<boolean> {
-	if (backend.getWorkflow(rootRunId) === undefined) await backend.hydrateWorkflow(rootRunId);
-	return backend.getWorkflow(rootRunId)?.resources?.workers?.placement === "shared";
+/** Whether `rootRunId`'s pool keeps its tables in `journal` itself, read without the write lock. */
+async function poolRunsIn(journal: Parameters<typeof sqlPoolStorage>[0], rootRunId: string): Promise<boolean> {
+	const storage = sqlPoolStorage(journal);
+	if (storage === undefined) return false;
+	const pool = `${storage.tables.runs}_pool`;
+	return storage.read(
+		async (executor) =>
+			(await executor.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", pool)) !== undefined &&
+			(await executor.get(`SELECT 1 FROM ${pool} WHERE root = ?`, rootRunId)) !== undefined,
+	);
 }
 
 async function openPoolSessionStore(journal: Parameters<typeof sqlPoolStorage>[0]): Promise<SessionStore | undefined> {

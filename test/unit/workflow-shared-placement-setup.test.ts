@@ -547,6 +547,8 @@ test("a shared root's finished stage sessions are read from its journal even whe
 				type: RUN_EVENT_TYPES.runStarted,
 				payload: { workflowId: runId, name: runId, inputs: {}, createdAt: 0, status: "running", ...started },
 			});
+			// A shared root's pool runs in the journal itself.
+			if (runId === "shared-root") await (await openSqlPoolQueue(journal)).initialize(acquired.lease, 60_000);
 		}
 		const found = async (rootRunId: string) => {
 			const sessions = await poolSessionStore(backend, rootRunId);
