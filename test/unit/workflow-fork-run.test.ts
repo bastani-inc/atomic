@@ -807,6 +807,7 @@ test("a write failure whose read-back also fails keeps the sessions and carries 
 	assert.equal(error.forkRunId, (await forkRuns())[0]?.runId, "it names the fork that was in fact written");
 	assert.ok(error.cause instanceof AggregateError);
 	assert.deepEqual(error.cause.errors, [failure, unreachable]);
+	assert.equal(error.cause.message, `Writing fork run ${error.forkRunId} failed, and reading it back failed too`);
 	assert.equal(await copyKept(), true);
 });
 
@@ -830,6 +831,19 @@ test("a rejected write the journal proves unwritten is a retryable ForkCopyFaile
 		assert.equal((await forkRuns()).length, 0, name);
 		vi.restoreAllMocks();
 	}
+});
+
+test("a failed journal write with no sessions does not attempt session cleanup (#4321)", async () => {
+	const { backend, def, runId } = await linearSource("fork-no-session-rollback");
+	vi.spyOn(backend.journal, "createRunWithEvents").mockRejectedValue(new Error("local transaction rolled back"));
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+	const error = await forkRun(runId, { durableBackend: backend, definition: def }).catch((failure: Error) => failure);
+	assert.ok(error instanceof ForkCopyFailedError);
+	assert.equal(error.code, "copy-failed");
+	assert.equal(error.phase, "journal");
+	assert.equal(error.cleanupCause, undefined);
+	assert.equal(warn.mock.calls.length, 0);
+	assert.equal((await backend.journal.listRuns()).length, 1);
 });
 
 test("a write that returns exists is a ForkCopyFailedError even when a run with that id is in the journal (#4321)", async () => {
