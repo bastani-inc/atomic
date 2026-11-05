@@ -1,4 +1,5 @@
-const URL_USERINFO = /([a-z][a-z0-9+.-]*):\/\/([^/@\s]+)@/gi;
+/** The scheme is bounded, so a long run of scheme characters cannot make the scan quadratic. */
+const URL_USERINFO = /([a-z][a-z0-9+.-]{0,31}):\/\/([^/@\s]+)@/gi;
 
 /**
  * Remove credentials from every URL in `value`, so remotes never leak secrets into errors or records. An `ssh://`

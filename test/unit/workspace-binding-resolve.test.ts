@@ -33,6 +33,7 @@ import {
 	workspace,
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
 import {
@@ -394,6 +395,15 @@ describe("workspace resolution details (#3109)", () => {
 		const binding = await resolveWorkspace(workspace({ repo, base: "main", branch: "unrelated" }));
 		assert.equal(binding.baseCommit, git(repo, "rev-parse", "main"));
 		assert.equal(binding.head, git(repo, "rev-parse", "unrelated"));
+	});
+
+	test("redacts credentials after any run of scheme characters (#3109)", () => {
+		const prefix = "x".repeat(60);
+		assert.equal(redactCredentials(`${prefix}https://user:secret@host/r.git`), `${prefix}https://host/r.git`);
+		assert.equal(redactCredentials("1ssh://git:pw@host/r"), "1ssh://git@host/r");
+		assert.equal(redactCredentials(`'${"a".repeat(40)}ssh://git:pw@host/r`), `'${"a".repeat(40)}ssh://host/r`);
+		const letters = "a".repeat(50_000);
+		assert.equal(redactCredentials(letters), letters);
 	});
 
 	test("records every remote URL once, sorted (#3109)", async () => {
