@@ -40,6 +40,14 @@ export const lookupTool: ToolDefinition = {
  */
 export const operations = new Map<string, (result: AgentToolResult) => void>();
 
+const operationWatchers = new Map<string, () => void>();
+
+/** Resolves once the long tool's operation for this run is live: the agent is then waiting on it. */
+export function operationStarted(run: string): Promise<void> {
+	if (operations.has(run)) return Promise.resolve();
+	return new Promise((resolve) => operationWatchers.set(run, resolve));
+}
+
 export const waitTool: ToolDefinition = {
 	name: WAIT_TOOL,
 	label: "Wait for CI",
@@ -47,7 +55,12 @@ export const waitTool: ToolDefinition = {
 	parameters: Type.Object({ run: Type.String() }),
 	detachable: true,
 	execute: (_toolCallId, params) =>
-		new Promise<AgentToolResult>((resolve) => operations.set((params as { run: string }).run, resolve)),
+		new Promise<AgentToolResult>((resolve) => {
+			const run = (params as { run: string }).run;
+			operations.set(run, resolve);
+			operationWatchers.get(run)?.();
+			operationWatchers.delete(run);
+		}),
 };
 
 const AGENT_PROMPT_PATTERN = /^Agent (\d+),/;

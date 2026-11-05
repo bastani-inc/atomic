@@ -42,6 +42,7 @@ import {
 	COMPLETION_TEXT,
 	delaySummary,
 	lookupTool,
+	operationStarted,
 	operations,
 	scriptedProvider,
 	settle,
@@ -50,6 +51,8 @@ import {
 	waitTool,
 	wakeDriver,
 } from "./scripted-model.js";
+
+const RESIDENT_RELEASE_AFTER_MS = 2 ** 31 - 1;
 
 const worker: AgentConfig = {
 	name: "worker",
@@ -169,7 +172,7 @@ export async function createSubagentHost(options: HostOptions): Promise<AgentHos
 				sessionDir,
 				sessionManager: await SessionManager.create(store, cwd),
 				resumeSession: true,
-				releaseWhenWaiting: subagentReleasePolicy(0),
+				releaseWhenWaiting: subagentReleasePolicy(options.mode === "release" ? 0 : RESIDENT_RELEASE_AFTER_MS),
 				testSession: false,
 				getChildSessionOptions: childSessionOptions,
 			},
@@ -179,6 +182,11 @@ export async function createSubagentHost(options: HostOptions): Promise<AgentHos
 			wakeDispatcher: dispatcher,
 		});
 		if (response.kind !== "admitted") throw new Error(`child ${childId} was not admitted: ${response.kind}`);
+		if (options.mode === "resident") {
+			await operationStarted(`agent-${index}`);
+			released.push(childId);
+			return;
+		}
 		await taskHost.waitForTask(response.observation.taskId);
 		await subagentChildRecordsAppended(ownerSessionId);
 		released.push(childId);
@@ -272,6 +280,11 @@ export async function createSubagentHost(options: HostOptions): Promise<AgentHos
 			unused: faux.getPendingResponseCount(),
 		}),
 		async close() {
+			if (options.mode === "resident")
+				for (const [run, finish] of operations) {
+					operations.delete(run);
+					finish({ content: [{ type: "text", text: "CI passed" }], details: undefined });
+				}
 			stopWakes();
 			await taskHost.close("session-close");
 			await store.close();
