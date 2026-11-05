@@ -147,18 +147,18 @@ export class RestoringRecipients {
 		canHold: boolean,
 	): RestoringRecipientAdmission {
 		const normalized = normalizeTarget(target);
-		const reservation = [...this.reservations.values()].find(
-			(candidate) =>
+		const found = [...this.reservations].find(
+			([, candidate]) =>
 				candidate.targets.has(normalized) &&
 				(candidate.ownerSessionId === sender.id || hasGroup(sessionGroups(sender.info), candidate.group)),
 		);
-		if (reservation === undefined) return { kind: "none" };
+		if (found === undefined) return { kind: "none" };
+		const [capability, reservation] = found;
 		if (reservation.gone !== undefined) return { kind: "refused", reason: reservation.gone };
 		if (!canHold || reservation.held.size >= MAX_HELD_SENDS)
 			return { kind: "refused", reason: restoringRecipientRetryReason(reservation.childName) };
-		const capability = [...this.reservations].find(([, candidate]) => candidate === reservation)?.[0];
 		const wake =
-			reservation.wake && reservation.held.size === 0 && capability !== undefined
+			reservation.wake && reservation.held.size === 0
 				? { ownerSessionId: reservation.ownerSessionId, capability, childName: reservation.childName }
 				: undefined;
 		const timer = setTimeout(() => {

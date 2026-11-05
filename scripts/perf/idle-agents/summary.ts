@@ -16,16 +16,16 @@ export interface IdleAgentSample {
 	readonly listeners: number;
 }
 
-/** Least-squares slope of `y` over `x`, or 0 with fewer than two distinct `x` values. */
+/**
+ * Least-squares slope of `y` over `x`: Σ(x − x̄)·y / Σ(x − x̄)², or 0 with fewer than two distinct `x` values. (The
+ * mean of `y` drops out, since Σ(x − x̄) is 0.)
+ */
 export function leastSquaresSlope(points: readonly { readonly x: number; readonly y: number }[]): number {
-	const count = points.length;
-	if (count < 2) return 0;
-	const meanX = points.reduce((sum, point) => sum + point.x, 0) / count;
-	const meanY = points.reduce((sum, point) => sum + point.y, 0) / count;
+	const meanX = points.reduce((sum, point) => sum + point.x, 0) / Math.max(1, points.length);
 	let numerator = 0;
 	let denominator = 0;
 	for (const point of points) {
-		numerator += (point.x - meanX) * (point.y - meanY);
+		numerator += (point.x - meanX) * point.y;
 		denominator += (point.x - meanX) ** 2;
 	}
 	return denominator === 0 ? 0 : numerator / denominator;
@@ -51,7 +51,6 @@ export function perAgentKb(samples: readonly IdleAgentSample[]): {
 
 /** The `p`th percentile (0-100) by nearest rank, or 0 for no values. */
 export function percentile(values: readonly number[], p: number): number {
-	if (values.length === 0) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
 	const rank = Math.min(sorted.length, Math.max(1, Math.ceil((p / 100) * sorted.length)));
 	return sorted[rank - 1] ?? 0;

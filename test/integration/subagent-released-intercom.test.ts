@@ -10,7 +10,9 @@ import { afterAll, beforeAll, test, vi } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
+import { SUBAGENT_RELEASED_CHILD_WAKE_EVENT } from "../../packages/intercom/session-recovery.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
+import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import { SUBAGENT_RELEASED_WAKE_PROMPT } from "../../packages/subagents/src/runs/foreground/released-children.js";
@@ -320,6 +322,51 @@ test(
 			assert.equal(launched.length, 2, "one wake for the whole burst");
 		} finally {
 			stopWakes();
+			await parent.host.close("session-close");
+			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
+			removeTempDirectory(cwd);
+		}
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"only a released subagent's held send asks its parent to wake it; a send held for a restoring one does not (#4326)",
+	async () => {
+		const cwd = makeTempDirectory("released-intercom-hold-only-");
+		const parent = parentSession("hold-only-parent", cwd);
+		const wakes: unknown[] = [];
+		parent.events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (notice) => wakes.push(notice));
+		const authorize = (childName: string): Promise<{ capability: string }> => {
+			const request: { childName: string; completion?: Promise<{ capability: string }> } = { childName };
+			parent.events.emit(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, request);
+			assert.ok(request.completion, "Intercom answers the supervisor authorization request");
+			return request.completion;
+		};
+		const reserve = async (request: { capability: string; aliases: string[]; dormant?: boolean; wake?: boolean }) => {
+			const forwarded: typeof request & { completion?: Promise<void> } = request;
+			parent.events.emit(SUBAGENT_RESERVE_RESTORING_CHILD_EVENT, forwarded);
+			assert.ok(forwarded.completion, "Intercom takes the reservation request");
+			await forwarded.completion;
+		};
+		try {
+			await parent.fire("session_start", { type: "session_start", reason: "startup" });
+			const restoring = "subagent-worker-hold9-1";
+			const released = "subagent-worker-rel9-1";
+			await reserve({ capability: (await authorize(restoring)).capability, aliases: [] });
+			await reserve({
+				capability: (await authorize(released)).capability,
+				aliases: [],
+				dormant: true,
+				wake: true,
+			});
+			const sender = await peer("hold-only-sender");
+			void sender.send(restoring, { text: "to the restoring child" }).catch(() => undefined);
+			void sender.send(released, { text: "to the released child" }).catch(() => undefined);
+			await vi.waitFor(() => assert.equal(wakes.length > 0, true), { timeout: RECORD_WAIT_MS, interval: 10 });
+			await sleep(SETTLE_MS);
+			assert.deepEqual(wakes, [{ childName: released }]);
+		} finally {
 			await parent.host.close("session-close");
 			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
 			removeTempDirectory(cwd);

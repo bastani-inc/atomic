@@ -505,6 +505,7 @@ test("resume with a message continues a paused child in the same run identity an
 	assert.equal(relaunch.options.runId, "steer1");
 	assert.equal(relaunch.options.index, 0);
 	assert.equal(relaunch.options.resumeSession, true);
+	assert.equal(relaunch.options.resumeToolResults, undefined, "a child that waited on nothing continues no turn");
 	assert.equal(relaunch.options.sessionManager?.getSessionId(), record.childSessionId);
 	assert.equal(relaunch.options.intercomSessionName, "subagent-worker-steer1");
 	assert.equal(relaunch.options.intercomGroup, "lane-group");
@@ -2939,6 +2940,11 @@ test("pause and quit of a released child only record the stop; resume continues 
 	await settled(h, resumedTaskId(resumed));
 	assert.equal(h.runs.at(-1)?.task, "carry on");
 	assert.equal(h.runs.at(-1)?.options.resumeSession, true);
+	assert.deepEqual(
+		h.runs.at(-1)?.options.resumeToolResults,
+		[],
+		"a stopped released child still continues the turn it waited in",
+	);
 });
 
 test("pause and quit with all: true include released children (#4326)", async () => {
@@ -3025,4 +3031,72 @@ test("an Intercom wake restores a released child with the wake prompt; a live or
 	const runs = h.runs.length;
 	await dispatcher.deliver(key, { id: "intercom:2", kind: "intercom" });
 	assert.equal(h.runs.length, runs, "a message for a child that is not released wakes nothing");
+});
+
+test("quit with all: true quits released children and leaves a woken child that settled out (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release6"));
+	await settled(h, await h.admit("release6b"));
+	await h.waitForLatest("release6b:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	await settled(h, resumedTaskId(await h.call({ action: "resume", id: "release6b:0", message: "finish" })));
+	await h.waitForLatest("release6b:0", (record) => record.state === "terminal" && record.terminalStatus === "ok");
+	const quit = await h.call({ action: "quit", all: true });
+	assert.deepEqual(
+		quit.details.runControl?.children.map((child) => child.childId),
+		["release6:0"],
+	);
+	assert.match(text(quit), /Quit released worker \(release6:0/);
+	assert.doesNotMatch(text(quit), /release6b/, "a settled child is not a quit target");
+});
+
+test("a woken released child is running, not released: status leaves it out and pause stops its run (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release7"));
+	await h.waitForLatest("release7:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	h.resumedRunsWait = true;
+	await h.call({ action: "resume", id: "release7:0", message: "keep going" });
+	await h.waitForLatest("release7:0", (record) => record.state === "running");
+	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "release7:0"), []);
+	const paused = await h.call({ action: "pause", id: "release7:0" });
+	assert.doesNotMatch(text(paused), /released/);
+	await h.waitForLatest("release7:0", (record) => record.state === "terminal" && record.terminalStatus === "paused");
+});
+
+test("status names every call a released child waits on, and shows one stored without them as waiting (#4326)", async () => {
+	const h = harness();
+	const base: SubagentChildRecord = {
+		version: 1,
+		runId: "stored",
+		agent: "worker",
+		state: "terminal",
+		terminalStatus: SUBAGENT_CHILD_RELEASED_STATUS,
+		cwd: h.cwd,
+		owner: { kind: "session", sessionId: h.sessionManager.getSessionId() },
+		childId: "stored:0",
+		index: 0,
+	};
+	await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+		...base,
+		waitingOn: [RELEASED_CALL, { toolCallId: "deploy-2", toolName: "deploy" }],
+	});
+	await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+		...base,
+		childId: "stored:1",
+		index: 1,
+	});
+	await h.sessionManager.appendCustomEntry(SUBAGENT_CHILD_RECORD_TYPE, {
+		...base,
+		childId: "stored:2",
+		index: 2,
+		terminalStatus: "ok",
+	});
+	const lines = subagentChildrenAwaitingResume(h.ctx);
+	assert.equal(lines.length, 2, lines.join("\n"));
+	assert.match(lines[0] ?? "", /released · waiting on wait_for_ci \(ci-1\), deploy \(deploy-2\); it holds nothing/);
+	assert.match(lines[1] ?? "", /released · waiting; it holds nothing/);
+	assert.deepEqual(subagentChildrenAwaitingResume(h.ctx, "no-such-child:0"), []);
 });
