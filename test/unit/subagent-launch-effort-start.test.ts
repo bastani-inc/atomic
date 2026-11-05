@@ -21,7 +21,12 @@ import { createAgentSession, withResourceAdmission } from "../../packages/coding
 import type { ResourceAdmission } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { AuthStorage, ModelRuntime } from "../../packages/coding-agent/src/index.js";
+import {
+	AuthStorage,
+	isSessionStartTimeoutError,
+	ModelRuntime,
+	rehydrateSessionStartError,
+} from "../../packages/coding-agent/src/index.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import { renderSubagentToolResult } from "../../packages/subagents/src/extension/tool-rendering.js";
@@ -106,8 +111,16 @@ class ExhaustedWorkflowAdmission implements ResourceAdmission {
 /** An admission that grants its holder's own session, then never answers again, as a wedged permit store would. */
 class WedgedAdmission implements ResourceAdmission {
 	readonly requests: string[] = [];
-	acquire(kind: "session" | "process", signal?: AbortSignal): Promise<() => Promise<void>> {
+	readonly delegated: (boolean | undefined)[] = [];
+	readonly signals: (AbortSignal | undefined)[] = [];
+	acquire(
+		kind: "session" | "process",
+		signal?: AbortSignal,
+		request?: { readonly delegated?: boolean },
+	): Promise<() => Promise<void>> {
 		this.requests.push(kind);
+		this.delegated.push(request?.delegated);
+		this.signals.push(signal);
 		if (this.requests.length === 1) return Promise.resolve(async () => undefined);
 		return new Promise((_resolve, reject) => {
 			signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
@@ -275,7 +288,7 @@ test(
 );
 
 test(
-	"a child whose session never starts fails within its start budget, and status no longer calls it running",
+	"a child whose session never starts fails within its start budget with a typed admission timeout, and status no longer calls it running (#4319)",
 	async () => {
 		const admission = new WedgedAdmission();
 		const fixture = await effortFixture({ parentAdmission: admission });
@@ -293,6 +306,10 @@ test(
 		await launched;
 
 		assert.deepEqual(admission.requests, ["session", "session"], "the child waited on its parent's admission");
+		assert.deepEqual(admission.delegated, [undefined, true], "the child asked for a delegated permit");
+		const childWait = admission.signals[1];
+		assert.ok(childWait?.aborted, "the child's wait was cancelled when its budget ran out");
+		assert.ok(isSessionStartTimeoutError(childWait.reason), "with the typed timeout as its reason");
 		assert.equal(
 			outcome.kind,
 			"settled",
@@ -300,11 +317,18 @@ test(
 		);
 		if (outcome.kind !== "settled") return;
 		assert.equal(outcome.result.status, "error", JSON.stringify(outcome.result));
-		assert.match(outcome.result.error ?? "", /did not start within 10s \(still creating its agent session/);
+		assert.ok(outcome.result.startError, JSON.stringify(outcome.result));
+		const error = rehydrateSessionStartError(outcome.result.startError);
+		assert.ok(isSessionStartTimeoutError(error));
+		assert.equal(error.code, "session-start-timeout");
+		assert.equal(error.phase, "admission");
+		assert.equal(error.step, "awaiting-admission");
+		assert.equal(error.timeoutMs, WEDGED_START_BUDGET_MS);
+		assert.equal(outcome.result.error, error.message);
 		assert.deepEqual(fixture.requests, [], "its task never reached the provider");
 		assert.match(
 			statusWhileWaiting,
-			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Subagent session did not start within 10s/,
+			/worker_1 — error \((?:loaded|cold)\) · id effort-wedged:0 · Session start timed out: subagent effort-wedged\/worker_1 did not start within 10s/,
 		);
 		assert.doesNotMatch(statusWhileWaiting, /running/);
 		// The status card, which renders the structured groups rather than the text, explains the failure too.
@@ -319,7 +343,7 @@ test(
 			.map((line) => stripVTControlCharacters(line))
 			.join("\n");
 		assert.match(card, /Failed/);
-		assert.match(card, /Subagent session did not start within 10s/);
+		assert.match(card, /Session start timed out/);
 	},
 	REAL_CHILD_SESSION_TIMEOUT_MS,
 );

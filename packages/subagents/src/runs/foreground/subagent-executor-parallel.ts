@@ -288,6 +288,7 @@ export async function runParallelPath(
 			foregroundControl,
 			concurrencyLimit: parallelConcurrency,
 			runningCapacity: deps.config.parallel?.runningCapacity,
+			sessionStartTimeoutMs: deps.config.sessionStartTimeoutMs,
 			parentDepth: data.parentDepth,
 			liveResults,
 			liveProgress,

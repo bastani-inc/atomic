@@ -2,7 +2,7 @@
  * Result, progress, and core subagent public types.
  */
 
-import type { SessionStats } from "@bastani/atomic";
+import type { SerializedSessionStartError, SessionStats } from "@bastani/atomic";
 import type { ChildIdentity } from "@bastani/atomic-natives";
 import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -211,6 +211,11 @@ export interface SingleResult {
 	modelAttempts?: ModelAttempt[];
 	controlEvents?: ControlEvent[];
 	error?: string;
+	/**
+	 * The child did not start within its start budget: a serialized `SessionStartTimeoutError`. Pass it to
+	 * `rehydrateSessionStartError` to branch on its `phase`; `error` is its message.
+	 */
+	startError?: SerializedSessionStartError;
 	sessionFile?: string;
 	skills?: string[];
 	skillsWarning?: string;

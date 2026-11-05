@@ -261,4 +261,6 @@ export interface ExtensionConfig {
 	intercomBridge?: IntercomBridgeConfig;
 	/** Startup recovery of the paused and quit subagents a session launched. Default: "never". */
 	resumeInFlight?: ResumeInFlight;
+	/** How long each child may take to start before it fails; `SUBAGENT_SESSION_START_TIMEOUT_MS` when omitted. */
+	sessionStartTimeoutMs?: number;
 }

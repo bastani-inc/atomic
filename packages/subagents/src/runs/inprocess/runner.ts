@@ -10,10 +10,12 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
+	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
 	type PackageSource,
 	SessionManager,
+	type SessionStartError,
 	type SessionStats,
 	SettingsManager,
 	type SubagentIntercomIdentity,
@@ -68,6 +70,7 @@ import {
 } from "../shared/cancellation-recovery.js";
 import { type ChildModePolicy, resolveChildModePolicy } from "./child-policy.js";
 import { createInProcessChildPromptBehavior, createInProcessChildSystemPromptTransform } from "./prompt-behavior.js";
+import { SessionStartBudget } from "./session-start-budget.js";
 
 export type ChildStatus = NativeAgentStatus | "killed";
 export type ContinuationReason = "intercom-coordination";
@@ -185,14 +188,11 @@ export interface ChildSpec {
 }
 
 /**
- * How long a child's session may take to start: open its session, load its resources, and create its agent session,
- * including any wait for a resource-admission permit. A child still starting then fails instead of staying running.
+ * How long a child may take to start: open its session, load its resources, create its agent session, including any
+ * wait for a resource-admission permit, and dispatch its task. A child still starting then fails with a
+ * `SessionStartTimeoutError` instead of staying running. Waiting for a running slot does not count.
  */
 export const SUBAGENT_SESSION_START_TIMEOUT_MS = 5 * 60_000;
-
-function formatStartTimeout(ms: number): string {
-	return ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.max(1, Math.round(ms / 1000))}s`;
-}
 
 /** Atomic's thinking level when neither the model nor the settings configure one (the SDK's default). */
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
@@ -310,6 +310,8 @@ export type AttemptOutcome = (
 	| {
 			readonly status: "error";
 			readonly cause: string;
+			/** The typed failure when the child did not start within its start budget; `cause` is its message. */
+			readonly startError?: SessionStartError;
 			readonly stats: AttemptStats;
 			readonly path: string;
 			readonly envelope: string;
@@ -1258,77 +1260,52 @@ export class SubagentControlRuntime {
 		signals.interrupt.addEventListener("abort", interruptListener, {
 			once: true,
 		});
-		// A child whose session is not up within its start budget fails, instead of staying running with no session.
-		const startTimeoutMs = admitted.spec.sessionStartTimeoutMs ?? SUBAGENT_SESSION_START_TIMEOUT_MS;
-		const startDeadline = new AbortController();
-		let startPhase = "opening its session";
-		const startTimer = setTimeout(
-			() =>
-				startDeadline.abort(
-					new Error(
-						`Subagent session did not start within ${formatStartTimeout(startTimeoutMs)} (still ${startPhase}); it was stopped before its task ran.`,
-					),
-				),
-			startTimeoutMs,
+		// A child whose session is not up, and its task dispatched, within its start budget fails, instead of staying
+		// running with no session. A resumed child's budget ends once its session is up: its recovery runs turns.
+		const startBudget = new SessionStartBudget(
+			`subagent ${admitted.identity.path}`,
+			admitted.spec.sessionStartTimeoutMs ?? SUBAGENT_SESSION_START_TIMEOUT_MS,
+			"opening-session",
 		);
 		/** Settle with `work`, or fail once the start budget runs out; a result that arrives later is `abandon`ed. */
-		const beforeStartDeadline = <T>(phase: string, work: Promise<T>, abandon?: (late: T) => void): Promise<T> => {
-			startPhase = phase;
-			return new Promise<T>((resolve, reject) => {
+		const beforeStartDeadline = <T>(work: Promise<T>, abandon?: (late: T) => void): Promise<T> =>
+			new Promise<T>((resolve, reject) => {
 				const expire = () => {
 					void work.then(
 						(late) => abandon?.(late),
 						() => undefined,
 					);
-					reject(startDeadline.signal.reason);
+					reject(startBudget.signal.reason);
 				};
-				if (startDeadline.signal.aborted) return expire();
-				startDeadline.signal.addEventListener("abort", expire, { once: true });
+				if (startBudget.signal.aborted) return expire();
+				startBudget.signal.addEventListener("abort", expire, { once: true });
 				work.then(
 					(value) => {
-						startDeadline.signal.removeEventListener("abort", expire);
+						startBudget.signal.removeEventListener("abort", expire);
 						resolve(value);
 					},
 					(error: unknown) => {
-						startDeadline.signal.removeEventListener("abort", expire);
+						startBudget.signal.removeEventListener("abort", expire);
 						reject(error);
 					},
 				);
 			});
-		};
 		try {
 			const workflow = workflowMetadataFromContext(admitted.spec.parent?.orchestrationContext);
-			const sessionManager = await beforeStartDeadline(
-				"opening its session",
-				admitted.sessionManager
-					? SessionManager.open(
-							admitted.sessionManager.getSessionStore(),
-							admitted.sessionManager.getSessionId(),
-							admitted.policy.cwd,
-						)
-					: SessionManager.create(
-							admitted.policy.cwd,
-							admitted.sessionDir,
-							workflow ? { internal: true, workflow } : { internal: true },
-						),
-			);
-			transcriptManager = sessionManager;
-			taskHooks?.bindTranscript?.(sessionManager);
-			const childSession = {
-				sessionId: sessionManager.getSessionId(),
-				sessionFile: sessionManager.getSessionFile(),
-			};
-			taskHooks?.bindChildSession?.(childSession);
-			admitted.spec.onChildSession?.(childSession);
-			if (workflow) await beforeStartDeadline("opening its session", sessionManager.markSessionInternal(workflow));
-			const launchLeafId = sessionManager.getLeafId();
-			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
-			let created: { session: AgentSession };
+			const opening = admitted.sessionManager
+				? SessionManager.open(
+						admitted.sessionManager.getSessionStore(),
+						admitted.sessionManager.getSessionId(),
+						admitted.policy.cwd,
+					)
+				: SessionManager.create(
+						admitted.policy.cwd,
+						admitted.sessionDir,
+						workflow ? { internal: true, workflow } : { internal: true },
+					);
 			// The fallback gate the child session gets, its own with its parent's, to check the model it starts on.
 			let startGate: CreateAgentSessionOptions["isFallbackModelAllowed"];
-			if (admitted.spec.testSession) {
-				created = { session: createTestSession(sessionManager, admitted.spec) };
-			} else {
+			const prepareChildSession = () => {
 				const childOptions: CreateAgentSessionOptions = {
 					cwd: admitted.policy.cwd,
 					...((candidate.model ?? admitted.policy.model)
@@ -1398,7 +1375,43 @@ export class SubagentControlRuntime {
 						orchestrationContext: admitted.spec.parent?.orchestrationContext,
 					}),
 				);
-				await beforeStartDeadline("loading its resources", resourceLoader.reload());
+				// Its resources load while its session opens: neither waits on the other.
+				const reloaded = resourceLoader.reload().then(
+					() => undefined,
+					(error: unknown) => ({ error }),
+				);
+				return { inherited, extensionBindings, settingsManager, explicitEffort, resourceLoader, reloaded };
+			};
+			let prepared: ReturnType<typeof prepareChildSession> | { readonly error: unknown } | undefined;
+			if (!admitted.spec.testSession) {
+				try {
+					prepared = prepareChildSession();
+				} catch (error) {
+					// Reported once its session is open and bound, where a launch that cannot run has always failed.
+					prepared = { error };
+				}
+			}
+			const sessionManager = await beforeStartDeadline(opening);
+			transcriptManager = sessionManager;
+			taskHooks?.bindTranscript?.(sessionManager);
+			const childSession = {
+				sessionId: sessionManager.getSessionId(),
+				sessionFile: sessionManager.getSessionFile(),
+			};
+			taskHooks?.bindChildSession?.(childSession);
+			admitted.spec.onChildSession?.(childSession);
+			if (workflow) await beforeStartDeadline(sessionManager.markSessionInternal(workflow));
+			const launchLeafId = sessionManager.getLeafId();
+			ownMessages = () => messagesSinceLaunch(sessionManager, launchLeafId);
+			let created: { session: AgentSession };
+			if (prepared === undefined) {
+				created = { session: createTestSession(sessionManager, admitted.spec) };
+			} else {
+				if ("error" in prepared) throw prepared.error;
+				const { inherited, extensionBindings, settingsManager, explicitEffort, resourceLoader } = prepared;
+				startBudget.enter("loading-resources");
+				const reloadFailure = await beforeStartDeadline(prepared.reloaded);
+				if (reloadFailure) throw reloadFailure.error;
 				const selectedSkills = resolveSkillsFromCatalog(
 					[...admitted.policy.skills],
 					resourceLoader.getSkillCatalog(),
@@ -1418,15 +1431,16 @@ export class SubagentControlRuntime {
 				const skillInjection = buildSkillInjection(selectedSkills.resolved);
 				const promptBehavior = createInProcessChildPromptBehavior(admitted.policy);
 				const systemPromptTransform = createInProcessChildSystemPromptTransform(admitted.policy, skillInjection);
+				startBudget.enter("creating-session");
 				created = await beforeStartDeadline(
-					"creating its agent session, which includes any wait for a resource-admission permit",
 					createAgentSession({
 						...inherited,
 						...explicitEffort,
 						extensionBindings,
 						customTools: admitted.policy.customTools ?? inherited.customTools,
 						resourceLoader,
-						resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startDeadline.signal]),
+						resourceAdmissionSignal: AbortSignal.any([signals.abort, signals.interrupt, startBudget.signal]),
+						onResourceAdmissionWait: (waiting) => startBudget.admissionWait(waiting),
 						subagentPolicy: {
 							...admitted.policy,
 							executionEnded: executionEnded.signal,
@@ -1442,7 +1456,8 @@ export class SubagentControlRuntime {
 					(late) => void late.session.dispose().catch(() => undefined),
 				);
 			}
-			clearTimeout(startTimer);
+			if (admitted.spec.resumeSession || admitted.spec.resumeFollowUps?.length) startBudget.end();
+			else startBudget.enter("dispatching-task");
 			session = created.session;
 			if (!admitted.spec.testSession) {
 				const ownModel = candidate.model ?? admitted.policy.model;
@@ -1525,6 +1540,10 @@ export class SubagentControlRuntime {
 					change: { kind: "model", model: taskRecordModel(effectiveModelId), thinking: effectiveThinking },
 				});
 			reportModel();
+			let markTaskDispatched = (): void => undefined;
+			const taskDispatched = new Promise<void>((resolve) => {
+				markTaskDispatched = () => resolve();
+			});
 			unsubscribe = session.subscribe((event) => {
 				writeEvent(admitted.spec.artifactJsonlPath, event);
 				if (event.type === "message_start" && event.message.role === "assistant")
@@ -1541,6 +1560,7 @@ export class SubagentControlRuntime {
 					});
 				}
 				if (event.type === "agent_start") {
+					markTaskDispatched();
 					this.native.publishChildStatus(admitted.identity.path, nativeStatus("running"));
 				} else if (event.type === "tool_execution_start") {
 					progressState.toolCount += 1;
@@ -1595,7 +1615,16 @@ export class SubagentControlRuntime {
 			}
 			if (!termination) {
 				unsent.splice(0, 1);
-				await session.prompt(admitted.spec.task, admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined);
+				const prompting = session.prompt(
+					admitted.spec.task,
+					admitted.spec.resumeTaskLiteral ? LITERAL_TEXT : undefined,
+				);
+				// Its task is dispatched once its agent starts; a prompt that settles first, refused or handled by an
+				// extension, ends dispatch too.
+				void prompting.then(markTaskDispatched, markTaskDispatched);
+				await beforeStartDeadline(taskDispatched);
+				startBudget.end();
+				await prompting;
 			}
 			await terminating;
 			const stats = statsFor(session, admitted.identity.path);
@@ -1701,9 +1730,11 @@ export class SubagentControlRuntime {
 					...(attemptedModels.length > 1 ? { attemptedModels: [...attemptedModels] } : {}),
 					...skillReport,
 				};
+			const startError = findSessionStartError(error);
 			return {
 				status,
 				cause,
+				...(startError === undefined ? {} : { startError }),
 				stats,
 				path: admitted.identity.path,
 				envelope: boundedEnvelope(cause),
@@ -1714,7 +1745,7 @@ export class SubagentControlRuntime {
 				...skillReport,
 			};
 		} finally {
-			clearTimeout(startTimer);
+			startBudget.end();
 			// End reply capability before asynchronous cleanup or extension invalidation.
 			executionEnded.abort();
 			signals.abort.removeEventListener("abort", abortListener);

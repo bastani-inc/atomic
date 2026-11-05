@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { parseSessionStartTimeoutMs, serializeSessionStartError } from "@bastani/atomic";
 import type { AgentConfig } from "../../agents/agent-types.js";
 import { ensureArtifactsDir, getArtifactPaths, writeArtifact } from "../../shared/artifacts.js";
 import { splitKnownThinkingSuffix, splitUnknownThinkingSuffix, THINKING_LEVELS } from "../../shared/model-info.js";
@@ -126,7 +127,11 @@ function resultFromOutcome(
 		task,
 		status,
 		...(outcome.status === "error"
-			? { cause: outcome.cause, error: outcome.cause }
+			? {
+					cause: outcome.cause,
+					error: outcome.cause,
+					...(outcome.startError ? { startError: serializeSessionStartError(outcome.startError) } : {}),
+				}
 			: outcome.status === "interrupted" && isParentCancellation(outcome.cause)
 				? { cause: outcome.cause }
 				: {}),
@@ -221,6 +226,11 @@ export async function runSingleInProcess(
 	task: string,
 	options: RunSyncOptions,
 ): Promise<SingleResult> {
+	const sessionStartTimeoutMs = parseSessionStartTimeoutMs(
+		options.sessionStartTimeoutMs,
+		"sdk",
+		"sessionStartTimeoutMs",
+	);
 	const cwd = options.cwd ?? runtimeCwd;
 	if (!existsSync(cwd)) return refusedResult(agent, task, `cwd does not exist: ${cwd}`);
 	if (!statSync(cwd).isDirectory()) return refusedResult(agent, task, `cwd is not a directory: ${cwd}`);
@@ -402,7 +412,7 @@ export async function runSingleInProcess(
 				? { progressArtifactPath: options.progressPath }
 				: {}),
 		...(artifactPaths?.outputPath ? { outputArtifactPath: artifactPaths.outputPath } : {}),
-		...(options.sessionStartTimeoutMs === undefined ? {} : { sessionStartTimeoutMs: options.sessionStartTimeoutMs }),
+		sessionStartTimeoutMs,
 		...(requestedThinking === undefined ? {} : { requestedThinking }),
 		...(options.resolveCandidateModel ? { resolveCandidateModel: options.resolveCandidateModel } : {}),
 		tools: agent.tools,
