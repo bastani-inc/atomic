@@ -3163,3 +3163,19 @@ test("a released child that can no longer be restored fails its wake with the re
 	);
 	assert.equal(h.runs.length, runs, "nothing ran");
 });
+
+test("pause with all: true pauses released children and leaves one already paused alone (#4326)", async () => {
+	const h = harness();
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("release12"));
+	await settled(h, await h.admit("release12b"));
+	await h.waitForLatest("release12b:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	await h.call({ action: "pause", id: "release12b:0" });
+	await h.waitForLatest("release12b:0", (record) => record.terminalStatus === "paused");
+	const paused = await h.call({ action: "pause", all: true });
+	assert.deepEqual(
+		paused.details.runControl?.children.map((child) => child.childId),
+		["release12:0"],
+	);
+	assert.doesNotMatch(text(paused), /already paused/);
+});
