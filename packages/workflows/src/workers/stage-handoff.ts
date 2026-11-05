@@ -123,7 +123,8 @@ export class PoolStageHandoff {
 	/**
 	 * Publish the latest activity of several attempts, in order, with one store invalidation per turn of the event
 	 * loop: the batch yields once a turn wrote {@link PUBLICATION_TURN_WRITES} snapshots, and stops with `signal`'s
-	 * reason when it was aborted meanwhile. Returns each publication's rejection, or undefined for an accepted one.
+	 * reason before any turn that starts once it was aborted, the first included. Returns each publication's
+	 * rejection, or undefined for an accepted one.
 	 */
 	async publishBatch(
 		publications: readonly PoolStagePublication[],
@@ -134,10 +135,8 @@ export class PoolStageHandoff {
 			prepared.push(await this.prepare(work, runs).catch((error: Error) => error));
 		const outcomes: (Error | undefined)[] = [];
 		while (outcomes.length < prepared.length) {
-			if (outcomes.length > 0) {
-				await nextTurn();
-				signal?.throwIfAborted();
-			}
+			if (outcomes.length > 0) await nextTurn();
+			signal?.throwIfAborted();
 			this.store.batch(() => {
 				for (let written = 0; written < PUBLICATION_TURN_WRITES && outcomes.length < prepared.length; ) {
 					const { work, runs } = publications[outcomes.length]!;

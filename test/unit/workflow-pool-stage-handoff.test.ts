@@ -3014,7 +3014,7 @@ test("a full publication of a child and its nested runs reads each of them a fix
 	assert.equal(large! - medium!, 4 * (medium! - small!), `reads ${small} / ${medium} / ${large} are not linear`);
 });
 
-test("a batch stops between turns once its signal aborts, so a run its pool ended is not written again (#4317)", async () => {
+test("a batch stops before any turn once its signal aborts, the first included, so a run its pool ended is not written again (#4317)", async () => {
 	const f = await fixture();
 	try {
 		const queue: PoolStageQueue = {
@@ -3040,6 +3040,17 @@ test("a batch stops between turns once its signal aborts, so a run its pool ende
 		);
 		const run = f.store.run(descriptor.childRunId)!;
 		assert.deepEqual([run.status, run.label], ["failed", "second"]);
+		const closed = new AbortController();
+		closed.abort();
+		await assert.rejects(
+			handoff.publishBatch([{ work: f.first, runs: [childRun(stages, { label: "after close" })] }], closed.signal),
+			(error) => error === closed.signal.reason,
+		);
+		assert.equal(
+			f.store.run(descriptor.childRunId)?.label,
+			"second",
+			"a batch its pool closed before writes nothing",
+		);
 	} finally {
 		await f.close();
 	}
