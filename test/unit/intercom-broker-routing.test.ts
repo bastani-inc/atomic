@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 
 const control = vi.hoisted(() => ({ reply: undefined as unknown, calls: [] as unknown[][] }));
 
@@ -46,11 +46,11 @@ test("a status report is read as whether the broker routes across machines and w
 	});
 	const selection = { digest: "d", source: "env" };
 	control.reply = report({ status: "on" }, selection);
-	await expect(queryBrokerRouting("/unused")).resolves.toEqual({ acrossMachines: true, hasSharedStorage: true });
+	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: true, hasSharedStorage: true });
 	control.reply = report({ status: "off" }, selection);
-	await expect(queryBrokerRouting("/unused")).resolves.toEqual({ acrossMachines: false, hasSharedStorage: true });
+	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: false, hasSharedStorage: true });
 	control.reply = report({ status: "off" });
-	await expect(queryBrokerRouting("/unused")).resolves.toEqual({ acrossMachines: false, hasSharedStorage: false });
+	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: false, hasSharedStorage: false });
 });
 
 test("the routing question is a broker_status request on the agent directory's socket, answered by a broker_status reply (#4320)", async () => {
