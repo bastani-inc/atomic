@@ -168,6 +168,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly budget: RunBudgetController;
 	readonly beforeToolCall?: () => void | Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
+	readonly recordLiveCheckpoint?: CreateToolPrimitiveInput["recordLiveCheckpoint"];
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
@@ -250,6 +251,7 @@ export function createTrackedToolPrimitive(input: {
 			return pending === undefined ? afterDrain() : pending.then(afterDrain);
 		},
 		beforeCheckpoint: input.beforeCheckpoint,
+		recordLiveCheckpoint: input.recordLiveCheckpoint,
 		...(budgetBoundary !== undefined ? { afterToolCall: budgetBoundary } : {}),
 		...lifecycle,
 	});

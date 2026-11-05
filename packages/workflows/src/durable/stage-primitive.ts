@@ -19,6 +19,7 @@ import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-top
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableStageCheckpoint, DurableStageRunTopology } from "./types.js";
 import { parseWorkflowChildResult } from "./workflow-child-result.js";
+import { stageWorktreeSnapshot } from "./worktree-snapshots.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
 
 export interface DurableStageDeps {
@@ -31,6 +32,8 @@ export interface DurableStageDeps {
 	readonly sourceOrderForStage?: (stage: StageSnapshot) => number | undefined;
 	readonly now?: () => number;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
+	readonly recordLiveCheckpoint?: import("./worktree-snapshot-recorder.js").WorkflowSnapshotRecord;
+	readonly stageDirectories?: (stage: StageSnapshot) => readonly string[];
 }
 
 export async function recordStageCheckpoint(
@@ -64,7 +67,10 @@ export async function recordStageCheckpoint(
 				...metadata,
 			};
 	await deps.beforeCheckpoint?.();
-	await recordCheckpointDurably(deps.backend, checkpoint);
+	if (stage.status === "completed" && stage.replayed !== true && deps.recordLiveCheckpoint) {
+		const snapshot = (await deps.recordLiveCheckpoint(checkpoint, undefined, deps.stageDirectories?.(stage))).at(-1);
+		if (snapshot !== undefined) stage.snapshot = stageWorktreeSnapshot(snapshot);
+	} else await recordCheckpointDurably(deps.backend, checkpoint);
 	return true;
 }
 
@@ -246,6 +252,7 @@ export function createDurableTaskPrimitive(input: {
 	) => void | Promise<void>;
 	readonly afterLiveResult?: (name: string) => Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
+	readonly recordLiveCheckpoint?: import("./worktree-snapshot-recorder.js").WorkflowSnapshotRecord;
 	readonly signal?: AbortSignal;
 	readonly registerTailControl?: (registration: {
 		readonly nodeId: string;
@@ -302,23 +309,24 @@ export function createDurableTaskPrimitive(input: {
 		try {
 			await input.beforeCheckpoint?.();
 			if (signal?.aborted) throw abortReasonError(signal);
+			const checkpoint: DurableStageCheckpoint = {
+				kind: "stage",
+				workflowId: input.workflowId,
+				checkpointId: stableCheckpointId("task", replayKey),
+				name,
+				replayKey,
+				output: result,
+				completedAt: Date.now(),
+				...taskCheckpointMetadata(result),
+				...(completedTopology !== undefined ? { topology: completedTopology } : {}),
+			};
 			await awaitAbortable(
 				signal,
-				recordCheckpointDurably(
-					input.backend,
-					{
-						kind: "stage",
-						workflowId: input.workflowId,
-						checkpointId: stableCheckpointId("task", replayKey),
-						name,
-						replayKey,
-						output: result,
-						completedAt: Date.now(),
-						...taskCheckpointMetadata(result),
-						...(completedTopology !== undefined ? { topology: completedTopology } : {}),
-					},
-					signal,
-				),
+				input.recordLiveCheckpoint
+					? input
+							.recordLiveCheckpoint(checkpoint, signal, options.cwd === undefined ? [] : [options.cwd])
+							.then(() => {})
+					: recordCheckpointDurably(input.backend, checkpoint, signal),
 			);
 		} catch (error) {
 			if (error instanceof Error) throw error;
@@ -736,6 +744,9 @@ export function recordCachedStageIntoStore(
 		...(checkpoint?.structured !== undefined ? { structured: checkpoint.structured } : {}),
 		...(checkpoint?.artifacts !== undefined ? { artifacts: checkpoint.artifacts } : {}),
 		...(checkpoint?.warnings !== undefined ? { warnings: checkpoint.warnings } : {}),
+		...(checkpoint?.worktreeSnapshots?.length
+			? { snapshot: stageWorktreeSnapshot(checkpoint.worktreeSnapshots.at(-1)!) }
+			: {}),
 	};
 	store.recordStageStart(runId, snapshot);
 	store.recordStageEnd(runId, snapshot);

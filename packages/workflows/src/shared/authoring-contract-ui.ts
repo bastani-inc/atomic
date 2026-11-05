@@ -258,7 +258,10 @@ export type NoExtraOutputs<TDeclared extends WorkflowOutputValues, TActual exten
 	Record<Exclude<keyof TActual, keyof TDeclared>, never>;
 
 export interface WorkflowOverlayAdapter extends WorkflowSerializableObject {}
-export interface RunSnapshot extends WorkflowSerializableObject {}
+export interface RunSnapshot extends WorkflowSerializableObject {
+	readonly worktreeRootMappings?: readonly (import("@bastani/atomic").WorktreeRootMapping &
+		WorkflowSerializableObject)[];
+}
 export interface ActiveRunEntry {
 	readonly controller: AbortController;
 	readonly children: readonly AbortController[];
@@ -287,6 +290,8 @@ export interface WorkflowParentRunLink {
 export interface RunOpts {
 	readonly adapters?: StageAdapters;
 	readonly cwd?: string;
+	/** Configure worktree snapshots for this workflow run. Defaults to enabled. */
+	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 	readonly ui?: WorkflowUIAdapter;
 	readonly executionMode?: WorkflowExecutionMode;
 	readonly usePromptNodesForUi?: boolean;
@@ -386,12 +391,22 @@ export interface WorkflowDetails extends WorkflowSerializableObject {
 	readonly exitReason?: string;
 }
 
+export interface StageWorktreeSnapshot extends WorkflowSerializableObject {
+	readonly id: string;
+	readonly root: string;
+	readonly head: string;
+	readonly tree: string;
+	readonly omittedCount: number;
+	readonly warnings: readonly string[];
+}
+
 export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked";
 
 export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly id: string;
 	readonly name: string;
 	readonly status: StageStatus;
+	readonly snapshot?: StageWorktreeSnapshot;
 	/** Parent stage ids. Do not cache this array across store updates; the runtime may replace it before a stage starts. */
 	readonly parentIds: readonly string[];
 	/** Shared admission order with tool nodes in this run. */

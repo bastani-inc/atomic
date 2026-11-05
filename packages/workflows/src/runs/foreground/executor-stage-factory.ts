@@ -2,6 +2,7 @@ import { type QuestionParams, runCallback, runSynchronousCallback } from "@basta
 import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { RunBudgetController } from "../../engine/run-budget.js";
+import { setStageWorkingDirectory } from "../../engine/stage-workspace.js";
 import { resolveStageGroup, stageCanUseWorkflowPendingStageRoute } from "../../shared/intercom-group.js";
 import { workflowPendingStageRouteReady } from "../../shared/pending-stage-route-readiness.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
@@ -160,6 +161,7 @@ export function createWorkflowStageFactory(input: {
 				: {}),
 			attachable: !shouldReplay,
 		};
+		setStageWorkingDirectory(stageSnapshot, options?.cwd);
 
 		if (shouldReplay) {
 			return createReplayStageContext({

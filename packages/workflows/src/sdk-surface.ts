@@ -46,6 +46,40 @@ export {
 	type SerializedDecisionError,
 	serializeDecisionError,
 } from "@bastani/atomic";
+export {
+	captureWorktreeSnapshot,
+	findWorkspaceError,
+	GitUnavailableError,
+	type GitUnavailableErrorCode,
+	isGitUnavailableError,
+	isWorkspaceConfigError,
+	isWorkspaceDriftError,
+	isWorkspaceError,
+	isWorkspaceGitError,
+	isWorkspaceRestoreError,
+	isWorkspaceSnapshotError,
+	rehydrateWorkspaceError,
+	serializeWorkspaceError,
+	type SerializedWorkspaceError,
+	WorkspaceConfigError,
+	type WorkspaceConfigErrorCode,
+	WorkspaceDriftError,
+	type WorkspaceDriftErrorCode,
+	WorkspaceError,
+	type WorkspaceErrorCode,
+	WorkspaceGitError,
+	type WorkspaceGitErrorCode,
+	WorkspaceRestoreError,
+	type WorkspaceRestoreErrorCode,
+	WorkspaceSnapshotError,
+	type WorkspaceSnapshotErrorCode,
+	restoreWorktreeSnapshot,
+	verifyWorktree,
+	type WorkspaceBinding,
+	type WorktreeRootMapping,
+	type WorktreeSnapshot,
+	type WorktreeSnapshotSettingsInput,
+} from "@bastani/atomic";
 export type { Static, TSchema } from "typebox";
 export { KEEP_CONTEXT_CLOSE_TAG, KEEP_CONTEXT_OPEN_TAG, keepContext } from "./authoring/keep-context.js";
 export type {
@@ -68,6 +102,12 @@ export type { RunJournalOption, RunJournalSettings } from "./durable/journal/res
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
 export * from "./durable/journal/types.js";
+export {
+	listResumableWorkflowSnapshots,
+	listWorkflowSnapshotBoundaries,
+	type WorkflowSnapshotBoundary,
+	workflowSnapshotFrontier,
+} from "./durable/worktree-snapshots.js";
 export type { StageNode } from "./engine/graph-inference.js";
 export { GraphFrontierTracker } from "./engine/graph-inference.js";
 export { createAgentSessionAdapter } from "./extension/wiring.js";
@@ -123,6 +163,7 @@ export type {
 	RunStatus,
 	StageSnapshot,
 	StageStatus,
+	StageWorktreeSnapshot,
 	StoreSnapshot,
 	ToolEvent,
 	ToolNodeSnapshot,

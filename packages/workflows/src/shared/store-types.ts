@@ -367,10 +367,21 @@ export type LiveStageMessageValidationResult =
 	| { readonly outcome: "undeliverable"; readonly reason?: string }
 	| { readonly outcome: "message_id_conflict"; readonly messageId: string };
 
+/** Summary of the workspace captured for a stage; patch and bundle bytes remain in storage. */
+export interface StageWorktreeSnapshot {
+	readonly id: string;
+	readonly root: string;
+	readonly head: string;
+	readonly tree: string;
+	readonly omittedCount: number;
+	readonly warnings: readonly string[];
+}
+
 export interface StageSnapshot {
 	readonly id: string;
 	readonly name: string;
 	status: StageStatus;
+	snapshot?: StageWorktreeSnapshot;
 	workerExecution?: {
 		readonly worker: string;
 		readonly generation: number;
@@ -545,6 +556,10 @@ export interface RunSnapshot extends RunExecutionState {
 	readonly stages: StageSnapshot[];
 	/** Durable ctx.tool execution nodes. */
 	readonly toolNodes: ToolNodeSnapshot[];
+	/** The first typed reason worktree snapshot capture was unavailable during this run. */
+	snapshotUnavailable?: import("@bastani/atomic").SerializedWorkspaceError;
+	/** Mapping from recorded roots to fresh restored worktrees. */
+	worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
 	/** Resolved duration budget and persisted wrap-up state; omitted when unbudgeted. */
 	budget?: RunBudgetSnapshot;
 	budgetState?: RunBudgetState;

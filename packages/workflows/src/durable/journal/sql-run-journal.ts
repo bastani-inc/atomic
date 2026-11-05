@@ -2,11 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
+	type SnapshotBlobStore,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteValue,
+	SqlSnapshotBlobStore,
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageUnavailableError,
@@ -136,6 +138,7 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
+	readonly snapshotBlobs: SnapshotBlobStore;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 	private readonly readerFile: string | undefined;
 	private reader?: Promise<SqliteDatabase>;
@@ -146,11 +149,13 @@ export class SqlRunJournal implements RunJournal {
 		tables: Tables,
 		legacy: LegacyJournalRuns | undefined,
 		readerFile: string | undefined,
+		snapshotBlobs: SnapshotBlobStore,
 	) {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
 		this.readerFile = readerFile;
+		this.snapshotBlobs = snapshotBlobs;
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.transaction(body)),
 			read: (body) => this.operation(() => this.readSnapshot(body)),
@@ -167,7 +172,8 @@ export class SqlRunJournal implements RunJournal {
 		if (!(await SqlRunJournal.initialized(database, t))) await SqlRunJournal.initialize(database, t);
 		const readerFile = await sharedFile(database, database);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
-		return new SqlRunJournal(database, t, legacy, readerFile);
+		const snapshotBlobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+		return new SqlRunJournal(database, t, legacy, readerFile, snapshotBlobs);
 	}
 
 	/**

@@ -31,6 +31,8 @@ export type EngineChildRunOptions = Pick<
 	| "cancellation"
 	| "overlay"
 	| "config"
+	| "snapshots"
+	| "worktreeRootMappings"
 	| "models"
 	| "registry"
 	| "stageControlRegistry"

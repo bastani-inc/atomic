@@ -72,6 +72,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 		this.persistent = inner.persistent;
 	}
 
+	get snapshotJournal(): DurableWorkflowBackend["snapshotJournal"] {
+		return this.inner.snapshotJournal;
+	}
+
 	async archivePendingStageMessage(_workflowId: string, entry: PendingStageMessage): Promise<void> {
 		await this.inner.archivePendingStageMessage?.(this.scope.rootWorkflowId, entry);
 	}

@@ -1,4 +1,5 @@
 import type { JournalCatalogError } from "@bastani/atomic/storage";
+import { findWorkspaceError, isWorkspaceDriftError, resolveWorktreeSnapshotSettings } from "@bastani/atomic";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
 /** Resume workflows from durable checkpoints without repeating completed work. */
@@ -27,6 +28,7 @@ import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { requireStoreDurableBackend } from "./store-backend.js";
 import { resolveToolResumeFrontier } from "./tool-resume-frontier.js";
 import type { ResumableWorkflowEntry } from "./types.js";
+import { listWorkflowSnapshotBoundaries } from "./worktree-snapshots.js";
 
 export type ResumeDurableResult =
 	| { ok: true; runId: string; workflowId: string; name: string; message: string }
@@ -124,6 +126,7 @@ export async function resumeDurableWorkflow(
 	deps: ResumeDurableDeps,
 	catalog?: readonly ResumableWorkflowEntry[],
 ): Promise<ResumeDurableResult> {
+	resolveWorktreeSnapshotSettings(deps.baseRunOpts.snapshots, "sdk", "snapshots");
 	const backend = resumeBackend(deps, workflowId);
 	const target = resolveDurableEntry(workflowId, catalog ?? backend.listResumableWorkflows());
 	const id = target !== undefined && !("kind" in target) ? target.workflowId : workflowId;
@@ -176,7 +179,13 @@ async function resumeDurableWorkflowClaimed(
 	}
 	const initial = backend.getWorkflow(workflowId);
 	const currentCwd = deps.baseRunOpts.cwd;
+	const journal = backend.snapshotJournal;
+	const hasSnapshots =
+		initial !== undefined &&
+		journal !== undefined &&
+		(await listWorkflowSnapshotBoundaries(journal, workflowId)).length > 0;
 	const crossProject =
+		!hasSnapshots &&
 		initial?.invocationCwd !== undefined &&
 		currentCwd !== undefined &&
 		canonicalDirectory(initial.invocationCwd) !== canonicalDirectory(currentCwd);
@@ -493,6 +502,8 @@ async function resumeDurableWorkflowClaimed(
 			if (adopting && sourceSnapshot === undefined) deps.baseRunOpts.store?.removeRun(accepted.runId);
 			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
 		});
+		const drift = findWorkspaceError(admission.error, isWorkspaceDriftError);
+		if (drift !== undefined) throw drift;
 		return {
 			ok: false,
 			reason: "startup_failed",

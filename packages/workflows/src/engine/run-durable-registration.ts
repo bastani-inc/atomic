@@ -12,6 +12,7 @@ export function durableRootRegistrationForRun(args: {
 	readonly continuationSourceId: string | undefined;
 	readonly possibleStages?: readonly string[];
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
+	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 }): WorkflowRegistrationInput | undefined {
 	if (args.isChildRun || args.continuationSourceId === args.runId) return undefined;
 	return {
@@ -25,6 +26,7 @@ export function durableRootRegistrationForRun(args: {
 		...(args.hasPersistence ? { sessionFile: undefined } : {}),
 		...(args.possibleStages !== undefined ? { possibleStages: args.possibleStages } : {}),
 		...(args.resources !== undefined ? { resources: args.resources } : {}),
+		...(args.snapshots !== undefined ? { snapshots: args.snapshots } : {}),
 	};
 }
 
