@@ -842,7 +842,7 @@ interface ForkErrorShape {
 }
 
 /** An object whose name is a known fork error's and whose code is that error's code. */
-function hasForkShape(value: unknown, name?: ForkErrorName): value is ForkErrorShape {
+function hasForkShape(value: unknown, name?: ForkErrorName): boolean {
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as ForkErrorShape;
 	const expected = name ?? candidate.name;
