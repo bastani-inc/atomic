@@ -149,6 +149,23 @@ describe("registering with the routing a session verified (#4320)", () => {
 		}
 	});
 
+	test("a routing-changed refusal of an unverified registration, from a broker of another version, expects single-machine routing", async () => {
+		await fakeBroker((socket) => {
+			writeMessage(socket, {
+				type: "registration_failed",
+				reason: BROKER_ROUTING_CHANGED_REASON,
+				code: BROKER_ROUTING_CHANGED_CODE,
+			});
+			socket.end();
+		});
+
+		const error = await connectFailure(undefined);
+
+		assert.ok(isIntercomRoutingChangedError(error), String(error));
+		assert.equal(error.expectedAcrossMachines, false);
+		assert.equal(isRetryableIntercomRoutingError(error), true);
+	});
+
 	test("the refusal code is the wire contract an older or newer broker also speaks", () => {
 		assert.equal(BROKER_ROUTING_CHANGED_CODE, "broker_routing_changed");
 	});
