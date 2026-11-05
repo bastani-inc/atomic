@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
+import { setCliStorageSelection } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { queryIntercomBroker, restartIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
@@ -578,3 +579,40 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+for (const [override, select] of [
+	[
+		"ATOMIC_STORAGE",
+		() => {
+			vi.stubEnv("ATOMIC_STORAGE", JSON.stringify({ memory: true }));
+		},
+	],
+	[
+		"--storage",
+		() => {
+			setCliStorageSelection({ flag: "--storage", value: JSON.stringify({ memory: true }) });
+			cleanups.push(() => setCliStorageSelection(undefined));
+		},
+	],
+] as const) {
+	test(
+		`a CI-profile session whose ${override} selects memory storage registers with a single-machine broker instead of being refused (#4320)`,
+		async () => {
+			startBrokerWithStorage("");
+			await brokerRouting("off");
+			vi.stubEnv("ATOMIC_PROFILE", "ci");
+			vi.stubEnv("ATOMIC_TEAM_URL", `file://${join(root, "team.db")}`);
+			select();
+			const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "ci-memory");
+			const alpha = await loadExtension();
+			cleanups.push(() => alpha.stop(alphaContext));
+			await alpha.start(alphaContext);
+
+			const status = await alpha.status(alphaContext);
+			assert.equal(status.isError, false, status.content[0]?.text);
+			assert.deepEqual(status.details?.groups, ["default"]);
+			assert.equal(await sessionsOnBroker(), 1);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+}

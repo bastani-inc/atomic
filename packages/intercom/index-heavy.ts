@@ -355,8 +355,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const actual = routing.acrossMachines;
     brokerRouting = actual;
     const explicit = explicitHomeGroup(config, ctx);
-    const strictSharedProfile = (process.env.ATOMIC_PROFILE ?? "").trim() === "ci";
-    const brokerLacksSelectedStorage = !routing.hasSharedStorage && multiNodeSelected(agentDir, processStorageEnvironment());
+    const selectedShared = multiNodeSelected(agentDir, processStorageEnvironment());
+    const strictSharedProfile = selectedShared && (process.env.ATOMIC_PROFILE ?? "").trim() === "ci";
+    const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
     if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
       throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
     }
