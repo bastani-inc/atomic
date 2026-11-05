@@ -533,3 +533,30 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 	const mapped = mapRestoredPath(header.cwd, mappings);
 	return mapped === resolve(cwd);
 }
+
+/**
+ * The snapshots retention keeps for sessions: the latest snapshot of each checkout in every session of `store`,
+ * internal workflow-stage sessions included. Pass them, with the snapshots resumable workflow runs reference, to
+ * `collectSnapshotGarbage`.
+ */
+export async function listRetainedSessionSnapshots(
+	store: SessionStore,
+	signal?: AbortSignal,
+): Promise<WorktreeSnapshot[]> {
+	const retained: WorktreeSnapshot[] = [];
+	for await (const summary of store.list({ includeInternal: true, signal })) {
+		const { entries } = await store.load(summary.id);
+		const records = new Map<string, WorktreeSnapshot>();
+		const latest = new Map<string, string>();
+		for (const entry of entries) {
+			if (entry.type !== "worktree_snapshot") continue;
+			if (entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
+			latest.set(entry.root, entry.snapshotId);
+		}
+		for (const snapshotId of new Set(latest.values())) {
+			const snapshot = records.get(snapshotId);
+			if (snapshot) retained.push(snapshot);
+		}
+	}
+	return retained;
+}
