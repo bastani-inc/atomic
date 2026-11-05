@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readlinkSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -711,10 +712,14 @@ function isExecutableFile(candidate: string, plat: string): boolean {
 	return stats?.isFile() === true && (plat === "win32" || (stats.mode & 0o111) !== 0);
 }
 
-/** The first git on PATH, ignoring Atomic's own portable copy. */
+/**
+ * The first git in an absolute PATH directory, ignoring Atomic's own portable copy. Empty and relative entries name
+ * the working directory, which may be an untrusted repository, so they are never searched.
+ */
 function findSystemGit(pathValue: string, portableRoot: string, plat: string): string | undefined {
 	const executable = plat === "win32" ? "git.exe" : "git";
 	for (const entry of pathValue.split(delimiter)) {
+		if (!isAbsolute(entry)) continue;
 		const directory = resolve(entry);
 		if (isWithin(directory, portableRoot)) continue;
 		const candidate = join(directory, executable);
@@ -1122,9 +1127,15 @@ function isProcessAlive(pid: number): boolean {
  * Remove staging directories whose installer process has exited. Ownership comes from the pid in the name, never
  * from timestamps, so a skewed clock cannot make a live installer's staging look abandoned.
  */
-/** Staging names carry the host and pid, so a sweep never judges another host's or container's installer. */
+const PID_NAMESPACE_LINK = "/proc/self/ns/pid";
+
+/**
+ * Staging names carry a tag of the host and PID namespace plus the pid, so a sweep never judges an installer whose
+ * pid it cannot see, such as one in another container sharing the directory.
+ */
 function stagingOwnerTag(): string {
-	return createHash("sha256").update(hostname()).digest("hex").slice(0, 8);
+	const pidNamespace = existsSync(PID_NAMESPACE_LINK) ? readlinkSync(PID_NAMESPACE_LINK) : "";
+	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
 }
 
 function removeAbandonedStagingDirectories(binDir: string): void {

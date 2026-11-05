@@ -8,13 +8,14 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, relative } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +86,8 @@ vi.mock("proper-lockfile", async () => {
 });
 
 const isWindows = process.platform === "win32";
-const HOST_TAG = createHash("sha256").update(hostname()).digest("hex").slice(0, 8);
+const PID_NAMESPACE = existsSync("/proc/self/ns/pid") ? readlinkSync("/proc/self/ns/pid") : "";
+const HOST_TAG = createHash("sha256").update(`${hostname()}\0${PID_NAMESPACE}`).digest("hex").slice(0, 8);
 /** Node timers may fire up to a millisecond before `Date.now()` shows the full delay. */
 const TIMER_EARLY_FIRE_TOLERANCE_MS = 2;
 const ORIGINAL_PATH = process.env.PATH ?? "";
@@ -1099,6 +1101,14 @@ describe("git resolution details (#4322)", () => {
 		const parentGit = writeGit(join(agentDir, "bin"), "git", 0o755, "2.44.0");
 		usePath(join(agentDir, "bin"));
 		assert.equal(tools.resolveGitSync().path, parentGit);
+	});
+
+	it("never runs a git from an empty or relative PATH entry", () => {
+		const untrusted = writeGit(join(tempDir, "untrusted-repo"), executableName, 0o755, "2.99.0");
+		const trusted = writeGit(join(tempDir, "trusted-bin"), executableName, 0o755, "2.40.0");
+		usePath("", relative(process.cwd(), join(untrusted, "..")), join(trusted, ".."));
+		assert.equal(tools.resolveGitSync().path, trusted);
+		assert.equal(mocks.spawnSyncCommands.includes(untrusted), false);
 	});
 
 	it("reads PATH case-insensitively and treats a missing PATH as empty", () => {
