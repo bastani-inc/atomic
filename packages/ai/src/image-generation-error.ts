@@ -522,6 +522,7 @@ function apiInit(data: ImageGenerationErrorData, cause: Error | undefined): Imag
 		apiCode: stringField(fields, "apiCode"),
 		apiType: stringField(fields, "apiType"),
 		requestId: stringField(fields, "requestId"),
+		retryable: data.retryable,
 		cause,
 	};
 }
@@ -546,7 +547,7 @@ function createFromData(data: ImageGenerationErrorData, cause: Error | undefined
 				cause,
 			});
 		case "ImageGenerationApiError":
-			return new ImageGenerationApiError({ ...apiInit(data, cause), retryable: data.retryable });
+			return new ImageGenerationApiError(apiInit(data, cause));
 		case "ImageGenerationQuotaError":
 			return new ImageGenerationQuotaError(apiInit(data, cause));
 		case "ImageGenerationRateLimitError":

@@ -174,6 +174,21 @@ describe("image generation errors (#4332)", () => {
 		);
 	});
 
+	it.each([
+		new ImageGenerationQuotaError({ ...apiInit, retryable: true }),
+		new ImageGenerationRateLimitError({ ...apiInit, retryable: false }),
+		new ImageGenerationServerError({ ...apiInit, detail: "HTTP 503", retryable: false }),
+		new ImageGenerationUserError({ ...apiInit, retryable: true }),
+		new ImageModerationBlockedError({ ...apiInit, retryable: true }),
+	])("keeps an explicit retryable override on $name across a JSON round trip (#4332)", (error) => {
+		const revived = imageGenerationErrorFromData(JSON.parse(JSON.stringify(error)) as ImageGenerationErrorData);
+
+		assert.equal(revived.constructor, error.constructor);
+		assert.equal(revived.retryable, error.retryable);
+		assert.equal(isRetryableImageGenerationError(revived), error.retryable);
+		assert.deepEqual(revived.toData(), error.toData());
+	});
+
 	it("keeps the api fields on the typed error (#4332)", () => {
 		const error = new ImageGenerationApiError(apiInit);
 

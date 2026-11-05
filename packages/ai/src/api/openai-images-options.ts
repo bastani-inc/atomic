@@ -197,6 +197,16 @@ export function validateOpenAIImagesRequest(model: ImageModel<ImageApi>, params:
 			"outputFormat",
 		);
 	}
+	if (params.background === "transparent" && format !== undefined && format !== "png" && format !== "webp") {
+		fail(
+			model,
+			"background",
+			"conflicts-with-option",
+			"transparent backgrounds require png or webp output",
+			'Set outputFormat to "png" or "webp", or remove the transparent background.',
+			"outputFormat",
+		);
+	}
 	if (params.output_compression !== undefined && format !== "jpeg" && format !== "webp") {
 		fail(
 			model,
@@ -206,6 +216,18 @@ export function validateOpenAIImagesRequest(model: ImageModel<ImageApi>, params:
 			'Set outputFormat to "jpeg" or "webp", or remove outputCompression.',
 			"outputFormat",
 		);
+	}
+	for (const role of ["markup", "mask"] as const) {
+		if (params[role] !== undefined && (params.image?.length ?? 0) === 0) {
+			fail(
+				model,
+				"input",
+				"requires-base-image",
+				`an image with role "${role}" needs a base image to apply to`,
+				"Add an image without a role before it; the first image is the base.",
+				role,
+			);
+		}
 	}
 	if (params.markup !== undefined && params.mask !== undefined) {
 		fail(

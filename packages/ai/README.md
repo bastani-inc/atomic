@@ -953,7 +953,7 @@ await models.generateImages(flare, {
 | --- | --- | --- |
 | `out-of-range` | `frameCount` outside 2-16, `frameDurationMs` outside 20-2000, `outputCompression` outside 0-100 (or not an integer), or `safetyIdentifier` longer than 128 characters. The bounds are in `OPENAI_IMAGES_LIMITS`. | Use a value within the bounds. |
 | `requires-option` | `frameCount` or `frameDurationMs` without `outputFormat: "gif"`, or `svg` without `outputFormat: "svg"`. `related` names the missing option. | Set the option in `related`, or remove `field`. |
-| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg` or no format; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
+| `conflicts-with-option` | SVG output with `n` above 1; `outputCompression` with `png`, `gif`, `svg` or no format; `background: "transparent"` with `jpeg`, `gif` or `svg`; a markup image together with a mask image; GIF or SVG output with streaming or partial images. | Remove `field` or the option named in `related`. |
 | `generation-only` | GIF or SVG output on a request with input images, which goes to the edits endpoint. | Remove the input images, or choose `png`, `jpeg` or `webp`. |
 | `unsupported-by-model` | `complexity`, GIF, SVG or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
 | `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |

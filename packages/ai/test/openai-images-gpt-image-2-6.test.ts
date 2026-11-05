@@ -601,6 +601,28 @@ describe("GPT Image 2.6 request validation (#4332)", () => {
 		assert.equal(result.errorMessage, error.message);
 	});
 
+	it.each(["jpeg", "gif", "svg"] as const)(
+		"rejects transparent %s output before hooks or requests (#4332)",
+		async (outputFormat) => {
+			const { fetch, requests } = mockFetch();
+			let hookCalls = 0;
+			const result = await run(
+				flare,
+				textContext,
+				{ background: "transparent", outputFormat, onPayload: () => void hookCalls++ },
+				fetch,
+			);
+
+			const error = errorOf(result);
+			assert(isImageGenerationConfigError(error));
+			assert.equal(error.field, "background");
+			assert.equal(error.reason, "conflicts-with-option");
+			assert.equal(error.related, "outputFormat");
+			assert.equal(hookCalls, 0);
+			assert.equal(requests.length, 0);
+		},
+	);
+
 	it("names the offending model and option in the message of a rejected request (#4332)", async () => {
 		const { fetch } = mockFetch();
 
@@ -621,6 +643,9 @@ describe("GPT Image 2.6 request validation (#4332)", () => {
 			{ outputFormat: "gif", n: 3 },
 			{ safetyIdentifier: "a".repeat(OPENAI_IMAGES_LIMITS.safetyIdentifierMaxLength) },
 			{ n: 4, outputFormat: "png" },
+			{ background: "transparent" },
+			{ background: "transparent", outputFormat: "png" },
+			{ background: "transparent", outputFormat: "webp" },
 		];
 
 		for (const options of accepted) {
@@ -639,6 +664,7 @@ describe("GPT Image 2.6 request validation (#4332)", () => {
 			[{ output_format: "gif", stream: true }, "stream", "conflicts-with-option", "outputFormat"],
 			[{ output_format: "svg", partial_images: 0 }, "partialImages", "conflicts-with-option", "outputFormat"],
 			[{ frame_count: 4 }, "frameCount", "requires-option", "outputFormat"],
+			[{ background: "transparent", output_format: "jpeg" }, "background", "conflicts-with-option", "outputFormat"],
 		] as const) {
 			const result = await run(flare, textContext, { onPayload: replace(extra) }, fetch);
 			const error = errorOf(result);
@@ -698,6 +724,37 @@ describe("GPT Image 2.6 request validation (#4332)", () => {
 		assert.equal(requests.length, 1);
 		assert.equal(jsonBody(requests[0]).moderation, "low");
 	});
+
+	it.each(["markup", "mask"] as const)(
+		"rejects hooks that remove or empty the base image for %s (#4332)",
+		async (role) => {
+			for (const emptyArray of [false, true]) {
+				for (const replace of [false, true]) {
+					const { fetch, requests } = mockFetch();
+					const result = await run(
+						flare,
+						editContext(png("base"), png("overlay", role)),
+						{
+							onPayload: (payload) => {
+								const changed = replace ? { ...(payload as object) } : (payload as Record<string, object>);
+								if (emptyArray) Object.assign(changed, { image: [] });
+								else delete (changed as Record<string, object>).image;
+								return replace ? changed : undefined;
+							},
+						},
+						fetch,
+					);
+
+					const error = errorOf(result);
+					assert(isImageGenerationConfigError(error));
+					assert.equal(error.field, "input");
+					assert.equal(error.reason, "requires-base-image");
+					assert.equal(error.related, role);
+					assert.equal(requests.length, 0);
+				}
+			}
+		},
+	);
 
 	it("allows streaming fields on formats that support them (#4332)", async () => {
 		const { fetch, requests } = mockFetch();

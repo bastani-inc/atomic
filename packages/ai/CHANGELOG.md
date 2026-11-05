@@ -17,6 +17,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 - `openai-images` no longer retries a quota-exhausted HTTP 429 when `maxRetries` is set; rate-limit and server errors are still retried ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
 
+### Fixed
+
+- Image requests reject transparent JPEG, GIF and SVG output locally, and an `onPayload` hook cannot leave a markup or mask image without a base image. Rebuilt API errors preserve explicit `retryable` overrides ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+
 ## [0.9.71] - 2026-11-03
 
 Copilot discovery now preserves readable model names alongside exact request IDs.
