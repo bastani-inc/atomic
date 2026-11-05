@@ -442,8 +442,10 @@ test("a serialized cause keeps its name and code but never its own message, whic
 	assert.doesNotMatch(JSON.stringify(chained.sent), /sk-synthet/);
 	assert.deepEqual(chained.sent.cause, {
 		name: "TeamProfileError",
-		message: wrapped.message,
 		code: "settings-write-failed",
+		message: wrapped.message,
+		hint: "Fix it.",
+		fields: { retryable: false, subject: "/settings.json" },
 		cause: { name: "Error", message: "EACCES", code: "EACCES", cause: { name: "Error", message: "Error" } },
 	});
 	assert.ok(isTeamProfileError(chained.received.cause));
@@ -495,6 +497,232 @@ test("a cause from another realm or a callable cause serializes from its name an
 		name: "Error",
 		message: "Error",
 		cause: { name: "Error", message: "Error" },
+	});
+});
+
+test("a nested team error crosses a process boundary as its own class, so retry decisions do not change (#4320)", () => {
+	const failed = new TeamProfileError("connection-failed", {
+		subject: "libsql://team.example.invalid",
+		detail: "ECONNREFUSED",
+		hint: "Check the URL.",
+		cause: Object.assign(new Error("raw sk-synthetic-value"), { code: "ECONNREFUSED" }),
+	});
+	const outer = new TeamProfileError("settings-write-failed", { subject: "/s.json", hint: "Fix it.", cause: failed });
+	assert.equal(outer.retryable, false);
+	assert.ok(isRetryableTeamProfileError(outer));
+	const { sent, received } = acrossProcesses(outer);
+	assert.doesNotMatch(JSON.stringify(sent), /sk-syn/);
+	assert.ok(isRetryableTeamProfileError(received));
+	const nested = received.cause;
+	assert.ok(nested instanceof TeamProfileError);
+	assert.deepEqual(
+		[nested.name, nested.code, nested.subject, nested.detail, nested.hint, nested.retryable, nested.message],
+		["TeamProfileError", "connection-failed", failed.subject, "ECONNREFUSED", "Check the URL.", true, failed.message],
+	);
+	const driver = nested.cause as Error & { code?: string };
+	assert.deepEqual([driver.name, driver.message, driver.code], ["Error", "ECONNREFUSED", "ECONNREFUSED"]);
+
+	const timeout = new TeamProfileTimeoutError({
+		subject: "libsql://team.example.invalid",
+		hint: "Retry.",
+		timeoutMs: 300,
+		elapsedMs: 301,
+		phase: "connect",
+	});
+	const future = rehydrateTeamError({
+		name: "TeamProfileQuotaError",
+		code: "quota-exceeded",
+		message: "The team database is full (quota-exceeded). Free space.",
+		hint: "Free space.",
+		fields: { retryable: true, subject: "libsql://team.example.invalid" },
+	});
+	for (const inner of [timeout, future]) {
+		const wrapped = new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "Delete it.",
+			cause: new Error("worker failed", { cause: inner }),
+		});
+		const delivered = acrossProcesses(wrapped).received;
+		assert.equal(delivered.retryable, false);
+		assert.ok(isRetryableTeamProfileError(delivered));
+		const restored = (delivered.cause as Error).cause;
+		assert.ok(restored instanceof TeamProfileError);
+		assert.deepEqual(
+			[restored.name, restored.code, restored.retryable, restored.message],
+			[inner.name, inner.code, true, inner.message],
+		);
+	}
+	const restoredTimeout = acrossProcesses(
+		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "Delete it.", cause: timeout }),
+	).received.cause;
+	assert.ok(restoredTimeout instanceof TeamProfileTimeoutError);
+	assert.deepEqual(
+		[restoredTimeout.timeoutMs, restoredTimeout.elapsedMs, restoredTimeout.phase],
+		[300, 301, "connect"],
+	);
+
+	let chain: Error = new Error("level 12");
+	for (let level = 11; level >= 1; level--) {
+		chain = new TeamProfileError("token-delete-failed", { subject: `/t${level}`, hint: "h", cause: chain });
+	}
+	const deep = acrossProcesses(
+		new TeamProfileError("settings-write-failed", { subject: "/s", hint: "h", cause: chain }),
+	);
+	let sentLevels = 0;
+	for (let cause = deep.sent.cause; cause !== undefined; cause = cause.cause) sentLevels++;
+	let receivedLevels = 0;
+	for (let cause = deep.received.cause; cause instanceof Error; cause = cause.cause) receivedLevels++;
+	assert.deepEqual([sentLevels, receivedLevels], [8, 8]);
+
+	let crafted: SerializedTeamError["cause"];
+	for (let level = 12; level >= 1; level--) {
+		crafted = {
+			name: "TeamProfileError",
+			code: "connection-failed",
+			message: `level ${level}`,
+			hint: "h",
+			fields: { retryable: true, subject: "s" },
+			...(crafted === undefined ? {} : { cause: crafted }),
+		};
+	}
+	const bounded = rehydrateTeamError({ ...deep.sent, cause: crafted });
+	let boundedLevels = 0;
+	for (let cause = bounded.cause; cause instanceof Error; cause = cause.cause) boundedLevels++;
+	assert.equal(boundedLevels, 8);
+
+	const malformed = rehydrateTeamError({
+		...deep.sent,
+		cause: { name: "TeamProfileError", code: "connection-failed", message: "m", hint: "h", fields: null as never },
+	}).cause;
+	assert.ok(malformed instanceof Error);
+	assert.equal(malformed instanceof TeamProfileError, false);
+	assert.equal(malformed.message, "m");
+});
+
+function foreignTeamError(message: string, props: Readonly<Record<string, unknown>>): unknown {
+	return runInNewContext(
+		'Object.assign(new Error(message), props, { cause: Object.assign(new Error("raw sk-synthetic-value"), { code: "ECONNREFUSED" }) })',
+		{ message, props },
+	);
+}
+
+function serializedNestedCause(cause: unknown): SerializedTeamError["cause"] {
+	return serializeTeamError(
+		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h", cause: new Error("w", { cause }) }),
+	).cause?.cause;
+}
+
+test("a team error from another realm with complete fields crosses a process boundary as its own class (#4320)", () => {
+	const local = new TeamProfileError("connection-failed", {
+		subject: "libsql://team.example.invalid",
+		detail: "ECONNREFUSED",
+		hint: "Check the URL.",
+	});
+	const foreign = foreignTeamError(local.message, {
+		name: "TeamProfileError",
+		code: "connection-failed",
+		subject: local.subject,
+		detail: local.detail,
+		hint: local.hint,
+		retryable: true,
+	});
+	assert.equal(foreign instanceof Error, false);
+	const outer = new TeamProfileError("settings-write-failed", {
+		subject: "/s.json",
+		hint: "Fix it.",
+		cause: new Error("worker failed", { cause: foreign }),
+	});
+	assert.equal(outer.retryable, false);
+	assert.ok(isRetryableTeamProfileError(outer));
+	const { sent, received } = acrossProcesses(outer);
+	assert.doesNotMatch(JSON.stringify(sent), /sk-syn/);
+	assert.ok(isRetryableTeamProfileError(received));
+	const restored = (received.cause as Error).cause;
+	assert.ok(restored instanceof TeamProfileError);
+	assert.deepEqual(
+		[restored.name, restored.code, restored.subject, restored.detail, restored.hint, restored.retryable],
+		["TeamProfileError", "connection-failed", local.subject, "ECONNREFUSED", "Check the URL.", true],
+	);
+	assert.equal(restored.message, local.message);
+	const driver = restored.cause as Error & { code?: string };
+	assert.deepEqual([driver.name, driver.message, driver.code], ["Error", "ECONNREFUSED", "ECONNREFUSED"]);
+
+	const timeoutProps = {
+		name: "TeamProfileTimeoutError",
+		code: "connection-timeout",
+		subject: local.subject,
+		hint: "Retry.",
+		retryable: true,
+		timeoutMs: 300,
+		elapsedMs: 301,
+		phase: "connect",
+	};
+	const timeout = acrossProcesses(
+		new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "h",
+			cause: new Error("worker failed", { cause: foreignTeamError("timed out", timeoutProps) }),
+		}),
+	).received;
+	assert.ok(isRetryableTeamProfileError(timeout));
+	const restoredTimeout = (timeout.cause as Error).cause;
+	assert.ok(restoredTimeout instanceof TeamProfileTimeoutError);
+	assert.deepEqual(
+		[restoredTimeout.timeoutMs, restoredTimeout.elapsedMs, restoredTimeout.phase],
+		[300, 301, "connect"],
+	);
+
+	const configProps = {
+		name: "TeamProfileConfigError",
+		code: "incomplete-profile",
+		source: "env",
+		field: "ATOMIC_PROFILE",
+		hint: "Set them.",
+		retryable: false,
+		missing: ["ATOMIC_TEAM_URL"],
+	};
+	const config = acrossProcesses(
+		new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "h",
+			cause: new Error("worker failed", { cause: foreignTeamError("incomplete", configProps) }),
+		}),
+	).received;
+	const restoredConfig = (config.cause as Error).cause;
+	assert.ok(restoredConfig instanceof TeamProfileConfigError);
+	assert.deepEqual(
+		[restoredConfig.code, restoredConfig.source, restoredConfig.field, restoredConfig.missing],
+		["incomplete-profile", "env", "ATOMIC_PROFILE", ["ATOMIC_TEAM_URL"]],
+	);
+
+	const incomplete: readonly Readonly<Record<string, unknown>>[] = [
+		{ name: "TeamProfileError", code: "connection-failed", subject: "s", hint: "h", retryable: "true" },
+		{ name: "TeamProfileError", code: "connection-failed", subject: 7, hint: "h", retryable: true },
+		{ name: "TeamProfileError", code: "connection-failed", subject: "s", detail: 7, hint: "h", retryable: true },
+		{ name: "TeamProfileError", code: "connection-failed", subject: "s", hint: 7, retryable: true },
+		{ ...timeoutProps, timeoutMs: "300" },
+		{ ...timeoutProps, elapsedMs: "301" },
+		{ ...timeoutProps, phase: 1 },
+		{ ...configProps, source: 1 },
+		{ ...configProps, field: 1 },
+		{ ...configProps, path: 1 },
+		{ ...configProps, missing: [1] },
+		{ ...configProps, missing: "ATOMIC_TEAM_URL" },
+	];
+	for (const props of incomplete) {
+		assert.deepEqual(
+			serializedNestedCause(foreignTeamError("raw sk-synthetic-value", props)),
+			{ name: "Error", message: props.code, code: props.code },
+			JSON.stringify(props),
+		);
+	}
+	const untypedMessage = runInNewContext(
+		'Object.assign(new Error(), { name: "TeamProfileError", code: "connection-failed", subject: "s", hint: "h", retryable: true, message: 7 })',
+	);
+	assert.deepEqual(serializedNestedCause(untypedMessage), {
+		name: "Error",
+		message: "connection-failed",
+		code: "connection-failed",
 	});
 });
 
