@@ -617,7 +617,7 @@ test("a target no presence lease and no known session names is not found, as on 
 	);
 });
 
-async function heldSendRoundTrip(wrapBus?: (node: number, bus: WakeUpBus) => WakeUpBus) {
+async function holdSendForRestoringChild(wrapBus?: (node: number, bus: WakeUpBus) => WakeUpBus) {
 	const [a, b] = await cluster(2, wrapBus);
 	const sender = await a!.connect("sender", { group: "crew" });
 	const supervisor = await b!.connect("supervisor", { group: "crew" });
@@ -637,15 +637,18 @@ async function heldSendRoundTrip(wrapBus?: (node: number, bus: WakeUpBus) => Wak
 	const sent = message();
 	a!.send(sender, "restored-child", sent, { awaitRestoringRecipient: true });
 	await waitFor(() => framesOf(sender).find((frame) => frame.type === "send_held" && frame.messageId === sent.id));
+	const connectChild = () =>
+		b!.connect("restored-child", { group: "crew", supervisorId: supervisor.info.id, consumed: { capability } });
+	return { a: a!, b: b!, sender, sent, connectChild };
+}
+
+async function heldSendRoundTrip(wrapBus?: (node: number, bus: WakeUpBus) => WakeUpBus) {
+	const { b, sender, sent, connectChild } = await holdSendForRestoringChild(wrapBus);
 	const heldAt = Date.now();
-	const child = await b!.connect("restored-child", {
-		group: "crew",
-		supervisorId: supervisor.info.id,
-		consumed: { capability },
-	});
+	const child = await connectChild();
 	const frame = await waitFor(() => messageFrames(child, sent.id)[0], RESTORING_RECIPIENT_HOLD_MS);
 	assert.deepEqual(frame, { type: "message", from: sender.info, message: sent });
-	b!.router.received(child, sent.id);
+	b.router.received(child, sent.id);
 	const outcome = await waitFor(() => outcomeOf(sender, sent.id));
 	return { outcome, elapsedMs: Date.now() - heldAt };
 }
@@ -655,25 +658,64 @@ test("a send held through one broker for a child restored on another gets send_h
 	assert.equal(outcome.type, "delivered");
 });
 
-test(
-	"a lost outcome hint for a held send is noticed by the outcome poll before the hold times out",
-	async () => {
-		assert.ok(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS < RESTORING_RECIPIENT_HOLD_MS);
-		const dropOutcomes = (node: number, bus: WakeUpBus): WakeUpBus =>
-			node === 1
-				? {
-						publish: (hint) =>
-							hint.reason === "outcome" ? Promise.resolve({ status: "published" }) : bus.publish(hint),
-						subscribe: (brokerId, listener) => bus.subscribe(brokerId, listener),
-						close: () => bus.close(),
-					}
-				: bus;
-		const { outcome, elapsedMs } = await heldSendRoundTrip(dropOutcomes);
-		assert.equal(outcome.type, "delivered", JSON.stringify(outcome));
-		assert.ok(elapsedMs < RESTORING_RECIPIENT_HOLD_MS, `noticed after ${elapsedMs} ms`);
-	},
-	RESTORING_RECIPIENT_HOLD_MS + CROSS_NODE_WAIT_MS,
-);
+async function advanceUntil<T>(
+	read: () => T | undefined,
+	limitMs: number,
+	stepMs = BUS_POLL_INTERVAL_MS,
+): Promise<{ value: T; elapsedMs: number } | undefined> {
+	for (let elapsedMs = 0; elapsedMs <= limitMs; elapsedMs += stepMs) {
+		const value = read();
+		if (value !== undefined) return { value, elapsedMs };
+		await vi.advanceTimersByTimeAsync(stepMs);
+		await new Promise((resolveStep) => setImmediate(resolveStep));
+	}
+	return undefined;
+}
+
+test("a lost outcome hint for a held send is noticed by the outcome poll before the hold times out", async () => {
+	assert.ok(MULTI_NODE_OUTCOME_POLL_INTERVAL_MS < RESTORING_RECIPIENT_HOLD_MS);
+	const dropOutcomes = (node: number, bus: WakeUpBus): WakeUpBus =>
+		node === 1
+			? {
+					publish: (hint) =>
+						hint.reason === "outcome" ? Promise.resolve({ status: "published" }) : bus.publish(hint),
+					subscribe: (brokerId, listener) => bus.subscribe(brokerId, listener),
+					close: () => bus.close(),
+				}
+			: bus;
+	vi.useFakeTimers({
+		toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"],
+	});
+	try {
+		const { b, sender, sent, connectChild } = await holdSendForRestoringChild(dropOutcomes);
+		const child = await connectChild();
+		assert.equal(messageFrames(child, sent.id).length, 0, "the lost hint cannot dispatch before the poll");
+		const pollSettleBudgetMs = BUS_POLL_INTERVAL_MS * 10;
+		const dispatched = await advanceUntil(() => messageFrames(child, sent.id)[0], RESTORING_RECIPIENT_HOLD_MS);
+		assert.ok(dispatched !== undefined, "the held send was never dispatched to the registered child");
+		assert.deepEqual(dispatched.value, { type: "message", from: sender.info, message: sent });
+		assert.ok(
+			dispatched.elapsedMs < MULTI_NODE_OUTCOME_POLL_INTERVAL_MS + pollSettleBudgetMs,
+			`dispatched ${dispatched.elapsedMs} ms after the child registered`,
+		);
+		b.router.received(child, sent.id);
+		assert.equal(outcomeOf(sender, sent.id), undefined, "the delivered hint is lost, so no outcome yet");
+		const noticed = await advanceUntil(() => outcomeOf(sender, sent.id), RESTORING_RECIPIENT_HOLD_MS);
+		assert.ok(noticed !== undefined, "the outcome poll never noticed the delivery");
+		assert.equal(noticed.value.type, "delivered", JSON.stringify(noticed.value));
+		assert.ok(
+			noticed.elapsedMs < MULTI_NODE_OUTCOME_POLL_INTERVAL_MS + pollSettleBudgetMs,
+			`the outcome was noticed ${noticed.elapsedMs} ms after the delivery`,
+		);
+		assert.ok(
+			dispatched.elapsedMs + noticed.elapsedMs < RESTORING_RECIPIENT_HOLD_MS,
+			`noticed after ${dispatched.elapsedMs + noticed.elapsedMs} ms`,
+		);
+		assert.equal(messageFrames(child, sent.id).length, 1, "delivered once");
+	} finally {
+		vi.useRealTimers();
+	}
+});
 
 test("no top-level storage, memory, or a domain-only adapter leaves multi-node routing off", async () => {
 	const agentDir = makeTempDirectory("intercom-multinode-off-");
