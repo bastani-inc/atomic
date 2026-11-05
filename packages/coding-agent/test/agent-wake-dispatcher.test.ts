@@ -936,3 +936,51 @@ describe("AgentWakeDispatcher cancellation and error rebuilding details (#4326)"
 		assert.equal(isAgentRehydrateError(rebuilt), true);
 	});
 });
+
+describe("AgentWakeDispatcher handler takeover while a key runs (#4326)", () => {
+	test("a namespace taken over while a run holds a slot keeps that slot, takes the new cap, and is forgotten once idle", async () => {
+		const dispatcher = new AgentWakeDispatcher();
+		let release!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		dispatcher.handle("child", () => blocked, { maxConcurrent: 1 });
+		const running = dispatcher.deliver("child:a", wake("1"));
+		await flush();
+		const started: string[] = [];
+		const gates: Array<() => void> = [];
+		const removeNew = dispatcher.handle(
+			"child",
+			async (key) => {
+				started.push(key);
+				await new Promise<void>((resolve) => gates.push(resolve));
+			},
+			{ replace: true, maxConcurrent: 2 },
+		);
+		release();
+		await running;
+		const later = [dispatcher.deliver("child:b", wake("1")), dispatcher.deliver("child:c", wake("1"))];
+		await flush();
+		assert.deepEqual(started, ["child:b", "child:c"], "the earlier run's slot is free and the new cap is 2");
+		for (const open of gates) open();
+		await Promise.all(later);
+		removeNew();
+		assert.equal(dispatcher.stats().namespaces, 0);
+	});
+
+	test("cancel drops only the wake with that id on that key", async () => {
+		const time = manualClock();
+		const dispatcher = new AgentWakeDispatcher({ clock: time.clock });
+		const fired: string[] = [];
+		dispatcher.handle("t", async (_key, wakes) => {
+			fired.push(...wakes.map((entry) => entry.id));
+		});
+		dispatcher.schedule("t:k", wake("x", "timer"), 10);
+		dispatcher.schedule("t:k", wake("y", "timer"), 20);
+		assert.equal(dispatcher.cancel("t:k", "y"), true);
+		assert.equal(dispatcher.cancel("t:other", "x"), false);
+		time.advance(20);
+		await flush();
+		assert.deepEqual(fired, ["x"]);
+	});
+});

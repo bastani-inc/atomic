@@ -107,7 +107,7 @@ export function wakeKeyNamespace(wakeKey: string): string {
  * queued or running has no entry. Timed wakes share one timer, armed for the earliest of them.
  */
 interface NamespaceSlots {
-	readonly maxConcurrent: number;
+	maxConcurrent: number;
 	active: number;
 	readonly waiting: Array<() => void>;
 }
@@ -143,7 +143,8 @@ export class AgentWakeDispatcher {
 			throw new AgentRehydrateError("wake-handler-conflict", { namespace });
 		this.handlers.set(namespace, handler);
 		const slots = this.slots.get(namespace);
-		this.slots.set(namespace, { maxConcurrent, active: slots?.active ?? 0, waiting: slots?.waiting ?? [] });
+		if (slots === undefined) this.slots.set(namespace, { maxConcurrent, active: 0, waiting: [] });
+		else slots.maxConcurrent = maxConcurrent;
 		return () => {
 			if (this.handlers.get(namespace) !== handler) return;
 			this.handlers.delete(namespace);
