@@ -19,6 +19,12 @@ import {
 import { isLlamaServerUnreachableError } from "../../packages/coding-agent/src/extensions/llama/errors.js";
 import { createLlamaProvider } from "../../packages/coding-agent/src/extensions/llama/provider.js";
 
+function routerOffline(): TypeError {
+	return new TypeError("fetch failed", {
+		cause: Object.assign(new Error("router offline"), { code: "ECONNREFUSED" }),
+	});
+}
+
 const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
@@ -194,7 +200,7 @@ describe("llama.cpp provider", () => {
 			assert.equal((await first.refresh({ allowNetwork: true })).errors.size, 0);
 
 			globalThis.fetch = mockFetch(async () => {
-				throw new Error("router offline");
+				throw routerOffline();
 			});
 			const restarted = await ModelRuntime.create({
 				credentials: auth,
@@ -244,7 +250,7 @@ describe("llama.cpp provider", () => {
 				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 			});
 			globalThis.fetch = mockFetch(async () => {
-				throw new Error("router offline");
+				throw routerOffline();
 			});
 			const registry = await ModelRuntime.create({
 				credentials: auth,
@@ -286,7 +292,7 @@ describe("llama.cpp provider", () => {
 				"llama.cpp": { type: "api_key", key: "local", env: { LLAMA_BASE_URL: "http://localhost:8080" } },
 			});
 			globalThis.fetch = mockFetch(async () => {
-				throw new Error("router offline");
+				throw routerOffline();
 			});
 			const registry = await ModelRuntime.create({
 				credentials: auth,

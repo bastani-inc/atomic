@@ -705,9 +705,11 @@ export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
 export {
 	findLlamaServerError,
 	isLlamaServerError,
+	isLlamaServerRequestError,
 	isLlamaServerUnreachableError,
 	LlamaServerError,
 	type LlamaServerErrorCode,
+	LlamaServerRequestError,
 	LlamaServerUnreachableError,
 	rehydrateLlamaServerError,
 } from "./extensions/llama/errors.ts";

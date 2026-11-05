@@ -7,8 +7,10 @@ import { LlamaClient } from "../src/extensions/llama/client.js";
 import {
 	findLlamaServerError,
 	isLlamaServerError,
+	isLlamaServerRequestError,
 	isLlamaServerUnreachableError,
 	LlamaServerError,
+	LlamaServerRequestError,
 	LlamaServerUnreachableError,
 	rehydrateLlamaServerError,
 } from "../src/extensions/llama/errors.js";
@@ -69,6 +71,29 @@ describe("llama.cpp server errors (pi #11779)", () => {
 			(failure: unknown) => failure,
 		);
 		assert.equal(isLlamaServerError(error), false);
+	});
+
+	it("reports a server URL with a user name and password as a rejected request without leaking them", async () => {
+		const port = await closedPort();
+		const error = await new LlamaClient(`http://alice:s3cr3t@127.0.0.1:${port}`).list().then(
+			() => undefined,
+			(failure: unknown) => failure,
+		);
+
+		assert.ok(error instanceof LlamaServerRequestError);
+		assert.ok(isLlamaServerRequestError(error));
+		assert.ok(isLlamaServerError(error));
+		assert.equal(isLlamaServerUnreachableError(error), false);
+		assert.equal(error.name, "LlamaServerRequestError");
+		assert.equal(error.code, "request-rejected");
+		assert.equal(error.retryable, false);
+		assert.equal(error.serverUrl, `http://127.0.0.1:${port}`);
+		assert.ok(error.hint?.includes("without a user name or password"));
+		assert.ok(error.cause instanceof TypeError);
+		for (const text of [error.message, error.detail, JSON.stringify(error.toJSON())]) {
+			assert.equal(text.includes("s3cr3t"), false, text);
+			assert.equal(text.includes("alice"), false, text);
+		}
 	});
 
 	it("keeps credentials in the server URL out of the message and fields", () => {
@@ -253,6 +278,87 @@ describe("llama.cpp connection failure detail", () => {
 		for (const cause of [undefined, null, "text", {}, { code: 42 }, { message: "ignored" }]) {
 			assert.equal(await detailOf(new TypeError("fetch failed", { cause })), "fetch failed");
 		}
+	});
+	it("treats a failure that carries an error code as unreachable", async () => {
+		const failure = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), {
+			code: "ConnectionRefused",
+		});
+		assert.equal(await detailOf(failure), "Unable to connect. Is the computer able to access the url?");
+	});
+});
+
+describe("llama.cpp request failures that are not network failures", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	async function failureOf(rejection: unknown): Promise<unknown> {
+		vi.spyOn(globalThis, "fetch").mockRejectedValue(rejection);
+		return new LlamaClient("http://127.0.0.1:8080").list().then(
+			() => undefined,
+			(thrown: unknown) => thrown,
+		);
+	}
+
+	it("reports a failure without an error code as a rejected request that is not retried", async () => {
+		const error = await failureOf(new TypeError("Invalid header value for http://bob:hunter2@127.0.0.1:8080/x"));
+		assert.ok(isLlamaServerRequestError(error));
+		assert.equal(error.code, "request-rejected");
+		assert.equal(error.retryable, false);
+		assert.equal(error.detail, "Invalid header value for http://127.0.0.1:8080/x");
+	});
+
+	it("rethrows the request timeout unchanged", async () => {
+		const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+		assert.equal(await failureOf(timeout), timeout);
+	});
+
+	it("rethrows an abort unchanged", async () => {
+		const abort = new DOMException("This operation was aborted", "AbortError");
+		assert.equal(await failureOf(abort), abort);
+	});
+
+	it("round-trips a rejected request across a process boundary with the credentials removed", () => {
+		const error = new LlamaServerRequestError("http://alice:s3cr3t@127.0.0.1:8080", "bad url http://alice:s3cr3t@x", {
+			cause: new TypeError(
+				"Request cannot be constructed from a URL that includes credentials: http://alice:s3cr3t@x",
+			),
+		});
+		const serialized = error.toJSON();
+		assert.deepEqual(serialized, {
+			name: "LlamaServerRequestError",
+			code: "request-rejected",
+			message: error.message,
+			hint: error.hint,
+			retryable: false,
+			fields: { serverUrl: "http://127.0.0.1:8080", detail: "bad url http://x" },
+			cause: {
+				name: "TypeError",
+				message: "Request cannot be constructed from a URL that includes credentials: http://x",
+			},
+		});
+		// The one rendered-message contract check for this class.
+		assert.equal(
+			error.message,
+			`Could not send a request to llama.cpp server at http://127.0.0.1:8080: bad url http://x (request-rejected). ${error.hint}`,
+		);
+		const rehydrated = rehydrateLlamaServerError(JSON.parse(JSON.stringify(serialized)));
+		assert.ok(rehydrated instanceof LlamaServerRequestError);
+		assert.ok(isLlamaServerRequestError(rehydrated));
+		assert.equal(rehydrated.detail, "bad url http://x");
+		assert.equal(rehydrated.retryable, false);
+		assert.equal(rehydrated.message, error.message);
+		assert.equal(
+			(rehydrated.cause as Error).message,
+			"Request cannot be constructed from a URL that includes credentials: http://x",
+		);
+		assert.equal(new LlamaServerRequestError("http://127.0.0.1:8080", "bad url").cause, undefined);
+		assert.equal(isLlamaServerRequestError({ name: "LlamaServerRequestError", code: "request-rejected" }), true);
+		assert.equal(isLlamaServerError({ name: "LlamaServerRequestError", code: "request-rejected" }), true);
+		assert.equal(
+			isLlamaServerRequestError({ name: "LlamaServerUnreachableError", code: "server-unreachable" }),
+			false,
+		);
 	});
 });
 

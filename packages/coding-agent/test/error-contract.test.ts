@@ -5,6 +5,7 @@ import {
 	hasErrorIdentity,
 	MAX_GUARDED_CAUSE_DEPTH,
 	MAX_SERIALIZED_CAUSE_DEPTH,
+	redactUrlCredentials,
 	rehydrateErrorCause,
 	type SerializedErrorCause,
 	serializeErrorCause,
@@ -166,5 +167,30 @@ describe("findInCauseChain", () => {
 		const opaque = Object.assign(() => {}, { cause: hidden });
 		const wrapped = new Error("outer", { cause: opaque });
 		assert.equal(findInCauseChain(wrapped, isMarked), undefined);
+	});
+});
+
+describe("redactUrlCredentials", () => {
+	it("removes the user name and password from every URL and leaves the rest of the text", () => {
+		assert.equal(
+			redactUrlCredentials("GET http://alice:s3cr3t@127.0.0.1:8080/models and HTTPS://bob@example.test/x"),
+			"GET http://127.0.0.1:8080/models and HTTPS://example.test/x",
+		);
+		assert.equal(
+			redactUrlCredentials("mail alice@example.test about http://host/p@th"),
+			"mail alice@example.test about http://host/p@th",
+		);
+		assert.equal(redactUrlCredentials("s3://key:secret@bucket/x"), "s3://bucket/x");
+	});
+
+	it("removes credentials from every serialized cause message", () => {
+		const root = new Error("connect to http://u:p@10.0.0.1:9 refused");
+		const serialized = serializeErrorCause(new TypeError("bad url http://u:p@h:1/x", { cause: root }));
+		assert.deepEqual(serialized, {
+			name: "TypeError",
+			message: "bad url http://h:1/x",
+			cause: { name: "Error", message: "connect to http://10.0.0.1:9 refused" },
+		});
+		assert.deepEqual(serializeErrorCause("thrown http://u:p@h:1"), { name: "Error", message: "thrown http://h:1" });
 	});
 });

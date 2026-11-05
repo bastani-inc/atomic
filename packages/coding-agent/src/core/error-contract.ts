@@ -32,15 +32,25 @@ export const MAX_SERIALIZED_CAUSE_DEPTH = 5;
 /** How many links of a cause chain a guard inspects. */
 export const MAX_GUARDED_CAUSE_DEPTH = 8;
 
-/** Serializes a cause chain without its stack traces, bounded to MAX_SERIALIZED_CAUSE_DEPTH levels. */
+const URL_USER_INFO = /\b([a-z][a-z\d+.-]*:\/\/)[^\s/?#@]+@/giu;
+
+/** Removes the user name and password from every URL in `text`, so they never reach a message or a relay. */
+export function redactUrlCredentials(text: string): string {
+	return text.replace(URL_USER_INFO, "$1");
+}
+
+/**
+ * Serializes a cause chain without its stack traces, bounded to MAX_SERIALIZED_CAUSE_DEPTH levels. URL credentials
+ * in a cause's message are removed, because runtimes quote the requested URL in their errors.
+ */
 export function serializeErrorCause(cause: unknown, depth = 0): SerializedErrorCause | undefined {
 	if (cause === undefined || cause === null || depth >= MAX_SERIALIZED_CAUSE_DEPTH) return undefined;
-	if (!(cause instanceof Error)) return { name: "Error", message: String(cause) };
+	if (!(cause instanceof Error)) return { name: "Error", message: redactUrlCredentials(String(cause)) };
 	const code = (cause as Error & { code?: unknown }).code;
 	const nested = serializeErrorCause(cause.cause, depth + 1);
 	return {
 		name: cause.name,
-		message: cause.message,
+		message: redactUrlCredentials(cause.message),
 		...(typeof code === "string" ? { code } : {}),
 		...(nested ? { cause: nested } : {}),
 	};

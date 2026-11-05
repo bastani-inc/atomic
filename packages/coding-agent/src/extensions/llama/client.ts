@@ -1,4 +1,5 @@
-import { LlamaServerUnreachableError } from "./errors.ts";
+import { findInCauseChain } from "../../core/error-contract.ts";
+import { LlamaServerRequestError, LlamaServerUnreachableError } from "./errors.ts";
 
 export type LlamaModelStatus = "unloaded" | "loading" | "loaded" | "downloading" | "sleeping";
 
@@ -174,6 +175,24 @@ function connectionErrorDetail(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function hasErrorCode(candidate: unknown): candidate is { code: string } {
+	return (
+		typeof candidate === "object" && candidate !== null && typeof (candidate as { code?: unknown }).code === "string"
+	);
+}
+
+/** A network-level fetch failure carries an error code somewhere in its chain, or is undici's generic `fetch failed`. */
+function isNetworkFailure(error: unknown): boolean {
+	return (
+		(error instanceof TypeError && error.message === "fetch failed") ||
+		findInCauseChain(error, hasErrorCode) !== undefined
+	);
+}
+
+function isAbortOrTimeout(error: unknown): boolean {
+	return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 export class LlamaClient {
 	readonly serverUrl: string;
 	private readonly apiKey: string | undefined;
@@ -183,14 +202,19 @@ export class LlamaClient {
 		this.apiKey = apiKey;
 	}
 
-	/** Fetches from the server; a network-level failure becomes a LlamaServerUnreachableError naming the server. */
+	/**
+	 * Fetches from the server. A network-level failure becomes a retryable LlamaServerUnreachableError naming the
+	 * server; a request the runtime refused to send becomes a LlamaServerRequestError. Cancellation and the request
+	 * timeout are rethrown unchanged.
+	 */
 	private async fetchServer(path: string, init: RequestInit): Promise<Response> {
 		try {
 			return await fetch(`${this.serverUrl}${path}`, init);
 		} catch (error) {
-			// Cancellation and the request timeout are not connection failures.
-			if (init.signal?.aborted) throw error;
-			throw new LlamaServerUnreachableError(this.serverUrl, connectionErrorDetail(error), { cause: error });
+			if (init.signal?.aborted || isAbortOrTimeout(error)) throw error;
+			const detail = connectionErrorDetail(error);
+			if (isNetworkFailure(error)) throw new LlamaServerUnreachableError(this.serverUrl, detail, { cause: error });
+			throw new LlamaServerRequestError(this.serverUrl, detail, { cause: error });
 		}
 	}
 
