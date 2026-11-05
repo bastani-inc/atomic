@@ -10,6 +10,7 @@ import {
 	isWorkspaceRestoreError,
 	isWorkspaceSnapshotError,
 	MemorySnapshotBlobStore,
+	removeRestoredWorktree,
 	restoreWorktree,
 	restoreWorktreeSnapshot,
 	type SnapshotBlobStore,
@@ -407,5 +408,32 @@ describe("verifyWorktree", () => {
 			verifyWorktree({ remotes: [], head: "a", tree: "b", envHash: "" }, sandbox.path("plain")),
 			(error: unknown) => isWorkspaceSnapshotError(error) && error.code === "not-a-repository",
 		);
+	});
+});
+
+describe("removeRestoredWorktree", () => {
+	test("removes a worktree a restore created and refuses anything else", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "x.txt"), "x\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = await capture(clone, blobs);
+		const storeDir = sandbox.path("host");
+		const restored = await restoreWorktreeSnapshot(snapshot, { blobs, storeDir });
+		for (const path of [clone, join(clone, "missing-dir-parent"), sandbox.root]) {
+			mkdirSync(path, { recursive: true });
+			await assert.rejects(removeRestoredWorktree(path, { storeDir }), (error: unknown) => {
+				assert.ok(isWorkspaceRestoreError(error));
+				assert.equal(error.code, "unsafe-target");
+				assert.equal(error.reason, "not-restored");
+				assert.equal(error.target, path);
+				return true;
+			});
+		}
+		assert.ok(existsSync(join(clone, "x.txt")));
+		await removeRestoredWorktree(restored, { storeDir });
+		assert.equal(existsSync(restored), false);
+		await removeRestoredWorktree(restored, { storeDir });
+		const again = await restoreWorktreeSnapshot(snapshot, { blobs, storeDir, into: restored });
+		assert.equal(again, restored);
 	});
 });

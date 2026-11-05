@@ -52,6 +52,7 @@ export {
 	defaultWorktreeSnapshotStoreDir,
 	type RestoredWorktree,
 	type RestoreWorktreeSnapshotOptions,
+	removeRestoredWorktree,
 	restoreWorktree,
 	restoreWorktreeSnapshot,
 	type VerifyWorktreeOptions,
