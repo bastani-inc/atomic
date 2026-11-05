@@ -89,7 +89,11 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 		removeTempDirectory(root);
 	});
 
-	function startInstaller(holdMs = 0, tag = "v0.0.0-chaos"): Installer {
+	function startInstaller(
+		holdMs = 0,
+		tag = "v0.0.0-chaos",
+		extraEnv: Readonly<Record<string, string>> = {},
+	): Installer {
 		const child = spawnProcess([bunExecutable(), CHILD], {
 			env: {
 				...process.env,
@@ -101,6 +105,7 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 				CHAOS_LOG: log,
 				CHAOS_HOLD_MS: String(holdMs),
 				CHAOS_TAG: tag,
+				...extraEnv,
 			},
 			stdout: "pipe",
 			stderr: "inherit",
@@ -122,6 +127,13 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 	async function waitForFetches(count: number): Promise<void> {
 		for (let attempt = 0; fetchesBy().length < count; attempt++) {
 			assert.ok(attempt < 600, `expected ${count} fetches, saw ${fetchesBy().length}`);
+			await sleep(20);
+		}
+	}
+
+	async function waitForReplacedBackup(): Promise<void> {
+		for (let attempt = 0; !readFileSync(log, "utf-8").includes("replaced "); attempt++) {
+			assert.ok(attempt < 1_500, "the installer never renamed the old install aside");
 			await sleep(20);
 		}
 	}
@@ -279,6 +291,36 @@ describe.skipIf(process.platform === "win32")("git provisioning under contention
 				const reset = await startInstaller(0, "v1").result;
 				assert.equal(reset?.ok, true, JSON.stringify(reset));
 			}
+		},
+		CHAOS_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"SIGKILL between renaming the old install aside and publishing the new one is recovered offline from the backup",
+		async () => {
+			const first = await startInstaller(0, "v1").result;
+			assert.equal(first?.ok, true, JSON.stringify(first));
+			const victim = startInstaller(0, "v2", { CHAOS_STOP_AFTER_REPLACE: "1" });
+			await waitForReplacedBackup();
+			victim.process.kill("SIGKILL");
+			await victim.process.exited;
+			const binDir = join(agentDir, "bin");
+			assert.equal(existsSync(installDir), false, "the kill landed in the gap with nothing published");
+			assert.ok(readdirSync(binDir).some((name) => name.startsWith(".git-replaced-")));
+			const fetchesBefore = fetchesBy().length;
+
+			const recovered = await startInstaller(0, "v2", { ATOMIC_OFFLINE: "1" }).result;
+
+			assert.equal(recovered?.ok, true, JSON.stringify(recovered));
+			assert.equal(recovered?.path, join(installDir, "bin", "git"));
+			assert.equal(fetchesBy().length, fetchesBefore, "offline recovery downloads nothing");
+			assert.equal(JSON.parse(readFileSync(join(installDir, ".atomic-git-release.json"), "utf-8")).tag, "v1");
+			assertHealthyInstall();
+			assert.deepEqual(
+				readdirSync(binDir).filter((name) => name.startsWith(".git-")),
+				[],
+				"the backup was restored, not left behind",
+			);
 		},
 		CHAOS_TEST_TIMEOUT_MS,
 	);

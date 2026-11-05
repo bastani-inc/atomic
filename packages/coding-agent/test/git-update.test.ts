@@ -10,11 +10,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join, parse } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DefaultPackageManager } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createGitEnvironment } from "../src/utils/git-env.ts";
+
+function commandName(command: string): string {
+	return parse(command).name;
+}
 
 // Helper to run git commands in a directory. Scrub repository-local Git env so
 // runs under commit/push hooks (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE) cannot
@@ -146,7 +150,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
+				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
 				if (command === "npm") {
 					return;
 				}
@@ -224,7 +228,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
+				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
 				const result = spawnSync(command, args, {
 					cwd: options?.cwd,
 					encoding: "utf-8",
@@ -386,7 +390,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args, options) => {
-				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
+				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
 				const result = spawnSync(command, args, {
 					cwd: options?.cwd,
 					encoding: "utf-8",
@@ -425,8 +429,8 @@ describe("DefaultPackageManager git update", () => {
 				runCommandCapture: (command: string, args: string[], options?: { cwd?: string }) => Promise<string>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
-				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
-				if (basename(command) === "git" && args[0] === "reset") {
+				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
+				if (commandName(command) === "git" && args[0] === "reset") {
 					writeFileSync(extensionFile, "// fresh");
 				}
 			};
@@ -472,7 +476,7 @@ describe("DefaultPackageManager git update", () => {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
-				executedCommands.push(`${basename(command)} ${args.join(" ")}`);
+				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
 			};
 
 			await packageManager.resolveExtensionSources([pinnedSource], { temporary: true });

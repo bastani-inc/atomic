@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_AGENT_DIR } from "../src/config.js";
 
 const isWindows = process.platform === "win32";
 
@@ -17,7 +17,7 @@ describe("agent shell git PATH (#4322)", () => {
 	let binDir: string;
 	let emptyDir: string;
 	let gitBinDir: string;
-	let getShellEnv: typeof import("../src/utils/shell.ts").getShellEnv;
+	let getShellEnv: typeof import("../src/utils/shell.js").getShellEnv;
 
 	function writeExecutable(path: string, body: string): void {
 		mkdirSync(join(path, ".."), { recursive: true });
@@ -35,7 +35,7 @@ describe("agent shell git PATH (#4322)", () => {
 		vi.stubEnv("PATH", emptyDir);
 		vi.stubEnv("GIT_EXEC_PATH", undefined);
 		vi.resetModules();
-		({ getShellEnv } = await import("../src/utils/shell.ts"));
+		({ getShellEnv } = await import("../src/utils/shell.js"));
 	});
 
 	afterEach(() => {

@@ -19,13 +19,13 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import type { SpawnSyncReturns } from "child_process";
 import lockfile from "proper-lockfile";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.ts";
-import { getPiUserAgent } from "../src/utils/pi-user-agent.ts";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { ENV_AGENT_DIR, ENV_OFFLINE, VERSION } from "../src/config.js";
+import { getPiUserAgent } from "../src/utils/pi-user-agent.js";
 
-type GitErrors = typeof import("../src/utils/git-errors.ts");
+type GitErrors = typeof import("../src/utils/git-errors.js");
 
-type ToolsManager = typeof import("../src/utils/tools-manager.ts");
+type ToolsManager = typeof import("../src/utils/tools-manager.js");
 type ProbeAnswer = { readonly status: number; readonly stdout: string };
 
 const mocks = vi.hoisted(() => ({
@@ -39,7 +39,8 @@ const mocks = vi.hoisted(() => ({
 	renameSync: vi.fn(),
 	writeFileSync: vi.fn(),
 	existsSync: vi.fn(),
-	osRelease: undefined as import("../src/utils/git-install-command.ts").OsRelease | undefined,
+	statSync: vi.fn(),
+	osRelease: undefined as import("../src/utils/git-install-command.js").OsRelease | undefined,
 	osReleaseReads: 0,
 	lock: undefined as
 		| ((
@@ -70,8 +71,8 @@ vi.mock("child_process", async () => {
 	return { ...actual, spawnSync };
 });
 
-vi.mock("../src/utils/git-install-command.ts", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../src/utils/git-install-command.ts")>()),
+vi.mock("../src/utils/git-install-command.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/utils/git-install-command.js")>()),
 	readOsRelease: () => {
 		mocks.osReleaseReads += 1;
 		return mocks.osRelease;
@@ -90,6 +91,7 @@ vi.mock("fs", async () => {
 	return {
 		...actual,
 		existsSync: mocks.existsSync,
+		statSync: mocks.statSync,
 		readdirSync: mocks.readdirSync,
 		rmSync: mocks.rmSync,
 		renameSync: mocks.renameSync,
@@ -106,6 +108,18 @@ vi.mock("proper-lockfile", async () => {
 });
 
 const isWindows = process.platform === "win32";
+const HOST_INSTALL_COMMAND: string | undefined = (
+	{ win32: "winget install --id Git.Git -e --source winget", darwin: "xcode-select --install" } as Record<
+		string,
+		string
+	>
+)[process.platform];
+const hostInstallField: { readonly installCommand?: string } =
+	HOST_INSTALL_COMMAND === undefined ? {} : { installCommand: HOST_INSTALL_COMMAND };
+const hostInstallAdvice =
+	HOST_INSTALL_COMMAND === undefined
+		? "your system package manager (https://git-scm.com/downloads)"
+		: `\`${HOST_INSTALL_COMMAND}\``;
 function hostTag(): string {
 	const pidNamespace = existsSync("/proc/self/ns/pid") ? readlinkSync("/proc/self/ns/pid") : "";
 	return createHash("sha256").update(`${hostname()}\0${pidNamespace}`).digest("hex").slice(0, 8);
@@ -129,7 +143,9 @@ function helperToolsDir(): string {
 	}
 	return dir;
 }
-const executableName = isWindows ? "git.exe" : "git";
+function executableName(): string {
+	return mocks.platform() === "win32" ? "git.exe" : "git";
+}
 
 let tempDir: string;
 let agentDir: string;
@@ -144,7 +160,7 @@ let rehydrateGitProvisionError: GitErrors["rehydrateGitProvisionError"];
 
 function makeSystemGit(version: string | undefined, status = 0): string {
 	const dir = mkdtempSync(join(tempDir, "system-"));
-	const path = join(dir, executableName);
+	const path = join(dir, executableName());
 	writeFileSync(path, "#!/bin/sh\nexit 0\n");
 	chmodSync(path, 0o755);
 	mocks.probes.set(path, { status, stdout: version === undefined ? "not git\n" : `git version ${version}\n` });
@@ -177,7 +193,7 @@ function makeProvisionedGit(version = "2.56.0"): string {
 
 interface FakeRelease {
 	readonly bytes: Buffer;
-	readonly release: import("../src/utils/tools-manager.ts").GitRelease;
+	readonly release: import("../src/utils/tools-manager.js").GitRelease;
 }
 
 function archiveOf(populate: (root: string) => void): Buffer {
@@ -238,6 +254,23 @@ function serveArchive(bytes: Buffer) {
 	});
 }
 
+function listLinuxLibraryDirectories(listing: Readonly<Record<string, readonly string[]>>): void {
+	mocks.readdirSync.mockImplementation((path: string) => listing[path] ?? []);
+	const actualExists = mocks.actualFs?.existsSync;
+	mocks.existsSync.mockImplementation((path: string) => (path in listing ? true : (actualExists?.(path) ?? false)));
+}
+
+function treatFilesAsExecutable(): void {
+	const actualStat = mocks.actualFs?.statSync;
+	mocks.statSync.mockImplementation((path: string, options?: object) => {
+		const stats = (actualStat as (path: string, options?: object) => import("node:fs").Stats | undefined)(
+			path,
+			options,
+		);
+		return stats === undefined ? undefined : Object.assign(Object.create(stats), { mode: stats.mode | 0o111 });
+	});
+}
+
 function leftovers(): string[] {
 	const binDir = join(agentDir, "bin");
 	return existsSync(binDir) ? readdirSync(binDir).filter((name) => name !== "git") : [];
@@ -261,7 +294,7 @@ beforeEach(async () => {
 	mocks.probes.clear();
 	mocks.spawnSyncCommands.length = 0;
 	vi.resetModules();
-	tools = await import("../src/utils/tools-manager.ts");
+	tools = await import("../src/utils/tools-manager.js");
 	({
 		GitProvisionConfigError,
 		GitProvisionTimeoutError,
@@ -269,7 +302,7 @@ beforeEach(async () => {
 		isGitProvisionError,
 		isGitUnavailableError,
 		rehydrateGitProvisionError,
-	} = await import("../src/utils/git-errors.ts"));
+	} = await import("../src/utils/git-errors.js"));
 	const actualFs = mocks.actualFs ?? (await vi.importActual<typeof import("fs")>("fs"));
 	mocks.readdirSync.mockReset();
 	mocks.readdirSync.mockImplementation(actualFs.readdirSync);
@@ -283,6 +316,8 @@ beforeEach(async () => {
 	mocks.writeFileSync.mockImplementation(actualFs.writeFileSync);
 	mocks.existsSync.mockReset();
 	mocks.existsSync.mockImplementation(actualFs.existsSync);
+	mocks.statSync.mockReset();
+	mocks.statSync.mockImplementation(actualFs.statSync);
 	mocks.spawnSyncOptions.length = 0;
 	mocks.lock = undefined;
 });
@@ -397,6 +432,19 @@ describe("git resolution (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 0);
 	});
 
+	it("answers getToolPath synchronously for a tool other than git, without resolving git", () => {
+		mocks.probes.set("rg", { status: 0, stdout: "ripgrep 1.0\n" });
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		assert.equal(tools.getToolPath("rg"), "rg");
+
+		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.equal(
+			mocks.spawnSyncCommands.some((command) => command.includes("git")),
+			false,
+		);
+	});
+
 	it.each([
 		["below the minimum", "2.29.9", 0, { problem: "below-minimum", version: "2.29.9" }],
 		["failing its probe", "2.40.0", 1, { problem: "probe-failed" }],
@@ -488,10 +536,11 @@ describe("git resolution (#4322)", () => {
 			offlineVariable: "ATOMIC_OFFLINE",
 			platform: process.platform,
 			arch: process.arch,
+			...hostInstallField,
 		});
 		assert.equal(
 			error.hint,
-			"Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			`Unset ATOMIC_OFFLINE so Atomic can download a portable git, or install git 2.30.0 or newer with ${hostInstallAdvice}.`,
 		);
 		assert.equal(fetchMock.mock.calls.length, 0);
 		assert.equal(mocks.spawnSyncCommands.length, 0);
@@ -509,9 +558,7 @@ describe("git resolution (#4322)", () => {
 		mocks.platform.mockReturnValue("linux");
 		mocks.arch.mockReturnValue("x64");
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
-		mocks.readdirSync.mockImplementation((path: string) =>
-			path === "/lib" ? ["ld-musl-x86_64.so.1", "libc.musl-x86_64.so.1"] : [],
-		);
+		listLinuxLibraryDirectories({ "/lib": ["ld-musl-x86_64.so.1", "libc.musl-x86_64.so.1"] });
 		const fetchMock = vi.spyOn(globalThis, "fetch");
 
 		const error = await tools.resolveGit().catch((caught: Error) => caught);
@@ -538,7 +585,8 @@ describe("git resolution (#4322)", () => {
 	it("uses a system git on Alpine", async () => {
 		mocks.platform.mockReturnValue("linux");
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
-		mocks.readdirSync.mockImplementation((path: string) => (path === "/lib" ? ["ld-musl-x86_64.so.1"] : []));
+		listLinuxLibraryDirectories({ "/lib": ["ld-musl-x86_64.so.1"] });
+		treatFilesAsExecutable();
 		const systemGit = makeSystemGit("2.47.1");
 		usePath(join(systemGit, ".."));
 		assert.equal((await tools.resolveGit()).path, systemGit);
@@ -546,15 +594,15 @@ describe("git resolution (#4322)", () => {
 
 	it("detects glibc from the runtime report before looking for a musl loader", () => {
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: { glibcVersionRuntime: "2.36" } });
-		mocks.readdirSync.mockImplementation(() => ["ld-musl-x86_64.so.1"]);
+		listLinuxLibraryDirectories({ "/lib": ["ld-musl-x86_64.so.1"] });
 		assert.deepEqual(tools.detectLinuxLibc(), { family: "glibc", version: "2.36" });
 	});
 
 	it("assumes glibc when neither the report nor a musl loader says otherwise", () => {
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
-		mocks.readdirSync.mockImplementation(() => ["ld-linux-x86-64.so.2"]);
+		listLinuxLibraryDirectories({ "/lib": ["ld-linux-x86-64.so.2"] });
 		assert.deepEqual(tools.detectLinuxLibc(), { family: "glibc" });
-		mocks.readdirSync.mockImplementation(() => ["ld-musl-aarch64.so.1"]);
+		listLinuxLibraryDirectories({ "/lib": ["ld-musl-aarch64.so.1"] });
 		assert.deepEqual(tools.detectLinuxLibc(), { family: "glibc" });
 	});
 
@@ -587,6 +635,7 @@ describe("git resolution (#4322)", () => {
 				installDir,
 				platform: process.platform,
 				arch: process.arch,
+				...hostInstallField,
 			}).toJSON(),
 		});
 	});
@@ -609,13 +658,137 @@ describe("git resolution (#4322)", () => {
 		assert.equal(mocks.spawnSyncCommands.filter((command) => command === systemGit).length, 1);
 	});
 
+	it.each(["EACCES", "EPERM"])("skips a PATH directory that fails with %s and reaches a later git", (code) => {
+		const denied = join(tempDir, "no-search");
+		const systemGit = makeSystemGit("2.43.0");
+		usePath(denied, join(systemGit, ".."));
+		const actualStat = mocks.actualFs!.statSync as (path: string, options?: object) => unknown;
+		mocks.statSync.mockImplementation((path: string, options?: object) => {
+			if (String(path).startsWith(denied)) throw Object.assign(new Error(`${code}: search denied`), { code });
+			return actualStat(path, options);
+		});
+		assert.equal(tools.resolveGitSync().path, systemGit);
+		assert.deepEqual(tools.getGitStatus(), { source: "system", version: "2.43.0", path: systemGit });
+	});
+
+	it("does not hide an unexpected stat failure on a PATH directory", () => {
+		const broken = join(tempDir, "broken");
+		const systemGit = makeSystemGit("2.43.0");
+		usePath(broken, join(systemGit, ".."));
+		const failure = Object.assign(new Error("EIO: disk gone"), { code: "EIO" });
+		const actualStat = mocks.actualFs!.statSync as (path: string, options?: object) => unknown;
+		mocks.statSync.mockImplementation((path: string, options?: object) => {
+			if (String(path).startsWith(broken)) throw failure;
+			return actualStat(path, options);
+		});
+		assert.throws(
+			() => tools.resolveGitSync(),
+			(thrown) => thrown === failure,
+		);
+	});
+
+	it.each([
+		["no git", undefined, undefined],
+		["a git below the minimum", { status: 0, stdout: "git version 2.20.0\n" }, "below-minimum"],
+		["a git that fails its probe", { status: 1, stdout: "" }, "probe-failed"],
+	] as const)(
+		"finds a git installed or upgraded on the same PATH after it saw %s",
+		async (_label, before, problem) => {
+			const dir = join(tempDir, "path-git");
+			mkdirSync(dir, { recursive: true });
+			usePath(dir);
+			const path = join(dir, executableName());
+			if (before !== undefined) {
+				writeGit(dir, executableName(), 0o755, undefined);
+				mocks.probes.set(path, before);
+			}
+			const first = caught(() => tools.resolveGitSync());
+			assert.ok(isGitUnavailableError(first));
+			assert.equal(first.code, "not-installed");
+			assert.equal(first.fields.code === "not-installed" ? first.fields.systemGit?.problem : undefined, problem);
+			const probesBefore = mocks.spawnSyncCommands.filter((command) => command === path).length;
+			assert.equal(probesBefore, before === undefined ? 0 : 1);
+
+			writeGit(dir, executableName(), 0o755, "2.43.0");
+			assert.equal(tools.resolveGitSync().path, path);
+			assert.equal((await tools.resolveGit()).path, path);
+			assert.equal(tools.getGitStatus().source, "system");
+			assert.equal(mocks.spawnSyncCommands.filter((command) => command === path).length, probesBefore + 1);
+		},
+	);
+
+	it("restores the working install a killed upgrade set aside, offline, and keeps other owners' trees", async () => {
+		const executable = makeProvisionedGit("2.56.0");
+		const binDir = join(agentDir, "bin");
+		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const savedByKilledUpgrade = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
+		const live = join(binDir, `.git-replaced-${hostTag()}-${process.pid}-1`);
+		const otherHost = join(
+			binDir,
+			`.git-replaced-${hostTag() === "00000000" ? "11111111" : "00000000"}-${exitedPid}-1`,
+		);
+		const unowned = join(binDir, ".git-replaced-unowned");
+		mocks.actualFs!.renameSync(installDir, savedByKilledUpgrade);
+		for (const dir of [live, otherHost, unowned]) mkdirSync(dir, { recursive: true });
+		assert.equal(existsSync(installDir), false);
+		vi.stubEnv(ENV_OFFLINE, "1");
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		const git = await tools.resolveGit();
+
+		assert.equal(git.source, "provisioned");
+		assert.equal(git.path, executable);
+		assert.equal(git.version, "2.56.0");
+		assert.equal(existsSync(savedByKilledUpgrade), false);
+		assert.equal(existsSync(join(installDir, ".atomic-git-release.json")), true);
+		for (const kept of [live, otherHost, unowned]) assert.equal(existsSync(kept), true, kept);
+		assert.equal(fetchMock.mock.calls.length, 0);
+	});
+
+	it("sweeps without a warning when another process removes an abandoned tree after it was listed", async () => {
+		const executable = makeProvisionedGit("2.56.0");
+		const binDir = join(agentDir, "bin");
+		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const abandoned = join(binDir, `.git-staging-${hostTag()}-${exitedPid}-1`);
+		mkdirSync(abandoned, { recursive: true });
+		const actualFs = mocks.actualFs!;
+		mocks.readdirSync.mockImplementation((path: string, options?: object) => {
+			const entries = actualFs.readdirSync(path, options as never);
+			if (path === binDir) actualFs.rmSync(abandoned, { recursive: true, force: true });
+			return entries;
+		});
+		const statuses: { type: string; message: string }[] = [];
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+
+		const git = await tools.resolveGit({ onStatus: (status) => statuses.push(status) });
+
+		assert.equal(git.path, executable);
+		assert.deepEqual(statuses, []);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		assert.equal(existsSync(abandoned), false);
+	});
+
+	it("discards a killed upgrade's saved tree when the published install is present", async () => {
+		const executable = makeProvisionedGit("2.56.0");
+		const binDir = join(agentDir, "bin");
+		const exitedPid = runProcess(process.execPath, ["-e", ""]).pid;
+		const savedByKilledUpgrade = join(binDir, `.git-replaced-${hostTag()}-${exitedPid}-1`);
+		mkdirSync(join(savedByKilledUpgrade, "stale"), { recursive: true });
+		vi.stubEnv(ENV_OFFLINE, "1");
+
+		assert.equal((await tools.resolveGit()).path, executable);
+
+		assert.equal(existsSync(savedByKilledUpgrade), false);
+		assert.equal(existsSync(executable), true);
+	});
+
 	it.each([
 		[null, "options", "an options object"],
 		[{ signal: "stop" }, "signal", "an AbortSignal"],
 		[{ onStatus: "log" }, "onStatus", "a function"],
 	])("validates options %o before any probe", async (options, field, expected) => {
 		const error = await tools
-			.resolveGit(options as unknown as import("../src/utils/tools-manager.ts").ResolveGitOptions)
+			.resolveGit(options as unknown as import("../src/utils/tools-manager.js").ResolveGitOptions)
 			.catch((caught: Error) => caught);
 		assert.ok(error instanceof GitProvisionConfigError);
 		assert.equal(error.code, "invalid-option");
@@ -653,6 +826,7 @@ describe("git download verification (#4322)", () => {
 			actualSha256: createHash("sha256").update("not the archive").digest("hex"),
 			platform: process.platform,
 			arch: process.arch,
+			...hostInstallField,
 		});
 		assert.equal(error.platform, process.platform);
 		assert.equal(error.retryable, false);
@@ -715,7 +889,7 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 	it("installs a verified distribution under getBinDir()/git and reuses it offline", async () => {
 		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
 		const fetchMock = serveArchive(fake.bytes);
-		const statuses: import("../src/utils/tools-manager.ts").ToolStatus[] = [];
+		const statuses: import("../src/utils/tools-manager.js").ToolStatus[] = [];
 
 		const git = await tools.withGitProvisionSettingsForTest({ release: fake.release }, () =>
 			tools.resolveGit({ onStatus: (status) => statuses.push(status) }),
@@ -734,7 +908,7 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 
 		vi.stubEnv(ENV_OFFLINE, "1");
 		vi.resetModules();
-		const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+		const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 		assert.equal((await fresh.resolveGit()).path, git.path);
 		assert.equal(fetchMock.mock.calls.length, 1);
 	});
@@ -907,6 +1081,27 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		assert.equal(existsSync(lockPath), false);
 	});
 
+	it("carries on when another waiter has already removed the stale lock", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		const fetchMock = serveArchive(fake.bytes);
+		const lockPath = join(agentDir, "bin", "git.install.lock");
+		mkdirSync(lockPath, { recursive: true });
+		const actualRemove = mocks.actualFs!.rmSync as (path: string, options?: object) => void;
+		mocks.rmSync.mockImplementation((path: string, options?: object) => {
+			if (path === lockPath) actualRemove(path, { recursive: true, force: true });
+			actualRemove(path, options);
+		});
+
+		const git = await tools.withGitProvisionSettingsForTest(
+			{ release: fake.release, lockPollMs: 20, lockStaleMs: 100 },
+			() => tools.resolveGit(),
+		);
+
+		assert.equal(git.source, "provisioned");
+		assert.equal(fetchMock.mock.calls.length, 1);
+		assert.equal(existsSync(lockPath), false);
+	});
+
 	it("keeps a healthy install another process published first and replaces a broken one", async () => {
 		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
@@ -919,7 +1114,7 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 
 		rmSync(installDir, { recursive: true });
 		vi.resetModules();
-		const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+		const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
 			mkdirSync(join(installDir, "broken-leftover"), { recursive: true });
 			return new Response(new Uint8Array(fake.bytes));
@@ -991,7 +1186,7 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 
 	it("records a failed provisioning as the reason resolveGitSync and ensureTool report", async () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("no", { status: 404 }));
-		const statuses: import("../src/utils/tools-manager.ts").ToolStatus[] = [];
+		const statuses: import("../src/utils/tools-manager.js").ToolStatus[] = [];
 		assert.equal(await tools.ensureTool("git", (status) => statuses.push(status)), undefined);
 		const reported = statuses.at(-1);
 		assert.equal(reported?.type, "warning");
@@ -1034,7 +1229,7 @@ describe("agent shell PATH (#4322)", () => {
 		usePath(join(systemGit, ".."));
 		assert.equal(await tools.ensureTool("git"), systemGit);
 		assert.ok(!isGitProvisionError(undefined));
-		expect(mocks.spawnSyncCommands).toContain(systemGit);
+		assert.ok(mocks.spawnSyncCommands.includes(systemGit));
 	});
 });
 
@@ -1075,7 +1270,7 @@ describe("git resolution details (#4322)", () => {
 		[{ "/lib": ["libc.so.6"], "/usr/lib": ["libz.so"] }, "glibc"],
 	] as const)("finds a musl loader in %o", (listing, family) => {
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
-		mocks.readdirSync.mockImplementation((path: string) => listing[path as keyof typeof listing] ?? []);
+		listLinuxLibraryDirectories(listing);
 		assert.equal(tools.detectLinuxLibc().family, family);
 	});
 
@@ -1154,8 +1349,8 @@ describe("git resolution details (#4322)", () => {
 	});
 
 	it("never runs a git from an empty or relative PATH entry", () => {
-		const untrusted = writeGit(join(tempDir, "untrusted-repo"), executableName, 0o755, "2.99.0");
-		const trusted = writeGit(join(tempDir, "trusted-bin"), executableName, 0o755, "2.40.0");
+		const untrusted = writeGit(join(tempDir, "untrusted-repo"), executableName(), 0o755, "2.99.0");
+		const trusted = writeGit(join(tempDir, "trusted-bin"), executableName(), 0o755, "2.40.0");
 		usePath("", relative(process.cwd(), join(untrusted, "..")), join(trusted, ".."));
 		assert.equal(tools.resolveGitSync().path, trusted);
 		assert.equal(mocks.spawnSyncCommands.includes(untrusted), false);
@@ -1195,7 +1390,7 @@ describe("git resolution details (#4322)", () => {
 
 	it("rejects a non-object options value", async () => {
 		const error = await tools
-			.resolveGit("fast" as unknown as import("../src/utils/tools-manager.ts").ResolveGitOptions)
+			.resolveGit("fast" as unknown as import("../src/utils/tools-manager.js").ResolveGitOptions)
 			.catch((caughtError: Error) => caughtError);
 		assert.ok(error instanceof GitProvisionConfigError);
 		assert.equal(error.fields.field, "options");
@@ -1205,12 +1400,13 @@ describe("git resolution details (#4322)", () => {
 		mocks.platform.mockReturnValue("linux");
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
 		const bug = new TypeError("directory listing failed");
+		listLinuxLibraryDirectories({ "/lib": [], "/usr/lib": [] });
 		mocks.readdirSync.mockImplementation(() => {
 			throw bug;
 		});
 		await assert.rejects(tools.ensureTool("git"), (error) => error === bug);
 		vi.resetModules();
-		const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+		const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 		assert.throws(
 			() => fresh.getGitStatus(),
 			(error) => error === bug,
@@ -1233,7 +1429,7 @@ describe("git resolution details (#4322)", () => {
 		assert.equal(
 			error.fields.code === "checksum-mismatch" ? error.fields.expectedSha256 : undefined,
 			tools.GIT_RELEASE.assets[
-				`${process.platform}-${process.arch}` as import("../src/utils/tools-manager.ts").GitTargetKey
+				`${process.platform}-${process.arch}` as import("../src/utils/tools-manager.js").GitTargetKey
 			]?.sha256,
 		);
 	});
@@ -1473,7 +1669,7 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		writeFileSync(join(tempDir, "blocker"), "");
 		vi.stubEnv(ENV_AGENT_DIR, join(tempDir, "blocker", "agent"));
 		vi.resetModules();
-		const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+		const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 		const fake = healthy();
 		serveArchive(fake.bytes);
 		const error = await failure(
@@ -1838,11 +2034,11 @@ describe("git install command on this machine (#4322)", () => {
 	it("names apk on Alpine whether or not os-release was readable", async () => {
 		mocks.platform.mockReturnValue("linux");
 		vi.spyOn(process.report, "getReport").mockReturnValue({ header: {} });
-		mocks.readdirSync.mockImplementation((path: string) => (path === "/lib" ? ["ld-musl-x86_64.so.1"] : []));
+		listLinuxLibraryDirectories({ "/lib": ["ld-musl-x86_64.so.1"] });
 		for (const osRelease of [undefined, { id: "alpine", idLike: [] }]) {
 			mocks.osRelease = osRelease;
 			vi.resetModules();
-			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 			const error = fresh.getGitStatus();
 			assert.equal(error.source, "unavailable");
 			assert.equal(error.source === "unavailable" ? error.error.fields.installCommand : undefined, "apk add git");
@@ -1990,7 +2186,7 @@ describe("git install command on this machine (#4322)", () => {
 			const live = join(binDir, `.git-staging-${hostTag()}-${process.pid}-1`);
 			for (const dir of [replaced, staging, live]) mkdirSync(dir, { recursive: true });
 			vi.resetModules();
-			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 			await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () => fresh.resolveGit());
 			assert.equal(fetchMock.mock.calls.length, 0);
 			assert.equal(existsSync(replaced), false);
@@ -2009,7 +2205,7 @@ describe("git install command on this machine (#4322)", () => {
 				return actualReaddir(path, options as never);
 			});
 			vi.resetModules();
-			const fresh: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const fresh: ToolsManager = await import("../src/utils/tools-manager.js");
 			const statuses: { type: string; message: string }[] = [];
 			const git = await fresh.withGitProvisionSettingsForTest({ release: fake.release }, () =>
 				fresh.resolveGit({ onStatus: (status) => statuses.push(status) }),
@@ -2027,7 +2223,7 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(statuses.length, 1);
 
 			vi.resetModules();
-			const quiet: ToolsManager = await import("../src/utils/tools-manager.ts");
+			const quiet: ToolsManager = await import("../src/utils/tools-manager.js");
 			const silent = await quiet.withGitProvisionSettingsForTest({ release: fake.release }, () =>
 				quiet.resolveGit(),
 			);

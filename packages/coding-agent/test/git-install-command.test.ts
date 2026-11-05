@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, vi } from "vitest";
@@ -17,7 +17,7 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
-import { gitInstallCommand, parseOsRelease, readOsRelease } from "../src/utils/git-install-command.ts";
+import { gitInstallCommand, parseOsRelease, readOsRelease } from "../src/utils/git-install-command.js";
 
 const release = (text: string) => parseOsRelease(text);
 
@@ -100,15 +100,14 @@ describe("git install command (#4322)", () => {
 		}
 	});
 
-	it.skipIf(process.getuid?.() === 0)("treats an unreadable file as an unknown distribution", () => {
+	it("treats an unreadable file as an unknown distribution", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-os-release-"));
 		try {
-			const locked = join(dir, "locked");
+			const unreadable = join(dir, "unreadable");
 			const fallback = join(dir, "fallback");
-			writeFileSync(locked, "ID=void\n");
-			chmodSync(locked, 0o000);
+			mkdirSync(unreadable);
 			writeFileSync(fallback, "ID=arch\n");
-			assert.equal(readOsRelease([locked, fallback]), undefined);
+			assert.equal(readOsRelease([unreadable, fallback]), undefined);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

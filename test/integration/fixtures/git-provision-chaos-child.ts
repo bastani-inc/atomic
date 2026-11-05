@@ -1,11 +1,10 @@
 // One installer process for the git provisioning chaos tests (#4322). The archive is read from disk through a fetch
 // stub, so the test opens no listening socket. Every fetch is appended to CHAOS_LOG before the optional delay.
+
+import { mock } from "bun:test";
 import { appendFileSync, readFileSync } from "node:fs";
-import {
-	type GitRelease,
-	resolveGit,
-	withGitProvisionSettingsForTest,
-} from "../../../packages/coding-agent/src/utils/tools-manager.ts";
+import { basename } from "node:path";
+import type { GitRelease } from "../../../packages/coding-agent/src/utils/tools-manager.js";
 
 const archive = readFileSync(process.env.CHAOS_ARCHIVE ?? "");
 const log = process.env.CHAOS_LOG ?? "";
@@ -26,6 +25,24 @@ const release: GitRelease = {
 		"win32-ia32": asset,
 	},
 };
+
+if (process.env.CHAOS_STOP_AFTER_REPLACE === "1") {
+	const realFs = { ...(await import("node:fs")) };
+	const realRename = realFs.renameSync;
+	mock.module("fs", () => ({
+		...realFs,
+		renameSync: (from: string, to: string) => {
+			realRename(from, to);
+			if (basename(to).startsWith(".git-replaced-")) {
+				appendFileSync(log, `replaced ${process.pid}\n`);
+				process.kill(process.pid, "SIGSTOP");
+			}
+		},
+	}));
+}
+const { resolveGit, withGitProvisionSettingsForTest } = await import(
+	"../../../packages/coding-agent/src/utils/tools-manager.js"
+);
 
 globalThis.fetch = Object.assign(async () => {
 	appendFileSync(log, `fetch ${process.pid}\n`);

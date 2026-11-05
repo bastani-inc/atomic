@@ -105,11 +105,30 @@ test("installer documentation keeps the literal entry points, knobs, defaults, a
 	assert.match(docs.windows, /lost `app\.js` or another startup file/u);
 	assert.match(docs.quickstart, /\*\*Package install:\*\* Node\.js 22\.19 or newer/u);
 	assert.match(docs.quickstart, /payload-local `libgcc` and `libstdc\+\+`/u);
-	assert.match(docs.quickstart, /stock Alpine needs no runtime package install/u);
-	assert.doesNotMatch(docs.quickstart, /apk add/u);
+	const alpineArchiveSections = markdownSections(docs.quickstart, "### Alpine and musl Linux archives");
+	assert.ok(alpineArchiveSections.some((section) => /stock Alpine needs no runtime package install/u.test(section)));
+	for (const section of [...markdownSections(docs.quickstartHub, "## Prerequisites"), ...alpineArchiveSections]) {
+		assert.doesNotMatch(section, /apk add/u);
+	}
 	assert.match(docs.index, /needs no Node\.js or package manager/u);
 	assert.match(docs.readme, /run on stock Alpine without an `apk add` step/u);
 	assert.match(docs.containerization, /without Node\.js or npm/u);
 	assert.match(docs.termux, /Do not run the root `install\.sh`/u);
 	assert.match(docs.termux, /bionic libc/u);
 });
+
+function markdownSections(text: string, heading: string): string[] {
+	const markdown = text.replace(/\r\n/gu, "\n");
+	const level = heading.indexOf(" ");
+	const sections: string[] = [];
+	let start = markdown.indexOf(`${heading}\n`);
+	while (start !== -1) {
+		const bodyStart = start + heading.length + 1;
+		const rest = markdown.slice(bodyStart);
+		const next = rest.search(new RegExp(`^#{1,${level}} `, "mu"));
+		sections.push(next === -1 ? rest : rest.slice(0, next));
+		start = markdown.indexOf(`${heading}\n`, bodyStart);
+	}
+	assert.notEqual(sections.length, 0, `missing section: ${heading}`);
+	return sections;
+}

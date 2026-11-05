@@ -723,8 +723,13 @@ function isWithin(child: string, parent: string): boolean {
 }
 
 function isExecutableFile(candidate: string, plat: string): boolean {
-	const stats = statSync(candidate, { throwIfNoEntry: false });
-	return stats?.isFile() === true && (plat === "win32" || (stats.mode & 0o111) !== 0);
+	try {
+		const stats = statSync(candidate, { throwIfNoEntry: false });
+		return stats?.isFile() === true && (plat === "win32" || (stats.mode & 0o111) !== 0);
+	} catch (error) {
+		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return false;
+		throw error;
+	}
 }
 
 /**
@@ -785,7 +790,7 @@ function probeSystemGit(): SystemGitProbe {
 				: compareVersions(version, GIT_MINIMUM_VERSION) < 0
 					? { kind: "rejected", rejected: { path, problem: "below-minimum", version } }
 					: { kind: "usable", path, version };
-	systemGitProbes.set(key, probe);
+	if (probe?.kind === "usable") systemGitProbes.set(key, probe);
 	return probe;
 }
 
@@ -945,7 +950,7 @@ function validateResolveGitOptions(options: ResolveGitOptions): void {
 
 let sweptAbandonedInstalls = false;
 
-/** Once per process, remove what exited installers left behind, so a killed upgrade's old tree does not linger. */
+/** Once per process, recover interrupted upgrades and remove abandoned installer directories. */
 function sweepAbandonedInstallsOnce(options: ResolveGitOptions): void {
 	if (sweptAbandonedInstalls) return;
 	sweptAbandonedInstalls = true;
@@ -1321,8 +1326,11 @@ function removeAbandonedStagingDirectories(binDir: string): void {
 	const host = stagingOwnerTag();
 	for (const entry of readdirSync(binDir)) {
 		const owner = /^\.git-(?:staging|replaced)-([0-9a-f]{8})-(\d+)-/.exec(entry);
-		if (owner !== null && owner[1] === host && !isProcessAlive(Number(owner[2])))
-			rmSync(join(binDir, entry), { recursive: true, force: true });
+		if (owner === null || owner[1] !== host || isProcessAlive(Number(owner[2]))) continue;
+		const abandoned = join(binDir, entry);
+		const installDir = getGitInstallDir();
+		if (entry.startsWith(GIT_REPLACED_PREFIX) && !existsSync(installDir)) renameSync(abandoned, installDir);
+		else rmSync(abandoned, { recursive: true, force: true });
 	}
 }
 
