@@ -99,17 +99,20 @@ for group in "${groups[@]}"; do
 done
 
 # A subscription policy may have attached VNet flow logs (in the shared Network Watcher group) to the run's VNets; they
-# outlive the run unless deleted. Only a flow log whose target is a run VNet is the run's.
-if flow_logs=$(az resource list --resource-type Microsoft.Network/networkWatchers/flowLogs --query "[].id" -o tsv); then
+# outlive the run unless deleted. Only a flow log whose target is a run VNet is the run's. A failure here leaves the
+# flow log in place, and the flow-log count of the proof below reports it.
+flow_log_ids() { az resource list --resource-type Microsoft.Network/networkWatchers/flowLogs --query "[].id" -o tsv; }
+flow_log_target() { az resource show --ids "$1" --query "properties.targetResourceId" -o tsv; }
+if flow_logs=$(flow_log_ids); then
 	while read -r id; do
 		[ -n "$id" ] || continue
-		target=$(az resource show --ids "$id" --query "properties.targetResourceId" -o tsv) || {
+		target=$(flow_log_target "$id") || {
 			log "reading flow log ${id##*/} failed; not deleted"
 			continue
 		}
 		run_vnet_region "$target" >/dev/null || continue
 		log "deleting flow log ${id##*/}"
-		az resource delete --ids "$id" -o none
+		az resource delete --ids "$id" -o none || log "deleting flow log ${id##*/} failed"
 	done <<<"$flow_logs"
 else
 	log "listing flow logs failed; none deleted"
@@ -156,10 +159,23 @@ count_peerings() {
 		run_vnet_region "$remote" >/dev/null && control_disconnected=$((control_disconnected + 1))
 	done <<<"$listed"
 }
+# Flow logs whose target is a run VNet. A flow log whose target cannot be read might be the run's, so it makes the
+# count "query failed" as a failed listing does.
+count_flow_logs() {
+	local listed id target
+	run_flow_logs=0
+	listed=$(flow_log_ids) || { run_flow_logs='"query failed"'; return; }
+	while read -r id; do
+		[ -n "$id" ] || continue
+		target=$(flow_log_target "$id") || { run_flow_logs='"query failed"'; return; }
+		run_vnet_region "$target" >/dev/null && run_flow_logs=$((run_flow_logs + 1))
+	done <<<"$listed"
+}
 count_resources
 count_groups
 count_peerings
-all_counts="$resources$named$branch_resources$remaining_groups$control_peering_count$control_disconnected$public_ips$disks"
+count_flow_logs
+all_counts="$resources$named$branch_resources$remaining_groups$control_peering_count$control_disconnected$public_ips$disks$run_flow_logs"
 proof=$(
 	cat <<EOF
 {
@@ -173,16 +189,17 @@ proof=$(
     "az network vnet peering list -g <control resource group> --vnet-name <control vnet>: peerings named atomic-dt-$RUN_ID-<region>": $control_peering_count,
     "az network vnet peering list -g <control resource group> --vnet-name <control vnet>: peerings to a run VNet": $control_disconnected,
     "az resource list: public IPs tagged atomic-run=$RUN_ID or in a run group": $public_ips,
-    "az resource list: disks tagged atomic-run=$RUN_ID or in a run group": $disks
+    "az resource list: disks tagged atomic-run=$RUN_ID or in a run group": $disks,
+    "az resource list --resource-type Microsoft.Network/networkWatchers/flowLogs: flow logs targeting a run VNet": $run_flow_logs
   },
-  "clean": $([ "$all_counts" = "00000000" ] && echo true || echo false)
+  "clean": $([ "$all_counts" = "000000000" ] && echo true || echo false)
 }
 EOF
 )
 echo "$proof" | tee "$STATE_DIR/teardown-proof.json"
 [ -n "$ARTIFACT_DIR" ] && echo "$proof" >"$ARTIFACT_DIR/teardown-proof.json"
 log "teardown verification written"
-if [ "$all_counts" != "00000000" ]; then
+if [ "$all_counts" != "000000000" ]; then
 	log "error: resources of run $RUN_ID remain or a verification query failed; see teardown-proof.json and run teardown again"
 	exit 1
 fi

@@ -60,14 +60,18 @@ case "$1 $2" in
 "group delete") group="$(arg -n "$@")"; drop groups.tsv "$group" 1; drop resources.tsv "$group" 1 ;;
 "group wait") ;;
 "resource list")
-	if [ -n "$(arg --resource-type "$@")" ]; then cut -f1 "$d/flowlogs.tsv"; else cat "$d/resources.tsv"; fi ;;
-"resource show") awk -F'\\t' -v id="$(arg --ids "$@")" '$1 == id { print $2 }' "$d/flowlogs.tsv" ;;
-"resource delete") drop flowlogs.tsv "$(arg --ids "$@")" 1 ;;
+	if [ -n "$(arg --resource-type "$@")" ]; then
+		[ -e "$d/fail-flowlog-list" ] && exit 1
+		[ -e "$d/fail-flowlog-list-once" ] && { rm "$d/fail-flowlog-list-once"; exit 1; }
+		cut -f1 "$d/flowlogs.tsv"
+	else cat "$d/resources.tsv"; fi ;;
+"resource show") [ -e "$d/fail-flowlog-show" ] && exit 1; awk -F'\\t' -v id="$(arg --ids "$@")" '$1 == id { print $2 }' "$d/flowlogs.tsv" ;;
+"resource delete") [ -e "$d/fail-flowlog-delete" ] && exit 1; drop flowlogs.tsv "$(arg --ids "$@")" 1 ;;
 *) echo "unexpected az call: $*" >&2; exit 64 ;;
 esac
 `;
 
-function teardownFixture(leftoverResources: readonly (readonly string[])[] = []) {
+function teardownFixture(leftoverResources: readonly (readonly string[])[] = [], faults: readonly string[] = []) {
 	const root = makeTempDirectory("fork-chaos-teardown-");
 	temporary.push(root);
 	const stub = join(root, "stub");
@@ -120,6 +124,7 @@ function teardownFixture(leftoverResources: readonly (readonly string[])[] = [])
 			[flowLogId("demo-flowlog"), vnetId("demo-production", "demo")],
 		]),
 	);
+	for (const fault of faults) writeFileSync(join(stub, fault), "");
 	const run = (runId: string) =>
 		spawnSyncCollect(["bash", join(harness, "teardown.sh")], {
 			env: {
@@ -139,7 +144,7 @@ function teardownFixture(leftoverResources: readonly (readonly string[])[] = [])
 	return { run, table, calls, stateDir: join(root, "state") };
 }
 
-describe("fork chaos teardown", () => {
+describe("fork chaos teardown (#4321)", () => {
 	unixTest("deletes only the run's own groups, peerings and flow logs, never similarly named ones", () => {
 		const fixture = teardownFixture();
 		const result = fixture.run("demo");
@@ -185,6 +190,40 @@ describe("fork chaos teardown", () => {
 		assert.equal(proof.queries["az resource list: resources tagged atomic-run=demo"], 1);
 		assert.equal(proof.queries["az resource list: public IPs tagged atomic-run=demo or in a run group"], 1);
 	});
+
+	const FLOW_LOG_PROOF =
+		"az resource list --resource-type Microsoft.Network/networkWatchers/flowLogs: flow logs targeting a run VNet";
+	const flowLogFaults: readonly [string, string, number | string][] = [
+		["listing flow logs fails", "fail-flowlog-list", "query failed"],
+		["a flow log's target cannot be read", "fail-flowlog-show", "query failed"],
+		["deleting the run's flow log fails", "fail-flowlog-delete", 1],
+		["the deletion pass misses the run's flow log", "fail-flowlog-list-once", 1],
+	];
+	for (const [name, fault, count] of flowLogFaults)
+		unixTest(`exits nonzero with an unclean proof when ${name}`, () => {
+			const fixture = teardownFixture([], [fault]);
+			const result = fixture.run("demo");
+			assert.equal(result.exitCode, 1);
+			assert.match(result.stderr.toString(), /error: resources of run demo remain or a verification query failed/);
+
+			const proof = JSON.parse(readFileSync(join(fixture.stateDir, "teardown-proof.json"), "utf8"));
+			assert.equal(proof.clean, false);
+			assert.equal(proof.queries[FLOW_LOG_PROOF], count);
+			const others = Object.entries(proof.queries).filter(([query]) => query !== FLOW_LOG_PROOF);
+			assert.ok(others.every(([, value]) => value === 0));
+			assert.match(fixture.table("flowlogs.tsv"), /fc-demo-vnet-westus3-flowlog/);
+			assert.match(fixture.table("flowlogs.tsv"), /fc-demo-production-vnet-westus3-flowlog/);
+			assert.match(fixture.table("flowlogs.tsv"), /\/demo-flowlog\t/);
+			assert.match(fixture.table("groups.tsv"), /^atomic-dt-4321-demo-production-westus3\t/m);
+			assert.match(fixture.table("groups.tsv"), /^demo-production\t/m);
+			assert.match(fixture.table("peerings.tsv"), /^atomic-dt-demo-production-westus3\t/m);
+			assert.ok(
+				fixture
+					.calls()
+					.filter((call) => call.startsWith("resource delete"))
+					.every((call) => call.includes("fc-demo-vnet-westus3-flowlog")),
+			);
+		});
 });
 
 const passingReport = () => ({
@@ -203,7 +242,7 @@ function verdictOf(text: string | undefined, checkerExitCode?: number | null): C
 	assert.fail("expected the round to fail");
 }
 
-describe("fork chaos verdict", () => {
+describe("fork chaos verdict (#4321)", () => {
 	test("passes only a report in which every invariant passed and the checker exited 0", () => {
 		assertChaosInvariants(JSON.stringify(passingReport()), { checkerExitCode: 0 });
 		assertChaosInvariants(JSON.stringify(passingReport()));
@@ -442,7 +481,7 @@ function securityFixture(faults: readonly string[], manifest?: object) {
 	return { result, calls, report };
 }
 
-describe("fork chaos security verification", () => {
+describe("fork chaos security verification (#4321)", () => {
 	unixTest("passes a topology whose every query answered and whose NICs match the manifest", () => {
 		const { result, report } = securityFixture([]);
 		assert.equal(result.exitCode, 0, result.stderr.toString());
@@ -540,7 +579,7 @@ function localVerdictOf(text: string | undefined, workloadExitCode?: number | nu
 	assert.fail("expected the node-local SQLite scenario to fail");
 }
 
-describe("fork chaos node-local SQLite verdict", () => {
+describe("fork chaos node-local SQLite verdict (#4321)", () => {
 	test("passes a report that met every expectation from a workload that exited 0", () => {
 		assertLocalSqliteReport(JSON.stringify(passingLocalReport()), { workloadExitCode: 0 });
 	});
