@@ -9,9 +9,9 @@ const SETTLE_MS = 300;
 const OBSERVE_MS = 600;
 const CONTROLLER_AND_CHILD_TIMEOUT_MS = 60_000;
 
-test(
-	"a suspended process stops running until it is resumed (#4313)",
-	async () => {
+test.each([true, false])(
+	"a suspended process stops until resumed and exits during cleanup, resume=%s (#4313)",
+	async (resumeBeforeCleanup) => {
 		const suspender = await createProcessSuspender();
 		const child = spawn(process.execPath, ["-e", TICK_SCRIPT], { stdio: ["ignore", "pipe", "inherit"] });
 		let ticks = 0;
@@ -29,11 +29,13 @@ test(
 			await sleep(OBSERVE_MS);
 			assert.equal(ticks, frozen, "a suspended process produces no output");
 
-			await suspender.resume(pid);
-			while (ticks < frozen + 3) await sleep(20);
+			if (resumeBeforeCleanup) {
+				await suspender.resume(pid);
+				while (ticks < frozen + 3) await sleep(20);
+			}
 		} finally {
 			const exited = new Promise((resolve) => child.once("exit", resolve));
-			child.kill();
+			child.kill("SIGKILL");
 			await exited;
 			await suspender.close();
 		}

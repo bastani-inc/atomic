@@ -35,7 +35,8 @@ test(
 			await f.finishing();
 			const stats = () => f.store.run("root")?.pool?.coordination;
 			await waitUntil(async () => (stats()?.requests.heartbeat?.count ?? 0) > 0, f.budget);
-			const first = heartbeatTraffic(stats()!);
+			const firstSnapshot = stats()!;
+			const first = heartbeatTraffic(firstSnapshot);
 			await waitUntil(
 				async () => heartbeatTraffic(stats()!).heartbeats >= first.heartbeats + OBSERVED_HEARTBEATS,
 				f.budget,
@@ -55,7 +56,11 @@ test(
 			const snapshot = stats()!;
 			assert.equal(snapshot.requests.renew, undefined);
 			assert.equal(snapshot.requests.usage, undefined);
-			assert.ok(snapshot.since <= Date.now());
+			assert.ok(
+				Number.isSafeInteger(snapshot.since) && snapshot.since >= Date.UTC(2020, 0, 1),
+				"the collection start is an epoch-millisecond timestamp",
+			);
+			assert.equal(snapshot.since, firstSnapshot.since, "later samples retain the coordinator's collection start");
 			assert.equal(f.pool.coordinationStats()?.since, snapshot.since, "the pool reports the counts it published");
 			await f.release();
 			assert.equal((await f.running).status, "completed");
