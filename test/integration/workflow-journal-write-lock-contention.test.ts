@@ -3,8 +3,16 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import {
+	isStorageWriteLockTimeoutError,
+	rehydrateStorageError,
+	type SerializedStorageError,
+	StorageUnavailableError,
+	StorageWriteLockTimeoutError,
+	StorageWriterQueueUnusableError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { isSqliteBusy } from "../../packages/coding-agent/src/core/storage/write-ahead-log.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
@@ -110,9 +118,14 @@ test(
 					() => assert.fail("write succeeded under a held lock"),
 					(cause: unknown) => cause,
 				);
+			assert.ok(error instanceof StorageWriteLockTimeoutError, String(error));
 			assert.ok(error instanceof StorageUnavailableError);
-			assert.match(error.message, /^Storage unavailable: node-sqlite at .*journal\.sqlite: database is locked/);
-			assert.match((error.cause as Error).message, /database is locked/);
+			assert.equal(error.code, "write-lock-timeout");
+			assert.equal(error.timeoutMs, 500);
+			assert.ok(error.elapsedMs >= 500);
+			assert.equal(error.phase, "acquiring");
+			assert.equal(error.location, path);
+			assert.ok(isSqliteBusy(error.cause), "names the SQLite cause");
 			assert.ok(Date.now() - started < 5_000, `gave up after ${Date.now() - started} ms`);
 			assert.deepEqual(await database.get("PRAGMA busy_timeout"), { timeout: 100 });
 		} finally {
@@ -322,13 +335,20 @@ test(
 					async (writer) =>
 						JSON.parse(await readLine(writer)) as {
 							waitedMs: number;
-							error: { name: string; message: string } | null;
+							error: SerializedStorageError | null;
 						},
 				),
 			);
 			for (const outcome of outcomes) {
-				assert.equal(outcome.error?.name, "StorageUnavailableError", JSON.stringify(outcome));
-				assert.match(outcome.error!.message, /gave up after \d+ ms waiting for the write lock/);
+				assert.ok(outcome.error, JSON.stringify(outcome));
+				// Serialized in the writer's process, rehydrated here as the same class with the same facts (#4316).
+				const error = rehydrateStorageError(outcome.error);
+				assert.ok(error instanceof StorageWriteLockTimeoutError, JSON.stringify(outcome));
+				assert.ok(isStorageWriteLockTimeoutError(error));
+				assert.equal(error.timeoutMs, STALLED_LOCK_WAIT_MS);
+				assert.ok(error.elapsedMs >= STALLED_LOCK_WAIT_MS);
+				assert.ok(error.phase === "queued" || error.phase === "acquiring", error.phase);
+				assert.equal(error.location, path);
 			}
 			const longest = Math.max(...outcomes.map((outcome) => outcome.waitedMs));
 			assert.ok(
@@ -369,11 +389,12 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 					() => assert.fail("write succeeded under a held lock"),
 					(cause: unknown) => cause,
 				);
-			assert.ok(error instanceof StorageUnavailableError, String(error));
-			assert.match(error.message, /^Storage unavailable: node-sqlite at .*journal\.sqlite: .*writers' queue/);
-			assert.ok(
-				error.cause instanceof Error && /EACCES|EPERM/.test((error.cause as NodeJS.ErrnoException).code ?? ""),
-			);
+			assert.ok(error instanceof StorageWriterQueueUnusableError, String(error));
+			assert.ok(error instanceof StorageUnavailableError);
+			assert.equal(error.code, "writer-queue-unusable");
+			assert.equal(error.location, path);
+			assert.ok(/^(EACCES|EPERM)$/.test(error.errno ?? ""), error.errno);
+			assert.equal((error.cause as NodeJS.ErrnoException).code, error.errno);
 		} finally {
 			chmodSync(queue, 0o700);
 			holder?.kill("SIGKILL");

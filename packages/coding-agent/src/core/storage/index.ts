@@ -9,7 +9,14 @@ export type {
 	StorageDescriptor,
 } from "./database.js";
 export * from "./errors.js";
-export { openNodeSqliteDatabase, wrapNodeSqliteDatabase } from "./node-sqlite.js";
+export {
+	DEFAULT_GROUP_COMMIT_HOLD_MS,
+	getWriterQueueDegradation,
+	getWriterQueueStats,
+	openNodeSqliteDatabase,
+	type WriterQueueStats,
+	wrapNodeSqliteDatabase,
+} from "./node-sqlite.js";
 export { renderStorageIdentifiers, validateStoragePrefix } from "./prefix.js";
 export * from "./provider.js";
 export * from "./run-journal.js";
