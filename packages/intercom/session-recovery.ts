@@ -17,6 +17,17 @@ export const CHILD_RESTORATION_WAIT_MS = 20_000;
  * it is restoring, by the capability it was just issued for that child (#3760).
  */
 export const SUBAGENT_RESERVE_RESTORING_CHILD_EVENT = "subagent:reserve-restoring-child";
+/**
+ * Intercom tells Subagents that a send or ask waits at the broker for a released child of this session (#4326), so
+ * Subagents wakes it. Payload: {@link ReleasedChildWakeNotice}.
+ */
+export const SUBAGENT_RELEASED_CHILD_WAKE_EVENT = "subagent:released-child-wake";
+
+/** A send or ask waits for the released child named `childName`. */
+export interface ReleasedChildWakeNotice {
+	readonly childName: string;
+}
+
 /** Subagents ends that hold; with `gone` (the reason) senders are told the child did not survive the restart. */
 export const SUBAGENT_RELEASE_RESTORING_CHILD_EVENT = "subagent:release-restoring-child";
 /**
@@ -81,6 +92,8 @@ export interface ReserveRestoringChildRequest {
 	readonly aliases: readonly string[];
 	/** Only keeps the child addressable until the supervisor that restores it reserves it and takes the hold over. */
 	readonly dormant?: boolean;
+	/** The child is released (#4326): the first send held for it asks this session to wake it. */
+	readonly wake?: boolean;
 	completion?: Promise<void>;
 }
 
@@ -100,6 +113,7 @@ export function isReserveRestoringChildRequest(value: unknown): value is Reserve
 		request.capability.length > 0 &&
 		(request.group === undefined || typeof request.group === "string") &&
 		(request.dormant === undefined || typeof request.dormant === "boolean") &&
+		(request.wake === undefined || typeof request.wake === "boolean") &&
 		Array.isArray(request.aliases) &&
 		request.aliases.every((alias) => typeof alias === "string")
 	);

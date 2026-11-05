@@ -742,6 +742,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			aliases: [...payload.aliases],
 			...(payload.group === undefined ? {} : { group: payload.group }),
 			...(payload.dormant === true ? { dormant: true } : {}),
+			...(payload.wake === true ? { wake: true } : {}),
 		};
 		payload.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 			handle.assertCurrent();

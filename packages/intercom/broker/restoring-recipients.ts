@@ -19,9 +19,16 @@ export interface HeldSend {
 	readonly clientMessage: { readonly type: string; readonly to: string } & Record<string, unknown>;
 }
 
+/** The owner to tell that a send now waits for its released child (#4326). */
+export interface RestoringRecipientWake {
+	readonly ownerSessionId: string;
+	readonly capability: string;
+	readonly childName: string;
+}
+
 export type RestoringRecipientAdmission =
 	| { readonly kind: "none" }
-	| { readonly kind: "held"; readonly timeoutMs: number }
+	| { readonly kind: "held"; readonly timeoutMs: number; readonly wake?: RestoringRecipientWake }
 	| { readonly kind: "refused"; readonly reason: string };
 
 /** One reservation as `RestoringRecipients.active` reports it; `gone` is the formatted gone refusal. */
@@ -45,6 +52,8 @@ interface Reservation {
 	 * same child and group takes it over with its held sends.
 	 */
 	dormant: boolean;
+	/** The child is released, not being restored: the first send held tells its owner to wake it (#4326). */
+	wake: boolean;
 	readonly targets: Set<string>;
 	/** Set once the owner reports the child gone; held and later senders get this refusal. */
 	gone?: string;
@@ -92,9 +101,10 @@ export class RestoringRecipients {
 		childName: string,
 		group: string,
 		aliases: readonly string[],
-		options: { readonly dormant?: boolean } = {},
+		options: { readonly dormant?: boolean; readonly wake?: boolean } = {},
 	): void {
 		const dormant = options.dormant === true;
+		const wake = options.wake === true;
 		let reservation = this.reservations.get(capability);
 		if (reservation === undefined) {
 			reservation = {
@@ -102,6 +112,7 @@ export class RestoringRecipients {
 				childName,
 				group,
 				dormant,
+				wake,
 				targets: new Set([normalizeTarget(childName)]),
 				held: new Map(),
 			};
@@ -118,6 +129,7 @@ export class RestoringRecipients {
 		}
 		reservation.group = group;
 		reservation.dormant = dormant;
+		reservation.wake = wake;
 		for (const alias of aliases) {
 			const target = normalizeTarget(alias);
 			if (target && reservation.targets.size < MAX_RESERVED_TARGETS) reservation.targets.add(target);
@@ -144,6 +156,11 @@ export class RestoringRecipients {
 		if (reservation.gone !== undefined) return { kind: "refused", reason: reservation.gone };
 		if (!canHold || reservation.held.size >= MAX_HELD_SENDS)
 			return { kind: "refused", reason: restoringRecipientRetryReason(reservation.childName) };
+		const capability = [...this.reservations].find(([, candidate]) => candidate === reservation)?.[0];
+		const wake =
+			reservation.wake && reservation.held.size === 0 && capability !== undefined
+				? { ownerSessionId: reservation.ownerSessionId, capability, childName: reservation.childName }
+				: undefined;
 		const timer = setTimeout(() => {
 			for (const candidate of this.reservations.values()) {
 				if (!candidate.held.delete(held)) continue;
@@ -153,7 +170,7 @@ export class RestoringRecipients {
 		}, RESTORING_RECIPIENT_HOLD_MS);
 		timer.unref?.();
 		reservation.held.set(held, timer);
-		return { kind: "held", timeoutMs: RESTORING_RECIPIENT_HOLD_MS };
+		return { kind: "held", timeoutMs: RESTORING_RECIPIENT_HOLD_MS, ...(wake === undefined ? {} : { wake }) };
 	}
 
 	/**

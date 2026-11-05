@@ -980,6 +980,15 @@ export class IntercomClient extends EventEmitter {
         this.pendingSends.extend(messageId, attemptId, timeoutMs + HELD_SEND_GRACE_MS);
         break;
       }
+      case "restoring_recipient_wake": {
+        const { capability, childName } = brokerMessage;
+        if (typeof capability !== "string" || typeof childName !== "string") {
+          throw new Error("Invalid restoring_recipient_wake message");
+        }
+        // #4326: a send waits at the broker for a released child this session reserved; its owner wakes it.
+        this.emit("restoring_recipient_wake", { capability, childName });
+        break;
+      }
       case "restoring_recipient_ack": {
         const { requestId, error } = brokerMessage;
         if (typeof requestId !== "string" || (error !== undefined && typeof error !== "string")) {
@@ -1319,7 +1328,7 @@ export class IntercomClient extends EventEmitter {
    */
   reserveRestoringRecipient(
     capability: string,
-    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean; wake?: boolean } = {},
   ): Promise<void> {
     return this.restoringRecipientRequest({
       type: "reserve_restoring_recipient",
@@ -1327,6 +1336,7 @@ export class IntercomClient extends EventEmitter {
       ...(options.group === undefined ? {} : { group: options.group }),
       ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
       ...(options.dormant === true ? { dormant: true } : {}),
+      ...(options.wake === true ? { wake: true } : {}),
     });
   }
 

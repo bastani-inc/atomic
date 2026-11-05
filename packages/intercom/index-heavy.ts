@@ -19,6 +19,8 @@ import {
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
   SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
+  SUBAGENT_RELEASED_CHILD_WAKE_EVENT,
+  type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
 import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
@@ -955,6 +957,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     nextClient.on("pending_stage_message", (request: PendingStageMessageRequest) => {
       handlePendingStageMessage(nextClient, request, () => client === nextClient);
     });
+    // #4326: a send waits at the broker for a released child of this session; Subagents wakes it.
+    nextClient.on("restoring_recipient_wake", (notice: { childName: string }) => {
+      if (client !== nextClient) return;
+      const wake: ReleasedChildWakeNotice = { childName: notice.childName };
+      pi.events.emit(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, wake);
+    });
 		nextClient.on("pending_stage_notification", (request: PendingStageNotificationRequest) => {
 			handlePendingStageNotification(nextClient, request);
 		});
@@ -1645,6 +1653,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         ...(request.group === undefined ? {} : { group: request.group }),
         aliases: request.aliases,
         ...(request.dormant === true ? { dormant: true } : {}),
+        ...(request.wake === true ? { wake: true } : {}),
       }),
     );
   });

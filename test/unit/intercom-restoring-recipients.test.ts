@@ -167,3 +167,53 @@ test("a dormant reservation the restoring stage never replaced ends with the chi
 		kind: "none",
 	});
 });
+
+test("a released subagent's reservation asks its owner to wake it when a send starts waiting, once per hold (#4326)", () => {
+	vi.useFakeTimers();
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true, wake: true });
+
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("ask-1", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+		wake: { ownerSessionId: "owner", capability: "capability", childName: CHILD },
+	});
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-2", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+	vi.advanceTimersByTime(20_000);
+	assert.deepEqual(
+		recipients.admit(CHILD, sender("peer"), send("send-3", "peer"), true),
+		{
+			kind: "held",
+			timeoutMs: 20_000,
+			wake: { ownerSessionId: "owner", capability: "capability", childName: CHILD },
+		},
+		"once the held sends expired, the next send asks for a wake again",
+	);
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-4", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+
+	recipients.reserve("restore-capability", "owner", CHILD, "default", []);
+	assert.deepEqual(
+		recipients.consume("restore-capability").map((held) => held.messageId),
+		["send-3", "send-4"],
+		"the restoring supervisor takes the released child's held sends over, in order, once",
+	);
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-5", "peer"), true), { kind: "none" });
+});
+
+test("a reservation without wake never asks its owner to wake the child (#4326)", () => {
+	const recipients = new RestoringRecipients(() => {});
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true });
+	const admission = recipients.admit(CHILD, sender("peer"), send("send-1", "peer"), true);
+	assert.deepEqual(admission, { kind: "held", timeoutMs: 20_000 });
+	recipients.reserve("capability", "owner", CHILD, "default", [], { dormant: true, wake: true });
+	assert.deepEqual(recipients.admit(CHILD, sender("peer"), send("send-2", "peer"), true), {
+		kind: "held",
+		timeoutMs: 20_000,
+	});
+});

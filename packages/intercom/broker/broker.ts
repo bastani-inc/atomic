@@ -1912,6 +1912,7 @@ class IntercomBroker {
           typeof clientMessage.capability !== "string" || !clientMessage.capability ||
           (clientMessage.group !== undefined && typeof clientMessage.group !== "string") ||
           (clientMessage.dormant !== undefined && typeof clientMessage.dormant !== "boolean") ||
+          (clientMessage.wake !== undefined && typeof clientMessage.wake !== "boolean") ||
           (clientMessage.aliases !== undefined && !isRestoringRecipientAliasList(clientMessage.aliases))
         ) {
           throw new Error("Invalid reserve_restoring_recipient message");
@@ -1935,7 +1936,7 @@ class IntercomBroker {
           childName,
           normalizeGroup(typeof clientMessage.group === "string" ? clientMessage.group : owner.registrationGroup),
           aliases,
-          { dormant: clientMessage.dormant === true },
+          { dormant: clientMessage.dormant === true, wake: clientMessage.wake === true },
         );
         this.multiNode?.restoringReserved(
           clientMessage.capability,
@@ -2495,7 +2496,13 @@ class IntercomBroker {
     );
     if (admission.kind === "none") return false;
     if (admission.kind === "refused") this.failHeldSend(held, admission.reason);
-    else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
+    else {
+      writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
+      // #4326: the child is released; its owner rehydrates it, and it takes the held sends in order when it registers.
+      const owner = admission.wake === undefined ? undefined : this.sessions.get(admission.wake.ownerSessionId);
+      if (owner !== undefined && admission.wake !== undefined)
+        writeMessageIfOpen(owner.socket, { type: "restoring_recipient_wake", capability: admission.wake.capability, childName: admission.wake.childName });
+    }
     return true;
   };
 

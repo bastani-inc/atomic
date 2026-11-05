@@ -214,7 +214,7 @@ export type ClientMessage =
    * with the capability. A `dormant` hold only keeps the child addressable until the supervisor that restores it
    * reserves the same child and group, which takes the hold over together with the sends held so far.
    */
-  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean }
+  | { type: "reserve_restoring_recipient"; requestId: string; capability: string; group?: string; aliases?: string[]; dormant?: boolean; wake?: boolean }
   /**
    * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With `refusal`,
    * the senders held now are told that reason instead and later ones are routed normally. Otherwise held sends are
@@ -374,6 +374,11 @@ export type BrokerMessage =
 	| { type: "queued"; messageId: string; attemptId?: string; target: string; position: number }
 	/** #3760: the send is held for a subagent that is being restored; wait up to `timeoutMs` for its outcome. */
 	| { type: "send_held"; messageId: string; attemptId?: string; timeoutMs: number }
+	/**
+	 * #4326: a send or ask is held for a released subagent this session reserved with `wake`; wake it. Sent once per
+	 * hold that starts empty, so a wake that fails is asked for again by the next send.
+	 */
+	| { type: "restoring_recipient_wake"; capability: string; childName: string }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "delivery_failed"; messageId: string; reason: string; reasonCode?: "message_id_conflict" | "session_not_found"; attemptId?: string }
 	| { type: "broker_status"; requestId: string; report: BrokerStatusReport }
