@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +12,8 @@ import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-
 import { queryIntercomBroker, restartIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { type SpawnedProcess, spawnProcess } from "../helpers/runtime.js";
 
 /**
  * #4320: one broker serves every session of an agent directory and keeps the storage it started with. A session
@@ -85,16 +87,16 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
-	const broker = await queryIntercomBroker(agentDir);
-	if (broker.state === "running") {
+	try {
+		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	} finally {
 		try {
-			process.kill(broker.report.pid, "SIGTERM");
-		} catch {}
+			await removeTempRootReleasingBroker(root, agentDir);
+		} finally {
+			vi.doUnmock("../../packages/intercom/broker/broker-routing.js");
+			vi.unstubAllEnvs();
+		}
 	}
-	vi.doUnmock("../../packages/intercom/broker/broker-routing.js");
-	vi.unstubAllEnvs();
-	rmSync(root, { recursive: true, force: true });
 });
 
 function sharedSelection(): { adapter: string; options: { path: string }; prefix: string } {
@@ -106,19 +108,23 @@ function sharedStorage(): string {
 }
 
 /** A broker started the way an Atomic process starts one, by a process launched with `ATOMIC_STORAGE`. */
-function startBrokerWithStorage(selection: string): ChildProcess {
-	const broker = spawn("bun", [join(extensionDir, "broker/broker.ts")], {
-		stdio: "ignore",
+function startBrokerWithStorage(selection: string): SpawnedProcess {
+	const broker = spawnProcess(["bun", join(extensionDir, "broker/broker.ts")], {
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "ignore",
 		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_STORAGE: selection },
 	});
-	cleanups.push(() => {
-		broker.kill("SIGKILL");
+	cleanups.push(async () => {
+		if (broker.exitCode === null) broker.kill("SIGKILL");
+		await broker.exited;
 	});
 	return broker;
 }
 
-async function replaceBrokerWithSharedStorage(old: ChildProcess): Promise<void> {
-	old.kill("SIGKILL");
+async function replaceBrokerWithSharedStorage(old: SpawnedProcess): Promise<void> {
+	if (old.exitCode === null) old.kill("SIGKILL");
+	await old.exited;
 	await vi.waitFor(async () => assert.equal((await queryIntercomBroker(agentDir)).state, "stopped"), {
 		timeout: BROKER_WAIT_MS,
 		interval: 25,
