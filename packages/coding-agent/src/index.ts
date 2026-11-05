@@ -686,7 +686,21 @@ export {
 	type ProjectTrustUpdate,
 	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 } from "./core/trust-manager.ts";
+export {
+	type ErrorFieldValue,
+	type SerializedErrorCause,
+	type SerializedTypedError,
+} from "./core/error-contract.ts";
 export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
+export {
+	findLlamaServerError,
+	isLlamaServerError,
+	isLlamaServerUnreachableError,
+	LlamaServerError,
+	type LlamaServerErrorCode,
+	LlamaServerUnreachableError,
+	rehydrateLlamaServerError,
+} from "./extensions/llama/errors.ts";
 export {
 	type LoadedMcpConfig,
 	type McpServerConfigPatch,

@@ -16,6 +16,7 @@ import {
 	llamaInferenceUrl,
 	normalizeLlamaServerUrl,
 } from "../../packages/coding-agent/src/extensions/llama/client.js";
+import { isLlamaServerUnreachableError } from "../../packages/coding-agent/src/extensions/llama/errors.js";
 import { createLlamaProvider } from "../../packages/coding-agent/src/extensions/llama/provider.js";
 
 const originalFetch = globalThis.fetch;
@@ -204,7 +205,10 @@ describe("llama.cpp provider", () => {
 			await restarted.refresh({ allowNetwork: false });
 			const result = await restarted.refresh({ allowNetwork: true });
 
-			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			const refreshError = result.errors.get("llama.cpp");
+			assert.ok(isLlamaServerUnreachableError(refreshError));
+			assert.equal(refreshError.detail, "router offline");
+			assert.equal(refreshError.serverUrl, "http://localhost:8080");
 			assert.deepEqual(
 				restarted
 					.getModels()
@@ -252,7 +256,10 @@ describe("llama.cpp provider", () => {
 
 			const result = await registry.refresh({ allowNetwork: true });
 
-			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			const refreshError = result.errors.get("llama.cpp");
+			assert.ok(isLlamaServerUnreachableError(refreshError));
+			assert.equal(refreshError.detail, "router offline");
+			assert.equal(refreshError.serverUrl, "http://localhost:8080");
 			assert.equal(
 				registry.getModels().some((model) => model.provider === "llama.cpp"),
 				false,
@@ -291,7 +298,10 @@ describe("llama.cpp provider", () => {
 
 			const result = await registry.refresh({ allowNetwork: true });
 
-			assert.equal(result.errors.get("llama.cpp")?.message, "router offline");
+			const refreshError = result.errors.get("llama.cpp");
+			assert.ok(isLlamaServerUnreachableError(refreshError));
+			assert.equal(refreshError.detail, "router offline");
+			assert.equal(refreshError.serverUrl, "http://localhost:8080");
 			assert.equal(
 				registry.getModels().some((model) => model.provider === "llama.cpp"),
 				false,

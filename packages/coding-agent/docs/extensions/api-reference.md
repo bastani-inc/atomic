@@ -1119,3 +1119,11 @@ Registered servers are the lowest-precedence MCP layer. They replace a same-name
 - Extension errors are logged, agent continues
 - `tool_call` errors block the tool (fail-safe)
 - Tool `execute` errors must be signaled by throwing; the thrown error is caught, reported to the LLM with `isError: true`, and execution continues
+
+### Typed errors from built-in tools and providers
+
+These classes are exported from `@bastani/atomic`. Branch on the class, its guard, or `code`, not on `message`. Each has `hint` (what to do next), `retryable`, and `toJSON()`, which gives `{ name, code, message, hint, retryable, fields, cause }` for relaying across a process boundary; `rehydrateLlamaServerError()` rebuilds the same class on the other side. The guards (`isLlamaServerError()`, ...) also accept such a relayed error.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `LlamaServerUnreachableError` (family `LlamaServerError`) | `server-unreachable` | A llama.cpp router request failed before the server answered: connection refused, wrong port, DNS, or `https` against a plain-HTTP server. Cancellation is rethrown unchanged. | `serverUrl` (without user information), `detail` (the network-level reason) | Start `llama serve`, or fix the URL with `/login llama.cpp` or `LLAMA_BASE_URL`. `retryable` is `true`. |
