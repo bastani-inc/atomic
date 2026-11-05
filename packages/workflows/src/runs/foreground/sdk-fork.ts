@@ -2,12 +2,14 @@
  * SDK entry points for run time travel (#4321): `forkRun` forks a durable run from a stage into a new
  * run and executes it; `listForkPoints` lists the stages a run can be forked from.
  */
+import { resolve } from "node:path";
 import type { AgentSessionEvent, SessionStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
-import { ForkConfigError, type ForkConfigField } from "../../durable/fork-errors.js";
+import { ForkConfigError, type ForkConfigField, type ForkConfigIssue } from "../../durable/fork-errors.js";
 import type { ForkCarryMessages, ForkPoint } from "../../durable/fork-run.js";
 import { durableForkPoints, forkDurableRun, validateForkOptions } from "../../durable/fork-run.js";
+import { JournalDurableBackend } from "../../durable/journal/journal-backend.js";
 import type { RunJournalOption } from "../../durable/journal/resolution.js";
 import { hasActiveLiveRun } from "../../durable/run-claims.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
@@ -19,6 +21,7 @@ import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "../../workers/host-options.js";
+import { poolUserDatabase, refusedResourceChanges, workerResources } from "../../workers/public-pool.js";
 import { resolveWorkerTiming } from "../../workers/worker-timing.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { runEventChannel, type WorkflowRunEvent } from "./run-event-channel.js";
@@ -83,6 +86,62 @@ function refuseAddedWorkerResources(options: ForkRunOptions, saved: DurableWorkf
 	if (first !== undefined) throw new ForkConfigError({ source: "sdk", issues: [first, ...rest] });
 }
 
+/** What `localWorkers` or `admission` must be for a source that saved worker resources: what its resume accepts. */
+const SAVED_WORKER_RESOURCES =
+	"the source run's saved setting, or one changing only localWorkers.count, admission.limits or admission.host, because a fork resumes its source's worker resources";
+
+/** What `admission` must be when user limits name no database and worker processes cannot reopen the journal. */
+const USER_DATABASE_UNAVAILABLE =
+	"settings for a fork whose journal is selected with workflows.journal, --storage or ATOMIC_WORKFLOWS_JOURNAL, as its source run's was, because user limits count in a pool database worker processes open by that selection";
+
+/** The pool database user limits count in; a plain configuration failure finding it is a `ForkConfigError`. */
+function forkUserDatabase(backend: DurableWorkflowBackend): string | undefined {
+	if (!(backend instanceof JournalDurableBackend)) return undefined;
+	try {
+		return poolUserDatabase(backend.journal);
+	} catch (error) {
+		if (!(error instanceof Error) || error.constructor !== Error) throw error;
+		throw new ForkConfigError(
+			{ source: "sdk", field: "admission", expected: USER_DATABASE_UNAVAILABLE },
+			{ cause: error },
+		);
+	}
+}
+
+/**
+ * Refuses `localWorkers` or `admission` that the source's saved worker resources cannot resume with, before anything
+ * is copied: `run()` would otherwise refuse them on the fork it just wrote (`activatePublicPool`), with the same check.
+ * Entry modules are compared by the fork's run, which reads them.
+ */
+function refuseChangedWorkerResources(
+	options: ForkRunOptions,
+	handle: DurableWorkflowHandle,
+	backend: DurableWorkflowBackend,
+): void {
+	const saved = handle.resources;
+	if (!saved || (!options.localWorkers && !options.admission)) return;
+	const digests = new Map((saved.definitions ?? []).map((source) => [source.path, source.digest]));
+	const requested = workerResources(
+		{
+			localWorkers: options.localWorkers ?? saved.localWorkers,
+			admission: options.admission ?? saved.admission,
+			cwd: options.cwd === undefined ? (handle.invocationCwd ?? process.cwd()) : resolve(options.cwd),
+		},
+		{
+			userDatabase: () => forkUserDatabase(backend),
+			digestOf: (path) => digests.get(path) ?? "",
+			coordinator: saved.coordinator,
+		},
+	);
+	const refused = refusedResourceChanges(saved, requested, options.acceptEntryChanges);
+	const issues = (["localWorkers", "admission"] as const).flatMap((field): ForkConfigIssue[] => {
+		const changes = refused.filter((change) => change.option === field).map((change) => change.description);
+		return changes.length === 0 ? [] : [{ field, expected: `${SAVED_WORKER_RESOURCES} (${changes.join("; ")})` }];
+	});
+	const [first, ...rest] = issues;
+	if (first !== undefined) throw new ForkConfigError({ source: "sdk", issues: [first, ...rest] });
+}
+
 async function sdkDurableBackend(
 	runId: string,
 	options: {
@@ -111,8 +170,8 @@ async function sdkDurableBackend(
  * leaves no fork behind except an unconfirmed shared write, which retains its copied sessions and names the fork
  * (`ForkJournalUnavailableError`, `commit`). Invalid worker timing raises `LocalWorkerOptionsError`; other fork
  * failures are `ForkError`s. A fork keeps its source's worker resources, so `localWorkers` or `admission` for a
- * source that saved none is a `ForkConfigError`. An abort before the fork is written rejects with the signal's
- * reason; after that, it cancels the fork's execution like `run()`.
+ * source that saved none, or that its saved ones cannot resume with, is a `ForkConfigError`. An abort before the fork
+ * is written rejects with the signal's reason; after that, it cancels the fork's execution like `run()`.
  */
 export async function forkRun<
 	TInputs extends WorkflowInputValues,
@@ -164,6 +223,7 @@ export async function forkRun<
 		signal: options.signal,
 		validateSource: (handle) => {
 			refuseAddedWorkerResources(options, handle.resources);
+			refuseChangedWorkerResources(options, handle, backend);
 			if (options.localWorkers === undefined && handle.resources?.localWorkers !== undefined)
 				resolveWorkerTiming(handle.resources.localWorkers, "sdk");
 			if (hostBinds || handle.resources?.localWorkers === undefined) return;

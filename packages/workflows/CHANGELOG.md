@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - An agent step on a pooled local worker no longer waits behind the worker's own heartbeat. Session writes and admission checks run alongside heartbeat traffic, while each worker's journal writes still apply one at a time in send order. Attempt transitions wait for earlier requests to finish, and concurrent heartbeat and lease-extension replies cannot move the held lease backwards ([#4315](https://github.com/bastani-inc/atomic/issues/4315))
 - Fork event readers now receive run and stage snapshots as they were when each event fired, even when reading after the run finishes. Later execution updates and callback mutations no longer change queued lifecycle events ([#4321](https://github.com/bastani-inc/atomic/issues/4321))
 - Forking a paused local-worker run preserves and resumes its unfinished conversations instead of failing when a new worker opens or saves the copied session, including when the workflow journal uses a storage adapter ([#4321](https://github.com/bastani-inc/atomic/issues/4321))
+- Forking with incompatible saved worker or admission settings now fails with `ForkConfigError` before conversations are copied or a new run is saved, while supported pool-size and local-limit overrides remain available ([#4321](https://github.com/bastani-inc/atomic/issues/4321))
 
 ## [0.9.71] - 2026-11-03
 

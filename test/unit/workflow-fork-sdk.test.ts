@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { afterAll, afterEach, test, vi } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -437,12 +437,121 @@ test("forkRun validates inherited worker timing before copying and accepts a val
 	assert.equal(error.retryable, false);
 	assert.equal(write.mock.calls.length, 0);
 	assert.equal((await backend.journal.listRuns()).length, 1);
+	// A root never saves its timing, so a source that saved resources without it accepts a valid timing override.
+	const savedId = testRunId("fork-valid-timing-override");
+	await backend.commitWorkflowRegistration({
+		workflowId: savedId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		resources: { localWorkers: { count: 2, definitions: [] }, definitions: [] },
+	});
 	const localWorkers = { count: 2, definitions: [], leaseMs: 4_000, heartbeatMs: 1_000 };
-	// A source with saved resources accepts overrides, as run() does when it restores them.
 	vi.mocked(run).mockImplementationOnce(async () => ({ status: "completed", stages: [] }) as never);
-	const forked = await forkRun(runId, { ...request, localWorkers, admission: {} });
+	const forked = await forkRun(savedId, { ...request, localWorkers, admission: {} });
 	assert.equal((await forked.result).status, "completed");
 	assert.equal(write.mock.calls.length, 1);
+});
+
+test("forkRun refuses localWorkers or admission overrides its source's saved worker resources cannot resume with, before writing (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId("fork-sdk-incompatible-overrides");
+	const definition = { path: resolve("/workers/review.js"), exportName: "default" };
+	const admission = {
+		userDatabase: resolve("/pool/users.sqlite"),
+		userLimits: { session: 2 },
+		limits: { session: 4 },
+	};
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		resources: {
+			localWorkers: { count: 2, definitions: [definition] },
+			admission,
+			definitions: [{ ...definition, digest: "a".repeat(64) }],
+		},
+	});
+	const source = await backend.journal.getRun(runId);
+	const write = vi.spyOn(backend.journal, "createRunWithEvents");
+	const runs = vi.mocked(run).mock.calls.length;
+	const request = { durableBackend: backend, definition: eventsDefinition };
+	const refusal = async (options: Parameters<typeof forkRun>[1]) => {
+		const outcome = await forkRun(runId, { ...request, ...options }).then(
+			async (forked) =>
+				`fork ${forked.runId} written; its run: ${String(await forked.result.catch((error: Error) => error))}`,
+			(error: Error) => error,
+		);
+		assert.ok(isForkConfigError(outcome), `expected ForkConfigError, got ${String(outcome)}`);
+		assert.equal(outcome.code, "invalid-option");
+		assert.equal(outcome.source, "sdk");
+		assert.equal(outcome.retryable, false);
+		return outcome.issues.map((issue) => issue.field);
+	};
+	const removedDefinition = { localWorkers: { count: 2, definitions: [] } };
+	const changedUserLimits = { admission: { ...admission, userLimits: { session: 3 } } };
+	assert.deepEqual(await refusal(removedDefinition), ["localWorkers"]);
+	assert.deepEqual(await refusal(changedUserLimits), ["admission"]);
+	assert.deepEqual(await refusal({ ...removedDefinition, ...changedUserLimits }), ["localWorkers", "admission"]);
+	assert.equal(write.mock.calls.length, 0, "nothing was written");
+	assert.deepEqual(await backend.journal.getRun(runId), source, "the source is unchanged");
+	assert.equal((await backend.journal.listRuns()).length, 1, "no fork exists");
+	assert.equal(vi.mocked(run).mock.calls.length, runs, "no fork was started");
+
+	// The pool size and the root's own limits are what a resume may change, so a fork may too.
+	vi.mocked(run).mockImplementationOnce(async () => ({ status: "completed", stages: [] }) as never);
+	const forked = await forkRun(runId, {
+		...request,
+		localWorkers: { count: 4, definitions: [definition], leaseMs: 4_000 },
+		admission: { ...admission, limits: { session: 8, process: 2 }, host: { maxLoadPerCpu: 2 } },
+	});
+	assert.equal((await forked.result).status, "completed");
+	assert.equal(write.mock.calls.length, 1, "the allowed fork was written once");
+});
+test("forkRun refuses user limits without a userDatabase on a journal worker processes cannot reopen as a ForkConfigError, before writing (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const runId = testRunId("fork-sdk-user-database-unavailable");
+	const admission = { userDatabase: resolve("/pool/users.sqlite"), userLimits: { session: 2 } };
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: eventsDefinition.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		resources: { admission },
+	});
+	const source = await backend.journal.getRun(runId);
+	const write = vi.spyOn(backend.journal, "createRunWithEvents");
+	const runs = vi.mocked(run).mock.calls.length;
+	const outcome = await forkRun(runId, {
+		durableBackend: backend,
+		definition: eventsDefinition,
+		admission: { userLimits: admission.userLimits, limits: { session: 8 } },
+	}).then(
+		async (forked) =>
+			`fork ${forked.runId} written; its run: ${String(await forked.result.catch((error: Error) => error))}`,
+		(error: Error) => error,
+	);
+	assert.ok(isForkConfigError(outcome), `expected ForkConfigError, got ${String(outcome)}`);
+	assert.equal(outcome.code, "invalid-option");
+	assert.equal(outcome.source, "sdk");
+	assert.equal(outcome.retryable, false);
+	assert.deepEqual(
+		outcome.issues.map((issue) => issue.field),
+		["admission"],
+	);
+	assert.ok(outcome.cause instanceof Error, "the configuration failure is kept as the cause");
+	assert.ok(
+		!JSON.stringify(outcome.fields).includes(outcome.cause.message),
+		"the cause's text stays out of the fields",
+	);
+	assert.equal(write.mock.calls.length, 0, "nothing was written");
+	assert.deepEqual(await backend.journal.getRun(runId), source, "the source is unchanged");
+	assert.equal((await backend.journal.listRuns()).length, 1, "no fork exists");
+	assert.equal(vi.mocked(run).mock.calls.length, runs, "no fork was started");
 });
 
 test("a fork of a source that saved local workers is pooled: it refuses process-bound options before writing and installs no stage callbacks (#4321)", async () => {
