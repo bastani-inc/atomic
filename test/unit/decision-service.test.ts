@@ -370,6 +370,23 @@ test("state without configured credentials is screened once before the model ans
 	assert.equal(chat.mock.calls.length, 0);
 });
 
+test("state changed by the caller while credentials are screened never reaches the model (#4358)", async () => {
+	const { requests } = recordedClassifier(fixture("typesafe-readiness-advance.json"));
+	const { request: decision } = await request({ questions: READINESS_QUESTIONS });
+	const shared = { ...STATE };
+	let release: (found: boolean) => void = () => {};
+	const screen = vi.fn((_text: string) => new Promise<boolean>((resolve) => (release = resolve)));
+	const outcome = decide({ ...decision, state: shared, modelRegistry: screening(decision.modelRegistry, screen) });
+	await vi.waitFor(() => assert.equal(screen.mock.calls.length, 1));
+	shared.user_message = "Bearer sk-abcdefghijklmnopqrstuvwxyz";
+	release(false);
+	await outcome;
+	assert.deepEqual(screen.mock.calls, [[JSON.stringify(STATE)]]);
+	assert.equal(requests.length, 1);
+	assert.deepEqual(requests[0]!.body.state, STATE);
+	assert.ok(!JSON.stringify(requests[0]).includes("Bearer"));
+});
+
 test("state with a configured credential, or a failed screen, is refused before any model is asked", async () => {
 	const { transport, chat, decision } = await pendingScreen();
 	await assert.rejects(
@@ -844,4 +861,33 @@ test("the renamed-setting error renders its message and hint once (UX contract)"
 		'Renamed setting: "routerModel" in global settings.json (renamed-setting). Rename "routerModel" to "decisionModel" in your global settings.json.',
 	);
 	assert.equal(error.hint, 'Rename "routerModel" to "decisionModel" in your global settings.json.');
+});
+
+test("serialization cannot introduce unchecked credentials or hide a snapshot failure (#4358)", async () => {
+	for (const mode of ["credential", "failure"] as const) {
+		const credential = `Bearer sk-${"s".repeat(32)}`;
+		const failure = new Error("snapshot getter failed");
+		let reads = 0;
+		const state = {
+			get message() {
+				reads += 1;
+				if (reads <= 2) return "ordinary state";
+				if (mode === "failure") throw failure;
+				return credential;
+			},
+		};
+		const { requests } = recordedClassifier(fixture("typesafe-readiness-advance.json"));
+		const { request: decision, chat } = await request({ questions: READINESS_QUESTIONS, state });
+		await decide(decision).then(
+			(result) => assert.equal(result.answers.next_action.choice, "advance"),
+			(error: unknown) => {
+				assert.ok(isDecisionRequestError(error));
+				assert.equal(error.field, "state");
+				assert.equal(error.reason, mode === "failure" ? "invalid-state" : "credential-in-state");
+				if (mode === "failure") assert.equal(error.cause, failure);
+			},
+		);
+		for (const sent of requests) assert.doesNotMatch(JSON.stringify(sent.body.state), /Bearer/);
+		assert.equal(chat.mock.calls.length, 0);
+	}
 });

@@ -31,6 +31,7 @@ export {
 	isDecisionRequestError,
 	isDecisionTimeoutError,
 	isRetryableDecisionError,
+	parseSerializedDecisionError,
 	rehydrateDecisionError,
 	type SerializedDecisionError,
 	serializeDecisionError,

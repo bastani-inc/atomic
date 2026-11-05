@@ -50,6 +50,8 @@ Keep code in control: compare an option's probability with a threshold per actio
 
 `deadline` is a wall-clock limit in milliseconds for the whole decision, including configured-credential screening, every request, retry, repair and fallback; it defaults to [`httpIdleTimeoutMs`](/settings#http). `signal` cancels it, and the call then rejects with the signal's reason. `model` names an exact model that decides instead of `decisionModel`. State that contains an environment credential, key-shaped text, or a saved credential identified by the model registry is refused before any model request.
 
+State is copied before asynchronous screening. Later changes to the caller's state object do not alter the in-flight decision.
+
 ### Errors
 
 Every failure rejects with a `DecisionError`; branch on the class or `code`, never on the message. Each has a `hint` and `retryable`, and keeps the lower-level failure as `cause`. `isDecisionError(error)` and the per-class guards also recognize an error that crossed a process boundary; `serializeDecisionError()` and `rehydrateDecisionError()` carry one across. `findDecisionError(error)` and `isRetryableDecisionError(error)` search a cause chain.

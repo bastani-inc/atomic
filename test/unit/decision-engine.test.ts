@@ -657,3 +657,29 @@ test("structured output with its own model ignores a different configured decisi
 	assert.equal(classify.mock.calls.length, 0);
 	assert.equal(dispatch.mock.calls.length, 1);
 });
+
+test("an unresolvable structured output model whose ID reads like a candidate key still falls back to the current chat model (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage({ route: "review" })));
+	const request = structuredOutputRequest();
+	const result = await generateStructuredOutput({
+		...request,
+		model: "chat:decision-test/chat",
+		modelRegistry: { ...request.modelRegistry, streamSimple: dispatch, getClassifierModel: () => undefined },
+	});
+	assert.equal(result.model, "decision-test/chat");
+	assert.deepEqual(
+		result.modelAttempts?.map((attempt) => attempt.model),
+		["chat:decision-test/chat", "decision-test/chat"],
+	);
+	assert.equal(dispatch.mock.calls.length, 1);
+});
+
+test("an unconfigured structured decision names its missing model before inference (#4358)", async () => {
+	const dispatch = vi.fn(() => messageStream(decisionMessage()));
+	const { registry } = await registeredDecisionRuntime(dispatch);
+	await assert.rejects(
+		generateStructuredOutput({ ...structuredOutputRequest(), currentModel: undefined, modelRegistry: registry }),
+		{ name: "Error", message: "Structured output requires model or currentModel." },
+	);
+	assert.equal(dispatch.mock.calls.length, 0);
+});

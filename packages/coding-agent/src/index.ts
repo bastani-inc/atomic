@@ -344,12 +344,12 @@ export {
 	serializeDebugError,
 } from "./core/debug-errors.ts";
 export { onDebugSettingChange, setDebugSetting } from "./core/debug-setting.ts";
+export * from "./core/decision/index.js";
 export type {
 	ErrorFieldValue,
 	SerializedErrorCause,
 	SerializedTypedError,
 } from "./core/error-contract.ts";
-export * from "./core/decision/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
 export {
 	AutoRoutingInferenceError,

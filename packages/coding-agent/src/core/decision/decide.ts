@@ -93,6 +93,19 @@ function validateRequest(request: DecisionRequest<DecisionQuestions>): void {
 		refuse("model", "invalid-model");
 }
 
+function snapshotRequest<R extends DecisionRequest<DecisionQuestions>>(request: R): R {
+	validateRequest(request);
+	let state: unknown;
+	try {
+		state = JSON.parse(JSON.stringify(request.state));
+	} catch (cause) {
+		throw new DecisionRequestError({ field: "state", reason: "invalid-state" }, { cause });
+	}
+	const snapshot = { ...request, state: state as R["state"] };
+	validateRequest(snapshot);
+	return snapshot;
+}
+
 function optionList(entries: readonly (readonly [string, string])[]): string {
 	return `${entries.map(([option, meaning]) => `${option}: ${meaning}`).join("; ")}.`;
 }
@@ -211,7 +224,7 @@ export async function decide<const Q extends DecisionQuestions>(
 	request: DecisionRequest<Q>,
 ): Promise<DecisionResult<Q>> {
 	request.signal?.throwIfAborted();
-	validateRequest(request);
+	request = snapshotRequest(request);
 	const settings = decisionSettings(request);
 	const model = resolveDecisionModel({
 		settings,
@@ -226,7 +239,7 @@ export async function decideWithModel<const Q extends DecisionQuestions>(
 	model: StructuredOutputModel,
 ): Promise<DecisionResult<Q>> {
 	request.signal?.throwIfAborted();
-	validateRequest(request);
+	request = snapshotRequest(request);
 	return decideOn(request, decisionSettings(request), model);
 }
 
@@ -251,8 +264,8 @@ async function decideOn<const Q extends DecisionQuestions>(
 	const registry = request.modelRegistry;
 	const screen = registry.containsConfiguredCredential;
 	let screeningFailure: { readonly error: unknown } | undefined;
-	const prepare = screen
-		? async (signal: AbortSignal): Promise<void> => {
+	const prepare: ((signal: AbortSignal) => Promise<void>) | undefined = screen
+		? async (signal) => {
 				let found: boolean;
 				try {
 					found = await raceWithAbortSignal(screen.call(registry, JSON.stringify(request.state)), signal);

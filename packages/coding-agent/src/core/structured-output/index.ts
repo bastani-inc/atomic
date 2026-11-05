@@ -445,7 +445,9 @@ async function generateWithinDeadline<T extends TSchema>(
 		...(currentId ? [resolveCandidateOutcome(currentId, request)] : []),
 	]) {
 		const key =
-			"candidate" in resolution ? `${resolution.candidate.kind}:${resolution.candidate.fullId}` : resolution.id;
+			"candidate" in resolution
+				? `${resolution.candidate.kind}:${resolution.candidate.fullId}`
+				: `failure:${resolution.id}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
 		resolutions.push(resolution);

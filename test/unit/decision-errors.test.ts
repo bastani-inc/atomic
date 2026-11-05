@@ -440,3 +440,16 @@ test("valid concrete error variants and future names retain their transport fiel
 	};
 	assert.deepEqual(parseSerializedDecisionError(future), future);
 });
+
+test("the public SDK and workflow entry points expose the untrusted-error parser (#4358)", async () => {
+	const sdk = await import("@bastani/atomic");
+	const workflows = await import("../../packages/workflows/src/sdk-surface.js");
+	const authoring = await import("../../packages/workflows/src/authoring.js");
+	for (const entry of [sdk, workflows, authoring]) {
+		assert.equal(entry.parseSerializedDecisionError, parseSerializedDecisionError);
+		assert.deepEqual(
+			entry.parseSerializedDecisionError(serializeDecisionError(ERRORS.config)),
+			serializeDecisionError(ERRORS.config),
+		);
+	}
+});
