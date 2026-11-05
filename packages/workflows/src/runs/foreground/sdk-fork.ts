@@ -5,13 +5,14 @@
 import type { AgentSessionEvent, SessionStore } from "@bastani/atomic";
 import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import { initializeDurableBackend } from "../../durable/factory.js";
+import { ForkConfigError, type ForkConfigField } from "../../durable/fork-errors.js";
 import type { ForkCarryMessages, ForkPoint } from "../../durable/fork-run.js";
 import { durableForkPoints, forkDurableRun, validateForkOptions } from "../../durable/fork-run.js";
 import type { RunJournalOption } from "../../durable/journal/resolution.js";
 import { hasActiveLiveRun } from "../../durable/run-claims.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride } from "../../durable/store-backend.js";
-import type { WorkflowForkedFrom } from "../../durable/types.js";
+import type { DurableWorkflowHandle, WorkflowForkedFrom } from "../../durable/types.js";
 import type { Store } from "../../shared/store.js";
 import { store as defaultStore } from "../../shared/store.js";
 import { currentWorkflowStore } from "../../shared/store-factory.js";
@@ -62,6 +63,26 @@ export interface ListForkPointsOptions {
 	readonly sourceSessionStore?: SessionStore;
 }
 
+/**
+ * What `localWorkers` or `admission` must be for a source that saved neither: a fork keeps its source's worker
+ * resources, and `run()` refuses to add them to an existing root.
+ */
+const SOURCE_WITHOUT_WORKER_RESOURCES =
+	"omitted, because the source run started without local workers or resource admission and a fork keeps its source's worker resources; start a new run with run() to use them";
+
+/**
+ * Refuses `localWorkers` or `admission` for a source that saved no worker resources, before anything is copied.
+ * `run()` would otherwise refuse them on the fork it just wrote (`restoreWorkerOptions`), leaving a fork that never starts.
+ */
+function refuseAddedWorkerResources(options: ForkRunOptions, saved: DurableWorkflowHandle["resources"]): void {
+	if (saved) return;
+	const added: ForkConfigField[] = [];
+	if (options.localWorkers) added.push("localWorkers");
+	if (options.admission) added.push("admission");
+	const [first, ...rest] = added.map((field) => ({ field, expected: SOURCE_WITHOUT_WORKER_RESOURCES }));
+	if (first !== undefined) throw new ForkConfigError({ source: "sdk", issues: [first, ...rest] });
+}
+
 async function sdkDurableBackend(
 	runId: string,
 	options: {
@@ -89,8 +110,9 @@ async function sdkDurableBackend(
  * read and is never written. Every precondition is checked before anything is copied, so a failure
  * leaves no fork behind except an unconfirmed shared write, which retains its copied sessions and names the fork
  * (`ForkJournalUnavailableError`, `commit`). Invalid worker timing raises `LocalWorkerOptionsError`; other fork
- * failures are `ForkError`s. An abort before the fork is written rejects with the signal's reason; after that,
- * it cancels the fork's execution like `run()`.
+ * failures are `ForkError`s. A fork keeps its source's worker resources, so `localWorkers` or `admission` for a
+ * source that saved none is a `ForkConfigError`. An abort before the fork is written rejects with the signal's
+ * reason; after that, it cancels the fork's execution like `run()`.
  */
 export async function forkRun<
 	TInputs extends WorkflowInputValues,
@@ -141,6 +163,7 @@ export async function forkRun<
 		modelOwner: options.modelOwner,
 		signal: options.signal,
 		validateSource: (handle) => {
+			refuseAddedWorkerResources(options, handle.resources);
 			if (options.localWorkers === undefined && handle.resources?.localWorkers !== undefined)
 				resolveWorkerTiming(handle.resources.localWorkers, "sdk");
 			if (hostBinds || handle.resources?.localWorkers === undefined) return;

@@ -300,39 +300,41 @@ test("a pooled fork refuses options bound to this process before writing, and in
 	).catch((error: Error) => error);
 	assert.ok(isForkConfigError(allRefused), String(allRefused));
 	assert.equal(allRefused.expected, `localWorkers without options bound to this process (${everyBound.join(", ")})`);
-	let captured: Parameters<typeof run>[2];
-	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
-		captured = options;
-		return { status: "completed", stages: [] } as never;
-	});
-	const pooled = await forkRun(runId, {
-		fromStage: "worker",
-		durableBackend: backend,
-		definition: eventsDefinition,
-		localWorkers,
-	});
-	await pooled.result;
-	assert.deepEqual(captured?.localWorkers, localWorkers);
-	assert.equal(typeof captured?.onRunStart, "function");
-	assert.equal(typeof captured?.onRunEnd, "function");
-	assert.deepEqual(
-		[captured?.onStageStart, captured?.onStageEnd, captured?.onStageSessionEvent],
-		[undefined, undefined, undefined],
-	);
-	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
-		captured = options;
-		return { status: "completed", stages: [] } as never;
-	});
-	const hosted = await forkRun(runId, {
-		fromStage: "worker",
-		durableBackend: backend,
-		definition: eventsDefinition,
-		localWorkers,
-		registry: createRegistry(),
-		[hostWorkerBindings]: true,
-	});
-	await hosted.result;
-	assert.equal(typeof captured?.onStageStart, "function", "a host that binds its workers keeps the stage events");
+});
+
+test("forkRun refuses localWorkers or admission for a source that saved no worker resources, before writing (#4321)", async () => {
+	// No mocked run(): the real run() refuses worker resources added to an existing root, so a fork written with
+	// them would never start.
+	const { backend, runId } = await eventsSource("fork-sdk-added-resources");
+	const write = vi.spyOn(backend.journal, "createRunWithEvents");
+	const runs = vi.mocked(run).mock.calls.length;
+	const localWorkers = { count: 1, definitions: [] };
+	const request = { fromStage: "worker", durableBackend: backend, definition: eventsDefinition };
+	const refusal = async (options: Parameters<typeof forkRun>[1]) => {
+		const outcome = await forkRun(runId, { ...request, ...options }).then(
+			async (forked) =>
+				`fork ${forked.runId} written; its run: ${String(await forked.result.catch((error: Error) => error))}`,
+			(error: Error) => error,
+		);
+		assert.ok(isForkConfigError(outcome), `expected ForkConfigError, got ${String(outcome)}`);
+		assert.equal(outcome.code, "invalid-option");
+		assert.equal(outcome.source, "sdk");
+		assert.match(outcome.hint, /start a new run with run\(\) to use them/);
+		return outcome.issues.map((issue) => issue.field);
+	};
+	assert.deepEqual(await refusal({ localWorkers }), ["localWorkers"]);
+	assert.deepEqual(await refusal({ admission: {} }), ["admission"]);
+	assert.deepEqual(await refusal({ localWorkers, admission: {} }), ["localWorkers", "admission"]);
+	// A host that binds its workers is refused the same way: run() restores resources regardless of who binds them.
+	assert.deepEqual(await refusal({ localWorkers, registry: createRegistry(), [hostWorkerBindings]: true }), [
+		"localWorkers",
+	]);
+	assert.equal(write.mock.calls.length, 0, "nothing was written");
+	assert.equal((await backend.journal.listRuns()).length, 1);
+	assert.equal(vi.mocked(run).mock.calls.length, runs, "no fork was started");
+
+	const forked = await forkRun(runId, { ...request, adapters });
+	assert.equal((await forked.result).status, "completed", "without worker options the fork runs");
 });
 
 test("forkRun rejects invalid worker timing before reading or writing its source (#4321)", async () => {
@@ -402,8 +404,9 @@ test("forkRun validates inherited worker timing before copying and accepts a val
 	assert.equal(write.mock.calls.length, 0);
 	assert.equal((await backend.journal.listRuns()).length, 1);
 	const localWorkers = { count: 2, definitions: [], leaseMs: 4_000, heartbeatMs: 1_000 };
+	// A source with saved resources accepts overrides, as run() does when it restores them.
 	vi.mocked(run).mockImplementationOnce(async () => ({ status: "completed", stages: [] }) as never);
-	const forked = await forkRun(runId, { ...request, localWorkers });
+	const forked = await forkRun(runId, { ...request, localWorkers, admission: {} });
 	assert.equal((await forked.result).status, "completed");
 	assert.equal(write.mock.calls.length, 1);
 });
