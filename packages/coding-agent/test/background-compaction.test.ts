@@ -6,16 +6,16 @@ import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { committedContextMessages } from "../src/core/agent-session-background-compaction.ts";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import type { AgentSession } from "../src/core/agent-session.js";
+import { committedContextMessages } from "../src/core/agent-session-background-compaction.js";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import {
 	BACKGROUND_COMPACTION_RESULT_TYPE,
 	BACKGROUND_COMPACTION_RETRY_BASE_MS,
 	type BackgroundCompactionResultRecord,
 	type CompactionReadyWake,
 	serializeBackgroundCompactionState,
-} from "../src/core/compaction/background-compaction.ts";
+} from "../src/core/compaction/background-compaction.js";
 import {
 	BackgroundCompactionCommitError,
 	BackgroundCompactionConfigError,
@@ -23,20 +23,20 @@ import {
 	BackgroundCompactionPlanningError,
 	isBackgroundCompactionDiscardedError,
 	isBackgroundCompactionNotCompactableError,
-} from "../src/core/compaction/background-compaction-errors.ts";
-import type { ExtensionFactory } from "../src/core/extensions/index.ts";
-import { convertToLlm } from "../src/core/messages.ts";
-import { sessionLifetime } from "../src/core/session-lifecycle-work.ts";
+} from "../src/core/compaction/background-compaction-errors.js";
+import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { convertToLlm } from "../src/core/messages.js";
+import { sessionLifetime } from "../src/core/session-lifecycle-work.js";
 import {
 	type CompactionEntry,
 	type CustomEntry,
 	type SessionEntry,
 	SessionManager,
-} from "../src/core/session-manager.ts";
-import type { Settings } from "../src/core/settings-manager.ts";
-import { StorageUnavailableError } from "../src/core/storage/errors.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.ts";
+} from "../src/core/session-manager.js";
+import type { Settings } from "../src/core/settings-manager.js";
+import { StorageUnavailableError } from "../src/core/storage/errors.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.js";
 
 const longPrompt = Array.from({ length: 24 }, (_, index) => `context line ${index + 1}`).join("\n");
 
@@ -676,6 +676,62 @@ describe("background compaction (#4330)", () => {
 		assert.equal(harness.session.getLastAssistantText(), "after tool");
 		assert.equal(planner.calls.length, 0);
 	});
+
+	test("switching background compaction off reads idle at once while the cancelled task is still settling", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		assert.equal(harness.session.compaction.state, "running");
+		const events = backgroundStates(harness).length;
+
+		harness.session.setBackgroundCompactionEnabled(false);
+
+		assert.equal(harness.session._backgroundCompaction.task !== undefined, true, "the planner is still held");
+		assert.equal(harness.session.compaction.state, "idle");
+		assert.deepEqual(backgroundStates(harness).slice(events), ["idle"], "the change is reported when it happens");
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+	});
+
+	test("an invalid setting that a settings write follows before any read is still reported once", async () => {
+		const planner = new Planner(true);
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		writeFileSync(
+			join(harness.tempDir, "settings.json"),
+			JSON.stringify(settingsWith({ backgroundThresholdPercent: 0 })),
+		);
+		await harness.settingsManager.reload();
+
+		harness.session.setBackgroundCompactionEnabled(false);
+
+		const failed = harness
+			.eventsOfType("background_compaction")
+			.filter((event) => event.compaction.state === "failed");
+		assert.equal(failed.length, 1);
+		assert.equal(failed[0].compaction.error?.code, "invalid-setting");
+		assert.equal(harness.session.compaction.error?.code, "invalid-setting");
+	});
+
+	test("an invalid setting reads failed at once while the task is still settling", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		writeFileSync(
+			join(harness.tempDir, "settings.json"),
+			JSON.stringify(settingsWith({ backgroundThresholdPercent: 0 })),
+		);
+		await harness.settingsManager.reload();
+
+		const state = harness.session.compaction;
+		assert.equal(state.state, "failed");
+		assert.ok(state.error instanceof BackgroundCompactionConfigError);
+		assert.equal(state.error.reason, "out-of-range");
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "failed");
+	});
 });
 
 /** A valid stored record produced by a real background task, used as a template. */
@@ -869,6 +925,151 @@ describe("background compaction waits in the next-turn hook (counted, #4330)", (
 		await harness.session.prompt("back");
 		assert.equal(compactionEntries(harness.sessionManager).length, 1, "applied exactly once");
 		assert.equal(harness.session.compaction.state, "idle");
+	});
+
+	test("a result is not applied when a queued branch move leaves its branch while the backup is written", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		const firstAnswer = harness.sessionManager
+			.getBranch()
+			.find((entry) => entry.type === "message" && entry.message.role === "assistant");
+		assert.ok(firstAnswer);
+		const backup = harness.sessionManager.writeBackupSnapshot.bind(harness.sessionManager);
+		const store = (
+			harness.sessionManager as unknown as { store: { append: (...args: unknown[]) => Promise<unknown> } }
+		).store;
+		const append = store.append.bind(store);
+		let releaseStore!: () => void;
+		const storeHeld = new Promise<void>((resolve) => {
+			releaseStore = resolve;
+		});
+		store.append = async (...args) => {
+			await storeHeld;
+			return append(...args);
+		};
+		const queued: Promise<unknown>[] = [];
+		harness.sessionManager.writeBackupSnapshot = async (label) => {
+			const path = await backup(label);
+			queued.push(
+				harness.sessionManager.appendCustomEntry("test-blocker", {}),
+				harness.sessionManager.branch(firstAnswer.id),
+			);
+			setTimeout(releaseStore, 0);
+			return path;
+		};
+
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		await Promise.all(queued);
+
+		const runtime = harness.session._backgroundCompaction;
+		assert.equal(
+			compactionEntries(harness.sessionManager).length,
+			0,
+			"the abandoned branch's summary is not applied",
+		);
+		assert.equal(runtime.failure, undefined, "a branch move is not a commit failure");
+		assert.equal(runtime.consecutiveFailures, 0);
+		assert.equal(runtime.nextAttemptAt, 0, "no backoff");
+		assert.equal(runtime.announcedResultEntryId, undefined, "the result left behind is forgotten at once");
+		assert.deepEqual(discardEvents(harness), [], "a result on another branch is not discarded");
+		assert.equal(harness.eventsOfType("compaction_end").filter((event) => event.background).length, 0);
+	});
+
+	test("a context edit inside the prefix that lands while the backup is written discards the result instead of applying it", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		const edited = harness.sessionManager
+			.getBranch()
+			.find((entry) => entry.type === "message" && entry.message.role === "user");
+		assert.ok(edited);
+		const backup = harness.sessionManager.writeBackupSnapshot.bind(harness.sessionManager);
+		harness.sessionManager.writeBackupSnapshot = async (label) => {
+			const path = await backup(label);
+			await harness.sessionManager.appendContextEdit(edited.id, { content: "edited" });
+			return path;
+		};
+
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+
+		const runtime = harness.session._backgroundCompaction;
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(runtime.failure, undefined, "a discard is not a commit failure");
+		assert.equal(runtime.consecutiveFailures, 0);
+		assert.equal(runtime.nextAttemptAt, 0, "no backoff");
+		const [discard, ...more] = discardEvents(harness);
+		assert.equal(more.length, 0, "reported once");
+		assert.equal(discard?.discarded?.fields.reason, "context-edited");
+		assert.equal(runtime.announcedResultEntryId, undefined);
+	});
+
+	test("switching background compaction off while the backup is written appends nothing and records no failure", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		const backup = harness.sessionManager.writeBackupSnapshot.bind(harness.sessionManager);
+		harness.sessionManager.writeBackupSnapshot = async (label) => {
+			const path = await backup(label);
+			harness.session.setBackgroundCompactionEnabled(false);
+			return path;
+		};
+
+		await harness.session.prompt("work");
+
+		const lateBoundaries = compactionEntries(harness.sessionManager).filter(
+			(entry) => entry.coveredThroughEntryId !== undefined,
+		);
+		assert.equal(lateBoundaries.length, 0, "no late background write after the switch");
+		assert.equal(harness.session.compaction.state, "idle");
+		assert.equal(harness.eventsOfType("compaction_end").filter((event) => event.background).length, 0);
+	});
+
+	test("closing the session while the backup is written appends nothing", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		const backup = harness.sessionManager.writeBackupSnapshot.bind(harness.sessionManager);
+		harness.sessionManager.writeBackupSnapshot = async (label) => {
+			const path = await backup(label);
+			await harness.session.dispose();
+			return path;
+		};
+
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(harness.session._backgroundCompaction.failure, undefined);
+	});
+
+	test.each([
+		[
+			"a session that failed to save",
+			(harness: Harness) => {
+				harness.session._persistenceFailure = "injected save failure";
+				return () => {
+					harness.session._persistenceFailure = undefined;
+				};
+			},
+		],
+		[
+			"a foreground compaction that takes the boundary",
+			(harness: Harness) => {
+				harness.session._autoCompactionAbortController = new AbortController();
+				return () => {
+					harness.session._autoCompactionAbortController = undefined;
+				};
+			},
+		],
+	])("%s while the backup is written appends nothing and records no failure", async (_name, block) => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		let unblock: (() => void) | undefined;
+		const backup = harness.sessionManager.writeBackupSnapshot.bind(harness.sessionManager);
+		harness.sessionManager.writeBackupSnapshot = async (label) => {
+			const path = await backup(label);
+			unblock = block(harness);
+			return path;
+		};
+
+		assert.equal(await harness.session._commitReadyBackgroundCompaction(), undefined);
+		unblock?.();
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(harness.session._backgroundCompaction.failure, undefined);
+		assert.equal(harness.session._backgroundCompaction.consecutiveFailures, 0);
+		assert.equal(harness.session.compaction.state, "ready", "the result still waits for a later boundary");
 	});
 
 	test("tool turns inside the commit backoff neither wait for saves nor retry, and the retry waits once", async () => {
@@ -2058,7 +2259,10 @@ describe("background compaction while it is off (#4330)", () => {
 		const harness = await createBackgroundHarness(TRIGGER, planner);
 		harnesses.push(harness);
 		await startBackgroundTask(harness, planner);
+		const events = backgroundStates(harness).length;
 		harness.session.setAutoCompactionEnabled(false);
+		assert.equal(harness.session.compaction.state, "idle", "idle while the cancelled planner is still held");
+		assert.deepEqual(backgroundStates(harness).slice(events), ["idle"]);
 		planner.release();
 		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
 		assert.equal(resultEntries(harness.sessionManager).length, 0);

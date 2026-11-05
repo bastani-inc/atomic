@@ -421,8 +421,10 @@ export class SessionManager {
 		details: VerbatimCompactionDetails,
 		usage?: Usage,
 		coveredThroughEntryId?: string,
+		precondition?: () => void,
 	): Promise<string> {
 		return this.runMutation(async () => {
+			precondition?.();
 			if (firstKeptEntryId !== null && !this.byId.has(firstKeptEntryId))
 				throw new SessionEntryError(firstKeptEntryId, "missing");
 			if (coveredThroughEntryId !== undefined && !this.byId.has(coveredThroughEntryId))

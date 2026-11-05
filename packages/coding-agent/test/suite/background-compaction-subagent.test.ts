@@ -4,7 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import { isSubagentChildSession } from "../../src/core/agent-session-tasks.js";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, type Harness } from "./harness.js";
 
 const chunk = Array.from({ length: 300 }, (_, line) => `line ${line} of a large file the subagent read`).join("\n");
 

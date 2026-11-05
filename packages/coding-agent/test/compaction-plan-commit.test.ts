@@ -10,14 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
-import { type CompactionRungResult, runVerbatimCompaction } from "../src/core/compaction/compaction-runner.ts";
-import { convertToLlm } from "../src/core/messages.ts";
-import { type CompactionEntry, SessionManager } from "../src/core/session-manager.ts";
-import type { Settings } from "../src/core/settings-manager.ts";
-import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.ts";
+import { type CompactionRungResult, runVerbatimCompaction } from "../src/core/compaction/compaction-runner.js";
+import { convertToLlm } from "../src/core/messages.js";
+import { type CompactionEntry, SessionManager } from "../src/core/session-manager.js";
+import type { Settings } from "../src/core/settings-manager.js";
+import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.js";
 
-vi.mock("../src/core/compaction/compaction-runner.ts", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/core/compaction/compaction-runner.ts")>();
+vi.mock("../src/core/compaction/compaction-runner.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/core/compaction/compaction-runner.js")>();
 	return { ...actual, runVerbatimCompaction: vi.fn(actual.runVerbatimCompaction) };
 });
 

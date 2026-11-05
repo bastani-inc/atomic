@@ -3,21 +3,21 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getAgentDir } from "../src/config.ts";
-import { buildExtensionResourcePaths } from "../src/core/agent-session-extension-bindings.ts";
-import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.ts";
-import { ExtensionRunner } from "../src/core/extensions/runner.ts";
+import { getAgentDir } from "../src/config.js";
+import { buildExtensionResourcePaths } from "../src/core/agent-session-extension-bindings.js";
+import { createExtensionRuntime } from "../src/core/extensions/loader-runtime.js";
+import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import {
 	collectFlags,
 	collectRegisteredTools,
 	resolveRegisteredCommands,
-} from "../src/core/extensions/runner-registries.ts";
-import { resolveExtensionShortcuts } from "../src/core/extensions/runner-shortcuts.ts";
-import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
-import type { ResourceLoader } from "../src/core/resource-loader-types.ts";
+} from "../src/core/extensions/runner-registries.js";
+import { resolveExtensionShortcuts } from "../src/core/extensions/runner-shortcuts.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
+import type { ResourceLoader } from "../src/core/resource-loader-types.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { builtInExtensions } from "../src/extensions/index.ts";
-import type { ExtensionActions, ExtensionRuntime, RpcSessionState } from "../src/index.ts";
+import { builtInExtensions } from "../src/extensions/index.js";
+import type { ExtensionActions, ExtensionRuntime, RpcSessionState } from "../src/index.js";
 
 const ENV_KEYS = [
 	"HOME",

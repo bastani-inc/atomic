@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, expect, it, test } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
-import { BackgroundCompactionRuntime } from "../src/core/agent-session-background-compaction.ts";
-import { agentSessionCompactionMethods } from "../src/core/agent-session-compaction.ts";
-import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
+import { AgentSession } from "../src/core/agent-session.js";
+import { BackgroundCompactionRuntime } from "../src/core/agent-session-background-compaction.js";
+import { agentSessionCompactionMethods } from "../src/core/agent-session-compaction.js";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
 
 describe("AgentSession compaction surface", () => {
 	it("exposes compact as the only boundary-creating manual door", () => {

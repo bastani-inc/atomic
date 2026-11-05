@@ -111,6 +111,8 @@ function liveTicket(writers: string, pid: number, offsetMs = 0): string {
 	const name = `${String(Date.now() + offsetMs).padStart(15, "0")}-${pid}-1`;
 	fs.writeFileSync(join(writers, name), "");
 	fs.writeFileSync(join(wakes(writers), name), "");
+	const refreshedAt = new Date(Date.now());
+	actual.utimesSync(join(writers, name), refreshedAt, refreshedAt);
 	const aged = new Date(Date.now() - 3_600_000);
 	actual.utimesSync(join(wakes(writers), name), aged, aged);
 	return name;

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { SessionShutdownEvent } from "../src/core/extensions/session-events.js";
-import { waitForInteractiveEngineBound } from "../src/modes/interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import { rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
-import type { RpcEvent, RpcModelCatalog, RpcSessionState, RpcSlashCommand } from "../src/modes/rpc/rpc-types.ts";
+import { waitForInteractiveEngineBound } from "../src/modes/interactive-engine/extension-ui-bridge.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { rpcTransportError } from "../src/modes/rpc/rpc-transport-error.js";
+import type { RpcEvent, RpcModelCatalog, RpcSessionState, RpcSlashCommand } from "../src/modes/rpc/rpc-types.js";
 import { arg, fakeHerdr } from "./helpers/herdr.js";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 interface Deferred<T> {
 	promise: Promise<T>;

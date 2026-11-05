@@ -406,9 +406,9 @@ describe("InteractiveMode compaction events", () => {
 			const text = renderedText(chatContainer);
 			const notice = "Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.123)";
 			if (showCacheMissNotices) {
-				expect(text).toContain(notice);
-				expect(text.indexOf("✻ Context compacted")).toBeLessThan(text.indexOf(notice));
-			} else expect(text).not.toContain("Prompt cache miss");
+				assert.ok(text.includes(notice));
+				assert.ok(text.indexOf("✻ Context compacted") < text.indexOf(notice));
+			} else assert.ok(!text.includes("Prompt cache miss"));
 		});
 	}
 
@@ -422,7 +422,7 @@ describe("InteractiveMode compaction events", () => {
 			willRetry: false,
 			background: true,
 		});
-		expect(renderedText(chatContainer)).not.toContain("Prompt cache miss");
+		assert.ok(!renderedText(chatContainer).includes("Prompt cache miss"));
 	});
 
 	// The completed boundary is persisted with its usage *and* re-announced live.

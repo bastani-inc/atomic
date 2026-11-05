@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { afterEach, describe, test, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import {
 	BackgroundCompactionConfigError,
 	BackgroundCompactionError,
@@ -13,12 +13,12 @@ import {
 	isSerializedBackgroundCompactionError,
 	type SerializedBackgroundCompactionError,
 	serializeBackgroundCompactionError,
-} from "../src/core/compaction/background-compaction-errors.ts";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.ts";
-import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+} from "../src/core/compaction/background-compaction-errors.js";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.js";
+import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.js";
+import { createHarness, type Harness } from "./suite/harness.js";
 
 class ProbeRpcClient extends RpcClient {
 	decode(response: RpcResponse): void {

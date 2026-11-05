@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { InteractiveEngineMonitor } from "../src/modes/interactive-engine/engine-monitor.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
+import { InteractiveEngineMonitor } from "../src/modes/interactive-engine/engine-monitor.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import {
 	INTERACTIVE_ENGINE_PROTOCOL_VERSION,
 	parseInteractiveEngineMessage,
 	serializeInteractiveEngineMessage,
-} from "../src/modes/interactive-engine/protocol.ts";
-import { InteractiveEngineResourceReadinessError } from "../src/modes/interactive-engine/resource-readiness-error.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { RpcResourceReadiness } from "../src/modes/rpc/rpc-resource-readiness.ts";
-import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.ts";
-import { isRpcTransportFailure, rpcTransportError } from "../src/modes/rpc/rpc-transport-error.ts";
-import { createHarness } from "./suite/harness.ts";
+} from "../src/modes/interactive-engine/protocol.js";
+import { InteractiveEngineResourceReadinessError } from "../src/modes/interactive-engine/resource-readiness-error.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { RpcResourceReadiness } from "../src/modes/rpc/rpc-resource-readiness.js";
+import { RpcSessionBinding } from "../src/modes/rpc/rpc-session-binding.js";
+import { isRpcTransportFailure, rpcTransportError } from "../src/modes/rpc/rpc-transport-error.js";
+import { createHarness } from "./suite/harness.js";
 
 function frame(message: Parameters<typeof serializeInteractiveEngineMessage>[0]): string {
 	return serializeInteractiveEngineMessage(message).trimEnd();

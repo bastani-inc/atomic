@@ -6,16 +6,16 @@ import { stripVTControlCharacters } from "node:util";
 import type { Container } from "@earendil-works/pi-tui";
 import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, expect, test, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
 import {
 	BACKGROUND_COMPACTION_THRESHOLD_CHOICES,
 	buildSettingsItems,
-} from "../src/modes/interactive/components/settings-selector-items.ts";
+} from "../src/modes/interactive/components/settings-selector-items.js";
 import { SelectSubmenu } from "../src/modes/interactive/components/settings-selector-submenus.js";
-import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => {
 	initTheme("dark");

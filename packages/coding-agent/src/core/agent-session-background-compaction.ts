@@ -46,6 +46,7 @@ import {
 	BackgroundCompactionPlanningError,
 	isBackgroundCompactionCommitError,
 	isBackgroundCompactionConfigError,
+	isBackgroundCompactionDiscardedError,
 	serializeBackgroundCompactionError,
 } from "./compaction/background-compaction-errors.ts";
 import { estimateContextTokens, shouldCompact, type VerbatimCompactionResult } from "./compaction/index.ts";
@@ -174,6 +175,7 @@ function stateKey(session: AgentSession): string {
  * on again starts fresh. Reports the state once if it changed, announcing a saved result that was never announced.
  */
 export function _writeBackgroundCompactionSetting(this: AgentSession, write: () => void): void {
+	effectiveBackgroundSettings(this);
 	const before = stateKey(this);
 	settingsWriteOwner.run(this, write);
 	const runtime = runtimeOf(this);
@@ -196,19 +198,18 @@ export function _writeBackgroundCompactionSetting(this: AgentSession, write: () 
 }
 
 /**
- * Current state: a running task; else `idle` while background compaction is off (`failed` when an invalid
- * setting turned it off); else a stored result that fits the branch, reported as `failed` while applying it
- * keeps failing; else the last task failure.
+ * Current state: invalid settings fail and disabled settings are idle, even while cancellation settles.
+ * Otherwise report the running task, a stored result that fits the branch, or the last task or commit failure.
  */
 export function backgroundCompactionState(session: AgentSession): BackgroundCompactionState {
 	const runtime = runtimeOf(session);
-	if (runtime.task) {
-		return { state: "running", upToEntryId: runtime.task.upToEntryId, startedAt: runtime.task.startedAt };
-	}
 	const configured = configuredBackgroundSettings(session);
 	if (isBackgroundCompactionConfigError(configured)) return { state: "failed", error: configured };
 	if (!configured.background || !session.settingsManager.getCompactionEnabled())
 		return IDLE_BACKGROUND_COMPACTION_STATE;
+	if (runtime.task) {
+		return { state: "running", upToEntryId: runtime.task.upToEntryId, startedAt: runtime.task.startedAt };
+	}
 	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
 	const failure = runtime.failure;
 	const error = failure?.error;
@@ -503,6 +504,17 @@ function commitBlocked(session: AgentSession, foreground: boolean): boolean {
 	);
 }
 
+const COMMIT_BLOCKED = Symbol();
+
+function assertCommitAllowed(session: AgentSession, ready: ReadyBackgroundCompaction, foreground: boolean): void {
+	if (commitBlocked(session, foreground)) throw COMMIT_BLOCKED;
+	const outcome = announcedResultOutcome(session.sessionManager.getBranch(), ready.entry.id);
+	if (outcome.kind === "committable") return;
+	throw outcome.kind === "discarded"
+		? outcome.error
+		: new BackgroundCompactionDiscardedError({ upToEntryId: ready.record.upToEntryId, reason: "off-branch" });
+}
+
 async function commitReady(
 	session: AgentSession,
 	{ foreground = false, awaitPersistence = false }: CommitReadyOptions,
@@ -529,8 +541,14 @@ async function commitReady(
 		appended = await appendVerbatimBoundary.call(session, planned, {
 			backupLabel: "background-compact",
 			coveredThroughEntryId: ready.record.upToEntryId,
+			precondition: () => assertCommitAllowed(session, ready, foreground),
 		});
 	} catch (error) {
+		if (error === COMMIT_BLOCKED) return undefined;
+		if (isBackgroundCompactionDiscardedError(error)) {
+			settleBranch(session);
+			return undefined;
+		}
 		if (!session._disposed && backgroundCompactionOn(session)) recordCommitFailure(session, ready, error);
 		return undefined;
 	}

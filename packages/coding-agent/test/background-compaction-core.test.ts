@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
 import { describe, test } from "vitest";
-import { estimateCompactionCacheMiss } from "../src/core/cache-stats.ts";
+import { estimateCompactionCacheMiss } from "../src/core/cache-stats.js";
 import {
 	announcedResultOutcome,
 	BACKGROUND_COMPACTION_RESULT_TYPE,
@@ -22,7 +22,7 @@ import {
 	selectReadyBackgroundCompaction,
 	serializeBackgroundCompactionState,
 	shouldStartBackgroundCompaction,
-} from "../src/core/compaction/background-compaction.ts";
+} from "../src/core/compaction/background-compaction.js";
 import {
 	BackgroundCompactionCommitError,
 	BackgroundCompactionConfigError,
@@ -45,13 +45,13 @@ import {
 	rehydrateBackgroundCompactionError,
 	type SerializedBackgroundCompactionError,
 	serializeBackgroundCompactionError,
-} from "../src/core/compaction/background-compaction-errors.ts";
-import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.ts";
-import { VERBATIM_COMPACTION_PROMPT_VERSION } from "../src/core/compaction/compaction-types.ts";
-import { type SessionEntry, SessionEntryError, SessionManager } from "../src/core/session-manager.ts";
-import { buildContextEntries, buildSessionProjection } from "../src/core/session-manager-history.ts";
-import { validateSessionEntryStructure } from "../src/core/storage/session/entry-structure.ts";
-import { SessionFormatVersionError } from "../src/core/storage/session/errors.ts";
+} from "../src/core/compaction/background-compaction-errors.js";
+import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
+import { VERBATIM_COMPACTION_PROMPT_VERSION } from "../src/core/compaction/compaction-types.js";
+import { type SessionEntry, SessionEntryError, SessionManager } from "../src/core/session-manager.js";
+import { buildContextEntries, buildSessionProjection } from "../src/core/session-manager-history.js";
+import { validateSessionEntryStructure } from "../src/core/storage/session/entry-structure.js";
+import { SessionFormatVersionError } from "../src/core/storage/session/errors.js";
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
 

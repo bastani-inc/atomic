@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "vitest";
-import type { CompactionReadyWake } from "../src/core/compaction/background-compaction.ts";
-import { BackgroundCompactionConfigError } from "../src/core/compaction/background-compaction-errors.ts";
-import { createAgentSession } from "../src/core/sdk.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
+import type { CompactionReadyWake } from "../src/core/compaction/background-compaction.js";
+import { BackgroundCompactionConfigError } from "../src/core/compaction/background-compaction-errors.js";
+import { createAgentSession } from "../src/core/sdk.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 const directories: string[] = [];
 afterEach(() => {

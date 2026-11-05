@@ -288,12 +288,13 @@ export interface AppendedVerbatimBoundary {
 /**
  * Back up the session and append a planned compaction as one boundary. Nothing else changes, so a
  * failure here leaves history and the in-memory context as they were. `coveredThroughEntryId` marks a
- * background result whose later entries replay unchanged.
+ * background result whose later entries replay unchanged. `precondition` runs inside the append's queued mutation
+ * and throws to refuse it.
  */
 export async function appendVerbatimBoundary(
 	this: AgentSession,
 	planned: PlannedVerbatimCompaction,
-	options: { backupLabel: string; coveredThroughEntryId?: string },
+	options: { backupLabel: string; coveredThroughEntryId?: string; precondition?: () => void },
 ): Promise<AppendedVerbatimBoundary> {
 	const backupPath = await this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = { ...planned.details, ...(backupPath ? { backupPath } : {}) };
@@ -304,6 +305,7 @@ export async function appendVerbatimBoundary(
 		details,
 		planned.usage,
 		options.coveredThroughEntryId,
+		options.precondition,
 	);
 	return { entryId, details, backupPath };
 }
