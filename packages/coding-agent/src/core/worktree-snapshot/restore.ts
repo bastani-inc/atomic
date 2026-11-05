@@ -431,8 +431,25 @@ function objectStorePath(storeDir: string, remotes: readonly string[]): string {
 	return join(storeDir, "repositories", `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
 }
 
-/** Creates `store` if needed. Callers hold its repository lock, so restores never initialize one store at once. */
+async function initializedStore(store: string): Promise<boolean> {
+	try {
+		await stat(join(store, "config"));
+		await stat(join(store, "HEAD"));
+		return true;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return false;
+		throw unreadablePathError(store, error);
+	}
+}
+
+/**
+ * Creates `store` unless it already has its configuration and HEAD. Callers hold its repository lock, so restores never
+ * initialize one store at once, and an existing store is left alone: re-initializing rewrites its configuration, which
+ * on Windows fails the other restores' Git processes that are reading it.
+ */
 async function ensureObjectStore(store: string, snapshotId: string | null, signal?: AbortSignal): Promise<void> {
+	if (await initializedStore(store)) return;
 	const repositories = dirname(store);
 	await writing(repositories, snapshotId, () => mkdir(repositories, { recursive: true }));
 	await runGit(["init", "-q", "--bare", store], { cwd: repositories, signal });
