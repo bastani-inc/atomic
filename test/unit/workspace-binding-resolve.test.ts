@@ -536,13 +536,15 @@ describe("workspace resolution details (#3109)", () => {
 		});
 		const kept = resolveWorkspace(workspace({ repo: remote.url, branch: "two" }));
 		await cloning;
-		const cancelled = resolveWorkspace(workspace({ repo: remote.url, branch: "one" }), { signal: controller.signal });
+		const one = workspace({ repo: remote.url, branch: "one" });
+		const cancelled = resolveWorkspace(one, { signal: controller.signal });
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		controller.abort(reason);
 		assert.equal(await rejection(cancelled), reason);
 		const binding = await kept;
 		assert.equal(binding.branch, "two");
 		assert.equal(existsSync(join(binding.repository, "HEAD")), true);
+		assert.equal((await resolveWorkspace(one)).branch, "one", "the abandoned resolution finished and is reused");
 	});
 });
 
