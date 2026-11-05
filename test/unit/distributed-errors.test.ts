@@ -267,6 +267,15 @@ test("a node agent's printed failure becomes the typed cause of its command erro
 		retryable: false,
 		fields: {},
 	});
+	for (const fatal of ['"boom"', '{"cause":null}', '{"cause":"text"}']) {
+		assert.deepEqual(agentFatal(`{"fatal":${fatal}}`), {
+			name: "Error",
+			code: "unclassified",
+			message: "",
+			retryable: false,
+			fields: {},
+		});
+	}
 	assert.deepEqual(agentFatal('{"fatal":null}'), {
 		name: "Error",
 		code: "unclassified",

@@ -554,8 +554,8 @@ export function selectRemoteRef(listing, ref) {
 	/** @type {Map<string, string>} */
 	const shas = new Map();
 	for (const line of listing.split("\n")) {
-		const [sha, refname] = line.trim().split("\t");
-		if (refname !== undefined && /^[0-9a-f]{40}$/.test(sha)) shas.set(refname, sha);
+		const match = /^([0-9a-f]{40})\t(\S+)$/.exec(line.trim());
+		if (match !== null) shas.set(match[2], match[1]);
 	}
 	const names = ref.startsWith("refs/") ? [ref] : [`refs/tags/${ref}`, `refs/heads/${ref}`];
 	const found = names.flatMap((refname) => {

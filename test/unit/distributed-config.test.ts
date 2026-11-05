@@ -503,6 +503,10 @@ test("a ref resolves only through its exact tag or branch name, never a longer r
 		`${sha("2")}\trefs/heads/both\r`,
 		`${sha("3")}\trefs/tags/both`,
 		"not-a-sha\trefs/heads/broken",
+		`g${sha("5")}\trefs/heads/prefixed`,
+		`${sha("6")}g\trefs/heads/suffixed`,
+		`${sha("7")}\trefs/heads/spaced name`,
+		`${sha("8")} refs/heads/untabbed`,
 		`${sha("4")}`,
 		"",
 	].join("\n");
@@ -526,7 +530,18 @@ test("a ref resolves only through its exact tag or branch name, never a longer r
 		actual: "both",
 	});
 	assert.equal(ambiguous.hint, "Set --ref to refs/tags/both or refs/heads/both.");
-	for (const ref of ["release/0.9.71x", "0.9.7", "broken", "heads/main", "refs/heads/backup", "71"]) {
+	for (const ref of [
+		"release/0.9.71x",
+		"0.9.7",
+		"broken",
+		"prefixed",
+		"suffixed",
+		"spaced",
+		"untabbed",
+		"heads/main",
+		"refs/heads/backup",
+		"71",
+	]) {
 		assert.deepEqual(configError(() => selectRemoteRef(listing, ref)).fields, {
 			source: "cli",
 			field: "--ref",
