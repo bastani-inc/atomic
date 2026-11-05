@@ -44,7 +44,7 @@ function configError(action: () => unknown): DistributedConfigError {
 const options = (argv: string[], replay = {}) =>
 	resolveRunOptions(parseRunArgs(argv), topology, { randomSeed: 7, replay });
 
-test("parses the issue's CLI form verbatim", () => {
+test("parses the issue's CLI form verbatim (#4331)", () => {
 	const args = parseRunArgs([
 		"--ref",
 		"main",
@@ -107,7 +107,7 @@ test("parses the issue's CLI form verbatim", () => {
 	});
 });
 
-test("rejects unknown flags and missing values before any side effect", () => {
+test("rejects unknown flags and missing values before any side effect (#4331)", () => {
 	const unknown = configError(() => parseRunArgs(["--ref", "main", "--nope"]));
 	assert.equal(unknown.code, "invalid-config");
 	assert.deepEqual(unknown.fields, {
@@ -124,7 +124,7 @@ test("rejects unknown flags and missing values before any side effect", () => {
 	assert.equal(configError(() => parseRunArgs(["hasOwnProperty"])).fields.reason, "unknown-flag");
 });
 
-test("renders one configuration error message as a UX contract", () => {
+test("renders one configuration error message as a UX contract (#4331)", () => {
 	const error = configError(() => options(["--ref", "main", "--nodes", "0"]));
 	assert.equal(
 		error.message,
@@ -135,7 +135,7 @@ test("renders one configuration error message as a UX contract", () => {
 	assert.equal(error.name, "DistributedConfigError");
 });
 
-test("resolves defaults from the topology and keeps values verbatim", () => {
+test("resolves defaults from the topology and keeps values verbatim (#4331)", () => {
 	const resolved = options(["--ref", "feature/x"]);
 	assert.deepEqual(resolved, {
 		ref: "feature/x",
@@ -190,7 +190,7 @@ test("resolves defaults from the topology and keeps values verbatim", () => {
 	assert.equal(options(["--ref", "x", "--seed", "4294967295"]).seed, 4294967295);
 });
 
-test("takes replay values unless a flag overrides them", () => {
+test("takes replay values unless a flag overrides them (#4331)", () => {
 	const replay = {
 		ref: "0123456789abcdef0123456789abcdef01234567",
 		suite: "compaction",
@@ -220,7 +220,7 @@ test("takes replay values unless a flag overrides them", () => {
 	assert.equal(overridden.nodes, 2);
 });
 
-test("rejects every invalid option with its field and reason", () => {
+test("rejects every invalid option with its field and reason (#4331)", () => {
 	const cases: [string[], string, string][] = [
 		[[], "--ref", "required"],
 		[["--ref", ""], "--ref", "required"],
@@ -256,7 +256,7 @@ test("rejects every invalid option with its field and reason", () => {
 	assert.equal(configError(() => options(["--ref", "m", "--chaos", "partition,quake"])).fields.actual, "quake");
 });
 
-test("lists every suite from the issue and every chaos profile once", () => {
+test("lists every suite from the issue and every chaos profile once (#4331)", () => {
 	assert.deepEqual(Object.keys(SUITES), [
 		"smoke",
 		"multi-node-resume",
@@ -294,7 +294,7 @@ test("lists every suite from the issue and every chaos profile once", () => {
 	}
 });
 
-test("validates the topology file field by field", () => {
+test("validates the topology file field by field (#4331)", () => {
 	assert.equal(topology.database.primary.region, "eastus2");
 	assert.deepEqual(
 		topology.nodes.map((node) => node.secondaryNic),
@@ -354,7 +354,7 @@ test("validates the topology file field by field", () => {
 	assert.equal(parsed.ttlHours, 0.01);
 });
 
-test("names runs with the UTC minute and four hex digits", () => {
+test("names runs with the UTC minute and four hex digits (#4331)", () => {
 	assert.equal(newRunId(NOW, 0xbeef), "adt2611050230-beef");
 	assert.equal(newRunId(new Date("2031-01-02T03:04:59Z"), 0x1_0001), "adt3101020304-0001");
 	assert.match(newRunId(NOW, 15), RUN_ID_PATTERN);
@@ -363,7 +363,7 @@ test("names runs with the UTC minute and four hex digits", () => {
 	assert.ok(!RUN_ID_PATTERN.test("adt2611050230-beef0"));
 });
 
-test("plans the default topology: three roles over two regions and a cross-region database", () => {
+test("plans the default topology: three roles over two regions and a cross-region database (#4331)", () => {
 	const plan = buildPlan(options(["--ref", "main"]), topology, { runId: "adt2611050230-beef", now: NOW });
 	assert.equal(plan.resourceGroup, "adt2611050230-beef-rg");
 	assert.equal(plan.location, "eastus2");
@@ -553,7 +553,7 @@ test("a ref resolves only through its exact tag or branch name, never a longer r
 	assert.equal(configError(() => selectRemoteRef("", "main")).fields.reason, "unknown-name");
 });
 
-test("plans extra nodes, the local-NVMe variant and a second database region", () => {
+test("plans extra nodes, the local-NVMe variant and a second database region (#4331)", () => {
 	const plan = buildPlan(
 		options([
 			"--ref",
@@ -603,7 +603,7 @@ test("plans extra nodes, the local-NVMe variant and a second database region", (
 	);
 });
 
-test("the largest topology keeps every private address unique and inside its /24", () => {
+test("the largest topology keeps every private address unique and inside its /24 (#4331)", () => {
 	assert.equal(MAX_NODES, 80);
 	const plan = buildPlan(options(["--ref", "main", "--nodes", String(MAX_NODES)]), topology, {
 		runId: "adt2611050230-0003",
@@ -625,7 +625,7 @@ test("the largest topology keeps every private address unique and inside its /24
 	assert.equal(Math.max(...plan.vms.map((vm) => vm.hostIndex)), 20 + MAX_NODES - 1);
 });
 
-test("JSON inputs distinguish an unreadable file from malformed JSON and keep the cause", () => {
+test("JSON inputs distinguish an unreadable file from malformed JSON and keep the cause (#4331)", () => {
 	const missing = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
 	const unreadable = configError(() =>
 		readJsonInput(
@@ -668,7 +668,7 @@ test("JSON inputs distinguish an unreadable file from malformed JSON and keep th
 	assert.deepEqual(reads, ["/s.json"]);
 });
 
-test("a report's replay section becomes flag values, preferring the resolved SHA", () => {
+test("a report's replay section becomes flag values, preferring the resolved SHA (#4331)", () => {
 	const sha = "0123456789abcdef0123456789abcdef01234567";
 	assert.deepEqual(
 		replayValues({
@@ -734,7 +734,7 @@ test("a report's replay section becomes flag values, preferring the resolved SHA
 	}
 });
 
-test("local NVMe falls back only when encryption at host is not registered", () => {
+test("local NVMe falls back only when encryption at host is not registered (#4331)", () => {
 	assert.equal(encryptionAtHostSkip("local-nvme", "Registered"), undefined);
 	assert.equal(encryptionAtHostSkip("premium-ssd", "NotRegistered"), undefined);
 	assert.equal(encryptionAtHostSkip("premium-ssd", undefined), undefined);
@@ -748,7 +748,7 @@ test("local NVMe falls back only when encryption at host is not registered", () 
 	});
 });
 
-test("the control network comes from the environment, with every missing variable reported together", () => {
+test("the control network comes from the environment, with every missing variable reported together (#4331)", () => {
 	const env = {
 		ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP: "control-rg",
 		ATOMIC_DISTRIBUTED_CONTROL_VNET: "control-vnet",
@@ -801,7 +801,7 @@ test("the control network comes from the environment, with every missing variabl
 	}
 });
 
-test("configuration errors carry the exact expectation and the offending value", () => {
+test("configuration errors carry the exact expectation and the offending value (#4331)", () => {
 	const fields = (action: () => unknown) => configError(action).fields;
 	assert.deepEqual(
 		fields(() => parseRunArgs(["--ref"])),
@@ -900,7 +900,7 @@ test("configuration errors carry the exact expectation and the offending value",
 	});
 });
 
-test("topology errors carry the exact expectation and the offending value", () => {
+test("topology errors carry the exact expectation and the offending value (#4331)", () => {
 	const broken = (mutate: (copy: Record<string, any>) => void) => {
 		const copy = structuredClone(topologyJson);
 		mutate(copy);
@@ -1048,7 +1048,7 @@ test("the controller subnet must be a private IPv4 CIDR, never an Internet sourc
 	);
 });
 
-test("every nested topology field is reported by its full path", () => {
+test("every nested topology field is reported by its full path (#4331)", () => {
 	const fieldOf = (mutate: (copy: Record<string, any>) => void) => {
 		const copy = structuredClone(topologyJson);
 		mutate(copy);

@@ -17,6 +17,18 @@ export const REF_DIR = `${REMOTE_ROOT}/atomic`;
 export const SECRETS = `${REMOTE_ROOT}/secrets`;
 
 /**
+ * @typedef {{ name: string, code: string | null, message: string, cause?: { name: string, code: string | null, message: string } }} AgentError
+ * @typedef {{ name: string, observed: { status?: number, error?: string } | { mode: string }, passed: boolean }} AgentSecurityCheck
+ * @typedef {{ facts: import("./report.mjs").HostFacts,
+ *   capabilities: { workflows: string[], atomic: string[], members: Record<string, string[]>, artifact: import("./report.mjs").ArtifactStamp },
+ *   security: { checks: AgentSecurityCheck[] },
+ *   read: { entries: import("./invariants.mjs").JournalObservation[], lease: { holderId: string, epoch: number } | null },
+ *   "stale-append": { outcome: "appended" | "rejected", status?: string, seq?: number, epoch?: number, error?: AgentError },
+ *   integrity: { result: string[] } }} AgentDocuments
+ * @typedef {{ pid: number, active: string, result: string, state: string }} UnitState
+ */
+
+/**
  * @param {string} path
  * @returns {Promise<string>}
  */
@@ -133,9 +145,11 @@ export class Host {
 	}
 
 	/**
+	 * Runs a script that prints a JSON document; the caller declares the document's shape.
+	 * @template [T=unknown]
 	 * @param {string} script
 	 * @param {{ operation: string, timeoutMs?: number }} options
-	 * @returns {Promise<any>}
+	 * @returns {Promise<T>}
 	 */
 	async json(script, options) {
 		return this.document(await this.run(script, options), options.operation);
@@ -143,9 +157,10 @@ export class Host {
 
 	/**
 	 * The last JSON document a command printed.
+	 * @template [T=unknown]
 	 * @param {{ stdout: string }} result
 	 * @param {string} operation
-	 * @returns {any}
+	 * @returns {T}
 	 */
 	document(result, operation) {
 		const line = result.stdout
@@ -191,10 +206,11 @@ export class Host {
 	/**
 	 * Runs the node agent and returns its JSON document. When the agent fails it prints its typed failure and exits 1;
 	 * that failure becomes the cause of the thrown command error.
-	 * @param {string} command
+	 * @template {keyof AgentDocuments} C
+	 * @param {C} command
 	 * @param {readonly string[]} args
 	 * @param {{ timeoutMs?: number, sudo?: boolean }} [options]
-	 * @returns {Promise<any>}
+	 * @returns {Promise<AgentDocuments[C]>}
 	 */
 	async agent(command, args, { timeoutMs = 300_000 } = {}) {
 		const words = [`NODE_EXTRA_CA_CERTS=${SECRETS}/ca.pem`, NODE_BIN, AGENT, command, ...args]
@@ -245,6 +261,7 @@ export async function stageSecret(host, local, name) {
  * Uploads the ref artifact, checks its digest on the host and unpacks it.
  * @param {Host} host
  * @param {{ artifact: string, digest: string }} input
+ * @returns {Promise<import("./report.mjs").ArtifactStamp>}
  */
 export async function stageArtifact(host, { artifact, digest }) {
 	await host.upload(artifact, `${REMOTE_ROOT}/atomic.tar.zst`, "upload ref artifact");
@@ -284,6 +301,7 @@ function dataDeviceScript(storage) {
  * @param {Host} host
  * @param {{ role: "primary" | "replica", storage: "premium-ssd" | "local-nvme", sqldBinary: string, sqldDigest: string,
  *   primaryIp: string, gatewayPort: number, replicationPort: number }} input
+ * @returns {Promise<import("./report.mjs").DatabaseVolume>}
  */
 export async function setupSqld(
 	host,
@@ -381,6 +399,7 @@ export async function startAgentUnit(host, { unit, args, properties = [] }) {
  * The state of a run-owned unit: main PID, active state, result and process state letter.
  * @param {Host} host
  * @param {string} unit
+ * @returns {Promise<UnitState>}
  */
 export async function unitState(host, unit) {
 	return host.json(

@@ -257,7 +257,7 @@ posixOnly("a NIC-only run stops the writer holding the lease before the node wri
 	});
 });
 
-posixOnly("smoke metrics count writer errors by name and summarize timed appends", async () => {
+posixOnly("smoke metrics count writer errors by name and summarize timed appends (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		fleet.onAgent = (command) => {
 			if (command !== "integrity") return;
@@ -287,7 +287,7 @@ posixOnly("smoke metrics count writer errors by name and summarize timed appends
 });
 
 posixOnly(
-	"nic-detach deallocates, removes the NIC and starts without waiting, then re-adds it and starts again",
+	"nic-detach deallocates, removes the NIC and starts without waiting, then re-adds it and starts again (#4331)",
 	async () => {
 		await withFleet(async (fleet) => {
 			await smoke(fleet, ["nic-detach"]);
@@ -304,19 +304,22 @@ posixOnly(
 	},
 );
 
-posixOnly("nic-detach whose deallocation failed leaves the NIC and the running VM alone while reverting", async () => {
-	await withFleet(async (fleet) => {
-		fleet.azure.failOn = "deallocate";
-		const result = await smoke(fleet, ["nic-detach"]);
-		assert.deepEqual(fleet.azure.calls, [{ action: "deallocate", vm: "node-3", wait: true }]);
-		const nic = faultOf(result, "nic-detach");
-		assert.equal(nic.error?.code, "fault-failed");
-		assert.equal(Reflect.get(nic.error?.fields ?? {}, "stage"), "apply");
-		assert.equal(nic.applied, false);
-	});
-});
+posixOnly(
+	"nic-detach whose deallocation failed leaves the NIC and the running VM alone while reverting (#4331)",
+	async () => {
+		await withFleet(async (fleet) => {
+			fleet.azure.failOn = "deallocate";
+			const result = await smoke(fleet, ["nic-detach"]);
+			assert.deepEqual(fleet.azure.calls, [{ action: "deallocate", vm: "node-3", wait: true }]);
+			const nic = faultOf(result, "nic-detach");
+			assert.equal(nic.error?.code, "fault-failed");
+			assert.equal(Reflect.get(nic.error?.fields ?? {}, "stage"), "apply");
+			assert.equal(nic.applied, false);
+		});
+	},
+);
 
-posixOnly("vm-restart requests the restart without waiting and leaves a running VM alone", async () => {
+posixOnly("vm-restart requests the restart without waiting and leaves a running VM alone (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		const result = await smoke(fleet, ["vm-restart"]);
 		assert.deepEqual(fleet.azure.calls, [{ action: "restart", vm: "node-3", wait: false }]);
@@ -327,7 +330,7 @@ posixOnly("vm-restart requests the restart without waiting and leaves a running 
 	});
 });
 
-posixOnly("vm-deallocate waits for the deallocation and starts the VM again without waiting", async () => {
+posixOnly("vm-deallocate waits for the deallocation and starts the VM again without waiting (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		const result = await smoke(fleet, ["vm-deallocate"]);
 		assert.deepEqual(fleet.azure.calls, [
@@ -342,7 +345,7 @@ posixOnly("vm-deallocate waits for the deallocation and starts the VM again with
 });
 
 posixOnly(
-	"the VM-fault node is the one with the vm-faults role, else the last node, and never holds the first writer",
+	"the VM-fault node is the one with the vm-faults role, else the last node, and never holds the first writer (#4331)",
 	async () => {
 		await withFleet(async (fleet) => {
 			await smoke(fleet, ["vm-deallocate"], { vmRole: 1 });
@@ -367,7 +370,7 @@ posixOnly(
 	},
 );
 
-posixOnly("the final check reads the journal through the primary and the replica of the run", async () => {
+posixOnly("the final check reads the journal through the primary and the replica of the run (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		await smoke(fleet, []);
 		const reads = fleet.agentCalls.filter((call) => call.command === "read" && call.args.includes("--run"));
@@ -379,7 +382,7 @@ posixOnly("the final check reads the journal through the primary and the replica
 	});
 });
 
-posixOnly("a partition counts the requests the gateway served during its window", async () => {
+posixOnly("a partition counts the requests the gateway served during its window (#4331)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	await withFleet(async (fleet) => {
 		const stats = join(fleet.root, "logs", "gateway-stats.json");
@@ -403,23 +406,26 @@ posixOnly("a partition counts the requests the gateway served during its window"
 	});
 });
 
-posixOnly("cancelling the run during a fault still clears the fault before the cancellation propagates", async () => {
-	await withFleet(async (fleet) => {
-		const controller = new AbortController();
-		const reason = new DOMException("cancelled by SIGINT", "AbortError");
-		fleet.onScript = (_host, script) => {
-			if (script.includes("iptables -I")) controller.abort(reason);
-		};
-		await assert.rejects(smoke(fleet, ["partition"], { signal: controller.signal }), (error) => error === reason);
-		const applied = fleet.scripts.findIndex(({ script }) => script.includes("iptables -I"));
-		const cleared = fleet.scripts.findIndex(({ script }) => script.includes("iptables -D"));
-		assert.ok(applied >= 0, "the partition was applied");
-		assert.ok(cleared > applied, "the partition rules were deleted after the run was cancelled");
-		assert.equal(fleet.scripts[cleared]?.host, fleet.scripts[applied]?.host, "on the host that was partitioned");
-	});
-});
+posixOnly(
+	"cancelling the run during a fault still clears the fault before the cancellation propagates (#4331)",
+	async () => {
+		await withFleet(async (fleet) => {
+			const controller = new AbortController();
+			const reason = new DOMException("cancelled by SIGINT", "AbortError");
+			fleet.onScript = (_host, script) => {
+				if (script.includes("iptables -I")) controller.abort(reason);
+			};
+			await assert.rejects(smoke(fleet, ["partition"], { signal: controller.signal }), (error) => error === reason);
+			const applied = fleet.scripts.findIndex(({ script }) => script.includes("iptables -I"));
+			const cleared = fleet.scripts.findIndex(({ script }) => script.includes("iptables -D"));
+			assert.ok(applied >= 0, "the partition was applied");
+			assert.ok(cleared > applied, "the partition rules were deleted after the run was cancelled");
+			assert.equal(fleet.scripts[cleared]?.host, fleet.scripts[applied]?.host, "on the host that was partitioned");
+		});
+	},
+);
 
-posixOnly("cancelling the run during a VM fault still restores the VM through the Azure boundary", async () => {
+posixOnly("cancelling the run during a VM fault still restores the VM through the Azure boundary (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		const controller = new AbortController();
 		const reason = new DOMException("cancelled by SIGINT", "AbortError");
@@ -438,7 +444,7 @@ posixOnly("cancelling the run during a VM fault still restores the VM through th
 });
 
 posixOnly(
-	"a writer's missing acknowledgement file fails the evidence invariant instead of shrinking the evidence",
+	"a writer's missing acknowledgement file fails the evidence invariant instead of shrinking the evidence (#4331)",
 	async () => {
 		await withFleet(async (complete) => {
 			const result = await smoke(complete, []);
@@ -481,7 +487,7 @@ const diskFullFleet = (fleet: Fleet) => {
 	};
 };
 
-posixOnly("a disk profile's local writer evidence is checked and recorded as an invariant", async () => {
+posixOnly("a disk profile's local writer evidence is checked and recorded as an invariant (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		diskFullFleet(fleet);
 		const result = await smoke(fleet, ["disk-full"]);
@@ -502,7 +508,7 @@ posixOnly("a disk profile's local writer evidence is checked and recorded as an 
 });
 
 posixOnly(
-	"a disk profile whose local writer file vanished fails its evidence invariant and names the writer",
+	"a disk profile whose local writer file vanished fails its evidence invariant and names the writer (#4331)",
 	async () => {
 		await withFleet(async (fleet) => {
 			diskFullFleet(fleet);
@@ -527,7 +533,7 @@ const diskFullVolume = dmVolumeScript({ name: "adt-disk-full", sizeMb: 64, user:
 const isVolumeCreate = (script: string) => script === diskFullVolume.create;
 const isVolumeRemove = (script: string) => script === diskFullVolume.remove;
 
-posixOnly("a disk volume whose setup failed partway is still removed from its node", async () => {
+posixOnly("a disk volume whose setup failed partway is still removed from its node (#4331)", async () => {
 	await withFleet(async (fleet) => {
 		fleet.onScript = (_host, script) => {
 			if (isVolumeCreate(script))
@@ -546,19 +552,22 @@ posixOnly("a disk volume whose setup failed partway is still removed from its no
 	});
 });
 
-posixOnly("cancelling the run during disk volume setup still removes the volume before cancelling", async () => {
-	await withFleet(async (fleet) => {
-		const controller = new AbortController();
-		const reason = new DOMException("cancelled by SIGINT", "AbortError");
-		fleet.onScript = (_host, script) => {
-			if (isVolumeCreate(script)) controller.abort(reason);
-		};
-		await assert.rejects(smoke(fleet, ["disk-full"], { signal: controller.signal }), (error) => error === reason);
-		const created = fleet.scripts.findIndex(({ script }) => isVolumeCreate(script));
-		const removed = fleet.scripts.findIndex(({ script }) => isVolumeRemove(script));
-		assert.ok(created >= 0, "setup was attempted");
-		assert.ok(removed > created, "cleanup removed the partial volume after the run was cancelled");
-		assert.equal(fleet.scripts[removed]?.host, fleet.scripts[created]?.host);
-		assert.equal(fleet.scripts[removed]?.operation, "remove adt-disk-full");
-	});
-});
+posixOnly(
+	"cancelling the run during disk volume setup still removes the volume before cancelling (#4331)",
+	async () => {
+		await withFleet(async (fleet) => {
+			const controller = new AbortController();
+			const reason = new DOMException("cancelled by SIGINT", "AbortError");
+			fleet.onScript = (_host, script) => {
+				if (isVolumeCreate(script)) controller.abort(reason);
+			};
+			await assert.rejects(smoke(fleet, ["disk-full"], { signal: controller.signal }), (error) => error === reason);
+			const created = fleet.scripts.findIndex(({ script }) => isVolumeCreate(script));
+			const removed = fleet.scripts.findIndex(({ script }) => isVolumeRemove(script));
+			assert.ok(created >= 0, "setup was attempted");
+			assert.ok(removed > created, "cleanup removed the partial volume after the run was cancelled");
+			assert.equal(fleet.scripts[removed]?.host, fleet.scripts[created]?.host);
+			assert.equal(fleet.scripts[removed]?.operation, "remove adt-disk-full");
+		});
+	},
+);

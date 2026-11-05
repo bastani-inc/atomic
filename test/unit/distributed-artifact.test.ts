@@ -61,11 +61,7 @@ function input(overrides: { builder?: string; signal?: AbortSignal } = {}) {
 	};
 }
 
-/**
- * The builder's /tmp as the generated scripts see it: every absolute `rm -rf` target is removed, a build writes the
- * archive its last line hashes, and a copy reads the file the command names.
- */
-class RemoteFiles {
+class FakeBuilderTmp {
 	readonly files = new Map<string, string>();
 	private builds = 0;
 
@@ -91,7 +87,7 @@ class RemoteFiles {
 
 test("concurrent builds on one builder keep their own build directories through build, copy and cleanup (#4331)", async () => {
 	const { buildArtifact } = await import("../distributed/run.mjs");
-	const remote = new RemoteFiles();
+	const remote = new FakeBuilderTmp();
 	const buildScripts: string[] = [];
 	const copySources: string[] = [];
 	const cleanupScripts: string[] = [];
@@ -116,7 +112,6 @@ test("concurrent builds on one builder keep their own build directories through 
 			return result();
 		}
 		buildScripts.push(script);
-		// Both builds finish before either copies, the order in which a shared directory loses one build's files.
 		if (buildScripts.length === 2) release();
 		await bothBuilt;
 		return result(`${digest(content)}\n`);
@@ -204,7 +199,7 @@ test("a cancelled build still removes its build directory under its own bounded 
 	assert.equal(cleanups[0]?.cwd, process.cwd());
 });
 
-test("a builder the harness warmed is stopped instead of cleaned", async () => {
+test("a builder the harness warmed is stopped instead of cleaned (#4331)", async () => {
 	const { buildArtifact } = await import("../distributed/run.mjs");
 	const operations: string[] = [];
 	command.mockImplementation(async (_context, _tool: string, args: string[], options: Options) => {
@@ -226,7 +221,7 @@ test("a builder the harness warmed is stopped instead of cleaned", async () => {
 	assert.deepEqual(operations, ["crabbox warmup", "build ref artifact", "copy artifact", "crabbox stop"]);
 });
 
-test("the artifact build fetches exactly the requested commit into its own directory and prints the tarball digest last", () => {
+test("the artifact build fetches exactly the requested commit into its own directory and prints the tarball digest last (#4331)", () => {
 	const remoteDir = artifactRemoteDir("0b6f1d4e-2c3a-4f5b-8a9c-0d1e2f3a4b5c");
 	assert.equal(ARTIFACT_REMOTE_ROOT, "/tmp/atomic-distributed-test-build");
 	assert.equal(remoteDir, "/tmp/atomic-distributed-test-build/0b6f1d4e-2c3a-4f5b-8a9c-0d1e2f3a4b5c");
@@ -281,7 +276,7 @@ test("the artifact build fetches exactly the requested commit into its own direc
 	}
 });
 
-test("only a single build directory under the build root is ever built in, copied from or removed", () => {
+test("only a single build directory under the build root is ever built in, copied from or removed (#4331)", () => {
 	const good = "/tmp/atomic-distributed-test-build/0b6f1d4e-2c3a-4f5b-8a9c-0d1e2f3a4b5c";
 	for (const remoteDir of [
 		ARTIFACT_REMOTE_ROOT,

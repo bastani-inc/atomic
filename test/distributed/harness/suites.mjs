@@ -1066,6 +1066,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 				await steps.recover?.(volume, writer, fault, mark);
 				await stopWriter();
 				if (profile === "io-error") {
+					/** @type {import("./chaos.mjs").VolumeRemount} */
 					const fsck = await host.json(volume.remount, { operation: "check and remount" });
 					fault.observed = { ...fault.observed, fsckExit: fsck.fsck, remounted: fsck.mounted };
 					fault.recovered = fsck.mounted === true;
@@ -1135,7 +1136,9 @@ async function runDiskProfiles(ctx, host, faultRun) {
 				acksBeforeFill: before,
 				freeBytesWhileFull: Number(free),
 				appendError: failure?.error ?? null,
-				probe: await host.json(volume.probe, { operation: "probe write" }),
+				probe: /** @type {import("./chaos.mjs").VolumeProbe} */ (
+					await host.json(volume.probe, { operation: "probe write" })
+				),
 			};
 			fault.effectObserved = failure !== undefined && Number(free) < 1024 * 1024;
 		},
@@ -1157,12 +1160,14 @@ async function runDiskProfiles(ctx, host, faultRun) {
 
 	await local("slow-disk", 256, {
 		apply: async (volume, writer, fault, mark, injecting) => {
+			/** @type {import("./chaos.mjs").VolumeProbe} */
 			const baseline = await host.json(volume.probe, { operation: "baseline probe" });
 			injecting();
 			await host.run(volume.swap("delay", 100), { operation: "swap in dm-delay" });
 			fault.applied = true;
 			mark("delay target active");
 			const before = await writer.acks();
+			/** @type {import("./chaos.mjs").VolumeProbe} */
 			const slow = await host.json(volume.probe, { operation: "delayed probe", timeoutMs: 120_000 });
 			await sleep(10_000);
 			fault.observed = {
@@ -1177,6 +1182,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 			mark("linear target restored");
 		},
 		recover: async (volume, _writer, fault) => {
+			/** @type {import("./chaos.mjs").VolumeProbe} */
 			const after = await host.json(volume.probe, { operation: "restored probe" });
 			fault.observed = { ...fault.observed, restoredProbeMs: after.ms };
 			fault.recovered = after.ms < Number(fault.observed.delayedProbeMs) / 2;
@@ -1192,6 +1198,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 			await host.run(volume.swap("error"), { operation: "swap in dm-error" });
 			fault.applied = true;
 			mark("error target active");
+			/** @type {import("./chaos.mjs").VolumeProbe} */
 			const probe = await host.json(volume.probe, { operation: "probe with errors" });
 			await sleep(10_000);
 			fault.observed = { ...fault.observed, probe };

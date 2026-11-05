@@ -33,20 +33,20 @@ const load = (name: "run" | "sweep") =>
 	name === "run" ? import("../distributed/run.mjs") : import("../distributed/sweep.mjs");
 
 for (const name of ["run", "sweep"] as const) {
-	test(`${name} import does not execute its CLI`, async () => {
+	test(`${name} import does not execute its CLI (#4331)`, async () => {
 		process.argv = [process.execPath, fileURLToPath(import.meta.url), "--unsupported-flag"];
 		await load(name);
 		assert.equal(process.exitCode, undefined);
 		assert.equal(stdout.mock.calls.length, 0);
 		assert.equal(stderr.mock.calls.length, 0);
 	});
-	test(`${name} imports without a process entrypoint`, async () => {
+	test(`${name} imports without a process entrypoint (#4331)`, async () => {
 		process.argv = [process.execPath];
 		await load(name);
 		assert.equal(process.exitCode, undefined);
 		assert.equal(stderr.mock.calls.length, 0);
 	});
-	test(`${name} executes its CLI when directly invoked`, async () => {
+	test(`${name} executes its CLI when directly invoked (#4331)`, async () => {
 		process.argv = [process.execPath, entry(name), "--unsupported-flag"];
 		await load(name);
 		assert.equal(process.exitCode, 2);
@@ -57,7 +57,7 @@ for (const name of ["run", "sweep"] as const) {
 				.includes("unknown-flag"),
 		);
 	});
-	test.skipIf(process.platform === "win32")(`${name} executes through a symlinked entrypoint`, async () => {
+	test.skipIf(process.platform === "win32")(`${name} executes through a symlinked entrypoint (#4331)`, async () => {
 		const link = join(dir, `${name}.mjs`);
 		symlinkSync(entry(name), link);
 		process.argv = [process.execPath, link, "--unsupported-flag"];
@@ -66,7 +66,7 @@ for (const name of ["run", "sweep"] as const) {
 	});
 }
 
-test("the controller plans a new run without looking for reuse state", async () => {
+test("the controller plans a new run without looking for reuse state (#4331)", async () => {
 	process.argv = [process.execPath, entry("run"), "--ref", "a".repeat(40), "--plan-only"];
 	await load("run");
 	assert.equal(process.exitCode, 0);
@@ -75,7 +75,7 @@ test("the controller plans a new run without looking for reuse state", async () 
 	assert.equal(stderr.mock.calls.length, 0);
 });
 
-test("the controller reads custom output state before planning reuse", async () => {
+test("the controller reads custom output state before planning reuse (#4331)", async () => {
 	const topology = parseTopology(
 		JSON.parse(readFileSync(new URL("../distributed/topology.json", import.meta.url), "utf8")),
 	);

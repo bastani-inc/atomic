@@ -90,13 +90,13 @@ export function parseSweepArgs(argv) {
 export async function sweep({ az, control, now, runId, force, dryRun, sleep, clock, log }) {
 	/** @type {{ id: string, name: string }[]} */
 	const listedGroups =
-		/** @type {any} */ (
+		/** @type {{ id: string, name: string }[] | null} */ (
 			await az(["group", "list", "--query", `[?tags."${RUN_TAG}" != null].{id:id,name:name}`], "list tagged groups")
 		) ?? [];
 	const groups = [];
 	for (const group of listedGroups) {
 		/** @type {{ id: string, name: string, tags: Record<string, string> | null }} */
-		const shown = /** @type {any} */ (
+		const shown = /** @type {{ id: string, name: string, tags: Record<string, string> | null }} */ (
 			await az(
 				["group", "show", "--name", group.name, "--query", "{id:id,name:name,tags:tags}"],
 				`read tags of ${group.name}`,
@@ -106,7 +106,7 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 	}
 	/** @type {{ id: string, name: string, resourceGroup: string }[]} */
 	const listedResources =
-		/** @type {any} */ (
+		/** @type {{ id: string, name: string, resourceGroup: string }[] | null} */ (
 			await az(
 				["resource", "list", "--tag", RUN_TAG, "--query", "[].{id:id,name:name,resourceGroup:resourceGroup}"],
 				"list tagged resources",
@@ -117,14 +117,14 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 	for (const resource of listedResources) {
 		if (groupNames.has(resource.resourceGroup.toLowerCase())) continue;
 		/** @type {Record<string, string> | null} */
-		const tags = /** @type {any} */ (
+		const tags = /** @type {Record<string, string> | null} */ (
 			await az(["resource", "show", "--ids", resource.id, "--query", "tags"], `read tags of ${resource.name}`)
 		);
 		resources.push({ ...resource, tags });
 	}
 	/** @type {{ name: string }[]} */
 	const controlPeerings =
-		/** @type {any} */ (
+		/** @type {{ name: string }[] | null} */ (
 			await az(
 				[
 					"network",
@@ -143,7 +143,7 @@ export async function sweep({ az, control, now, runId, force, dryRun, sleep, clo
 		) ?? [];
 	/** @type {string[]} */
 	const existingGroups =
-		/** @type {any} */ (await az(["group", "list", "--query", "[].name"], "list resource groups")) ?? [];
+		/** @type {string[] | null} */ (await az(["group", "list", "--query", "[].name"], "list resource groups")) ?? [];
 	const plan = planSweep({
 		groups,
 		resources,

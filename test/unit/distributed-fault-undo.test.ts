@@ -81,7 +81,7 @@ posixOnly(
 	},
 );
 
-posixOnly("commands outside an undo step still honour the run's cancellation", async () => {
+posixOnly("commands outside an undo step still honour the run's cancellation (#4331)", async () => {
 	const controller = new AbortController();
 	const scope = new UndoScope({ signal: controller.signal });
 	const host = scope.bind(hostWith(controller.signal));
@@ -92,7 +92,7 @@ posixOnly("commands outside an undo step still honour the run's cancellation", a
 	await assert.rejects(host.run("true", { operation: "after undo" }), (error) => error === reason);
 });
 
-test("an undo step is bounded: when its budget passes, the step's signal aborts with a typed timeout", async () => {
+test("an undo step is bounded: when its budget passes, the step's signal aborts with a typed timeout (#4331)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	try {
 		const scope = new UndoScope({ signal: new AbortController().signal, budgetMs: 25 });
@@ -117,7 +117,7 @@ test("an undo step is bounded: when its budget passes, the step's signal aborts 
 	}
 });
 
-test("a finished undo step leaves no timer behind, so its budget cannot abort anything later", async () => {
+test("a finished undo step leaves no timer behind, so its budget cannot abort anything later (#4331)", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 	try {
 		const scope = new UndoScope({ signal: new AbortController().signal, budgetMs: 25 });
@@ -133,7 +133,7 @@ test("a finished undo step leaves no timer behind, so its budget cannot abort an
 	}
 });
 
-test("an undo step's signal is independent of the run signal and restored afterwards, even when the step fails", async () => {
+test("an undo step's signal is independent of the run signal and restored afterwards, even when the step fails (#4331)", async () => {
 	const run = new AbortController();
 	const scope = new UndoScope({ signal: run.signal });
 	assert.equal(scope.signal, run.signal);
@@ -149,14 +149,14 @@ test("an undo step's signal is independent of the run signal and restored afterw
 	assert.equal(scope.signal, run.signal);
 });
 
-test("a scope without a run signal still gives undo steps a bounded signal", async () => {
+test("a scope without a run signal still gives undo steps a bounded signal (#4331)", async () => {
 	const scope = new UndoScope({});
 	assert.equal(scope.signal, undefined);
 	await scope.undo(async () => assert.equal(scope.signal?.aborted, false));
 	assert.equal(scope.signal, undefined);
 });
 
-posixOnly("a missing acknowledgement file is absent evidence, not an empty history", async () => {
+posixOnly("a missing acknowledgement file is absent evidence, not an empty history (#4331)", async () => {
 	const host = hostWith();
 	const present = join(scratch, "w1.jsonl");
 	writeFileSync(present, '{"event":"ack","index":0}\nnot json\n{"event":"done"}\n');
@@ -171,39 +171,48 @@ posixOnly("a missing acknowledgement file is absent evidence, not an empty histo
 	assert.deepEqual(await readJsonLinesFile(host, join(scratch, "empty.jsonl")), [], "an empty file exists");
 });
 
-posixOnly("an acknowledgement path that exists but cannot be read fails instead of reading as empty", async () => {
-	const host = hostWith();
-	const unreadable = join(scratch, "unreadable.jsonl");
-	mkdirSync(unreadable);
-	await assert.rejects(readJsonLinesFile(host, unreadable), (error: unknown) => {
-		assert.equal(Reflect.get(error as object, "name"), "DistributedCommandError");
-		assert.equal(Reflect.get(error as object, "code"), "command-failed");
-		assert.equal(Reflect.get(Reflect.get(error as object, "fields"), "operation"), `node-1: read ${unreadable}`);
-		return true;
-	});
-	await assert.rejects(readJsonLines(host, unreadable), { name: "DistributedCommandError", code: "command-failed" });
-	await assert.rejects(readWriterEvidence([{ holder: "w1", host, acks: unreadable }]), {
-		name: "DistributedCommandError",
-	});
-});
+posixOnly(
+	"an acknowledgement path that exists but cannot be read fails instead of reading as empty (#4331)",
+	async () => {
+		const host = hostWith();
+		const unreadable = join(scratch, "unreadable.jsonl");
+		mkdirSync(unreadable);
+		await assert.rejects(readJsonLinesFile(host, unreadable), (error: unknown) => {
+			assert.equal(Reflect.get(error as object, "name"), "DistributedCommandError");
+			assert.equal(Reflect.get(error as object, "code"), "command-failed");
+			assert.equal(Reflect.get(Reflect.get(error as object, "fields"), "operation"), `node-1: read ${unreadable}`);
+			return true;
+		});
+		await assert.rejects(readJsonLines(host, unreadable), {
+			name: "DistributedCommandError",
+			code: "command-failed",
+		});
+		await assert.rejects(readWriterEvidence([{ holder: "w1", host, acks: unreadable }]), {
+			name: "DistributedCommandError",
+		});
+	},
+);
 
-posixOnly("final evidence lists every writer whose file is missing and keeps the records it did read", async () => {
-	const host = hostWith();
-	writeFileSync(join(scratch, "w1.jsonl"), '{"event":"ack","index":0}\n');
-	writeFileSync(join(scratch, "w3.jsonl"), '{"event":"ack","index":1}\n');
-	const evidence = await readWriterEvidence([
-		{ holder: "w1", host, acks: join(scratch, "w1.jsonl") },
-		{ holder: "w2", host, acks: join(scratch, "w2.jsonl") },
-		{ holder: "w3", host, acks: join(scratch, "w3.jsonl") },
-	]);
-	assert.deepEqual(evidence.records, [
-		{ event: "ack", index: 0 },
-		{ event: "ack", index: 1 },
-	]);
-	assert.deepEqual(evidence.missing, [{ holder: "w2", host: "node-1", path: join(scratch, "w2.jsonl") }]);
-});
+posixOnly(
+	"final evidence lists every writer whose file is missing and keeps the records it did read (#4331)",
+	async () => {
+		const host = hostWith();
+		writeFileSync(join(scratch, "w1.jsonl"), '{"event":"ack","index":0}\n');
+		writeFileSync(join(scratch, "w3.jsonl"), '{"event":"ack","index":1}\n');
+		const evidence = await readWriterEvidence([
+			{ holder: "w1", host, acks: join(scratch, "w1.jsonl") },
+			{ holder: "w2", host, acks: join(scratch, "w2.jsonl") },
+			{ holder: "w3", host, acks: join(scratch, "w3.jsonl") },
+		]);
+		assert.deepEqual(evidence.records, [
+			{ event: "ack", index: 0 },
+			{ event: "ack", index: 1 },
+		]);
+		assert.deepEqual(evidence.missing, [{ holder: "w2", host: "node-1", path: join(scratch, "w2.jsonl") }]);
+	},
+);
 
-test("the default undo budget is ninety minutes, covering sequential VM operations", async () => {
+test("the default undo budget is ninety minutes, covering sequential VM operations (#4331)", async () => {
 	vi.useFakeTimers();
 	try {
 		const scope = new UndoScope({});

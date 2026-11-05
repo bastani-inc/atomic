@@ -64,7 +64,7 @@ const run = (az: (args: readonly string[], operation: string) => Promise<unknown
 	});
 };
 
-test("a failed straggler deletion does not stop the other deletions or any run teardown, and is reported", async () => {
+test("a failed straggler deletion does not stop the other deletions or any run teardown, and is reported (#4331)", async () => {
 	const fake = fakeAzure(
 		["/stray-a"],
 		(id) => new DistributedCommandError({ tool: "az", operation: `delete ${id}`, exitCode: 1, signal: null }),
@@ -83,7 +83,7 @@ test("a failed straggler deletion does not stop the other deletions or any run t
 	assert.equal(result.deleteFailures[0].error.fields.operation, "delete /stray-a");
 });
 
-test("a sweep with no deletion failure reports none", async () => {
+test("a sweep with no deletion failure reports none (#4331)", async () => {
 	const fake = fakeAzure([], () => new Error("unused"));
 
 	const result = await run(fake.az);
@@ -92,7 +92,7 @@ test("a sweep with no deletion failure reports none", async () => {
 	assert.deepEqual([...fake.deletedResources].sort(), ["/stray-a", "/stray-c"]);
 });
 
-test("a cancelled deletion is not collected as a failure", async () => {
+test("a cancelled deletion is not collected as a failure (#4331)", async () => {
 	const cancelled = Object.assign(new Error("aborted"), { name: "AbortError" });
 	const fake = fakeAzure(["/stray-a"], () => cancelled);
 
@@ -100,7 +100,7 @@ test("a cancelled deletion is not collected as a failure", async () => {
 	assert.deepEqual(fake.deletedGroups, []);
 });
 
-test("a dry run reports no deletion failures and deletes nothing", async () => {
+test("a dry run reports no deletion failures and deletes nothing (#4331)", async () => {
 	const fake = fakeAzure([], () => new Error("unused"));
 
 	const result = await sweep({
@@ -118,7 +118,7 @@ test("a dry run reports no deletion failures and deletes nothing", async () => {
 	assert.equal(fake.deletedResources.size, 0);
 });
 
-test("the sweeper exits nonzero for any failed deletion or run", () => {
+test("the sweeper exits nonzero for any failed deletion or run (#4331)", () => {
 	assert.equal(sweepExitCode({ runs: [], deleteFailures: [] }), 0);
 	assert.equal(sweepExitCode({ runs: [{ ok: true }, { ok: true }], deleteFailures: [] }), 0);
 	assert.equal(sweepExitCode({ runs: [{ ok: true }, { ok: false }], deleteFailures: [] }), 1);

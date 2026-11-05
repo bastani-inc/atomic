@@ -52,7 +52,7 @@ const healthy = () => ({
 const byName = (results: ReturnType<typeof checkJournalInvariants>) =>
 	Object.fromEntries(results.map((result) => [result.name, result]));
 
-test("a healthy history passes every invariant with explicit expected and actual values", () => {
+test("a healthy history passes every invariant with explicit expected and actual values (#4331)", () => {
 	const results = checkJournalInvariants(healthy());
 	assert.deepEqual(
 		results.map((result) => [result.name, result.passed]),
@@ -90,7 +90,7 @@ test("a healthy history passes every invariant with explicit expected and actual
 	assert.equal(named["recovered-without-intervention"].actual, "completed");
 });
 
-test("missing evidence can never pass", () => {
+test("missing evidence can never pass (#4331)", () => {
 	const none = byName(
 		checkJournalInvariants({
 			entries: undefined,
@@ -122,7 +122,7 @@ test("missing evidence can never pass", () => {
 	assert.equal(byName(checkJournalInvariants(exact))["evidence-complete"].passed, true);
 });
 
-test("detects a lost acknowledged checkpoint and a payload or position mismatch", () => {
+test("detects a lost acknowledged checkpoint and a payload or position mismatch (#4331)", () => {
 	const lost = healthy();
 	lost.entries = lost.entries.filter((item) => item.index !== 1);
 	const named = byName(checkJournalInvariants(lost));
@@ -145,7 +145,7 @@ test("detects a lost acknowledged checkpoint and a payload or position mismatch"
 	}
 });
 
-test("detects duplicates, gaps, sequence and epoch regressions", () => {
+test("detects duplicates, gaps, sequence and epoch regressions (#4331)", () => {
 	const duplicate = healthy();
 	duplicate.entries.push({ ...entry(5, 2, 3) });
 	const dup = byName(checkJournalInvariants(duplicate));
@@ -191,7 +191,7 @@ test("detects duplicates, gaps, sequence and epoch regressions", () => {
 	);
 });
 
-test("detects accepted stale writers, corrupt journals and untyped failures", () => {
+test("detects accepted stale writers, corrupt journals and untyped failures (#4331)", () => {
 	const accepted = healthy();
 	accepted.fencing = [{ holder: "w1", epoch: 1, outcome: "appended" }];
 	assert.deepEqual(byName(checkJournalInvariants(accepted))["stale-writers-rejected"].actual, {
@@ -232,7 +232,7 @@ test("detects accepted stale writers, corrupt journals and untyped failures", ()
 	assert.ok(!checkJournalInvariants(stalled).some((result) => result.name === "recovered-without-intervention"));
 });
 
-test("counts at-least-once replays and summarizes latency in a window", () => {
+test("counts at-least-once replays and summarizes latency in a window (#4331)", () => {
 	assert.equal(atLeastOnceReplays(healthy().records), 1);
 	assert.equal(atLeastOnceReplays([{ event: "error", status: "exists" }]), 0);
 	const records = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((ms, index) => ({
@@ -262,7 +262,7 @@ test("counts at-least-once replays and summarizes latency in a window", () => {
 	});
 });
 
-test("every invariant states its expected and actual values exactly", () => {
+test("every invariant states its expected and actual values exactly (#4331)", () => {
 	assert.deepEqual(checkJournalInvariants(healthy()), [
 		{
 			name: "evidence-complete",
@@ -317,7 +317,7 @@ test("every invariant states its expected and actual values exactly", () => {
 	]);
 });
 
-test("edge cases: keyless records, unordered indexes, probes without errors", () => {
+test("edge cases: keyless records, unordered indexes, probes without errors (#4331)", () => {
 	const keyless = healthy();
 	keyless.records = [
 		...keyless.records,
@@ -372,7 +372,7 @@ test("edge cases: keyless records, unordered indexes, probes without errors", ()
 	assert.equal(noRecords["recovered-without-intervention"].passed, false);
 });
 
-test("latency statistics sort their inputs and ignore unusable records", () => {
+test("latency statistics sort their inputs and ignore unusable records (#4331)", () => {
 	const shuffled = [50, 10, 40, 20, 30].map((ms, index) => ({ event: "ack", ms, at: index }));
 	assert.deepEqual(latencyStats(shuffled, { from: 0, to: 10 }), { count: 5, median: 30, p10: 10, p90: 50 });
 	assert.deepEqual(
@@ -393,7 +393,7 @@ test("latency statistics sort their inputs and ignore unusable records", () => {
 	);
 });
 
-test("missing writer records or journal entries are reported, never filled in", () => {
+test("missing writer records or journal entries are reported, never filled in (#4331)", () => {
 	const noRecords = checkJournalInvariants({
 		...healthy(),
 		records: undefined,

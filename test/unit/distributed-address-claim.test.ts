@@ -230,7 +230,7 @@ function assertDisjointClaims(cloud: SimulatedCloud, runIds: readonly string[], 
 	return byRun;
 }
 
-test("allocation passes over `skip` free /16s, wrapping within the room left", () => {
+test("allocation passes over `skip` free /16s, wrapping within the room left (#4331)", () => {
 	const used = [CONTROL_PREFIX, "10.61.0.0/16"];
 	const small = { firstSecondOctet: 60, lastSecondOctet: 64 };
 	assert.deepEqual(
@@ -267,7 +267,7 @@ test("allocation passes over `skip` free /16s, wrapping within the room left", (
 	);
 });
 
-test("the first attempt never skips and retries skip by a run-specific amount", () => {
+test("the first attempt never skips and retries skip by a run-specific amount (#4331)", () => {
 	assert.equal(allocationSkip("adt2611050230-aaaa", 1), 0);
 	assert.equal(allocationSkip("adt2611050230-aaaa", 0), 0);
 	const a = allocationSkip("adt2611050230-aaaa", 2);
@@ -278,7 +278,7 @@ test("the first attempt never skips and retries skip by a run-specific amount", 
 	assert.equal(allocationSkip("x", 2), 0x860177ef);
 });
 
-test("address conflicts list other peerings that overlap an allocated prefix", () => {
+test("address conflicts list other peerings that overlap an allocated prefix (#4331)", () => {
 	const allocated = new Map([
 		["eastus2", "10.60.0.0/16"],
 		["westus3", "10.61.0.0/16"],
@@ -370,7 +370,7 @@ test("when overlapping control peerings are both accepted, the runs never both k
 		);
 });
 
-test("a run that loses every attempt fails typed and leaves no claim behind", async () => {
+test("a run that loses every attempt fails typed and leaves no claim behind (#4331)", async () => {
 	const cloud = new SimulatedCloud({
 		enforce: false,
 		gate: (runId, event) => {
@@ -417,7 +417,7 @@ test("a run that loses every attempt fails typed and leaves no claim behind", as
 	);
 });
 
-test("a rejected control peering without an overlap is rethrown, not retried", async () => {
+test("a rejected control peering without an overlap is rethrown, not retried (#4331)", async () => {
 	const cloud = new SimulatedCloud({ enforce: true, rejectPeering: () => true });
 	const { run, plan } = simulatedRun(cloud, "adt2611050230-aaaa");
 	await assert.rejects(run.createNetworks(), (error) => {
@@ -444,7 +444,7 @@ function intrudeOn(cloud: () => SimulatedCloud, region: string): Gate {
 	};
 }
 
-test("a non-overlap peering failure beside a conflict in another region is rethrown, not retried", async () => {
+test("a non-overlap peering failure beside a conflict in another region is rethrown, not retried (#4331)", async () => {
 	const cloud: SimulatedCloud = new SimulatedCloud({
 		enforce: false,
 		gate: intrudeOn(() => cloud, "eastus2"),
@@ -462,7 +462,7 @@ test("a non-overlap peering failure beside a conflict in another region is rethr
 	assert.deepEqual(cloud.deleted, []);
 });
 
-test("a conflict whose own peering was rejected releases only the VNet and then succeeds", async () => {
+test("a conflict whose own peering was rejected releases only the VNet and then succeeds (#4331)", async () => {
 	const cloud: SimulatedCloud = new SimulatedCloud({
 		enforce: true,
 		gate: (_runId, event, count) => {
@@ -485,7 +485,7 @@ test("a conflict whose own peering was rejected releases only the VNet and then 
 	assertDisjointClaims(cloud, [plan.runId], plan.vnetRegions.length);
 });
 
-test("a failed release of a lost claim is typed and stops the run", async () => {
+test("a failed release of a lost claim is typed and stops the run (#4331)", async () => {
 	const cloud: SimulatedCloud = new SimulatedCloud({
 		enforce: false,
 		gate: intrudeOn(() => cloud, "eastus2"),
@@ -506,7 +506,7 @@ test("a failed release of a lost claim is typed and stops the run", async () => 
 });
 
 for (const on of ["network vnet peering create", "network vnet peering delete", "network vnet delete"])
-	test(`cancellation during "${on}" while claiming reaches the caller unwrapped`, async () => {
+	test(`cancellation during "${on}" while claiming reaches the caller unwrapped (#4331)`, async () => {
 		const controller = new AbortController();
 		const cloud: SimulatedCloud = new SimulatedCloud({
 			enforce: false,
@@ -520,7 +520,7 @@ for (const on of ["network vnet peering create", "network vnet peering delete", 
 		});
 	});
 
-test("allocation skips foreign control peers and other runs' unpeered VNets, and tolerates missing address spaces", async () => {
+test("allocation skips foreign control peers and other runs' unpeered VNets, and tolerates missing address spaces (#4331)", async () => {
 	const cloud = new SimulatedCloud({ enforce: true });
 	cloud.controlPeers.set("foreign", { remoteId: "/vnets/foreign", prefix: "10.60.0.0/16" });
 	cloud.controlPeers.set("foreign-unknown-space", { remoteId: "/vnets/unknown", prefix: null });
@@ -537,7 +537,7 @@ test("allocation skips foreign control peers and other runs' unpeered VNets, and
 	assert.deepEqual(cloud.deleted, []);
 });
 
-test("empty listings that az prints as nothing allocate from the start of the pool", async () => {
+test("empty listings that az prints as nothing allocate from the start of the pool (#4331)", async () => {
 	const cloud = new SimulatedCloud({ enforce: true, nullWhenEmpty: true });
 	const { run } = simulatedRun(cloud, "adt2611050230-aaaa");
 	await run.createNetworks();
@@ -547,7 +547,7 @@ test("empty listings that az prints as nothing allocate from the start of the po
 	]);
 });
 
-test("a pool with too few free /16s fails typed before any VNet is created", async () => {
+test("a pool with too few free /16s fails typed before any VNet is created (#4331)", async () => {
 	const cloud = new SimulatedCloud({ enforce: true });
 	cloud.controlPeers.set("foreign", { remoteId: "/vnets/foreign", prefix: "10.61.0.0/16" });
 	const narrow = { ...topology, addressPool: { firstSecondOctet: 60, lastSecondOctet: 61 } };
@@ -565,7 +565,7 @@ test("a pool with too few free /16s fails typed before any VNet is created", asy
 	assert.deepEqual(cloud.created, []);
 });
 
-test("cancellation of a claim's peering is not mistaken for a lost address space", async () => {
+test("cancellation of a claim's peering is not mistaken for a lost address space (#4331)", async () => {
 	const controller = new AbortController();
 	const cloud: SimulatedCloud = new SimulatedCloud({
 		enforce: false,

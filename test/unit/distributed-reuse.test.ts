@@ -77,7 +77,7 @@ test("reuse preserves default lookup and rejects another run's custom directory 
 	}
 });
 
-test.skipIf(process.platform === "win32")("controller commands run when invoked through symlinks", () => {
+test.skipIf(process.platform === "win32")("controller commands run when invoked through symlinks (#4331)", () => {
 	const dir = makeTempDirectory("distributed-entrypoint-");
 	try {
 		for (const name of ["run", "sweep"]) {
@@ -92,7 +92,7 @@ test.skipIf(process.platform === "win32")("controller commands run when invoked 
 	}
 });
 
-test("state loading preserves readable-file diagnostics for custom output", () => {
+test("state loading preserves readable-file diagnostics for custom output (#4331)", () => {
 	const dir = makeTempDirectory("distributed-state-errors-");
 	try {
 		for (const reason of ["unreadable", "invalid-json"] as const) {
@@ -116,7 +116,7 @@ test("state loading preserves readable-file diagnostics for custom output", () =
 	}
 });
 
-test("reuse commands include and quote only an explicitly custom output directory", () => {
+test("reuse commands include and quote only an explicitly custom output directory (#4331)", () => {
 	assert.equal(reuseCommand("run-a", undefined), "node test/distributed/run.mjs --reuse run-a");
 	assert.equal(
 		reuseCommand("run-a", "reports/custom output"),

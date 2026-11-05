@@ -110,7 +110,7 @@ const samples = (): [Error, (value: unknown) => boolean, string][] => [
 	],
 ];
 
-test("every concrete error has a literal name, stable code, hint, fields and its own guard", () => {
+test("every concrete error has a literal name, stable code, hint, fields and its own guard (#4331)", () => {
 	const guards = samples().map(([, guard]) => guard);
 	for (const [error, guard, code] of samples()) {
 		assert.ok(error instanceof DistributedTestError);
@@ -146,7 +146,7 @@ test("every concrete error has a literal name, stable code, hint, fields and its
 	assert.ok(!isDistributedTestError({ name: "XDistributedError", code: "x" }));
 });
 
-test("retryability is explicit and found anywhere in a bounded cause chain", () => {
+test("retryability is explicit and found anywhere in a bounded cause chain (#4331)", () => {
 	assert.equal(
 		new DistributedCommandError({ tool: "ssh", operation: "o", exitCode: 255, signal: null, retryable: true })
 			.retryable,
@@ -174,7 +174,7 @@ test("retryability is explicit and found anywhere in a bounded cause chain", () 
 	assert.ok(!isRetryableDistributedError(deep));
 });
 
-test("cancellation is recognized from the signal's reason or an AbortError, never as a failure", () => {
+test("cancellation is recognized from the signal's reason or an AbortError, never as a failure (#4331)", () => {
 	const controller = new AbortController();
 	const reason = new Error("stop");
 	assert.ok(!isCancellation(reason, controller.signal));
@@ -186,7 +186,7 @@ test("cancellation is recognized from the signal's reason or an AbortError, neve
 	assert.ok(!isCancellation(null));
 });
 
-test("a cleanup failure is attached to the primary failure and never replaces it", () => {
+test("a cleanup failure is attached to the primary failure and never replaces it (#4331)", () => {
 	const primary = new DistributedProvisionError({ step: "create VM", resource: "vm" });
 	const cleanup = new DistributedTeardownError({ runId: "r", remaining: ["/x"], errors: [] });
 	assert.equal(attachCleanupFailure(primary, cleanup), primary);
@@ -199,7 +199,7 @@ test("a cleanup failure is attached to the primary failure and never replaces it
 	assert.equal(attachCleanupFailure(undefined, cleanup), undefined);
 });
 
-test("failures of operations that ran beside the primary are kept with it, never instead of it", () => {
+test("failures of operations that ran beside the primary are kept with it, never instead of it (#4331)", () => {
 	const primary = new DistributedProvisionError({ step: "create VM", resource: "vm" });
 	const others = [
 		new DistributedCommandError({ tool: "curl", operation: "download", exitCode: 6, signal: null }),
@@ -327,7 +327,7 @@ test("the real node agent's failure crosses the process boundary with its name a
 	assert.ok(isDistributedTestError(error.cause));
 });
 
-test("errors round-trip across a process boundary as the same class with fields and causes", () => {
+test("errors round-trip across a process boundary as the same class with fields and causes (#4331)", () => {
 	const cause = new DistributedCommandError({
 		tool: "az",
 		operation: "create",
@@ -379,7 +379,7 @@ test("errors round-trip across a process boundary as the same class with fields 
 	}
 });
 
-test("unknown names rehydrate into the family base, keeping name and code", () => {
+test("unknown names rehydrate into the family base, keeping name and code (#4331)", () => {
 	const future = rehydrateDistributedError({
 		name: "WorkerPlacementError",
 		code: "no-host",
@@ -401,7 +401,7 @@ test("unknown names rehydrate into the family base, keeping name and code", () =
 	assert.equal(inherited.constructor, DistributedTestError);
 });
 
-test("serialization is bounded, cycle-safe and handles non-errors", () => {
+test("serialization is bounded, cycle-safe and handles non-errors (#4331)", () => {
 	assert.deepEqual(serializeDistributedError("boom"), {
 		name: "NonError",
 		code: "non-error",
@@ -508,7 +508,7 @@ const crabbox = {
 const az = { tool: "az", what: "az", why: "every resource is created with the az CLI", fix: "install the Azure CLI" };
 const sha = "0123456789abcdef0123456789abcdef01234567";
 
-test("the required tools follow what the run will do", () => {
+test("the required tools follow what the run will do (#4331)", () => {
 	assert.deepEqual(requiredTools({ reuse: false, builder: true, sqldCached: false, ref: "main" }), [
 		ssh,
 		scp,
@@ -569,7 +569,7 @@ const toolDir = (tools: readonly string[], azScript?: string) => {
 	return dir;
 };
 
-posixOnly("a tool is on PATH only as an executable file in a non-empty entry", () => {
+posixOnly("a tool is on PATH only as an executable file in a non-empty entry (#4331)", () => {
 	const dir = toolDir(["adt-tool"]);
 	writeFileSync(join(dir, "adt-plain"), "", { mode: 0o644 });
 	const other = mkdtempSync(join(tmpdir(), "adt-tools-"));
@@ -581,7 +581,7 @@ posixOnly("a tool is on PATH only as an executable file in a non-empty entry", (
 	assert.equal(onPath(join(dir, "adt-tool"), ""), false);
 });
 
-posixOnly("missing tools fail fast with every missing piece, before any az call", async () => {
+posixOnly("missing tools fail fast with every missing piece, before any az call (#4331)", async () => {
 	const empty = mkdtempSync(join(tmpdir(), "adt-empty-path-"));
 	const tools = requiredTools({ reuse: false, builder: true, sqldCached: false, ref: "main" });
 	await assert.rejects(checkPrerequisites(context(), { control, tools, path: empty }), (error) => {
@@ -623,40 +623,43 @@ posixOnly("missing tools fail fast with every missing piece, before any az call"
 	);
 });
 
-posixOnly("present prerequisites resolve the subscription and the control VNet with exact az queries", async () => {
-	const dir = toolDir(
-		["ssh", "scp", "openssl"],
-		'case "$1" in account) echo \'"sub-1"\' ;; network) echo \'{"id":"/vnet/c","prefixes":["10.20.0.0/16"]}\' ;; esac',
-	);
-	const tools = requiredTools({ reuse: true, builder: false, sqldCached: true, ref: sha });
-	assert.deepEqual(await withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir })), {
-		subscription: "sub-1",
-		controlVnetId: "/vnet/c",
-		controlPrefixes: ["10.20.0.0/16"],
-	});
-	assert.deepEqual(readFileSync(join(dir, "az-calls"), "utf8").trim().split("\n"), [
-		"account show --query id -o json --only-show-errors",
-		"network vnet show --resource-group control-rg --name control-vnet --query {id:id,prefixes:addressSpace.addressPrefixes} -o json --only-show-errors",
-	]);
-	const bare = toolDir(
-		["ssh", "scp", "openssl"],
-		'case "$1" in account) echo \'"sub-2"\' ;; network) echo \'{"id":"/vnet/d","prefixes":null}\' ;; esac',
-	);
-	assert.deepEqual(await withPath(bare, () => checkPrerequisites(context(), { control, tools, path: bare })), {
-		subscription: "sub-2",
-		controlVnetId: "/vnet/d",
-		controlPrefixes: [],
-	});
-	const controller = new AbortController();
-	const reason = new DOMException("stop", "AbortError");
-	controller.abort(reason);
-	await assert.rejects(
-		withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir, signal: controller.signal })),
-		(error) => error === reason,
-	);
-});
+posixOnly(
+	"present prerequisites resolve the subscription and the control VNet with exact az queries (#4331)",
+	async () => {
+		const dir = toolDir(
+			["ssh", "scp", "openssl"],
+			'case "$1" in account) echo \'"sub-1"\' ;; network) echo \'{"id":"/vnet/c","prefixes":["10.20.0.0/16"]}\' ;; esac',
+		);
+		const tools = requiredTools({ reuse: true, builder: false, sqldCached: true, ref: sha });
+		assert.deepEqual(await withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir })), {
+			subscription: "sub-1",
+			controlVnetId: "/vnet/c",
+			controlPrefixes: ["10.20.0.0/16"],
+		});
+		assert.deepEqual(readFileSync(join(dir, "az-calls"), "utf8").trim().split("\n"), [
+			"account show --query id -o json --only-show-errors",
+			"network vnet show --resource-group control-rg --name control-vnet --query {id:id,prefixes:addressSpace.addressPrefixes} -o json --only-show-errors",
+		]);
+		const bare = toolDir(
+			["ssh", "scp", "openssl"],
+			'case "$1" in account) echo \'"sub-2"\' ;; network) echo \'{"id":"/vnet/d","prefixes":null}\' ;; esac',
+		);
+		assert.deepEqual(await withPath(bare, () => checkPrerequisites(context(), { control, tools, path: bare })), {
+			subscription: "sub-2",
+			controlVnetId: "/vnet/d",
+			controlPrefixes: [],
+		});
+		const controller = new AbortController();
+		const reason = new DOMException("stop", "AbortError");
+		controller.abort(reason);
+		await assert.rejects(
+			withPath(dir, () => checkPrerequisites(context(), { control, tools, path: dir, signal: controller.signal })),
+			(error) => error === reason,
+		);
+	},
+);
 
-posixOnly("commands fail with typed exit, timeout and cancellation outcomes", async () => {
+posixOnly("commands fail with typed exit, timeout and cancellation outcomes (#4331)", async () => {
 	const log = join(mkdtempSync(join(tmpdir(), "adt-cmd-")), "commands.log");
 	const ctx = { log, secrets: new Set(["super-secret-token-value"]) };
 	const ok = await runCommand(
@@ -739,52 +742,58 @@ posixOnly("commands fail with typed exit, timeout and cancellation outcomes", as
 	assert.ok(!readFileSync(log, "utf8").includes("super-secret-token-value"));
 });
 
-posixOnly("a failed create is wrapped with its step and stays recorded in the manifest for cleanup", async () => {
-	const dir = mkdtempSync(join(tmpdir(), "adt-fake-az-"));
-	writeFileSync(join(dir, "az"), '#!/bin/sh\necho "ERROR: quota exceeded" >&2\nexit 1\n', { mode: 0o755 });
-	const path = process.env.PATH;
-	process.env.PATH = `${dir}:${path}`;
-	try {
-		const options = resolveRunOptions(parseRunArgs(["--ref", "main"]), topology, { randomSeed: 1 });
-		const plan = buildPlan(options, topology, { runId: "adt2611050230-beef", now: new Date("2026-11-05T02:30:00Z") });
-		const manifest = new Manifest(dir, {
-			runId: plan.runId,
-			resourceGroup: plan.resourceGroup,
-			expiresAt: plan.expiresAt,
-			subscription: "s",
-			control,
-			entries: [],
-		});
-		const azure = new AzureRun({
-			context: context(),
-			plan,
-			topology,
-			manifest,
-			control,
-			controlVnetId: "/c",
-			controlPrefixes: ["10.20.0.0/16"],
-			sshPublicKey: "/k.pub",
-		});
-		await assert.rejects(azure.createGroup(), (error) => {
-			assert.ok(isDistributedProvisionError(error));
-			assert.deepEqual(Reflect.get(error as object, "fields"), {
-				step: "create resource group",
-				resource: "adt2611050230-beef-rg",
-				detail: "",
+posixOnly(
+	"a failed create is wrapped with its step and stays recorded in the manifest for cleanup (#4331)",
+	async () => {
+		const dir = mkdtempSync(join(tmpdir(), "adt-fake-az-"));
+		writeFileSync(join(dir, "az"), '#!/bin/sh\necho "ERROR: quota exceeded" >&2\nexit 1\n', { mode: 0o755 });
+		const path = process.env.PATH;
+		process.env.PATH = `${dir}:${path}`;
+		try {
+			const options = resolveRunOptions(parseRunArgs(["--ref", "main"]), topology, { randomSeed: 1 });
+			const plan = buildPlan(options, topology, {
+				runId: "adt2611050230-beef",
+				now: new Date("2026-11-05T02:30:00Z"),
 			});
-			assert.ok(isDistributedCommandError(Reflect.get(error as object, "cause")));
-			assert.equal(Reflect.get(Reflect.get(error as object, "cause"), "fields").detail, "ERROR: quota exceeded");
-			return true;
-		});
-		assert.deepEqual(Manifest.load(dir).data.entries, [
-			{ kind: "group", name: "adt2611050230-beef-rg", scope: "subscription", state: "planned" },
-		]);
-	} finally {
-		process.env.PATH = path;
-	}
-});
+			const manifest = new Manifest(dir, {
+				runId: plan.runId,
+				resourceGroup: plan.resourceGroup,
+				expiresAt: plan.expiresAt,
+				subscription: "s",
+				control,
+				entries: [],
+			});
+			const azure = new AzureRun({
+				context: context(),
+				plan,
+				topology,
+				manifest,
+				control,
+				controlVnetId: "/c",
+				controlPrefixes: ["10.20.0.0/16"],
+				sshPublicKey: "/k.pub",
+			});
+			await assert.rejects(azure.createGroup(), (error) => {
+				assert.ok(isDistributedProvisionError(error));
+				assert.deepEqual(Reflect.get(error as object, "fields"), {
+					step: "create resource group",
+					resource: "adt2611050230-beef-rg",
+					detail: "",
+				});
+				assert.ok(isDistributedCommandError(Reflect.get(error as object, "cause")));
+				assert.equal(Reflect.get(Reflect.get(error as object, "cause"), "fields").detail, "ERROR: quota exceeded");
+				return true;
+			});
+			assert.deepEqual(Manifest.load(dir).data.entries, [
+				{ kind: "group", name: "adt2611050230-beef-rg", scope: "subscription", state: "planned" },
+			]);
+		} finally {
+			process.env.PATH = path;
+		}
+	},
+);
 
-test("the security gate and invariant checks produce their typed failures", () => {
+test("the security gate and invariant checks produce their typed failures (#4331)", () => {
 	assert.throws(
 		() =>
 			gateVerdict([
@@ -816,7 +825,7 @@ test("the security gate and invariant checks produce their typed failures", () =
 	});
 });
 
-test("each error renders its message from its fields", () => {
+test("each error renders its message from its fields (#4331)", () => {
 	const messages = samples().map(([error]) => error.message);
 	assert.deepEqual(messages, [
 		"Invalid distributed-test configuration: cli --nodes is invalid-value (invalid-config). Set --nodes to a positive integer.",
@@ -876,7 +885,7 @@ test("each error renders its message from its fields", () => {
 	assert.equal(new DistributedTestError({ code: "c", summary: "s", cause: 0 }).cause, 0);
 });
 
-test("guards and helpers tolerate primitives and null causes", () => {
+test("guards and helpers tolerate primitives and null causes (#4331)", () => {
 	assert.equal(
 		isRetryableDistributedError(
 			Object.assign(new DistributedProvisionError({ step: "s", resource: "r" }), { cause: null }),

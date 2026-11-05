@@ -27,7 +27,7 @@ const tagged = (name: string, runId: string | undefined, expiresAt: string | und
 	},
 });
 
-test("tags and names carry the run id", () => {
+test("tags and names carry the run id (#4331)", () => {
 	assert.deepEqual(runTags(RUN, "2026-11-05T08:30:00.000Z"), {
 		"atomic-distributed-test": RUN,
 		"atomic-distributed-test-expiry": "2026-11-05T08:30:00.000Z",
@@ -55,7 +55,7 @@ test("tags and names carry the run id", () => {
 	assert.equal(runIdOfName(`x${RUN}-a`), undefined);
 });
 
-test("classifies expiry strictly after the instant and never deletes without a parseable expiry", () => {
+test("classifies expiry strictly after the instant and never deletes without a parseable expiry (#4331)", () => {
 	assert.deepEqual(classifyExpiry(tagged("g", RUN, "2026-11-05T11:59:59Z"), NOW), {
 		kind: "expired",
 		runId: RUN,
@@ -85,7 +85,7 @@ test("classifies expiry strictly after the instant and never deletes without a p
 	assert.deepEqual(classifyExpiry({ id: "i", name: "n" }, NOW), { kind: "foreign" });
 });
 
-test("plans a sweep of expired runs, their stragglers and their control peerings only", () => {
+test("plans a sweep of expired runs, their stragglers and their control peerings only (#4331)", () => {
 	const plan = planSweep({
 		groups: [
 			tagged(`${RUN}-rg`, RUN, "2026-11-05T00:00:00Z"),
@@ -139,7 +139,7 @@ test("plans a sweep of expired runs, their stragglers and their control peerings
 	]);
 });
 
-test("limits a sweep to one run, and --force ignores only that run's TTL", () => {
+test("limits a sweep to one run, and --force ignores only that run's TTL (#4331)", () => {
 	const input = {
 		groups: [tagged(`${RUN}-rg`, RUN, "2026-11-06T00:00:00Z"), tagged(`${OTHER}-rg`, OTHER, "2026-11-01T00:00:00Z")],
 		resources: [{ id: "/r/x", name: "x", resourceGroup: "shared", tags: runTags(RUN, "2026-11-06T00:00:00Z") }],
@@ -162,7 +162,7 @@ test("limits a sweep to one run, and --force ignores only that run's TTL", () =>
 	assert.deepEqual(forceWithoutRun.controlPeerings, [{ name: `${OTHER}-a`, runId: OTHER }]);
 });
 
-test("names leftovers from absence query results", () => {
+test("names leftovers from absence query results (#4331)", () => {
 	assert.deepEqual(
 		remainingFromQueries([{ result: ["/id/a", { id: "/id/b", name: "n" }, { name: "peer" }, 7] }, { result: [] }]),
 		["/id/a", "/id/b", "peer", "7"],
@@ -171,7 +171,7 @@ test("names leftovers from absence query results", () => {
 	assert.deepEqual(remainingFromQueries([]), []);
 });
 
-test("absence queries cover tags, groups, both peering sides and the run group", () => {
+test("absence queries cover tags, groups, both peering sides and the run group (#4331)", () => {
 	assert.deepEqual(
 		absenceQueries({ runId: RUN, resourceGroup: `${RUN}-rg`, control }).map((query) => [
 			query.label,
@@ -221,7 +221,7 @@ const timing = () => {
 	};
 };
 
-test("tears down control peerings and the group, then proves absence", async () => {
+test("tears down control peerings and the group, then proves absence (#4331)", async () => {
 	const { az, calls } = fakeAz([
 		[
 			"network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].name",
@@ -277,7 +277,7 @@ test("tears down control peerings and the group, then proves absence", async () 
 	);
 });
 
-test("skips deleting an absent group and is idempotent", async () => {
+test("skips deleting an absent group and is idempotent (#4331)", async () => {
 	const { az, calls } = fakeAz([["group exists", () => false]]);
 	const result = await teardownRun({
 		az,
@@ -293,7 +293,7 @@ test("skips deleting an absent group and is idempotent", async () => {
 	assert.ok(!calls.some((call) => call.args[1] === "delete"));
 });
 
-test("polls until eventual absence and reports leftovers after the deadline", async () => {
+test("polls until eventual absence and reports leftovers after the deadline (#4331)", async () => {
 	const clock = timing();
 	const slow = fakeAz([
 		["group exists", () => true],
@@ -337,7 +337,7 @@ test("polls until eventual absence and reports leftovers after the deadline", as
 	assert.equal(stuck.calls.filter((call) => call.operation === "absence query: control VNet peerings").length, 3);
 });
 
-test("continues past failures, never treats a failed query as absence, and keeps every failure", async () => {
+test("continues past failures, never treats a failed query as absence, and keeps every failure (#4331)", async () => {
 	const boom = (what: string) =>
 		Object.assign(new Error(what), { name: "DistributedCommandError", code: "command-failed" });
 	const { az, calls } = fakeAz([
@@ -392,7 +392,7 @@ test("continues past failures, never treats a failed query as absence, and keeps
 	]);
 });
 
-test("a transient query failure that later clears does not fail teardown", async () => {
+test("a transient query failure that later clears does not fail teardown (#4331)", async () => {
 	const { az } = fakeAz([
 		["group exists", () => false],
 		["resource list", (_call, count) => (count === 1 ? new Error("throttled") : [])],
@@ -410,7 +410,7 @@ test("a transient query failure that later clears does not fail teardown", async
 	assert.equal(result.ok, true);
 });
 
-test("cancellation during teardown propagates as cancellation", async () => {
+test("cancellation during teardown propagates as cancellation (#4331)", async () => {
 	const abort = new DOMException("stop", "AbortError");
 	const { az } = fakeAz([["group exists", () => abort]]);
 	await assert.rejects(
@@ -442,7 +442,7 @@ test("cancellation during teardown propagates as cancellation", async () => {
 	);
 });
 
-test("teardown sends exact commands, ignores non-string listings and measures its deadline from the start", async () => {
+test("teardown sends exact commands, ignores non-string listings and measures its deadline from the start (#4331)", async () => {
 	const { az, calls } = fakeAz([
 		[
 			"network vnet peering list --resource-group control-rg --vnet-name control-vnet --query [].name",
@@ -514,11 +514,11 @@ test("teardown sends exact commands, ignores non-string listings and measures it
 	assert.deepEqual(shaped.error?.fields.remaining, ['{"value":[]}', "query failed: test VNets (both peering sides)"]);
 });
 
-test("remaining names prefer ids, then string names, then JSON", () => {
+test("remaining names prefer ids, then string names, then JSON (#4331)", () => {
 	assert.deepEqual(remainingFromQueries([{ result: [{ name: 5 }, { id: 3, name: "n" }] }]), ['{"name":5}', "n"]);
 });
 
-test("expiry parsing is anchored and force without a run id never touches unexpired resources", () => {
+test("expiry parsing is anchored and force without a run id never touches unexpired resources (#4331)", () => {
 	for (const bad of ["x2026-11-05T11:00:00Z", "2026-11-05T11:00:00Zx"])
 		assert.equal(classifyExpiry(tagged("g", RUN, bad), NOW).kind, "malformed-expiry", bad);
 	const plan = planSweep({

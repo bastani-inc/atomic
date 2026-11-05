@@ -20,7 +20,7 @@ import { isDistributedFaultError, rehydrateDistributedError } from "../distribut
 import { createRandom, PRNG_NAME } from "../distributed/harness/prng.mjs";
 import { exerciseProfile } from "../distributed/harness/suites.mjs";
 
-test("every advertised chaos profile has a mechanism, an observable effect and a recovery", () => {
+test("every advertised chaos profile has a mechanism, an observable effect and a recovery (#4331)", () => {
 	assert.ok(catalogIsComplete());
 	assert.deepEqual(Object.keys(PROFILE_SPECS).sort(), [...CHAOS_PROFILES].sort());
 	for (const [profile, spec] of Object.entries(PROFILE_SPECS)) {
@@ -49,7 +49,7 @@ test("every advertised chaos profile has a mechanism, an observable effect and a
 	});
 });
 
-test("iptables faults touch only the run's tagged rules, in the right directions", () => {
+test("iptables faults touch only the run's tagged rules, in the right directions (#4331)", () => {
 	const target = { dbIp: "10.60.0.10", port: 8443 };
 	const full = iptablesRules("adt-x-partition", "full", target);
 	assert.equal(
@@ -77,7 +77,7 @@ test("iptables faults touch only the run's tagged rules, in the right directions
 	assert.deepEqual(parseCounters("INPUT x\nOUTPUT\n  INPUT 5  "), { INPUT: 5 });
 });
 
-test("netem faults are filtered to the database flow and seeded", () => {
+test("netem faults are filtered to the database flow and seeded (#4331)", () => {
 	assert.equal(netemParameters("latency", 1), "delay 150ms");
 	assert.equal(netemParameters("jitter", 1), "delay 100ms 80ms distribution normal");
 	assert.equal(netemParameters("loss", 42), "loss 20% seed 42");
@@ -103,7 +103,7 @@ test("netem faults are filtered to the database flow and seeded", () => {
 	assert.equal(parseNetemStats("qdisc noqueue 0: root"), undefined);
 });
 
-test("device-mapper volumes swap linear, delay and error targets on the run's own device", () => {
+test("device-mapper volumes swap linear, delay and error targets on the run's own device (#4331)", () => {
 	const volume = dmVolumeScript({ name: "adt-slow-disk", sizeMb: 256, user: "atomic" });
 	assert.ok(
 		volume.create.startsWith(
@@ -184,48 +184,54 @@ function removeLeftovers(state: Leftovers) {
 const removedFiles = "rm -f /var/lib/adt-disk/adt-slow-disk.loop /var/lib/adt-disk/adt-slow-disk.img";
 const posixOnly = test.skipIf(process.platform === "win32");
 
-posixOnly("volume removal frees whatever a partial or cancelled setup left, even an unrecorded loop device", () => {
-	assert.deepEqual(removeLeftovers({}), { exitCode: 0, steps: [removedFiles] });
-	assert.deepEqual(removeLeftovers({ loops: ["/dev/loop7"] }), {
-		exitCode: 0,
-		steps: ["losetup -d /dev/loop7", removedFiles],
-	});
-	assert.deepEqual(removeLeftovers({ mapper: true, loops: ["/dev/loop7"] }), {
-		exitCode: 0,
-		steps: ["dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7", removedFiles],
-	});
-	assert.deepEqual(removeLeftovers({ mounted: true, mapper: true, loops: ["/dev/loop7", "/dev/loop9"] }), {
-		exitCode: 0,
-		steps: [
-			"umount /mnt/adt-slow-disk",
-			"dmsetup remove --force adt-slow-disk",
-			"losetup -d /dev/loop7 /dev/loop9",
-			removedFiles,
-		],
-	});
-});
+posixOnly(
+	"volume removal frees whatever a partial or cancelled setup left, even an unrecorded loop device (#4331)",
+	() => {
+		assert.deepEqual(removeLeftovers({}), { exitCode: 0, steps: [removedFiles] });
+		assert.deepEqual(removeLeftovers({ loops: ["/dev/loop7"] }), {
+			exitCode: 0,
+			steps: ["losetup -d /dev/loop7", removedFiles],
+		});
+		assert.deepEqual(removeLeftovers({ mapper: true, loops: ["/dev/loop7"] }), {
+			exitCode: 0,
+			steps: ["dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7", removedFiles],
+		});
+		assert.deepEqual(removeLeftovers({ mounted: true, mapper: true, loops: ["/dev/loop7", "/dev/loop9"] }), {
+			exitCode: 0,
+			steps: [
+				"umount /mnt/adt-slow-disk",
+				"dmsetup remove --force adt-slow-disk",
+				"losetup -d /dev/loop7 /dev/loop9",
+				removedFiles,
+			],
+		});
+	},
+);
 
-posixOnly("volume removal fails, and keeps the backing image, when a resource that exists cannot be freed", () => {
-	const all = { mounted: true, mapper: true, loops: ["/dev/loop7"] };
-	assert.deepEqual(removeLeftovers({ ...all, failing: "losetup -d" }), {
-		exitCode: 1,
-		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7"],
-	});
-	assert.deepEqual(removeLeftovers({ ...all, failing: "losetup --list" }), {
-		exitCode: 1,
-		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
-	});
-	assert.deepEqual(removeLeftovers({ ...all, failing: "dmsetup remove" }), {
-		exitCode: 1,
-		steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
-	});
-	assert.deepEqual(removeLeftovers({ ...all, failing: "umount" }), {
-		exitCode: 1,
-		steps: ["umount /mnt/adt-slow-disk", "umount -l /mnt/adt-slow-disk"],
-	});
-});
+posixOnly(
+	"volume removal fails, and keeps the backing image, when a resource that exists cannot be freed (#4331)",
+	() => {
+		const all = { mounted: true, mapper: true, loops: ["/dev/loop7"] };
+		assert.deepEqual(removeLeftovers({ ...all, failing: "losetup -d" }), {
+			exitCode: 1,
+			steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk", "losetup -d /dev/loop7"],
+		});
+		assert.deepEqual(removeLeftovers({ ...all, failing: "losetup --list" }), {
+			exitCode: 1,
+			steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
+		});
+		assert.deepEqual(removeLeftovers({ ...all, failing: "dmsetup remove" }), {
+			exitCode: 1,
+			steps: ["umount /mnt/adt-slow-disk", "dmsetup remove --force adt-slow-disk"],
+		});
+		assert.deepEqual(removeLeftovers({ ...all, failing: "umount" }), {
+			exitCode: 1,
+			steps: ["umount /mnt/adt-slow-disk", "umount -l /mnt/adt-slow-disk"],
+		});
+	},
+);
 
-test("a profile counts as exercised only with an observed effect and a recovery", () => {
+test("a profile counts as exercised only with an observed effect and a recovery (#4331)", () => {
 	const base = { applied: true, effectObserved: true, recovered: true };
 	const coverage = profileCoverage(
 		[
@@ -248,7 +254,7 @@ test("a profile counts as exercised only with an observed effect and a recovery"
 	assert.deepEqual(profileCoverage([], []), []);
 });
 
-test("the seeded PRNG replays the same choices", () => {
+test("the seeded PRNG replays the same choices (#4331)", () => {
 	assert.equal(PRNG_NAME, "mulberry32/v1");
 	const first = createRandom(4331);
 	const second = createRandom(4331);
@@ -275,7 +281,7 @@ test("the seeded PRNG replays the same choices", () => {
 	assert.equal(createRandom(2 ** 32 + 5).next(), createRandom(5).next());
 });
 
-test("counter, netem and catalog parsing edge cases", () => {
+test("counter, netem and catalog parsing edge cases (#4331)", () => {
 	assert.deepEqual(parseCounters("\n  INPUT    12  \nOUTPUT 3x\nOUTPUT\nFORWARD 4 extra\n"), { INPUT: 12 });
 	assert.throws(() => netemParameters("partition", 1), {
 		name: "RangeError",
@@ -294,7 +300,7 @@ test("counter, netem and catalog parsing edge cases", () => {
 	assert.throws(() => createRandom(1).pick([]), { name: "RangeError", message: "pick needs at least one item" });
 });
 
-test("counter lines must start with the chain name", () => {
+test("counter lines must start with the chain name (#4331)", () => {
 	assert.deepEqual(parseCounters("junk OUTPUT 5\nINPUT 2"), { INPUT: 2 });
 });
 
@@ -432,7 +438,7 @@ test("a fault that was never injected is not reverted, and cleanup still runs (#
 	assert.equal(record?.error?.cause?.cleanupCause, undefined);
 });
 
-test("revert and recovery failures are recorded at the recover stage, and later failures never replace the first", async () => {
+test("revert and recovery failures are recorded at the recover stage, and later failures never replace the first (#4331)", async () => {
 	const revertFailure = new Error("rule still present");
 	const reverted = await exercised({ revert: revertFailure });
 	assert.deepEqual(reverted.calls, ["apply", "revert", "cleanup"]);
@@ -463,7 +469,7 @@ test("revert and recovery failures are recorded at the recover stage, and later 
 	assert.equal(one.record?.error?.cause?.cleanupCause?.message, "only revert failed");
 });
 
-test("a cancellation still reverts and cleans up, then propagates as the cancellation", async () => {
+test("a cancellation still reverts and cleans up, then propagates as the cancellation (#4331)", async () => {
 	const controller = new AbortController();
 	const reason = new Error("operator stopped the run");
 	controller.abort(reason);

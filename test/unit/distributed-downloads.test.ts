@@ -183,7 +183,7 @@ test("database extraction publishes a complete binary through the same cache pro
 	assert.deepEqual(readdirSync(join(dir, "atomic-distributed-test/sqld/v0.24.33")), ["sqld"]);
 });
 
-test("a runtime missing from the checksum manifest fails with the typed verification error", async () => {
+test("a runtime missing from the checksum manifest fails with the typed verification error (#4331)", async () => {
 	const { nodeTarball } = await import("../distributed/run.mjs");
 	const { DistributedProvisionError } = await import("../distributed/harness/errors.mjs");
 	command.mockImplementation(async (_context, _tool: string, args: string[]) => {
@@ -200,7 +200,7 @@ test("a runtime missing from the checksum manifest fails with the typed verifica
 	});
 });
 
-test("an artifact that differs from its builder digest is never cached", async () => {
+test("an artifact that differs from its builder digest is never cached (#4331)", async () => {
 	const { buildArtifact } = await import("../distributed/run.mjs");
 	const { DistributedProvisionError } = await import("../distributed/harness/errors.mjs");
 	command.mockImplementation(async (_context, _tool: string, args: string[]) => {

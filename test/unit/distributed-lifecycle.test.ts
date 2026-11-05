@@ -105,7 +105,7 @@ const lifecycle = (overrides: Partial<Parameters<typeof runLifecycle>[0]> & { lo
 	};
 };
 
-test("scenarios start only after every step, and teardown always follows", async () => {
+test("scenarios start only after every step, and teardown always follows (#4331)", async () => {
 	const ok = lifecycle();
 	const outcome = await ok.run();
 	assert.deepEqual(ok.log, ["provision", "security-gate", "scenarios", "teardown"]);
@@ -200,7 +200,7 @@ test("--keep never keeps a topology whose security gate failed (#4331)", async (
 	assert.equal(noSteps.outcome.teardownSkipped, "kept");
 });
 
-test("a teardown failure is attached to the primary failure, or reported on its own", async () => {
+test("a teardown failure is attached to the primary failure, or reported on its own (#4331)", async () => {
 	const primary = new Error("scenario broke");
 	const cleanup = new Error("group delete failed");
 	const failing = await lifecycle({
@@ -226,7 +226,7 @@ test("a teardown failure is attached to the primary failure, or reported on its 
 	assert.deepEqual(aloneThrown.teardown, { ok: false, error: thrown });
 });
 
-test("keep and nothing-provisioned skip teardown; cancellation stays a cancellation", async () => {
+test("keep and nothing-provisioned skip teardown; cancellation stays a cancellation (#4331)", async () => {
 	const kept = lifecycle();
 	assert.equal((await lifecycle({ keep: true, log: kept.log }).run()).teardownSkipped, "kept");
 	assert.ok(!kept.log.includes("teardown"));
@@ -266,7 +266,7 @@ test("keep and nothing-provisioned skip teardown; cancellation stays a cancellat
 	);
 });
 
-test("sqld must listen on loopback for HTTP and admin, and the private address for TLS and replication", () => {
+test("sqld must listen on loopback for HTTP and admin, and the private address for TLS and replication (#4331)", () => {
 	const expected = { privateIp: "10.60.0.10", gatewayPort: 8443, replicationPort: 5001, loopbackPorts: [8080, 9090] };
 	assert.deepEqual(
 		bindViolations(
@@ -313,7 +313,7 @@ test("a planned VM missing from the public-IP listing fails the gate instead of 
 	assert.deepEqual(publicAddressChecks([{ vm: "n1", publicIps: [] }], ["n1"]).length, 1);
 });
 
-test("the gate passes only with checks that all passed", () => {
+test("the gate passes only with checks that all passed (#4331)", () => {
 	const checks = [{ name: "a", subject: "s", passed: true, observed: 1 }];
 	assert.deepEqual(gateVerdict(checks), { passed: true, checks });
 	assert.notEqual(gateVerdict(checks).checks, checks);
@@ -347,7 +347,7 @@ const capabilities = (extra: { workflows?: string[]; atomic?: string[]; members?
 	members: extra.members ?? {},
 });
 
-test("feature suites skip with a typed reason when the ref lacks their interface", () => {
+test("feature suites skip with a typed reason when the ref lacks their interface (#4331)", () => {
 	assert.deepEqual(Object.keys(FEATURE_PROBES), [
 		"multi-node-resume",
 		"cross-host-pools",
@@ -399,7 +399,7 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 	for (const [suite, probe] of Object.entries(FEATURE_PROBES)) assert.equal(probe.implemented, false, suite);
 });
 
-test("a malformed capabilities document is a broken deployment, not a missing feature", () => {
+test("a malformed capabilities document is a broken deployment, not a missing feature (#4331)", () => {
 	assert.deepEqual(parseCapabilities({ workflows: ["a"], atomic: ["b"], members: { x: ["c"] }, artifact: {} }), {
 		workflows: ["a"],
 		atomic: ["b"],
@@ -421,7 +421,7 @@ test("a malformed capabilities document is a broken deployment, not a missing fe
 	assert.deepEqual(selectedSuites("compaction"), ["compaction"]);
 });
 
-test("run status: cancelled, then failure, then incomplete coverage or teardown", () => {
+test("run status: cancelled, then failure, then incomplete coverage or teardown (#4331)", () => {
 	const passed = {
 		cancelled: false,
 		error: undefined,
@@ -448,7 +448,7 @@ test("run status: cancelled, then failure, then incomplete coverage or teardown"
 	);
 });
 
-test("the report is rendered from one object and never contains a registered secret", () => {
+test("the report is rendered from one object and never contains a registered secret (#4331)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-report-"));
 	const token = "eyJhbGciOiJFZERTQSJ9.eyJwIjp7fX0.c2lnbmF0dXJlLXZhbHVl";
 	const fixture = report({
@@ -592,7 +592,7 @@ test("the report is rendered from one object and never contains a registered sec
 	);
 });
 
-test("tokens are EdDSA JWTs sqld accepts and scoped to the run's namespaces", async () => {
+test("tokens are EdDSA JWTs sqld accepts and scoped to the run's namespaces (#4331)", async () => {
 	const keys = generateKeyPairSync("ed25519");
 	const token = mintToken(keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(), {
 		namespaces: ["smoke"],
@@ -686,7 +686,7 @@ posixOnly("reports, manifests and run secrets are owner-only files (#4331)", asy
 	assert.equal(readFileSync(existing, "utf8"), "new");
 });
 
-test("run tokens are issued five minutes in the past and expire after the TTL plus that margin", async () => {
+test("run tokens are issued five minutes in the past and expire after the TTL plus that margin (#4331)", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] });
 	vi.setSystemTime(new Date(1_800_000_000_750));
 	try {
@@ -709,7 +709,7 @@ test("run tokens are issued five minutes in the past and expire after the TTL pl
 	}
 });
 
-test("the run CA signs host certificates for the database names and address, valid for the TTL in whole days", async () => {
+test("the run CA signs host certificates for the database names and address, valid for the TTL in whole days (#4331)", async () => {
 	const validity = async (validHours: number) => {
 		const dir = join(mkdtempSync(join(tmpdir(), "adt-certs-")), "secrets");
 		const log = join(dirname(dir), "commands.log");
@@ -775,7 +775,7 @@ test("the run CA signs host certificates for the database names and address, val
 	assert.deepEqual((await validity(0)).days, [1, 1, 1]);
 });
 
-test("the manifest records planned resources before creation and survives a reload", () => {
+test("the manifest records planned resources before creation and survives a reload (#4331)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-manifest-"));
 	const manifest = new Manifest(dir, {
 		runId: "r",
@@ -799,7 +799,7 @@ test("the manifest records planned resources before creation and survives a relo
 	assert.equal(loaded.data.builder, "slug");
 });
 
-test("the sweeper's flags are validated before any az call", () => {
+test("the sweeper's flags are validated before any az call (#4331)", () => {
 	assert.deepEqual(parseSweepArgs([]), { dryRun: false, force: false });
 	assert.deepEqual(parseSweepArgs(["--dry-run", "--run-id", "adt2611050230-beef", "--force"]), {
 		dryRun: true,
@@ -827,7 +827,7 @@ test("the sweeper's flags are validated before any az call", () => {
 	}
 });
 
-test("the sweeper re-reads tags, deletes only expired runs and proves their absence", async () => {
+test("the sweeper re-reads tags, deletes only expired runs and proves their absence (#4331)", async () => {
 	const expired = "adt2611050230-0001";
 	const fresh = "adt2611050230-0002";
 	const calls: string[] = [];
@@ -959,7 +959,7 @@ test("the sweeper re-reads tags, deletes only expired runs and proves their abse
 	);
 });
 
-test("each feature probe names its issue, its capability and the exact interface it looks for", () => {
+test("each feature probe names its issue, its capability and the exact interface it looks for (#4331)", () => {
 	assert.deepEqual(
 		Object.fromEntries(
 			Object.entries(FEATURE_PROBES).map(([suite, probe]) => [suite, [probe.issue, probe.capability]]),
@@ -1002,7 +1002,7 @@ test("each feature probe names its issue, its capability and the exact interface
 	assert.equal(parseCapabilities({ workflows: [], atomic: [], members: { x: ["a"], y: [1] } }), undefined);
 });
 
-test("the manifest dedupes by kind, name and scope, and every change is flushed", () => {
+test("the manifest dedupes by kind, name and scope, and every change is flushed (#4331)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-manifest-2-"));
 	const data = {
 		runId: "r",
@@ -1030,7 +1030,7 @@ test("the manifest dedupes by kind, name and scope, and every change is flushed"
 	assert.equal(Manifest.load(dir).data.entries[1].state, "deleted");
 });
 
-test("an empty gate reports exactly why it failed, and a kept teardown leaves no cleanup marker", async () => {
+test("an empty gate reports exactly why it failed, and a kept teardown leaves no cleanup marker (#4331)", async () => {
 	assert.throws(
 		() => gateVerdict([]),
 		(error) => {
@@ -1051,7 +1051,7 @@ test("an empty gate reports exactly why it failed, and a kept teardown leaves no
 	assert.equal(Object.getOwnPropertyDescriptor(primary, "cleanupCause"), undefined);
 });
 
-test("run and suite status follow any failed suite, coverage gap, invariant or fault", () => {
+test("run and suite status follow any failed suite, coverage gap, invariant or fault (#4331)", () => {
 	const base = { cancelled: false, error: undefined, coverage: [{ status: "exercised" }], teardownOk: true };
 	assert.equal(
 		overallStatus({
@@ -1087,7 +1087,7 @@ test("run and suite status follow any failed suite, coverage gap, invariant or f
 	);
 });
 
-test("the Markdown report renders every section exactly", () => {
+test("the Markdown report renders every section exactly (#4331)", () => {
 	const fixture = report({
 		runId: "adt2611050230-beef",
 		status: "failed",
@@ -1317,7 +1317,7 @@ test("the Markdown report renders every section exactly", () => {
 	assert.equal(readFileSync(paths.json, "utf8"), `${JSON.stringify({ ...minimal, paths }, null, "\t")}\n`);
 });
 
-test("the sweeper sends exact queries, survives empty listings and hands teardown the run's own peerings", async () => {
+test("the sweeper sends exact queries, survives empty listings and hands teardown the run's own peerings (#4331)", async () => {
 	const control = { resourceGroup: "control-rg", vnet: "control-vnet" };
 	const run = "adt2611050230-0001";
 	const other = "adt2611050230-0002";
@@ -1428,7 +1428,7 @@ test("the sweeper sends exact queries, survives empty listings and hands teardow
 	assert.ok(!Object.hasOwn(straggler.runs[0], "error"));
 });
 
-test("sweeper flag errors carry their exact expectation", () => {
+test("sweeper flag errors carry their exact expectation (#4331)", () => {
 	const fields = (argv: string[]) => {
 		try {
 			parseSweepArgs(argv);
@@ -1474,7 +1474,7 @@ test("sweeper flag errors carry their exact expectation", () => {
 	});
 });
 
-test("the sweeper names every az operation, tolerates empty listings and tears each run down with its own peerings", async () => {
+test("the sweeper names every az operation, tolerates empty listings and tears each run down with its own peerings (#4331)", async () => {
 	const control = { resourceGroup: "control-rg", vnet: "control-vnet" };
 	const first = "adt2611050230-0001";
 	const second = "adt2611050230-0002";
@@ -1578,7 +1578,7 @@ test("the sweeper names every az operation, tolerates empty listings and tears e
 	assert.deepEqual(quiet, ["group list", "resource list", "network vnet", "group list"]);
 });
 
-test("manifest updates find the entry by kind, name and scope together", () => {
+test("manifest updates find the entry by kind, name and scope together (#4331)", () => {
 	const dir = mkdtempSync(join(tmpdir(), "adt-manifest-3-"));
 	const manifest = new Manifest(dir, {
 		runId: "r",

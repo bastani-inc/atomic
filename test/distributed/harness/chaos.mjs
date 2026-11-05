@@ -200,6 +200,11 @@ export function parseNetemStats(text) {
 }
 
 /**
+ * @typedef {{ result: string, ms: number }} VolumeProbe
+ * @typedef {{ fsck: number, mounted: boolean }} VolumeRemount
+ */
+
+/**
  * A loop-backed device-mapper volume mounted at `/mnt/<name>`; its table can be swapped for delay or error.
  * @param {{ name: string, sizeMb: number, user: string }} input
  */

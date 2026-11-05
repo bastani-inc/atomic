@@ -10,7 +10,7 @@ import {
 	subnetRules,
 } from "../distributed/harness/network.mjs";
 
-test("parses CIDR blocks and rejects malformed ones", () => {
+test("parses CIDR blocks and rejects malformed ones (#4331)", () => {
 	assert.deepEqual(parseCidr("10.60.0.0/16"), { base: 0x0a3c0000, bits: 16 });
 	assert.deepEqual(parseCidr("10.60.1.7/16"), { base: 0x0a3c0000, bits: 16 });
 	assert.deepEqual(parseCidr("10.20.1.4"), { base: 0x0a140104, bits: 32 });
@@ -28,7 +28,7 @@ test("parses CIDR blocks and rejects malformed ones", () => {
 		assert.equal(parseCidr(bad), undefined, bad);
 });
 
-test("detects overlap and containment, treating unparseable input as overlapping", () => {
+test("detects overlap and containment, treating unparseable input as overlapping (#4331)", () => {
 	assert.ok(cidrsOverlap("10.20.0.0/16", "10.20.1.0/24"));
 	assert.ok(cidrsOverlap("10.20.1.0/24", "10.20.0.0/16"));
 	assert.ok(!cidrsOverlap("10.60.0.0/16", "10.61.0.0/16"));
@@ -47,7 +47,7 @@ test("detects overlap and containment, treating unparseable input as overlapping
 	assert.ok(!cidrWithin("10.20.0.0/16", "x"));
 });
 
-test("allocates one free /16 per distinct region from 10.60 upward", () => {
+test("allocates one free /16 per distinct region from 10.60 upward (#4331)", () => {
 	const pool = { firstSecondOctet: 60, lastSecondOctet: 255 };
 	assert.deepEqual(
 		[...(allocateAddressSpaces(["eastus2", "westus3"], ["10.20.0.0/16"], pool) ?? [])],
@@ -73,14 +73,14 @@ test("allocates one free /16 per distinct region from 10.60 upward", () => {
 	assert.deepEqual([...(allocateAddressSpaces([], [], pool) ?? [])], []);
 });
 
-test("derives the subnet and host addresses from a region's /16", () => {
+test("derives the subnet and host addresses from a region's /16 (#4331)", () => {
 	const { subnet, host } = subnetOf("10.61.0.0/16");
 	assert.equal(subnet, "10.61.0.0/24");
 	assert.equal(host(10), "10.61.0.10");
 	assert.equal(host(122), "10.61.0.122");
 });
 
-test("NSG rules deny Internet first, allow only SSH from control and database ports from run VNets", () => {
+test("NSG rules deny Internet first, allow only SSH from control and database ports from run VNets (#4331)", () => {
 	const rules = subnetRules({
 		sshSource: "10.20.1.0/24",
 		runPrefixes: ["10.60.0.0/16", "10.61.0.0/16"],
@@ -235,11 +235,11 @@ function effective(overrides: Record<string, unknown>[] = []) {
 }
 const allowed = ["10.20.1.0/24", "10.60.0.0/16", "10.61.0.0/16"];
 
-test("accepts the harness's own effective rules", () => {
+test("accepts the harness's own effective rules (#4331)", () => {
 	assert.deepEqual(evaluateEffectiveRules("nic", effective(), allowed), []);
 });
 
-test("reports an Internet, star or public allow regardless of priority", () => {
+test("reports an Internet, star or public allow regardless of priority (#4331)", () => {
 	const allow = (source: string, priority = 300) => ({
 		name: `securityRules/bad-${source}`,
 		priority,
@@ -290,7 +290,7 @@ test("reports an Internet, star or public allow regardless of priority", () => {
 	assert.deepEqual(evaluateEffectiveRules("nic", effective([allow("10.60.0.20/32")]), allowed), []);
 });
 
-test("requires the Internet deny and overrides of the implicit allows", () => {
+test("requires the Internet deny and overrides of the implicit allows (#4331)", () => {
 	const without = (name: string) => effective().filter((rule) => rule.name !== name);
 	assert.deepEqual(evaluateEffectiveRules("nic", without("securityRules/deny-internet-in"), allowed), [
 		{ check: "internet-deny", subject: "nic", detail: "no explicit inbound deny from Internet covering all traffic" },
@@ -354,13 +354,13 @@ test("requires the Internet deny and overrides of the implicit allows", () => {
 	);
 });
 
-test("CIDR edge cases: a /0 mask, overlap at the far edge", () => {
+test("CIDR edge cases: a /0 mask, overlap at the far edge (#4331)", () => {
 	assert.deepEqual(parseCidr("10.1.2.3/0"), { base: 0, bits: 0 });
 	assert.ok(cidrsOverlap("10.60.0.0/16", "10.60.255.255/32"));
 	assert.ok(cidrsOverlap("10.60.255.255/32", "10.60.0.0/16"));
 });
 
-test("effective-rule evaluation follows priority, access and exact allowlist entries", () => {
+test("effective-rule evaluation follows priority, access and exact allowlist entries (#4331)", () => {
 	const allowAt = (name: string, source: string, priority: number, port = "22") => ({
 		name: `securityRules/${name}`,
 		priority,
@@ -414,7 +414,7 @@ test("effective-rule evaluation follows priority, access and exact allowlist ent
 	assert.equal(evaluateEffectiveRules("nic", portsOnly, allowed)[0]?.check, "internet-deny");
 });
 
-test("rule order in the input does not matter, and only denies can shadow an implicit allow", () => {
+test("rule order in the input does not matter, and only denies can shadow an implicit allow (#4331)", () => {
 	const lateInternetDeny = {
 		name: "securityRules/late-deny",
 		priority: 4090,

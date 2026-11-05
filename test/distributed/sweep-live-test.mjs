@@ -61,8 +61,7 @@ try {
 		],
 		"create expired group",
 	);
-	/** @type {{ newVNet: { id: string } }} */
-	const vnet = /** @type {any} */ (
+	const vnet = /** @type {{ newVNet: { id: string } }} */ (
 		await az(
 			[
 				"network",
