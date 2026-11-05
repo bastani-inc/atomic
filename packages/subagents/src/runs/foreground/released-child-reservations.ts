@@ -1,3 +1,4 @@
+import { isStaleExtensionContextError } from "@bastani/atomic";
 import type { IntercomEventBus, RunSyncOptions } from "../../shared/types.js";
 import { subagentChildRecordsOf } from "./subagent-child-card-state.js";
 import {
@@ -34,9 +35,25 @@ export interface ReleasedChildHoldFailure {
 	handled?: boolean;
 }
 
+function closedOwnerSession(error: Error): boolean {
+	return (error as Error & { code?: string }).code === "SessionClosed" || isStaleExtensionContextError(error);
+}
+
+/** Tell the launching session; false when it has closed, so there is nobody left to tell. */
+function emitToOwner(events: IntercomEventBus, eventName: string, payload: object): boolean {
+	try {
+		events.emit(eventName, payload);
+		return true;
+	} catch (error) {
+		if (closedOwnerSession(error as Error)) return false;
+		throw error;
+	}
+}
+
 function recordHoldFailure(events: IntercomEventBus, childNames: readonly string[], error: Error): void {
+	if (closedOwnerSession(error)) return;
 	const failure: ReleasedChildHoldFailure = { childNames, error };
-	events.emit(SUBAGENT_HOLD_FAILURE_EVENT, failure);
+	if (!emitToOwner(events, SUBAGENT_HOLD_FAILURE_EVENT, failure)) return;
 	if (!failure.handled) console.error("Released subagent reservation failed (hold-failed); no owner is listening");
 }
 
@@ -71,7 +88,9 @@ export function reserveReleasedChildren(
 ): Promise<void> {
 	if (children.length === 0) return Promise.resolve();
 	return emitIntercomRequest(events, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children }).then(
-		() => events.emit(SUBAGENT_HOLD_RECOVERED_EVENT, {}),
+		() => {
+			emitToOwner(events, SUBAGENT_HOLD_RECOVERED_EVENT, {});
+		},
 		(error: Error) =>
 			recordHoldFailure(
 				events,

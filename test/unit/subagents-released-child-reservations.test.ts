@@ -228,3 +228,34 @@ for (const operation of ["drop", "acknowledge"] as const) {
 		}
 	});
 }
+
+test("a reservation, drop or acknowledgement after the launching session closed throws nothing and reports nothing (#4326)", async () => {
+	const sessionClosed = () => Object.assign(new Error("SessionClosed"), { code: "SessionClosed" });
+	const closed: IntercomEventBus = {
+		on: () => () => {},
+		emit() {
+			throw sessionClosed();
+		},
+	};
+	const refusedThenClosed: IntercomEventBus = {
+		on: () => () => {},
+		emit(channel, data) {
+			if (channel === SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT) {
+				(data as { completion?: Promise<void> }).completion = Promise.reject(new Error("broker refused"));
+				return;
+			}
+			throw sessionClosed();
+		},
+	};
+	const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const child = { childName: "gone-child", aliases: [], wake: true };
+		await reserveReleasedChildren(closed, [child]);
+		await dropReleasedChildren(closed, ["gone-child"]);
+		await acknowledgeReleasedChildWake(closed, "gone-child");
+		await reserveReleasedChildren(refusedThenClosed, [child]);
+		assert.equal(reported.mock.calls.length, 0);
+	} finally {
+		reported.mockRestore();
+	}
+});
