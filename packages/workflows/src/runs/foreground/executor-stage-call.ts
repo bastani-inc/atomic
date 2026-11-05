@@ -114,7 +114,7 @@ export function createTrackedStageCaller(input: {
 		if (models?.decide === undefined || userMessage === undefined || models.autoAdvanceAfterSteer?.() === false)
 			return undefined;
 		const messageSeq = runtime.state.userMessageSeq;
-		let decision: StageReadinessDecision;
+		let decision: StageReadinessDecision | undefined;
 		try {
 			const result = await models.decide({
 				state: readinessState({
@@ -130,15 +130,11 @@ export function createTrackedStageCaller(input: {
 			decision = readinessDecisionRecord(readinessVerdict(result), result.model);
 		} catch (error) {
 			if (signal.aborted) throw error;
-			if (runtime.state.userMessageSeq !== messageSeq) return "superseded";
-			if (decisionModelGivesNoProbabilities(error)) {
-				runtime.state.latestUserMessage = undefined;
-				return undefined;
-			}
-			decision = readinessFailureRecord(error);
+			decision = decisionModelGivesNoProbabilities(error) ? undefined : readinessFailureRecord(error);
 		}
 		if (runtime.state.userMessageSeq !== messageSeq) return "superseded";
 		runtime.state.latestUserMessage = undefined;
+		if (decision === undefined) return undefined;
 		recordReadinessDecision(runtime, decision);
 		if (decision.outcome === "advanced") return { action: "advance" };
 		if (decision.outcome === "stayed") return { action: "stay" };
@@ -147,11 +143,7 @@ export function createTrackedStageCaller(input: {
 
 	/** Waits while the stage's session runs or admits a turn, such as the one a newer user message started. */
 	const waitForNewerUserTurn = async (): Promise<void> => {
-		while (
-			runtime.innerCtx.isStreaming ||
-			runtime.innerCtx.__agentSession()?.isStreaming === true ||
-			runtime.innerCtx.__turnLoopBusy?.() === true
-		)
+		while (runtime.innerCtx.isStreaming || runtime.innerCtx.__turnLoopBusy?.() === true)
 			await runtime.raceStageSessionHeartbeat(
 				raceAbort(new Promise<void>((resolve) => setTimeout(resolve, STAGE_TURN_POLL_MS)), runtime.signal),
 			);
@@ -346,16 +338,19 @@ export function createTrackedStageCaller(input: {
 							}
 							const controller = new AbortController();
 							runtime.state.readinessController = controller;
-							let decision: ReadinessDecision | undefined;
+							let decision: ReadinessDecision;
+							let superseded = false;
 							try {
 								const readinessSignal = AbortSignal.any([runtime.signal, controller.signal]);
 								const decided = await decideReadiness(readinessSignal);
-								if (decided !== "superseded") {
-									decision = decided ?? (await confirmReadiness(readinessSignal));
-									// An answer can win its promise race while pause still wins admission.
-									if (decision.action === "advance" || decision.message !== undefined) {
-										await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
-									}
+								superseded = decided === "superseded";
+								decision =
+									decided === "superseded"
+										? { action: "stay" }
+										: (decided ?? (await confirmReadiness(readinessSignal)));
+								// An answer can win its promise race while pause still wins admission.
+								if (decision.action === "advance" || decision.message !== undefined) {
+									await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
 								}
 								runtime.signal.throwIfAborted();
 								if (controller.signal.aborted) {
@@ -370,18 +365,14 @@ export function createTrackedStageCaller(input: {
 								}
 								throw error;
 							}
-							if (decision?.action === "advance") break;
+							if (decision.action === "advance") break;
 							delete runtime.state.readinessController;
 							if (runtime.signal.aborted) break;
 							runtime.state.askUserQuestionObservedThisTurn = false;
 							runtime.state.chatAnswerObservedThisTurn = false;
-							if (decision === undefined) {
+							if (superseded) {
 								await waitForNewerUserTurn();
-								const responseText = runtime.innerCtx.__getLastAssistantText();
-								if (responseText !== undefined) {
-									result = responseText as T;
-									if (runtime.budget.enabled) stageResultBeforeBudget = responseText;
-								}
+								result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
 								repeatReadinessAfterChatTurn = true;
 							} else if (decision.message !== undefined) {
 								// Text typed into the readiness question is the user's message; "chat more" is not.

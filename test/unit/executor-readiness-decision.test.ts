@@ -60,8 +60,12 @@ interface SessionControl {
 	readonly beforeQuestion?: Promise<void>;
 	/** How the question was answered: typed into "Chat about this", or by picking an option. */
 	readonly answerKind?: "chat" | "option";
-	/** Holds each later user turn while it streams. */
+	/** Holds each later user turn while it runs. */
 	readonly userTurn?: () => Promise<void>;
+	/** `false`: a held user turn is only admitted, and the session does not report streaming. */
+	readonly userTurnStreams?: boolean;
+	/** A steer to the idle stage starts its own turn on the session, outside message admission. */
+	readonly steerStartsTurn?: boolean;
 }
 
 /** A stage that asks the user a question, which the user answers by typing `answer` into "Chat about this". */
@@ -101,7 +105,7 @@ function steeredSession(
 				});
 				lastAssistantText = "Applied the blue theme.";
 			} else {
-				streaming = true;
+				streaming = control.userTurnStreams !== false;
 				await control.userTurn?.();
 				streaming = false;
 				events.push(`user-turn:${text}`);
@@ -117,6 +121,17 @@ function steeredSession(
 		},
 		get messages() {
 			return messages as never;
+		},
+		async steer(text: string) {
+			if (!control.steerStartsTurn) return;
+			if (recordMessages) messages.push({ role: "user", content: text });
+			streaming = true;
+			await control.userTurn?.();
+			streaming = false;
+			events.push(`user-turn:${text}`);
+			lastAssistantText = `Handled: ${text}`;
+			if (recordMessages) messages.push({ role: "assistant", content: [{ type: "text", text: lastAssistantText }] });
+			emit({ type: "agent_end", messages: [] });
 		},
 		get isStreaming() {
 			return streaming;
@@ -398,6 +413,7 @@ describe("executor — readiness after a steer decided by the decision model (#4
 			assert.equal(decide.mock.calls.length, 2);
 			assert.equal(decide.mock.calls[1]![0].state.user_message, "Also make the header bold.");
 			assert.equal(decide.mock.calls[1]![0].state.stage_reply, "Handled: Also make the header bold.");
+			assert.equal(themeStage().result, "Handled: Also make the header bold.");
 			assert.deepEqual(
 				themeStage()
 					.notices?.filter((notice) => notice.kind === "decision")
@@ -407,45 +423,54 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		});
 	}
 
-	test("a verdict that arrives while the newer message's turn still runs waits for that turn before judging it", async () => {
-		store.clear();
-		let releaseFirst!: () => void;
-		let finishTurn!: () => void;
-		let calls = 0;
-		const { result, decide, events, registry } = launch({
-			decide: async () => {
-				calls += 1;
-				if (calls === 1)
-					await new Promise<void>((resolve) => {
-						releaseFirst = resolve;
-					});
-				return classified(0.93, 0.07, 0.91);
-			},
-			control: {
-				userTurn: () =>
-					new Promise<void>((resolve) => {
-						finishTurn = resolve;
-					}),
-			},
+	for (const [label, control, send] of [
+		["a streaming turn", {}, "prompt"],
+		["a turn still being admitted", { userTurnStreams: false }, "prompt"],
+		["a steer's turn outside message admission", { steerStartsTurn: true }, "steer"],
+	] as const) {
+		test(`a verdict that arrives while ${label} for the newer message runs waits for that turn before judging it`, async () => {
+			store.clear();
+			let releaseFirst!: () => void;
+			let finishTurn!: () => void;
+			let calls = 0;
+			const { result, decide, events, registry } = launch({
+				decide: async () => {
+					calls += 1;
+					if (calls === 1)
+						await new Promise<void>((resolve) => {
+							releaseFirst = resolve;
+						});
+					return classified(0.93, 0.07, 0.91);
+				},
+				control: {
+					...control,
+					userTurn: () =>
+						new Promise<void>((resolve) => {
+							finishTurn = resolve;
+						}),
+				},
+			});
+			const deadline = Date.now() + 2_000;
+			while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
+			const handle = registry.get(store.runs()[0]!.id, themeStage().id);
+			assert.ok(handle);
+			const delivery =
+				send === "steer" ? handle.steer("Also make the header bold.") : handle.prompt("Also make the header bold.");
+			while (finishTurn === undefined && Date.now() < deadline) await sleep(5);
+			releaseFirst();
+			await sleep(150);
+			assert.equal(decide.mock.calls.length, 1);
+			assert.equal(themeStage().status === "completed", false);
+			assert.equal(themeStage().readinessDecision, undefined);
+			finishTurn();
+			await delivery;
+			assert.equal((await result).status, "completed");
+			assert.deepEqual(events, ["user-turn:Also make the header bold.", "next:completed"]);
+			assert.equal(decide.mock.calls.length, 2);
+			assert.equal(decide.mock.calls[1]![0].state.stage_reply, "Handled: Also make the header bold.");
+			assert.equal(themeStage().result, "Handled: Also make the header bold.");
 		});
-		const deadline = Date.now() + 2_000;
-		while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
-		const handle = registry.get(store.runs()[0]!.id, themeStage().id);
-		assert.ok(handle);
-		const delivery = handle.prompt("Also make the header bold.");
-		while (finishTurn === undefined && Date.now() < deadline) await sleep(5);
-		releaseFirst();
-		await sleep(150);
-		assert.equal(decide.mock.calls.length, 1);
-		assert.equal(themeStage().status === "completed", false);
-		assert.equal(themeStage().readinessDecision, undefined);
-		finishTurn();
-		await delivery;
-		assert.equal((await result).status, "completed");
-		assert.deepEqual(events, ["user-turn:Also make the header bold.", "next:completed"]);
-		assert.equal(decide.mock.calls.length, 2);
-		assert.equal(decide.mock.calls[1]![0].state.stage_reply, "Handled: Also make the header bold.");
-	});
+	}
 
 	for (const [label, answerKind, answer] of [
 		["picking an option", "option", "Blue"],
