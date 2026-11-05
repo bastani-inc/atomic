@@ -949,6 +949,57 @@ describe.skipIf(isWindows)("git installation (#4322)", () => {
 		assert.equal(fetchMock.mock.calls.length, 1);
 	});
 
+	it("keeps replacement callers together when a cancelled provision finishes later", async () => {
+		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
+		let firstStarted!: () => void;
+		let secondStarted!: () => void;
+		let rejectFirst!: (reason: Error) => void;
+		let finishSecond!: (response: Response) => void;
+		let secondSignal: AbortSignal | undefined;
+		const firstReady = new Promise<void>((resolveReady) => {
+			firstStarted = resolveReady;
+		});
+		const secondReady = new Promise<void>((resolveReady) => {
+			secondStarted = resolveReady;
+		});
+		const response = () => new Response(new Uint8Array(fake.bytes));
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+			if (fetchMock.mock.calls.length === 1)
+				return new Promise<Response>((_resolve, reject) => {
+					rejectFirst = reject;
+					firstStarted();
+				});
+			if (fetchMock.mock.calls.length === 2)
+				return new Promise<Response>((resolveResponse) => {
+					secondSignal = init?.signal ?? undefined;
+					finishSecond = resolveResponse;
+					secondStarted();
+				});
+			return Promise.resolve(response());
+		});
+		await tools.withGitProvisionSettingsForTest({ release: fake.release, lockPollMs: 10 }, async () => {
+			const firstController = new AbortController();
+			const secondController = new AbortController();
+			const firstReason = new Error("first caller left");
+			const secondReason = new Error("second caller left");
+			const first = tools.resolveGit({ signal: firstController.signal }).catch((error: Error) => error);
+			await firstReady;
+			firstController.abort(firstReason);
+			assert.equal(await first, firstReason);
+			const second = tools.resolveGit({ signal: secondController.signal }).catch((error: Error) => error);
+			rejectFirst(new Error("cancelled fetch settled"));
+			await secondReady;
+			const third = tools.resolveGit();
+			secondController.abort(secondReason);
+			const sharedDownloadAborted = secondSignal?.aborted;
+			finishSecond(response());
+			assert.equal(await second, secondReason);
+			assert.equal((await third).source, "provisioned");
+			assert.equal(sharedDownloadAborted, false);
+			assert.equal(fetchMock.mock.calls.length, 2);
+		});
+	});
+
 	it("cancels the download when every caller cancels, installing nothing", async () => {
 		const fake = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')));
 		vi.spyOn(globalThis, "fetch").mockImplementation(
