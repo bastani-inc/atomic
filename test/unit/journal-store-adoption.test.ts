@@ -1449,16 +1449,3 @@ test("recovery follows where the catalog names a run when it settles, not where 
 	);
 	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
 });
-
-function countCalls<T extends object>(target: T, methods: readonly (keyof T & string)[]): Record<string, number> {
-	const counts: Record<string, number> = {};
-	for (const method of methods) {
-		counts[method] = 0;
-		const original = (target[method] as (...args: never[]) => unknown).bind(target);
-		Reflect.set(target, method, (...args: never[]) => {
-			counts[method]!++;
-			return original(...args);
-		});
-	}
-	return counts;
-}
