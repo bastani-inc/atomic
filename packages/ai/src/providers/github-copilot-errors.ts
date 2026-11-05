@@ -402,17 +402,19 @@ function isRelayedFamilyMember(value: unknown): value is StructuralFamilyMember 
 
 /** Rebuild a relayed family member as its class; one that carries only its name and code gets that code's hint. */
 function rebuildRelayedFamilyMember(found: StructuralFamilyMember): GitHubCopilotError | undefined {
-	return (
-		deserializeGitHubCopilotError(found) ??
-		deserializeGitHubCopilotError({
-			name: found.name,
-			code: found.code,
-			message: typeof found.message === "string" ? found.message : "",
-			hint: HINTS[found.code],
-			retryable: RETRYABLE_CODES.has(found.code),
-			fields: {},
-		})
-	);
+	const deserialized = deserializeGitHubCopilotError(found);
+	if (deserialized) return deserialized;
+	if ("fields" in found || "hint" in found || "retryable" in found || "cause" in found) return undefined;
+	if (Reflect.ownKeys(found).some((key) => key !== "name" && key !== "code" && key !== "message")) return undefined;
+	if ("message" in found && typeof found.message !== "string") return undefined;
+	return deserializeGitHubCopilotError({
+		name: found.name,
+		code: found.code,
+		message: found.message ?? "",
+		hint: HINTS[found.code],
+		retryable: RETRYABLE_CODES.has(found.code),
+		fields: {},
+	});
 }
 
 /**
@@ -510,7 +512,14 @@ export function serializeGitHubCopilotError(error: GitHubCopilotError): Serializ
 
 function rehydrateCause(cause: SerializedGitHubCopilotErrorCause | undefined): Error | undefined {
 	if (cause === undefined) return undefined;
-	const error = new Error(cause.message, { cause: rehydrateCause(cause.cause) });
+	const family = isRelayedFamilyMember(cause)
+		? rebuildRelayedFamilyMember({ name: cause.name, code: cause.code, message: cause.message })
+		: undefined;
+	const error = family ?? new Error(cause.message);
+	Object.defineProperties(error, {
+		message: { value: cause.message },
+		cause: { value: rehydrateCause(cause.cause), writable: true, configurable: true },
+	});
 	Object.defineProperty(error, "name", { value: cause.name });
 	if (cause.code !== undefined) Object.defineProperty(error, "code", { value: cause.code, enumerable: true });
 	return error;
@@ -694,6 +703,7 @@ function nonEmptyString(value: unknown): string | undefined {
 type ProviderFailure = Error & {
 	status?: unknown;
 	code?: unknown;
+	type?: unknown;
 	error?: unknown;
 	requestID?: unknown;
 	request_id?: unknown;
@@ -723,13 +733,17 @@ function requestIdOf(error: ProviderFailure): string | undefined {
 	return nonEmptyString(error.requestID) ?? nonEmptyString(error.request_id) ?? nonEmptyString(header);
 }
 
-/** The provider's code: the SDK's `code`, then the parsed body's `error.code` or `code`. */
+/**
+ * The provider's code: the SDK's `code`, then the parsed body's `error.code` or `code`. A Messages `error` event
+ * arrives with no HTTP status and names its failure only by `type`, so that type is its code.
+ */
 function providerCodeOf(error: ProviderFailure): string | undefined {
 	const body = structural(error.error) as { code?: unknown; error?: unknown } | undefined;
 	return (
 		nonEmptyString(error.code) ??
 		nonEmptyString((structural(body?.error) as { code?: unknown } | undefined)?.code) ??
-		nonEmptyString(body?.code)
+		nonEmptyString(body?.code) ??
+		(error.status === undefined && error.error !== undefined ? nonEmptyString(error.type) : undefined)
 	);
 }
 
@@ -740,6 +754,10 @@ function providerDetailOf(error: ProviderFailure, status: number | undefined): s
 		nonEmptyString((structural(body?.error) as { message?: unknown } | undefined)?.message) ??
 		nonEmptyString(body?.message);
 	if (bodyMessage !== undefined) return truncate(bodyMessage);
+	if (typeof error.error === "string") {
+		const text = nonEmptyString(error.error);
+		return text === undefined ? undefined : truncate(text);
+	}
 	const message =
 		status !== undefined && error.message.startsWith(`${status} `)
 			? error.message.slice(`${status} `.length)
@@ -768,6 +786,19 @@ const PROVIDER_CODE_FAILURES: Readonly<
 	insufficient_quota: (context, cause) => new GitHubCopilotQuotaExhaustedError(context, { cause }),
 	quota_exceeded: (context, cause) => new GitHubCopilotQuotaExhaustedError(context, { cause }),
 	server_error: (context, cause) => new GitHubCopilotServiceUnavailableError(context, { cause }),
+	invalid_request_error: (context, cause) =>
+		badRequestTextFailure(undefined, context, cause) ??
+		new GitHubCopilotInvalidRequestError("rejected", context, { cause }),
+	authentication_error: (context, cause) => new GitHubCopilotAuthenticationError(context, { cause }),
+	permission_error: (context, cause) => new GitHubCopilotAuthenticationError(context, { cause }),
+	billing_error: (context, cause) => new GitHubCopilotQuotaExhaustedError(context, { cause }),
+	not_found_error: (context, cause) => new GitHubCopilotModelUnavailableError("not-found", context, { cause }),
+	request_too_large: (context, cause) => promptTooLarge(context, cause),
+	rate_limit_error: (context, cause) =>
+		new GitHubCopilotRateLimitError(context, getProviderRetryAfterMs(cause), { cause }),
+	overloaded_error: (context, cause) => new GitHubCopilotServiceUnavailableError(context, { cause }),
+	api_error: (context, cause) => new GitHubCopilotServiceUnavailableError(context, { cause }),
+	timeout_error: (context, cause) => new GitHubCopilotServiceUnavailableError(context, { cause }),
 };
 
 const PROMPT_TOKENS_PATTERN = /prompt token count of (\d+) exceeds the limit of (\d+)/i;
@@ -916,7 +947,7 @@ export function classifyGitHubCopilotFailure(
 	if (providerCode !== undefined) {
 		return new GitHubCopilotUnrecognizedResponseError("unknown-error-event", context, { cause: providerError });
 	}
-	if (providerError instanceof SyntaxError) {
+	if (providerError instanceof SyntaxError || providerError.error !== undefined) {
 		return new GitHubCopilotUnrecognizedResponseError("malformed-body", context, { cause: providerError });
 	}
 	return failure.streamStarted ? new GitHubCopilotStreamEndedEarlyError(context, { cause: providerError }) : undefined;

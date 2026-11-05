@@ -28,6 +28,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - `github-copilot` Gemini models keep the opaque `reasoning_opaque` value Copilot streams as a redacted thinking block and send it back on the same model's next request, so multi-turn tool loops keep their reasoning state ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Chat Completions usage counts a top-level `reasoning_tokens` as output when the response's `total_tokens` shows it sits outside `completion_tokens`, as on `github-copilot` Gemini models, so their output tokens, totals and cost are no longer understated ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 - Responses stream `error` and `response.failed` events keep the provider's error code on the thrown error ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
+- Messages stream errors keep their structured provider type, request ID and retry hints, so a rejected Copilot request is not retried as a cut-off stream. Error guards reject malformed serialized payloads instead of rebuilding them without their context ([#4324](https://github.com/bastani-inc/atomic/issues/4324))
 
 ## [0.9.71] - 2026-11-03
 

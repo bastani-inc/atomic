@@ -330,6 +330,12 @@ describe("GitHub Copilot error family (#4324)", () => {
 		}
 	});
 
+	it("does not walk function-valued cause carriers", () => {
+		const callback = Object.assign(() => undefined, { cause: new GitHubCopilotQuotaExhaustedError(context) });
+		assert.equal(findGitHubCopilotError(callback), undefined);
+		assert.equal(isGitHubCopilotQuotaExhaustedError(callback), false);
+	});
+
 	it.each(CLASS_CASES)("$name survives a process boundary as its own class", (testCase) => {
 		const cause = Object.assign(new Error("provider said no"), { code: "fixture_code" });
 		const original = deserializeGitHubCopilotError({
@@ -467,6 +473,13 @@ describe("GitHub Copilot error family (#4324)", () => {
 			"a missing message",
 			{ ...serializeGitHubCopilotError(new GitHubCopilotAuthenticationError(context)), message: 1 },
 		],
+		[
+			"an invalid reason",
+			{
+				...serializeGitHubCopilotError(new GitHubCopilotModelUnavailableError("integration", context)),
+				fields: { ...BASE_FIELDS, reason: "invalid-reason" },
+			},
+		],
 		["a missing hint", { ...serializeGitHubCopilotError(new GitHubCopilotAuthenticationError(context)), hint: 1 }],
 		[
 			"a non-boolean retryable",
@@ -516,6 +529,34 @@ describe("GitHub Copilot error family (#4324)", () => {
 		],
 	])("rejects %s at the boundary", (_label, value) => {
 		assert.equal(deserializeGitHubCopilotError(value), undefined);
+		assert.equal(findGitHubCopilotError(value), undefined);
+		assert.equal(isGitHubCopilotError(value), false);
+		assert.equal(isRetryableGitHubCopilotError(value), false);
+		for (const guard of ALL_GUARDS) assert.equal(guard(value), false, guard.name);
+	});
+
+	it.each([
+		{ message: 1 },
+		{ message: undefined },
+		{ fields: undefined },
+		{ hint: undefined },
+		{ retryable: undefined },
+		{ cause: undefined },
+		{ modelId: "gemini-4-argon" },
+	])("rejects incomplete relay envelopes without replacing their context: %j", (extra) => {
+		const value = { name: "GitHubCopilotRateLimitError", code: "rate-limited", ...extra };
+		assert.equal(findGitHubCopilotError(value), undefined);
+		assert.equal(isGitHubCopilotRateLimitError(value), false);
+	});
+
+	it.each(["fields", "hint", "retryable", "cause"])("rejects malformed relays with inherited %s", (field) => {
+		const value = Object.assign(Object.create({ [field]: { reason: "invalid-reason" } }), {
+			name: "GitHubCopilotModelUnavailableError",
+			code: "model-unavailable",
+		});
+		assert.equal(deserializeGitHubCopilotError(value), undefined);
+		assert.equal(findGitHubCopilotError(value), undefined);
+		assert.equal(isGitHubCopilotModelUnavailableError(value), false);
 	});
 
 	it("bounds a serialized cause chain and rejects one deeper than the bound", () => {
@@ -640,6 +681,22 @@ describe("GitHub Copilot errors carried by failed assistant messages in a cause 
 		const typed = new GitHubCopilotStreamEndedEarlyError(context);
 		assert.equal(findGitHubCopilotError(wrapped(typed, 7)), typed);
 		assert.equal(findGitHubCopilotError(wrapped(typed, 8)), undefined);
+	});
+
+	it("keeps concrete guards working on rehydrated family causes", () => {
+		const inner = new GitHubCopilotQuotaExhaustedError(context, { cause: new Error("provider failure") });
+		const outer = new GitHubCopilotRateLimitError(context, undefined, { cause: inner });
+		const rebuilt = deserializeGitHubCopilotError(JSON.parse(JSON.stringify(serializeGitHubCopilotError(outer))));
+		assert.ok(rebuilt instanceof GitHubCopilotRateLimitError);
+		assert.equal(isGitHubCopilotQuotaExhaustedError(rebuilt), true);
+		assert.ok(rebuilt.cause instanceof GitHubCopilotQuotaExhaustedError);
+		assert.equal(rebuilt.cause.message, inner.message);
+		assert.ok(rebuilt.cause.cause instanceof Error);
+		assert.equal(rebuilt.cause.cause.message, "provider failure");
+		rebuilt.cause.cause = new GitHubCopilotAuthenticationError(context);
+		assert.equal(isGitHubCopilotAuthenticationError(rebuilt), true);
+		delete rebuilt.cause.cause;
+		assert.equal(isGitHubCopilotAuthenticationError(rebuilt), false);
 	});
 
 	it("returns the first typed error but lets a class guard find a later one", () => {
@@ -997,9 +1054,26 @@ describe("GitHub Copilot failure classification at the provider boundary (#4324)
 		);
 	});
 
+	it("uses the HTTP status rather than a stream-only type on an HTTP error", () => {
+		const rejected = Object.assign(new Error("No auth"), {
+			status: 401,
+			type: "api_error",
+			error: { error: { type: "api_error", message: "No auth" } },
+		});
+		const typed = classifyGitHubCopilotFailure(rejected, failure);
+		assert.ok(typed instanceof GitHubCopilotAuthenticationError);
+		assert.equal(typed.status, 401);
+		assert.equal(typed.providerCode, undefined);
+		assert.equal(typed.retryable, false);
+	});
+
 	it("leaves a failure that never reached Copilot to the generic network handling", () => {
 		assert.equal(classifyGitHubCopilotFailure(new Error("fetch failed"), failure), undefined);
 		assert.equal(classifyGitHubCopilotFailure("thrown text", failure), undefined);
+		assert.equal(
+			classifyGitHubCopilotFailure(Object.assign(new Error("fetch failed"), { type: "system" }), failure),
+			undefined,
+		);
 		assert.equal(
 			classifyGitHubCopilotFailure(Object.assign(new Error("500"), { status: "500" }), failure),
 			undefined,

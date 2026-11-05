@@ -7,6 +7,7 @@ import type {
 	BetaMessageParam as MessageParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import type { RawMessageStreamEvent, RefusalStopDetails } from "@anthropic-ai/sdk/resources/messages.js";
+import type { ErrorType } from "@anthropic-ai/sdk/resources/shared.js";
 import {
 	ANTHROPIC_FEDERATION_RULE_ID_ENV,
 	ANTHROPIC_IDENTITY_TOKEN_FILE_ENV,
@@ -1043,6 +1044,20 @@ async function* iterateSseMessages(
 	}
 }
 
+function parseStreamedErrorBody(data: string): NonNullable<unknown> {
+	try {
+		return JSON.parse(data) ?? data;
+	} catch {
+		return data;
+	}
+}
+
+function streamedErrorType(body: NonNullable<unknown>): ErrorType | undefined {
+	const error = (body as { error?: unknown }).error;
+	const type = typeof error === "object" && error !== null ? (error as { type?: unknown }).type : undefined;
+	return typeof type === "string" ? (type as ErrorType) : undefined;
+}
+
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
@@ -1056,7 +1071,8 @@ async function* iterateAnthropicEvents(
 
 	for await (const sse of iterateSseMessages(response.body, signal)) {
 		if (sse.event === "error") {
-			throw new Error(sse.data);
+			const body = parseStreamedErrorBody(sse.data);
+			throw new Anthropic.APIError(undefined, body, sse.data, response.headers, streamedErrorType(body));
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {

@@ -804,6 +804,181 @@ describe("GitHub Copilot failures on every API surface (#4324)", () => {
 		assert.ok(getGitHubCopilotError(message) instanceof GitHubCopilotStreamEndedEarlyError, message.errorMessage);
 	});
 
+	const messagesErrorData = (data: string, headers?: Record<string, string>) => () =>
+		new Response(
+			[
+				`event: message_start\ndata: ${JSON.stringify({
+					type: "message_start",
+					message: {
+						id: "msg_fixture",
+						role: "assistant",
+						content: [],
+						usage: { input_tokens: 5, output_tokens: 0 },
+					},
+				})}`,
+				`event: error\ndata: ${data}`,
+			].join("\n\n") + "\n\n",
+			{
+				status: 200,
+				headers: { "content-type": "text/event-stream", "request-id": "req-fixture-1", ...headers },
+			},
+		);
+
+	const messagesErrorEvent = (type: string, message: string, headers?: Record<string, string>) =>
+		messagesErrorData(
+			JSON.stringify({ type: "error", error: { type, message }, request_id: "req_fixture" }),
+			headers,
+		);
+
+	it.each([
+		["invalid_request_error", GitHubCopilotInvalidRequestError, "invalid-request", false],
+		["authentication_error", GitHubCopilotAuthenticationError, "authentication-failed", false],
+		["permission_error", GitHubCopilotAuthenticationError, "authentication-failed", false],
+		["billing_error", GitHubCopilotQuotaExhaustedError, "quota-exhausted", false],
+		["not_found_error", GitHubCopilotModelUnavailableError, "model-unavailable", false],
+		["request_too_large", GitHubCopilotPromptTooLargeError, "prompt-too-large", false],
+		["rate_limit_error", GitHubCopilotRateLimitError, "rate-limited", true],
+		["overloaded_error", GitHubCopilotServiceUnavailableError, "service-unavailable", true],
+		["api_error", GitHubCopilotServiceUnavailableError, "service-unavailable", true],
+		["timeout_error", GitHubCopilotServiceUnavailableError, "service-unavailable", true],
+		["fixture_unknown_error", GitHubCopilotUnrecognizedResponseError, "unrecognized-response", true],
+	] as const)("types a streamed Messages %s event by its own type", async (type, errorClass, code, retryable) => {
+		const { message } = await run(claude(), userTurn, [messagesErrorEvent(type, "Provider said no")]);
+		const error = getGitHubCopilotError(message);
+
+		assert.equal(message.stopReason, "error");
+		assert.ok(error instanceof errorClass, `${error?.name}: ${message.errorMessage}`);
+		assert.equal(error.code, code);
+		assert.equal(error.retryable, retryable);
+		assert.equal(error.providerCode, type);
+		assert.equal(error.detail, "Provider said no");
+		assert.equal(error.requestId, "req-fixture-1");
+		assert.equal(error.api, "anthropic-messages");
+		assert.ok(error.cause instanceof Error, String(error.cause));
+		assert.equal(isRetryableAssistantError(message), retryable);
+	});
+
+	it("keeps the raw streamed Messages error event on the typed error", async () => {
+		const raw = JSON.stringify({
+			type: "error",
+			error: { type: "invalid_request_error", message: "Bad field" },
+			request_id: "req_fixture",
+		});
+		const { message } = await run(claude(), userTurn, [messagesErrorEvent("invalid_request_error", "Bad field")]);
+		const error = getGitHubCopilotError(message);
+
+		assert.equal(error?.cause instanceof Error ? error.cause.message : undefined, raw);
+		assert.ok(message.errorMessage?.endsWith(raw), message.errorMessage);
+	});
+
+	it.each([
+		["text that is not JSON", "upstream exploded"],
+		["JSON null", "null"],
+		["a JSON number", "503"],
+		["a JSON boolean", "false"],
+		["a JSON string", '"upstream exploded"'],
+		["a JSON array", '["upstream exploded"]'],
+		["an object with no error", '{"type":"error"}'],
+		["an object whose error is not an object", '{"type":"error","error":"upstream exploded"}'],
+		["an object whose error is null", '{"type":"error","error":null}'],
+		["an object whose error has no type", '{"type":"error","error":{"message":"upstream exploded"}}'],
+		["an object whose error type is not a string", '{"type":"error","error":{"type":5,"message":"x"}}'],
+	])(
+		"types a streamed Messages error event with %s as an unrecognized response, not a cut-off stream",
+		async (_name, data) => {
+			const { message } = await run(claude(), userTurn, [messagesErrorData(data)]);
+			const error = getGitHubCopilotError(message);
+
+			assert.equal(message.stopReason, "error");
+			assert.ok(error instanceof GitHubCopilotUnrecognizedResponseError, `${error?.name}: ${message.errorMessage}`);
+			assert.equal(error.reason, "malformed-body");
+			assert.equal(error.retryable, true);
+			assert.equal(error.status, undefined);
+			assert.equal(error.providerCode, undefined);
+			assert.equal(error.requestId, "req-fixture-1");
+			assert.equal(isRetryableAssistantError(message), true);
+		},
+	);
+
+	it("types a streamed Messages error event with only whitespace as malformed, with no detail", async () => {
+		const { message } = await run(claude(), userTurn, [messagesErrorData("   ")]);
+		const error = getGitHubCopilotError(message);
+
+		assert.ok(error instanceof GitHubCopilotUnrecognizedResponseError, `${error?.name}: ${message.errorMessage}`);
+		assert.equal(error.reason, "malformed-body");
+		assert.equal(error.detail, undefined);
+		assert.equal(error.retryable, true);
+	});
+
+	it("keeps the text of a streamed Messages error event that is not JSON as the error detail", async () => {
+		const { message } = await run(claude(), userTurn, [messagesErrorData("upstream exploded")]);
+		const error = getGitHubCopilotError(message);
+
+		assert.equal(error?.detail, "upstream exploded");
+		assert.ok(message.errorMessage?.includes("upstream exploded"), message.errorMessage);
+	});
+
+	it.each([
+		["Anthropic's prompt overflow text", "prompt is too long: 213462 tokens > 200000 maximum"],
+		["Copilot's input overflow text", "Input is too long for requested model."],
+	])("treats a streamed Messages invalid_request_error with %s as context overflow", async (_name, text) => {
+		const model = claude();
+		const { message } = await run(model, userTurn, [messagesErrorEvent("invalid_request_error", text)]);
+		const error = getGitHubCopilotError(message);
+
+		assert.ok(error instanceof GitHubCopilotInvalidRequestError, message.errorMessage);
+		assert.equal(error.reason, "rejected");
+		assert.equal(error.retryable, false);
+		assert.equal(error.detail, text);
+		assert.equal(isContextOverflow(message, model.contextWindow), true);
+		assert.equal(isRetryableAssistantError(message), false);
+	});
+
+	it("types a streamed Messages invalid_request_error with Copilot's prompt-token text as prompt-too-large", async () => {
+		const { message } = await run(claude(), userTurn, [
+			messagesErrorEvent("invalid_request_error", "prompt token count of 209736 exceeds the limit of 128000"),
+		]);
+		const error = getGitHubCopilotError(message);
+
+		assert.ok(error instanceof GitHubCopilotPromptTooLargeError, message.errorMessage);
+		assert.equal(error.providerCode, "invalid_request_error");
+		assert.deepEqual(pick(error.fields(), ["promptTokens", "limitTokens"]), {
+			promptTokens: 209_736,
+			limitTokens: 128_000,
+		});
+		assert.equal(isContextOverflow(message), true);
+	});
+
+	it("carries a streamed Messages rate_limit_error's Retry-After header as its delay", async () => {
+		const { message } = await run(claude(), userTurn, [
+			messagesErrorEvent("rate_limit_error", "Slow down", { "retry-after": "7" }),
+		]);
+		const error = getGitHubCopilotError(message);
+
+		assert.ok(error instanceof GitHubCopilotRateLimitError, message.errorMessage);
+		assert.equal(error.retryAfterMs, 7000);
+		assert.equal(message.retryAfterMs, 7000);
+	});
+
+	it("gives a streamed Messages rate_limit_error no delay without a Retry-After header", async () => {
+		const { message } = await run(claude(), userTurn, [messagesErrorEvent("rate_limit_error", "Slow down")]);
+		const error = getGitHubCopilotError(message);
+
+		assert.ok(error instanceof GitHubCopilotRateLimitError, message.errorMessage);
+		assert.equal(error.retryAfterMs, undefined);
+		assert.equal(message.retryAfterMs, undefined);
+	});
+
+	it("keeps a streamed Messages error event structured for another provider", async () => {
+		const { message } = await run({ ...claude(), provider: "fixture-provider" }, userTurn, [
+			messagesErrorEvent("overloaded_error", "Overloaded"),
+		]);
+		assert.equal(message.stopReason, "error");
+		assert.equal(getGitHubCopilotError(message), undefined);
+		assert.ok(message.errorMessage?.includes("Overloaded"), message.errorMessage);
+		assert.equal(isRetryableAssistantError(message), true);
+	});
+
 	it.each([
 		["Chat Completions", () => discovered("example-chat-model")],
 		["Responses", () => discovered("example-model")],

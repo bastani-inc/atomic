@@ -222,9 +222,13 @@ Every error carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `pr
 
 All of them extend `GitHubCopilotError`. The same decisions apply in the main chat, in subagents, and in workflow stages, which find the error through the failed message they wrap. An `invalid-request` or `unrecognized-response` whose response text reads as a context overflow is still treated as one.
 
+Messages stream error events follow their provider error type, not a cut-off-stream fallback. A streamed `invalid_request_error` is non-retryable; `rate_limit_error`, `overloaded_error` and `api_error` are retryable. An unknown event type becomes `unrecognized-response`.
+
 A cancelled request is never reported as one of these. A connection failure before Copilot answers keeps Atomic's usual network handling.
 
 SDK users can read the typed error from a failed assistant message with `getGitHubCopilotError(message)`, or from any error whose cause chain holds one, or a failed message, with `findGitHubCopilotError(error)`, which returns the error as an instance of its class. The error travels in the message's `diagnostics`, so it survives workers, RPC, and saved sessions; `serializeGitHubCopilotError()` and `deserializeGitHubCopilotError()` convert it explicitly, and `deserializeGitHubCopilotError()` returns `undefined` for a payload whose class name does not go with its code or whose reason that class does not have. Guards such as `isGitHubCopilotError()` and `isGitHubCopilotRateLimitError()` answer whether an error, its cause chain, or a failed message in it holds one, including errors relayed from another process. They return a plain `boolean` and do not narrow the value you pass in, because that value is often the wrapper or the message; call `findGitHubCopilotError()` when you need the instance and its fields. `describeGitHubCopilotModel(model)` returns the capabilities in the table above for one model.
+
+The guards and `findGitHubCopilotError()` reject malformed serialized errors too. Only minimal relays containing `name`, `code` and an optional string `message` can be reconstructed without structured fields; a malformed full payload is never rebuilt with its context discarded.
 
 #### Endpoint routing for personal access tokens
 
