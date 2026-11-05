@@ -8,6 +8,7 @@ import { inspect } from "node:util";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import {
 	isTeamProfileConfigError,
@@ -856,4 +857,24 @@ describe("result shapes and edge paths (#4320)", () => {
 			release();
 		}
 	});
+});
+
+test("setStorageLayout replaces only the keys it is given (#4320)", () => {
+	const manager = SettingsManager.inMemory({
+		theme: "dark",
+		storage: { path: "shared.sqlite" },
+		sessions: { storage: { path: "mine.sqlite" } },
+	});
+	manager.setStorageLayout({ sessionsStorage: undefined });
+	assert.deepEqual(
+		[manager.getGlobalSettings().storage, manager.getGlobalSettings().sessions],
+		[{ path: "shared.sqlite" }, undefined],
+	);
+	manager.setStorageLayout({ sessionsStorage: LOCAL_SESSIONS_STORAGE });
+	manager.setStorageLayout({ storage: undefined });
+	assert.deepEqual(
+		[manager.getGlobalSettings().storage, manager.getGlobalSettings().sessions],
+		[undefined, { storage: LOCAL_SESSIONS_STORAGE }],
+	);
+	assert.equal(manager.getGlobalSettings().theme, "dark");
 });

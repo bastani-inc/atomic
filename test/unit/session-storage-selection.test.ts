@@ -8,6 +8,7 @@ import {
 	canIsolateSessionStore,
 	resolveSessionStore,
 	type SessionStorageOptions,
+	selectSessionSetting,
 	selectSessionStorage,
 } from "../../packages/coding-agent/src/core/session-storage.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
@@ -560,6 +561,68 @@ test("selected JSONL stores upgrade older conversations in place without rebindi
 	} finally {
 		await source.close();
 		await destination.close();
+		removeTempDirectory(root);
+	}
+});
+
+test("a sessions setting resolves against the Atomic home, defaults by its field, and names that setting when it fails (#4320)", async () => {
+	const root = makeTempDirectory("session-setting-");
+	const agentDir = join(root, "agent");
+	try {
+		assert.deepEqual(selectSessionSetting({ dir: "sessions" }, "sessions.storage", agentDir), {
+			kind: "jsonl",
+			dir: join(root, "sessions"),
+		});
+		assert.deepEqual(selectSessionSetting({ path: "mine.sqlite", prefix: "me_" }, "sessions.storage", agentDir), {
+			kind: "sqlite",
+			path: join(root, "mine.sqlite"),
+			prefix: "me_",
+		});
+		assert.deepEqual(selectSessionSetting({ prefix: "t_" }, "storage", agentDir), {
+			kind: "sqlite",
+			path: join(root, "storage.sqlite"),
+			prefix: "t_",
+		});
+		assert.deepEqual(selectSessionSetting({ prefix: "t_" }, "sessions.storage", agentDir), {
+			kind: "sqlite",
+			path: join(root, "workflows", "journal.sqlite"),
+			prefix: "t_",
+		});
+		const invalid: [object, "sessions.storage" | "storage", string][] = [
+			[{ dir: "file://%" }, "sessions.storage", "invalid-path"],
+			[{ path: "file://%" }, "storage", "invalid-path"],
+			[{ adapter: "" }, "sessions.storage", "invalid-selection"],
+			[{ dir: "sessions" }, "storage", "invalid-selection"],
+			[{ path: 7 }, "sessions.storage", "invalid-selection"],
+		];
+		for (const [value, field, reason] of invalid) {
+			assert.throws(
+				() => selectSessionSetting(value as never, field, agentDir),
+				(error: Error) =>
+					error instanceof StorageConfigError &&
+					error.source === "settings" &&
+					error.field === field &&
+					error.reason === reason,
+				JSON.stringify(value),
+			);
+		}
+
+		const adapter = join(root, "adapter.mjs");
+		await writeFileEnsuringDir(adapter, "export default { atomicStorageAdapter: 1, openDatabase() {} };\n");
+		vi.stubEnv("TEAM_4320_UNSET", undefined as never);
+		await assert.rejects(
+			resolveSessionStore(root, {
+				agentDir,
+				settings: { sessions: { storage: { adapter, secrets: { authToken: { env: "TEAM_4320_UNSET" } } } } },
+			}),
+			(error: Error) =>
+				error instanceof StorageConfigError &&
+				error.source === "settings" &&
+				error.field === "sessions.storage" &&
+				error.reason === "secret-env-missing",
+		);
+	} finally {
+		vi.unstubAllEnvs();
 		removeTempDirectory(root);
 	}
 });

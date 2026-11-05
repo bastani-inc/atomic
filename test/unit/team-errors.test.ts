@@ -353,3 +353,94 @@ test("an unknown team error name keeps its name, code and retryable, and causes 
 	for (let cause = sent.cause; cause !== undefined; cause = cause.cause) levels++;
 	assert.equal(levels, 8);
 });
+
+test("serialized team errors carry only the fields that are set, and causes keep only their own facts (#4320)", () => {
+	assert.deepEqual(
+		serializeTeamError(new TeamProfileError("settings-locked", { subject: "/s.json", hint: "Retry." })),
+		{
+			name: "TeamProfileError",
+			code: "settings-locked",
+			message: "Another process is writing the global settings: /s.json (settings-locked). Retry.",
+			hint: "Retry.",
+			fields: { retryable: true, subject: "/s.json" },
+		},
+	);
+	assert.deepEqual(
+		serializeTeamError(
+			new TeamProfileConfigError("missing-url", { source: "sdk", field: "url", hint: "Pass the URL." }),
+		).fields,
+		{ retryable: false, source: "sdk", field: "url" },
+	);
+	const chained = serializeTeamError(
+		new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "Delete it.",
+			cause: new Error("outer", { cause: null }),
+		}),
+	);
+	assert.deepEqual(chained.cause, { name: "Error", message: "outer" });
+
+	const received = rehydrateTeamError({
+		name: "TeamProfileError",
+		code: "connection-failed",
+		message: "m",
+		hint: "h",
+		fields: { retryable: true, subject: "s" },
+		cause: { name: "TypeError", message: "outer", cause: { name: "Error", message: "inner", code: "EPIPE" } },
+	});
+	const outer = received.cause as Error;
+	const inner = outer.cause as Error & { code?: string };
+	assert.deepEqual([outer.name, outer.message, Object.hasOwn(outer, "code")], ["TypeError", "outer", false]);
+	assert.deepEqual([inner.message, inner.code, Object.hasOwn(inner, "cause")], ["inner", "EPIPE", false]);
+	assert.deepEqual(Object.getOwnPropertyDescriptor(received, "message"), {
+		value: "m",
+		writable: true,
+		enumerable: false,
+		configurable: true,
+	});
+});
+
+test("a rehydrated timeout keeps its subject and cause, and malformed fields fall back to safe defaults (#4320)", () => {
+	const timedOut = rehydrateTeamError({
+		name: "TeamProfileTimeoutError",
+		code: "connection-timeout",
+		message: "m",
+		hint: "h",
+		fields: { retryable: true, subject: "libsql://team", timeoutMs: 300, elapsedMs: 301, phase: "connect" },
+		cause: { name: "Error", message: "late" },
+	}) as TeamProfileTimeoutError;
+	assert.equal(timedOut.subject, "libsql://team");
+	const cause = Object.getOwnPropertyDescriptor(timedOut, "cause");
+	assert.deepEqual([cause?.writable, cause?.enumerable, cause?.configurable], [true, false, true]);
+	assert.equal((cause?.value as Error).message, "late");
+
+	const malformedTimeout = rehydrateTeamError({
+		name: "TeamProfileTimeoutError",
+		code: "connection-timeout",
+		message: "m",
+		hint: "h",
+		fields: { timeoutMs: "300", elapsedMs: "301" },
+	}) as TeamProfileTimeoutError;
+	assert.deepEqual(
+		[malformedTimeout.subject, malformedTimeout.timeoutMs, malformedTimeout.elapsedMs, malformedTimeout.phase],
+		["", 0, 0, "connect"],
+	);
+	assert.equal(malformedTimeout.retryable, true);
+	const malformedConfig = rehydrateTeamError({
+		name: "TeamProfileConfigError",
+		code: "missing-url",
+		message: "m",
+		hint: "h",
+		fields: { source: "sdk", retryable: "no" },
+	}) as TeamProfileConfigError;
+	assert.deepEqual([malformedConfig.field, malformedConfig.retryable], ["", false]);
+	const malformed = rehydrateTeamError({
+		name: "TeamProfileError",
+		code: "connection-failed",
+		message: "m",
+		hint: "h",
+		fields: { subject: 7, detail: false },
+	});
+	assert.ok(malformed instanceof TeamProfileError);
+	assert.deepEqual([malformed.subject, Object.hasOwn(malformed, "detail"), malformed.retryable], ["", false, true]);
+});
