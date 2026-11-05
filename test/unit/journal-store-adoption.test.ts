@@ -1570,3 +1570,58 @@ test("an undo with the destination fence still held is a plain undo: the catalog
 	assert.equal(result.named, result.source);
 	assert.equal(scalar(result.destination, "SELECT count(*) FROM wf_runs"), 0, "the destination copy is gone");
 });
+
+test("a move whose source fence a resume took while it waited is abandoned before the catalog changes, and its copy removed (#4325)", async () => {
+	const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [source]);
+	const destination = (await withCatalog((catalog) => catalog.homeShard("r"))).path;
+	const events = Number(scalar(source, EVENTS));
+	const report = await withCatalog(async (catalog) => {
+		const homeShard = catalog.homeShard.bind(catalog);
+		Reflect.set(catalog, "homeShard", async (runId: string) => {
+			const home = await homeShard(runId);
+			raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+			raw(source, APPEND_EVENT, events + 1, "p1-new");
+			return home;
+		});
+		const moves = countMoves(catalog);
+		const result = await consolidateJournalStore(catalog);
+		assert.equal(moves.count, 0, "the catalog was not asked to repoint");
+		return result;
+	});
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, source);
+	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the destination copy is gone");
+	assert.equal(scalar(source, EVENTS), events + 1, "the resume's event is in the source");
+});
+
+function countMoves(catalog: JournalCatalog): { count: number } {
+	const moves = { count: 0 };
+	const moveRun = catalog.moveRun.bind(catalog);
+	Reflect.set(catalog, "moveRun", (...args: Parameters<JournalCatalog["moveRun"]>) => {
+		moves.count++;
+		return moveRun(...args);
+	});
+	return moves;
+}
+
+test("an undo never moves the catalog off a destination that holds events the source lacks, whoever holds its lease (#4325)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source, destination }) => {
+				const events = Number(scalar(source, EVENTS));
+				raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(destination, APPEND_EVENT, events + 1, "p2-new");
+			},
+		},
+	});
+	assert.equal(result.named, result.destination);
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal(result.moveRuns, 1, "the move was not undone");
+});

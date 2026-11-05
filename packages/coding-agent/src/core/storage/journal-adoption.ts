@@ -506,6 +506,12 @@ async function fence(
  * Lifts the fence of any consolidation, this one or a crashed one, from a run's lease in the journal that now holds it. A
  * lease a resume holds is never touched.
  */
+/** Whether a process that is not a consolidation holds the lease of a run in a journal: a resume took it over. */
+async function heldByResume(database: SqliteDatabase, runId: string): Promise<boolean> {
+	const lease = await database.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+	return lease?.holder_id != null && !lease.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
+}
+
 /** Whether `holder`, a consolidation, still holds the lease of a run in a journal: no resume took it over. */
 async function fenceIsOurs(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
 	const lease = await database.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
@@ -701,7 +707,11 @@ async function settleMove(
 		return { runId, from: from.id, to: destination.id, outcome: "skipped", reason: "leased" };
 	};
 	const undo = async (): Promise<JournalConsolidationRun> => {
-		if (!(await fenceIsOurs(database, runId, holder))) return keptOnDestination();
+		// The catalog never moves off a destination that someone else leases or that holds events the source lacks.
+		const left = await readRun(source, runId);
+		const there = await readRun(database, runId);
+		const ahead = left !== undefined && there !== undefined && there.events.length > left.events.length;
+		if (ahead || !(await fenceIsOurs(database, runId, holder))) return keptOnDestination();
 		await catalog.moveRun(runId, destination.id, from.id);
 		if (await removeRun(database, runId, holder))
 			return { runId, from: from.id, outcome: "skipped", reason: "leased" };
@@ -880,6 +890,11 @@ async function moveOne(
 	if (!(await copy(source, database, fenced, holder, fenced.lease.epoch))) {
 		await unfence(source, runId, holder);
 		return conflictRun(catalog, shard.id, destination, runId);
+	}
+	// A move that waited so long that a resume took the source's fence is abandoned before the catalog changes.
+	if (await heldByResume(source, runId)) {
+		await removeRun(database, runId, holder);
+		return { runId, from: shard.id, outcome: "skipped", reason: "leased" };
 	}
 	const repointed = await catalog.moveRun(runId, shard.id, destination.id);
 	if (!repointed && (await catalog.locate(runId))?.shard.id !== destination.id) {
