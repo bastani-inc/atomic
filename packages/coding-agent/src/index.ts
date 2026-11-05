@@ -46,8 +46,11 @@ export { JsonlSessionStore } from "./core/storage/session/jsonl-session-store.js
 export { AgentTaskHost, type AgentTaskHostBinding, type AgentTaskRunnerFactory } from "./core/tasks/agent-adapter.js";
 export {
 	isRetryableTaskError,
+	isTaskCleanupAdmissionTimeoutError,
 	isTaskCleanupError,
 	rehydrateTaskCleanupError,
+	TaskCleanupAdmissionTimeoutError,
+	type TaskCleanupAdmissionTiming,
 	TaskCleanupError,
 	type TaskCleanupErrorCode,
 	type TaskCleanupFailure,

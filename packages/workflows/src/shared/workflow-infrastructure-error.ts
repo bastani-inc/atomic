@@ -1,7 +1,9 @@
 import {
+	isTaskCleanupAdmissionTimeoutError,
 	isTaskCleanupError,
 	type ResourceFailure,
 	rehydrateTaskCleanupError,
+	type TaskCleanupAdmissionTimeoutError,
 	type TaskCleanupError,
 	type TaskCleanupPhase,
 } from "@bastani/atomic";
@@ -114,7 +116,8 @@ export interface SerializedWorkflowInfrastructureError {
 	readonly message: string;
 	readonly hint?: string;
 	readonly fields?: { readonly phase: TaskCleanupPhase; readonly resources: readonly ProcessCleanupResource[] };
-	readonly cause?: Pick<TaskCleanupError, "name" | "code" | "retryable" | "hint" | "phase" | "failures">;
+	readonly cause?: Pick<TaskCleanupError, "name" | "code" | "retryable" | "hint" | "phase" | "failures"> &
+		Partial<Pick<TaskCleanupAdmissionTimeoutError, "timeoutMs" | "elapsedMs">>;
 }
 
 export function serializeWorkflowInfrastructureError(
@@ -138,6 +141,9 @@ export function serializeWorkflowInfrastructureError(
 						hint: cause.hint,
 						phase: cause.phase,
 						failures: cause.failures,
+						...(isTaskCleanupAdmissionTimeoutError(cause)
+							? { timeoutMs: cause.timeoutMs, elapsedMs: cause.elapsedMs }
+							: {}),
 					},
 				}
 			: {}),

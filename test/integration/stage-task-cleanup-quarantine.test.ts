@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { isRetryableTaskError, isTaskCleanupError, SessionManager, type TaskCleanupError } from "@bastani/atomic";
+import {
+	isRetryableTaskError,
+	isTaskCleanupAdmissionTimeoutError,
+	isTaskCleanupError,
+	SessionManager,
+	type TaskCleanupError,
+} from "@bastani/atomic";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session-types.js";
+import type { ResourceAdmission, ResourcePermit } from "../../packages/coding-agent/src/core/sdk-types.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
-import type { OperationId, ResourceFailure } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { OperationId, ResourceFailure, TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { QUARANTINED_ADMISSION_WAIT_MS } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -432,4 +440,294 @@ test.runIf(process.platform === "linux")(
 		}
 	},
 	QUARANTINE_BOUND_TEST_TIMEOUT_MS,
+);
+
+const ADMISSION_SETTLE_HEADROOM_MS = 10_000;
+const BLOCKED_LAUNCH_LIMIT_MS = QUARANTINED_ADMISSION_WAIT_MS + ADMISSION_SETTLE_HEADROOM_MS;
+const QUARANTINE_EVENT_LIMIT_MS = DRAIN_WINDOW_TEST_TIMEOUT_MS / 4;
+const TIMER_JITTER_MS = 50;
+const PENDING_PROBE_MS = QUARANTINED_ADMISSION_WAIT_MS + 1_000;
+
+class PermitAdmission implements ResourceAdmission {
+	held = 0;
+	acquired = 0;
+	releaseCalls = 0;
+	failure: Error | undefined;
+	private readonly waiters: Array<() => void> = [];
+	constructor(private readonly limit: number) {}
+	acquire(_kind: "session" | "process", signal?: AbortSignal): Promise<ResourcePermit> {
+		if (signal?.aborted) return Promise.reject(signal.reason);
+		return new Promise((resolve, reject) => {
+			if (this.failure) {
+				const failure = this.failure;
+				const timer = setTimeout(() => reject(failure), QUARANTINE_OBSERVATION_MS);
+				signal?.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(signal.reason);
+					},
+					{ once: true },
+				);
+				return;
+			}
+			const grant = () => {
+				this.held++;
+				this.acquired++;
+				let released = false;
+				resolve(async () => {
+					this.releaseCalls++;
+					if (released) return;
+					released = true;
+					this.held--;
+					this.waiters.shift()?.();
+				});
+			};
+			if (this.held < this.limit) return grant();
+			this.waiters.push(grant);
+			signal?.addEventListener(
+				"abort",
+				() => {
+					const index = this.waiters.indexOf(grant);
+					if (index < 0) return;
+					this.waiters.splice(index, 1);
+					reject(signal.reason);
+				},
+				{ once: true },
+			);
+		});
+	}
+}
+
+function within<T>(promise: Promise<T>, limitMs: number, failure: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const expired = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new Error(failure)), limitMs);
+	});
+	return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
+
+function blockedLaunchSignal(...others: AbortSignal[]): AbortSignal {
+	return AbortSignal.any([AbortSignal.timeout(BLOCKED_LAUNCH_LIMIT_MS), ...others]);
+}
+
+function settle(promise: Promise<unknown>): Promise<unknown> {
+	return promise.then(
+		() => undefined,
+		(reason: unknown) => reason,
+	);
+}
+
+function holderHost(dir: string, admission: ResourceAdmission) {
+	let reportQuarantine!: (taskId: TaskId) => void;
+	const quarantined = within(
+		new Promise<TaskId>((resolve) => {
+			reportQuarantine = resolve;
+		}),
+		QUARANTINE_EVENT_LIMIT_MS,
+		"the first command's cleanup was never quarantined",
+	);
+	quarantined.catch(() => undefined);
+	const host = new AgentTaskHost({
+		scope: { kind: "session", sessionId: randomUUID() },
+		authorizeLaunch() {},
+		resourceAdmission: admission,
+		onTaskCleanupQuarantined: (ref) => reportQuarantine(ref.taskId),
+	});
+	const { supervisor, owner } = host.ownerBinding;
+	const launch = (command: string, signal: AbortSignal = blockedLaunchSignal()) =>
+		supervisor.startCommandTask(
+			owner,
+			{ kind: "command", command, terminal: { kind: "pipe" } },
+			randomUUID() as OperationId,
+			signal,
+		);
+	const ready = launch(escapedHolderCommand(dir)).then(async (first) => {
+		assert.ok(first.ok, "the first command was admitted");
+		await waitForPidFile(dir, "holder");
+	});
+	const cleanup = async () => {
+		await settle(ready);
+		const holder = pidFile(dir, "holder");
+		if (holder !== undefined && processExists(holder)) process.kill(holder, "SIGKILL");
+		const closed = await host.close("session-close");
+		removeTempDirectory(dir);
+		assert.ok(closed.ok, closed.ok ? "" : closed.error.message);
+	};
+	return { host, ready, quarantined, launch, cleanup };
+}
+
+function assertTimedOutBehind(error: unknown, taskId: TaskId): void {
+	assert.ok(isTaskCleanupAdmissionTimeoutError(error), String(error));
+	assert.equal(error.phase, "command-admission");
+	assert.equal(error.timeoutMs, QUARANTINED_ADMISSION_WAIT_MS);
+	assert.ok(error.elapsedMs >= QUARANTINED_ADMISSION_WAIT_MS - TIMER_JITTER_MS, String(error.elapsedMs));
+	assert.equal(isRetryableTaskError(error), true);
+	assert.deepEqual(
+		error.failures.map((failure) => failure.taskId),
+		[taskId],
+	);
+}
+
+test.runIf(process.platform === "linux")(
+	"a command whose admission only quarantined cleanup blocks times out with a TaskCleanupAdmissionTimeoutError and the held permit stays (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-quarantine-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			const firstTaskId = await quarantined;
+			assert.equal(admission.held, 1);
+			assertTimedOutBehind(await settle(launch("echo SECOND")), firstTaskId);
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+			assert.equal(admission.acquired, 1);
+
+			writeTextSync(`${dir}/release`, "");
+			const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
+			while (admission.held > 0) {
+				assert.ok(Date.now() < deadline, "the confirmed cleanup never released its permit");
+				await sleep(10);
+			}
+			const third = await launch("echo THIRD");
+			assert.ok(third.ok);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a command admission already waiting when the cleanup it waits behind is quarantined times out from the quarantine (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-prequarantine-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			const waiting = settle(launch("echo SECOND"));
+			assertTimedOutBehind(await waiting, await quarantined);
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a command can use free process capacity while an earlier command is quarantined (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-headroom-");
+		const admission = new PermitAdmission(2);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			await quarantined;
+			const second = await launch(`while [ ! -e '${dir}/second-release' ]; do sleep 0.05; done; echo SECOND`);
+			assert.ok(second.ok);
+			assert.equal(admission.held, 2);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"an admission's own rejection while it waits behind quarantined cleanup reaches the caller unchanged (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-rejection-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			await quarantined;
+			admission.failure = new Error("admission pool unavailable");
+			assert.equal(await settle(launch("echo SECOND")), admission.failure);
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a command waiting behind quarantined cleanup fails with the caller's cancellation, not the timeout (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-cancel-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			await quarantined;
+			const cancellation = new Error("caller cancelled the launch");
+			const controller = new AbortController();
+			const waiting = settle(launch("echo SECOND", blockedLaunchSignal(controller.signal)));
+			await sleep(QUARANTINE_OBSERVATION_MS);
+			controller.abort(cancellation);
+			assert.equal(await waiting, cancellation);
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a command whose quarantined cleanup was reaped waits for live work however long without timing out (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-reaped-");
+		const admission = new PermitAdmission(1);
+		const { ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			await quarantined;
+			const live = launch(`while [ ! -e '${dir}/finish' ]; do sleep 0.05; done; echo LIVE`);
+			const next = settle(launch("echo NEXT"));
+			writeTextSync(`${dir}/release`, "");
+			assert.ok((await live).ok, "the live command was admitted once the quarantined permit returned");
+			const probe = await Promise.race([next, sleep(PENDING_PROBE_MS).then(() => "still waiting")]);
+			assert.equal(probe, "still waiting", "live work holding the permit is waited for without a timeout");
+			writeTextSync(`${dir}/finish`, "");
+			assert.equal(await next, undefined, "the waiting command was admitted when the live one finished");
+		} finally {
+			writeTextSync(`${dir}/finish`, "");
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
+);
+
+test.runIf(process.platform === "linux")(
+	"a stage pause is not held up by a command admission waiting behind quarantined cleanup (#4338)",
+	async () => {
+		const dir = makeTempDirectory("atomic-admission-pause-");
+		const admission = new PermitAdmission(1);
+		const { host, ready, quarantined, launch, cleanup } = holderHost(dir, admission);
+		try {
+			await ready;
+			const firstTaskId = await quarantined;
+			const waiting = settle(launch("echo SECOND"));
+			await within(
+				host.pauseTasks(),
+				BLOCKED_LAUNCH_LIMIT_MS,
+				"the pause waited on an admission that could never be granted",
+			);
+			assertTimedOutBehind(await waiting, firstTaskId);
+			assert.equal(admission.held, 1);
+			assert.equal(admission.releaseCalls, 0);
+		} finally {
+			await cleanup();
+		}
+	},
+	DRAIN_WINDOW_TEST_TIMEOUT_MS,
 );

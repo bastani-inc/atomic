@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { isRetryableTaskError, isTaskCleanupError, rehydrateTaskCleanupError, TaskCleanupError } from "@bastani/atomic";
+import {
+	isRetryableTaskError,
+	isTaskCleanupAdmissionTimeoutError,
+	isTaskCleanupError,
+	rehydrateTaskCleanupError,
+	TaskCleanupAdmissionTimeoutError,
+	TaskCleanupError,
+} from "@bastani/atomic";
 import { test } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type {
@@ -537,4 +544,88 @@ test("a process cleanup error copy that lost its cause rehydrates from its field
 	assert.ok(preferred instanceof ProcessCleanupUnconfirmedError);
 	assert.deepEqual(preferred.cause.failures, cause.failures, "a valid cause wins over the fields");
 	assert.equal(preferred.phase, "stage-close");
+});
+
+const admissionTiming = { timeoutMs: 5000, elapsedMs: 5012 };
+
+function admissionTimeoutError(options?: ErrorOptions): TaskCleanupAdmissionTimeoutError {
+	return new TaskCleanupAdmissionTimeoutError(
+		[{ taskId: "task-1" as TaskId, resources: [drain] }],
+		admissionTiming,
+		options,
+	);
+}
+
+test("a command admission that timed out behind unconfirmed cleanup is a retryable TaskCleanupError with its timing (#4338)", () => {
+	const cause = new Error("admission refused");
+	const error = admissionTimeoutError({ cause });
+	assert.ok(error instanceof TaskCleanupError);
+	assert.equal(error.name, "TaskCleanupAdmissionTimeoutError");
+	assert.equal(error.code, "task_cleanup_unconfirmed");
+	assert.equal(error.phase, "command-admission");
+	assert.equal(error.retryable, true);
+	assert.equal(error.timeoutMs, 5000);
+	assert.equal(error.elapsedMs, 5012);
+	assert.equal(error.cause, cause);
+	assert.deepEqual(error.failures, [{ taskId: "task-1", resources: [drain] }]);
+	assert.equal(
+		error.message,
+		`Command admission timed out after 5012 ms (limit 5000 ms) behind unconfirmed task cleanup: task-1 process-group:4242: Output reader drain was not confirmed (task_cleanup_unconfirmed). ${error.hint}.`,
+	);
+	assert.equal(admissionTimeoutError().cause, undefined);
+	assert.equal(isTaskCleanupError(error), true);
+	assert.equal(isTaskCleanupAdmissionTimeoutError(error), true);
+	assert.equal(isTaskCleanupAdmissionTimeoutError(cleanupError()), false);
+	assert.equal(isTaskCleanupAdmissionTimeoutError(new Error(error.message)), false);
+	const copy = { ...JSON.parse(JSON.stringify(error)), message: error.message };
+	assert.equal(isTaskCleanupAdmissionTimeoutError(copy), true);
+	assert.equal(isTaskCleanupAdmissionTimeoutError({ ...copy, name: "TaskCleanupError" }), false);
+	for (const retryable of [
+		error,
+		copy,
+		new Error("launch failed", { cause: error }),
+		new ProcessCleanupUnconfirmedError(error),
+	])
+		assert.equal(isRetryableTaskError(retryable), true);
+});
+
+test("a TaskCleanupAdmissionTimeoutError copy rehydrates into the subtype with its timing, and a malformed one does not (#4338)", () => {
+	const error = admissionTimeoutError();
+	const copy = JSON.parse(JSON.stringify(error));
+	const rehydrated = rehydrateTaskCleanupError(copy);
+	assert.ok(rehydrated instanceof TaskCleanupAdmissionTimeoutError);
+	assert.equal(rehydrated.phase, "command-admission");
+	assert.equal(rehydrated.timeoutMs, 5000);
+	assert.equal(rehydrated.elapsedMs, 5012);
+	assert.deepEqual(rehydrated.failures, error.failures);
+	assert.equal(rehydrated.message, error.message);
+	for (const malformed of [
+		{ ...copy, phase: "stage-close" },
+		{ ...copy, timeoutMs: undefined },
+		{ ...copy, elapsedMs: "5012" },
+		{ ...copy, timeoutMs: -1 },
+		{ ...copy, elapsedMs: Number.NaN },
+		{ ...copy, failures: [{ taskId: 1, resources: [] }] },
+	])
+		assert.equal(rehydrateTaskCleanupError(malformed), undefined, JSON.stringify(malformed));
+	const base = rehydrateTaskCleanupError({ ...copy, name: "TaskCleanupError" });
+	assert.ok(base instanceof TaskCleanupError && !(base instanceof TaskCleanupAdmissionTimeoutError));
+	assert.equal(base.phase, "command-admission");
+});
+
+test("a process cleanup fault caused by an admission timeout keeps the subtype and its timing across a round trip (#4338)", () => {
+	const error = new ProcessCleanupUnconfirmedError(admissionTimeoutError());
+	const serialized: SerializedWorkflowInfrastructureError = JSON.parse(
+		JSON.stringify(serializeWorkflowInfrastructureError(error)),
+	);
+	assert.equal(serialized.cause?.name, "TaskCleanupAdmissionTimeoutError");
+	assert.equal(serialized.cause?.timeoutMs, 5000);
+	assert.equal(serialized.cause?.elapsedMs, 5012);
+	const rehydrated = rehydrateWorkflowInfrastructureError(serialized);
+	assert.ok(rehydrated instanceof ProcessCleanupUnconfirmedError);
+	assert.ok(rehydrated.cause instanceof TaskCleanupAdmissionTimeoutError);
+	assert.equal(rehydrated.cause.timeoutMs, 5000);
+	assert.equal(rehydrated.cause.elapsedMs, 5012);
+	assert.equal(rehydrated.phase, "command-admission");
+	assert.equal(isRetryableTaskError(rehydrated), true);
 });

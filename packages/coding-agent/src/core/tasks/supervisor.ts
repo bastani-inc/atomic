@@ -7,7 +7,7 @@ import type { AgentSessionEvent } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
-import type { TaskCleanupFailure } from "./cleanup-error.js";
+import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
@@ -20,6 +20,13 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 };
 
 export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;
+/**
+ * How long a command's process admission waits while the owner's own commands hold process permits for cleanup that
+ * is not confirmed, before it fails with a `TaskCleanupAdmissionTimeoutError`. A quarantined command keeps its permit
+ * until its cleanup is confirmed or the owner closes, so this wait has no other end; capacity that live work holds is
+ * still waited for however long it takes.
+ */
+export const QUARANTINED_ADMISSION_WAIT_MS = 5_000;
 /** These objects are live authority, not DTOs, restart tokens or model arguments. */
 class Capability {
 	#live = true;
@@ -92,6 +99,8 @@ type OwnerState = {
 	commandAdmissions: Set<Promise<void>>;
 	closing: AbortController;
 	permits: Map<C.TaskId, ResourcePermit>;
+	unconfirmedCleanups: Map<C.TaskId, C.ResourceFailure[]>;
+	admissionWatchers: Set<() => void>;
 	releases: Set<Promise<void>>;
 	releaseFailures: Error[];
 	commandStarts: Map<C.OperationId, { intent: C.CommandIntent; result: Promise<C.Result<TaskLease, C.StartFailure>> }>;
@@ -695,6 +704,8 @@ export class TaskSupervisor {
 					commandAdmissions: new Set(),
 					closing: new AbortController(),
 					permits: new Map(),
+					unconfirmedCleanups: new Map(),
+					admissionWatchers: new Set(),
 					releases: new Set(),
 					releaseFailures: [],
 					commandStarts: new Map(),
@@ -719,7 +730,11 @@ export class TaskSupervisor {
 					let failure: Error | undefined;
 					for (const record of projection.tasks) {
 						if (record.cleanup.kind === "reaped") this.#releasePermit(ownerState, record.ref.taskId);
+						if (record.cleanup.kind === "quarantined" || record.cleanup.kind === "failed")
+							ownerState.unconfirmedCleanups.set(record.ref.taskId, record.cleanup.resources);
+						else ownerState.unconfirmedCleanups.delete(record.ref.taskId);
 					}
+					this.#notifyAdmissionWatchers(ownerState);
 					for (const { ref, resources } of quarantinedCleanups(projection, events)) {
 						if (ownerState.quarantinedTasks.has(ref.taskId)) continue;
 						ownerState.quarantinedTasks.add(ref.taskId);
@@ -766,6 +781,59 @@ export class TaskSupervisor {
 			})
 			.finally(() => state.releases.delete(pending));
 		state.releases.add(pending);
+		this.#notifyAdmissionWatchers(state);
+	}
+	#notifyAdmissionWatchers(state: OwnerState): void {
+		for (const watcher of [...state.admissionWatchers]) watcher();
+	}
+	#unconfirmedPermitHolders(state: OwnerState): TaskCleanupFailure[] {
+		return [...state.unconfirmedCleanups].flatMap(([taskId, resources]) =>
+			state.permits.has(taskId) ? [{ taskId, resources }] : [],
+		);
+	}
+	async #acquireProcessPermit(
+		state: OwnerState,
+		admission: import("../sdk-types.ts").ResourceAdmission | undefined,
+		signal: AbortSignal | undefined,
+	): Promise<ResourcePermit | undefined> {
+		if (!admission) return undefined;
+		const external = signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal;
+		const refusal = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const outcome: { blocked?: { holders: TaskCleanupFailure[]; elapsedMs: number } } = {};
+		const watch = () => {
+			if (external.aborted || refusal.signal.aborted) return;
+			if (this.#unconfirmedPermitHolders(state).length === 0) {
+				clearTimeout(timer);
+				timer = undefined;
+				return;
+			}
+			if (timer) return;
+			const startedAt = performance.now();
+			timer = setTimeout(() => {
+				timer = undefined;
+				const holders = this.#unconfirmedPermitHolders(state);
+				if (external.aborted || holders.length === 0) return watch();
+				outcome.blocked = { holders, elapsedMs: Math.round(performance.now() - startedAt) };
+				refusal.abort();
+			}, QUARANTINED_ADMISSION_WAIT_MS);
+		};
+		state.admissionWatchers.add(watch);
+		try {
+			watch();
+			return await admission.acquire("process", AbortSignal.any([external, refusal.signal]));
+		} catch (error) {
+			const { blocked } = outcome;
+			if (!blocked || external.aborted) throw error;
+			throw new TaskCleanupAdmissionTimeoutError(
+				blocked.holders,
+				{ timeoutMs: QUARANTINED_ADMISSION_WAIT_MS, elapsedMs: blocked.elapsedMs },
+				error === refusal.signal.reason ? undefined : { cause: error },
+			);
+		} finally {
+			state.admissionWatchers.delete(watch);
+			clearTimeout(timer);
+		}
 	}
 	#notifyTaskSettled(state: OwnerState, ref: C.NativeTaskRef, receipt: native.SettlementReceipt): void {
 		if (!state.host.binding.onTaskSettled || state.settledTasks.has(ref.taskId)) return;
@@ -818,9 +886,10 @@ export class TaskSupervisor {
 		state.commandAdmissions.add(admission);
 		let release: ResourcePermit | undefined;
 		try {
-			release = await (currentResourceAdmission() ?? state.host.binding.resourceAdmission)?.acquire(
-				"process",
-				signal ? AbortSignal.any([signal, state.closing.signal]) : state.closing.signal,
+			release = await this.#acquireProcessPermit(
+				state,
+				currentResourceAdmission() ?? state.host.binding.resourceAdmission,
+				signal,
 			);
 			const { heartbeatMs, ...nativeIntent } = intent;
 			const heartbeatKey = rememberLaunchHeartbeat(
@@ -865,6 +934,7 @@ export class TaskSupervisor {
 			}
 			if (release) {
 				state.permits.set(id, release);
+				this.#notifyAdmissionWatchers(state);
 				release = undefined;
 			}
 			const task = new TaskCapability();
