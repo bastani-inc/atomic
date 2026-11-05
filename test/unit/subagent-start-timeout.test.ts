@@ -30,6 +30,10 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agent-type
 import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground/inprocess-run-sync.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { type AttemptOutcome, SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
+import {
+	SATURATED_LOOP_TURN_MS,
+	SESSION_START_MIN_LOOP_TURNS,
+} from "../../packages/subagents/src/runs/inprocess/session-start-budget.js";
 import { createCandidateModelResolver } from "../../packages/subagents/src/shared/model-resolution.js";
 import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
 import { sleep } from "../helpers/runtime.js";
@@ -288,6 +292,12 @@ function startTimeoutOf(result: SingleResult): SessionStartTimeoutError {
 	return error;
 }
 
+function assertMeasuredPhase(error: SessionStartTimeoutError, stepPhase: "setup" | "dispatch"): void {
+	const { turns, meanTurnMs } = error.eventLoop;
+	const loopWasStarved = turns < SESSION_START_MIN_LOOP_TURNS && meanTurnMs >= SATURATED_LOOP_TURN_MS;
+	assert.equal(error.phase, loopWasStarved ? "event-loop" : stepPhase, JSON.stringify(error.eventLoop));
+}
+
 test(
 	"a child on a saturated main thread reaches its provider within a bounded number of loop turns (#4319)",
 	async () => {
@@ -348,7 +358,7 @@ test(
 
 		assert.ok(stall.reached(), "the child's extension startup was held");
 		const error = startTimeoutOf(result);
-		assert.equal(error.phase, "setup");
+		assertMeasuredPhase(error, "setup");
 		assert.equal(error.step, "creating-session");
 		assert.equal(error.timeoutMs, STALL_START_BUDGET_MS);
 		assert.ok(error.elapsedMs >= STALL_START_BUDGET_MS - TIMER_GRANULARITY_MS, String(error.elapsedMs));
@@ -372,7 +382,7 @@ test(
 
 		assert.ok(stall.reached(), "the child's input handling was held");
 		const error = startTimeoutOf(result);
-		assert.equal(error.phase, "dispatch");
+		assertMeasuredPhase(error, "dispatch");
 		assert.equal(error.step, "dispatching-task");
 		assert.equal(error.steps.at(-2)?.step, "creating-session");
 		assert.deepEqual(fixture.requests, [], "its task never reached the provider");
@@ -398,7 +408,7 @@ for (const point of ["input", "before_agent_start"] as const) {
 			assert.ok(stall.reached(), `the child's ${point} handling was held`);
 			assert.ok(outcome !== "hung", "the launch settled while its handler was still held");
 			const error = startTimeoutOf(outcome);
-			assert.equal(error.phase, "dispatch");
+			assertMeasuredPhase(error, "dispatch");
 			assert.equal(error.step, "dispatching-task");
 			assert.deepEqual(fixture.requests, [], "its task never reached the provider");
 
@@ -565,7 +575,7 @@ test(
 		stall.release();
 
 		const error = startTimeoutOf(result);
-		assert.equal(error.phase, "setup");
+		assertMeasuredPhase(error, "setup");
 		assert.equal(error.step, "creating-session");
 		assert.deepEqual(
 			error.steps.map((timing) => timing.step),
