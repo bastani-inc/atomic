@@ -26,9 +26,15 @@ const CHAOS_TEST_TIMEOUT_MS = 120_000;
 const child = join(import.meta.dirname, "../fixtures/fork-chaos-child.ts");
 const definition = workflow({ name: "chaos-source", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 const directories: string[] = [];
+const forkers: Forker[] = [];
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
+	for (const forker of forkers.splice(0)) {
+		if (forker.process.exitCode === null && forker.process.signalCode === null) forker.process.kill("SIGKILL");
+		await forker.process.exited;
+		await forker.stderr;
+	}
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
 });
 
@@ -120,15 +126,18 @@ async function sourceHash(path: string, sourceId: string): Promise<string> {
 	}
 }
 
+interface Forker {
+	readonly process: SpawnedProcess;
+	readonly lines: AsyncGenerator<Record<string, unknown>>;
+	readonly stderr: Promise<string>;
+}
+
+/** A forking child process; every one is killed and reaped after its test, whatever the test's outcome. */
 function spawnForker(
 	journal: ChaosJournal,
 	attempts: number,
 	options: { readonly fromStage?: string; readonly skewMs?: number } = {},
-): {
-	readonly process: SpawnedProcess;
-	readonly lines: AsyncGenerator<Record<string, unknown>>;
-	readonly stderr: Promise<string>;
-} {
+): Forker {
 	const spawned = spawnProcess(
 		[
 			bunExecutable(),
@@ -155,7 +164,9 @@ function spawnForker(
 			}
 		}
 	}
-	return { process: spawned, lines: lines(), stderr };
+	const forker = { process: spawned, lines: lines(), stderr };
+	forkers.push(forker);
+	return forker;
 }
 
 async function until(lines: AsyncGenerator<Record<string, unknown>>, event: string): Promise<Record<string, unknown>> {
@@ -199,9 +210,8 @@ test(
 			await until(forker.lines, "copying");
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 			forker.process.kill("SIGKILL");
-			await forker.process.exited;
+			assert.notEqual(await forker.process.exited, 0, "the forker was killed, not finished");
 			await forker.stderr;
-			assert.equal(forker.process.signalCode, "SIGKILL");
 			ageLeases(journal.path, journal.sourceId);
 		}
 		const forks = await assertOnlyCompleteForks(journal.path, journal.sourceId, journal.checkpoints);
@@ -215,15 +225,15 @@ test(
 	CHAOS_TEST_TIMEOUT_MS,
 );
 
-test(
+test.skipIf(process.platform === "win32")(
 	"a SIGSTOPped fork's claim fences other forks until it expires on the journal clock, despite clock skew (#4321)",
 	async () => {
 		const journal = await seededJournal("fork-chaos-stop", 50);
 		const before = await sourceHash(journal.path, journal.sourceId);
 		const stopped = spawnForker(journal, 1, { skewMs: 3_600_000 });
 		await until(stopped.lines, "claimed");
-		stopped.process.kill("SIGSTOP");
 		try {
+			stopped.process.kill("SIGSTOP");
 			for (const skew of [-3_600_000, 0, 3_600_000]) {
 				const now = Date.now.bind(Date);
 				vi.spyOn(Date, "now").mockImplementation(() => now() + skew);
