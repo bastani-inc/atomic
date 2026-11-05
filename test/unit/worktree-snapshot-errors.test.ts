@@ -83,7 +83,7 @@ describe("WorkspaceError rendering", () => {
 				remotes: ["https://example.com/r.git"],
 				reason: "denied-history",
 			}).message,
-			"Cannot restore snapshot snap: commit h is not on https://example.com/r.git and its unpushed history touches denied paths .env (commits-unavailable). Push commits c1, c2 to a recorded remote, then retry.",
+			"Cannot restore snapshot snap: commit h is not on https://example.com/r.git and its unpushed history touches denied paths .env (commits-unavailable). Push commit h (with its history) to a recorded remote, then retry. Commits c1, c2 add or change denied paths .env, so pushing publishes those files.",
 		);
 		assert.equal(
 			drift().message,

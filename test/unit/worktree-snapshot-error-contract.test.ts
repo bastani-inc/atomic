@@ -139,7 +139,7 @@ describe("WorkspaceGitError and WorkspaceSnapshotError", () => {
 			],
 			[
 				"blob-store-unsupported",
-				"Worktree snapshot unavailable: /w storage cannot hold snapshot blobs (blob-store-unsupported). Use local SQLite, JSONL, memory, or a database-backed storage adapter to record snapshots.",
+				'Worktree snapshot unavailable: /w storage cannot hold snapshot blobs (blob-store-unsupported). Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 			],
 			[
 				"unreadable-path",
@@ -216,13 +216,13 @@ describe("WorkspaceRestoreError messages", () => {
 				remotes: ["https://a/r.git", "https://b/r.git"],
 				reason: "denied-history",
 			},
-			`Cannot restore snapshot snap1: commit ${HEAD} is not on https://a/r.git, https://b/r.git and its unpushed history touches denied paths .env, id_rsa (commits-unavailable). Push commits c1, c2 to a recorded remote, then retry.`,
+			`Cannot restore snapshot snap1: commit ${HEAD} is not on https://a/r.git, https://b/r.git and its unpushed history touches denied paths .env, id_rsa (commits-unavailable). Push commit ${HEAD} (with its history) to a recorded remote, then retry. Commits c1, c2 add or change denied paths .env, id_rsa, so pushing publishes those files.`,
 		],
 		[
 			"commits-unavailable bundle-over-cap without remotes",
 			"commits-unavailable",
 			{ snapshotId: "snap1", head: HEAD, commits: ["c1"], reason: "bundle-over-cap" },
-			`Cannot restore snapshot snap1: commit ${HEAD} is not on no recorded remote and its unpushed history exceeded the snapshot size cap (commits-unavailable). Push commits c1 to a recorded remote, then retry.`,
+			`Cannot restore snapshot snap1: commit ${HEAD} is not on no recorded remote and its unpushed history exceeded the snapshot size cap (commits-unavailable). Push commit ${HEAD} (with its history) to a recorded remote, or raise snapshots.maxSnapshotBytes and record a new snapshot, then retry.`,
 		],
 		[
 			"delta-failed with a patch",
@@ -687,5 +687,115 @@ describe("filesystem failure wrappers", () => {
 			assert.equal(unreadablePathError("/w/a", error), error);
 			assert.equal(unwritablePathError("/w/a", "snap1", error), error);
 		}
+	});
+});
+
+describe("a drift whose automatic restore failed shows that failure (#4245)", () => {
+	const drift = {
+		root: "/r",
+		expectedHead: HEAD,
+		actualHead: null,
+		expectedTree: TREE,
+		actualTree: null,
+		snapshotId: "s1",
+	};
+	const prefix = `Worktree drifted from its recorded snapshot: /r has tree none at no HEAD, expected ${TREE} at ${HEAD}`;
+	const restoreFailures = [
+		[
+			"denied history",
+			new WorkspaceRestoreError("commits-unavailable", {
+				snapshotId: "s1",
+				head: HEAD,
+				commits: ["c1"],
+				paths: [".env"],
+				remotes: ["https://a/r.git"],
+				reason: "denied-history",
+			}),
+		],
+		["a missing blob", new WorkspaceRestoreError("blob-missing", { snapshotId: "s1", blob: "h1", role: "patch" })],
+		[
+			"an unfetched commit",
+			new WorkspaceRestoreError("commits-unavailable", {
+				snapshotId: "s1",
+				head: HEAD,
+				commits: [HEAD],
+				remotes: ["https://a/r.git"],
+				reason: "not-fetched",
+			}),
+		],
+		[
+			"an invalid record",
+			new WorkspaceRestoreError("invalid-snapshot", {
+				snapshotId: "s1",
+				field: "remotes[0]",
+				reason: "unsafe-remote",
+			}),
+		],
+	] as const;
+
+	test.each(restoreFailures)("%s: the message names it and the hint is its fix", (_name, failure) => {
+		const error = new WorkspaceDriftError({ ...drift, reason: "restore-failed" }, failure);
+		assert.equal(
+			error.message,
+			`${prefix}, and the automatic restore failed: ${failure.summary} (tree-drift). ${failure.hint}`,
+		);
+		assert.equal(error.hint, failure.hint);
+		assert.equal(error.reason, "restore-failed");
+		assert.equal(error.restoreCode, failure.code);
+		assert.deepEqual(error.fields, { ...drift, reason: "restore-failed", restoreCode: failure.code });
+		const back = rehydrateWorkspaceError(JSON.parse(JSON.stringify(serializeWorkspaceError(error))));
+		assert.ok(back instanceof WorkspaceDriftError);
+		assert.equal(back.message, error.message);
+		assert.deepEqual(back.fields, error.fields);
+	});
+
+	test("a restore failure deeper in the cause chain, or Git being unavailable, is shown the same way", () => {
+		const missing = new WorkspaceRestoreError("blob-missing", { snapshotId: "s1", blob: "h1", role: "bundle" });
+		const wrapped = new WorkspaceDriftError(
+			{ ...drift, reason: "restore-failed" },
+			new Error("outer", { cause: missing }),
+		);
+		assert.equal(wrapped.restoreCode, "blob-missing");
+		assert.equal(wrapped.hint, missing.hint);
+		const git = new GitUnavailableError("not-installed", "git");
+		const unavailable = new WorkspaceDriftError({ ...drift, reason: "restore-failed" }, git);
+		assert.equal(
+			unavailable.message,
+			`${prefix}, and the automatic restore failed: Git is unavailable (not-installed) (tree-drift). ${git.hint}`,
+		);
+		assert.equal(unavailable.restoreCode, "not-installed");
+	});
+
+	test("an untyped failure, no cause, or a drift that was never restored keeps the drift's own remedy", () => {
+		const generic = "Restore the recorded snapshot into a new worktree, or undo the changes, then resume.";
+		for (const error of [
+			new WorkspaceDriftError({ ...drift, reason: "restore-failed" }, new Error("disk on fire")),
+			new WorkspaceDriftError({ ...drift, reason: "restore-failed" }),
+			new WorkspaceDriftError(drift, new WorkspaceRestoreError("blob-missing", { snapshotId: "s1", blob: "h1" })),
+		]) {
+			assert.equal(error.message, `${prefix} (tree-drift). ${generic}`);
+			assert.equal(error.hint, generic);
+			assert.equal(error.restoreCode, undefined);
+			assert.equal(error.message.includes("disk on fire"), false);
+		}
+	});
+
+	test("every workspace error exposes what failed apart from its code and hint", () => {
+		const error = new WorkspaceSnapshotError("unborn-head", "/w");
+		assert.equal(error.summary, "Worktree snapshot unavailable: /w has no commits yet");
+		assert.equal(error.message, `${error.summary} (unborn-head). ${error.hint}`);
+	});
+});
+
+describe("blob-store-unsupported names the setting that selects SQLite for its store (#4245)", () => {
+	test("a session store and a workflow journal each get their own fix", () => {
+		assert.equal(
+			new WorkspaceSnapshotError("blob-store-unsupported", "jsonl").hint,
+			'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
+		);
+		assert.equal(
+			new WorkspaceSnapshotError("blob-store-unsupported", "workflow journal").message,
+			'Worktree snapshot unavailable: workflow journal storage cannot hold snapshot blobs (blob-store-unsupported). Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.',
+		);
 	});
 });

@@ -390,7 +390,7 @@ describe("snapshot blob store contract", () => {
 		assert.deepEqual([...(await store.getBlob("h"))!], [1, 2, 3]);
 		assert.equal(await store.getBlob("absent"), undefined);
 		assert.deepEqual(await store.listBlobHashes(), ["h"]);
-		await store.deleteBlobs(["h", "never-stored"]);
+		await store.deleteBlobs(["h", "never-stored"], { olderThanSeconds: 0 });
 		assert.deepEqual(await store.listBlobHashes(), []);
 	});
 
@@ -406,11 +406,11 @@ describe("snapshot blob store contract", () => {
 			chain: [{ tree: "t", patch: blobs[0]!.hash, bytes: 1 }],
 			bundle: null,
 		} as unknown as WorktreeSnapshot;
-		const result = await collectSnapshotGarbage(store, [retained]);
+		const result = await collectSnapshotGarbage(store, [retained], { graceSeconds: 0 });
 		assert.deepEqual([...result.deleted].sort(), [blobs[1]!.hash, blobs[2]!.hash].sort());
 		assert.deepEqual(await store.listBlobHashes(), [blobs[0]!.hash]);
-		assert.deepEqual((await collectSnapshotGarbage(store, [retained])).deleted, []);
-		assert.deepEqual([...(await collectSnapshotGarbage(store, [])).deleted], [blobs[0]!.hash]);
+		assert.deepEqual((await collectSnapshotGarbage(store, [retained], { graceSeconds: 0 })).deleted, []);
+		assert.deepEqual([...(await collectSnapshotGarbage(store, [], { graceSeconds: 0 })).deleted], [blobs[0]!.hash]);
 		assert.deepEqual(await store.listBlobHashes(), []);
 	});
 });

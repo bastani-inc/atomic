@@ -63,7 +63,7 @@ test("resume validates the latest boundary once, fails on drift, and can restore
 	assert.ok(missingBlob);
 	const blobData = await journal.snapshotBlobs.getBlob(missingBlob);
 	assert.ok(blobData);
-	await journal.snapshotBlobs.deleteBlobs([missingBlob]);
+	await journal.snapshotBlobs.deleteBlobs([missingBlob], { olderThanSeconds: 0 });
 	await assert.rejects(
 		resolveWorkflowSnapshotFrontier(journal, "run", { storeDir: sandbox.path("other-host") }),
 		(error: unknown) => {
@@ -73,6 +73,15 @@ test("resume validates the latest boundary once, fails on drift, and can restore
 			assert.equal(error.expectedTree, snapshots[2]!.tree);
 			assert.notEqual(error.actualTree, snapshots[2]!.tree);
 			assert.equal((error.cause as { code?: string }).code, "blob-missing");
+			assert.equal(error.reason, "restore-failed");
+			assert.equal(error.restoreCode, "blob-missing");
+			assert.equal(error.hint, (error.cause as { hint?: string }).hint);
+			assert.ok(
+				error.message.includes(
+					`, and the automatic restore failed: Cannot restore snapshot ${snapshots[2]!.id}: patch blob ${missingBlob} is missing from storage (tree-drift). Use the storage the snapshot was recorded in`,
+				),
+				error.message,
+			);
 			return true;
 		},
 	);
@@ -105,7 +114,8 @@ test("failed multi-root restore removes earlier fresh worktrees and records no m
 			payload: { kind: "tool", checkpointId: `tool-${index}`, worktreeSnapshots: [capture.snapshot] },
 		} as unknown as RunEvent);
 		sandbox.write(join(clone, "change.txt"), `drift ${index}\n`);
-		if (index === 1) await journal.snapshotBlobs.deleteBlobs([capture.snapshot.chain[0]!.patch!]);
+		if (index === 1)
+			await journal.snapshotBlobs.deleteBlobs([capture.snapshot.chain[0]!.patch!], { olderThanSeconds: 0 });
 	}
 	const storeDir = sandbox.path("rollback-host");
 	await assert.rejects(resolveWorkflowSnapshotFrontier(journal, "run", { storeDir }), (error: unknown) => {

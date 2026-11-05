@@ -16,6 +16,7 @@ import {
 } from "./errors.ts";
 import { type GitRunOptions, gitText, nulFields, runGit } from "./git.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
+import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord } from "./records.ts";
 import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
 import type { SnapshotBlobStore, WorkspaceBinding, WorktreeRestoreWarning, WorktreeSnapshot } from "./types.ts";
 
@@ -153,6 +154,21 @@ function bundlePrerequisites(bundle: Uint8Array): string[] {
 		.map((line) => line.slice(1).split(" ", 1)[0]!);
 }
 
+/**
+ * Transports a restore may fetch over. Recorded remotes come from storage, so Git's remote helpers (`ext::`, `fd::`,
+ * custom `<name>::`) are refused; local paths stay allowed for path remotes and mirrors.
+ */
+const FETCH_TRANSPORTS = [
+	"-c",
+	"protocol.allow=never",
+	...["https", "http", "ssh", "git", "file"].flatMap((protocol) => ["-c", `protocol.${protocol}.allow=always`]),
+];
+
+/** `git fetch` of `refspecs` from `repository`; the `--` keeps a recorded value from ever being read as an option. */
+function fetchArgs(repository: string, refspecs: readonly string[]): string[] {
+	return [...FETCH_TRANSPORTS, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", repository, ...refspecs];
+}
+
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
@@ -164,7 +180,7 @@ async function fetchCommits(
 		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
 		if (missing.length === 0) return undefined;
 		try {
-			await runGit(["fetch", "-q", "--no-tags", "--no-write-fetch-head", remote, ...missing], git);
+			await runGit(fetchArgs(remote, missing), git);
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
@@ -184,11 +200,13 @@ async function ensureHead(
 		let failure = await fetchCommits(git, snapshot.remotes, [head]);
 		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
-			failure = (await fetchCommits(git, snapshot.remotes, bundlePrerequisites(data))) ?? failure;
+			const prerequisites = bundlePrerequisites(data);
+			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
+			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)) ?? failure;
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
-				await runGit(["fetch", "-q", "--no-tags", "--no-write-fetch-head", file, "HEAD"], git);
+				await runGit(fetchArgs(file, ["HEAD"]), git);
 			} catch (error) {
 				if (!isWorkspaceGitError(error)) throw error;
 				failure = error;
@@ -319,7 +337,7 @@ function resolveSnapshot(
 ): WorktreeSnapshot | null {
 	if (isSnapshot(target)) return target;
 	const candidates = (snapshots ?? []).filter(
-		(snapshot) => snapshot.tree === target.tree && snapshot.head === target.head,
+		(snapshot) => isSnapshot(snapshot) && snapshot.tree === target.tree && snapshot.head === target.head,
 	);
 	return candidates.at(-1) ?? null;
 }
@@ -342,6 +360,7 @@ export async function restoreWorktree(
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
+	assertUsableSnapshotRecord(target, snapshot);
 	const snapshotId = snapshot?.id ?? null;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const path = resolve(
@@ -507,6 +526,7 @@ export async function verifyWorktree(
 	if (!isBinding(binding)) throw new WorkspaceConfigError("sdk", "binding", "a WorkspaceBinding");
 	if (typeof dir !== "string" || dir.length === 0) throw new WorkspaceConfigError("sdk", "dir", "a directory path");
 	const settings = resolveWorktreeSnapshotSettings(options.settings, "sdk", "settings");
+	assertUsableSnapshotRecord(binding, isSnapshot(binding) ? binding : null);
 	const checkout = await locateCheckout(dir, options.signal);
 	if (checkout instanceof Error) throw checkout;
 	const policy = await loadSnapshotPathPolicy(checkout.root);

@@ -73,8 +73,12 @@ function command(args: readonly string[]): string[] {
 	return rest;
 }
 const invocations = (name: string) => spawned.calls.map(command).filter((rest) => rest[0] === name);
-/** The repository each `git fetch` since the last reset read from: a remote URL or a bundle file. */
-const fetchedFrom = () => invocations("fetch").map((rest) => rest[4]!);
+/** The repository each `git fetch` since the last reset read from, a remote URL or a bundle file, always after `--`. */
+const fetchedFrom = () =>
+	invocations("fetch").map((rest) => {
+		assert.equal(rest[4], "--");
+		return rest[5]!;
+	});
 const reset = () => {
 	spawned.calls.length = 0;
 	spawned.closed.length = 0;
@@ -167,7 +171,7 @@ describe("finding the head", () => {
 		const snapshot = await capture(clone, blobs);
 		assert.ok(snapshot.bundle);
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
-		await blobs.deleteBlobs([snapshot.bundle.blob]);
+		await blobs.deleteBlobs([snapshot.bundle.blob], { olderThanSeconds: 0 });
 		const restored = await restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") });
 		assert.equal(readFileSync(join(restored.path, "feature.txt"), "utf8"), "feature\n");
 	});
@@ -508,7 +512,7 @@ describe("one restore at a time per shared store", () => {
 		const blobs: SnapshotBlobStore = {
 			putBlobs: (entries) => stored.putBlobs(entries),
 			listBlobHashes: () => stored.listBlobHashes(),
-			deleteBlobs: (hashes) => stored.deleteBlobs(hashes),
+			deleteBlobs: (hashes, options) => stored.deleteBlobs(hashes, options),
 			getBlob: async (hash) => {
 				const gate = gates.get(hash);
 				if (gate) {
