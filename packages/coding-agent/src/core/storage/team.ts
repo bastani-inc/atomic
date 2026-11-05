@@ -5,14 +5,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { getAgentDir } from "../../config.js";
+import { getAgentDir, getProjectConfigPaths } from "../../config.js";
+import { parseJsonFileContent } from "../../utils/json.ts";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
 import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
+import { FileSettingsStorage, writeSettingsFile } from "../settings-storage.ts";
 import {
 	describeStorageError,
 	StorageAdapterLoadError,
@@ -160,18 +162,22 @@ function unreadableSettingsDetail(error: Error): string {
 	return position === null ? "not valid JSON" : `not valid JSON at line ${position[1]}, column ${position[2]}`;
 }
 
+function unreadableSettingsError(subject: string, cause: Error): TeamProfileError {
+	return new TeamProfileError("settings-unreadable", {
+		subject,
+		detail: unreadableSettingsDetail(cause),
+		hint: `Fix ${subject} first, then run the command again.`,
+		cause,
+	});
+}
+
 function openGlobalSettings(cwd: string, agentDir: string): SettingsManager {
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const failure = manager.drainErrors().find(({ scope }) => scope === "global");
 	if (failure !== undefined) {
 		const settingsPath = settingsPathOf(agentDir);
 		if (isLocked(failure.error)) throw lockedError(settingsPath, failure.error, "Nothing was changed.");
-		throw new TeamProfileError("settings-unreadable", {
-			subject: settingsPath,
-			detail: unreadableSettingsDetail(failure.error),
-			hint: `Fix ${settingsPath} first, then run the command again.`,
-			cause: failure.error,
-		});
+		throw unreadableSettingsError(settingsPath, failure.error);
 	}
 	return manager;
 }
@@ -303,6 +309,32 @@ function settingsWriteError(settingsPath: string, cause: Error, outcome: string)
 	});
 }
 
+function withGlobalSettings<T>(agentDir: string, outcome: string, run: (settings: Settings) => T): T {
+	const settingsPath = settingsPathOf(agentDir);
+	let result: T | undefined;
+	try {
+		new FileSettingsStorage(dirname(agentDir), agentDir).withPrimaryWriteLock("global", (current) => {
+			let settings: Settings = {};
+			if (current !== undefined) {
+				try {
+					const parsed: unknown = parseJsonFileContent(current);
+					if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+						throw new TypeError("not a JSON object");
+					settings = parsed as Settings;
+				} catch (error) {
+					throw unreadableSettingsError(settingsPath, error as Error);
+				}
+			}
+			result = run(settings);
+			return undefined;
+		});
+	} catch (error) {
+		if (error instanceof TeamProfileError) throw error;
+		throw settingsWriteError(settingsPath, error as Error, outcome);
+	}
+	return result as T;
+}
+
 function cleanupAfter(primary: Error, cleanup: () => void): void {
 	try {
 		cleanup();
@@ -338,7 +370,7 @@ export async function joinSharedDatabase(
 	} else if (!isFileUrl(url)) throw missingTeamToken(url, source);
 	const prefix = checkTeamPrefix(options.prefix, source);
 
-	const manager = openGlobalSettings(cwd, agentDir);
+	openGlobalSettings(cwd, agentDir);
 	const settingsPath = settingsPathOf(agentDir);
 	// An unreadable settings file looks like one with no packages installed, so it is reported first.
 	if ((await resolvePackageStorageAdapter(LIBSQL_ADAPTER_PACKAGE, agentDir)) === undefined) {
@@ -349,46 +381,45 @@ export async function joinSharedDatabase(
 	}
 	await checkConnectionWithin(url, token, agentDir, connectionTimeoutMs);
 
-	const previous: StorageSettingsSelection | undefined = manager.getGlobalSettings().storage;
-	const previousPin = manager.getGlobalSettings().sessions?.storage;
-	const reused = token === undefined ? undefined : reusableTokenFile(previous, token, agentDir);
-	const tokenPath =
-		token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
-	if (token !== undefined && tokenPath !== undefined && reused === undefined) {
-		try {
-			writePrivateFile(tokenPath, token);
-		} catch (error) {
-			throw new TeamProfileError("token-write-failed", {
-				subject: tokenPath,
-				detail: describeStorageError(error as Error),
-				hint: "Nothing was changed. Check that the agent directory is writable, then run the command again.",
-				cause: error as Error,
-			});
+	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
+	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
+		const previous = settings.storage;
+		const reused = token === undefined ? undefined : reusableTokenFile(previous, token, agentDir);
+		const tokenPath =
+			token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
+		const created = token !== undefined && tokenPath !== undefined && reused === undefined ? tokenPath : undefined;
+		if (token !== undefined && created !== undefined) {
+			try {
+				writePrivateFile(created, token);
+			} catch (error) {
+				throw new TeamProfileError("token-write-failed", {
+					subject: created,
+					detail: describeStorageError(error as Error),
+					hint: "Nothing was changed. Check that the agent directory is writable, then run the command again.",
+					cause: error as Error,
+				});
+			}
 		}
-	}
-	const storage: StorageSettingsSelection = {
-		adapter: LIBSQL_ADAPTER_PACKAGE,
-		options: { url },
-		...(tokenPath === undefined
-			? {}
-			: { secrets: { authToken: { file: relative(dirname(agentDir), tokenPath).split(sep).join("/") } } }),
-		...(prefix === undefined ? {} : { prefix }),
-	};
-	// Publishing settings is the commit point; an unsuccessful write removes only a token file it created.
-	if (options.pinLocalSessions) manager.setStorageLayout({ storage, sessionsStorage: LOCAL_SESSIONS_STORAGE });
-	else manager.setStorage(storage);
-	await manager.flush();
-	const writeFailure = manager.drainErrors()[0];
-	if (writeFailure !== undefined) {
-		const error = settingsWriteError(
-			settingsPath,
-			writeFailure.error,
-			"Nothing was changed: the previous selection and its token are kept.",
-		);
-		if (tokenPath !== undefined && reused === undefined)
-			cleanupAfter(error, () => rmSync(tokenPath, { force: true }));
-		throw error;
-	}
+		const storage: StorageSettingsSelection = {
+			adapter: LIBSQL_ADAPTER_PACKAGE,
+			options: { url },
+			...(tokenPath === undefined
+				? {}
+				: { secrets: { authToken: { file: relative(dirname(agentDir), tokenPath).split(sep).join("/") } } }),
+			...(prefix === undefined ? {} : { prefix }),
+		};
+		const next: Settings = { ...settings, storage };
+		if (options.pinLocalSessions) next.sessions = { ...settings.sessions, storage: LOCAL_SESSIONS_STORAGE };
+		try {
+			writeSettingsFile(settingsPath, JSON.stringify(next, null, 2));
+		} catch (error) {
+			const failure = settingsWriteError(settingsPath, error as Error, unchanged);
+			if (created !== undefined) cleanupAfter(failure, () => rmSync(created, { force: true }));
+			throw failure;
+		}
+		return { storage, previous, previousPin: settings.sessions?.storage, tokenPath, reused };
+	});
+	const { storage, previous, previousPin, tokenPath, reused } = published;
 	return {
 		settingsPath,
 		storage,
@@ -546,6 +577,23 @@ function referencedTokenFiles(settings: Settings, agentDir: string): string[] {
 	);
 }
 
+function readProjectSettings(cwd: string, agentDir: string, settingsPath: string): Settings {
+	const storage = new FileSettingsStorage(cwd, agentDir, {
+		projectReadPaths: getProjectConfigPaths(cwd, "settings.json"),
+	});
+	try {
+		let merged: string | undefined;
+		storage.withLock("project", (current) => {
+			merged = current;
+			return undefined;
+		});
+		return merged === undefined ? {} : (parseJsonFileContent(merged) as Settings);
+	} catch (error) {
+		if (isLocked(error as Error)) throw lockedError(settingsPath, error as Error, "Nothing was changed.");
+		throw unreadableSettingsError("the project settings", error as Error);
+	}
+}
+
 /** `leaveTeam` with the CLI's broker control. */
 export async function leaveTeamWith(
 	options: LeaveTeamOptions = {},
@@ -554,60 +602,74 @@ export async function leaveTeamWith(
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
 	const cwd = resolve(options.cwd ?? process.cwd());
 	const settingsPath = settingsPathOf(agentDir);
-	const manager = openGlobalSettings(cwd, agentDir);
-	const global = manager.getGlobalSettings();
-	const storage: StorageSettingsSelection | undefined = global.storage;
-	const removed: TeamSettingKey[] = [];
-	const kept: TeamKeptSetting[] = [];
-	if (isJoinedStorage(storage, agentDir)) removed.push("storage");
-	else if (storage !== undefined) kept.push({ key: "storage", reason: "changed" });
-	const pin = global.sessions?.storage;
-	const storageRemains = storage !== undefined && !removed.includes("storage");
-	if (isLocalSessionsPin(pin)) {
-		if (storageRemains) kept.push({ key: "sessions.storage", reason: "storage-remains" });
-		else removed.push("sessions.storage");
-	} else if (pin !== undefined) kept.push({ key: "sessions.storage", reason: "changed" });
-	if (removed.length === 0) return { settingsPath, removed, kept, deletedTokenFiles: [], keptTokenFiles: [] };
+	openGlobalSettings(cwd, agentDir);
+	const unchanged = "Nothing was changed.";
+	const empty: TeamLeaveResult = { settingsPath, removed: [], kept: [], deletedTokenFiles: [], keptTokenFiles: [] };
+	if (!existsSync(settingsPath)) return empty;
+	const trusted = projectTrust(cwd, agentDir);
+	const outcome = withGlobalSettings(agentDir, unchanged, (global) => {
+		const project = readProjectSettings(cwd, agentDir, settingsPath);
+		const storage: StorageSettingsSelection | undefined = global.storage;
+		const removed: TeamSettingKey[] = [];
+		const kept: TeamKeptSetting[] = [];
+		if (isJoinedStorage(storage, agentDir)) removed.push("storage");
+		else if (storage !== undefined) kept.push({ key: "storage", reason: "changed" });
+		const pin = global.sessions?.storage;
+		const storageRemains =
+			(storage !== undefined && !removed.includes("storage")) || (trusted && project.storage !== undefined);
+		if (isLocalSessionsPin(pin)) {
+			if (storageRemains) kept.push({ key: "sessions.storage", reason: "storage-remains" });
+			else removed.push("sessions.storage");
+		} else if (pin !== undefined) kept.push({ key: "sessions.storage", reason: "changed" });
+		if (removed.length === 0) return { ...empty, kept };
 
-	const tokenPath = removed.includes("storage") ? secretFilePath(storage?.secrets?.authToken, agentDir) : undefined;
-	manager.setStorageLayout({
-		...(removed.includes("storage") ? { storage: undefined } : {}),
-		...(removed.includes("sessions.storage") ? { sessionsStorage: undefined } : {}),
-	});
-	await manager.flush();
-	const writeFailure = manager.drainErrors()[0];
-	if (writeFailure !== undefined) throw settingsWriteError(settingsPath, writeFailure.error, "Nothing was changed.");
-	context.onLeft?.({ settingsPath, removed, kept });
-	const broker = removed.includes("storage") ? await restartBroker(agentDir, context, options.onProgress) : undefined;
-	const deletedTokenFiles: string[] = [];
-	const keptTokenFiles: string[] = [];
-	if (tokenPath !== undefined) {
-		const remaining = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
-		const references = [
-			...referencedTokenFiles(remaining.getGlobalSettings(), agentDir),
-			...referencedTokenFiles(remaining.getProjectSettings(), agentDir),
-		];
-		if (references.includes(tokenPath)) keptTokenFiles.push(tokenPath);
-		else {
-			try {
-				rmSync(tokenPath, { force: true });
-			} catch (error) {
-				throw new TeamProfileError("token-delete-failed", {
-					subject: tokenPath,
-					detail: describeStorageError(error as Error),
-					hint: "The team settings were removed. Delete the token file yourself.",
-					cause: error as Error,
-				});
-			}
-			deletedTokenFiles.push(tokenPath);
+		const tokenPath = removed.includes("storage") ? secretFilePath(storage?.secrets?.authToken, agentDir) : undefined;
+		const next: Settings = { ...global };
+		if (removed.includes("storage")) delete next.storage;
+		if (removed.includes("sessions.storage")) {
+			const { storage: _pin, ...sessions } = { ...global.sessions };
+			if (Object.keys(sessions).length === 0) delete next.sessions;
+			else next.sessions = sessions;
 		}
-	}
+		try {
+			writeSettingsFile(settingsPath, JSON.stringify(next, null, 2));
+		} catch (error) {
+			throw settingsWriteError(settingsPath, error as Error, unchanged);
+		}
+		const deletedTokenFiles: string[] = [];
+		const keptTokenFiles: string[] = [];
+		let tokenFailure: TeamProfileError | undefined;
+		if (tokenPath !== undefined) {
+			if ([...referencedTokenFiles(next, agentDir), ...referencedTokenFiles(project, agentDir)].includes(tokenPath))
+				keptTokenFiles.push(tokenPath);
+			else {
+				try {
+					rmSync(tokenPath, { force: true });
+					deletedTokenFiles.push(tokenPath);
+				} catch (error) {
+					tokenFailure = new TeamProfileError("token-delete-failed", {
+						subject: tokenPath,
+						detail: describeStorageError(error as Error),
+						hint: "The team settings were removed. Delete the token file yourself.",
+						cause: error as Error,
+					});
+				}
+			}
+		}
+		return { settingsPath, removed, kept, deletedTokenFiles, keptTokenFiles, tokenFailure };
+	});
+	if (outcome.removed.length === 0) return outcome;
+	context.onLeft?.({ settingsPath, removed: outcome.removed, kept: outcome.kept });
+	const broker = outcome.removed.includes("storage")
+		? await restartBroker(agentDir, context, options.onProgress)
+		: undefined;
+	if ("tokenFailure" in outcome && outcome.tokenFailure !== undefined) throw outcome.tokenFailure;
 	return {
 		settingsPath,
-		removed,
-		kept,
-		deletedTokenFiles,
-		keptTokenFiles,
+		removed: outcome.removed,
+		kept: outcome.kept,
+		deletedTokenFiles: outcome.deletedTokenFiles,
+		keptTokenFiles: outcome.keptTokenFiles,
 		...(broker === undefined ? {} : { broker }),
 	};
 }

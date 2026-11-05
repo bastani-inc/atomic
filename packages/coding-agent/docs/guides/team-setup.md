@@ -46,7 +46,9 @@ atomic team leave           # back to the individual layout
 
 `atomic team status` exits 1 when a selection is invalid, the adapter cannot load, or the database does not answer.
 
-`atomic team leave` removes `storage` and `sessions.storage` only when they still hold what `team join` wrote. A value you changed yourself stays in place, and the command says so. While a `storage` you changed stays, `sessions.storage` stays too, so your sessions do not move to that store. It deletes the token file unless another setting still references it, and restarts the Intercom broker. Running it again changes nothing.
+`atomic team leave` removes `storage` and `sessions.storage` only when they still hold what `team join` wrote. A value you changed yourself stays in place, and the command says so. If another global or trusted project `storage` selection remains, `sessions.storage` stays too, so your sessions do not move to that store. It deletes the token file unless another setting still references it, and restarts the Intercom broker. Running it again changes nothing.
+
+If the global or project settings cannot be read, fix them before leaving. The command keeps settings and token files unchanged rather than deleting a token whose references it cannot check.
 
 ## Project groups
 

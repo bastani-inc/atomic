@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { FileSettingsStorage } from "../../packages/coding-agent/src/core/settings-storage.js";
 import { isTeamProfileError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { joinSharedDatabase } from "../../packages/coding-agent/src/core/storage/team.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory } from "../helpers/runtime.js";
 
-const full = vi.hoisted(() => ({ on: false, rmFails: false, tokenWrites: [] as unknown[] }));
+const full = vi.hoisted(() => ({ on: false, settingsFail: false, rmFails: false, tokenWrites: [] as unknown[] }));
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
 	return {
@@ -19,6 +18,9 @@ vi.mock("node:fs", async (importOriginal) => {
 			if (/storage-token\.[\da-f-]+\.\d+\.tmp$/.test(String(args[0]))) full.tokenWrites.push(args[2]);
 			if (full.on && /storage-token\.[\da-f-]+\.\d+\.tmp$/.test(String(args[0]))) {
 				throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+			}
+			if (full.settingsFail && /settings\.json\.[^\\/]*\.tmp$/.test(String(args[0]))) {
+				throw Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
 			}
 			return fs.writeFileSync(...args);
 		},
@@ -47,6 +49,7 @@ beforeEach(() => {
 
 afterEach(async () => {
 	full.on = false;
+	full.settingsFail = false;
 	full.rmFails = false;
 	full.tokenWrites = [];
 	vi.restoreAllMocks();
@@ -74,7 +77,8 @@ test(
 			[error.code, error.retryable, error.detail],
 			["token-write-failed", false, "ENOSPC: no space left on device, write"],
 		);
-		assert.match(error.subject, /\/agent\/storage-token\.[\da-f-]+$/);
+		assert.match(error.subject, /[\\/]agent[\\/]storage-token\.[\da-f-]+$/);
+		assert.equal(dirname(error.subject), agentDir);
 		assert.equal(
 			error.hint,
 			"Nothing was changed. Check that the agent directory is writable, then run the command again.",
@@ -93,9 +97,7 @@ test(
 		const path = join(databaseDirectory, "team.sqlite");
 		await (await openNodeSqliteDatabase(path)).close();
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
-		vi.spyOn(FileSettingsStorage.prototype, "withPrimaryWriteLock").mockImplementation(() => {
-			throw Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
-		});
+		full.settingsFail = true;
 		full.rmFails = true;
 		const error = await joinSharedDatabase(
 			{ url: pathToFileURL(path).href, token: "t", agentDir, cwd: root, pinLocalSessions: true },
