@@ -1,3 +1,4 @@
+import type { ImageEditParamsNonStreaming } from "openai/resources/images";
 import { ImageGenerationConfigError, type ImageGenerationConfigReason } from "../image-generation-error.ts";
 import type { ImageApi, ImageModel, ImagesInputContent, ImagesInputImage, ImagesOptions } from "../types.ts";
 
@@ -80,7 +81,7 @@ export interface OpenAIImagesWireParams {
 	svg?: OpenAIImagesSvgOptions;
 	stream?: boolean;
 	partial_images?: number;
-	image?: readonly object[];
+	image?: ImageEditParamsNonStreaming["image"];
 	markup?: object;
 	mask?: object;
 }
@@ -217,8 +218,9 @@ export function validateOpenAIImagesRequest(model: ImageModel<ImageApi>, params:
 			"outputFormat",
 		);
 	}
+	const hasBaseImage = Array.isArray(params.image) ? params.image.length > 0 : params.image != null;
 	for (const role of ["markup", "mask"] as const) {
-		if (params[role] !== undefined && (params.image?.length ?? 0) === 0) {
+		if (params[role] !== undefined && !hasBaseImage) {
 			fail(
 				model,
 				"input",

@@ -756,6 +756,31 @@ describe("GPT Image 2.6 request validation (#4332)", () => {
 		},
 	);
 
+	it.each(["markup", "mask"] as const)(
+		"accepts a hook's single-upload base image with %s (#4332)",
+		async (role) => {
+			const { fetch, requests } = mockFetch();
+			const result = await run(
+				flare,
+				editContext(png("base"), png("overlay", role)),
+				{
+					onPayload: (payload) => {
+						const edit = payload as { image: File[] };
+						return { ...edit, image: edit.image[0] };
+					},
+				},
+				fetch,
+			);
+
+			assert.equal(result.stopReason, "stop");
+			assert.equal(requests.length, 1);
+			assert.equal(requests[0]?.url, "https://api.openai.com/v1/images/edits");
+			const image = formOf(requests[0]).get("image");
+			assert(image instanceof File);
+			assert.equal(await image.text(), "base");
+		},
+	);
+
 	it("allows streaming fields on formats that support them (#4332)", async () => {
 		const { fetch, requests } = mockFetch();
 
