@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -28,6 +28,16 @@ describe.skipIf(process.platform === "win32")("canonical worktree paths (#4245)"
 			join(root, "real", "gone", "deeper"),
 		);
 		assert.equal(canonicalizeWorktreePath(join(root, "missing")), join(root, "missing"));
+	});
+
+	test("components below a regular file keep their spelling under the file's real path", () => {
+		mkdirSync(join(root, "real"));
+		writeFileSync(join(root, "real", "file"), "");
+		symlinkSync(join(root, "real"), join(root, "link"));
+		assert.equal(
+			canonicalizeWorktreePath(join(root, "link", "file", "below", "deeper")),
+			join(root, "real", "file", "below", "deeper"),
+		);
 	});
 
 	test("a link that loops fails as an unreadable path instead of being guessed", () => {
