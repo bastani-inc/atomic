@@ -310,6 +310,14 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		else await this._queueSteer(keptText, keptImages, text);
 	};
 
+	// Reserves the context through async input hooks and auth checks, so tree navigation cannot start
+	// before `_isPreparingRun` marks the run (pi #9154).
+	let reservedPreflight = false;
+	const releasePreflight = () => {
+		if (!reservedPreflight) return;
+		reservedPreflight = false;
+		this._promptPreflightCount--;
+	};
 	try {
 		// Authorize workflow delivery before commands or input extensions can perform side effects.
 		// A later terminal transition cannot retroactively reject input accepted at this boundary.
@@ -322,6 +330,8 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 			return;
 		}
 		assertCurrent();
+		this._promptPreflightCount++;
+		reservedPreflight = true;
 		// Real user input is on its way in, so a summary describing the previous turn is about
 		// to be stale; stop paying for it. Deliberately after the authorization boundary and
 		// the slash-command path, both of which must observe an untouched session. The
@@ -490,6 +500,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		}
 
 		this._isPreparingRun = "user";
+		releasePreflight();
 		// From here, input arriving during preparation queues behind this run (#3919).
 		this._workflowStageAwaitingFirstPrompt = false;
 		preparingRun = true;
@@ -559,6 +570,7 @@ async function promptInternal(this: AgentSession, text: string, options?: Prompt
 		await keepAcceptedInput(error);
 		throw error;
 	} finally {
+		releasePreflight();
 		admission.release();
 		// A started run is now preparing, so held input admitted next queues behind it.
 		if (held) finishHeldInput(this, held);

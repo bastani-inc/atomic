@@ -59,6 +59,7 @@
 - An image-only steering or follow-up message leaves the queue once it is delivered, so the pending count and queued-message display no longer keep a stale entry (upstream [#8612](https://github.com/earendil-works/pi/pull/8612))
 - A user `!` command whose earlier output was dropped from the in-memory buffer now reports its output as truncated, with the path of the saved full log, even when the kept tail fits the output limits (upstream [#10165](https://github.com/earendil-works/pi/pull/10165))
 - A symlinked `auth.json` shares one lock with the file it points to, so two Atomic processes that reach the same credentials through different paths no longer refresh the same OAuth token at the same time. Writes replace the real file instead of the symlink, which a write used to turn into a separate regular file (upstream [#11787](https://github.com/earendil-works/pi/pull/11787))
+- Tree navigation can no longer start while a prompt is still running its input hooks, which let navigation rebuild the context under the prompt and drop it. A `session_tree` handler can prompt or navigate again: the selected context is installed before the event, so such a prompt no longer waits for the navigation that is waiting for the handler (upstream [#9155](https://github.com/earendil-works/pi/pull/9155))
 
 ## [0.9.71] - 2026-11-03
 

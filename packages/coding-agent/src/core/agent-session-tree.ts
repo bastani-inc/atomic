@@ -37,7 +37,7 @@ export async function navigateTree(
 	assertSessionOpen(this);
 	// Navigating away mid-response would strand the in-flight turn's tool calls on
 	// the abandoned branch. Callers abort first, then navigate.
-	if (this.isStreaming || this._isPreparingRun === "user") {
+	if (this.isStreaming || this._isPreparingRun === "user" || this._promptPreflightCount > 0) {
 		throw new Error("Wait for the current response to finish before navigating the session tree.");
 	}
 	if (this.isCompacting) {
@@ -94,7 +94,8 @@ export async function navigateTree(
 	this.abortSessionSummary();
 
 	// Set up abort controller for summarization
-	this._branchSummaryAbortController = new AbortController();
+	const abortController = new AbortController();
+	this._branchSummaryAbortController = abortController;
 	if (this._compactionReason === undefined) this._compactionReason = "branchSummary";
 	let finishBranchSummary = (): void => {};
 	const branchSummaryCompletion = new Promise<void>((resolve) => {
@@ -111,7 +112,7 @@ export async function navigateTree(
 			const result = (await this._extensionRunner.emit({
 				type: "session_before_tree",
 				preparation,
-				signal: this._branchSummaryAbortController.signal,
+				signal: abortController.signal,
 			})) as SessionBeforeTreeResult | undefined;
 
 			assertSessionOpen(this);
@@ -151,7 +152,7 @@ export async function navigateTree(
 				apiKey,
 				headers,
 				baseUrl,
-				signal: this._branchSummaryAbortController.signal,
+				signal: abortController.signal,
 				customInstructions,
 				replaceInstructions,
 				reserveTokens: branchSummarySettings.reserveTokens,
@@ -237,7 +238,8 @@ export async function navigateTree(
 		this._refreshFinalizedContext();
 		this._restoreToolsFromTranscript();
 
-		// Emit session_tree event
+		// The selected context is installed; session_tree handlers may now prompt or navigate again (pi #9154).
+		this._branchSummaryAbortController = undefined;
 		await this._extensionRunner.emit({
 			type: "session_tree",
 			newLeafId: this.sessionManager.getLeafId(),
@@ -250,8 +252,10 @@ export async function navigateTree(
 
 		return { editorText, cancelled: false, summaryEntry };
 	} finally {
-		this._branchSummaryAbortController = undefined;
-		if (this._compactionReason === "branchSummary") this._compactionReason = undefined;
+		// A navigation started from session_tree owns the controller now; do not clear it or its reason.
+		if (this._branchSummaryAbortController === abortController) this._branchSummaryAbortController = undefined;
+		if (this._compactionReason === "branchSummary" && this._branchSummaryAbortController === undefined)
+			this._compactionReason = undefined;
 		finishBranchSummary();
 		if (this._branchSummaryCompletion === branchSummaryCompletion) this._branchSummaryCompletion = undefined;
 	}
