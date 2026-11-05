@@ -64,7 +64,15 @@ interface SessionFileState {
 
 type JsonValue = SessionJsonValue;
 
-const SCAN_FIRST_LINE_CHUNK_BYTES = 4096;
+/** One read takes the whole header line of any ordinary session; a longer line takes further reads of this size. */
+const HEADER_READ_CHUNK_BYTES = 64 * 1024;
+/** `"type":"session",`, which a header line carries before the fields of its record header. */
+const HEADER_LINE_TYPE_BYTES = Buffer.byteLength('"type":"session",');
+
+/** The bytes of the header line a session file with this record header stamp starts with, its newline included. */
+function headerLineBytes(headerStamp: string): number {
+	return Buffer.byteLength(headerStamp) + HEADER_LINE_TYPE_BYTES + 1;
+}
 
 export interface JsonlSessionFile {
 	readonly location: string;
@@ -345,10 +353,7 @@ export class JsonlSessionStore implements SessionStore {
 		for (const location of await this.run(() => this.paths({ skipUnreadableDirectories: true }), false)) {
 			let header: SessionRecordHeader;
 			try {
-				header = await this.run(
-					async () => this.readHeaderAt(location, await this.readFirstLine(location, SCAN_FIRST_LINE_CHUNK_BYTES)),
-					false,
-				);
+				header = await this.run(async () => this.readHeaderAt(location, await this.readFirstLine(location)), false);
 			} catch {
 				continue;
 			}
@@ -539,7 +544,7 @@ export class JsonlSessionStore implements SessionStore {
 			const cached = this.fileStates.get(path);
 			let stored: StoredSessionHeader;
 			try {
-				stored = await this.readFirstLine(path, SCAN_FIRST_LINE_CHUNK_BYTES);
+				stored = await this.readFirstLine(path);
 			} catch (cause) {
 				// Preserve requested-file errors only while its cached inode still owns the path.
 				if (cached?.headerId === sessionId) {
@@ -571,7 +576,8 @@ export class JsonlSessionStore implements SessionStore {
 			if (parent !== this.directory && (this.exactDirectory || dirname(parent) !== this.directory)) return undefined;
 			let stored: StoredSessionHeader;
 			try {
-				stored = await this.readFirstLine(path);
+				// A file this store knows starts with the header it last saw: read exactly that line, and no further.
+				stored = await this.readFirstLine(path, headerLineBytes(cached.headerStamp));
 			} catch (cause) {
 				if ((cause as NodeJS.ErrnoException).code === "ENOENT") this.fileStates.delete(path);
 				return undefined;
@@ -591,16 +597,17 @@ export class JsonlSessionStore implements SessionStore {
 		return createHash("sha256").update(sessionId).digest("hex");
 	}
 
-	private async readFirstLine(path: string, chunkBytes = 1): Promise<StoredSessionHeader> {
+	/** The first line, read `firstReadBytes` at once and then in chunks until its newline. */
+	private async readFirstLine(path: string, firstReadBytes = HEADER_READ_CHUNK_BYTES): Promise<StoredSessionHeader> {
 		const file = await open(path, "r");
 		try {
 			const chunks: Buffer[] = [];
-			const buffer = Buffer.alloc(chunkBytes);
-			while (true) {
-				const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
+			for (let length = firstReadBytes; ; length = HEADER_READ_CHUNK_BYTES) {
+				const buffer = Buffer.allocUnsafe(length);
+				const { bytesRead } = await file.read(buffer, 0, length, null);
 				if (!bytesRead) break;
 				const newline = buffer.subarray(0, bytesRead).indexOf(10);
-				chunks.push(Buffer.from(buffer.subarray(0, newline === -1 ? bytesRead : newline)));
+				chunks.push(buffer.subarray(0, newline === -1 ? bytesRead : newline));
 				if (newline !== -1) break;
 			}
 			const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonValue;

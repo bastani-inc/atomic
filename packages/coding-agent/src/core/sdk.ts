@@ -682,10 +682,10 @@ async function constructAgentSession(
 				await sessionManager.appendThinkingLevelChange(thinkingLevel);
 			}
 		} else {
-			if (model) {
-				await sessionManager.appendModelChange(model.provider, model.id);
-			}
-			await sessionManager.appendThinkingLevelChange(thinkingLevel);
+			await sessionManager.appendStartState(
+				model ? { provider: model.provider, modelId: model.id } : undefined,
+				thinkingLevel,
+			);
 		}
 	}
 
