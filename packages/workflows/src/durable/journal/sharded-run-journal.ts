@@ -302,11 +302,9 @@ export class ShardedRunJournal implements RunJournal {
 		if (unserializable(recorded))
 			throw new StorageUnavailableError(this.descriptor, recorded.unserializable as StorageFailureCause);
 		return this.operation(async () => {
-			// A run another writer added to an adopted file since the catalog last indexed it already exists.
-			if ((await this.catalog.locate(header.runId)) === undefined) {
-				const adopted = await this.locate(header.runId);
-				if (adopted !== undefined) return adopted.journal.createRun(recorded);
-			}
+			// A run another writer added to an adopted file since the catalog last indexed it already exists: finding it
+			// indexes it, so the reservation below names that file and not a new, empty shard.
+			if ((await this.catalog.locate(header.runId)) === undefined) await this.locate(header.runId);
 			// The root is reserved first and gets its status once its shard has accepted it: a failure in between leaves
 			// a reservation that stops counting as busy, not a running root that does not exist.
 			const reserved = await this.catalog.place({ runId: header.runId });

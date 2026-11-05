@@ -827,3 +827,25 @@ test("a read from sequence 0 returns the whole run, as one from 1 does (#4325)",
 		Array.from({ length: PAGED_EVENTS }, (_, index) => index + 1),
 	);
 });
+
+test("creating a run that another writer added to an adopted file since it was adopted finds it, and makes no empty copy (#4325)", async () => {
+	const legacy = join(root, "adopted", "journal.sqlite");
+	mkdirSync(join(legacy, ".."), { recursive: true });
+	await (await openSqlRunJournal(legacy)).close();
+	await adoptJournals(store, [legacy]);
+	const writer = await openSqlRunJournal(legacy);
+	await writer.createRun({ runId: "late", name: "wf", cwd: "/p", createdAt: 1, status: "failed" });
+	await writer.close();
+	const journal = await open();
+	assert.equal(
+		await journal.createRun({ runId: "late", name: "wf", cwd: "/p", createdAt: 2, status: "running" }),
+		"exists",
+	);
+	assert.equal(journal.shardOf("late")?.kind, "adopted");
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	assert.deepEqual(
+		(await catalog.shards()).map((shard) => shard.kind),
+		["adopted"],
+		"no native shard was created for it",
+	);
+});
