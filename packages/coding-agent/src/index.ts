@@ -215,6 +215,23 @@ export {
 	WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
 } from "./config.js";
 export {
+	AgentRehydrateError,
+	type AgentRehydrateErrorCode,
+	type AgentRehydrateErrorFields,
+	AgentReleaseConfigError,
+	type AgentReleaseConfigSource,
+	type AgentSessionActivity,
+	isAgentRehydrateError,
+	isAgentReleaseConfigError,
+	isLocalOnlySessionStorage,
+	isRetryableAgentRehydrateError,
+	rehydrateAgentRehydrateError,
+	type SerializedAgentErrorCause,
+	type SerializedAgentRehydrateError,
+	serializeAgentRehydrateError,
+	TEAM_JOIN_COMMAND,
+} from "./core/agent-rehydrate-errors.ts";
+export {
 	AgentSession,
 	type AgentSessionConfig,
 	type AgentSessionEvent,
@@ -234,6 +251,19 @@ export type {
 	DetachedToolResult,
 	ToolDetachmentPolicy,
 } from "./core/agent-session-detached-tools.ts";
+export type { ReleasedAgentSession, ReleaseWhenIdleOptions } from "./core/agent-session-release.ts";
+export {
+	type AgentWake,
+	type AgentWakeClock,
+	AgentWakeDispatcher,
+	type AgentWakeDispatcherOptions,
+	type AgentWakeDispatcherStats,
+	type AgentWakeHandler,
+	type AgentWakeKind,
+	type AgentWakeTimer,
+	agentWakeDispatcher,
+	wakeKeyNamespace,
+} from "./core/agent-wake-dispatcher.ts";
 // Auth and model runtime
 export { AuthStorage, readStoredCredential } from "./core/auth-storage.ts";
 export {

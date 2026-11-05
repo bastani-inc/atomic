@@ -20,8 +20,16 @@ import type {
 } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+/**
+ * Sessions held in process memory. Each record is kept as UTF-8 JSON bytes, not a string: one character outside
+ * Latin-1 makes the engine store a whole string at two bytes per character, which would double every idle agent's
+ * history (#4326).
+ */
 export class MemorySessionStore implements SessionStore {
-	private records = new Map<string, string>();
+	private records = new Map<string, Uint8Array>();
 	private closed = false;
 
 	private readonly cwdMatcher?: SessionCwdMatcher;
@@ -98,7 +106,7 @@ export class MemorySessionStore implements SessionStore {
 		for (const record of this.records.values()) {
 			this.assertOpen();
 			query.signal?.throwIfAborted();
-			const snapshot = JSON.parse(record) as SessionSnapshot;
+			const snapshot = JSON.parse(utf8Decoder.decode(record)) as SessionSnapshot;
 			if (matchesCwd && !matchesCwd(snapshot.header.cwd)) continue;
 			if (!query.includeInternal && snapshot.header.internal) continue;
 			yield summarizeSession(snapshot);
@@ -137,7 +145,7 @@ export class MemorySessionStore implements SessionStore {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
 		const record = this.records.get(sessionId);
-		return record === undefined ? undefined : (JSON.parse(record) as SessionSnapshot);
+		return record === undefined ? undefined : (JSON.parse(utf8Decoder.decode(record)) as SessionSnapshot);
 	}
 
 	private forWrite(sessionId: string, options: SessionWriteOptions): SessionSnapshot {
@@ -149,9 +157,9 @@ export class MemorySessionStore implements SessionStore {
 		return snapshot;
 	}
 
-	private encode(snapshot: SessionSnapshot): string {
+	private encode(snapshot: SessionSnapshot): Uint8Array {
 		try {
-			return JSON.stringify(snapshot);
+			return utf8Encoder.encode(JSON.stringify(snapshot));
 		} catch (cause) {
 			throw new StorageUnavailableError(this.descriptor, cause as Error);
 		}

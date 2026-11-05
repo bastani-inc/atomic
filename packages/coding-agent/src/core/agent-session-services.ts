@@ -82,6 +82,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
 	extensionBindings?: CreateAgentSessionOptions["extensionBindings"];
+	releaseWhenIdle?: CreateAgentSessionOptions["releaseWhenIdle"];
 }
 
 /**
@@ -309,5 +310,6 @@ function createSessionFromServices(
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
 		extensionBindings: options.extensionBindings,
+		...(options.releaseWhenIdle === undefined ? {} : { releaseWhenIdle: options.releaseWhenIdle }),
 	});
 }

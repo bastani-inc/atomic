@@ -1,6 +1,7 @@
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AgentSession } from "./agent-session.js";
+import type { ReleaseWhenIdleOptions } from "./agent-session-release.ts";
 import type { ExtensionBindings } from "./agent-session-types.js";
 import type {
 	LoadExtensionsResult,
@@ -151,6 +152,13 @@ export interface CreateAgentSessionOptions {
 	 * the wait ends, so an in-process subagent's start budget can tell that wait from the rest of its setup.
 	 */
 	onResourceAdmissionWait?: (waiting: boolean) => void;
+	/**
+	 * Release the session once it has been idle (no run, compaction, shell command or queued message) for `afterMs`
+	 * milliseconds: it lets go of everything live and keeps only its stored history, and subscribers get a
+	 * `session_released` event first. Rehydrate it with `AgentSessionRuntime.rehydrate(sessionId)`. Validated before
+	 * anything is created; an invalid value throws `AgentReleaseConfigError`.
+	 */
+	releaseWhenIdle?: ReleaseWhenIdleOptions;
 	/** Transform the fully constructed base system prompt at session construction. */
 	systemPromptTransform?: (prompt: string) => string;
 	/** Filter inherited session messages before they enter the new AgentSession. */

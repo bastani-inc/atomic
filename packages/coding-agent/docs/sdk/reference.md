@@ -1070,6 +1070,35 @@ generateDiffString
 generateUnifiedPatch
 type EditDiffResult
 
+// Releasing idle sessions and waking them (see "Releasing idle sessions" in the SDK guide)
+type ReleasedAgentSession
+type ReleaseWhenIdleOptions
+AgentWakeDispatcher
+agentWakeDispatcher
+wakeKeyNamespace
+type AgentWake
+type AgentWakeKind
+type AgentWakeHandler
+type AgentWakeClock
+type AgentWakeTimer
+type AgentWakeDispatcherOptions
+type AgentWakeDispatcherStats
+AgentRehydrateError
+AgentReleaseConfigError
+type AgentRehydrateErrorCode
+type AgentRehydrateErrorFields
+type AgentReleaseConfigSource
+type AgentSessionActivity
+type SerializedAgentRehydrateError
+type SerializedAgentErrorCause
+isAgentRehydrateError
+isAgentReleaseConfigError
+isRetryableAgentRehydrateError
+isLocalOnlySessionStorage
+serializeAgentRehydrateError
+rehydrateAgentRehydrateError
+TEAM_JOIN_COMMAND
+
 // Session output
 createTranscript
 type Transcript

@@ -5,8 +5,10 @@ import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { resolvePath } from "../utils/paths.ts";
+import { AgentRehydrateError, isLocalOnlySessionStorage } from "./agent-rehydrate-errors.ts";
 import type { AgentSession } from "./agent-session.js";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
+import { onSessionClose } from "./agent-session-release.ts";
 import { type AtomicOAuthLoginCallbacks, loginRuntimeOAuthProvider } from "./agent-session-runtime-auth.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
@@ -66,6 +68,11 @@ export interface CreateAgentSessionRuntimeOptions {
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
+	/**
+	 * Services already created for this cwd that the factory may reuse instead of creating new ones, so sessions the
+	 * runtime rehydrates share one resource loader, model runtime and settings. Set by `rehydrate` only.
+	 */
+	services?: AgentSessionServices;
 }
 
 export type CreateAgentSessionRuntimeFactory = {
@@ -123,6 +130,10 @@ export class AgentSessionRuntime {
 	private publicationContext = new AsyncLocalStorage<{ active: boolean }>();
 	private retained = new Set<AgentSession>();
 	private retirementCleanup = new Set<Promise<void>>();
+	/** Sessions `rehydrate` brought back that are live now, by id. Released or closed sessions have no entry. */
+	private readonly rehydrated = new Map<string, AgentSession>();
+	private readonly rehydrating = new Map<string, Promise<AgentSession>>();
+	private declare readonly sessionFactory: CreateAgentSessionRuntimeFactory;
 
 	private retainRetirementCleanup(cleanup: Promise<void>): void {
 		const receipt = cleanup.catch((error) => {
@@ -248,6 +259,7 @@ export class AgentSessionRuntime {
 				},
 			};
 		};
+		this.sessionFactory = createRuntime;
 		this.createRuntime = (options) =>
 			this.createReplacement(() => sessionLifecycleCreation.run(context(), () => createRuntime(options)));
 		this.createRuntime.prepareResume = (options) =>
@@ -725,6 +737,70 @@ export class AgentSessionRuntime {
 		});
 	}
 
+	/**
+	 * Bring a released session back from storage as a live session, built by this runtime's factory with the
+	 * runtime's services when the cwd matches. It runs beside `session` and does not replace it; release it again
+	 * with `release()`. A session that is live already is returned as it is, and concurrent calls for one id share
+	 * one rehydration. A session this node's storage does not hold fails at once with a `session-not-found`
+	 * {@link AgentRehydrateError}, before the factory runs.
+	 */
+	rehydrate(sessionId: string): Promise<AgentSession> {
+		return this.admit(async () => {
+			const current = this.session as unknown as AgentSessionInternalSurface;
+			if (this.session.sessionId === sessionId && !current._disposed) return this.session;
+			const live = this.rehydrated.get(sessionId);
+			if (live !== undefined && !(live as unknown as AgentSessionInternalSurface)._disposed) return live;
+			const pending = this.rehydrating.get(sessionId);
+			if (pending !== undefined) return pending;
+			const rehydration = this.rehydrateFromStore(sessionId);
+			this.rehydrating.set(sessionId, rehydration);
+			try {
+				return await rehydration;
+			} finally {
+				this.rehydrating.delete(sessionId);
+			}
+		});
+	}
+
+	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {
+		const store = this.session.sessionManager.getSessionStore();
+		if ((await store.readHeader(sessionId)) === undefined) {
+			const storage = store.descriptor.adapter;
+			throw new AgentRehydrateError("session-not-found", {
+				sessionId,
+				storage,
+				localOnly: isLocalOnlySessionStorage(storage),
+			});
+		}
+		const sessionManager = await this.session.sessionManager.openSessionById(sessionId);
+		const cwd = sessionManager.getCwd();
+		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>
+			this.sessionFactory({
+				cwd,
+				agentDir: this.services.agentDir,
+				sessionManager,
+				sessionStartEvent: { type: "session_start", reason: "resume" },
+				...(cwd === this.services.cwd ? { services: this.services } : {}),
+			}),
+		);
+		const session = result.session;
+		this.retainSessionStore(session);
+		this.rehydrated.set(sessionId, session);
+		onSessionClose(session as unknown as AgentSessionInternalSurface, () => {
+			if (this.rehydrated.get(sessionId) === session) this.rehydrated.delete(sessionId);
+		});
+		if (this.closed) {
+			await session.dispose();
+			this.assertOpen();
+		}
+		return session;
+	}
+
+	/** Number of live sessions this runtime rehydrated; counted by tests. */
+	get rehydratedSessionCount(): number {
+		return this.rehydrated.size;
+	}
+
 	dispose(options?: { fromSignal?: boolean }): Promise<void> {
 		if (this.closing) return this.closing;
 		this.closed = true;
@@ -743,6 +819,14 @@ export class AgentSessionRuntime {
 				}
 			}
 			this.candidates.clear();
+			for (const session of [...this.rehydrated.values()]) {
+				try {
+					await session.dispose();
+				} catch (error) {
+					this.cleanupFailures.push(error);
+				}
+			}
+			this.rehydrated.clear();
 			try {
 				await current;
 			} catch (error) {

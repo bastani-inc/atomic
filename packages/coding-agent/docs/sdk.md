@@ -755,6 +755,48 @@ session = runtime.session;
 unsubscribe = session.subscribe(() => {});
 ```
 
+### Releasing idle sessions
+
+A host that keeps many conversations doesn't need a live `AgentSession` for each one. `session.release()` lets go of everything the session holds in memory (its agent loop, extension instances, tool registry, listeners, timers, MCP connections and Intercom connection) and keeps only its saved history. `runtime.rehydrate(sessionId)` brings it back from storage when there is something for it to do.
+
+```typescript
+const released = await session.release(); // { sessionId, cwd, sessionFile? }
+
+// Later, when a message for that conversation arrives:
+const live = await runtime.rehydrate(released.sessionId);
+await live.prompt("Here is the CI result you were waiting for.");
+await live.release();
+```
+
+- `release()` refuses with a retryable `session-busy` error while a run, compaction, shell command or queued message is active. Wait for `agent_settled`, then call it again. Calling it on a released session returns the same result.
+- Subscribers get a `session_released` event before the session closes. After that, the instance behaves like a disposed session; use `runtime.rehydrate()` for a live one.
+- `runtime.rehydrate(sessionId)` builds the session with the runtime's factory and passes the runtime's `services` to it as `options.services` when the cwd matches, so rehydrated sessions can share one resource loader, model runtime and settings. A factory that ignores `services` still works; it just builds its own. The rehydrated session runs beside `runtime.session` without replacing it. A session that is already live is returned as it is, concurrent calls for one id share one rehydration, and `runtime.dispose()` closes every session it rehydrated.
+- A session this node's storage doesn't hold fails at once with `session-not-found`, before the factory runs. When the node keeps sessions in local storage, the error's `hint` says so and names `atomic team join <url> --token-file <path>`.
+
+To release automatically, pass `releaseWhenIdle`:
+
+```typescript
+const { session } = await createAgentSession({ releaseWhenIdle: { afterMs: 5 * 60_000 } });
+session.subscribe((event) => {
+  if (event.type === "session_released") saveForLater(event.released.sessionId);
+});
+```
+
+The session is released once it has been idle for `afterMs` milliseconds. `releaseWhenIdle` is also accepted by `createAgentSessionFromServices()`, so a runtime factory can pass it through. An invalid value throws `AgentReleaseConfigError` before any session, store or timer is created.
+
+Idle sessions wait on one process-wide `AgentWakeDispatcher` (`agentWakeDispatcher()`), not on timers of their own. Hosts can use it to wake their own released agents: register one handler per namespace with `handle(namespace, handler)`, then `deliver("<namespace>:<key>", wake)`. Wakes for one key are handled in the order they arrive, one batch at a time; a wake whose `id` is already queued or running for that key is delivered once.
+
+Release and wake failures reject with `AgentRehydrateError` (or its subclass `AgentReleaseConfigError`). Branch on `code`, or use `isAgentRehydrateError()`, `isAgentReleaseConfigError()` and `isRetryableAgentRehydrateError()`, which also accept copies that crossed a process boundary. `serializeAgentRehydrateError()` and `rehydrateAgentRehydrateError()` carry the error across one with its `code`, `hint`, `fields` and cause chain.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `AgentReleaseConfigError` | `invalid-release-policy` | `releaseWhenIdle` isn't `{ afterMs }` with a finite `afterMs` of at least 0. | `source`, `field`, `value` | Fix the option. Nothing was created. |
+| `AgentRehydrateError` | `session-busy` | `release()` while a run, compaction, shell command or queued message is active. `retryable` is `true`. | `sessionId`, `activity` | Wait for `agent_settled`, then release again. |
+| `AgentRehydrateError` | `session-not-found` | `rehydrate()` names a session this node's storage doesn't hold. | `sessionId`, `storage`, `localOnly` | Check the id. On local storage, join shared storage with `atomic team join <url> --token-file <path>` if the session was saved on another node. |
+| `AgentRehydrateError` | `no-wake-handler` | A wake was delivered to a namespace with no handler. | `wakeKey`, `namespace` | Register a handler for the namespace first. |
+| `AgentRehydrateError` | `wake-handler-conflict` | A second handler was registered for a namespace. | `namespace` | Dispose the first handler before registering another. |
+| `AgentRehydrateError` | `wake-failed` | The handler failed while rehydrating or waking the agent. The `cause` says why. | `wakeKey`, `wakes` | Fix the cause, then deliver the wakes again. |
+
 ### Prompting and Message Queueing
 
 `PromptOptions` controls prompt expansion, queueing behavior while streaming, and prompt preflight notifications:
