@@ -419,3 +419,10 @@ test("run-moved is retryable, renders its fields and crosses a process boundary 
 	assert.deepEqual([back.retryable, back.fields], [true, error.fields]);
 	assert.ok(isRetryableJournalStoreError(new Error("outer", { cause: error })));
 });
+
+test("run-moved names its run and shard by their ids when it has no run ID or path (#4325)", () => {
+	assert.equal(
+		new JournalCatalogError({ code: "run-moved", catalogPath, shardId: 2, lastSeq: 5 }).message,
+		"Journal run moved while it was read: run unknown left shard 2 after sequence 5 and its new shard did not continue the history (run-moved).",
+	);
+});

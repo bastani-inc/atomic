@@ -533,12 +533,11 @@ async function readRun(database: SqliteExecutor, runId: string): Promise<RunSnap
 	};
 }
 
-type Copied = "inserted" | "present" | "conflict";
-
 /**
- * Copies a fenced run into the target journal in one transaction. A run the target already holds is left alone, and its
- * lease with it: `present` when that copy holds everything the source does, `conflict` when it differs. Only a copy
- * this call inserts gets a lease, fenced by `holder` at an epoch above any lease row the target kept for the run.
+ * Copies a fenced run into the target journal in one transaction and says whether the target now holds it. A run the
+ * target already holds is left alone, and its lease with it: it counts when that copy holds everything the source does,
+ * and not when it differs. Only a copy this call inserts gets a lease, fenced by `holder` at an epoch above any lease
+ * row the target kept for the run.
  */
 async function copy(
 	source: SqliteDatabase,
@@ -546,12 +545,12 @@ async function copy(
 	snapshot: RunSnapshot,
 	holder: string,
 	sourceEpoch: number,
-): Promise<Copied> {
+): Promise<boolean> {
 	return target.transaction(async (tx) => {
 		await ensureJournalTables(source, tx);
 		const { run } = snapshot;
 		const existing = await readRun(tx, run.run_id);
-		if (existing !== undefined) return holdsSnapshot(snapshot, existing) ? "present" : "conflict";
+		if (existing !== undefined) return holdsSnapshot(snapshot, existing);
 		await tx.run(
 			`INSERT INTO ${TABLES.runs}(run_id, name, cwd, created_at, status, header_json) VALUES (?, ?, ?, ?, ?, ?)`,
 			run.run_id,
@@ -579,19 +578,18 @@ async function copy(
 			holder,
 			Math.max(sourceEpoch, Number(kept?.epoch ?? 0) + 1),
 		);
-		return "inserted";
+		return true;
 	}, CONSOLIDATION_TRANSACTION);
 }
 
-/** Deletes a journal's copy of a run, only while `holder` still holds its lease; false when it does not. */
-async function removeRun(database: SqliteDatabase, runId: string, holder: string): Promise<boolean> {
-	return database.transaction(async (tx) => {
+/** Deletes a journal's copy of a run, only while `holder` still holds its lease: a compare-and-set on the fence. */
+async function removeRun(database: SqliteDatabase, runId: string, holder: string): Promise<void> {
+	await database.transaction(async (tx) => {
 		const lease = await tx.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
-		if (lease?.holder_id !== holder) return false;
+		if (lease?.holder_id !== holder) return;
 		await tx.run(`DELETE FROM ${TABLES.events} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.runs} WHERE run_id = ?`, runId);
 		await tx.run(`DELETE FROM ${TABLES.leases} WHERE run_id = ?`, runId);
-		return true;
 	}, CONSOLIDATION_TRANSACTION);
 }
 
@@ -628,34 +626,35 @@ async function settleMove(
 	database: SqliteDatabase,
 	runId: string,
 	holder: string,
-	inserted: boolean,
+	sourceEpoch: number,
 ): Promise<JournalConsolidationRun> {
 	const moved = { runId, from: from.id, to: destination.id, outcome: "moved" } as const;
 	const undo = async (): Promise<JournalConsolidationRun> => {
 		await catalog.moveRun(runId, destination.id, from.id);
-		if (inserted) await removeRun(database, runId, holder);
+		await removeRun(database, runId, holder);
 		return { runId, from: from.id, outcome: "skipped", reason: "leased" };
 	};
-	let snapshot = await readRun(source, runId);
+	const snapshot = await readRun(source, runId);
 	if (snapshot === undefined) {
 		await liftFence(database, runId);
 		return moved;
 	}
 	let held = await readRun(database, runId);
 	if (held === undefined) {
-		const lease = await source.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
-		if ((await copy(source, database, snapshot, holder, Number(lease?.epoch ?? 0))) === "conflict")
+		if (!(await copy(source, database, snapshot, holder, sourceEpoch)))
 			return conflictRun(catalog, from.id, destination, runId);
-		inserted = true;
-		held = await readRun(database, runId);
+		held = (await readRun(database, runId))!;
 	}
-	if (held === undefined) return conflictRun(catalog, from.id, destination, runId);
 	if (!holdsSnapshot(snapshot, held))
 		return holdsSnapshot(held, snapshot) ? undo() : conflictRun(catalog, from.id, destination, runId);
-	if (!(await removeRun(source, runId, holder))) {
-		snapshot = await readRun(source, runId);
-		held = await readRun(database, runId);
-		if (snapshot !== undefined && (held === undefined || !holdsSnapshot(snapshot, held))) return undo();
+	await removeRun(source, runId, holder);
+	const left = await readRun(source, runId);
+	if (left !== undefined) {
+		const now = await readRun(database, runId);
+		const leased = await source.get<LeaseRow>(`SELECT * FROM ${TABLES.leases} WHERE run_id = ?`, runId);
+		const resumed = leased?.holder_id != null && !leased.holder_id.startsWith(JOURNAL_CONSOLIDATION_HOLDER_PREFIX);
+		// A resume that took the source lease, with or without events yet, belongs on the file the catalog names.
+		if (resumed || now === undefined || !holdsSnapshot(left, now)) return undo();
 	}
 	await liftFence(database, runId);
 	return moved;
@@ -770,7 +769,7 @@ async function finishInterruptedMoves(
 			database,
 			lease.run_id,
 			lease.holder_id!,
-			false,
+			Number(lease.epoch),
 		);
 		if (settled.outcome === "skipped") skipped.push(settled);
 	}
@@ -796,29 +795,17 @@ async function moveOne(
 		if (!(error instanceof JournalShardUnavailableError)) throw error;
 		return { runId, from: shard.id, outcome: "skipped", reason: "shard-unavailable", error };
 	}
-	const copied = await copy(source, database, fenced, holder, fenced.lease.epoch);
-	if (copied === "conflict") {
+	if (!(await copy(source, database, fenced, holder, fenced.lease.epoch))) {
 		await unfence(source, runId, holder);
 		return conflictRun(catalog, shard.id, destination, runId);
 	}
 	const repointed = await catalog.moveRun(runId, shard.id, destination.id);
 	if (!repointed && (await catalog.locate(runId))?.shard.id !== destination.id) {
-		if (copied === "inserted") await removeRun(database, runId, holder);
+		await removeRun(database, runId, holder);
 		await unfence(source, runId, holder);
 		return { runId, from: shard.id, outcome: "skipped", reason: "changed" };
 	}
-	const settled = await settleMove(
-		catalog,
-		source,
-		shard,
-		destination,
-		database,
-		runId,
-		holder,
-		copied === "inserted",
-	);
+	const settled = await settleMove(catalog, source, shard, destination, database, runId, holder, fenced.lease.epoch);
 	// Another consolidation repointed the run first: it moved it, this one only cleaned up behind it.
-	return repointed || settled.outcome === "skipped"
-		? settled
-		: { runId, from: shard.id, outcome: "skipped", reason: "changed" };
+	return repointed ? settled : { runId, from: shard.id, outcome: "skipped", reason: "changed" };
 }

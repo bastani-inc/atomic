@@ -790,19 +790,40 @@ test("a read whose run moved to a shard that is gone fails with shard-missing, n
 	assert.equal(failure.code, "shard-missing");
 });
 
-test("a read is followed through at most three moves of its run (#4325)", async () => {
+for (const [moves, outcome] of [
+	[3, "completes"],
+	[4, "fails with run-moved"],
+] as const)
+	test(`a read of a run that moves ${moves} times ${outcome}: it follows at most three moves (#4325)`, async () => {
+		await adoptedPagedRun();
+		const journal = await open();
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		const locate = catalog.locate.bind(catalog);
+		let calls = 0;
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			const found = await locate(runId);
+			const moved = Math.min(calls++, moves);
+			return found === undefined || moved === 0 ? found : { ...found, shard: { ...found.shard, id: 100 + moved } };
+		});
+		const result = await readAll(journal, "paged").catch((error: Error) => error);
+		if (outcome === "completes") {
+			assert.deepEqual(
+				result,
+				Array.from({ length: PAGED_EVENTS }, (_, index) => index + 1),
+			);
+			return;
+		}
+		assert.ok(isJournalCatalogError(result) && result.code === "run-moved");
+		assert.equal(result.fields.lastSeq, PAGED_EVENTS, "it names the last entry it returned");
+	});
+
+test("a read from sequence 0 returns the whole run, as one from 1 does (#4325)", async () => {
 	await adoptedPagedRun();
 	const journal = await open();
-	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
-	const shards = [1, 2, 3, 4, 5];
-	const locate = catalog.locate.bind(catalog);
-	let calls = 0;
-	Reflect.set(catalog, "locate", async (runId: string) => {
-		const found = await locate(runId);
-		return found === undefined || calls++ === 0
-			? found
-			: { ...found, shard: { ...found.shard, id: shards[calls % shards.length]! + 100 } };
-	});
-	const failure = await readAll(journal, "paged").catch((error: Error) => error);
-	assert.ok(isJournalCatalogError(failure) && failure.code === "run-moved");
+	const seqs: number[] = [];
+	for await (const entry of journal.read("paged", 0)) seqs.push(entry.seq);
+	assert.deepEqual(
+		seqs,
+		Array.from({ length: PAGED_EVENTS }, (_, index) => index + 1),
+	);
 });

@@ -515,6 +515,8 @@ for (const [label, change] of [
 	["payload", "UPDATE wf_events SET payload = '\"other\"'"],
 	["key", "UPDATE wf_events SET key = 'other'"],
 	["type", "UPDATE wf_events SET type = 'SummaryRecorded'"],
+	["epoch", "UPDATE wf_events SET epoch = epoch + 1"],
+	["time", "UPDATE wf_events SET at = at + 1"],
 	["seq", "UPDATE wf_events SET seq = seq + 10"],
 ] as const)
 	test(`consolidation treats a destination copy with another ${label} as a conflict (#4325)`, async () => {
@@ -661,9 +663,9 @@ for (const [label, change] of [
 		);
 	});
 
-for (const [label, takeover] of [
-	["took over", "UPDATE wf_leases SET holder_id = 'resumer' WHERE run_id = 'run'"],
-	["removed", "DELETE FROM wf_leases WHERE run_id = 'run'"],
+for (const [label, takeover, outcome] of [
+	["took over", "UPDATE wf_leases SET holder_id = 'resumer' WHERE run_id = 'run'", ["run", "skipped"]],
+	["removed", "DELETE FROM wf_leases WHERE run_id = 'run'", ["run", "moved"]],
 ] as const)
 	test(`consolidation never deletes a source copy whose fence another process ${label} while it moved (#4325)`, async () => {
 		const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "run" }]);
@@ -677,7 +679,12 @@ for (const [label, takeover] of [
 			const report = await consolidateJournalStore(catalog);
 			assert.deepEqual(
 				report.runs.map((run) => [run.runId, run.outcome]),
-				[["run", "moved"]],
+				[outcome],
+			);
+			assert.equal(
+				(await catalog.locate("run"))?.shard.path === path,
+				label === "took over",
+				"a live resume keeps the run on the file it holds the lease in",
 			);
 		});
 		const source = new DatabaseSync(path, { readOnly: true });
@@ -1046,4 +1053,79 @@ test("a destination copy that holds the source's events and more, as after a res
 	);
 	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
 	assert.equal(scalar(target.path, "SELECT count(*) FROM wf_events WHERE run_id = 'copy'"), events);
+});
+
+test("recovery copies the run again into a destination file that has no journal tables at all (#4325)", async () => {
+	const { path, destination, events } = await interrupted("repoint");
+	const epoch = scalar(path, "SELECT epoch FROM wf_leases WHERE run_id = 'r'");
+	removeDatabaseFiles(destination);
+	new DatabaseSync(destination).close();
+	assert.deepEqual((await consolidateJournalStore(store)).runs, []);
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.deepEqual(
+		[scalar(destination, EVENTS), scalar(destination, HOLDER), scalar(destination, "SELECT epoch FROM wf_leases")],
+		[events, null, epoch],
+		"the new copy's lease keeps the epoch the source's fence had",
+	);
+});
+
+test("a copy a consolidation inserts gets a lease above one the destination kept for the run (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	const destination = (await withCatalog((catalog) => catalog.homeShard("r"))).path;
+	await journal(destination, []);
+	raw(destination, "INSERT INTO wf_leases VALUES ('r', NULL, 7, 0)");
+	await consolidateJournalStore(store);
+	assert.equal(scalar(destination, "SELECT epoch FROM wf_leases WHERE run_id = 'r'"), 8);
+});
+
+test("a consolidation whose run another consolidation finished meanwhile reports it changed and loses nothing (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	const events = Number(scalar(path, EVENTS));
+	let nested: Awaited<ReturnType<typeof consolidateJournalStore>> | undefined;
+	const report = await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			nested = await consolidateJournalStore(store);
+			return moveRun(runId, from, to);
+		});
+		return consolidateJournalStore(catalog);
+	});
+	assert.deepEqual(
+		nested?.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "changed"]],
+	);
+	const destination = (await withCatalog((catalog) => catalog.locate("r")))!.shard.path;
+	assert.equal(scalar(path, "SELECT count(*) FROM wf_runs"), 0);
+	assert.deepEqual([scalar(destination, EVENTS), scalar(destination, HOLDER)], [events, null]);
+});
+
+test("a move whose source fence another consolidation holds leaves that consolidation to remove the source (#4325)", async () => {
+	const path = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [path]);
+	const events = Number(scalar(path, EVENTS));
+	const report = await withCatalog(async (catalog) => {
+		const moveRun = catalog.moveRun.bind(catalog);
+		Reflect.set(catalog, "moveRun", async (runId: string, from: number, to: number) => {
+			raw(
+				path,
+				`UPDATE wf_leases SET holder_id = '${JOURNAL_CONSOLIDATION_HOLDER_PREFIX}other' WHERE run_id = ?`,
+				runId,
+			);
+			return moveRun(runId, from, to);
+		});
+		return consolidateJournalStore(catalog);
+	});
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome]),
+		[["r", "moved"]],
+	);
+	const destination = (await withCatalog((catalog) => catalog.locate("r")))!.shard.path;
+	assert.deepEqual([scalar(destination, EVENTS), scalar(destination, HOLDER)], [events, null]);
+	assert.equal(scalar(path, EVENTS), events, "the other consolidation's fenced source copy is left for it to remove");
 });
