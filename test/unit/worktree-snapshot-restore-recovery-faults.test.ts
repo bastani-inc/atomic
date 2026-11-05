@@ -176,7 +176,10 @@ async function registered(store: string): Promise<string[]> {
 		.map((line) => line.slice("worktree ".length));
 }
 
-const warning = (path: string): WorktreeRestoreWarning => ({ code: "stale-restore-retained", path });
+const warning = (
+	path: string,
+	kind: "worktree" | "record" | "records-directory" = "worktree",
+): WorktreeRestoreWarning => ({ code: "stale-restore-retained", path, kind });
 const retainedWarnings = (warnings: readonly WorktreeRestoreWarning[]) =>
 	warnings.filter((candidate) => candidate.code === "stale-restore-retained");
 const siblingStaging = (target: string, id: string) =>
@@ -844,7 +847,7 @@ describe("sweeping a record under faults", () => {
 			throw Object.assign(new Error("EIO: cannot lock"), { code: "EIO" });
 		};
 
-		assert.deepEqual(await sweep(storeDir), [warning(record)]);
+		assert.deepEqual(await sweep(storeDir), [warning(record, "record")]);
 
 		assert.equal(existsSync(staging), true);
 		assert.equal(existsSync(record), true);

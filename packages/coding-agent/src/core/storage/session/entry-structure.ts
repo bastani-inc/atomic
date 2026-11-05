@@ -102,11 +102,15 @@ function validPayload(entry: SessionEntry): boolean {
 	}
 }
 
+const LEFTOVER_KINDS = new Set<string>(["worktree", "record", "records-directory"]);
+
 function validRestoreHostWarning(warning: WorktreeRestoreHostWarning | null): boolean {
 	if (warning?.code === "lfs-objects-unavailable") {
 		return Array.isArray(warning.paths) && warning.paths.every((path) => typeof path === "string");
 	}
-	return warning?.code === "stale-restore-retained" && typeof warning.path === "string";
+	return (
+		warning?.code === "stale-restore-retained" && typeof warning.path === "string" && LEFTOVER_KINDS.has(warning.kind)
+	);
 }
 
 function validMessage(message: SessionMessageEntry["message"]): boolean {

@@ -168,7 +168,7 @@ describe("validating persisted snapshot entries", () => {
 				restore: { from: "/old", to: "/r", snapshotId: "s1", tree: "t", restoredAt: "x" },
 				restoreWarnings: [
 					{ code: "lfs-objects-unavailable", paths: ["a.bin"] },
-					{ code: "stale-restore-retained", path: "/host/restores" },
+					{ code: "stale-restore-retained", path: "/host/restores", kind: "records-directory" },
 				],
 			}),
 		);
@@ -221,11 +221,16 @@ describe("validating persisted snapshot entries", () => {
 					],
 					["LFS paths that are not a list", restored, [{ code: "lfs-objects-unavailable", paths: "a.bin" }]],
 					["an LFS path that is not a string", restored, [{ code: "lfs-objects-unavailable", paths: ["a", 5] }]],
-					["a leftover without a path", restored, [{ code: "stale-restore-retained" }]],
+					["a leftover without a path", restored, [{ code: "stale-restore-retained", kind: "worktree" }]],
+					[
+						"a leftover of no known kind",
+						restored,
+						[{ code: "stale-restore-retained", path: "/p", kind: "directory" }],
+					],
 					[
 						"a valid warning beside a malformed one",
 						restored,
-						[{ code: "stale-restore-retained", path: "/p" }, { code: "stale-restore-retained" }],
+						[{ code: "stale-restore-retained", path: "/p", kind: "record" }, { code: "stale-restore-retained" }],
 					],
 				] as const
 			).map(([name, restore, restoreWarnings]): [string, object] => [

@@ -401,7 +401,14 @@ export function formatWorktreeRestoreWarning(warning: WorktreeRestoreWarning): s
 		case "lfs-objects-unavailable":
 			return `Git LFS objects could not be fetched; these files hold LFS pointers: ${warning.paths.join(", ")}`;
 		case "stale-restore-retained":
-			return `A restore interrupted earlier left ${warning.path}; remove it with removeRestoredWorktree or delete the directory`;
+			switch (warning.kind) {
+				case "worktree":
+					return `A restore interrupted earlier left ${warning.path}; remove it with removeRestoredWorktree or delete the directory`;
+				case "record":
+					return `A restore interrupted earlier left the crash record ${warning.path}, which cannot be read; delete the file`;
+				case "records-directory":
+					return `The restore crash records in ${warning.path} cannot be read; make the directory readable or remove it`;
+			}
 	}
 }
 

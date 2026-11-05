@@ -544,7 +544,7 @@ describe("opening a session where it continues", () => {
 			{ type: "warning", message: "The restored snapshot left out 1 item(s): .env (denied)" },
 			{
 				type: "warning",
-				message: `A restore interrupted earlier left ${brokenRecord}; remove it with removeRestoredWorktree or delete the directory`,
+				message: `A restore interrupted earlier left the crash record ${brokenRecord}, which cannot be read; delete the file`,
 			},
 		]);
 		assert.equal(existsSync(brokenRecord), true);
@@ -676,8 +676,24 @@ describe("restore notices", () => {
 			"Git LFS objects could not be fetched; these files hold LFS pointers: a.bin, docs/b.bin",
 		);
 		assert.equal(
-			formatWorktreeRestoreWarning({ code: "stale-restore-retained", path: "/work/unfinished" }),
+			formatWorktreeRestoreWarning({ code: "stale-restore-retained", path: "/work/unfinished", kind: "worktree" }),
 			"A restore interrupted earlier left /work/unfinished; remove it with removeRestoredWorktree or delete the directory",
+		);
+		assert.equal(
+			formatWorktreeRestoreWarning({
+				code: "stale-restore-retained",
+				path: "/host/restores/r.json",
+				kind: "record",
+			}),
+			"A restore interrupted earlier left the crash record /host/restores/r.json, which cannot be read; delete the file",
+		);
+		assert.equal(
+			formatWorktreeRestoreWarning({
+				code: "stale-restore-retained",
+				path: "/host/restores",
+				kind: "records-directory",
+			}),
+			"The restore crash records in /host/restores cannot be read; make the directory readable or remove it",
 		);
 	});
 });

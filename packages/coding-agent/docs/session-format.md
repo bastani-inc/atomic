@@ -367,7 +367,7 @@ The repository state of one checkout at the end of a turn that called a file-wri
 
 - `snapshot`: Present when the state changed. An entry without it refers to the earlier entry whose snapshot has the same `snapshotId`.
 - `restore`: Present on the entry written when a resume restored the snapshot into a new worktree: `{ "from", "to", "snapshotId", "tree", "restoredAt" }`. Later resumes map `from` to `to`.
-- `restoreWarnings`: Optional, only with `restore`: what that restore reported beyond the snapshot record, `{ "code": "lfs-objects-unavailable", "paths": [...] }` or `{ "code": "stale-restore-retained", "path": "..." }`.
+- `restoreWarnings`: Optional, only with `restore`: what that restore reported beyond the snapshot record, `{ "code": "lfs-objects-unavailable", "paths": [...] }` or `{ "code": "stale-restore-retained", "path": "...", "kind": "worktree" | "record" | "records-directory" }`.
 - `blobs`: Present only in exported files: base64 patch and bundle content keyed by SHA-256. Import verifies and stores them, then drops this field.
 
 ## Tree Structure

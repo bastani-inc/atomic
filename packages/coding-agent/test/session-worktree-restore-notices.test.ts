@@ -66,7 +66,7 @@ async function twoDriftedRepositories() {
 }
 
 const leftoverWarning = (path: string) =>
-	`Warning: A restore interrupted earlier left ${path}; remove it with removeRestoredWorktree or delete the directory`;
+	`Warning: A restore interrupted earlier left the crash record ${path}, which cannot be read; delete the file`;
 
 /** A host whose statuses, warnings and errors render into a real chat container. */
 function chatHost(sessionManager: SessionManager) {
@@ -264,7 +264,7 @@ describe("restore warnings recorded with their restore (#4245)", () => {
 		const restores = reopened.getBranch().filter((entry) => entry.type === "worktree_snapshot" && entry.restore);
 		assert.deepEqual(
 			restores.map((entry) => entry.type === "worktree_snapshot" && entry.restoreWarnings),
-			[[{ code: "stale-restore-retained", path: interrupted }], undefined],
+			[[{ code: "stale-restore-retained", path: interrupted, kind: "record" }], undefined],
 		);
 		assert.equal(
 			opened.notices.filter((notice) => notice.message === leftoverWarning(interrupted).slice("Warning: ".length))

@@ -108,7 +108,12 @@ export type WorktreeRestoreWarning =
 	| { readonly code: "omitted-content"; readonly omitted: readonly WorktreeSnapshotOmission[] }
 	| { readonly code: "filters"; readonly filters: WorktreeSnapshotFilters }
 	| { readonly code: "lfs-objects-unavailable"; readonly paths: readonly string[] }
-	| { readonly code: "stale-restore-retained"; readonly path: string };
+	| {
+			readonly code: "stale-restore-retained";
+			readonly path: string;
+			/** What was left: a staging or nested worktree, a crash record file, or the crash-record directory itself. */
+			readonly kind: "worktree" | "record" | "records-directory";
+	  };
 
 /** A checkout restored on this host in place of one recorded elsewhere: work under `from` now happens under `to`. */
 export interface WorktreeRootMapping {
