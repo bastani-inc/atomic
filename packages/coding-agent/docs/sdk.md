@@ -796,7 +796,7 @@ await dispatcher.whenIdle();
 stop();
 ```
 
-Release and wake failures reject with `AgentRehydrateError` (or its subclass `AgentReleaseConfigError`). Branch on `code`, or use `isAgentRehydrateError()`, `isAgentReleaseConfigError()` and `isRetryableAgentRehydrateError()`, which also accept copies that crossed a process boundary. `serializeAgentRehydrateError()` and `rehydrateAgentRehydrateError()` carry the error across one with its `code`, `hint`, `fields` and cause chain.
+Release and wake failures reject with `AgentRehydrateError` (or its subclass `AgentReleaseConfigError`). Branch on `code`, or use `isAgentRehydrateError()`, `isAgentReleaseConfigError()` and `isRetryableAgentRehydrateError()`, which also accept copies that crossed a process boundary. `serializeAgentRehydrateError()` and `rehydrateAgentRehydrateError()` carry the error across one with its `code`, `hint`, `fields` and cause chain. A cause that is itself an `AgentRehydrateError`, a `ToolDetachmentError` or a storage error comes back as that class, so `isRetryableAgentRehydrateError()` gives the same answer on both sides; any other cause comes back as an `Error` that keeps its `name`, `code` and `retryable`.
 
 | Class | `code` | When | Fields | What to do |
 | --- | --- | --- | --- | --- |

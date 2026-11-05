@@ -1,4 +1,15 @@
-import { MAX_TOOL_DETACHMENT_AFTER_MS } from "./tool-detachment-errors.ts";
+import {
+	isStorageError,
+	rehydrateStorageError,
+	type SerializedStorageError,
+	serializeStorageError,
+} from "./storage/errors.js";
+import {
+	deserializeToolDetachmentError,
+	MAX_TOOL_DETACHMENT_AFTER_MS,
+	type SerializedToolDetachmentError,
+	ToolDetachmentError,
+} from "./tool-detachment-errors.ts";
 
 /**
  * Why releasing an idle agent, or waking and rehydrating a released one, was refused or failed. Codes are public
@@ -46,12 +57,24 @@ export interface AgentRehydrateErrorFields {
 	readonly value?: string;
 }
 
-/** A cause in serialized form: name, message and code only, so nothing secret crosses a process boundary. */
+/** A cause that belongs to a family that rebuilds itself, in that family's own serialized form. */
+export type SerializedAgentErrorFamily =
+	| { readonly kind: "agent-rehydrate"; readonly error: SerializedAgentRehydrateError }
+	| { readonly kind: "tool-detachment"; readonly error: SerializedToolDetachmentError }
+	| { readonly kind: "storage"; readonly error: SerializedStorageError };
+
+/**
+ * A cause in serialized form: name, message, code and retryable flag only, so nothing secret crosses a process
+ * boundary. A cause from the agent, tool-detachment or storage family also carries `family`, which rebuilds it as its
+ * own class.
+ */
 export interface SerializedAgentErrorCause {
 	readonly name: string;
 	readonly message: string;
 	readonly code?: string;
+	readonly retryable?: boolean;
 	readonly cause?: SerializedAgentErrorCause;
+	readonly family?: SerializedAgentErrorFamily;
 }
 
 /** An {@link AgentRehydrateError} as it crosses a worker, RPC or broker boundary. */
@@ -166,17 +189,21 @@ export class AgentRehydrateError extends Error {
 	}
 
 	toJSON(): SerializedAgentRehydrateError {
-		const cause = serializeCause(this.cause, 0);
-		return {
-			name: this.name,
-			code: this.code,
-			message: this.message,
-			hint: this.hint,
-			retryable: this.retryable,
-			fields: this.fields,
-			...(cause === undefined ? {} : { cause }),
-		};
+		return serializeAt(this, 0);
 	}
+}
+
+function serializeAt(error: AgentRehydrateError, depth: number): SerializedAgentRehydrateError {
+	const cause = serializeCause(error.cause, depth);
+	return {
+		name: error.name,
+		code: error.code,
+		message: error.message,
+		hint: error.hint,
+		retryable: error.retryable,
+		fields: error.fields,
+		...(cause === undefined ? {} : { cause }),
+	};
 }
 
 /** An SDK option for releasing idle sessions was invalid. Thrown before any session, store or timer is created. */
@@ -195,31 +222,59 @@ export class AgentReleaseConfigError extends AgentRehydrateError {
 	}
 }
 
-type ErrorCause = Error | { readonly name?: string; readonly message?: string; readonly code?: string } | undefined;
+type ErrorCause = {
+	readonly name?: string;
+	readonly message?: string;
+	readonly code?: string | number;
+	readonly retryable?: boolean;
+	readonly cause?: ErrorOptions["cause"];
+};
+
+function serializeFamily(cause: Error | object, depth: number): SerializedAgentErrorFamily | undefined {
+	if (cause instanceof AgentRehydrateError) return { kind: "agent-rehydrate", error: serializeAt(cause, depth) };
+	if (cause instanceof ToolDetachmentError) return { kind: "tool-detachment", error: cause.toJSON() };
+	if (isStorageError(cause)) return { kind: "storage", error: serializeStorageError(cause) };
+	return undefined;
+}
 
 function serializeCause(cause: ErrorOptions["cause"], depth: number): SerializedAgentErrorCause | undefined {
 	if (cause === undefined || cause === null || depth >= MAX_CAUSE_DEPTH) return undefined;
 	if (typeof cause !== "object") return { name: "Error", message: String(cause) };
-	const candidate = cause as ErrorCause & { readonly cause?: ErrorOptions["cause"] };
-	const code = (candidate as { readonly code?: string | number }).code;
-	const nested = serializeCause(candidate.cause, depth + 1);
+	const candidate = cause as ErrorCause;
+	const family = serializeFamily(cause, depth + 1);
+	const nested = family === undefined ? serializeCause(candidate.cause, depth + 1) : undefined;
 	return {
 		name: typeof candidate.name === "string" ? candidate.name : "Error",
 		message: typeof candidate.message === "string" ? candidate.message : "",
-		...(typeof code === "string" ? { code } : {}),
+		...(typeof candidate.code === "string" ? { code: candidate.code } : {}),
+		...(typeof candidate.retryable === "boolean" ? { retryable: candidate.retryable } : {}),
 		...(nested === undefined ? {} : { cause: nested }),
+		...(family === undefined ? {} : { family }),
 	};
+}
+
+function rehydrateFamily(family: SerializedAgentErrorFamily): Error {
+	switch (family.kind) {
+		case "agent-rehydrate":
+			return rehydrateAgentRehydrateError(family.error);
+		case "tool-detachment":
+			return deserializeToolDetachmentError(family.error);
+		case "storage":
+			return rehydrateStorageError(family.error);
+	}
 }
 
 function rehydrateCause(cause: SerializedAgentErrorCause | undefined, depth: number): Error | undefined {
 	if (cause === undefined || depth >= MAX_CAUSE_DEPTH) return undefined;
+	if (cause.family !== undefined) return rehydrateFamily(cause.family);
 	const nested = rehydrateCause(cause.cause, depth + 1);
-	const error: Error & { code?: string } = new Error(
+	const error: Error & { code?: string; retryable?: boolean } = new Error(
 		cause.message,
 		nested === undefined ? undefined : { cause: nested },
 	);
 	error.name = cause.name;
 	if (cause.code !== undefined) error.code = cause.code;
+	if (cause.retryable !== undefined) error.retryable = cause.retryable;
 	return error;
 }
 
