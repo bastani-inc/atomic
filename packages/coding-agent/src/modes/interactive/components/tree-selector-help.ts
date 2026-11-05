@@ -1,5 +1,7 @@
 import {
 	type Component,
+	CURSOR_MARKER,
+	type Focusable,
 	getKeybindings,
 	type Keybinding,
 	truncateToWidth,
@@ -11,7 +13,8 @@ import { formatKeyText } from "./keybinding-hints.js";
 import type { TreeList } from "./tree-selector-list.ts";
 
 /** Component that displays the current search query */
-export class SearchLine implements Component {
+export class SearchLine implements Component, Focusable {
+	focused = false;
 	private readonly treeList: TreeList;
 
 	constructor(treeList: TreeList) {
@@ -21,11 +24,16 @@ export class SearchLine implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		if (width <= 0) return [""];
+
 		const query = this.treeList.getSearchQuery();
-		if (query) {
-			return [truncateToWidth(`  ${theme.fg("muted", "Type to search:")} ${theme.fg("accent", query)}`, width)];
-		}
-		return [truncateToWidth(`  ${theme.fg("muted", "Type to search:")}`, width)];
+		const line = query
+			? `  ${theme.fg("muted", "Type to search:")} ${theme.fg("accent", query)}`
+			: `  ${theme.fg("muted", "Type to search:")} `;
+		if (!this.focused) return [truncateToWidth(line, width)];
+
+		const content = truncateToWidth(line, Math.max(0, width - 1));
+		return [`${content}${CURSOR_MARKER}\x1b[7m \x1b[27m`];
 	}
 
 	handleInput(_keyData: string): boolean {
