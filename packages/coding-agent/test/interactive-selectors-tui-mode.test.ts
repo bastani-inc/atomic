@@ -9,16 +9,16 @@ import {
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { isDebugEnabled } from "../src/core/debug.ts";
-import { setDebugSetting } from "../src/core/debug-setting.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.ts";
+import { isDebugEnabled } from "../src/core/debug.js";
+import { setDebugSetting } from "../src/core/debug-setting.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import type { SettingsSelectorComponent } from "../src/modes/interactive/components/settings-selector.js";
 import {
 	createInteractiveTui,
 	createInteractiveTuiReference,
 	InteractiveMode,
-} from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+} from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const previousKeybindings = getKeybindings();
 

@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { AgentSession } from "../src/core/agent-session.ts";
-import { setDebugSetting } from "../src/core/debug-setting.ts";
-import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
+import type { AgentSession } from "../src/core/agent-session.js";
+import { setDebugSetting } from "../src/core/debug-setting.js";
+import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.js";
 import {
 	FooterComponent,
 	formatCwdForFooter,
 	UsageMeterComponent,
-} from "../src/modes/interactive/components/footer.ts";
-import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+} from "../src/modes/interactive/components/footer.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 type AssistantUsage = {
 	input: number;

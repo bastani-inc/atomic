@@ -245,6 +245,7 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 	takeOverStdout();
 	try {
 		const parsed = parseArgs(command.args);
+		if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
 		if (command.kind === "check") {
 			if (parsed.unknownFlags.size > 0) {
 				const option = parsed.unknownFlags.keys().next().value;
@@ -331,7 +332,6 @@ export async function main(argv: string[], options?: MainOptions) {
 		setEnvValue(ENV_OFFLINE, "1");
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
-	if (args.includes("--debug")) setEnvValue(ENV_DEBUG, "1");
 	if (process.platform === "win32") cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	let cwd: string;
 	try {
@@ -381,6 +381,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		return;
 	}
 	const parsed = parseArgs(args);
+	if (parsed.debug) setEnvValue(ENV_DEBUG, "1");
 	if (engineEnv.child === "1" && engineEnv.apiKey) parsed.apiKey = engineEnv.apiKey;
 	if (parsed.diagnostics.length > 0) {
 		for (const d of parsed.diagnostics) {

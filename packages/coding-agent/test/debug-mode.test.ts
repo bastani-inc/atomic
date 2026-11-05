@@ -3,28 +3,28 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import { parseArgs, printHelp } from "../src/cli/args.ts";
-import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.ts";
-import { isDebugEnabled } from "../src/core/debug.ts";
-import { DebugConfigError, isDebugConfigError } from "../src/core/debug-errors.ts";
-import { setDebugSetting } from "../src/core/debug-setting.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
-import { main } from "../src/main.ts";
-import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.ts";
-import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.ts";
-import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { buildInteractiveEngineArgs } from "../src/modes/interactive-engine/engine-args.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import { RpcClient } from "../src/modes/rpc/rpc-client.ts";
-import { RpcClientApi } from "../src/modes/rpc/rpc-client-api.ts";
-import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
-import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.ts";
-import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.ts";
-import type { RpcCommandBody, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
-import { createHarness } from "./suite/harness.ts";
+import { parseArgs, printHelp } from "../src/cli/args.js";
+import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
+import { isDebugEnabled } from "../src/core/debug.js";
+import { DebugConfigError, isDebugConfigError } from "../src/core/debug-errors.js";
+import { setDebugSetting } from "../src/core/debug-setting.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.js";
+import { main } from "../src/main.js";
+import { createSettingsChangeHandler } from "../src/modes/interactive/components/settings-selector-handlers.js";
+import { buildSettingsItems } from "../src/modes/interactive/components/settings-selector-items.js";
+import type { SettingsCallbacks, SettingsConfig } from "../src/modes/interactive/components/settings-selector-types.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { buildInteractiveEngineArgs } from "../src/modes/interactive-engine/engine-args.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { RpcClientApi } from "../src/modes/rpc/rpc-client-api.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
+import { createRpcInputLineHandler } from "../src/modes/rpc/rpc-input.js";
+import { createRpcErrorResponse } from "../src/modes/rpc/rpc-responses.js";
+import type { RpcCommandBody, RpcResponse } from "../src/modes/rpc/rpc-types.js";
+import { createHarness } from "./suite/harness.js";
 
 const unusedCreateRuntime = (async () => {
 	throw new Error("unused runtime factory");
@@ -273,6 +273,15 @@ describe("startup (#4360)", () => {
 			await assert.rejects(version(), /process\.exit\(0\)/);
 			assert.equal(process.env.ATOMIC_DEBUG, undefined);
 			assert.equal(isDebugEnabled(), false);
+			for (const prompt of [
+				["-p", "--", "--debug"],
+				["--system-prompt", "--debug"],
+				["--name", "--debug"],
+			]) {
+				await assert.rejects(main(["--no-extensions", "--version", ...prompt]), /process\.exit\(0\)/);
+				assert.equal(process.env.ATOMIC_DEBUG, undefined, JSON.stringify(prompt));
+				assert.equal(isDebugEnabled(), false, JSON.stringify(prompt));
+			}
 			await assert.rejects(version("--debug"), /process\.exit\(0\)/);
 			assert.equal(process.env.ATOMIC_DEBUG, "1", "child processes inherit --debug");
 			vi.stubEnv("ATOMIC_DEBUG", undefined);
@@ -290,6 +299,27 @@ describe("startup (#4360)", () => {
 			await assert.rejects(version(), /process\.exit\(0\)/);
 			assert.equal(isDebugEnabled(undefined, {}), true, "an inherited on wins over a saved off");
 		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+	it("auth check only enables debug for a parsed flag, not an option value", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "atomic-debug-auth-"));
+		const exitCode = process.exitCode;
+		try {
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+			vi.stubEnv("ATOMIC_DEBUG", undefined);
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+				throw new Error(`process.exit(${code})`);
+			}) as typeof process.exit);
+			await assert.rejects(main(["auth", "check", "--provider", "--debug", "--unknown"]), /process\.exit\(2\)/);
+			assert.equal(process.env.ATOMIC_DEBUG, undefined);
+			assert.equal(process.exitCode, 2);
+			await assert.rejects(main(["auth", "check", "--debug", "--unknown"]), /process\.exit\(2\)/);
+			assert.equal(process.env.ATOMIC_DEBUG, "1");
+			assert.equal(process.exitCode, 2);
+		} finally {
+			process.exitCode = exitCode;
 			rmSync(agentDir, { recursive: true, force: true });
 		}
 	});

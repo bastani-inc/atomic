@@ -33,6 +33,7 @@ const { nextWorkflowHeartbeatBoundary } = await import(
 	"../../packages/workflows/src/extension/workflow-heartbeat-scheduler.js"
 );
 const { poolCoordinationLine } = await import("../../packages/workflows/src/shared/pool-coordination.js");
+const { LocalWorkerPool } = await import("../../packages/workflows/src/workers/local-pool.js");
 const { createStore } = await import("../../packages/workflows/src/shared/store.js");
 const { configurePooledWatchTrace, tracePooledWatch } = await import(
 	"../../packages/workflows/src/workers/pooled-watch-trace.js"
@@ -48,13 +49,7 @@ afterEach(() => {
 
 const stats = { since: 0, requests: { claim: { count: 1, perSecond: 1 } }, writes: {} };
 
-/**
- * One trigger of every debug surface: model routing, pooled watch, workflow notices and heartbeats, a writers'-queue
- * degradation, and the pool line.
- */
-async function triggerEveryArea(
-	agentDir: string,
-): Promise<{ readonly writers: number; readonly poolLine: string | undefined }> {
+async function triggerEveryArea(agentDir: string): Promise<string | undefined> {
 	reportModelRoutingDebug("routing fallback");
 	configurePooledWatchTrace(join(agentDir, "journal.sqlite"), "root");
 	tracePooledWatch("root.reconnect.start", { key: "k" });
@@ -93,19 +88,27 @@ async function triggerEveryArea(
 	} finally {
 		await database.close();
 	}
-	return { writers: 5, poolLine: poolCoordinationLine({ coordination: stats }) };
+	await Reflect.apply(Reflect.get(LocalWorkerPool.prototype, "receive"), { root: "root" }, [
+		{ kind: "coordination", stats },
+	]);
+	return poolCoordinationLine({ coordination: stats });
 }
 
 async function count(source: DebugModeSource | "off") {
 	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 	return withDebugLog(source, async (log) => {
 		appends.count = 0;
-		const { writers, poolLine } = await triggerEveryArea(log.agentDir);
+		const poolLine = await triggerEveryArea(log.agentDir);
+		const records = log.records();
 		return {
-			writers,
 			poolLine,
 			appends: appends.count,
-			records: log.records().length,
+			records: records.length,
+			areas: records.reduce<Record<string, number>>((counts, { area }) => {
+				counts[area] = (counts[area] ?? 0) + 1;
+				return counts;
+			}, {}),
+			poolEvents: records.filter(({ area }) => area === "pool").map(({ event, data }) => ({ event, data })),
 			warnings: warn.mock.calls.length,
 		};
 	});
@@ -122,8 +125,15 @@ test("with debug off, no debug sink is written by any area (#4360)", async () =>
 test("with debug on, each area's event is one append to the debug log and nothing else (#4360)", async () => {
 	for (const source of ["setting", "ATOMIC_DEBUG"] as const) {
 		const on = await count(source);
-		assert.equal(on.appends, on.writers, `${source}: one append per event`);
-		assert.equal(on.records, on.writers, `${source}: every append is a debug log record`);
+		assert.deepEqual(on.areas, { "model-routing": 1, "pooled-watch": 1, workflow: 2, storage: 1, pool: 1 });
+		assert.deepEqual(on.poolEvents, [
+			{
+				event: "coordination",
+				data: { root: "root", summary: "pool: requests 1.0/s (claim 1.0) · writes 0.00/s" },
+			},
+		]);
+		assert.equal(on.appends, 6, `${source}: one append per event`);
+		assert.equal(on.records, 6, `${source}: every append is a debug log record`);
 		assert.equal(on.warnings, 0, `${source}: debug mode prints nothing`);
 		assert.notEqual(on.poolLine, undefined, `${source}: the pool line is shown`);
 	}
