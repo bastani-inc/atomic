@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
@@ -17,6 +17,7 @@ import {
 	createRepository,
 	git,
 	type WorkspaceSandboxDirs,
+	withInjectedGit,
 	workspaceSandbox,
 } from "../helpers/workspace-repos.ts";
 
@@ -226,4 +227,35 @@ describe("restoreWorkspace (#3109)", () => {
 		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
 		assert.equal(commands.filter((args) => args[0] === "fetch").length, 0, "a local repository is not fetched");
 	});
+
+	// POSIX: the stand-in git that stalls is a shell script.
+	test.skipIf(process.platform === "win32")(
+		"a resume cancelled while a recorded step commit is being looked up stops that lookup (#3109)",
+		async () => {
+			const repo = createRepository(dirs.root, "stalled-lookup");
+			const binding = await resolveWorkspace(workspace({ repo, branch: "feat/stalled" }));
+			const stepHead = commitFile(binding.worktree, "step.txt", "step\n");
+			const armed = join(dirs.root, "armed");
+			const finished = join(dirs.root, "lookup-finished");
+			const controller = new AbortController();
+			const reason = new Error("resume cancelled");
+			const outcome = await withInjectedGit(
+				dirs.root,
+				{
+					FAKE_GIT_SLOW: "rev-parse --verify",
+					FAKE_GIT_SLEEP: "3",
+					FAKE_GIT_ARMED: armed,
+					FAKE_GIT_MARKER: finished,
+				},
+				async () => {
+					writeFileSync(armed, "");
+					const pending = restoreWorkspace(binding, { signal: controller.signal, recordedHeads: [stepHead] });
+					setTimeout(() => controller.abort(reason), 300);
+					return rejection(pending);
+				},
+			);
+			assert.equal(outcome, reason);
+			assert.equal(existsSync(finished), false, "the stalled lookup was stopped, not waited out");
+		},
+	);
 });

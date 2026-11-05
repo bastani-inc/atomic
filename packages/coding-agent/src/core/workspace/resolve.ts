@@ -228,8 +228,12 @@ async function openRemote(
 }
 
 /** The commit `ref` names in `repository`, or undefined when it names none. */
-export async function commitOf(repository: { readonly root: string }, ref: string): Promise<string | undefined> {
-	const result = await probe(repository.root, ["rev-parse", "--verify", `${ref}^{commit}`]);
+export async function commitOf(
+	repository: { readonly root: string },
+	ref: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const result = await probe(repository.root, ["rev-parse", "--verify", `${ref}^{commit}`], signal);
 	return result.status === 0 ? result.stdout.trim() : undefined;
 }
 

@@ -57,9 +57,13 @@ async function assertInHistory(binding: WorktreeBinding, head: string, signal: A
 }
 
 /** The recorded heads `repository` does not have. */
-async function absentCommits(repository: OpenRepository, heads: readonly string[]): Promise<string[]> {
+async function absentCommits(
+	repository: OpenRepository,
+	heads: readonly string[],
+	signal: AbortSignal | undefined,
+): Promise<string[]> {
 	const absent: string[] = [];
-	for (const head of heads) if ((await commitOf(repository, head)) === undefined) absent.push(head);
+	for (const head of heads) if ((await commitOf(repository, head, signal)) === undefined) absent.push(head);
 	return absent;
 }
 
@@ -73,12 +77,12 @@ async function assertRecordedHeads(
 	heads: readonly string[],
 	signal: AbortSignal | undefined,
 ): Promise<void> {
-	let absent = await absentCommits(repository, heads);
+	let absent = await absentCommits(repository, heads, signal);
 	if (absent.length > 0 && repository.spec.kind === "remote") {
 		await withRepositoryLock(repository.commonDir, () =>
 			gitOutput({ cwd: repository.root, args: ["fetch", "origin"], phase: "fetch", signal }),
 		);
-		absent = await absentCommits(repository, absent);
+		absent = await absentCommits(repository, absent, signal);
 	}
 	if (absent.length > 0)
 		throw new WorkspaceRestoreError({
