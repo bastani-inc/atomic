@@ -9,6 +9,7 @@ import type { WorkerDefinitionSource } from "./definitions.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
+import type { PublishedRun } from "./run-changes.js";
 import type {
 	DeliveryOpId,
 	PooledPromptAnswer,
@@ -159,9 +160,16 @@ export interface CoordinatorReply {
 	readonly error?: string;
 }
 
+/** An attempt's latest publication as its worker sent it: every run it holds, in full. */
 export interface PoolActivityEntry {
 	readonly work: PoolWorkToken;
 	readonly runs: readonly RunSnapshot[];
+}
+
+/** An attempt's latest publication as the root receives it: each run in full or only what changed (#4317). */
+export interface PoolActivityUpdate {
+	readonly work: PoolWorkToken;
+	readonly runs: readonly PublishedRun[];
 }
 
 /** A request from the coordinator that only the root's store can answer. */
@@ -191,7 +199,7 @@ export type CoordinatorEvent =
 	| {
 			readonly kind: "activity";
 			readonly batch: number;
-			readonly entries: readonly PoolActivityEntry[];
+			readonly entries: readonly PoolActivityUpdate[];
 			readonly usage?: PoolUsage;
 	  }
 	| { readonly kind: "spawned"; readonly pid: number }

@@ -36,7 +36,7 @@ import {
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
-import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
+import type { PoolCoordinationStats } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
 	WorkflowSerializableObject,
@@ -58,7 +58,7 @@ import {
 	type CoordinatorRequestBody,
 	POOL_COORDINATOR_ROLE,
 	POOL_SUMMARY_INTERVAL_MS,
-	type PoolActivityEntry,
+	type PoolActivityUpdate,
 	type PoolRootProjection,
 	type PoolWorkToken,
 } from "./coordinator-protocol.js";
@@ -77,6 +77,7 @@ import {
 	questionIdentity,
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings } from "./host-options.js";
+import { OpenStages, type PublishedStages } from "./open-stages.js";
 import { PoolCoordinator, projectRootRun } from "./pool-coordinator.js";
 import {
 	isLocalPoolJournal,
@@ -341,6 +342,10 @@ export class LocalWorkerPool {
 	private readonly heldAnswers = new HeldPromptAnswers();
 	/** Runs this pool's workers published, so answers for another pool's runs pass it by. */
 	private readonly ownedRuns = new Set<string>();
+	/** The stages each accepted publication hands prompt routing and stage registrations (#4317). */
+	private readonly openStages = new OpenStages();
+	/** Aborted once the pool closes, so an activity batch still applying in turns stops (#4317). */
+	private readonly disposal = new AbortController();
 	/** Stops sending this process's provider and model limits to the pool (#4023). */
 	private stopSharingRateLimits?: () => void;
 	/** Registrations in the caller's registry, loaded and applied in activity order. */
@@ -652,7 +657,7 @@ export class LocalWorkerPool {
 	 * resolves it there; an SDK caller's `ui` is asked instead when one was given.
 	 */
 	private routePrompts(
-		publications: readonly { readonly work: PoolWork; readonly runs: readonly RunSnapshot[] }[],
+		publications: readonly { readonly work: PoolWork; readonly runs: readonly PublishedStages[] }[],
 	): void {
 		const store = this.store;
 		for (const { work, runs } of publications)
@@ -1435,6 +1440,7 @@ export class LocalWorkerPool {
 			case "result":
 				if (event.usage !== undefined) this.usageTotal = event.usage;
 				this.results.set(event.workId, event.result);
+				this.openStages.forget(event.workId);
 				void this.registrations?.then((registrations) => registrations.forget(event.workId));
 				this.signalChange();
 				return;
@@ -1478,7 +1484,7 @@ export class LocalWorkerPool {
 	}
 	private async applyActivity(
 		batch: number,
-		entries: readonly PoolActivityEntry[],
+		entries: readonly PoolActivityUpdate[],
 		usage: PoolUsage | undefined,
 	): Promise<void> {
 		if (usage !== undefined) this.usageTotal = usage;
@@ -1489,18 +1495,21 @@ export class LocalWorkerPool {
 				const work = this.track(entry.work);
 				if (work !== undefined) return [{ work, runs: entry.runs }];
 				rejected.push({ workId: entry.work.id, generation: entry.work.generation, error: STALE_WORK_LEASE });
+				handoff.refuse(entry.work, new Error(STALE_WORK_LEASE));
 				return [];
 			});
-			const outcomes = await handoff.publishBatch(publications);
+			const outcomes = await handoff.publishBatch(publications, this.disposal.signal);
 			outcomes.forEach((error, index) => {
 				const { work } = publications[index]!;
 				if (error !== undefined)
 					rejected.push({ workId: work.id, generation: work.generation, error: error.message });
 			});
-			this.routePrompts(publications.filter((_, index) => outcomes[index] === undefined));
+			const accepted = publications
+				.filter((_, index) => outcomes[index] === undefined)
+				.map(({ work, runs }) => ({ work, runs: this.openStages.visit(work, runs) }));
+			this.routePrompts(accepted);
 			const registry = this.options.stageControlRegistry;
 			if (registry !== undefined) {
-				const accepted = publications.filter((_, index) => outcomes[index] === undefined);
 				this.registrations = (
 					this.registrations ??
 					import("./pooled-stage-registry.js").then(
@@ -1602,6 +1611,7 @@ export class LocalWorkerPool {
 	}
 	private async dispose(): Promise<void> {
 		this.closed = true;
+		this.disposal.abort();
 		for (const { controller } of this.routedQuestions.values())
 			controller.abort(new Error("Local worker pool is closed"));
 		this.routedQuestions.clear();

@@ -11,8 +11,9 @@ import {
 	type StageQueuedUserMessages,
 } from "../runs/foreground/stage-queued-user-messages.js";
 import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-runner-types.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { StageSnapshot } from "../shared/store-types.js";
 import type { StageSendUserMessageOptions } from "../shared/types.js";
+import type { PublishedStages } from "./open-stages.js";
 import type { PooledStageLease } from "./pooled-stage-sources.js";
 
 type Acquire = (runId: string, stageId: string) => Promise<PooledStageLease | undefined>;
@@ -192,7 +193,7 @@ export class PooledStageRegistrations {
 		private readonly acquire: Acquire,
 	) {}
 
-	sync(work: { readonly id: string; readonly generation: number }, runs: readonly RunSnapshot[]): void {
+	sync(work: { readonly id: string; readonly generation: number }, runs: readonly PublishedStages[]): void {
 		for (const run of runs)
 			for (const stage of run.stages) {
 				const key = JSON.stringify([run.id, stage.id]);
