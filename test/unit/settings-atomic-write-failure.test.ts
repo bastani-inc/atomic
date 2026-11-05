@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import {
@@ -94,6 +103,25 @@ test("a settings file that cannot be replaced, such as a single mounted file, is
 	assert.deepEqual(writeSettingsFile(replaced, "{}"), { mode: "replaced" });
 	assert.equal(settingsFilesWrittenInPlace().has(realpathSync(replaced)), false);
 });
+
+test.skipIf(process.platform === "win32")(
+	"a file written in place by its path and through a link is recorded once, under its real path (#4320)",
+	() => {
+		const path = join(root, "mounted.json");
+		writeFileSync(path, "{}");
+		mkdirSync(join(root, "sub"));
+		const link = join(root, "link.json");
+		symlinkSync("./sub/../mounted.json", link);
+		refuse.rename = "EBUSY";
+
+		writeSettingsFile(path, '{"via":"path"}');
+		writeSettingsFile(link, '{"via":"link"}');
+
+		assert.equal(readFileSync(path, "utf8"), '{"via":"link"}');
+		const ownWrites = [...settingsFilesWrittenInPlace().keys()].filter((key) => key.startsWith(root));
+		assert.deepEqual(ownWrites, [realpathSync(path)]);
+	},
+);
 
 test("any other rename failure still throws and leaves the previous file and no temporary file (#4320)", () => {
 	const path = join(root, "settings.json");
