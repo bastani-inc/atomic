@@ -7,7 +7,6 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
@@ -15,6 +14,7 @@ import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -32,8 +32,8 @@ afterEach(() => {
 
 test("resuming a workflow restores its latest tree and runs live work in the mapped cwd (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const store = createStore();
 	const jobs = createJobTracker();
 	let attempt = 0;
@@ -79,7 +79,7 @@ test("resuming a workflow restores its latest tree and runs live work in the map
 	assert.equal(mapping?.from, clone);
 	assert.equal(mapping?.tree, (await listWorkflowSnapshotBoundaries(journal, first.runId)).at(-1)?.snapshot.tree);
 	assert.equal(mapping?.to, resumedCwd);
-	await backend.close();
+	await fixture.close();
 });
 
 test("another host resumes a workflow from shared journal blobs after the source checkout is removed (#4245)", async () => {
@@ -148,8 +148,8 @@ test("another host resumes a workflow from shared journal blobs after the source
 
 test("SDK runId reuse validates once and automatically restores before live code (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { backend } = fixture;
 	let calls = 0;
 	let attempt = 0;
 	let resumed = "";
@@ -182,13 +182,13 @@ test("SDK runId reuse validates once and automatically restores before live code
 	assert.equal(calls, 1);
 	assert.notEqual(resumed, clone);
 	assert.equal(backend.getWorkflow(first.runId)?.worktreeRootMappings?.at(-1)?.to, resumed);
-	await backend.close();
+	await fixture.close();
 });
 
 test("resume fails with typed drift and the missing blob as cause before callbacks run (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const store = createStore();
 	let attempts = 0;
 	const definition = workflow({
@@ -230,5 +230,5 @@ test("resume fails with typed drift and the missing blob as cause before callbac
 		},
 	);
 	assert.equal(attempts, 1);
-	await backend.close();
+	await fixture.close();
 });

@@ -553,7 +553,6 @@ async function executeRun(
 	const checkpointIdGenerator = createCheckpointIdGenerator();
 	const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
 	const completedStageReplayKeys = new Map<string, string>();
-	const stageSnapshotDirectories = new Map<string, string>();
 	const durableStageDeps = createDurableStageDeps({
 		backend: durableBackend,
 		run: runSnapshot,
@@ -563,7 +562,7 @@ async function executeRun(
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordLiveCheckpoint,
 		stageDirectories: (stage) => {
-			const cwd = stageWorkingDirectory(stage) ?? stageSnapshotDirectories.get(stage.id);
+			const cwd = stageWorkingDirectory(stage);
 			return cwd === undefined ? [] : [cwd];
 		},
 	});
@@ -915,13 +914,9 @@ async function executeRun(
 		beforeCheckpoint: drainBeforeCheckpoint,
 		recordCachedStage,
 		stage: (name, options, replayKey) => {
-			const mappedOptions = options === undefined ? undefined : mapStageOptions(options);
-			const stage = runtime.stage(name, mappedOptions);
+			const stage = runtime.stage(name, mapStageOptions(options));
 			const stageId = activeStore.run(runId)?.stages.at(-1)?.id;
-			if (stageId !== undefined) {
-				completedStageReplayKeys.set(stageId, replayKey);
-				if (mappedOptions?.cwd !== undefined) stageSnapshotDirectories.set(stageId, mappedOptions.cwd);
-			}
+			if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
 			return stage;
 		},
 	});

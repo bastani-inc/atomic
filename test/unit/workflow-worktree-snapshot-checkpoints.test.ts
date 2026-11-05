@@ -17,6 +17,7 @@ import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/m
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -27,8 +28,8 @@ afterEach(() => sandbox.dispose());
 
 test("completed workflow tool checkpoints carry their captured workspace and durable blobs (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const definition = workflow({
 		name: "snapshot-tools",
 		description: "",
@@ -58,14 +59,14 @@ test("completed workflow tool checkpoints carry their captured workspace and dur
 			if (link.patch) assert.ok(await journal.snapshotBlobs.getBlob(link.patch));
 		}
 	}
-	await backend.close();
+	await fixture.close();
 });
 
 test("completed stages capture their own cwd as well as the workflow cwd (#4245)", async () => {
 	const workflowRepo = await sandbox.remoteWithClone("workflow");
 	const stageRepo = await sandbox.remoteWithClone("stage");
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const definition = workflow({
 		name: "snapshot-stage",
 		description: "",
@@ -109,13 +110,13 @@ test("completed stages capture their own cwd as well as the workflow cwd (#4245)
 	const historical = durableWorkflowRunSnapshots(backend, handle);
 	assert.equal(historical[0]?.stages[0]?.snapshot?.tree, result.stages[0]?.snapshot?.tree);
 	assert.equal(result.stages[0]?.snapshot?.omittedCount, 0);
-	await backend.close();
+	await fixture.close();
 });
 
 test("missing Git degrades once without preventing completed tools (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const store = createStore();
 	let resolutions = 0;
 	setWorktreeSnapshotGit(async () => {
@@ -143,48 +144,79 @@ test("missing Git degrades once without preventing completed tools (#4245)", asy
 	assert.equal(error.code, "not-installed");
 	assert.equal(error.executable, sandbox.path("missing-git"));
 	assert.deepEqual(await listWorkflowSnapshotBoundaries(journal, result.runId), []);
-	await backend.close();
+	await fixture.close();
 });
 
-test("a non-repository or journal without blob storage records a typed reason and keeps running (#4245)", async () => {
-	for (const missingStorage of [false, true]) {
-		const actual = new MemoryRunJournal();
-		const journal = missingStorage
-			? new Proxy(actual, {
-					get(target, key) {
-						if (key === "snapshotBlobs") return undefined;
-						const value = Reflect.get(target, key, target);
-						return typeof value === "function" ? value.bind(target) : value;
-					},
-				})
-			: actual;
-		const backend = await JournalDurableBackend.open(journal, { runs: [] });
-		const store = createStore();
-		const definition = workflow({
-			name: "degrade",
-			description: "",
-			inputs: {},
-			outputs: {},
-			run: async (ctx) => {
-				await ctx.tool("one", {}, async () => "done");
-				return {};
-			},
-		});
-		const result = await run(definition, {}, { cwd: sandbox.root, durableBackend: backend, store });
-		assert.equal(result.status, "completed");
-		const reason = store.run(result.runId)?.snapshotUnavailable;
-		assert.ok(reason);
-		const error = rehydrateWorkspaceError(reason);
-		assert.ok(isWorkspaceSnapshotError(error));
-		assert.equal(error.code, missingStorage ? "blob-store-unsupported" : "not-a-repository");
-		await backend.close();
-	}
+test("a non-repository records a typed reason and keeps running (#4245)", async () => {
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const store = createStore();
+	const definition = workflow({
+		name: "degrade",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("one", {}, async () => "done");
+			return {};
+		},
+	});
+	const result = await run(definition, {}, { cwd: sandbox.root, durableBackend: fixture.backend, store });
+	assert.equal(result.status, "completed");
+	const reason = store.run(result.runId)?.snapshotUnavailable;
+	assert.ok(reason);
+	const error = rehydrateWorkspaceError(reason);
+	assert.ok(isWorkspaceSnapshotError(error));
+	assert.equal(error.code, "not-a-repository");
+	assert.equal(error.subject, sandbox.root);
+	assert.deepEqual(await listWorkflowSnapshotBoundaries(fixture.journal, result.runId), []);
+	await fixture.close();
+});
+
+test("a journal without a blob table records nothing and reports blob-store-unsupported once (#4245)", async () => {
+	const { clone } = await sandbox.remoteWithClone();
+	const journal = new MemoryRunJournal();
+	assert.equal("snapshotBlobs" in journal, false);
+	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const store = createStore();
+	let resolutions = 0;
+	setWorktreeSnapshotGit(async () => {
+		resolutions++;
+		return sandbox.executable;
+	});
+	const definition = workflow({
+		name: "memory-journal",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("one", {}, async () => {
+				sandbox.write(join(ctx.cwd!, "a.txt"), "one\n");
+				return "done";
+			});
+			await ctx.tool("two", {}, async () => {
+				sandbox.write(join(ctx.cwd!, "a.txt"), "two\n");
+				return "done";
+			});
+			return {};
+		},
+	});
+	const result = await run(definition, {}, { cwd: clone, durableBackend: backend, store });
+	assert.equal(result.status, "completed");
+	assert.equal(resolutions, 0, "no Git work without a blob table to hold the result");
+	const reason = store.run(result.runId)?.snapshotUnavailable;
+	assert.ok(reason);
+	const error = rehydrateWorkspaceError(reason);
+	assert.ok(isWorkspaceSnapshotError(error));
+	assert.equal(error.code, "blob-store-unsupported");
+	assert.equal(error.subject, "workflow journal");
+	assert.deepEqual(await listWorkflowSnapshotBoundaries(journal, result.runId), []);
+	await backend.close();
 });
 
 test("parallel stages sharing a worktree select the last journal boundary (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	const definition = workflow({
 		name: "parallel-snapshots",
 		description: "",
@@ -222,13 +254,13 @@ test("parallel stages sharing a worktree select the last journal boundary (#4245
 	assert.ok(boundaries[1]!.seq > boundaries[0]!.seq);
 	const current = await captureWorktreeSnapshot(clone, { previous: boundaries[1]!.snapshot });
 	assert.equal(current.status, "unchanged");
-	await backend.close();
+	await fixture.close();
 });
 
 test("disabled snapshots and invalid RunOpts perform no Git work (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	let resolutions = 0;
 	setWorktreeSnapshotGit(async () => {
 		resolutions++;
@@ -274,13 +306,13 @@ test("disabled snapshots and invalid RunOpts perform no Git work (#4245)", async
 	assert.equal(result.status, "completed");
 	assert.equal(resolutions, 0);
 	assert.deepEqual(await listWorkflowSnapshotBoundaries(journal, result.runId), []);
-	await backend.close();
+	await fixture.close();
 });
 
 test("a stage's allocated Git worktree is captured at completion (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
-	const backend = await JournalDurableBackend.open(journal, { runs: [] });
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	const { journal, backend } = fixture;
 	let effectiveCwd = "";
 	const definition = workflow({
 		name: "snapshot-allocated-worktree",
@@ -315,5 +347,5 @@ test("a stage's allocated Git worktree is captured at completion (#4245)", async
 	const boundaries = await listWorkflowSnapshotBoundaries(journal, result.runId);
 	assert.ok(boundaries.some((boundary) => boundary.root === effectiveCwd));
 	assert.equal(result.stages[0]?.snapshot?.root, effectiveCwd);
-	await backend.close();
+	await fixture.close();
 });

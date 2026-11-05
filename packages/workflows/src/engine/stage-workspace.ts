@@ -1,9 +1,9 @@
 import type { StageSnapshot } from "../shared/store-types.js";
 
-const workingDirectories = new WeakMap<StageSnapshot, string>();
+const workingDirectories = new WeakMap<StageSnapshot, string | undefined>();
 
 export function setStageWorkingDirectory(stage: StageSnapshot, cwd: string | undefined): void {
-	if (cwd !== undefined) workingDirectories.set(stage, cwd);
+	workingDirectories.set(stage, cwd);
 }
 
 export function stageWorkingDirectory(stage: StageSnapshot): string | undefined {

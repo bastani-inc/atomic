@@ -8,13 +8,9 @@ import { snapshotBlob } from "../../packages/coding-agent/src/core/worktree-snap
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 
-test("workflow memory journal holds snapshot blobs (#4245)", async () => {
+test("the in-memory workflow journal has no blob table, so runs on it record no snapshots (#4245)", async () => {
 	const journal = new MemoryRunJournal();
-	const blob = snapshotBlob(Buffer.from("snapshot patch"));
-	assert.ok(journal.snapshotBlobs);
-	await journal.snapshotBlobs.putBlobs([blob, blob]);
-	assert.deepEqual(await journal.snapshotBlobs.listBlobHashes(), [blob.hash]);
-	assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), Uint8Array.from(blob.data));
+	assert.equal("snapshotBlobs" in journal, false);
 	await journal.close();
 });
 
