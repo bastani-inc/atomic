@@ -112,8 +112,11 @@ function joinTeamDatabase(): ReturnType<typeof joinSharedDatabase> {
 	return joinSharedDatabase({ url: databaseUrl, token: TOKEN, agentDir, cwd: project, pinLocalSessions: true }, "sdk");
 }
 
-function leave(): ReturnType<typeof leaveTeamWith> {
-	return leaveTeamWith({ agentDir, cwd: project }, { loadControl: async () => control });
+function leave(onLeft?: () => void): ReturnType<typeof leaveTeamWith> {
+	return leaveTeamWith(
+		{ agentDir, cwd: project },
+		{ loadControl: async () => control, ...(onLeft ? { onLeft } : {}) },
+	);
 }
 
 function settingsText(): string {
@@ -373,6 +376,10 @@ describe("team leave and a trusted project's remote storage (#4320)", () => {
 				[failure.code, failure.subject, failure.retryable],
 				["settings-locked", projectSettings, true],
 			);
+			assert.equal(
+				failure.hint,
+				"Nothing was changed. Run the command again in a few seconds; a lock left by a killed process expires after 10 seconds.",
+			);
 			assert.equal(settingsText(), joined);
 			assert.equal(tokenFiles().length, 1);
 		},
@@ -426,6 +433,313 @@ describe("team leave when the agent directory is the project's config directory 
 			assert.deepEqual(left.keptTokenFiles, [joined.tokenPath]);
 			assert.equal(existsSync(joined.tokenPath), true);
 			assert.deepEqual(JSON.parse(settingsText()).sessions, { storage: LOCAL_SESSIONS_STORAGE });
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+});
+
+describe("team join and leave when the settings change after their preflight (#4320)", () => {
+	function failureOf<T>(run: () => Promise<T>): Promise<Error> {
+		return run().then(
+			() => assert.fail("completed"),
+			(error: Error) => error,
+		);
+	}
+
+	test(
+		"a join over settings deleted after its preflight starts from empty settings",
+		async () => {
+			beforeSettingsWriteLock(() => rmSync(settingsPath));
+
+			const joined = await joinTeamDatabase();
+
+			assert.deepEqual(JSON.parse(settingsText()), {
+				storage: joined.storage,
+				sessions: { storage: LOCAL_SESSIONS_STORAGE },
+			});
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a join over settings that stop being a JSON object fails as settings-unreadable before it writes a token file",
+		async () => {
+			const original = settingsText();
+			for (const malformed of ["[]", "null", '"text"', "7", "{not json"]) {
+				writeFileSync(settingsPath, original);
+				observed.tokenOperations = [];
+				beforeSettingsWriteLock(() => writeFileSync(settingsPath, malformed));
+
+				const failure = await failureOf(joinTeamDatabase);
+
+				assert.ok(isTeamProfileError(failure), malformed);
+				assert.deepEqual([failure.code, failure.subject], ["settings-unreadable", settingsPath], malformed);
+				assert.equal(settingsText(), malformed);
+				assert.deepEqual(tokenFiles(), [], malformed);
+				assert.deepEqual(observed.tokenOperations, [], malformed);
+				vi.restoreAllMocks();
+			}
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a settings file that parses to an array reports a TypeError cause that names no content",
+		async () => {
+			beforeSettingsWriteLock(() => writeFileSync(settingsPath, "[]"));
+
+			const failure = await failureOf(joinTeamDatabase);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.ok(failure.cause instanceof TypeError);
+			assert.equal(failure.detail, "TypeError");
+			assert.equal(failure.cause.message, "not a JSON object");
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a leave over settings that stop being a JSON object fails as settings-unreadable and changes nothing",
+		async () => {
+			const first = await joinTeamDatabase();
+			assert.ok(first.tokenPath);
+			beforeSettingsWriteLock(() => writeFileSync(settingsPath, "[]"));
+			const onLeft = vi.fn();
+
+			const failure = await failureOf(() => leave(onLeft));
+
+			assert.ok(isTeamProfileError(failure));
+			assert.deepEqual([failure.code, failure.subject], ["settings-unreadable", settingsPath]);
+			assert.equal(settingsText(), "[]");
+			assert.equal(existsSync(first.tokenPath), true);
+			assert.equal(onLeft.mock.calls.length, 0);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a leave over settings deleted after its preflight changes nothing and recreates no file",
+		async () => {
+			await joinTeamDatabase();
+			beforeSettingsWriteLock(() => rmSync(settingsPath));
+			const onLeft = vi.fn();
+
+			const left = await leave(onLeft);
+
+			assert.deepEqual([left.removed, left.kept, left.deletedTokenFiles], [[], [], []]);
+			assert.equal(existsSync(settingsPath), false);
+			assert.equal(onLeft.mock.calls.length, 0);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+});
+
+describe("team join token handling under the settings lock (#4320)", () => {
+	test(
+		"a join without a token file reads no token file and records no secret",
+		async () => {
+			await joinTeamDatabase();
+			observed.tokenOperations = [];
+
+			const joined = await joinSharedDatabase(
+				{ url: databaseUrl, agentDir, cwd: project, pinLocalSessions: true },
+				"sdk",
+			);
+
+			assert.equal(joined.token, "none");
+			assert.equal(joined.tokenPath, undefined);
+			assert.equal(joined.storage.secrets, undefined);
+			assert.deepEqual(observed.tokenOperations, []);
+			assert.equal(JSON.parse(settingsText()).storage.secrets, undefined);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a failed settings write keeps the token file a join reused and records no cleanup failure",
+		async () => {
+			const first = await joinTeamDatabase();
+			assert.ok(first.tokenPath);
+			const joined = settingsText();
+			observed.tokenOperations = [];
+			observed.settingsRenameFails = true;
+
+			const failure = await joinTeamDatabase().then(
+				() => assert.fail("joined"),
+				(error: Error) => error,
+			);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.equal(failure.code, "settings-write-failed");
+			assert.equal(Object.hasOwn(failure, "cleanupCause"), false);
+			assert.equal(existsSync(first.tokenPath), true);
+			assert.equal(readFileSync(first.tokenPath, "utf8"), TOKEN);
+			assert.equal(
+				observed.tokenOperations.some(({ op }) => op === "delete"),
+				false,
+			);
+			assert.equal(settingsText(), joined);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+});
+
+describe("team leave edge cases (#4320)", () => {
+	test(
+		"a leave without a settings file returns the empty result and creates no directory, lock or callback",
+		async () => {
+			const absent = join(root, "absent-agent");
+			const lock = vi.spyOn(FileSettingsStorage.prototype, "withPrimaryWriteLock");
+			const onLeft = vi.fn();
+
+			const left = await leaveTeamWith(
+				{ agentDir: absent, cwd: project },
+				{ loadControl: async () => control, onLeft },
+			);
+
+			assert.deepEqual(left, {
+				settingsPath: join(absent, "settings.json"),
+				removed: [],
+				kept: [],
+				deletedTokenFiles: [],
+				keptTokenFiles: [],
+			});
+			assert.equal(existsSync(absent), false);
+			assert.equal(lock.mock.calls.length, 0);
+			assert.equal(onLeft.mock.calls.length, 0);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a leave that removes nothing does not report a change",
+		async () => {
+			const custom = { theme: "dark", storage: { path: "shared.sqlite" } };
+			writeFileSync(settingsPath, JSON.stringify(custom));
+			const onLeft = vi.fn();
+
+			const left = await leave(onLeft);
+
+			assert.deepEqual(left.removed, []);
+			assert.deepEqual(left.kept, [{ key: "storage", reason: "changed" }]);
+			assert.equal(onLeft.mock.calls.length, 0);
+			assert.deepEqual(JSON.parse(settingsText()), custom);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a leave whose settings write fails keeps the settings and the token file and reports nothing",
+		async () => {
+			const first = await joinTeamDatabase();
+			assert.ok(first.tokenPath);
+			const joined = settingsText();
+			observed.tokenOperations = [];
+			observed.settingsRenameFails = true;
+			const onLeft = vi.fn();
+
+			const failure = await leave(onLeft).then(
+				() => assert.fail("left"),
+				(error: Error) => error,
+			);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.equal(failure.code, "settings-write-failed");
+			assert.equal(settingsText(), joined);
+			assert.equal(existsSync(first.tokenPath), true);
+			assert.deepEqual(observed.tokenOperations, []);
+			assert.equal(onLeft.mock.calls.length, 0);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"removing the pin keeps the other keys of sessions",
+		async () => {
+			await joinTeamDatabase();
+			const settings = JSON.parse(settingsText());
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({ ...settings, sessions: { ...settings.sessions, retained: { days: 7 } } }),
+			);
+
+			const left = await leave();
+
+			assert.deepEqual(left.removed, ["storage", "sessions.storage"]);
+			assert.deepEqual(JSON.parse(settingsText()).sessions, { retained: { days: 7 } });
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a project settings file that cannot be parsed fails the leave as settings-unreadable before anything changes",
+		async () => {
+			const first = await joinTeamDatabase();
+			assert.ok(first.tokenPath);
+			const joined = settingsText();
+			const projectSettings = join(project, ".atomic", "settings.json");
+			mkdirSync(dirname(projectSettings), { recursive: true });
+			writeFileSync(projectSettings, "{not json");
+			const onLeft = vi.fn();
+
+			const failure = await leave(onLeft).then(
+				() => assert.fail("left"),
+				(error: Error) => error,
+			);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.deepEqual([failure.code, failure.subject], ["settings-unreadable", projectSettings]);
+			assert.equal(settingsText(), joined);
+			assert.equal(existsSync(first.tokenPath), true);
+			assert.equal(onLeft.mock.calls.length, 0);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"a trusted project whose storage lives only in a legacy config directory keeps the pin",
+		async () => {
+			await joinTeamDatabase();
+			const legacy = join(project, ".pi", "settings.json");
+			mkdirSync(dirname(legacy), { recursive: true });
+			writeFileSync(
+				legacy,
+				JSON.stringify({ storage: { adapter: "@example/sessions", options: { url: "libsql://x.example.io" } } }),
+			);
+			new ProjectTrustStore(agentDir).set(project, true);
+
+			const left = await leave();
+
+			assert.deepEqual(left.removed, ["storage"]);
+			assert.deepEqual(left.kept, [{ key: "sessions.storage", reason: "storage-remains" }]);
+			assert.deepEqual(JSON.parse(settingsText()).sessions, { storage: LOCAL_SESSIONS_STORAGE });
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"an unreadable independent project file fails a same-file leave as settings-unreadable before anything changes",
+		async () => {
+			agentDir = join(project, ".atomic");
+			settingsPath = join(agentDir, "settings.json");
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(settingsPath, JSON.stringify({ packages: [packageRoot] }));
+			const first = await joinTeamDatabase();
+			assert.ok(first.tokenPath);
+			const joined = settingsText();
+			const legacy = join(project, ".pi", "settings.json");
+			mkdirSync(dirname(legacy), { recursive: true });
+			writeFileSync(legacy, "{not json");
+
+			const failure = await leave().then(
+				() => assert.fail("left"),
+				(error: Error) => error,
+			);
+
+			assert.ok(isTeamProfileError(failure));
+			assert.deepEqual([failure.code, failure.subject], ["settings-unreadable", legacy]);
+			assert.equal(settingsText(), joined);
+			assert.equal(existsSync(first.tokenPath), true);
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);

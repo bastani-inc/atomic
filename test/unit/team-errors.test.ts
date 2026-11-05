@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { test } from "vitest";
 import {
 	isRetryableTeamProfileError,
@@ -452,6 +453,49 @@ test("a serialized cause keeps its name and code but never its own message, whic
 		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h", cause: disguised }),
 	);
 	assert.deepEqual(quoted.cause, { name: "Error", message: "Error" });
+
+	const untyped = Object.assign(new Error("raw sk-synthetic-value"), { name: true, code: true });
+	const coerced = serializeTeamError(
+		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h", cause: untyped }),
+	);
+	assert.deepEqual(coerced.cause, { name: "Error", message: "Error" });
+});
+
+test("a cause from another realm or a callable cause serializes from its name and code alone (#4320)", () => {
+	const foreign = runInNewContext(
+		'Object.assign(new Error("raw sk-synthetic-value"), { name: "TeamProfileError", code: "settings-locked" })',
+	) as unknown;
+	assert.equal(foreign instanceof Error, false);
+	assert.ok(isTeamProfileError(foreign));
+	const fromRealm = serializeTeamError(
+		new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "h",
+			cause: new Error("wrapper", { cause: foreign }),
+		}),
+	);
+	assert.doesNotMatch(JSON.stringify(fromRealm), /sk-syn/);
+	assert.deepEqual(fromRealm.cause, {
+		name: "Error",
+		message: "Error",
+		cause: { name: "Error", message: "settings-locked", code: "settings-locked" },
+	});
+
+	const callable = Object.defineProperty(() => undefined, "code", {
+		get: () => assert.fail("the serializer inspected a callable cause"),
+	});
+	const fromCallable = serializeTeamError(
+		new TeamProfileError("token-delete-failed", {
+			subject: "/t",
+			hint: "h",
+			cause: new Error("wrapper", { cause: callable }),
+		}),
+	);
+	assert.deepEqual(fromCallable.cause, {
+		name: "Error",
+		message: "Error",
+		cause: { name: "Error", message: "Error" },
+	});
 });
 
 test("a malformed settings file reaches getTeamProfile and leaveTeam callers, serialized, without its content (#4320)", async () => {
