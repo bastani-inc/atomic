@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { getAgentDir } from "../../config.ts";
 import { locateCheckout, readRepositoryConfig, withScratchDirectory, writeWorkingTree } from "./capture.ts";
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
@@ -415,6 +415,36 @@ async function exists(path: string): Promise<boolean> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw error;
 	}
+}
+
+/**
+ * Removes a worktree that a restore created, for callers that roll back a multi-checkout restore; a path that no
+ * longer exists is already removed. Refuses, with
+ * `unsafe-target` (reason `not-restored`), any directory that is not a worktree of a shared store under `storeDir`,
+ * so it can never touch a user's checkout.
+ */
+export async function removeRestoredWorktree(
+	path: string,
+	options: { readonly storeDir?: string; readonly signal?: AbortSignal } = {},
+): Promise<void> {
+	const target = resolve(path);
+	if (!(await exists(target))) return;
+	const repositories = join(resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir()), "repositories");
+	const common = await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+		cwd: target,
+		signal: options.signal,
+		allowExitCodes: [128],
+	});
+	const store = common.stdout.toString("utf8").trim();
+	if (common.exitCode !== 0 || !isWithin(repositories, store) || isWithin(store, target)) {
+		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target, reason: "not-restored" });
+	}
+	await removeWorktree({ cwd: repositories, env: { GIT_DIR: store }, signal: options.signal }, target, true);
+}
+
+function isWithin(parent: string, child: string): boolean {
+	const path = relative(parent, child);
+	return path !== "" && !path.startsWith("..") && !isAbsolute(path);
 }
 
 /**

@@ -183,7 +183,7 @@ export interface WorkspaceRestoreErrorFields {
 	readonly actualTree?: string | null;
 	readonly commits?: readonly string[];
 	readonly paths?: readonly string[];
-	readonly reason?: "denied-history" | "bundle-over-cap" | "not-fetched" | "not-empty";
+	readonly reason?: "denied-history" | "bundle-over-cap" | "not-fetched" | "not-empty" | "not-restored";
 	readonly remotes?: readonly string[];
 	readonly target?: string;
 	readonly detail?: string;
@@ -240,10 +240,15 @@ function restoreMessage(
 				"Check the repository's .gitattributes filters, then retry the restore into a new directory.",
 			];
 		case "unsafe-target":
-			return [
-				`Cannot restore into ${fields.target}: it is not an empty directory`,
-				"Choose a new or empty directory, or omit `into` to restore under Atomic home.",
-			];
+			return fields.reason === "not-restored"
+				? [
+						`Cannot remove ${fields.target}: it is not a worktree that a snapshot restore created`,
+						"Remove only paths returned by restoreWorktreeSnapshot, with the same storeDir.",
+					]
+				: [
+						`Cannot restore into ${fields.target}: it is not an empty directory`,
+						"Choose a new or empty directory, or omit `into` to restore under Atomic home.",
+					];
 	}
 }
 

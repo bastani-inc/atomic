@@ -101,6 +101,7 @@ if (capture.status === "captured" || capture.status === "unchanged") {
 - `captureWorktreeSnapshot(dir, { settings?, previous?, blobs?, signal? })` resolves `captured`, `unchanged`, `disabled`, or `unavailable` with the typed reason (`GitUnavailableError` or `WorkspaceSnapshotError`).
 - `restoreWorktreeSnapshot(bindingOrSnapshot, { into?, blobs?, snapshots?, storeDir?, settings?, onWarning?, signal? })` resolves to the path of a new, verified worktree. `into` must be a new or empty directory. A binding is restored from a matching entry of `snapshots`, or from a host whose object store already holds its tree. Restore checks the target and every blob before writing, and removes what it created when it fails.
 - `verifyWorktree(binding, dir)` resolves to the checkout's current binding when its `HEAD` and tree match, and rejects with `WorkspaceDriftError` otherwise.
+- `removeRestoredWorktree(path, { storeDir? })` removes a worktree a restore created, for rolling back a restore of several checkouts. It refuses any other directory.
 - `collectSnapshotGarbage(blobs, retained)` deletes blobs that none of the retained snapshots needs; pass the snapshots referenced by resumable checkpoints and the latest snapshot of each session.
 
 ## Errors
@@ -121,5 +122,5 @@ Every error except `GitUnavailableError` extends `WorkspaceError`; all of them c
 | `WorkspaceRestoreError` | `commits-unavailable` | `HEAD` cannot be fetched from the remotes and no usable bundle exists | `head`, `commits`, `paths`, `remotes`, `reason` (`denied-history`, `bundle-over-cap`, `not-fetched`) | Push the named commits, or check access to the named remote |
 | `WorkspaceRestoreError` | `delta-failed` | A patch did not produce its recorded tree | `snapshotId`, `deltaIndex`, `blob`, `expectedTree`, `actualTree` | Restore an earlier snapshot |
 | `WorkspaceRestoreError` | `tree-mismatch` | The materialized worktree's tree differs from the snapshot | `target`, `expectedTree`, `actualTree` | Check the repository's `.gitattributes` filters on this host, then retry |
-| `WorkspaceRestoreError` | `unsafe-target` | `into` exists and is not an empty directory | `target`, `reason` | Choose a new or empty directory, or omit `into` |
+| `WorkspaceRestoreError` | `unsafe-target` | `into` exists and is not an empty directory (`reason: "not-empty"`), or `removeRestoredWorktree` was given a directory no restore created (`reason: "not-restored"`) | `target`, `reason` | Choose a new or empty directory, or omit `into`; remove only paths a restore returned |
 | `WorkspaceDriftError` | `tree-drift` | A checkout no longer matches the snapshot work would resume from, and it could not be restored | `root`, `expectedHead`, `actualHead`, `expectedTree`, `actualTree`, `snapshotId` | Follow the `cause`'s hint, or restore the snapshot into a new worktree |
