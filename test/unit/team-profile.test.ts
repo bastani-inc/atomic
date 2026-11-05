@@ -495,3 +495,8 @@ describe("teamProfileSelection (#4320)", () => {
 		assert.equal(processStorageEnvironment().ATOMIC_STORAGE, "");
 	});
 });
+
+test("an in-memory secret shows as the documented [redacted] placeholder (#4320)", () => {
+	assert.equal(REDACTED_SECRET, "[redacted]");
+	assert.equal(JSON.stringify(inMemorySecret("team-secret-token")), '{"value":"[redacted]"}');
+});
