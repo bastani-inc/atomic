@@ -82,7 +82,7 @@ import {
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { SessionIdReclaim } from "./session-id-reclaim.js";
-import { type HeldSend, RestoringRecipients } from "./restoring-recipients.js";
+import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
 import {
@@ -2496,15 +2496,16 @@ class IntercomBroker {
     );
     if (admission.kind === "none") return false;
     if (admission.kind === "refused") this.failHeldSend(held, admission.reason);
-    else {
-      writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
-      // #4326: the child is released; its owner rehydrates it, and it takes the held sends in order when it registers.
-      const owner = admission.wake === undefined ? undefined : this.sessions.get(admission.wake.ownerSessionId);
-      if (owner !== undefined && admission.wake !== undefined)
-        writeMessageIfOpen(owner.socket, { type: "restoring_recipient_wake", capability: admission.wake.capability, childName: admission.wake.childName });
-    }
+    else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
+    if (admission.kind === "held" && admission.wake !== undefined) this.wakeRestoringRecipientOwner(admission.wake);
     return true;
   };
+
+  /** #4326: the child is released; its owner rehydrates it, and it takes the held sends in order when it registers. */
+  private wakeRestoringRecipientOwner(wake: RestoringRecipientWake): void {
+    const owner = this.sessions.get(wake.ownerSessionId);
+    if (owner !== undefined) writeMessageIfOpen(owner.socket, { type: "restoring_recipient_wake", capability: wake.capability, childName: wake.childName });
+  }
 
   private failHeldSend(held: HeldSend, reason: string): void {
     writeMessageIfOpen(held.socket, {

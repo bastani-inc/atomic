@@ -361,11 +361,18 @@ test(
 				wake: true,
 			});
 			const sender = await peer("hold-only-sender");
-			void sender.send(restoring, { text: "to the restoring child" }).catch(() => undefined);
+			let restoringSendSettled = false;
+			void sender
+				.send(restoring, { text: "to the restoring child" })
+				.finally(() => {
+					restoringSendSettled = true;
+				})
+				.catch(() => undefined);
 			void sender.send(released, { text: "to the released child" }).catch(() => undefined);
 			await vi.waitFor(() => assert.equal(wakes.length > 0, true), { timeout: RECORD_WAIT_MS, interval: 10 });
 			await sleep(SETTLE_MS);
 			assert.deepEqual(wakes, [{ childName: released }]);
+			assert.equal(restoringSendSettled, false, "the send to the restoring child is still held");
 		} finally {
 			await parent.host.close("session-close");
 			await parent.fire("session_shutdown", { type: "session_shutdown", reason: "quit" });
