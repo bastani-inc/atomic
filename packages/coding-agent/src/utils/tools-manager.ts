@@ -924,7 +924,11 @@ function selectGitSync(): GitSelection {
 
 /**
  * Resolve git without downloading: a system git at or above {@link GIT_MINIMUM_VERSION}, else the provisioned copy.
- * Throws {@link GitUnavailableError} when neither exists; call {@link resolveGit} first to provision one.
+ * When neither exists it throws, in this order: the {@link GitUnavailableError} for a platform or offline mode that
+ * rules out provisioning; else the error the last {@link resolveGit} failed with in this process, which can be a
+ * {@link GitUnavailableError} such as `download-failed` or a {@link GitProvisionTimeoutError}; else
+ * {@link GitUnavailableError} `not-installed`. Call {@link resolveGit} first to provision one, and
+ * {@link isRetryableGitProvisionError} to tell whether trying again can help.
  */
 export function resolveGitSync(): ResolvedGit {
 	return toResolvedGit(selectGitSync());

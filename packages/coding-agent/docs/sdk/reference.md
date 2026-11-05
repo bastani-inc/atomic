@@ -273,7 +273,7 @@ spawnSync(git.path, ["status", "--short"], { cwd: projectDir, env: git.env, enco
 | Function | Returns |
 |---|---|
 | `resolveGit({ signal?, onStatus? })` | `Promise<ResolvedGit>`. May download and verify the portable git. `onStatus` receives `{ type: "info" \| "warning", message }` progress. Aborting `signal` rejects with `signal.reason`; concurrent callers share one download, which stops only when every caller has aborted. |
-| `resolveGitSync()` | `ResolvedGit` without downloading. Throws `GitUnavailableError` with code `not-installed` when a download would be needed. |
+| `resolveGitSync()` | `ResolvedGit` without downloading. When no git is usable it throws, in this order: the `GitUnavailableError` (`unsupported-platform` or `offline`) that rules out provisioning; else the error the last `resolveGit()` failed with in this process (a `GitUnavailableError` such as `download-failed`, or a `GitProvisionTimeoutError`); else `GitUnavailableError` with code `not-installed`. Pass the error to `isRetryableGitProvisionError()` to tell whether `await resolveGit()` can help. |
 | `getGitStatus()` | `GitToolStatus`, the value in the tools report. Never downloads. |
 
 `ResolvedGit` has `path` (absolute executable path), `source` (`"system"` or `"provisioned"`), `version`, and `env`: a copy of `process.env` plus, for a provisioned git, `GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`, `GIT_CONFIG_SYSTEM` (macOS and Linux), and `GIT_SSL_CAINFO` (Linux and Windows). Pass `env` to the child process; a `GIT_CONFIG_SYSTEM` or `GIT_SSL_CAINFO` you already set is kept. `env` is computed per call, so later changes to `process.env` are picked up.
