@@ -5,6 +5,7 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
+import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { createWorkflowBoundaryHopsResolver } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import {
 	closestStagePath,
@@ -49,6 +50,7 @@ import type {
 	StageSnapshot,
 } from "../../packages/workflows/src/shared/store-types.js";
 import type { WorkflowDefinition, WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
+import { renderRunDetail } from "../../packages/workflows/src/tui/run-detail.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -98,7 +100,15 @@ function rootRun(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
 }
 
 function stage(name: string, overrides: Partial<StageSnapshot> = {}): StageSnapshot {
-	return { id: `${name}-id`, name, status: "running", startedAt: 1, ...overrides } as StageSnapshot;
+	return {
+		id: `${name}-id`,
+		name,
+		status: "running",
+		startedAt: 1,
+		parentIds: [],
+		toolEvents: [],
+		...overrides,
+	} as StageSnapshot;
 }
 
 function storeWith(run: RunSnapshot = rootRun()) {
@@ -329,6 +339,48 @@ describe("prediction outcomes at their edges (#4359)", () => {
 		assert.ok(prediction);
 		assert.ok(visibleWidth(prediction) <= 60, `${visibleWidth(prediction)}: ${prediction}`);
 		assert.ok(prediction.includes("…"));
+	});
+});
+
+describe("the run detail's predictions (#4359)", () => {
+	test("a run's detail lists its predictions and a failed prediction, and nothing when it has none", () => {
+		const store = storeWith(
+			rootRun({
+				stages: [stage("review-1")],
+				stagePredictions: {
+					status: "fallback",
+					targets: {},
+					entries: [
+						{ path: "review-1", probability: 0.95, source: "scan" },
+						{ path: "summary-2", probability: 0.9, source: "scan" },
+					],
+					fallback: {
+						name: "StageDecisionTimeoutError",
+						code: "decision-timeout",
+						hint: "Later runs ask again.",
+						phase: "target",
+						retryable: true,
+					},
+				},
+			}),
+		);
+		const inspected = inspectRun("root", { store, now: 2 });
+		if (!inspected.ok) assert.fail("expected the run");
+		assert.deepEqual(
+			inspected.detail.stagePredictions?.entries.map((entry) => [entry.path, entry.outcome]),
+			[
+				["review-1", "confirmed"],
+				["summary-2", "predicted"],
+			],
+		);
+		const text = renderRunDetail(inspected.detail, { now: 2, width: 160 });
+		assert.match(text, /predictions\s+review-1 confirmed 0\.95, summary-2 predicted 0\.90/);
+		assert.match(text, /predictions\s+unavailable \(decision-timeout\): Later runs ask again\./);
+
+		const plain = inspectRun("plain", { store: storeWith(rootRun({ id: "plain" })), now: 2 });
+		if (!plain.ok) assert.fail("expected the run");
+		assert.equal("stagePredictions" in plain.detail, false);
+		assert.doesNotMatch(renderRunDetail(plain.detail, { now: 2, width: 160 }), /predictions/);
 	});
 });
 

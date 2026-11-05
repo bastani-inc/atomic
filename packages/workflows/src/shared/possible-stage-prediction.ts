@@ -294,18 +294,32 @@ const STATUS_PREDICTION_LIMIT = 5;
  * in the structured status only.
  */
 export function formatStagePredictionStatus(status: StagePredictionStatus | undefined): string[] {
-	const lines: string[] = [];
-	if (status === undefined) return lines;
-	if (status.entries.length > 0) {
-		const shown = status.entries
-			.slice(0, STATUS_PREDICTION_LIMIT)
-			.map((entry) => `${entry.path} ${entry.outcome} ${entry.probability.toFixed(2)}`);
-		const more = status.entries.length - STATUS_PREDICTION_LIMIT;
-		lines.push(`stage predictions: ${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}`);
-	}
-	// A decision model that cannot give probabilities (a chat model) is a setup choice, not a failure worth a line.
-	if (status.fallback !== undefined && status.fallback.code !== "decision-unavailable") {
-		lines.push(`stage predictions unavailable (${status.fallback.code}): ${status.fallback.hint}`);
-	}
-	return lines;
+	const { predicted, unavailable } = describeStagePredictions(status);
+	return [
+		...(predicted === undefined ? [] : [`stage predictions: ${predicted}`]),
+		...(unavailable === undefined ? [] : [`stage predictions ${unavailable}`]),
+	];
+}
+
+/**
+ * The text of a root's predictions, such as `review-1 confirmed 0.95, lint predicted 0.91`, and of a failed
+ * prediction, such as `unavailable (decision-timeout): <hint>`. A decision model that cannot give probabilities (a chat
+ * model) is a setup choice, not a failure, so `decision-unavailable` has no text.
+ */
+export function describeStagePredictions(status: StagePredictionStatus | undefined): {
+	readonly predicted?: string;
+	readonly unavailable?: string;
+} {
+	if (status === undefined) return {};
+	const shown = status.entries
+		.slice(0, STATUS_PREDICTION_LIMIT)
+		.map((entry) => `${entry.path} ${entry.outcome} ${entry.probability.toFixed(2)}`);
+	const more = status.entries.length - STATUS_PREDICTION_LIMIT;
+	const fallback = status.fallback;
+	return {
+		...(shown.length === 0 ? {} : { predicted: `${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}` }),
+		...(fallback === undefined || fallback.code === "decision-unavailable"
+			? {}
+			: { unavailable: `unavailable (${fallback.code}): ${fallback.hint}` }),
+	};
 }

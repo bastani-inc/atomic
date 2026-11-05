@@ -16,6 +16,7 @@ import {
 } from "../../engine/run-liveness.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
+import { type StagePredictionStatus, stagePredictionStatus } from "../../shared/possible-stage-prediction.js";
 import {
 	actionableReturnedStatusText,
 	effectiveRunStatus,
@@ -84,6 +85,8 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly blockedAt?: number;
 	/** True when a raw-running root has a completed frontier and no control node over budget. */
 	readonly strandedRoot?: true;
+	/** Decision-model stage-name predictions of a root run, each with whether it came true. */
+	readonly stagePredictions?: StagePredictionStatus;
 }
 
 export type InspectRunResult =
@@ -171,7 +174,16 @@ export function inspectRun(
 		retryAfterMs: copy.retryAfterMs,
 		blockedAt: copy.blockedAt,
 		...(strandedRoot ? { strandedRoot: true as const } : {}),
+		...stagePredictionsOf(copy, activeStore.runs()),
 	};
 
 	return { ok: true, runId: copy.id, detail };
+}
+
+function stagePredictionsOf(
+	run: RunSnapshot,
+	runs: readonly RunSnapshot[],
+): { readonly stagePredictions?: StagePredictionStatus } {
+	const stagePredictions = stagePredictionStatus(run, runs);
+	return stagePredictions === undefined ? {} : { stagePredictions };
 }
