@@ -17,6 +17,9 @@
  *
  * `--store memory` keeps the conversations in an in-memory session store, comparable to Infinity's in-memory figure;
  * `--store sqlite` uses the default SQLite session store and journal on disk.
+ *
+ * `--no-release` runs the same agents with `releaseWhenWaiting: false`: the resident baseline the released figures
+ * compare against. Its idle invariants are not checked, since every agent keeps its session by design.
  */
 import { getEventListeners } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -48,7 +51,7 @@ export interface Options {
 	readonly store: "memory" | "sqlite";
 	readonly label: string;
 	readonly out?: string;
-	/** False for a build whose stages cannot release: a wave is idle once every agent called the long tool. */
+	/** False for the resident baseline (`--no-release`): a wave is idle once every agent called the long tool. */
 	readonly expectRelease: boolean;
 }
 
@@ -213,7 +216,7 @@ const TRANSIENT_RESOURCE_KINDS: ReadonlySet<string> = new Set(["PromiseResolve",
 /**
  * Throws when an idle agent still costs something per agent: a live or retained session, a handle (timer, socket,
  * pipe, child process) beyond a small per-run constant, or an abort listener per agent on the run's signal. Skipped for
- * a build that cannot release (`--no-release`), where every agent keeps its session by design.
+ * the resident baseline (`--no-release`, which runs with `releaseWhenWaiting: false`), where every agent keeps its session.
  */
 export function assertIdleInvariants(report: IdleInvariantReport): void {
 	if (!report.options.expectRelease) return;
@@ -411,7 +414,7 @@ export async function runIdleAgentBenchmark(options: Options): Promise<IdleInvar
 				store,
 				adapters,
 				...(options.store === "memory" ? { journal: { memory: true } } : {}),
-				releaseWhenWaiting: { afterMs: 0 },
+				releaseWhenWaiting: options.expectRelease ? { afterMs: 0 } : false,
 				onStageLifecycleEvent: (_runId: string, event: StageLifecycleEvent) => {
 					if (event.type === "stage_waiting") waiting.set(event.stageName, Date.now());
 					else rehydratedAt.set(event.stageName, Date.now());
