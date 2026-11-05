@@ -111,9 +111,16 @@ export function scheduleSnapshotCollection(
 	if (now - (lastAskedAt.get(store.identity) ?? Number.NEGATIVE_INFINITY) < checked.collectIntervalSeconds * 1000)
 		return skipped("not-due");
 	lastAskedAt.set(store.identity, now);
-	const pace = new BackgroundCollectionPace();
-	const running = collectIfDue(store, checked, pace, options.onFailure ?? ((error) => process.emitWarning(error)));
-	trackSnapshotCollection(store, { outcome: running, pace });
+	const controller = new AbortController();
+	const pace = new BackgroundCollectionPace(controller.signal);
+	const running = collectIfDue(
+		store,
+		checked,
+		pace,
+		controller.signal,
+		options.onFailure ?? ((error) => process.emitWarning(error)),
+	);
+	trackSnapshotCollection(store, { outcome: running, pace, abort: (reason) => controller.abort(reason) });
 	void running.then((outcome) => {
 		if (outcome.status === "interrupted") lastAskedAt.delete(store.identity);
 	});
@@ -138,6 +145,7 @@ async function collectIfDue(
 	store: SqlSnapshotBlobStore,
 	settings: CollectionSettings,
 	pace: BackgroundCollectionPace,
+	signal: AbortSignal,
 	onFailure: (error: WorkspaceCollectionError) => void,
 ): Promise<SnapshotCollectionOutcome> {
 	const holder = randomUUID();
@@ -147,12 +155,13 @@ async function collectIfDue(
 		if (!(await store.claimCollection(settings.collectIntervalSeconds, holder, pace)))
 			return { status: "skipped", reason: "not-due" };
 		phase = "index";
-		await store.completeIndex({ holder, pace });
+		await store.completeIndex({ holder, pace, signal });
 		phase = "sweep";
 		await store.sweep({
 			graceSeconds: settings.graceSeconds,
 			holder,
 			pace,
+			signal,
 			onBatch: (batch) => deleted.push(...batch),
 		});
 		phase = "record";

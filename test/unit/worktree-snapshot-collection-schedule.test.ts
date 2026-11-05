@@ -7,6 +7,7 @@ import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent
 import { StoreClosedError } from "../../packages/coding-agent/src/core/storage/errors.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
+	abortSnapshotCollectionsOn,
 	MemorySnapshotBlobStore,
 	runningSnapshotCollectionsOn,
 	SNAPSHOT_COLLECTION_LEASE_SECONDS,
@@ -411,6 +412,23 @@ test("each database is collected and its failures reported on its own, in one pr
 	);
 	assert.equal(reported.length, 2);
 	assert.notEqual(first.store.identity, second.store.identity);
+});
+
+test("aborting the collections of one database leaves those of another database running to their end (#4355)", async () => {
+	const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+	const first = await connection({ file: "first.sqlite", gate: gates[0].promise });
+	const second = await connection({ file: "second.sqlite", gate: gates[1].promise });
+	await agedOrphans(first.store, first.database, 1);
+	await agedOrphans(second.store, second.database, 1);
+	const stopped = scheduleSnapshotCollection(first.store, settings, silent);
+	const finished = scheduleSnapshotCollection(second.store, settings, silent);
+
+	abortSnapshotCollectionsOn(first.database.descriptor, new StoreClosedError(first.database.descriptor));
+	for (const gate of gates) gate.resolve();
+
+	assert.equal((await stopped).status, "interrupted");
+	assert.equal((await finished).status, "collected");
+	assert.deepEqual(await second.store.listBlobHashes(), []);
 });
 
 describe("the claim is a lease every batch renews, and the interval runs from the last finish (#4355)", () => {

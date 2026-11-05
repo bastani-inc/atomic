@@ -81,7 +81,10 @@ export type SnapshotCollectionSkipReason = "disabled" | "unsupported" | "in-prog
 export type SnapshotCollectionOutcome =
 	| { readonly status: "skipped"; readonly reason: SnapshotCollectionSkipReason }
 	| { readonly status: "collected"; readonly deleted: readonly string[] }
-	/** The storage closed before the collection finished; what it deleted stays deleted. */
+	/**
+	 * The storage closed, or its last store was released, before the collection finished; it stopped at its next batch
+	 * and what it deleted stays deleted.
+	 */
 	| { readonly status: "interrupted"; readonly deleted: readonly string[] }
 	| { readonly status: "failed"; readonly error: WorkspaceCollectionError };
 
@@ -92,19 +95,34 @@ const databaseIdentity = (descriptor: StorageDescriptor) => `${descriptor.adapte
  * How an automatic collection waits, so that it never keeps its process alive: between batches, and before it tries
  * a write lock another connection holds again, on timers the process does not wait for. A process that has nothing
  * else to do exits at the next wait, which leaves only garbage, like a crash, and the next trigger after the claim
- * lease carries on. {@link keepProcessAlive} makes the process wait for the collection like any other work.
+ * lease carries on. {@link keepProcessAlive} makes the process wait for the collection like any other work. A wait
+ * ends at once when `signal` aborts, so an aborted collection stops without sleeping out its wait.
  */
 export class BackgroundCollectionPace {
+	readonly signal?: AbortSignal;
 	private keepAlive = false;
 	private pending?: ReturnType<typeof setTimeout>;
 
-	/** Resolves after `milliseconds`, unless the process exits first because it has nothing else to do. */
+	constructor(signal?: AbortSignal) {
+		this.signal = signal;
+	}
+
+	/**
+	 * Resolves after `milliseconds`, or as soon as the signal aborts, and unless the process exits first because it
+	 * has nothing else to do.
+	 */
 	wait(milliseconds: number): Promise<void> {
 		return new Promise((resolve) => {
-			const timer = setTimeout(() => {
+			const signal = this.signal;
+			if (signal?.aborted) return resolve();
+			const done = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", done);
 				this.pending = undefined;
 				resolve();
-			}, milliseconds);
+			};
+			const timer = setTimeout(done, milliseconds);
+			signal?.addEventListener("abort", done, { once: true });
 			if (!this.keepAlive) timer.unref();
 			this.pending = timer;
 		});
@@ -121,6 +139,8 @@ export class BackgroundCollectionPace {
 export interface RunningSnapshotCollection {
 	readonly outcome: Promise<SnapshotCollectionOutcome>;
 	readonly pace: BackgroundCollectionPace;
+	/** Stops the collection at its next batch boundary, with `reason` as the abort reason. */
+	abort(reason: Error): void;
 }
 
 const collectionsRunning = new Map<string, RunningSnapshotCollection>();
@@ -134,6 +154,15 @@ export function trackSnapshotCollection(store: SqlSnapshotBlobStore, running: Ru
 /** The automatic collection of `store`'s blob table that this process is running, if any. */
 export function runningSnapshotCollectionOf(store: SqlSnapshotBlobStore): RunningSnapshotCollection | undefined {
 	return collectionsRunning.get(store.identity);
+}
+
+/**
+ * Stops every automatic collection this process is running on a blob table of the database `descriptor` names, each at
+ * its next batch boundary, with `reason` as the abort reason; a collection that stops this way ends `interrupted`.
+ */
+export function abortSnapshotCollectionsOn(descriptor: StorageDescriptor, reason: Error): void {
+	const prefix = databaseIdentity(descriptor);
+	for (const [identity, running] of collectionsRunning) if (identity.startsWith(prefix)) running.abort(reason);
 }
 
 /** Every automatic collection this process is running on a blob table of the database `descriptor` names. */
@@ -589,7 +618,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	}
 
 	/** Indexes the next rows of `source`, and resolves true once every row at or below its watermark is indexed. */
-	private backfillBatch(source: IndexSource, { holder, pace }: SnapshotIndexOptions): Promise<boolean> {
+	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
 		return this.write(pace, async (transaction) => {
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
@@ -611,7 +640,11 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					progress.backfilled_through,
 					upper,
 				);
-				for (const { id } of rows) for (const sql of source.rowwise) await transaction.run(sql, id);
+				for (const { id } of rows) {
+					// Stopping between rows rolls the whole batch back, progress included, so the pass stays resumable.
+					signal?.throwIfAborted();
+					for (const sql of source.rowwise) await transaction.run(sql, id);
+				}
 			}
 			await transaction.run(`UPDATE ${t.sources} SET backfilled_through = ? WHERE source = ?`, upper, source.name);
 			if (holder !== undefined) await this.renewClaim(transaction, holder);
@@ -816,6 +849,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					throw error;
 			}
 			await pace.wait(delay);
+			pace.signal?.throwIfAborted();
 			waited += delay;
 			delay = Math.min(delay * 2, SNAPSHOT_COLLECTION_LOCK_RETRY_MAX_MS);
 		}

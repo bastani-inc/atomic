@@ -28,6 +28,16 @@ import { dropSnapshotIndex, startRun, statusEvent, textBlob } from "../helpers/s
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/snapshot-collection-exit.ts");
+/**
+ * Makes a Node child resolve the packages the sources import from each other to their sources, as the test runner
+ * does, so that one module instance serves the whole process: a collection recognizes only the blob store and the
+ * closed-store error of its own instance, not those of a built copy.
+ */
+const SOURCE_ALIASES = JSON.stringify({
+	"@bastani/atomic/storage": join(ROOT, "packages/coding-agent/src/core/storage/index.ts"),
+	"@bastani/atomic": join(ROOT, "packages/coding-agent/src/index.ts"),
+});
+const DISPOSE_FIXTURE = join(ROOT, "test/fixtures/snapshot-collection-dispose.ts");
 /** Each test starts real Node or Bun processes that load the sources, which takes seconds, not a test's default. */
 const CHILD_PROCESS_TEST_TIMEOUT_MS = 120_000;
 /**
@@ -35,8 +45,13 @@ const CHILD_PROCESS_TEST_TIMEOUT_MS = 120_000;
  * minutes for the lock (see the fixture), so a collection that waited for it would still be running at this point.
  */
 const LOCK_HELD_EXIT_BUDGET_MS = 60_000;
-/** Three backfill transactions' worth of checkpoints, each referencing its own blob, of one failed run. */
-const EVENTS = SNAPSHOT_INDEX_BACKFILL_BATCH * 2 + 100;
+/**
+ * Backfill transactions' worth of checkpoints, each referencing its own blob, of one failed run. Enough that no
+ * plausible number of batches finishing before a stopped process exits, however loaded the machine, completes the
+ * backfill: a test may assert it was cut short.
+ */
+const EXIT_SEED_BATCHES = 10;
+const EVENTS = SNAPSHOT_INDEX_BACKFILL_BATCH * EXIT_SEED_BATCHES;
 const ORPHANS = [textBlob("unreferenced a"), textBlob("unreferenced b")];
 
 const RUNTIMES = [
@@ -76,8 +91,18 @@ async function unindexedHistory(path: string): Promise<void> {
 	}
 }
 
-async function runChild(runtime: (typeof RUNTIMES)[number], mode: "schedule" | "await", path: string) {
-	const child = spawnProcess([...runtime[1](), FIXTURE, mode, path], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
+type ChildMode = "schedule" | "await" | "dispose-session" | "dispose-journal";
+
+async function runChild(runtime: (typeof RUNTIMES)[number], mode: ChildMode, path: string) {
+	const command = mode.startsWith("dispose-")
+		? [...runtime[1](), DISPOSE_FIXTURE, path, mode.slice("dispose-".length)]
+		: [...runtime[1](), FIXTURE, mode, path];
+	const child = spawnProcess(command, {
+		cwd: ROOT,
+		env: { ...process.env, JITI_ALIAS: SOURCE_ALIASES },
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	const stdout = new Response(child.stdout).text();
 	const stderr = new Response(child.stderr).text();
 	return { child, stdout, stderr };
@@ -112,8 +137,7 @@ describe.each(RUNTIMES)("an automatic collection never keeps its %s process aliv
 				database = await openNodeSqliteDatabase(path);
 				const stopped = await progress(database);
 				const events = stopped.sources.find((row) => row.source === "journal-events")!;
-				assert.equal(events.backfilled_through, SNAPSHOT_INDEX_BACKFILL_BATCH, "one backfill batch, then the exit");
-				assert.ok(events.backfilled_through < events.watermark);
+				assert.ok(events.backfilled_through < events.watermark, "the backfill was cut short by the exit");
 				assert.deepEqual([stopped.claim?.claimed, stopped.claim?.finished], [1, 0], "its claim is left unfinished");
 				assert.equal((await database.all("SELECT hash FROM snapshot_blobs")).length, EVENTS + ORPHANS.length);
 
@@ -141,6 +165,47 @@ describe.each(RUNTIMES)("an automatic collection never keeps its %s process aliv
 				assert.equal(finished.claim?.finished, 1);
 			} finally {
 				resetSnapshotCollectionScheduleForTesting();
+				await database?.close();
+				removeTempDirectory(directory);
+			}
+		},
+		CHILD_PROCESS_TEST_TIMEOUT_MS,
+	);
+
+	test.each(["session", "journal"] as const)(
+		"a process whose storage keeps it alive until closed exits once its %s store is closed, with the collection stopped at a batch",
+		async (kind) => {
+			const directory = makeTempDirectory("snapshot-collection-dispose-");
+			const path = join(directory, "shared.sqlite");
+			let database: SqliteDatabase | undefined;
+			try {
+				await unindexedHistory(path);
+
+				const { child, stdout, stderr } = await runChild(runtime, `dispose-${kind}`, path);
+				assert.equal(await child.exited, 0, await stderr);
+				assert.equal(
+					await stdout,
+					"closed\n",
+					"closing the store did not wait for the collection, and no failure was reported",
+				);
+
+				database = await openNodeSqliteDatabase(path);
+				const stopped = await progress(database);
+				const events = stopped.sources.find((row) => row.source === "journal-events")!;
+				assert.ok(events.backfilled_through < events.watermark, "the close stopped the collection part way");
+				assert.equal(stopped.claim?.finished, 0, "a stopped collection's claim is left for the lease to expire");
+				assert.equal(
+					Number(
+						(
+							await database.get<{ n: number }>(
+								"SELECT count(*) AS n FROM snapshot_blobs WHERE hash LIKE 'padded-%'",
+							)
+						)?.n,
+					),
+					EVENTS,
+					"no blob a journal references was deleted",
+				);
+			} finally {
 				await database?.close();
 				removeTempDirectory(directory);
 			}

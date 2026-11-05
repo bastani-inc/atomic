@@ -8,6 +8,7 @@ import {
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import type { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
+import { SNAPSHOT_COLLECTION_BATCH } from "../../packages/coding-agent/src/core/worktree-snapshot/blob-store.ts";
 import {
 	resetSnapshotCollectionScheduleForTesting,
 	scheduleSnapshotCollection,
@@ -47,19 +48,37 @@ async function sessionStoreWithOrphans(count: number): Promise<SqlSessionStore> 
 const databaseOf = (store: SqlSessionStore) =>
 	(store.snapshotBlobs as unknown as { readonly database: SqliteDatabase }).database;
 
-test("closing the last store of a database does not cut short a collection that is running on it (#4355)", async () => {
-	const store = await sessionStoreWithOrphans(300);
+test("closing the last store of a database stops a collection running on it at its next batch, before the database closes (#4355)", async () => {
+	const store = await sessionStoreWithOrphans(SNAPSHOT_COLLECTION_BATCH * 3);
 	const database = databaseOf(store);
-	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
+	const failures: unknown[] = [];
+	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, {
+		onFailure: (error) => failures.push(error),
+	});
 
 	await store.close();
 
 	const outcome = await collection;
-	assert.equal(outcome.status, "collected", "the collection ran to its end instead of being interrupted");
-	assert.equal((outcome as { deleted: readonly string[] }).deleted.length, 300, "across more than one batch");
+	assert.equal(outcome.status, "interrupted", "a cancellation, not a failure");
+	const deleted = (outcome as { deleted: readonly string[] }).deleted.length;
+	assert.ok(deleted < SNAPSHOT_COLLECTION_BATCH * 3, "it stopped before collecting everything");
+	assert.deepEqual(failures, []);
 	await vi.waitFor(async () => {
 		await assert.rejects(database.get("SELECT 1"), (error: unknown) => error instanceof StoreClosedError);
 	});
+});
+
+test("closing the last store does not wait for the batch in progress, and the database closes once the collection has stopped (#4355)", async () => {
+	const store = await sessionStoreWithOrphans(SNAPSHOT_COLLECTION_BATCH * 3);
+	const database = databaseOf(store);
+	const { closed } = slowClose(database);
+	const collection = scheduleSnapshotCollection(store.snapshotBlobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
+
+	await store.close();
+	assert.equal(closed(), false, "the close does not wait for the batch in progress");
+	await collection;
+
+	await vi.waitFor(() => assert.equal(closed(), true));
 });
 
 /** Makes closing `database` take a moment, and records when it has finished. */

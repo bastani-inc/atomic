@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import type { SqliteDatabase, SqliteExecutor } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { StorageWriteLockTimeoutError, StoreClosedError } from "../../packages/coding-agent/src/core/storage/errors.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
@@ -17,7 +18,9 @@ import {
 import {
 	ageBlobs,
 	checkpointEvent,
+	createSession,
 	dropSnapshotIndex,
+	messageEntry,
 	openSharedSnapshotDatabase,
 	type SharedSnapshotDatabase,
 	startRun,
@@ -147,6 +150,111 @@ describe("the pace of a background collection (#4355)", () => {
 		});
 
 		assert.deepEqual(tickedBeforeBatch, [false, true, true]);
+	});
+});
+
+describe("a background collection stops when it is aborted (#4355)", () => {
+	const reason = new Error("the last store was released");
+
+	test("a wait ends at once when the pace's signal aborts, and does not start once it has", async () => {
+		const controller = new AbortController();
+		const pace = new BackgroundCollectionPace(controller.signal);
+		const clearTimeouts = vi.spyOn(globalThis, "clearTimeout");
+
+		const waiting = pace.wait(60_000);
+		controller.abort(reason);
+		await waiting;
+
+		assert.ok(clearTimeouts.mock.calls.length > 0, "the timer was cleared, not left to fire");
+		await pace.wait(60_000);
+	});
+
+	test("a sweep stops at the batch boundary with the abort reason, keeping what earlier batches deleted", async () => {
+		await agedOrphans(SNAPSHOT_COLLECTION_BATCH * 3);
+		const controller = new AbortController();
+		const pace = new BackgroundCollectionPace(controller.signal);
+		let batches = 0;
+
+		await assert.rejects(
+			blobs().sweep({
+				graceSeconds: 0,
+				pace,
+				signal: controller.signal,
+				onBatch: () => {
+					if (++batches === 1) controller.abort(reason);
+				},
+			}),
+			(error: unknown) => error === reason,
+		);
+
+		assert.equal(batches, 1);
+		assert.equal((await blobs().listBlobHashes()).length, SNAPSHOT_COLLECTION_BATCH * 2);
+	});
+
+	test("a write waiting for a held lock stops when aborted, with the abort reason", async () => {
+		holdWriteLock();
+		const controller = new AbortController();
+		const pace = new BackgroundCollectionPace(controller.signal);
+		const refused = blobs().claimCollection(3600, "collector", pace);
+		setTimeout(() => controller.abort(reason), 30);
+
+		await assert.rejects(refused, (error: unknown) => error === reason);
+	});
+
+	test("a session backfill stopped between rows rolls its whole batch back, so the pass resumes cleanly", async () => {
+		const other = await openSharedSnapshotDatabase(join(directory, "rowwise.sqlite"));
+		const root = messageEntry("start");
+		const entries = [root];
+		for (let index = 0; index < 20; index++) entries.push(messageEntry(`entry ${index}`, entries.at(-1)!.id));
+		await createSession(other.sessions, "session-1", entries);
+		await other.sessions.close();
+		await other.journal.close();
+		await dropSnapshotIndex(other.database);
+		const controller = new AbortController();
+		let links = 0;
+		const wrap = (executor: SqliteExecutor): SqliteExecutor => ({
+			exec: (sql) => executor.exec(sql),
+			get: (sql, ...params) => executor.get(sql, ...params),
+			all: (sql, ...params) => executor.all(sql, ...params),
+			run: async (sql, ...params) => {
+				if (sql.startsWith("INSERT OR IGNORE INTO snapshot_session_links") && ++links === 5)
+					controller.abort(reason);
+				return executor.run(sql, ...params);
+			},
+		});
+		const aborting: SqliteDatabase = {
+			descriptor: other.database.descriptor,
+			exec: (sql) => other.database.exec(sql),
+			run: (sql, ...params) => other.database.run(sql, ...params),
+			get: (sql, ...params) => other.database.get(sql, ...params),
+			all: (sql, ...params) => other.database.all(sql, ...params),
+			transaction: (callback, options) =>
+				other.database.transaction((transaction) => callback(wrap(transaction)), options),
+			close: () => other.database.close(),
+		};
+		try {
+			const store = await SqlSnapshotBlobStore.open(aborting);
+
+			await assert.rejects(store.completeIndex({ signal: controller.signal }), (error: unknown) => error === reason);
+
+			const progress = await other.database.get<{ watermark: number; backfilled_through: number }>(
+				"SELECT watermark, backfilled_through FROM snapshot_index_sources WHERE source = 'session-entries'",
+			);
+			assert.equal(progress?.backfilled_through, 0, "the batch's progress was rolled back with its rows");
+			assert.equal(
+				Number((await other.database.get<{ n: number }>("SELECT count(*) AS n FROM snapshot_session_links"))?.n),
+				0,
+			);
+
+			await store.completeIndex();
+
+			assert.equal(
+				Number((await other.database.get<{ n: number }>("SELECT count(*) AS n FROM snapshot_session_links"))?.n),
+				entries.length,
+			);
+		} finally {
+			await other.database.close();
+		}
 	});
 });
 
