@@ -175,20 +175,23 @@ test("atomic storage consolidate moves finished runs and says why others stay (#
 	const moved = await storage(["consolidate"]);
 	assert.deepEqual(moved, {
 		code: 0,
-		out: ["Moved 1 finished run into the journal store's shards.", "Left 1 run in place: unfinished."],
+		out: [
+			"Moved 1 finished run into the journal store's shards.",
+			"Skipped completing consolidation for 1 run: unfinished.",
+		],
 		err: [],
 	});
 	const again = await storage(["consolidate"]);
 	assert.deepEqual(again.out, [
 		"Moved 0 finished runs into the journal store's shards.",
-		"Left 1 run in place: unfinished.",
+		"Skipped completing consolidation for 1 run: unfinished.",
 	]);
 	rmSync(join(root, "old"), { recursive: true, force: true });
 	const gone = await storage(["consolidate"]);
 	assert.equal(gone.code, 1, "a run skipped with a typed failure fails the command");
 	assert.deepEqual(gone.out.slice(0, 2), [
 		"Moved 0 finished runs into the journal store's shards.",
-		"Left 1 run in place: shard-unavailable.",
+		"Skipped completing consolidation for 1 run: shard-unavailable.",
 	]);
 	assert.ok(gone.out[2]?.startsWith(`Journal shard unavailable: ${file} (shard-missing). Restore the file`));
 });
@@ -363,8 +366,8 @@ test("adopt names the journals it adopted through references; consolidate counts
 		code: 1,
 		out: [
 			"Moved 2 finished runs into the journal store's shards.",
-			"Left 2 runs in place: unfinished.",
-			"Left 1 run in place: shard-unavailable.",
+			"Skipped completing consolidation for 2 runs: unfinished.",
+			"Skipped completing consolidation for 1 run: shard-unavailable.",
 			`${missing.message} ${missing.hint}`,
 		],
 		err: [],

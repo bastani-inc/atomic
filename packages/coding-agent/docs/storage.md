@@ -148,6 +148,8 @@ try {
 
 Each entry of `report.discovered` names the journal that referenced it and, when it was skipped, the `reason`. `consolidateJournalStore` reports each run as `moved`, with the shard it moved `to`, or `skipped` with a `reason`, and for `conflict` or `shard-unavailable` the typed `error`. When adoption, consolidation or opening the catalog fails and closing a file then fails too, the original typed error is thrown with the close failure as its `cleanupCause`.
 
+A `skipped` result means consolidation did not finish, not that the run stayed in its original file. When another process resumed the destination during a move, the catalog keeps that destination selected. Check the catalog's current location before comparing copies or retrying consolidation.
+
 ### When to select a journal
 
 Select a journal file only to isolate runs, for example in tests or a sandbox: `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, `RunOpts.journal` and `createAgentSession({ journal })` keep working as one file. You do not need separate journals for performance: the store already keeps concurrent roots apart. A shared libSQL or Turso database stays one selection; the adapter scales it.
@@ -473,7 +475,7 @@ Journal store errors are exported from `@bastani/atomic/storage` with their code
 | | `schema-version` | A newer Atomic wrote the catalog | `found`, `supported` | Upgrade Atomic |
 | | `corrupt` | The catalog breaks a consistency rule | `rule` | Move `catalog.sqlite` aside, then adopt every `shard-*.sqlite` file in the store directory again |
 | | `write-failed` | A catalog write failed; retryable when another process held the lock | `phase`, `runId`, `detail` | Free disk space or wait for the lock; checkpoints already written stay on their shard |
-| | `run-conflict` | `consolidate` found a different copy of a run in its destination | `runId`, `shardPath` | Compare the copies; the run was not moved |
+| | `run-conflict` | `consolidate` found different histories for a run | `runId`, `shardPath` | Compare both preserved copies and check the catalog's current location; a concurrent resume may have kept the run on the destination |
 | | `run-moved` | A consolidation moved a run while it was read and its new shard did not continue the history; retryable | `runId`, `shardId`, `shardPath`, `lastSeq` | Read the run again |
 | | `run-not-found` | No run with this ID is in this machine's storage | `runId`, `selection`, `localOnly` | With local-only storage, join the machine that ran it with `atomic storage join <url> --token-file <path>`, or adopt an older journal file |
 | `JournalShardUnavailableError` | `shard-missing` | The file holding a run is gone | `shardId`, `shardPath`, `runId` | Restore the file at that path; its runs stay registered there |

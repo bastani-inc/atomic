@@ -30,6 +30,7 @@ import {
 	legacyDefaultJournalPath,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
+import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -1598,6 +1599,147 @@ test("a move whose source fence a resume took while it waited is abandoned befor
 	assert.equal(scalar(destination, "SELECT count(*) FROM wf_runs"), 0, "the destination copy is gone");
 	assert.equal(scalar(source, EVENTS), events + 1, "the resume's event is in the source");
 });
+
+test("an abandoned move never deletes the destination another consolidation already selected (#4325)", async () => {
+	const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [source]);
+	const destination = await withCatalog((catalog) => catalog.homeShard("r"));
+	const events = Number(scalar(source, EVENTS));
+	const report = await withCatalog(async (catalog) => {
+		const homeShard = catalog.homeShard.bind(catalog);
+		Reflect.set(catalog, "homeShard", async (runId: string) => {
+			const home = await homeShard(runId);
+			await journal(home.path, []);
+			const copied = new DatabaseSync(home.path);
+			try {
+				copied.prepare("ATTACH DATABASE ? AS source").run(source);
+				for (const table of ["wf_runs", "wf_events", "wf_leases"])
+					copied.exec(`INSERT INTO main.${table} SELECT * FROM source.${table}`);
+			} finally {
+				copied.close();
+			}
+			const originalHolder = scalar(home.path, HOLDER);
+			await withCatalog(async (other) => {
+				const moveRun = other.moveRun.bind(other);
+				Reflect.set(other, "moveRun", async (...args: Parameters<JournalCatalog["moveRun"]>) => {
+					assert.equal(await moveRun(...args), true);
+					throw new Error("interrupted after selecting the destination");
+				});
+				await assert.rejects(consolidateJournalStore(other), /interrupted after selecting the destination/);
+			});
+			assert.equal(scalar(home.path, HOLDER), originalHolder);
+			raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+			raw(source, APPEND_EVENT, events + 1, "p1-new");
+			return home;
+		});
+		return consolidateJournalStore(catalog);
+	});
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	const selected = (await withCatalog((catalog) => catalog.locate("r")))!.shard;
+	assert.equal(scalar(selected.path, "SELECT count(*) FROM wf_runs WHERE run_id = 'r'"), 1);
+	assert.equal(selected.path, source);
+	assert.equal(scalar(destination.path, "SELECT count(*) FROM wf_runs WHERE run_id = 'r'"), 0);
+	const reopened = await ShardedRunJournal.open({ directory: store, openShard: openSqlRunJournal });
+	try {
+		assert.equal((await reopened.getRun("r"))?.runId, "r");
+		const saved = [];
+		for await (const event of reopened.read("r")) saved.push(event);
+		assert.equal(saved.length, events + 1);
+		assert.equal(saved.at(-1)?.key, "p1-new");
+	} finally {
+		await reopened.close();
+	}
+	assert.equal((await consolidateJournalStore(store)).moved, 0);
+});
+
+test("an abandoned move follows a destination selected between its catalog check and its delete (#4325)", async () => {
+	const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+	await adoptJournals(store, [source]);
+	const from = (await withCatalog((catalog) => catalog.locate("r")))!.shard;
+	const destination = await withCatalog((catalog) => catalog.homeShard("r"));
+	const events = Number(scalar(source, EVENTS));
+	let resumed = false;
+	let raced = false;
+	const report = await withCatalog(async (catalog) => {
+		const homeShard = catalog.homeShard.bind(catalog);
+		Reflect.set(catalog, "homeShard", async (runId: string) => {
+			const home = await homeShard(runId);
+			raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+			raw(source, APPEND_EVENT, events + 1, "p1-new");
+			resumed = true;
+			return home;
+		});
+		const locate = catalog.locate.bind(catalog);
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			const found = await locate(runId);
+			if (resumed && !raced) {
+				raced = true;
+				await withCatalog(async (other) => assert.equal(await other.moveRun(runId, from.id, destination.id), true));
+			}
+			return found;
+		});
+		return consolidateJournalStore(catalog);
+	});
+	assert.equal(raced, true);
+	assert.deepEqual(
+		report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "leased"]],
+	);
+	assert.equal((await withCatalog((catalog) => catalog.locate("r")))?.shard.path, source);
+	assert.equal(scalar(destination.path, "SELECT count(*) FROM wf_runs WHERE run_id = 'r'"), 0);
+	const reopened = await ShardedRunJournal.open({ directory: store, openShard: openSqlRunJournal });
+	try {
+		assert.equal((await reopened.getRun("r"))?.runId, "r");
+		const saved = [];
+		for await (const event of reopened.read("r")) saved.push(event);
+		assert.equal(saved.length, events + 1);
+		assert.equal(saved.at(-1)?.key, "p1-new");
+	} finally {
+		await reopened.close();
+	}
+});
+
+for (const state of ["released", "unindexed"] as const)
+	test(`an abandoned move whose source resume becomes ${state} preserves history and reports who moved it (#4325)`, async () => {
+		const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+		await adoptJournals(store, [source]);
+		const from = (await withCatalog((catalog) => catalog.locate("r")))!.shard;
+		const events = Number(scalar(source, EVENTS));
+		const report = await withCatalog(async (catalog) => {
+			const homeShard = catalog.homeShard.bind(catalog);
+			Reflect.set(catalog, "homeShard", async (runId: string) => {
+				const home = await homeShard(runId);
+				raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+				if (state === "unindexed") await catalog.remove(runId);
+				else {
+					assert.equal(await catalog.moveRun(runId, from.id, home.id), true);
+					const locate = catalog.locate.bind(catalog);
+					Reflect.set(catalog, "locate", async (id: string) => {
+						raw(source, "UPDATE wf_leases SET holder_id = NULL WHERE run_id = 'r'");
+						return locate(id);
+					});
+				}
+				return home;
+			});
+			return consolidateJournalStore(catalog);
+		});
+		assert.deepEqual(
+			report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+			[["r", "skipped", state === "released" ? "changed" : "leased"]],
+		);
+		const reopened = await ShardedRunJournal.open({ directory: store, openShard: openSqlRunJournal });
+		try {
+			assert.equal((await reopened.getRun("r"))?.runId, "r");
+			const saved = [];
+			for await (const event of reopened.read("r")) saved.push(event);
+			assert.equal(saved.length, events);
+		} finally {
+			await reopened.close();
+		}
+	});
 
 function countMoves(catalog: JournalCatalog): { count: number } {
 	const moves = { count: 0 };

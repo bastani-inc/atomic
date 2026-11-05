@@ -511,7 +511,8 @@ async function consolidate(options: StorageCommandOptions, log: (line: string) =
 	const reasons = new Map<string, number>();
 	for (const run of report.runs)
 		if (run.outcome === "skipped") reasons.set(run.reason, (reasons.get(run.reason) ?? 0) + 1);
-	for (const [reason, count] of reasons) log(`Left ${count} run${count === 1 ? "" : "s"} in place: ${reason}.`);
+	for (const [reason, count] of reasons)
+		log(`Skipped completing consolidation for ${count} run${count === 1 ? "" : "s"}: ${reason}.`);
 	const failures = new Map<string, string>();
 	for (const run of report.runs)
 		if (run.error !== undefined) failures.set(run.error.message, `${run.error.message} ${run.error.hint}`);

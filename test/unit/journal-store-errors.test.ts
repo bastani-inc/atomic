@@ -67,12 +67,12 @@ test("JournalCatalogError renders each code's message and hint from its fields (
 		[
 			new JournalCatalogError({ code: "run-conflict", catalogPath, runId: "r2", shardPath: "/s/shard-0002.sqlite" }),
 			"Journal run conflict: run r2 already has a different copy in /s/shard-0002.sqlite (run-conflict).",
-			"Compare the two copies before moving the run; nothing was changed for this run.",
+			"Compare the two copies and check the catalog's current location before retrying consolidation; both copies are preserved when their histories differ.",
 		],
 		[
 			new JournalCatalogError({ code: "run-conflict", catalogPath, shardId: 4 }),
 			"Journal run conflict: run unknown already has a different copy in shard 4 (run-conflict).",
-			"Compare the two copies before moving the run; nothing was changed for this run.",
+			"Compare the two copies and check the catalog's current location before retrying consolidation; both copies are preserved when their histories differ.",
 		],
 		[
 			new JournalCatalogError({

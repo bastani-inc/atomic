@@ -893,8 +893,20 @@ async function moveOne(
 	}
 	// A move that waited so long that a resume took the source's fence is abandoned before the catalog changes.
 	if (await heldByResume(source, runId)) {
-		await removeRun(database, runId, holder);
-		return { runId, from: shard.id, outcome: "skipped", reason: "leased" };
+		const selected = async () => (await catalog.locate(runId))?.shard.id === destination.id;
+		if (!(await selected()) && (!(await removeRun(database, runId, holder)) || !(await selected())))
+			return { runId, from: shard.id, outcome: "skipped", reason: "leased" };
+		const settled = await settleMove(
+			catalog,
+			source,
+			shard,
+			destination,
+			database,
+			runId,
+			holder,
+			fenced.lease.epoch,
+		);
+		return settled.outcome === "moved" ? { runId, from: shard.id, outcome: "skipped", reason: "changed" } : settled;
 	}
 	const repointed = await catalog.moveRun(runId, shard.id, destination.id);
 	if (!repointed && (await catalog.locate(runId))?.shard.id !== destination.id) {

@@ -522,7 +522,7 @@ function catalogText(init: JournalCatalogErrorInit, detail: string | null): { me
 		case "run-conflict":
 			return {
 				message: `Journal run conflict: run ${init.runId ?? "unknown"} already has a different copy in ${init.shardPath ?? `shard ${String(init.shardId)}`} (run-conflict).`,
-				hint: "Compare the two copies before moving the run; nothing was changed for this run.",
+				hint: "Compare the two copies and check the catalog's current location before retrying consolidation; both copies are preserved when their histories differ.",
 			};
 		case "run-moved":
 			return {
