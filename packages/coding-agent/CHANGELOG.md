@@ -5,6 +5,7 @@
 ### Breaking Changes
 
 - `SessionStore.list` now rejects cancellation with the original `AbortSignal.reason` across JSONL, SQL and in-memory stores. Callers supplying a custom reason should compare the caught value to `signal.reason` rather than expecting a new `AbortError`; `controller.abort()` without a custom reason still produces the standard `AbortError` ([#4319](https://github.com/bastani-inc/atomic/issues/4319))
+- Removed `readFile` from `GrepOperations`. The grep tool takes context lines from ripgrep and no longer reads matched files itself; `GrepOperations` only covers the directory check. To search a remote system, override grep's `execute()` (upstream [#11705](https://github.com/earendil-works/pi/pull/11705))
 
 ### Added
 
@@ -40,6 +41,7 @@
 - A bash call whose command leaves a process holding its output open, or (on Linux) whose process group is slow to exit on a busy machine, no longer fails with `CleanupFailed: Process-group exit or reader drain was not confirmed`. The tool returns the command's output and exit code, and the task's cleanup shows as `quarantined` while it is confirmed in the background until the session or stage closes; its process permit stays held until then. On macOS, a process group the system still refuses to probe after the drain window fails as before ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).
 - Aborting while a tool runs no longer ends the turn with an error when the next request's credential setup sees the aborted signal; the turn ends as aborted (upstream [#8635](https://github.com/earendil-works/pi/pull/8635))
 - `ATOMIC_STARTUP_BENCHMARK=1` now disposes the session runtime after printing its timings, so extensions get `session_shutdown` and a timer or socket they clean up there no longer keeps the process from exiting (upstream [#11736](https://github.com/earendil-works/pi/pull/11736))
+- The grep tool's ripgrep search (literal patterns, custom operations, or when native search is unavailable) no longer reads every matched file into memory when `context`, `contextBefore` or `contextAfter` is set, which ran out of memory on large files. Context lines come from ripgrep, so overlapping context prints once, UTF-16 and non-UTF-8 files show correctly, and the match limit notice no longer appears when exactly `limit` matches exist. A fractional `limit` or a huge context value is clamped to a whole number (upstream [#11705](https://github.com/earendil-works/pi/pull/11705))
 
 ## [0.9.71] - 2026-11-03
 
