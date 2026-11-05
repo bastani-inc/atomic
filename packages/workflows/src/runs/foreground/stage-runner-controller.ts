@@ -455,6 +455,13 @@ export class StageSessionController {
 	private releasing: Promise<boolean> | undefined;
 	/** The model and thinking level of the session the stage last released: all it keeps of that session (#4309). */
 	private releasedSettings: Pick<StageSessionRuntime, "model" | "thinkingLevel"> | undefined;
+	/**
+	 * The wait of the session the stage gave up, until a session of the stage is ready again: while the stage has no
+	 * session, a read of it reports the session as released, also once that wait has ended without reopening it (#4309).
+	 */
+	private givenUp: StageWaitSnapshot | undefined;
+	/** Why the session a tool wait gave up could not be reopened, until a session of the stage is ready again (#4309). */
+	private reopenFailure: unknown;
 	/** Cancels the wait between two attempts to reopen the session when the stage is aborted. */
 	private reopenBackoff: AbortController | undefined;
 	/** Prompts of the stage that have not settled; a stage with one cannot be released by its author. */
@@ -1248,6 +1255,7 @@ export class StageSessionController {
 		for (const text of cleared?.followUp ?? [])
 			this.holdInput({ content: text, kind: "followUp", expandPromptTemplates: false });
 		this.releasedWait = wait;
+		this.givenUp = wait;
 		this.reattachSessionId = current.sessionId;
 		this.releasedSettings = { model: current.model, thinkingLevel: current.thinkingLevel };
 		this.session = undefined;
@@ -1301,6 +1309,7 @@ export class StageSessionController {
 			// Nothing wakes a tool wait again: callers waiting for its session learn why it never came.
 			if (wait.kind === "tool") {
 				this.releasedWait = undefined;
+				this.reopenFailure = error;
 				this.bindAbortSignal();
 				const ended = this.releasedWaitEnded;
 				this.releasedWaitEnded = undefined;
@@ -1423,11 +1432,12 @@ export class StageSessionController {
 	}
 
 	/**
-	 * True while the stage has no session because it released it: it waits released (marked before the session is
-	 * given up), or is reopening it. False while the session is resident, and for a stage that never opened one (#4309).
+	 * True while the stage has no session because it gave it up: it waits released, is reopening it, or its wait ended
+	 * without reopening it (a failed reopen or an abort). False while a session is live, for a stage that never opened
+	 * one, and once the stage is disposed (#4309).
 	 */
 	sessionReleased(): boolean {
-		return this.session === undefined && (this.releasedWait !== undefined || this.rehydration !== undefined);
+		return this.session === undefined && this.givenUp !== undefined && !this.disposed;
 	}
 
 	/** The session id a released stage reopens. */
@@ -1438,14 +1448,18 @@ export class StageSessionController {
 	/** Throw {@link StageReleasedError} for a read of `property`, which needs the session, while it is released. */
 	throwIfReleased(property: StageReleasedProperty): void {
 		if (!this.sessionReleased()) return;
-		throw new StageReleasedError({
-			runId: this.opts.runId,
-			stageId: this.opts.stageId,
-			stageName: this.opts.stageName,
-			...(this.reattachSessionId === undefined ? {} : { sessionId: this.reattachSessionId }),
-			property,
-			...(this.releasedWait === undefined ? {} : { waitKind: this.releasedWait.kind }),
-		});
+		throw new StageReleasedError(
+			{
+				runId: this.opts.runId,
+				stageId: this.opts.stageId,
+				stageName: this.opts.stageName,
+				...(this.reattachSessionId === undefined ? {} : { sessionId: this.reattachSessionId }),
+				property,
+				...(this.releasedWait === undefined ? {} : { waitKind: this.releasedWait.kind }),
+				...(this.reopenFailure === undefined ? {} : { reopenFailed: true }),
+			},
+			this.reopenFailure === undefined ? undefined : { cause: this.reopenFailure },
+		);
 	}
 
 	/**
@@ -1609,6 +1623,7 @@ export class StageSessionController {
 		const hooks = this.opts.waiting;
 		if (hooks === undefined || !reopensOnUse(wait) || this.session !== undefined || this.disposed) return;
 		this.releasedWait = wait;
+		this.givenUp = wait;
 		this.reattachSessionId = sessionId;
 		this.unbindAbortSignal?.();
 		this.unbindAbortSignal = undefined;
@@ -1620,13 +1635,16 @@ export class StageSessionController {
 		});
 	}
 
-	/** `stage.rehydrate()`: reopen a stage released between turns. Does nothing for a resident stage. */
+	/**
+	 * `stage.rehydrate()`: reopen a stage released between turns, or one whose wait ended without reopening its session,
+	 * as its next prompt would. Does nothing for a resident stage, or one waiting on a tool call, which its result wakes.
+	 */
 	async rehydrate(): Promise<void> {
 		if (this.releasing !== undefined) await this.joinRelease();
 		if (this.rehydration !== undefined) return this.rehydration;
 		const wait = this.releasedWait;
-		if (!reopensOnUse(wait) || this.disposed) return;
-		await this.reopen(wait);
+		if (reopensOnUse(wait) && !this.disposed) return this.reopen(wait);
+		if (wait === undefined && this.sessionReleased()) await this.ensureSession();
 	}
 
 	private async promptSegment(
@@ -2951,6 +2969,8 @@ export class StageSessionController {
 			}
 			throw reason;
 		}
+		this.givenUp = undefined;
+		this.reopenFailure = undefined;
 		this.reportStartupPhase("ready");
 		return attachedSession;
 	}

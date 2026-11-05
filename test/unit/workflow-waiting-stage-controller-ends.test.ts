@@ -133,7 +133,7 @@ describe("a stage's detached calls and reopenings when the run or the stage ends
 		assert.equal(rig.created(), 1);
 	});
 
-	test("a stage whose tool wait ended without its session reopening reports no session id (#4309)", async () => {
+	test("a stage whose tool wait ended without its session reopening still names the session its next use reopens (#4309)", async () => {
 		const failure = new Error("the adapter refused the session");
 		const controller = new AbortController();
 		const rig = makeRig({
@@ -145,11 +145,12 @@ describe("a stage's detached calls and reopenings when the run or the stage ends
 		const turn = rig.ctx.prompt("go");
 		await until(() => rig.log.includes("enter:tool"));
 		const whileReleased = getEventListeners(controller.signal, "abort").length;
+		const sessionId = rig.ctx.sessionId;
 		rig.ci.finish("c1");
 
 		assert.equal(await rejection(turn), failure);
 		assert.equal(rig.ctx.__isReleased?.(), false);
-		assert.throws(() => rig.ctx.sessionId);
+		assert.equal(rig.ctx.sessionId, sessionId);
 		// The stage is no longer released: it listens to the run's abort again, as a resident stage does.
 		assert.equal(getEventListeners(controller.signal, "abort").length, whileReleased + 1);
 	});

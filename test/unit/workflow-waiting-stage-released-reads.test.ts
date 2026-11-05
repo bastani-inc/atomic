@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
-import { type DetachedToolCall, SessionManager } from "@bastani/atomic";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type DetachedToolCall, JsonlSessionStore, SessionManager } from "@bastani/atomic";
 import { afterEach, describe, test, vi } from "vitest";
-import type { StageWaitSnapshot } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";
+import type { StageWaitKind, StageWaitSnapshot } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
+import { STAGE_WAIT_RETRY_ATTEMPTS } from "../../packages/workflows/src/shared/stage-wait.js";
 import {
 	deserializeStageWaitError,
 	isStageReleasedError,
 	isStageReleaseError,
 	isStageWaitError,
+	StageRehydrationError,
 	StageReleasedError,
 	StageReleaseError,
 	StageWaitError,
@@ -305,5 +311,231 @@ describe("StageReleasedError across a process boundary (#4309)", () => {
 		assert.equal(isStageReleaseError(copy), false);
 		assert.equal(isStageReleasedError(new StageReleaseError("stage-busy", { stageName: STAGE_NAME })), false);
 		assert.equal(isStageReleasedError({ name: "StageReleasedError", code: "not-a-code" }), false);
+	});
+});
+
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+	return promise.then(
+		() => assert.fail("expected a rejection"),
+		(reason: unknown) => reason,
+	);
+}
+
+/** A stage whose prompt detached `c1` and released its session, then the call's result; reopening fails as `failCreation` says. */
+async function toolWaitThatCannotReopen(config: Pick<RigConfig, "failCreation" | "signal">) {
+	const rig = makeRig({ ...config, customize: storedTranscripts(true) });
+	const turn = rig.ctx.prompt("go");
+	await until(() => rig.ctx.__isReleased?.() === true);
+	return { rig, turn, sessionId: rig.ctx.sessionId };
+}
+
+describe("a stage whose tool wait ended without reopening its session (#4309)", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	test("throws StageReleasedError for agent and messages with the failure as cause, keeps model and thinkingLevel, reads the store, and its next prompt reopens the same session (#4309)", async () => {
+		const failure = new Error("No API key found for provider faux");
+		const { rig, turn, sessionId } = await toolWaitThatCannotReopen({
+			failCreation: (number) => (number === 2 ? failure : undefined),
+		});
+		rig.ci.finish("c1");
+		assert.equal(await rejection(turn), failure);
+		assert.equal(rig.ctx.__isReleased?.(), false, "the wait has ended");
+
+		for (const property of ["agent", "messages"] as const) {
+			const error = releasedReadOf(() => rig.ctx[property]);
+			assert.deepEqual(error.fields, {
+				runId: RUN_ID,
+				stageId: STAGE_ID,
+				stageName: STAGE_NAME,
+				sessionId,
+				property,
+				reopenFailed: true,
+			});
+			assert.equal(error.cause, failure);
+		}
+		assert.equal(
+			releasedReadOf(() => rig.ctx.messages).message,
+			`Cannot read stage.messages of stage "${STAGE_NAME}": its session ${sessionId} is released and could not be reopened (stage-released). Reopening the session failed; the error's cause says why. Call await stage.readMessages() to read the transcript from the session store, or reopen the session with await stage.rehydrate() or the stage's next prompt. ${KEEP_RESIDENT}`,
+		);
+		assert.equal(rig.ctx.model, MODEL);
+		assert.equal(rig.ctx.thinkingLevel, "high");
+		const load = vi.spyOn(rig.store, "load");
+		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
+		assert.deepEqual(load.mock.calls, [[sessionId]]);
+
+		await rig.ctx.prompt("again");
+		assert.equal(rig.created(), 3);
+		assert.equal(rig.createOptions[1]?.sessionManager?.getSessionId(), sessionId);
+		assert.deepEqual(rig.ctx.agent, { session: 3 });
+		assert.deepEqual(roleAndContent(rig.ctx.messages), [
+			["user", "go"],
+			["user", "again"],
+		]);
+	});
+
+	test("rehydrate() reopens it without a prompt, after which every member reads the reopened session (#4309)", async () => {
+		const { rig, turn, sessionId } = await toolWaitThatCannotReopen({
+			failCreation: (number) => (number === 2 ? new Error("the adapter refused the session") : undefined),
+		});
+		rig.ci.finish("c1");
+		await rejection(turn);
+
+		await rig.ctx.rehydrate();
+		assert.equal(rig.created(), 3);
+		assert.equal(rig.createOptions[1]?.sessionManager?.getSessionId(), sessionId);
+		assert.deepEqual(rig.ctx.agent, { session: 3 });
+		assert.deepEqual(roleAndContent(rig.ctx.messages), [["user", "go"]]);
+		await rig.ctx.rehydrate();
+		assert.equal(rig.created(), 3, "a stage with its session reopens nothing");
+	});
+
+	test("after the store failed on every attempt, the cause is the StageRehydrationError that ended the attempts (#4309)", async () => {
+		vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		const unavailable = () =>
+			new StorageUnavailableError(
+				{ adapter: "libsql", location: "the shared session store" },
+				Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+			);
+		const { rig, turn } = await toolWaitThatCannotReopen({
+			failCreation: (number) => (number === 1 ? undefined : unavailable()),
+		});
+		const settled = rejection(turn);
+		rig.ci.finish("c1");
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		const failure = await settled;
+		assert.ok(failure instanceof StageRehydrationError);
+		assert.equal(failure.fields.attempts, STAGE_WAIT_RETRY_ATTEMPTS);
+		const error = releasedReadOf(() => rig.ctx.messages);
+		assert.equal(error.fields.reopenFailed, true);
+		assert.equal(error.cause, failure);
+	});
+
+	test("an abort during the wait leaves it released with no wait and no failure: the reads still throw, and readMessages() reads the store (#4309)", async () => {
+		const controller = new AbortController();
+		const reason = new Error("run killed");
+		const { rig, turn, sessionId } = await toolWaitThatCannotReopen({ signal: controller.signal });
+		controller.abort(reason);
+		assert.equal(await rejection(turn), reason);
+
+		const error = releasedReadOf(() => rig.ctx.agent);
+		assert.deepEqual(error.fields, {
+			runId: RUN_ID,
+			stageId: STAGE_ID,
+			stageName: STAGE_NAME,
+			sessionId,
+			property: "agent",
+		});
+		assert.equal(error.cause, undefined);
+		assert.equal(rig.ctx.model, MODEL);
+		assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
+		assert.equal(rig.created(), 1);
+	});
+});
+
+describe("the message of a StageReleasedError (#4309)", () => {
+	const base = { runId: RUN_ID, stageId: STAGE_ID, stageName: STAGE_NAME, sessionId: "s-1" } as const;
+	const READ_OR_REHYDRATE = `Call await stage.rehydrate() before reading stage.agent, or await stage.readMessages() to read only the transcript without reopening the session. ${KEEP_RESIDENT}`;
+
+	test("names what the stage waits on for each wait kind, and nothing when it waits on nothing (#4309)", () => {
+		const cases: [StageWaitKind | undefined, string][] = [
+			["tool", " while the stage waits on a tool call"],
+			["release", " by stage.release()"],
+			["prompt", " while the stage waits for an answer"],
+			["idle", " while the workflow holds the stage idle"],
+			[undefined, ""],
+		];
+		for (const [waitKind, reason] of cases) {
+			const error = new StageReleasedError({
+				...base,
+				property: "agent",
+				...(waitKind === undefined ? {} : { waitKind }),
+			});
+			assert.ok(
+				error.message.startsWith(
+					`Cannot read stage.agent of stage "${STAGE_NAME}": its session s-1 is released${reason} (stage-released). `,
+				),
+				error.message,
+			);
+		}
+	});
+
+	test("while it waits on a tool call, the hint says the result reopens it and points at readMessages() (#4309)", () => {
+		const error = new StageReleasedError({ ...base, property: "messages", waitKind: "tool" });
+		assert.equal(
+			error.hint,
+			`The stage reopens its session when the tool call's result arrives; call await stage.readMessages() to read the transcript from the session store meanwhile. ${KEEP_RESIDENT}`,
+		);
+		assert.ok(error.message.endsWith(error.hint));
+	});
+
+	test("without a member or a session id, it reads stage.agent of its session (#4309)", () => {
+		const error = new StageWaitError("stage-released", { stageName: STAGE_NAME });
+		assert.equal(
+			error.message,
+			`Cannot read stage.agent of stage "${STAGE_NAME}": its session is released (stage-released). ${READ_OR_REHYDRATE}`,
+		);
+	});
+
+	test("a reopen failure crosses a process boundary with its cause (#4309)", () => {
+		const cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+		const original = new StageReleasedError({ ...base, property: "messages", reopenFailed: true }, { cause });
+		const back = deserializeStageWaitError(JSON.parse(JSON.stringify(original)));
+
+		assert.ok(back instanceof StageReleasedError);
+		assert.equal(back.message, original.message);
+		assert.deepEqual(back.fields, original.fields);
+		assert.ok(back.cause instanceof Error);
+		assert.equal(back.cause.message, "connect ECONNREFUSED");
+		assert.equal((back.cause as { readonly code?: string }).code, "ECONNREFUSED");
+	});
+});
+
+describe("the session store readMessages() reads a released stage from (#4309)", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("a store opened from the stage's sessionDir is closed after each read, and a caller's sessionStore never is (#4309)", async () => {
+		const sessionDir = mkdtempSync(join(tmpdir(), "atomic-released-reads-"));
+		try {
+			const rig = makeRig({ withStore: false, stageOptions: { sessionDir }, customize: storedTranscripts() });
+			await rig.ctx.prompt("go");
+			await rig.ctx.release();
+			const open = vi.spyOn(JsonlSessionStore, "open");
+			const close = vi.spyOn(JsonlSessionStore.prototype, "close");
+
+			for (let read = 0; read < 3; read++)
+				assert.deepEqual(roleAndContent(await rig.ctx.readMessages()), [["user", "go"]]);
+			assert.equal(open.mock.calls.length, 3);
+			assert.equal(close.mock.calls.length, 3);
+		} finally {
+			rmSync(sessionDir, { recursive: true, force: true });
+		}
+
+		const shared = makeRig({ customize: storedTranscripts() });
+		await shared.ctx.prompt("go");
+		await shared.ctx.release();
+		const closeShared = vi.spyOn(shared.store, "close");
+		for (let read = 0; read < 3; read++) await shared.ctx.readMessages();
+		assert.equal(closeShared.mock.calls.length, 0);
+	});
+
+	test("the store is read in the stage's cwd, or the run's when the stage sets none (#4309)", async () => {
+		const reads: (string | undefined)[] = [];
+		for (const stageOptions of [{}, { cwd: "/stage/tree" }]) {
+			const rig = makeRig({ defaultCwd: "/run/tree", stageOptions, customize: storedTranscripts() });
+			await rig.ctx.prompt("go");
+			await rig.ctx.release();
+			const open = vi.spyOn(SessionManager, "open");
+			await rig.ctx.readMessages();
+			reads.push(...open.mock.calls.map((call) => call[2]));
+			open.mockRestore();
+		}
+		assert.deepEqual(reads, ["/run/tree", "/stage/tree"]);
 	});
 });

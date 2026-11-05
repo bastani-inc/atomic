@@ -107,6 +107,8 @@ export interface StageWaitErrorFields extends WorkflowSerializableObject {
 	readonly property?: StageReleasedProperty;
 	/** What the released stage waits on, when the stage knows it (`stage-released`). */
 	readonly waitKind?: StageWaitKind;
+	/** True when the stage could not reopen the session its tool wait gave up; `cause` says why (`stage-released`). */
+	readonly reopenFailed?: boolean;
 }
 
 /** The serialized form of a {@link StageWaitError}, for crossing a worker or IPC boundary. */
@@ -174,7 +176,7 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 		return `Register "${fields.kind ?? "tool-results"}" without a handler: the runtime delivers it only to a stage that waits for it.`;
 	if (code === "results-not-saved")
 		return `Resume the run with /workflow resume ${fields.runId ?? "<runId>"}: the stage continues its turn from the results it recorded with its wait, which stay recorded until a turn that uses them is saved.`;
-	if (code === "stage-released") return releasedHint(fields.property);
+	if (code === "stage-released") return releasedHint(fields);
 	if (code !== "session-not-found") return HINTS[code];
 	const storage = fields.storage === undefined ? "" : ` (${fields.storage})`;
 	return `Resume the run with the session storage it was started with${storage} selected through ${STORAGE_SELECTORS}. Run "atomic storage status" to see which session storage this process selects.`;
@@ -183,7 +185,11 @@ function hintFor(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 const KEEP_RESIDENT =
 	"Set releaseWhenWaiting: false only on a stage the workflow must read synchronously while it holds it.";
 
-function releasedHint(property: StageReleasedProperty | undefined): string {
+function releasedHint({ property, waitKind, reopenFailed }: StageWaitErrorFields): string {
+	if (reopenFailed === true)
+		return `Reopening the session failed; the error's cause says why. Call await stage.readMessages() to read the transcript from the session store, or reopen the session with await stage.rehydrate() or the stage's next prompt. ${KEEP_RESIDENT}`;
+	if (waitKind === "tool")
+		return `The stage reopens its session when the tool call's result arrives; call await stage.readMessages() to read the transcript from the session store meanwhile. ${KEEP_RESIDENT}`;
 	if (property === "messages")
 		return `Call await stage.readMessages(), which reads the transcript from the session store and leaves the session released, or call await stage.rehydrate() before reading stage.messages. ${KEEP_RESIDENT}`;
 	return `Call await stage.rehydrate() before reading stage.${property ?? "agent"}, or await stage.readMessages() to read only the transcript without reopening the session. ${KEEP_RESIDENT}`;
@@ -249,7 +255,7 @@ function subject(code: StageWaitErrorCode, fields: StageWaitErrorFields): string
 		case "invalid-wake-handler":
 			return `Invalid handler passed to registerStageWakeKind for the wake kind "${fields.kind ?? "unknown"}": ${fields.value}`;
 		case "stage-released":
-			return `Cannot read stage.${fields.property ?? "agent"} of ${stage}: ${fields.sessionId === undefined ? "its session" : `its session ${fields.sessionId}`} is released${releasedWhile(fields.waitKind)}`;
+			return `Cannot read stage.${fields.property ?? "agent"} of ${stage}: ${fields.sessionId === undefined ? "its session" : `its session ${fields.sessionId}`} is released${releasedWhile(fields.waitKind)}${fields.reopenFailed === true ? " and could not be reopened" : ""}`;
 	}
 }
 
@@ -365,14 +371,15 @@ export class StageWakeError extends StageWaitError {
 
 /**
  * `stage.agent` or `stage.messages` was read while the stage's session was released, being released or being reopened,
- * so no session was there to read (`stage-released`). Not retryable: reading again finds no session until
- * `stage.rehydrate()` reopens it; `stage.readMessages()` reads the transcript from the session store meanwhile.
+ * or after its tool wait ended without reopening it, so no session was there to read (`stage-released`). Not
+ * retryable: reading again finds no session until the session reopens; `stage.readMessages()` reads the transcript from
+ * the session store meanwhile. When reopening failed, `fields.reopenFailed` is true and `cause` is the failure.
  */
 export class StageReleasedError extends StageWaitError {
 	override readonly name = "StageReleasedError";
 	declare readonly code: StageReleasedErrorCode;
-	constructor(fields: StageWaitErrorFields & { readonly property: StageReleasedProperty }) {
-		super("stage-released", fields);
+	constructor(fields: StageWaitErrorFields & { readonly property: StageReleasedProperty }, options?: ErrorOptions) {
+		super("stage-released", fields, options);
 	}
 }
 
@@ -494,6 +501,7 @@ export function deserializeStageWaitError(serialized: SerializedStageWaitError):
 		case "StageReleasedError":
 			error = new StageReleasedError(
 				serialized.fields as StageWaitErrorFields & { readonly property: StageReleasedProperty },
+				options,
 			);
 			break;
 		default:

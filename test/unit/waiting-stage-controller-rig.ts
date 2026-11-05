@@ -83,6 +83,8 @@ export interface RigConfig {
 	/** False: no session store, so no caller-owned session manager exists to reopen from. Default true. */
 	readonly withStore?: boolean;
 	readonly signal?: AbortSignal;
+	/** The run's working directory, which a stage without a `cwd` option works in. */
+	readonly defaultCwd?: string;
 	readonly stageOptions?: StageOptions;
 	/** The calls a session's `prompt()` leaves detached; default none. */
 	readonly detachOnPrompt?: (sessionNumber: number, text: string, ci: Ci) => DetachedToolCall[];
@@ -246,6 +248,7 @@ export function makeRig(config: RigConfig = {}): Rig {
 			stageName: STAGE_NAME,
 			adapters,
 			...(config.signal === undefined ? {} : { signal: config.signal }),
+			...(config.defaultCwd === undefined ? {} : { defaultCwd: config.defaultCwd }),
 			...(config.noHooks === true ? {} : { waiting: hooks }),
 			onStartupChange: (snapshot) => startups.push(snapshot),
 			...(config.bare === true
