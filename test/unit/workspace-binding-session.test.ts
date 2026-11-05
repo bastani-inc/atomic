@@ -360,6 +360,8 @@ describe("workspace session helpers (#3109)", () => {
 		]);
 		const same = await bindSessionWorkspace(workspace({ repo, branch: "recorded" }), session);
 		assert.equal(same.label, "first");
+		const sameBase = await bindSessionWorkspace(workspace({ repo, base: "main", branch: "recorded" }), session);
+		assert.equal(sameBase.label, "first", "an explicit base that matches the record restores it");
 		assert.equal(same.head, recorded.head);
 		const relabelled = await bindSessionWorkspace(workspace({ repo, branch: "recorded", label: "second" }), session);
 		assert.equal(relabelled.label, "second");

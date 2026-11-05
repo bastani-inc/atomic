@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { setWorkspaceGhCommand } from "../../packages/coding-agent/src/core/workspace/change-set.ts";
 import {
+	isWorkspaceBindingError,
 	isWorkspacePublicationError,
 	publishPullRequest,
 	resolveWorkspace,
@@ -228,7 +229,10 @@ describe("publishPullRequest (#3109)", () => {
 		const invalid = await rejection(
 			publishPullRequest({ ...(await workspaceChangeSet(twoBinding)), repo: "not a repo" }),
 		);
-		assert.equal((invalid as { code?: string }).code, "invalid-repository");
+		assert.ok(isWorkspaceBindingError(invalid));
+		assert.equal(invalid.code, "invalid-repository");
+		assert.equal(invalid.reason, "not-a-repository");
+		assert.deepEqual(invalid.fields, { repo: "not a repo" });
 	});
 
 	test("a gh that cannot be executed is gh-failed, and cancellation rejects with the signal's reason (#3109)", async () => {

@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.ts";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import { setWorkspaceGitExecutableResolver } from "../../packages/coding-agent/src/core/workspace/git.ts";
 import {
 	type BoundWorkspace,
 	findWorkspaceError,
@@ -1200,5 +1201,41 @@ describe("workspace plumbing in the engine (#3109)", () => {
 		const cached = resumed.stages.find((stage) => stage.name === "cached");
 		assert.equal(cached?.workflowChild?.changeSet?.diffStat.files, 1, "a cached child keeps its changeSet");
 		await resumedBackend.close();
+	});
+
+	test("a workflow exit while a child's workspace resolves skips the boundary without recording it (#3109)", async () => {
+		const repo = createRepository(dirs.root, "exit-during-bind");
+		const restore = setWorkspaceGitExecutableResolver(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			return { path: "git", env: {} };
+		});
+		try {
+			let childError: unknown;
+			const parent = workflow({
+				name: "exit-during-bind",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					const pending = ctx.workflow(implement, { workspace: workspace({ repo, branch: "never-bound" }) });
+					pending.catch((error: unknown) => {
+						childError = error;
+					});
+					await ctx.tool("before-exit", {}, async () => "ok");
+					return ctx.exit({ status: "completed", reason: "stop now" });
+				},
+			});
+			const backend = await createMemoryTestBackend();
+			const result = await run(parent, {}, { store: createStore(), durableBackend: backend });
+			assert.equal(result.exited, true);
+			assert.equal(result.exitReason, "stop now");
+			const boundary = result.stages.find((stage) => stage.name === "workflow:implement");
+			assert.equal(boundary?.status, "skipped");
+			assert.equal(boundaryStarts(backend.listCheckpoints(result.runId)).length, 0);
+			assert.ok(childError !== undefined);
+			assert.equal(existsSync(join(dirs.home, "worktrees")), false, "the exit stopped binding before any worktree");
+		} finally {
+			restore();
+		}
 	});
 });

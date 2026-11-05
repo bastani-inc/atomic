@@ -113,6 +113,21 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(isWorkspaceError({ name: "SomethingElse", code: "x" }), false);
 		assert.equal(isWorkspaceError(null), false);
 		assert.equal(isWorkspaceError("WorkspaceBindingError"), false);
+		const unrelated = { name: "OtherError", code: "x" };
+		for (const guard of [
+			isWorkspaceError,
+			isWorkspaceBindingError,
+			isWorkspaceConfigError,
+			isWorkspaceRestoreError,
+			isWorkspacePublicationError,
+			isWorkspaceTimeoutError,
+			isWorkspaceSandboxError,
+			isGitUnavailableError,
+		])
+			assert.equal(guard(unrelated), false, guard.name);
+		assert.equal(isWorkspaceError({ name: "WorkspaceBindingError", code: 7 }), false, "a code must be a string");
+		const base = new WorkspaceError({ code: "c", message: "m", hint: "h", fields: {}, retryable: false });
+		assert.equal(base.name, "WorkspaceError");
 	});
 
 	test("findWorkspaceError walks at most eight causes (#3109)", () => {
@@ -268,10 +283,21 @@ describe("workspace error family (#3109)", () => {
 		assert.ok(cause instanceof GitUnavailableError);
 		assert.equal(cause.code, "offline");
 		assert.equal(cause.message, "offline wording");
+		const causeMessage = Object.getOwnPropertyDescriptor(cause, "message");
+		assert.equal(causeMessage?.writable, true);
+		assert.equal(causeMessage?.configurable, true);
 		assert.equal(cause.fields.gitPath, "git");
 		assert.equal(cause.retryable, false);
 		assert.equal(cause.platform, process.platform);
 		assert.equal(cause.hint, `Install git (${gitInstallCommand()}) and make sure it is on PATH.`);
+	});
+
+	test("serialization terminates on a cyclic cause chain (#3109)", () => {
+		const cyclic = new WorkspaceBindingError({ code: "git-failed", fields: { phase: "fetch" } });
+		Object.defineProperty(cyclic, "cause", { value: cyclic });
+		let depth = 0;
+		for (let link = serializeWorkspaceError(cyclic).cause; link !== undefined; link = link.cause) depth++;
+		assert.equal(depth, 7);
 	});
 
 	test("serialization bounds a deep cause chain (#3109)", () => {
@@ -330,8 +356,17 @@ describe("workspace() validates its options before any work (#3109)", () => {
 			[{ repo: "/r", sandbox: "full" }, "workspace.sandbox", "invalid-value", "an unsupported string"],
 			[{ repo: "/r", label: 3 }, "workspace.label", "invalid-type", "number"],
 		];
+		const expectations: Record<string, string> = {
+			"workspace.repo": "an absolute repository path or a remote URL",
+			"workspace.base": "a non-empty commit-ish",
+			"workspace.branch": "a branch name without empty, . or .. segments",
+			"workspace.worktree": '"auto" or an absolute path',
+			"workspace.sandbox": '"workspace-write" or "read-only"',
+			"workspace.label": "a string",
+		};
 		for (const [options, field, reason, received] of cases) {
 			const error = thrown(() => workspace(options as never));
+			assert.equal((error as WorkspaceConfigError).fields.expected, expectations[field]);
 			assert.ok(isWorkspaceConfigError(error), JSON.stringify(options));
 			assert.equal(error.source, "sdk");
 			assert.equal(error.field, field);
@@ -386,6 +421,10 @@ describe("repository classification (#3109)", () => {
 			host: "github.com",
 			segments: ["acme", "x"],
 		});
+		assert.deepEqual((classifyRepository("https://h/o/my.github") as unknown as { segments: string[] }).segments, [
+			"o",
+			"my.github",
+		]);
 		for (const invalid of ["relative", "https://", "https://host/", "host:/", "http://[::1"])
 			assert.equal(classifyRepository(invalid), undefined, invalid);
 	});
