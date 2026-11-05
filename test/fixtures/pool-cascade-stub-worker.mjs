@@ -79,7 +79,7 @@ try {
 			writeFileSync(stallMarker, String(process.pid));
 			await new Promise(() => {});
 		}
-		const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+		const renewal = setInterval(() => request({ kind: "heartbeat", reports: [] }).catch(() => {}), 250);
 		await delay(holdMs);
 		clearInterval(renewal);
 		const runId = childRunId(work);

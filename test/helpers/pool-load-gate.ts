@@ -44,7 +44,6 @@ import {
 	acquirePooledStage,
 	type PooledStageLease,
 } from "../../packages/workflows/src/workers/pooled-stage-sources.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
 import { type LagWindow, lagViolation, measureLag } from "./event-loop-lag.js";
 import { IntercomBrokerFixture } from "./intercom-broker-fixture.js";
 import { testRunId } from "./run-id.js";
@@ -61,6 +60,11 @@ import {
 
 /** Concurrent stub workers, one pooled child each. */
 const WORKERS = 150;
+/**
+ * A stub's heartbeat interval. Shorter than any lease's default heartbeat, so the heartbeat-only window carries
+ * enough heartbeats to tell journal growth per heartbeat from growth per worker.
+ */
+const STUB_HEARTBEAT_MS = 1_000;
 /** Full traffic: heartbeats plus tool checkpoints and session appends. */
 const SUSTAINED_TRAFFIC_MS = 20_000;
 /** Heartbeats only, to measure what renewals alone add to the journal. */
@@ -200,7 +204,7 @@ export async function runPoolLoadGate(watches: 0 | 1, options: { readonly pane?:
 			activeDirectory,
 			statsDirectory,
 			failureLog,
-			heartbeatMs: WORKER_HEARTBEAT_INTERVAL_MS,
+			heartbeatMs: STUB_HEARTBEAT_MS,
 			appendIntervalMs: APPEND_INTERVAL_MS,
 			toolIntervalMs: TOOL_INTERVAL_MS,
 			largeEvery: LARGE_ENTRY_EVERY,

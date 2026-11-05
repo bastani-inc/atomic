@@ -11,6 +11,12 @@ export interface LocalWorkerOptions {
 	readonly startupTimeoutMs?: number;
 	readonly leaseMs?: number;
 	/**
+	 * How often, in milliseconds, each worker's heartbeat renews its child's lease, reports its usage and reads pool
+	 * control, in one request. An integer from 100 to half of `leaseMs`; a quarter of `leaseMs` when unset. Not saved
+	 * with the root.
+	 */
+	readonly heartbeatMs?: number;
+	/**
 	 * Load per CPU (the one-minute load average divided by the CPU count) above which the stages of pooled children start
 	 * one at a time, at most one every five seconds and in the order they asked, so an overloaded machine is not given
 	 * a burst of stage starts while earlier ones are still starting. Running stages, the subagents they start and their

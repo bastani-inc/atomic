@@ -611,8 +611,33 @@ export interface RunSnapshot extends RunExecutionState {
 	pendingStageMessages?: PendingStageMessage[];
 	/** Possible stage targets from the D1 static scan; root runs only; empty when not scanned (D10). */
 	possibleStages?: readonly string[];
+	/** The local worker pool of a root that runs one: what its coordinator has handled so far. */
+	pool?: RunPoolSnapshot;
 }
 
+/** One kind of coordinator traffic since the coordinator started. */
+export interface PoolCoordinationCount {
+	readonly count: number;
+	/** `count` divided by the seconds between `since` and when the coordinator took this sample. */
+	readonly perSecond: number;
+}
+
+/**
+ * What a local worker pool's coordinator handled since it started (`since`, epoch milliseconds). `requests` counts
+ * worker requests by their kind (`heartbeat`, `commit`, `claim`, ...) and root commands as `root-<kind>`. `writes`
+ * counts the journal write transactions the coordinator submitted, by the request or root command that caused them
+ * (timers a root command started count as that command's), `recovery` for its expired-lease recovery, and `other`
+ * for the rest.
+ */
+export interface PoolCoordinationStats {
+	readonly since: number;
+	readonly requests: Readonly<Record<string, PoolCoordinationCount>>;
+	readonly writes: Readonly<Record<string, PoolCoordinationCount>>;
+}
+
+export interface RunPoolSnapshot {
+	readonly coordination: PoolCoordinationStats;
+}
 export interface StoreSnapshot {
 	readonly runs: readonly RunSnapshot[];
 	readonly notices: readonly WorkflowNotice[];

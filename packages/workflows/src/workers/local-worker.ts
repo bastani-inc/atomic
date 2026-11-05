@@ -18,7 +18,6 @@ import "../durable/journal/workflows-host-module.js";
 import type { PoolCommitReceipt, PoolControl, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { run } from "../engine/run.js";
 import { createToolControlRegistry } from "../engine/run-tool-control-registry.js";
-import { WorkflowGracefulQuitError } from "../engine/workflow-tool-abort.js";
 import type { PiCustomOverlayFactory, PiCustomOverlayOptions } from "../extension/wiring.js";
 import { createAgentSessionAdapter } from "../extension/wiring.js";
 import type { StageQuestionnaireInput } from "../extension/workflow-human-input.js";
@@ -46,7 +45,7 @@ import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { createPooledStageDelivery, pooledStageQueuedEntries } from "./pooled-stage-delivery.js";
 import { configurePooledWatchTrace } from "./pooled-watch-trace.js";
 import {
-	WORKER_HEARTBEAT_INTERVAL_MS,
+	WORKER_ACTIVITY_INTERVAL_MS,
 	type WorkerDeliver,
 	type WorkerInbound,
 	type WorkerReply,
@@ -58,6 +57,8 @@ import { AdmissionHolderStoppedError, QuarantinedCapacityError, SqlResourceAdmis
 import { workerSessionStore } from "./session-store.js";
 import { type WorkerStagePrompts, WorkerStageWatches } from "./stage-watch.js";
 import { collectWorkerUsage } from "./usage-accounting.js";
+import { WorkerControl, workerControlHandlers } from "./worker-control.js";
+import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
 function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
@@ -93,42 +94,29 @@ const ATTEMPT_STAGE_CLOSE_MS = 10_000;
  *
  * The attempt is ended at the pool only after this: until then it still holds its work lease, so what its sessions
  * write as they close (their last transcript entries) commits, and a write the pool refused would fail their shutdown
- * and keep their permits. `renew` renews that lease on the worker's heartbeat meanwhile, so however long a session
- * takes to shut down, the worker never looks dead to the pool. A session that fails to close keeps its permit, as it
- * would have before, and one still closing after {@link ATTEMPT_STAGE_CLOSE_MS} keeps closing in the background; the
- * caller stops a fenced attempt's writes before it ends it, so nothing of it can commit after that.
+ * and keep their permits. `heartbeat` renews that lease at once and every `heartbeatMs` meanwhile, so however long a
+ * session takes to shut down, the worker never looks dead to the pool. A session that fails to close keeps its permit,
+ * as it would have before, and one still closing after {@link ATTEMPT_STAGE_CLOSE_MS} keeps closing in the background;
+ * the caller stops a fenced attempt's writes before it ends it, so nothing of it can commit after that.
  */
 async function closeAttemptStages(
 	stageControls: StageControlRegistry,
 	store: Store,
-	renew: () => Promise<unknown>,
+	heartbeat: () => Promise<void>,
+	heartbeatMs: number,
 ): Promise<void> {
 	const closing = Promise.allSettled(store.runs().map((run) => stageControls.clear(run.id))).then((results) => {
 		for (const result of results)
 			if (result.status === "rejected")
 				console.warn("atomic-workflows: an attempt's stage session did not close", result.reason);
 	});
-	let renewal: Promise<void> | undefined;
-	const pulse = () => {
-		// A refused renewal (another attempt replaced this one) leaves the worker holding no lease to be fenced for.
-		renewal ??= renew()
-			.then(
-				() => {},
-				() => {},
-			)
-			.finally(() => {
-				renewal = undefined;
-			});
-	};
-	pulse();
-	const heartbeat = setInterval(pulse, WORKER_HEARTBEAT_INTERVAL_MS);
+	const renewal = startWorkerHeartbeat(heartbeatMs, heartbeat, { immediate: true });
 	const bound = new AbortController();
 	try {
 		await Promise.race([closing, delay(ATTEMPT_STAGE_CLOSE_MS, undefined, { signal: bound.signal }).catch(() => {})]);
 	} finally {
-		clearInterval(heartbeat);
 		bound.abort();
-		await renewal;
+		await renewal.stop();
 	}
 }
 
@@ -266,6 +254,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		{ resolve: (reply: WorkerReply["value"]) => void; reject: (error: Error) => void; deliver?: WorkerDeliver }
 	>();
 	let stageWatches: WorkerStageWatches | undefined;
+	/** Applies pool control the coordinator pushed; set once the worker can apply control. */
+	let receiveControl: ((control: PoolControl) => void) | undefined;
 	// #4023: limits this worker records reach the rest of the pool, and theirs reach it, through the coordinator.
 	const rateLimitOutbox = new RateLimitObservationOutbox((observations) =>
 		process.send?.({ id: 0, kind: "rate-limits", observations } satisfies WorkerRequest, () => {}),
@@ -274,6 +264,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	process.on("message", (message: WorkerInbound) => {
 		if ("kind" in message && message.kind === "rate-limits") {
 			for (const observation of message.observations) applyProviderRateLimitObservation(observation);
+			return;
+		}
+		if ("kind" in message && message.kind === "pool-control") {
+			receiveControl?.(message.control);
 			return;
 		}
 		if ("kind" in message) {
@@ -428,10 +422,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			},
 		}) as DurableWorkflowBackend;
 	try {
-		let controlRevision = -1;
+		/** A pushed control whose application failed while no attempt ran; the worker's loop fails with it. */
+		let controlFailure: Error | undefined;
 		/** Attempts this worker has run to their end, completed or fenced. */
 		let attempts = 0;
-		let controlState: PoolControl["state"] = "running";
 		let currentStore = createStore();
 		let activeController: AbortController | undefined;
 		const toolControls = createToolControlRegistry();
@@ -441,43 +435,42 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		const stageControls = trackTurnStarts(createStageControlRegistry(), turnStarted);
 		let heldAttempt: PoolWork | undefined;
 		let prompts: WorkerStagePrompts | undefined;
+		const control = new WorkerControl(
+			workerControlHandlers({
+				runs: () => currentStore.runs(),
+				tools: (runId) => toolControls.runControl(runId),
+				stages: (runId) => stageControls.run(runId),
+				attempt: () => activeController,
+				root: start.root,
+				acknowledge: async (revision) => {
+					await request({ kind: "controlled", revision });
+				},
+			}),
+		);
 		stageWatches = new WorkerStageWatches(
 			stageControls,
 			() => (heldAttempt === undefined ? undefined : { workId: heldAttempt.id, generation: heldAttempt.generation }),
 			(message) => process.send?.({ ...message, id: 0 }),
-			() => controlState,
+			() => control.state,
 			{
 				entries: async (sessionId) => (await sessions.load(sessionId)).entries,
 				turnStarted: (handle) => turnStarted.has(handle),
 				prompts: () => prompts,
 			},
 		);
-		const observeControl = async () => {
-			const control = (await request({ kind: "control" })) as PoolControl;
-			if (control.revision === controlRevision) return;
-			for (const run of currentStore.runs()) {
-				if (control.state === "paused") {
-					await toolControls.runControl(run.id)?.pause();
-					await stageControls.run(run.id).pause();
-				} else if (control.state === "running") {
-					await toolControls.runControl(run.id)?.resume();
-					await stageControls.run(run.id).resume();
-				}
-			}
-			controlState = control.state;
-			controlRevision = control.revision;
-			if (control.state === "quit" && activeController) {
-				activeController.abort(
-					new WorkflowGracefulQuitError(currentStore.runs()[0]?.id ?? start.root, "root worker control"),
-				);
-				return;
-			}
-			await request({ kind: "controlled", revision: controlRevision });
-		};
+		/** Applies control a heartbeat reply or a push carried; a failure ends the attempt it would have controlled. */
+		const offerControl = (next: PoolControl) =>
+			void control.offer(next).catch((error: Error) => {
+				if (activeController) activeController.abort(error);
+				else controlFailure ??= error;
+			});
+		receiveControl = offerControl;
+		const observeControl = async () => control.offer((await request({ kind: "control" })) as PoolControl);
 		await request({ kind: "ready" });
 		for (;;) {
+			if (controlFailure) throw controlFailure;
 			await observeControl();
-			if (controlState !== "running") {
+			if (control.state !== "running") {
 				await delay(25);
 				continue;
 			}
@@ -614,36 +607,31 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await awaitAdmission(signal);
 				await admission?.validate(signal);
 			});
-			let renewal: Promise<void> | undefined;
-			let report: Promise<void> | undefined;
-			let controlPulse: Promise<void> | undefined;
+			const usageReports = () => collectWorkerUsage(store.runs());
 			const failPulse = (error: Error) => {
 				controller.abort(error);
 				if (!(error instanceof WorkAttemptFencedError)) process.exitCode = 1;
 			};
-			const heartbeat = setInterval(() => {
+			// One request every `heartbeatMs` renews the attempt's lease, reports its usage and reads pool control; pushed
+			// control reaches the attempt between heartbeats.
+			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
+				try {
+					offerControl((await request({ kind: "heartbeat", reports: usageReports() })) as PoolControl);
+				} catch (error) {
+					failPulse(error as Error);
+				}
+			});
+			const activity = setInterval(() => {
 				stageWatches?.sweep();
-				renewal ??= request({ kind: "renew" })
-					.then(() => {})
-					.catch(failPulse)
-					.finally(() => {
-						renewal = undefined;
-					});
-				controlPulse ??= observeControl()
-					.catch((error: Error) => controller.abort(error))
-					.finally(() => {
-						controlPulse = undefined;
-					});
-				report ??= (async () => {
-					publish();
-					await publication;
-					await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });
-				})()
-					.catch(failPulse)
-					.finally(() => {
-						report = undefined;
-					});
-			}, WORKER_HEARTBEAT_INTERVAL_MS);
+				publish();
+			}, WORKER_ACTIVITY_INTERVAL_MS);
+			// A fenced attempt has no lease left to keep while its stage sessions close: its refusals are expected.
+			const closingHeartbeat = tolerantHeartbeat(
+				() => request({ kind: "heartbeat", reports: usageReports() }),
+				(error) => error instanceof WorkAttemptFencedError,
+				(error) =>
+					console.warn("atomic-workflows: a heartbeat failed while an attempt's stage sessions closed", error),
+			);
 			try {
 				await observeControl();
 				while (((await request({ kind: "control" })) as PoolControl).state !== "running") {
@@ -675,15 +663,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						},
 					}),
 				);
-				clearInterval(heartbeat);
+				clearInterval(activity);
 				// Watched events reach the coordinator before the attempt's end does.
 				stageWatches?.clear();
-				await renewal;
-				await report;
-				await controlPulse;
+				await heartbeat.stop();
+				await control.settled();
 				await publication;
-				await request({ kind: "usage", reports: collectWorkerUsage(store.runs()) });
-				const finalControl = (await request({ kind: "control" })) as PoolControl;
+				// The last heartbeat records the attempt's final usage before it ends, and reads whether the pool quits.
+				const finalControl = (await request({ kind: "heartbeat", reports: usageReports() })) as PoolControl;
 				if (finalControl.state === "quit") {
 					await request({ kind: "controlled", revision: finalControl.revision });
 					return;
@@ -702,7 +689,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// The child is done on this worker: what its run left open closes while the attempt still holds its lease,
 				// and the worker's stage registry forgets it before the worker serves another child (#4197). A session
 				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
-				await closeAttemptStages(stageControls, store, () => request({ kind: "renew" }));
+				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
 				await request({ kind: "complete", result });
 			} catch (error) {
@@ -710,7 +697,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.
 				controller.abort(error);
 			} finally {
-				clearInterval(heartbeat);
+				clearInterval(activity);
+				void heartbeat.stop();
 				unsubscribe();
 				stageWatches?.clear();
 				heldAttempt = undefined;
@@ -718,12 +706,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				activeController = undefined;
 			}
 			if (attemptFenced && !rootLeaseLost) {
-				await renewal;
-				await report;
-				await controlPulse;
+				await heartbeat.stop();
+				await control.settled();
 				// The fenced attempt's stages never run again here: its replay opens its own sessions. Close theirs now, so
 				// their session permits go back before this worker serves the replay, instead of when the worker exits.
-				await closeAttemptStages(stageControls, store, () => request({ kind: "renew" }));
+				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
 				await request({ kind: "fenced", ...(poolFault === undefined ? {} : { fault: poolFault }) });
 			}

@@ -54,6 +54,9 @@ export async function fixture(
 		beforeChild?: () => Promise<void>;
 		admission?: AdmissionConfiguration;
 		coordinator?: "in-process";
+		/** The pool's `localWorkers.leaseMs` and `localWorkers.heartbeatMs`; the pool's defaults when unset. */
+		leaseMs?: number;
+		heartbeatMs?: number;
 		/** The root run's signal: its share of the test's budget, one cold start per pool or worker it starts. */
 		runBudgetMs?: number;
 	} = {},
@@ -76,6 +79,8 @@ export async function fixture(
 		definitions: [{ definition: child, path: childPath, exportName: "child" }],
 		admission: options.admission,
 		coordinator: options.coordinator,
+		...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+		...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
 	});
 	const parent = workflow({
 		name: "pool-lifecycle-root",

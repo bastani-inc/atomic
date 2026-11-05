@@ -8,6 +8,7 @@ import { store as defaultStore } from "../../shared/store.js";
 import { currentWorkflowStore } from "../../shared/store-factory.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import { restoreWorkerOptions } from "../../workers/public-pool.js";
+import { resolveWorkerTiming } from "../../workers/worker-timing.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { acquireStandaloneIntercom } from "./sdk-intercom.js";
 
@@ -27,6 +28,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 	inputs: WorkflowRunInputArgument,
 	callerOpts: RunOpts = {},
 ): Promise<RunResult> {
+	// The caller's local worker timing is checked before anything is opened or written for the run.
+	if (callerOpts.localWorkers !== undefined) resolveWorkerTiming(callerOpts.localWorkers, "sdk");
 	let opts = callerOpts;
 	const store = opts.store === undefined || opts.store === defaultStore ? currentWorkflowStore() : opts.store;
 	const sourceRunId = opts.continuation?.source.id ?? opts.runId;

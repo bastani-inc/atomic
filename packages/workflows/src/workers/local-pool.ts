@@ -36,7 +36,7 @@ import {
 import { askStagePromptUi, presentStageQuestion } from "../shared/stage-question-form.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { Store } from "../shared/store.js";
-import type { RunSnapshot } from "../shared/store-types.js";
+import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type {
 	WorkflowDefinition,
 	WorkflowSerializableObject,
@@ -90,7 +90,6 @@ import type { OutboundEntry, PooledStageHandle, PooledStageTransport } from "./p
 import type { PooledStageRegistrations } from "./pooled-stage-registry.js";
 import { type PooledStageLease, registerPooledStageSource } from "./pooled-stage-sources.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "./protocol.js";
 import { RateLimitObservationOutbox } from "./rate-limit-sharing.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import { PoolStageHandoff, type PoolStageQueue } from "./stage-handoff.js";
@@ -110,6 +109,7 @@ import type {
 	WatchId,
 	WatchResult,
 } from "./stage-watch-types.js";
+import { MAX_TIMER_DELAY_MS, resolveWorkerTiming } from "./worker-timing.js";
 
 /** A live view of one pooled stage, shared by everything that holds it. */
 interface StageView {
@@ -134,9 +134,6 @@ const RECONNECT_ATTEMPT_PUBLICATIONS = 40;
 import { defaultStartupTimeoutMs } from "./startup-timeout.js";
 
 const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
-const DEFAULT_WORK_LEASE_MS = 30_000;
-const MINIMUM_WORK_LEASE_MS = 2 * WORKER_HEARTBEAT_INTERVAL_MS;
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const COORDINATOR_STDERR_TAIL_CHARACTERS = 8192;
 const COORDINATOR_EXIT_GRACE_MS = 5_000;
 
@@ -286,6 +283,9 @@ export class LocalWorkerPool {
 	private waiting = 0;
 	private ticker?: NodeJS.Timeout;
 	private readonly leaseMs: number;
+	private readonly heartbeatMs: number;
+	/** What the coordinator reported it handled so far. */
+	private coordination?: PoolCoordinationStats;
 	private desiredControl?: PoolControl["state"];
 	private root?: string;
 	private store?: Store;
@@ -358,6 +358,8 @@ export class LocalWorkerPool {
 			readonly admission?: AdmissionConfiguration;
 			readonly startupTimeoutMs?: number;
 			readonly leaseMs?: number;
+			/** Worker heartbeat interval; a quarter of `leaseMs` when unset. */
+			readonly heartbeatMs?: number;
 			/** Load per CPU above which the root's pooled stage starts are paced; undefined or 0: never. */
 			readonly maxLoadPerCpu?: number;
 			/** Resident set size, in bytes, past which a worker is replaced between children; undefined: never (#4197). */
@@ -393,15 +395,7 @@ export class LocalWorkerPool {
 				options.startupTimeoutMs > MAX_TIMER_DELAY_MS)
 		)
 			throw new Error("Invalid local worker startup timeout");
-		if (
-			options.leaseMs !== undefined &&
-			(!Number.isSafeInteger(options.leaseMs) ||
-				options.leaseMs < MINIMUM_WORK_LEASE_MS ||
-				options.leaseMs > MAX_TIMER_DELAY_MS)
-		)
-			throw new Error(
-				`Invalid local worker lease: must be an integer from ${MINIMUM_WORK_LEASE_MS} to ${MAX_TIMER_DELAY_MS} ms`,
-			);
+		const timing = resolveWorkerTiming(options, "sdk");
 		if (options.maxLoadPerCpu !== undefined && (!Number.isFinite(options.maxLoadPerCpu) || options.maxLoadPerCpu < 0))
 			throw new Error("Invalid local worker load threshold: maxLoadPerCpu must be a number of at least 0");
 		if (
@@ -409,7 +403,8 @@ export class LocalWorkerPool {
 			(!Number.isSafeInteger(options.maxWorkerRssBytes) || options.maxWorkerRssBytes < 1)
 		)
 			throw new Error("Invalid local worker memory limit: maxWorkerRssBytes must be a positive integer");
-		this.leaseMs = options.leaseMs ?? DEFAULT_WORK_LEASE_MS;
+		this.leaseMs = timing.leaseMs;
+		this.heartbeatMs = timing.heartbeatMs;
 		this.releaseBinding = bindChildWorkerDispatcher(backend, this, options.rootId);
 		if (options.admission && options.rootId === undefined) workflowResourceAdmission.set(backend, options.admission);
 	}
@@ -426,6 +421,13 @@ export class LocalWorkerPool {
 	}
 	usage(): PoolUsage | undefined {
 		return this.usageTotal;
+	}
+	/**
+	 * What the pool's coordinator handled since it started: requests and journal writes by kind. The root run's
+	 * `pool.coordination` shows the same counts. Undefined until the coordinator first reports them.
+	 */
+	coordinationStats(): PoolCoordinationStats | undefined {
+		return this.coordination;
 	}
 	async prepare(root: string, store?: Store): Promise<void> {
 		if (this.closed) throw new Error("Local worker pool is closed");
@@ -468,6 +470,7 @@ export class LocalWorkerPool {
 					...(this.options.durable === undefined ? {} : { durable: this.options.durable }),
 					workers: this.options.workers,
 					leaseMs: this.leaseMs,
+					heartbeatMs: this.heartbeatMs,
 					startupTimeoutMs: this.options.startupTimeoutMs ?? defaultStartupTimeoutMs(this.options.workers),
 					...(this.options.admission === undefined ? {} : { admission: this.options.admission }),
 					...(this.options.maxLoadPerCpu === undefined
@@ -1451,6 +1454,11 @@ export class LocalWorkerPool {
 				return;
 			case "health":
 				this.recordHealth(event.message);
+				return;
+			case "coordination":
+				// A coordinator runs only for a prepared root.
+				this.store?.recordRunPool?.(this.root!, { coordination: event.stats });
+				this.coordination = event.stats;
 				return;
 			case "stage-events":
 				this.stageWatches.get(event.watch)?.({ kind: "events", events: event.events });

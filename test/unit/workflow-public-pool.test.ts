@@ -9,6 +9,7 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import * as host from "../../packages/workflows/src/workers/admission-host.js";
+import { isLocalWorkerOptionsError } from "../../packages/workflows/src/workers/local-worker-pool-errors.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -285,7 +286,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"the worker lease is validated and can change when a root resumes (#3888)",
+	"the worker lease and heartbeat are validated, never saved, and can change when a root resumes (#3888, #4313)",
 	async () => {
 		const directory = makeTempDirectory("pool-resume-lease-");
 		const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
@@ -295,11 +296,20 @@ test.skipIf(process.platform === "win32")(
 			for (const leaseMs of [0, 1_999, 2_500.5, 2_147_483_648])
 				await assert.rejects(
 					run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [], leaseMs } }),
-					/Invalid local worker lease/,
+					(error: unknown) =>
+						isLocalWorkerOptionsError(error) && error.code === "invalid-lease" && error.source === "sdk",
 				);
+			await assert.rejects(
+				run(definition, {}, { ...options, localWorkers: { count: 1, definitions: [], heartbeatMs: 15_001 } }),
+				(error: unknown) => isLocalWorkerOptionsError(error) && error.code === "invalid-heartbeat",
+			);
 			assert.equal((await journal.listRuns()).length, 0);
-			for (const leaseMs of [2_000, 120_000, undefined]) {
-				const localWorkers = { count: 1, definitions: [], leaseMs };
+			for (const timing of [
+				{ leaseMs: 2_000 },
+				{ leaseMs: 120_000, heartbeatMs: 60_000 },
+				{ leaseMs: undefined, heartbeatMs: 100 },
+			]) {
+				const localWorkers = { count: 1, definitions: [], ...timing };
 				assert.equal((await run(definition, {}, { ...options, localWorkers })).status, "completed");
 			}
 			assert.deepEqual(backend.getWorkflow("root")?.resources?.localWorkers, { count: 1, definitions: [] });

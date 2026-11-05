@@ -25,7 +25,8 @@ import { SqlResourceAdmission } from "./resource-admission.js";
 /**
  * Saved settings a resumed root may run with other values of: they size and pace its pool and bound its own sessions
  * and processes, and no recorded step or queued child depends on them, so a resume runs with the current ones and the
- * root records those (#4196). `startupTimeoutMs`, `leaseMs`, `maxLoadPerCpu` and `maxWorkerRssBytes` are never saved.
+ * root records those (#4196). `startupTimeoutMs`, `leaseMs`, `heartbeatMs`, `maxLoadPerCpu` and `maxWorkerRssBytes` are
+ * never saved.
  */
 const RESUMABLE_SETTINGS: ReadonlySet<string> = new Set([
 	"localWorkers.count",
@@ -106,6 +107,10 @@ function resourceChanges(saved: WorkflowExecutionResources, current: WorkflowExe
 	return changes;
 }
 
+/**
+ * The run options with the host's `workflows.localWorkers` and `workflows.admission` settings where the options set
+ * none. Only a merge: a run or resume validates the local worker settings it takes before it starts.
+ */
 export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettings): RunOpts {
 	const configured = settings?.workflows;
 	if (!configured || Array.isArray(configured)) return options;
@@ -181,6 +186,7 @@ export async function activatePublicPool(
 		...options.localWorkers,
 		startupTimeoutMs: undefined,
 		leaseMs: undefined,
+		heartbeatMs: undefined,
 		maxLoadPerCpu: undefined,
 		maxWorkerRssBytes: undefined,
 		definitions: options.localWorkers.definitions.map((source) => ({ ...source, path: resolve(cwd, source.path) })),
@@ -269,6 +275,7 @@ export async function activatePublicPool(
 		admission: resources.admission ?? {},
 		startupTimeoutMs: options.localWorkers?.startupTimeoutMs,
 		leaseMs: options.localWorkers?.leaseMs,
+		heartbeatMs: options.localWorkers?.heartbeatMs,
 		maxLoadPerCpu: options.localWorkers?.maxLoadPerCpu ?? DEFAULT_POOLED_STAGE_START_MAX_LOAD_PER_CPU,
 		...(options.localWorkers?.maxWorkerRssBytes === undefined
 			? {}

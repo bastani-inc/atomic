@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `localWorkers.heartbeatMs` sets how often each local worker sends its heartbeat, from `100` ms to half of `localWorkers.leaseMs`. It defaults to a quarter of the lease, and is available in `RunOpts.localWorkers` and in `workflows.localWorkers` settings. An out-of-range `leaseMs` or `heartbeatMs` now refuses the run or resume before it starts with the exported `LocalWorkerOptionsError` (family `LocalWorkerPoolError`, codes `invalid-lease` and `invalid-heartbeat`). The error names the setting's `source` and `field` and carries a `hint`. Use `isLocalWorkerOptionsError`, `isLocalWorkerPoolError` or `findLocalWorkerPoolError` to recognize it ([#4313](https://github.com/bastani-inc/atomic/issues/4313))
+- A root that runs a local worker pool shows its coordinator's requests and journal writes per second, by kind, in the root run's `pool.coordination` snapshot and as a `pool:` line in `workflow` status and `/workflow status` ([#4313](https://github.com/bastani-inc/atomic/issues/4313))
+
+### Fixed
+
+- Large local worker pools no longer spend most of their journal's write lock on worker heartbeats. Each worker used to send a lease renewal, a control poll and a usage report every second, as three journal transactions. It now sends one heartbeat every quarter of its lease that does all three in one transaction. With 450 workers and a 60 s lease, that is 30 heartbeat writes per second instead of 1,350, and leases are renewed well before they expire. Pause, resume and quit are pushed to workers as soon as they are committed, so they reach running children no later than before ([#4313](https://github.com/bastani-inc/atomic/issues/4313))
+
 ## [0.9.71] - 2026-11-03
 
 ### Changed

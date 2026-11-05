@@ -14,7 +14,6 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { POOL_SUMMARY_INTERVAL_MS } from "../../packages/workflows/src/workers/coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { testRunId } from "../helpers/run-id.js";
 import {
@@ -29,6 +28,8 @@ import {
 
 /** Enough workers that per-worker activity would far outrun the summary rate. */
 const WORKERS = 20;
+/** How often each stub worker heartbeats: often, so the observed window carries plenty of pool traffic. */
+const STUB_HEARTBEAT_MS = 1_000;
 /** Steady traffic over which root store invalidations are counted. */
 const OBSERVED_TRAFFIC_MS = 5_000;
 /** Timer phase and the last summary of the window may add one invalidation each. */
@@ -46,6 +47,7 @@ const POOL_WRITES = [
 	"claim",
 	"renew",
 	"extend",
+	"heartbeat",
 	"commit",
 	"complete",
 	"expire",
@@ -107,7 +109,7 @@ async function startPooledRoot(root: string, workers: number, whenBrokerReady?: 
 			activeDirectory,
 			statsDirectory: join(directory, "stats"),
 			failureLog,
-			heartbeatMs: WORKER_HEARTBEAT_INTERVAL_MS,
+			heartbeatMs: STUB_HEARTBEAT_MS,
 			appendIntervalMs: 500,
 			toolIntervalMs: 1_000,
 			largeEvery: 4,

@@ -44,8 +44,11 @@ export type {
 	CustomPromptIdentitySource,
 	NoticeLevel,
 	PendingPrompt,
+	PoolCoordinationCount,
+	PoolCoordinationStats,
 	PromptKind,
 	RunFailureClassification,
+	RunPoolSnapshot,
 	RunSnapshot,
 	RunStatus,
 	StageSnapshot,
@@ -70,6 +73,20 @@ export {
 export type { WorkflowInfrastructureFault } from "./shared/workflow-infrastructure-error.js";
 export { isRetryableWorkflowError, WorkflowInfrastructureError } from "./shared/workflow-infrastructure-error.js";
 export { loadWorkerWorkflow } from "./workers/definitions.js";
+export type {
+	LocalWorkerOptionsErrorCode,
+	LocalWorkerOptionsErrorReason,
+	LocalWorkerOptionsSource,
+	LocalWorkerPoolErrorCode,
+	LocalWorkerTimingOption,
+} from "./workers/local-worker-pool-errors.js";
+export {
+	findLocalWorkerPoolError,
+	isLocalWorkerOptionsError,
+	isLocalWorkerPoolError,
+	LocalWorkerOptionsError,
+	LocalWorkerPoolError,
+} from "./workers/local-worker-pool-errors.js";
 export type { LocalWorkerOptions, WorkflowAdmissionOptions } from "./workers/public-options.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";

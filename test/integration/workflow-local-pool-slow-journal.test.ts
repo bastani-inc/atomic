@@ -1,6 +1,6 @@
 /**
- * A local worker sends one renewal, one control poll and one usage report at a time, and waits for each answer before
- * it sends the next. When the pool's journal answers more slowly than the work lease, as when other writers keep its
+ * A local worker sends one heartbeat at a time, which renews its lease, reports its usage and reads pool control, and
+ * waits for its answer before it sends the next. When the pool's journal answers more slowly than the work lease, as when other writers keep its
  * write lock busy, every worker of the pool waits on the coordinator at once and sends nothing more. Lease recovery
  * used to read that wait as every worker having gone silent: it killed every worker of the pool at the same moment
  * and replayed, or failed, every child. A worker waiting for the pool's own answer is not silent.
@@ -20,7 +20,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
+import { defaultWorkerHeartbeatMs } from "../../packages/workflows/src/workers/worker-timing.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import {
 	makeTempDirectory,
@@ -37,7 +37,7 @@ const WORK_LEASE_MS = 2_000;
 /** How long each lease renewal takes while the journal is slow: well past the work lease. */
 const SLOW_RENEWAL_MS = 3 * WORK_LEASE_MS;
 /** How long the journal stays slow: several leases and worker heartbeats, so every recovery pass meets it. */
-const SLOW_FOR_MS = 2 * WORK_LEASE_MS + 4 * WORKER_HEARTBEAT_INTERVAL_MS;
+const SLOW_FOR_MS = 2 * WORK_LEASE_MS + 4 * defaultWorkerHeartbeatMs(WORK_LEASE_MS);
 /** Children that commit a checkpoint every few milliseconds until the test releases them. */
 const childPath = fileURLToPath(new URL("../fixtures/pool-committing-child.ts", import.meta.url));
 const BUDGET = poolTestBudgetMs(2);
@@ -104,12 +104,21 @@ test.skipIf(process.platform === "win32")(
 			coordinator: "in-process",
 		});
 		// The pool's journal answers lease renewals slowly, as one whose write lock other writers keep busy does. Only the
-		// time changes: every renewal still lands, and the coordinator's own event loop stays free.
+		// time changes: every renewal still lands, and the coordinator's own event loop stays free. A worker renews its
+		// lease with its heartbeat, and the coordinator renews it on the way to other requests and in recovery.
 		let slowUntil = 0;
 		const extend = SqlPoolQueue.prototype.extend;
 		vi.spyOn(SqlPoolQueue.prototype, "extend").mockImplementation(async function (this: SqlPoolQueue, ...args) {
 			if (Date.now() < slowUntil) await sleep(SLOW_RENEWAL_MS);
 			return extend.apply(this, args);
+		});
+		const heartbeat = SqlPoolQueue.prototype.heartbeat;
+		vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+			this: SqlPoolQueue,
+			...args: Parameters<SqlPoolQueue["heartbeat"]>
+		) {
+			if (Date.now() < slowUntil) await sleep(SLOW_RENEWAL_MS);
+			return heartbeat.apply(this, args);
 		});
 		const runId = randomUUID();
 		const budget = AbortSignal.timeout(BUDGET.waitMs);

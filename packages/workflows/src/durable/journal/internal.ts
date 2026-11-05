@@ -81,3 +81,19 @@ export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStor
 export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined {
 	return poolStorage.get(journal);
 }
+
+/**
+ * Calls `observe` as each pool transaction on `journal` begins, for the transactions of the pool tables (queue, usage,
+ * admission) opened on it from now on: a pool coordinator counts its journal writes this way.
+ */
+export function observeSqlPoolTransactions(journal: RunJournal, observe: () => void): void {
+	const storage = poolStorage.get(journal);
+	if (storage === undefined) return;
+	poolStorage.set(journal, {
+		...storage,
+		transaction: (body) => {
+			observe();
+			return storage.transaction(body);
+		},
+	});
+}

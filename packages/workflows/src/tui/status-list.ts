@@ -25,6 +25,7 @@ import type {
 	WorkflowBoundarySegmentsResolver,
 } from "../shared/pending-stage-status.js";
 import { pendingWorkflowStageStatuses, workflowBoundarySegments } from "../shared/pending-stage-status.js";
+import { formatPoolCoordination } from "../shared/pool-coordination.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import type { RunIndicatorStatus } from "../shared/run-indicator-status.js";
 import { createRunIndicatorStatusResolver, runIndicatorStatus } from "../shared/run-indicator-status.js";
@@ -179,10 +180,17 @@ function renderRunEntry(
 	const metaSeg = theme ? `${dim}${meta}${reset}` : meta;
 	const metaLine = `   ${modeSeg}    ${strip}${" ".repeat(gap)}${metaSeg} `;
 
+	const poolLine =
+		run.pool === undefined
+			? []
+			: [
+					`   ${muted}${truncateToWidth(formatPoolCoordination(run.pool.coordination), interior - 3, ELLIPSIS)}${reset}`,
+				];
 	return [
 		...identityRows,
 		identity,
 		metaLine,
+		...poolLine,
 		...pendingStageLines(run, interior, theme, resolveOwningRunStatus, resolveBoundarySegments),
 	];
 }

@@ -29,6 +29,7 @@ type RunStoreMethods = Pick<
 	| "recordRunStart"
 	| "recordRunSummary"
 	| "recordRunExecutionState"
+	| "recordRunPool"
 	| "reconcileRunParentStage"
 	| "recordRunEnd"
 	| "recordRunBlocked"
@@ -107,6 +108,13 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			if (run === undefined || run.endedAt !== undefined) return;
 			if (update.phase !== undefined && update.phase !== run.phase) run.phaseStartedAt = Date.now();
 			Object.assign(run, update);
+			context.bumpAndNotify({ runId });
+		},
+
+		recordRunPool(runId, pool): void {
+			const run = context.findRun(runId);
+			if (run === undefined) return;
+			run.pool = pool;
 			context.bumpAndNotify({ runId });
 		},
 

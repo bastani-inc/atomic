@@ -2,7 +2,7 @@
 // (test/integration/workflow-pool-load-gate.test.ts) through LocalWorkerPool's internal
 // `workerEntry` option. It speaks the real worker IPC protocol
 // (packages/workflows/src/workers/protocol.ts) and produces the traffic a busy
-// agent stage produces: heartbeats (renew, control, activity, usage), tool
+// agent stage produces: heartbeats (lease, control and usage in one request), activity, tool
 // checkpoints, the root pending-stage route an Intercom-capable stage takes, and
 // a pooled stage session created and appended to with message entries, some
 // over 100 KB. Every commit is a real pool mutation that the root validates and
@@ -37,6 +37,10 @@ let watchable;
 process.on("message", (reply) => {
 	if (reply.kind === "stage-command") {
 		watchable?.serve(reply);
+		return;
+	}
+	if (reply.kind === "pool-control") {
+		applyControl(reply.control).catch(fail);
 		return;
 	}
 	if (reply.delivery) {
@@ -90,12 +94,15 @@ function text(bytes, seed) {
 
 let controlRevision = -1;
 let busy = false;
-async function observeControl() {
-	const control = await request({ kind: "control" });
-	if (control.revision === controlRevision) return control;
+// Control arrives pushed, in heartbeat replies and from control reads; an older revision is ignored.
+async function applyControl(control) {
+	if (control.revision <= controlRevision) return control;
 	controlRevision = control.revision;
 	if (control.state !== "quit" || !busy) await request({ kind: "controlled", revision: control.revision });
 	return control;
+}
+async function observeControl() {
+	return applyControl(await request({ kind: "control" }));
 }
 
 const journal = new DatabaseSync(start.journalPath, { readOnly: true, timeout: 60_000 });
@@ -354,31 +361,24 @@ async function perform(work) {
 		},
 	};
 
+	const reports = () => [{ key: `stage:${run.runId}:${stageId}`, usage: { ...usage } }];
 	let renewal;
-	let controlPulse;
 	let report;
 	const heartbeat = setInterval(() => {
-		renewal ??= request({ kind: "renew" })
-			.then(() => {
+		// One heartbeat renews the lease, records usage and returns pool control, as a real worker's does.
+		renewal ??= request({ kind: "heartbeat", reports: reports() })
+			.then((control) => {
 				stats.renewals++;
 				if (phase() === "quiet") stats.quietRenewals++;
+				return applyControl(control);
 			})
 			.catch(fail)
 			.finally(() => {
 				renewal = undefined;
 			});
-		controlPulse ??= observeControl()
-			.catch(fail)
-			.finally(() => {
-				controlPulse = undefined;
-			});
 		report ??= (async () => {
 			await request({ kind: "activity", runs: [snapshot()] });
 			stats.activities++;
-			await request({
-				kind: "usage",
-				reports: [{ key: `stage:${run.runId}:${stageId}`, usage: { ...usage } }],
-			});
 		})()
 			.catch(fail)
 			.finally(() => {
@@ -431,13 +431,11 @@ async function perform(work) {
 	for (const timer of watched.values()) clearInterval(timer);
 	watched.clear();
 	await renewal;
-	await controlPulse;
 	await report;
 	stageStatus = "completed";
 	mkdirSync(config.statsDirectory, { recursive: true });
 	writeFileSync(join(config.statsDirectory, `${work.id}.json`), JSON.stringify(stats));
-	await request({ kind: "usage", reports: [{ key: `stage:${run.runId}:${stageId}`, usage: { ...usage } }] });
-	await observeControl();
+	await applyControl(await request({ kind: "heartbeat", reports: reports() }));
 	await request({
 		kind: "complete",
 		result: { runId: run.runId, status: "completed", result: {}, stages: [stage()], toolNodes: [...toolNodes] },

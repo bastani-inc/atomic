@@ -87,7 +87,7 @@ async function loadAdmission() {
 
 async function orphanProcessGroup(work, { resolveRunJournal, SqlResourceAdmission }) {
 	// Keep the lease renewed while the permit is taken, as a real worker's heartbeat does.
-	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+	const renewal = setInterval(() => request({ kind: "heartbeat", reports: [] }).catch(() => {}), 250);
 	const journal = await resolveRunJournal({ journal: { path: start.journalPath } });
 	const admission = await SqlResourceAdmission.open(journal, {
 		...start.admission,
@@ -115,7 +115,7 @@ async function orphanProcessGroup(work, { resolveRunJournal, SqlResourceAdmissio
  * refused it, after the attempt was ended as a fault of the pool.
  */
 async function admitReplay(work, { resolveRunJournal, SqlResourceAdmission }) {
-	const renewal = setInterval(() => request({ kind: "renew" }).catch(() => {}), 250);
+	const renewal = setInterval(() => request({ kind: "heartbeat", reports: [] }).catch(() => {}), 250);
 	const started = performance.now();
 	const record = (outcome) =>
 		appendFileSync(

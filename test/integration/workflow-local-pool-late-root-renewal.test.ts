@@ -14,7 +14,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
-import { WORKER_HEARTBEAT_INTERVAL_MS } from "../../packages/workflows/src/workers/protocol.js";
+import { defaultWorkerHeartbeatMs } from "../../packages/workflows/src/workers/worker-timing.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { makeTempDirectory, removeTempDirectory, sleep, writeFileEnsuringDir } from "../helpers/runtime.js";
 
@@ -28,7 +28,7 @@ const RENEWAL_LATE_BY_MS = 4 * STAGE_SESSION_HEARTBEAT_INTERVAL_MS;
  * How long the renewal stays late: several worker heartbeats and work leases, so every request and recovery meets it,
  * and a checkpoint commit that waits it out outlasts its attempt's work lease.
  */
-const LATE_FOR_MS = 2 * WORK_LEASE_MS + 4 * WORKER_HEARTBEAT_INTERVAL_MS;
+const LATE_FOR_MS = 2 * WORK_LEASE_MS + 4 * defaultWorkerHeartbeatMs(WORK_LEASE_MS);
 /** Children that commit a checkpoint every few milliseconds, so commits wait out the late renewal too. */
 const childPath = fileURLToPath(new URL("../fixtures/pool-committing-child.ts", import.meta.url));
 const BUDGET = poolTestBudgetMs(2);

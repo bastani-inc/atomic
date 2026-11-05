@@ -101,11 +101,22 @@ export class SqlPoolUsage {
 		return total;
 	}
 	async report(lease: Lease, token: UsageToken, reports: readonly PoolUsageReport[]): Promise<PoolUsage> {
+		return this.transaction(this.recording(lease, token, reports));
+	}
+	/**
+	 * Validates `reports` now and returns what records them inside a pool transaction: the work of {@link report}, for a
+	 * caller that records usage within a transaction of its own, such as a worker's heartbeat.
+	 */
+	recording(
+		lease: Lease,
+		token: UsageToken,
+		reports: readonly PoolUsageReport[],
+	): (tx: SqliteExecutor) => Promise<PoolUsage> {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		for (const report of reports) validate(report);
 		const snapshot = reports.map((report) => ({ key: report.key, usage: { ...report.usage } }));
-		return this.transaction(async (tx) => {
+		return async (tx) => {
 			const authority = await tx.get(
 				`SELECT l.epoch, l.holder_id, l.renewed_at, p.timeout, ${STORE_NOW} AS now FROM ${this.journal.leases} l
 				 LEFT JOIN ${this.journal.runs}_pool p ON p.root = l.run_id WHERE l.run_id = ?`,
@@ -136,7 +147,7 @@ export class SqlPoolUsage {
 			for (const { key, usage } of snapshot)
 				await upsertPoolUsage(tx, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);
-		});
+		};
 	}
 	total(root: string): Promise<PoolUsage> {
 		return this.transaction((tx) => this.totalIn(tx, root));

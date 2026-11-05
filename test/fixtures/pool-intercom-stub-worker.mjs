@@ -22,6 +22,10 @@ const CHECKPOINT_EVENT = "CheckpointRecorded";
 let sequence = 0;
 const pending = new Map();
 process.on("message", (reply) => {
+	if (reply.kind === "pool-control") {
+		applyControl(reply.control).catch(fail);
+		return;
+	}
 	if (reply.delivery) {
 		process.send({ id: 0, kind: "delivery-ack", deliveryId: reply.delivery.id });
 		return;
@@ -53,12 +57,15 @@ function fail(error) {
 
 let controlRevision = -1;
 let busy = false;
-async function observeControl() {
-	const control = await request({ kind: "control" });
-	if (control.revision === controlRevision) return control;
+// Control arrives pushed, in heartbeat replies and from control reads; an older revision is ignored.
+async function applyControl(control) {
+	if (control.revision <= controlRevision) return control;
 	controlRevision = control.revision;
 	if (control.state !== "quit" || !busy) await request({ kind: "controlled", revision: control.revision });
 	return control;
+}
+async function observeControl() {
+	return applyControl(await request({ kind: "control" }));
 }
 
 /** Hands the stage to the test process and resolves once its Intercom calls are done. */
@@ -123,17 +130,12 @@ async function perform(work) {
 	});
 
 	let renewal;
-	let controlPulse;
 	const heartbeat = setInterval(() => {
-		renewal ??= request({ kind: "renew" })
+		renewal ??= request({ kind: "heartbeat", reports: [] })
+			.then(applyControl)
 			.catch(fail)
 			.finally(() => {
 				renewal = undefined;
-			});
-		controlPulse ??= observeControl()
-			.catch(fail)
-			.finally(() => {
-				controlPulse = undefined;
 			});
 	}, config.heartbeatMs);
 
@@ -146,9 +148,8 @@ async function perform(work) {
 
 	clearInterval(heartbeat);
 	await renewal;
-	await controlPulse;
 	stageStatus = "completed";
-	await observeControl();
+	await applyControl(await request({ kind: "heartbeat", reports: [] }));
 	await request({
 		kind: "complete",
 		result: { runId: run.runId, status: "completed", result: {}, stages: [stage()], toolNodes: [] },
