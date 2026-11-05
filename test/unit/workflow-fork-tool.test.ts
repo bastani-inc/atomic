@@ -410,6 +410,22 @@ export default workflow({
 	return { backend, root, runId, runtimeDir, runtime, execute, jobs };
 }
 
+test("resuming a run in its own project still finds its workflow by discovery when no fork definition is given (#4321)", async () => {
+	const { backend, root, runId } = await discoverableSource("resume-discovered");
+	try {
+		const sourceDir = backend.getWorkflow(runId)!.invocationCwd!;
+		await backend.commitWorkflowStatus(runId, "paused", 0, true);
+		const jobs = createJobTracker();
+		const runtime = createExtensionRuntime({ definitions: [], store, jobs, cwd: sourceDir });
+		const resumed = await runtime.resumeDurableWorkflow(runId);
+		assert.ok(resumed.ok, resumed.message);
+		await jobs.get(runId)?.promise;
+		assert.equal(backend.getWorkflow(runId)?.status, "completed");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a fork of a workflow defined only in the source's project runs that definition to completion (#4321)", async () => {
 	const { backend, root, runId, execute, jobs } = await discoverableSource("fork-discovery");
 	try {

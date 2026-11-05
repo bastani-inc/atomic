@@ -16,6 +16,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { currentWorkflowStore } from "../../packages/workflows/src/shared/store-factory.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { hostWorkerBindings } from "../../packages/workflows/src/workers/host-options.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/workflow-journal.js";
@@ -314,6 +315,20 @@ test("a pooled fork refuses options bound to this process before writing, and in
 		[captured?.onStageStart, captured?.onStageEnd, captured?.onStageSessionEvent],
 		[undefined, undefined, undefined],
 	);
+	vi.mocked(run).mockImplementationOnce(async (_definition, _inputs, options) => {
+		captured = options;
+		return { status: "completed", stages: [] } as never;
+	});
+	const hosted = await forkRun(runId, {
+		fromStage: "worker",
+		durableBackend: backend,
+		definition: eventsDefinition,
+		localWorkers,
+		registry: createRegistry(),
+		[hostWorkerBindings]: true,
+	});
+	await hosted.result;
+	assert.equal(typeof captured?.onStageStart, "function", "a host that binds its workers keeps the stage events");
 });
 
 test("forkRun events can be read after the run ended, without an unhandled rejection, and ignore later notifications (#4321)", async () => {
