@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.js";
@@ -348,7 +348,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             text: `Intercom not connected: ${getErrorMessage(error)}`,
           }],
           isError: true,
-          details: { ...retryErrorDetails(retainedToken), retryable: isRecoverableIntercomDisconnect(error) },
+          details: {
+            ...retryErrorDetails(retainedToken),
+            retryable: isRecoverableIntercomDisconnect(error),
+            ...(isIntercomRoutingError(error) || isProjectGroupError(error) ? { code: error.code, hint: error.hint } : {}),
+          },
         };
       }
 

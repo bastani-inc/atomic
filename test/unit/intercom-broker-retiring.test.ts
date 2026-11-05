@@ -36,6 +36,9 @@ const {
 } = await import("../../packages/intercom/recoverable-disconnect.js");
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 
 /** The one `node:timers/promises` delay a test holds with `holdNextDelay`; every other delay runs as it always does. */
 const heldDelay = vi.hoisted(() => ({

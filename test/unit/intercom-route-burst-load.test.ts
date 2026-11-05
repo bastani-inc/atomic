@@ -32,6 +32,9 @@ import { isRetryableSameModelFailure } from "../../packages/workflows/src/runs/s
 import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-proxy.js";
 import { sleep } from "../helpers/runtime.js";
 
+vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false }),
+}));
 vi.mock("../../packages/intercom/broker/spawn.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../packages/intercom/broker/spawn.js")>()),
 	spawnBrokerIfNeeded: async () => {},

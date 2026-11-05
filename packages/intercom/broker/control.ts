@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import net from "node:net";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
-import { createMessageReader, type JsonWireValue, writeMessage } from "./framing.js";
+import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { BROKER_LEASE_STALE_AFTER_MS } from "./multinode-state-store.js";
 import { getBrokerPidPath, getBrokerSocketPath } from "./paths.js";
 import {
@@ -24,8 +22,7 @@ import { readLiveBrokerNodes } from "./sql-lease-store.js";
 export { describeMultiNodeStatus };
 export { projectHomeGroup } from "../project-group.js";
 
-/** How long a control request waits for its answer; a status report may wait up to 2 s for the shared database. */
-export const BROKER_CONTROL_TIMEOUT_MS = 5_000;
+export { BROKER_CONTROL_TIMEOUT_MS };
 /** How long `restartIntercomBroker` waits for the old broker to exit; its multi-node close is bounded at 2 s. */
 export const BROKER_STOP_TIMEOUT_MS = 10_000;
 /** How long `restartIntercomBroker` waits for a reconnecting session to start a new broker (first retry after 1 s). */
@@ -56,55 +53,8 @@ export type RestartOutcome =
 			readonly current: Exclude<BrokerQuery, { state: "stopped" }>;
 	  };
 
-type ControlReply = { readonly connected: false } | { readonly connected: true; readonly reply?: JsonWireValue };
-
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Send one control frame and wait for the reply of `replyType`; a broker that closes without one yields no reply. */
-function controlRequest(
-	socketPath: string,
-	type: "broker_status" | "shutdown",
-	replyType: "broker_status" | "shutdown_ack",
-	timeoutMs: number,
-): Promise<ControlReply> {
-	return new Promise((resolve) => {
-		const requestId = randomUUID();
-		const socket = net.connect(socketPath);
-		let connected = false;
-		let settled = false;
-		const finish = (result: ControlReply): void => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			socket.destroy();
-			resolve(result);
-		};
-		const timer = setTimeout(() => finish(connected ? { connected } : { connected: false }), timeoutMs);
-		socket.on("connect", () => {
-			connected = true;
-			writeMessage(socket, { type, requestId });
-		});
-		socket.on(
-			"data",
-			createMessageReader(
-				(message) => {
-					if (
-						typeof message === "object" &&
-						message !== null &&
-						!Array.isArray(message) &&
-						message.type === replyType &&
-						message.requestId === requestId
-					)
-						finish({ connected: true, reply: message });
-				},
-				() => finish({ connected }),
-			),
-		);
-		socket.on("error", () => finish(connected ? { connected } : { connected: false }));
-		socket.on("close", () => finish(connected ? { connected } : { connected: false }));
-	});
 }
 
 function readBrokerPid(agentDir: string): number | undefined {

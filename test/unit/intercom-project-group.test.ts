@@ -25,6 +25,16 @@ import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
+vi.mock("../../packages/intercom/broker/broker-routing.js", async () => {
+	const { processStorageEnvironment } = await import("@bastani/atomic");
+	const { multiNodeSelected } = await import("../../packages/intercom/project-group.js");
+	return {
+		queryBrokerRouting: async (agentDir: string) => {
+			const selected = multiNodeSelected(agentDir, processStorageEnvironment());
+			return { acrossMachines: selected, hasSharedStorage: selected };
+		},
+	};
+});
 
 let root: string;
 let agentDir: string;

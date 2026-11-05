@@ -409,6 +409,21 @@ export {
 	type ProjectGroupErrorCode,
 } from "./core/intercom-project-group-error.ts";
 export {
+	IntercomRoutingError,
+	type IntercomRoutingErrorCode,
+	IntercomRoutingMismatchError,
+	type IntercomRoutingMismatchReason,
+	type IntercomRoutingPhase,
+	IntercomRoutingTimeoutError,
+	IntercomRoutingUnavailableError,
+	type IntercomRoutingUnavailableReason,
+	isIntercomRoutingError,
+	isIntercomRoutingMismatchError,
+	isIntercomRoutingTimeoutError,
+	isIntercomRoutingUnavailableError,
+	isRetryableIntercomRoutingError,
+} from "./core/intercom-routing-error.ts";
+export {
 	RUNTIME_INTERCOM_GROUP_ENV,
 	readRuntimeIntercomGroup,
 	runtimeIntercomGroupEnvKey,
