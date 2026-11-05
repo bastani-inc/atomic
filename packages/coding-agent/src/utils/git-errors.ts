@@ -219,7 +219,7 @@ function unavailableHint(fields: GitUnavailableFields): string {
 			return `Check that github.com is reachable from this machine and try again, or ${installYourself(fields.installCommand)}.`;
 		case "install-failed":
 			return fields.phase === "verify"
-				? `This system cannot run the portable git build; ${installYourself(fields.installCommand)}.`
+				? `Check cached files and read/execute access in ${fields.installDir}; if this system cannot run the portable build, ${installYourself(fields.installCommand)}.`
 				: `Check free disk space and write access to ${fields.installDir} and try again, or ${installYourself(fields.installCommand)}.`;
 	}
 }

@@ -105,8 +105,8 @@ describe("git provisioning errors (#4322)", () => {
 		[
 			"verification failure",
 			{ ...HOST, code: "install-failed", phase: "verify", asset: "a.tar.gz", installDir: "/agent/bin/git" },
-			"Git is unavailable: a.tar.gz could not be verified into /agent/bin/git (install-failed). This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
-			"This system cannot run the portable git build; install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Git is unavailable: a.tar.gz could not be verified into /agent/bin/git (install-failed). Check cached files and read/execute access in /agent/bin/git; if this system cannot run the portable build, install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
+			"Check cached files and read/execute access in /agent/bin/git; if this system cannot run the portable build, install git 2.30.0 or newer with your system package manager (https://git-scm.com/downloads).",
 		],
 	])("renders %s from its fields with the remediation as hint", (_label, fields, message, hint) => {
 		const error = new GitUnavailableError(fields);

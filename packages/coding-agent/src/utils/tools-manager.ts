@@ -883,9 +883,9 @@ function selectedReleaseLayout(): GitDistributionLayout | undefined {
 			{
 				code: "install-failed",
 				phase: "verify",
-				asset: GIT_SELECTED_RELEASE,
+				asset: join(GIT_RELEASES_DIR, GIT_SELECTED_RELEASE),
 				installDir: getGitInstallDir(),
-				detail: "the selected release marker cannot be read",
+				detail: "the selected Git release marker must be a readable file",
 				...hostPlatform(),
 			},
 			{ cause: error },

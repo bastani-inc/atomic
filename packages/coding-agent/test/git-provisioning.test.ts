@@ -823,7 +823,8 @@ describe("git resolution (#4322)", () => {
 				assert.equal(error.fields.code, "install-failed");
 				if (error.fields.code === "install-failed") {
 					assert.equal(error.fields.phase, "verify");
-					assert.equal(error.fields.asset, "selected");
+					assert.equal(error.fields.asset, join("releases", "selected"));
+					assert.equal(error.fields.detail, "the selected Git release marker must be a readable file");
 					assert.equal(error.fields.installDir, installDir);
 				}
 				assert.equal((error.cause as NodeJS.ErrnoException).code, "EISDIR");
@@ -2038,6 +2039,29 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		assert.ok(existsSync(join(installDir, "broken")));
 		assert.deepEqual(readdirSync(join(installDir, "releases")), []);
 		assert.deepEqual(leftovers(), []);
+	});
+
+	it("keeps the selection write failure primary when no pending selection file was created", async () => {
+		const fake = healthy();
+		serveArchive(fake.bytes);
+		mkdirSync(join(installDir, "broken"), { recursive: true });
+		const selection = join(installDir, "releases", "selected");
+		const denied = Object.assign(new Error("EACCES: write selection"), { code: "EACCES" });
+		const actualWrite = mocks.actualFs!.writeFileSync;
+		mocks.writeFileSync.mockImplementation((path: string, data: string) => {
+			if (String(path).startsWith(`${selection}.`)) throw denied;
+			actualWrite(path, data);
+		});
+		const error = await failure(provision({ release: fake.release }));
+		assert.ok(isGitUnavailableError(error));
+		assert.equal(error.code, "install-failed");
+		assert.equal(error.fields.code === "install-failed" ? error.fields.phase : undefined, "promote");
+		assert.equal(error.cause, denied);
+		assert.equal(error.cleanupCause, undefined);
+		const unselected = readdirSync(join(installDir, "releases"));
+		assert.equal(unselected.length, 1);
+		assert.ok(existsSync(provisionedExecutable(join(installDir, "releases", unselected[0]!))));
+		assert.equal(existsSync(selection), false);
 	});
 
 	it("reports a release selection that cannot be switched, keeping the complete release unselected", async () => {
