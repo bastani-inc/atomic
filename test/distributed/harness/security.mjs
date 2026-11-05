@@ -29,6 +29,28 @@ export function bindViolations(sockets, { privateIp, gatewayPort, replicationPor
 }
 
 /**
+ * The zero-public-IP checks: one per entry Azure listed, and a failed one for every planned VM the listing left out,
+ * because a VM that was never listed was never checked.
+ * @param {readonly { vm: string, publicIps: readonly string[] }[]} addresses
+ * @param {readonly string[]} plannedVms
+ * @returns {SecurityCheck[]}
+ */
+export function publicAddressChecks(addresses, plannedVms) {
+	/** @type {SecurityCheck[]} */
+	const checks = addresses.map((entry) => ({
+		name: "zero-public-ips",
+		subject: entry.vm,
+		passed: entry.publicIps.length === 0,
+		observed: [...entry.publicIps],
+	}));
+	for (const vm of plannedVms) {
+		if (!addresses.some((entry) => entry.vm === vm))
+			checks.push({ name: "zero-public-ips", subject: vm, passed: false, observed: "missing from the listing" });
+	}
+	return checks;
+}
+
+/**
  * The gate's result, throwing `DistributedSecurityError` with every failed check when any failed. An empty list of
  * checks is a failure: a gate that checked nothing proves nothing.
  * @param {readonly SecurityCheck[]} checks

@@ -25,13 +25,16 @@ export ATOMIC_DISTRIBUTED_CONTROL_VNET=control-vnet           # name of the cont
 export ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX=10.0.1.0/24      # CIDR of the controller's subnet
 ```
 
+The SSH prefix must be a private range inside `10.0.0.0/8`, `172.16.0.0/12` or `192.168.0.0/16`; anything else,
+including `0.0.0.0/0`, is rejected before any side effect.
+
 The harness reads the control VNet's address space from Azure and never allocates an overlapping prefix. It checks
 everything below before it creates anything and lists every missing piece in one `DistributedPrerequisiteError`. Tools
 are looked up on `PATH`; `az` is called only once it is found:
 
 - the three variables above, and read access to the control VNet;
-- `az` and `az login` with rights to create resource groups, VNets, NSGs, NICs, VMs and peerings, and to add and
-  remove peerings on the control VNet;
+- `az` and an `az login` session. The account also needs rights to create resource groups, VNets, NSGs, NICs, VMs
+  and peerings, and to add and remove peerings on the control VNet; those rights are not checked up front;
 - `ssh`, `scp` and `openssl` on every run;
 - `ssh-keygen` and `curl` when the run brings up a new topology rather than reusing one;
 - `docker` when the pinned `sqld` binary is not cached yet (it is extracted from its image once);
@@ -49,9 +52,13 @@ are looked up on `PATH`; `az` is called only once it is found:
    and between the run's VNets, private NICs and VMs. Every taggable resource carries
    `atomic-distributed-test=<run-id>` and `atomic-distributed-test-expiry=<ISO time>`. Each resource is written to
    `manifest.json` before the command that creates it.
-3. Resolves `--ref` to a SHA, builds it once on Crabbox (`npm ci --ignore-scripts` and `npm run build`), caches the
-   tarball by SHA under `$XDG_CACHE_HOME/atomic-distributed-test/artifacts/`, and copies identical bytes to every node,
-   checking the SHA-256 on each.
+3. Resolves `--ref` to a SHA through its exact name only: a full refname (`refs/...`) as given, otherwise
+   `refs/tags/<ref>` (an annotated tag resolves to its commit) or `refs/heads/<ref>`, never a longer ref that merely
+   ends in it, such as `refs/heads/release/<ref>`. A name that is a tag and a branch at different commits is rejected as
+   ambiguous; pass the full refname instead. The report records the refname used. The harness builds the ref once on
+   Crabbox (`npm ci --ignore-scripts` and `npm run build`), caches the tarball by SHA under
+   `$XDG_CACHE_HOME/atomic-distributed-test/artifacts/`, and copies identical bytes to every node, checking the
+   SHA-256 on each.
 4. Starts `sqld` (`v0.24.33`, digest-pinned) as a primary and a replica with namespaces, JWT authentication and
    replication over mutual TLS, behind a TLS gateway on each database VM's private address.
 5. Runs the security gate. Any failure aborts the run before a scenario starts and tears everything down.
@@ -69,8 +76,9 @@ are looked up on `PATH`; `az` is called only once it is found:
 | `db-primary` | sqld primary, Premium SSD data disk | `eastus2` | `Standard_D2s_v7` |
 | `db-replica` | sqld replica in the second region | `westus3` | `Standard_D2s_v7` |
 
-`--nodes` accepts 1 to 80. Nodes take the topology's templates in order and are spread over `--regions` round-robin;
-nodes beyond the templates use `extraNode`. `--db-region` moves the replica (the second database tier) to another
+`--nodes` accepts 1 to 80. With one or two nodes, the last node also takes the VM-level faults and a second NIC.
+Nodes take the topology's templates in order and are spread over `--regions` round-robin; nodes beyond the templates
+use `extraNode`. `--db-region` moves the replica (the second database tier) to another
 region. `--db-storage local-nvme` puts both database VMs on the local NVMe temporary disk of `Standard_D2ds_v7` with
 `--encryption-at-host true`; when the subscription has not registered `Microsoft.Compute/EncryptionAtHost`, the run
 records the skip reason `encryption-at-host-unavailable` and uses Premium SSD instead. Local NVMe is ephemeral: a
@@ -100,7 +108,8 @@ EdDSA JWT scoped to the run's namespaces, kept in a mode-600 file and passed to 
 
 Before any scenario, the gate checks and records:
 
-- `az vm list-ip-addresses` shows no public IP on any VM, and the group has no public IP or load balancer resources.
+- `az vm list-ip-addresses` shows no public IP on any VM, and lists every planned VM (a missing one fails the check),
+  and the group has no public IP or load balancer resources.
 - Effective NSG rules on every NIC have no inbound allow from `Internet`, `*` or a public range, every allow comes
   from the allowlist, and `AllowVnetInBound` and `AllowAzureLoadBalancerInBound` are overridden by higher-priority denies.
 - `sqld` binds HTTP and admin to loopback and the gateway and replication listeners to the private address only.
@@ -197,7 +206,8 @@ gate and the suites again on a kept topology, which is the fast way to iterate o
 Each run writes to `$XDG_STATE_HOME/atomic-distributed-test/runs/<run-id>/` (or `--out`):
 
 - `report.json` and `report.md`: replay values, topology, environment facts (Node, kernel, tools, sqld version and
-  digest), security checks, suites with typed skip and failure reasons, invariants with expected and actual values,
+  digest), security checks, suites with typed skip and failure reasons (a suite that fails or is cancelled midway
+  keeps the fault records gathered so far), invariants with expected and actual values,
   per-profile coverage with observations, metrics (append latency, writer errors by type, at-least-once replays), the
   fault timeline, phase durations, and the teardown's absence queries with their results;
 - `commands.log`: every command the controller ran, redacted;
@@ -234,7 +244,7 @@ It re-reads each candidate's tags, never deletes a group with a missing or malfo
 control VNet peerings whose run group is gone or expired, and runs the same absence queries.
 
 Cost is bounded by the topology's size, `--ttl-hours` (default 6) and the sweeper; there is no spending limit. A
-smoke run uses five VMs (14 vCPUs) for roughly an hour; `--chaos none` or a short profile list makes it cheaper, and
+smoke run uses five VMs (16 vCPUs) for roughly an hour; `--chaos none` or a short profile list makes it cheaper, and
 `--reuse` avoids paying for bring-up twice.
 
 ## Errors
@@ -246,7 +256,7 @@ Every harness failure is a `DistributedTestError` from `test/distributed/harness
 | --- | --- | --- | --- |
 | `DistributedConfigError` | `invalid-config` | A flag, topology field or replay file is invalid; nothing was created | Fix the named `field` |
 | `DistributedPrerequisiteError` | `missing-prerequisite` | A tool, login or the control VNet is missing | Run the fixes in `hint` |
-| `DistributedCommandError` | `command-failed` | `az`, `ssh`, `scp` or `crabbox` exited unsuccessfully (SSH exit 255 is retryable) | Read `commands.log` |
+| `DistributedCommandError` | `command-failed` | `az`, `ssh`, `scp` or `crabbox` exited unsuccessfully (SSH exit 255 is retryable); when the node agent fails, its own error (name and code) is the `cause` | Read `commands.log` and the cause |
 | `DistributedTimeoutError` | `timeout` | A phase exceeded its budget | Check reachability of the target |
 | `DistributedProvisionError` | `provision-failed` | A resource could not be created or verified | Check quota and SKU availability |
 | `DistributedSecurityError` | `security-check-failed` | The security gate failed; no scenario ran | Fix the configuration named in `violations` |

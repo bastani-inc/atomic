@@ -1,5 +1,6 @@
 // @ts-check
 import { DistributedConfigError, DistributedPrerequisiteError } from "./errors.mjs";
+import { cidrWithin } from "./network.mjs";
 
 /** Suites a run can select, each with the issue whose feature it exercises. */
 export const SUITES = Object.freeze({
@@ -132,6 +133,9 @@ export const CONTROL_ENV = Object.freeze({
  * @typedef {{ resourceGroup: string, vnet: string, sshSourcePrefix: string }} ControlNetwork
  */
 
+/** The RFC 1918 ranges; the controller's subnet must lie inside one, because no Internet source may reach a run. */
+export const PRIVATE_RANGES = Object.freeze(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+
 /**
  * The control network from the environment: the resource group and name of the VNet the controller runs in, and the
  * CIDR of the controller's subnet, which alone may reach the run's VMs over SSH. Every missing variable is reported
@@ -158,12 +162,12 @@ export function parseControlEnv(env) {
 		});
 	}
 	const sshSourcePrefix = /** @type {string} */ (env[CONTROL_ENV.sshSourcePrefix]);
-	if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(sshSourcePrefix)) {
+	if (!sshSourcePrefix.includes("/") || !PRIVATE_RANGES.some((range) => cidrWithin(sshSourcePrefix, range))) {
 		throw new DistributedConfigError({
 			source: "env",
 			field: CONTROL_ENV.sshSourcePrefix,
 			reason: "invalid-value",
-			expected: "an IPv4 CIDR such as 10.0.1.0/24",
+			expected: `a private IPv4 CIDR inside ${PRIVATE_RANGES.join(", ")}, such as 10.0.1.0/24`,
 			actual: sshSourcePrefix,
 		});
 	}
@@ -530,6 +534,56 @@ export function encryptionAtHostSkip(storage, featureState) {
 }
 
 /**
+ * The `git ls-remote` patterns that list `ref` and, for an annotated tag, the commit it points at. git matches each
+ * pattern against the tail of every refname, so the listing also holds longer refs such as `refs/heads/release/<ref>`.
+ * @param {string} ref
+ */
+export function remoteRefPatterns(ref) {
+	return [ref, `${ref}^{}`];
+}
+
+/**
+ * The commit `ref` names in a `git ls-remote` listing, and the full refname it was resolved through. Only exact names
+ * count: a full refname (`refs/...`) as given, otherwise `refs/tags/<ref>` or `refs/heads/<ref>`. An annotated tag
+ * resolves to the commit it points at. A short name that is a tag and a branch at different commits is ambiguous.
+ * @param {string} listing
+ * @param {string} ref
+ * @returns {{ sha: string, refname: string }}
+ */
+export function selectRemoteRef(listing, ref) {
+	/** @type {Map<string, string>} */
+	const shas = new Map();
+	for (const line of listing.split("\n")) {
+		const [sha, refname] = line.trim().split("\t");
+		if (refname !== undefined && /^[0-9a-f]{40}$/.test(sha)) shas.set(refname, sha);
+	}
+	const names = ref.startsWith("refs/") ? [ref] : [`refs/tags/${ref}`, `refs/heads/${ref}`];
+	const found = names.flatMap((refname) => {
+		const sha = shas.get(`${refname}^{}`) ?? shas.get(refname);
+		return sha === undefined ? [] : [{ sha, refname }];
+	});
+	if (found.length === 0) {
+		throw new DistributedConfigError({
+			source: "cli",
+			field: "--ref",
+			reason: "unknown-name",
+			expected: "a commit SHA, or a branch or tag pushed to origin",
+			actual: ref,
+		});
+	}
+	if (found.some((candidate) => candidate.sha !== found[0].sha)) {
+		throw new DistributedConfigError({
+			source: "cli",
+			field: "--ref",
+			reason: "ambiguous",
+			expected: found.map((candidate) => candidate.refname).join(" or "),
+			actual: ref,
+		});
+	}
+	return found[0];
+}
+
+/**
  * A run id: `adt`, the UTC minute as YYMMDDHHmm, and four hex digits.
  * @param {Date} now
  * @param {number} entropy
@@ -549,8 +603,9 @@ export function newRunId(now, entropy) {
 
 /**
  * The VMs and regions a run creates. Nodes take the topology's templates in order and are spread over `regions`
- * round-robin; nodes beyond the templates use `extraNode`. The database primary is in its topology region and the
- * replica in `dbRegion`.
+ * round-robin; nodes beyond the templates use `extraNode`. When no template in use carries the `vm-faults` role, the
+ * last node takes it and a second NIC, so the VM-level profiles always have a target. The database primary is in its
+ * topology region and the replica in `dbRegion`.
  * @param {RunOptions} options
  * @param {Topology} topology
  * @param {{ runId: string, now: Date }} context
@@ -592,6 +647,12 @@ export function buildPlan(options, topology, { runId, now }) {
 			encryptionAtHost: nvme,
 			dbRole,
 		});
+	}
+	const nodes = vms.filter((vm) => vm.kind === "node");
+	if (!nodes.some((vm) => vm.roles.includes("vm-faults"))) {
+		const target = /** @type {VmPlan} */ (nodes.at(-1));
+		target.roles.push("vm-faults");
+		target.secondaryNic = true;
 	}
 	/** @type {string[]} */
 	const vnetRegions = [];

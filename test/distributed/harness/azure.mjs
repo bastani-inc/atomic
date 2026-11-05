@@ -267,6 +267,10 @@ export class AzureRun {
 		});
 	}
 
+	/**
+	 * Allocates one /16 per region and creates the VNets first, so a run starting a moment later already sees these
+	 * prefixes as taken; then each region's NSG with its rules and the private subnet, then the peerings.
+	 */
 	async createNetworks() {
 		const allocated = allocateAddressSpaces(
 			this.plan.vnetRegions,
@@ -288,6 +292,27 @@ export class AzureRun {
 			this.plan.vnetRegions.map(async (region) => {
 				const prefix = /** @type {string} */ (allocated.get(region));
 				const names = networkNames(this.plan.runId, region);
+				/** @type {{ newVNet: { id: string } }} */
+				const vnet = await this.create({
+					kind: "vnet",
+					name: names.vnet,
+					step: "create VNet",
+					args: [
+						"network",
+						"vnet",
+						"create",
+						"--resource-group",
+						this.plan.resourceGroup,
+						"--name",
+						names.vnet,
+						"--location",
+						region,
+						"--address-prefixes",
+						prefix,
+						"--tags",
+						...this.tags,
+					],
+				});
 				await this.create({
 					kind: "nsg",
 					name: names.nsg,
@@ -350,27 +375,6 @@ export class AzureRun {
 						],
 					});
 				}
-				/** @type {{ newVNet: { id: string } }} */
-				const vnet = await this.create({
-					kind: "vnet",
-					name: names.vnet,
-					step: "create VNet",
-					args: [
-						"network",
-						"vnet",
-						"create",
-						"--resource-group",
-						this.plan.resourceGroup,
-						"--name",
-						names.vnet,
-						"--location",
-						region,
-						"--address-prefixes",
-						prefix,
-						"--tags",
-						...this.tags,
-					],
-				});
 				await this.create({
 					kind: "subnet",
 					name: `${names.vnet}/${names.subnet}`,

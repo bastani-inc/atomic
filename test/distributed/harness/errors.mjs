@@ -63,7 +63,7 @@ export class DistributedConfigError extends DistributedTestError {
 	name = "DistributedConfigError";
 	/**
 	 * @param {{ source: "cli" | "topology" | "env" | "replay", field: string,
-	 *   reason: "unknown-flag" | "missing-value" | "required" | "invalid-value" | "unknown-name" | "invalid-json" | "unreadable", expected: string,
+	 *   reason: "unknown-flag" | "missing-value" | "required" | "invalid-value" | "unknown-name" | "ambiguous" | "invalid-json" | "unreadable", expected: string,
 	 *   actual?: FieldValue, cause?: unknown }} init
 	 */
 	constructor({ source, field, reason, expected, actual = null, cause }) {
@@ -354,6 +354,63 @@ export function attachConcurrentFailures(primary, others) {
 		});
 	}
 	return primary;
+}
+
+/**
+ * A failure as the node agent prints it (`{ name, code, message, cause? }`), in serialized form.
+ * @param {unknown} value
+ * @returns {SerializedError}
+ */
+function fromAgentRecord(value) {
+	const record = typeof value === "object" && value !== null ? value : {};
+	const name = Reflect.get(record, "name");
+	const code = Reflect.get(record, "code");
+	const message = Reflect.get(record, "message");
+	const cause = Reflect.get(record, "cause");
+	return {
+		name: typeof name === "string" ? name : "Error",
+		code: typeof code === "string" ? code : "unclassified",
+		message: typeof message === "string" ? message : "",
+		retryable: false,
+		fields: {},
+		...(typeof cause === "object" && cause !== null ? { cause: fromAgentRecord(cause) } : {}),
+	};
+}
+
+/**
+ * The failure a node agent reported before exiting 1: the last `{"fatal": …}` line of its output, serialized so the
+ * controller can rehydrate it. Undefined when the output holds no readable fatal record.
+ * @param {string} stdout
+ * @returns {SerializedError | undefined}
+ */
+export function agentFatal(stdout) {
+	const line = stdout
+		.split("\n")
+		.map((text) => text.trim())
+		.filter((text) => text.startsWith('{"fatal":'))
+		.at(-1);
+	if (line === undefined) return undefined;
+	try {
+		return fromAgentRecord(JSON.parse(line).fatal);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The command error for a node agent that exited 1, carrying the agent's own failure as its rehydrated cause.
+ * @param {{ tool: string, operation: string, stdout: string }} input
+ */
+export function agentCommandError({ tool, operation, stdout }) {
+	const fatal = agentFatal(stdout);
+	return new DistributedCommandError({
+		tool,
+		operation,
+		exitCode: 1,
+		signal: null,
+		detail: fatal === undefined ? "the agent exited 1 without a fatal record" : `${fatal.name} (${fatal.code})`,
+		cause: fatal === undefined ? undefined : rehydrateDistributedError(fatal),
+	});
 }
 
 /**

@@ -16,7 +16,7 @@ import { runLifecycle } from "../distributed/harness/lifecycle.mjs";
 import { Manifest } from "../distributed/harness/manifest.mjs";
 import { overallStatus, renderMarkdown, suiteStatus, writeReport } from "../distributed/harness/report.mjs";
 import { createRunSecrets, loadRunSecrets, mintToken, writeSecretFile } from "../distributed/harness/secrets.mjs";
-import { bindViolations, gateVerdict } from "../distributed/harness/security.mjs";
+import { bindViolations, gateVerdict, publicAddressChecks } from "../distributed/harness/security.mjs";
 import { FEATURE_PROBES, featureSkip, parseCapabilities, selectedSuites } from "../distributed/harness/suites.mjs";
 import { parseSweepArgs, sweep } from "../distributed/sweep.mjs";
 
@@ -226,6 +226,36 @@ test("sqld must listen on loopback for HTTP and admin, and the private address f
 	);
 	assert.deepEqual(bindViolations(["127.0.0.1:8080"], expected), ["missing 10.60.0.10:8443"]);
 	assert.deepEqual(bindViolations([], expected), ["missing 10.60.0.10:8443"]);
+});
+
+test("a planned VM missing from the public-IP listing fails the gate instead of going unchecked (#4331)", () => {
+	const listed = [
+		{ vm: "n1", publicIps: [] },
+		{ vm: "n3", publicIps: [] },
+		{ vm: "n3", publicIps: ["20.1.1.1"] },
+		{ vm: "stray", publicIps: [] },
+	];
+	const checks = publicAddressChecks(listed, ["n1", "n2", "n3"]);
+	assert.deepEqual(checks, [
+		{ name: "zero-public-ips", subject: "n1", passed: true, observed: [] },
+		{ name: "zero-public-ips", subject: "n3", passed: true, observed: [] },
+		{ name: "zero-public-ips", subject: "n3", passed: false, observed: ["20.1.1.1"] },
+		{ name: "zero-public-ips", subject: "stray", passed: true, observed: [] },
+		{ name: "zero-public-ips", subject: "n2", passed: false, observed: "missing from the listing" },
+	]);
+	assert.notEqual(checks[2].observed, listed[2].publicIps);
+	assert.throws(
+		() => gateVerdict(publicAddressChecks([{ vm: "n1", publicIps: [] }], ["n1", "n2"])),
+		(error) => {
+			assert.ok(isDistributedSecurityError(error));
+			assert.deepEqual(Reflect.get(error as object, "fields").violations, [
+				{ check: "zero-public-ips", subject: "n2", detail: '"missing from the listing"' },
+			]);
+			return true;
+		},
+	);
+	assert.deepEqual(publicAddressChecks([], []), []);
+	assert.deepEqual(publicAddressChecks([{ vm: "n1", publicIps: [] }], ["n1"]).length, 1);
 });
 
 test("the gate passes only with checks that all passed", () => {
@@ -850,7 +880,7 @@ test("each feature probe names its issue, its capability and the exact interface
 			Object.entries(FEATURE_PROBES).map(([suite, probe]) => [suite, [probe.issue, probe.capability]]),
 		),
 		{
-			"multi-node-resume": ["#4329", "export WorkspaceError"],
+			"multi-node-resume": ["#4329", "export ResumeError"],
 			"cross-host-pools": ["#4310", "export WorkerPlacementError"],
 			"shard-contention": ["#4325", "export JournalShardUnavailableError"],
 			"idle-density": ["#4309/#4326", "AgentSessionRuntime.rehydrate"],
@@ -863,7 +893,7 @@ test("each feature probe names its issue, its capability and the exact interface
 		},
 	);
 	const exports: Record<string, string> = {
-		"multi-node-resume": "WorkspaceError",
+		"multi-node-resume": "ResumeError",
 		"cross-host-pools": "WorkerPlacementError",
 		"shard-contention": "JournalShardUnavailableError",
 		"subscription-flood": "SubscriptionError",

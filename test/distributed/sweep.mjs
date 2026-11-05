@@ -17,7 +17,7 @@
 import { fileURLToPath } from "node:url";
 import { azJson } from "./harness/commands.mjs";
 import { parseControlEnv, RUN_ID_PATTERN } from "./harness/config.mjs";
-import { DistributedConfigError, isDistributedTestError, serializeDistributedError } from "./harness/errors.mjs";
+import { DistributedConfigError, serializeDistributedError } from "./harness/errors.mjs";
 import { planSweep, RUN_TAG } from "./harness/ownership.mjs";
 import { teardownRun } from "./harness/teardown.mjs";
 
@@ -218,9 +218,7 @@ async function main() {
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 		return result.runs.every((run) => run.ok) ? 0 : 1;
 	} catch (error) {
-		process.stderr.write(
-			`Sweep failed: ${error instanceof Error ? error.message : String(error)}\n${isDistributedTestError(error) && error.hint ? `${error.hint}\n` : ""}`,
-		);
+		process.stderr.write(`Sweep failed: ${error instanceof Error ? error.message : String(error)}\n`);
 		return 1;
 	}
 }

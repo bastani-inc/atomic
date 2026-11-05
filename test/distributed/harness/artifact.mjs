@@ -5,6 +5,8 @@
  * and the outputs of `npm run build`; `.git` and Rust `target` directories are left out.
  */
 
+import { shellQuote } from "./commands.mjs";
+
 export const ARTIFACT_REMOTE_DIR = "/tmp/atomic-distributed-test-build";
 
 /**
@@ -22,7 +24,7 @@ export function artifactBuildScript({ sha, repository, nodeVersion, bunVersion }
 		`if [ "$(bun --version 2>/dev/null)" != "${bunVersion}" ]; then curl -fsSL https://bun.sh/install | bash -s "bun-v${bunVersion}" >/dev/null; fi`,
 		"if ! command -v cargo >/dev/null; then curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable >/dev/null; fi",
 		`rm -rf ${ARTIFACT_REMOTE_DIR} && mkdir -p ${ARTIFACT_REMOTE_DIR}/atomic && cd ${ARTIFACT_REMOTE_DIR}/atomic`,
-		`git init -q . && git remote add origin ${repository}`,
+		`git init -q . && git remote add origin ${shellQuote(repository)}`,
 		`git fetch -q --depth 1 origin ${sha} && git checkout -q FETCH_HEAD`,
 		`test "$(git rev-parse HEAD)" = "${sha}"`,
 		"npm ci --ignore-scripts --no-audit --no-fund >/tmp/adt-npm-ci.log 2>&1 || { tail -40 /tmp/adt-npm-ci.log; exit 1; }",

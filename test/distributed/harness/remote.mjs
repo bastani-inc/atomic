@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { join } from "node:path";
 import { retrying, runCommand, shellQuote } from "./commands.mjs";
-import { DistributedProvisionError, isCancellation } from "./errors.mjs";
+import { agentCommandError, DistributedProvisionError, isCancellation } from "./errors.mjs";
 
 export const REMOTE_ROOT = "/opt/adt";
 export const NODE_BIN = `${REMOTE_ROOT}/node/bin/node`;
@@ -83,7 +83,16 @@ export class Host {
 	 * @returns {Promise<any>}
 	 */
 	async json(script, options) {
-		const result = await this.run(script, options);
+		return this.document(await this.run(script, options), options.operation);
+	}
+
+	/**
+	 * The last JSON document a command printed.
+	 * @param {{ stdout: string }} result
+	 * @param {string} operation
+	 * @returns {any}
+	 */
+	document(result, operation) {
 		const line = result.stdout
 			.trim()
 			.split("\n")
@@ -91,7 +100,7 @@ export class Host {
 			.pop();
 		if (line === undefined)
 			throw new DistributedProvisionError({
-				step: options.operation,
+				step: operation,
 				resource: this.name,
 				detail: "no JSON output",
 			});
@@ -125,16 +134,22 @@ export class Host {
 	}
 
 	/**
-	 * Runs the node agent and returns its JSON document.
+	 * Runs the node agent and returns its JSON document. When the agent fails it prints its typed failure and exits 1;
+	 * that failure becomes the cause of the thrown command error.
 	 * @param {string} command
 	 * @param {readonly string[]} args
 	 * @param {{ timeoutMs?: number, sudo?: boolean }} [options]
+	 * @returns {Promise<any>}
 	 */
-	agent(command, args, { timeoutMs = 300_000 } = {}) {
+	async agent(command, args, { timeoutMs = 300_000 } = {}) {
 		const words = [`NODE_EXTRA_CA_CERTS=${SECRETS}/ca.pem`, NODE_BIN, AGENT, command, ...args]
 			.map(shellQuote)
 			.join(" ");
-		return this.json(words, { operation: `agent ${command}`, timeoutMs });
+		const operation = `agent ${command}`;
+		const result = await this.run(words, { operation, timeoutMs, allowExitCodes: [1] });
+		if (result.exitCode === 1)
+			throw agentCommandError({ tool: "ssh", operation: `${this.name}: ${operation}`, stdout: result.stdout });
+		return this.document(result, operation);
 	}
 }
 

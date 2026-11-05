@@ -7,14 +7,17 @@ import {
 	encryptionAtHostSkip,
 	MAX_NODES,
 	newRunId,
+	PRIVATE_RANGES,
 	parseControlEnv,
 	parseRunArgs,
 	parseTopology,
 	RUN_ID_PATTERN,
 	readJsonInput,
+	remoteRefPatterns,
 	replayValues,
 	resolveRunOptions,
 	SUITES,
+	selectRemoteRef,
 } from "../distributed/harness/config.mjs";
 import {
 	DistributedConfigError,
@@ -450,6 +453,91 @@ test("plans the default topology: three roles over two regions and a cross-regio
 	);
 });
 
+test("one or two nodes still give the VM-level profiles a target with a second NIC (#4331)", () => {
+	const plan = (nodes: number) =>
+		buildPlan(options(["--ref", "main", "--nodes", String(nodes)]), topology, {
+			runId: "adt2611050230-0004",
+			now: NOW,
+		})
+			.vms.filter((vm) => vm.kind === "node")
+			.map((vm) => [vm.name.slice(-2), vm.roles, vm.secondaryNic]);
+	assert.deepEqual(plan(1), [["n1", ["large", "vm-faults"], true]]);
+	assert.deepEqual(plan(2), [
+		["n1", ["large"], false],
+		["n2", ["small-memory", "vm-faults"], true],
+	]);
+	assert.deepEqual(plan(3), [
+		["n1", ["large"], false],
+		["n2", ["small-memory"], false],
+		["n3", ["git-less", "vm-faults"], true],
+	]);
+	assert.deepEqual(plan(5).slice(3), [
+		["n4", ["standard"], false],
+		["n5", ["standard"], false],
+	]);
+	const databases = buildPlan(options(["--ref", "main", "--nodes", "1"]), topology, {
+		runId: "adt2611050230-0004",
+		now: NOW,
+	}).vms.filter((vm) => vm.kind === "database");
+	assert.deepEqual(
+		databases.map((vm) => [vm.roles, vm.secondaryNic]),
+		[
+			[["sqld-primary"], false],
+			[["sqld-replica"], false],
+		],
+	);
+	assert.deepEqual(topology.nodes[0].roles, ["large"]);
+});
+
+test("a ref resolves only through its exact tag or branch name, never a longer ref ending in it (#4331)", () => {
+	const sha = (digit: string) => digit.repeat(40);
+	const listing = [
+		`${sha("a")}\trefs/heads/release/0.9.71`,
+		`${sha("b")}\trefs/tags/0.9.71`,
+		`${sha("c")}\trefs/heads/backup/main`,
+		`${sha("d")}\trefs/heads/main`,
+		`${sha("e")}\trefs/tags/v1`,
+		`${sha("f")}\trefs/tags/v1^{}`,
+		`${sha("1")}\trefs/heads/same`,
+		`${sha("1")}\trefs/tags/same`,
+		`${sha("2")}\trefs/heads/both\r`,
+		`${sha("3")}\trefs/tags/both`,
+		"not-a-sha\trefs/heads/broken",
+		`${sha("4")}`,
+		"",
+	].join("\n");
+	assert.deepEqual(remoteRefPatterns("v1"), ["v1", "v1^{}"]);
+	assert.deepEqual(selectRemoteRef(listing, "0.9.71"), { sha: sha("b"), refname: "refs/tags/0.9.71" });
+	assert.deepEqual(selectRemoteRef(listing, "main"), { sha: sha("d"), refname: "refs/heads/main" });
+	assert.deepEqual(selectRemoteRef(listing, "v1"), { sha: sha("f"), refname: "refs/tags/v1" });
+	assert.deepEqual(selectRemoteRef(listing, "refs/tags/v1"), { sha: sha("f"), refname: "refs/tags/v1" });
+	assert.deepEqual(selectRemoteRef(listing, "refs/heads/release/0.9.71"), {
+		sha: sha("a"),
+		refname: "refs/heads/release/0.9.71",
+	});
+	assert.deepEqual(selectRemoteRef(listing, "same"), { sha: sha("1"), refname: "refs/tags/same" });
+	assert.deepEqual(selectRemoteRef(listing, "refs/heads/both"), { sha: sha("2"), refname: "refs/heads/both" });
+	const ambiguous = configError(() => selectRemoteRef(listing, "both"));
+	assert.deepEqual(ambiguous.fields, {
+		source: "cli",
+		field: "--ref",
+		reason: "ambiguous",
+		expected: "refs/tags/both or refs/heads/both",
+		actual: "both",
+	});
+	assert.equal(ambiguous.hint, "Set --ref to refs/tags/both or refs/heads/both.");
+	for (const ref of ["release/0.9.71x", "0.9.7", "broken", "heads/main", "refs/heads/backup", "71"]) {
+		assert.deepEqual(configError(() => selectRemoteRef(listing, ref)).fields, {
+			source: "cli",
+			field: "--ref",
+			reason: "unknown-name",
+			expected: "a commit SHA, or a branch or tag pushed to origin",
+			actual: ref,
+		});
+	}
+	assert.equal(configError(() => selectRemoteRef("", "main")).fields.reason, "unknown-name");
+});
+
 test("plans extra nodes, the local-NVMe variant and a second database region", () => {
 	const plan = buildPlan(
 		options([
@@ -692,7 +780,7 @@ test("the control network comes from the environment, with every missing variabl
 			source: "env",
 			field: "ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX",
 			reason: "invalid-value",
-			expected: "an IPv4 CIDR such as 10.0.1.0/24",
+			expected: "a private IPv4 CIDR inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, such as 10.0.1.0/24",
 			actual: bad,
 		});
 	}
@@ -884,14 +972,37 @@ test("topology errors carry the exact expectation and the offending value", () =
 	assert.equal(parseTopology(noNic).nodes[2].secondaryNic, false);
 });
 
-test("the controller subnet must be an IPv4 CIDR", () => {
+test("the controller subnet must be a private IPv4 CIDR, never an Internet source (#4331)", () => {
 	const env = {
 		ATOMIC_DISTRIBUTED_CONTROL_RESOURCE_GROUP: "control-rg",
 		ATOMIC_DISTRIBUTED_CONTROL_VNET: "control-vnet",
 	};
-	for (const valid of ["10.0.123.0/24", "192.168.1.0/8"])
+	assert.deepEqual(PRIVATE_RANGES, ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]);
+	for (const valid of [
+		"10.0.123.0/24",
+		"10.0.0.0/8",
+		"172.16.5.0/24",
+		"172.31.255.0/24",
+		"192.168.1.0/24",
+		"192.168.0.0/16",
+	])
 		assert.equal(parseControlEnv({ ...env, ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX: valid }).sshSourcePrefix, valid);
-	for (const invalid of ["x10.0.1.0/24", "10.0.1.0/24x", "10.0.1.1234/24"]) {
+	for (const invalid of [
+		"x10.0.1.0/24",
+		"10.0.1.0/24x",
+		"10.0.1.1234/24",
+		"999.1.1.1/40",
+		"10.0.1.0",
+		"0.0.0.0/0",
+		"8.8.8.0/24",
+		"11.0.0.0/8",
+		"10.0.0.0/7",
+		"172.15.0.0/16",
+		"172.32.0.0/16",
+		"172.16.0.0/11",
+		"192.169.0.0/16",
+		"192.168.1.0/8",
+	]) {
 		assert.equal(
 			configError(() => parseControlEnv({ ...env, ATOMIC_DISTRIBUTED_CONTROL_SSH_PREFIX: invalid })).fields.actual,
 			invalid,

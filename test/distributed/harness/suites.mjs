@@ -54,8 +54,8 @@ const memberOf = (owner, member) => (/** @type {Capabilities} */ capabilities) =
 export const FEATURE_PROBES = Object.freeze({
 	"multi-node-resume": {
 		issue: "#4329",
-		capability: "export WorkspaceError",
-		present: exported("WorkspaceError"),
+		capability: "export ResumeError",
+		present: exported("ResumeError"),
 		implemented: false,
 	},
 	"cross-host-pools": {
@@ -161,18 +161,22 @@ export function selectedSuites(selection) {
  *   error?: import("./errors.mjs").SerializedError }} FaultRecord
  * @typedef {{ runId: string, attempt: string, nodes: NodeHost[], primary: Host, replica: Host,
  *   azure: import("./azure.mjs").AzureRun, random: ReturnType<typeof import("./prng.mjs").createRandom>, profiles: readonly string[],
- *   gatewayPort: number, namespace: string, signal?: AbortSignal, log: (line: string) => void, started: number }} SmokeContext
+ *   gatewayPort: number, namespace: string, signal?: AbortSignal, log: (line: string) => void, started: number,
+ *   faults: FaultRecord[] }} SmokeContext
  * @typedef {(fault: FaultRecord, mark: (event: string) => void) => Promise<void>} FaultStep
- * @typedef {{ profile: string, target: string, parameters: Record<string, unknown>, apply: FaultStep, revert?: FaultStep,
+ * @typedef {(fault: FaultRecord, mark: (event: string) => void, injecting: () => void) => Promise<void>} ApplyStep
+ * @typedef {{ profile: string, target: string, parameters: Record<string, unknown>, apply: ApplyStep, revert?: FaultStep,
  *   recover?: FaultStep, cleanup?: FaultStep }} FaultSpec
  * @typedef {{ profiles: readonly string[], faults: FaultRecord[], started: number, log: (line: string) => void, signal?: AbortSignal }} FaultRun
  */
 
 /**
- * Runs one chaos profile when it is selected: `apply` injects the fault and observes its effect; `revert` undoes it
- * whenever the fault was applied, even after `apply` failed; `recover` observes recovery when nothing failed; `cleanup`
- * always runs last. The first failure becomes the fault's `fault-failed` error and every later one is attached to it as
- * its cleanup cause. A cancellation from any step is rethrown once the revert and cleanup ran.
+ * Runs one chaos profile when it is selected: `apply` injects the fault and observes its effect, calling `injecting`
+ * right before its first change to the target; `revert` undoes it whenever that change was attempted, even when it or
+ * the observation failed, so a revert must tolerate a fault that was only partly applied; `recover` observes recovery
+ * when nothing failed; `cleanup` always runs last. The first failure becomes the fault's `fault-failed` error and
+ * every later one is attached to it as its cleanup cause. A cancellation from any step is rethrown once the revert and
+ * cleanup ran.
  * @param {FaultRun} run
  * @param {FaultSpec} spec
  * @returns {Promise<FaultRecord | undefined>}
@@ -198,20 +202,29 @@ export async function exerciseProfile(run, { profile, target, parameters, apply,
 	/** @typedef {"apply" | "observe" | "recover"} FaultStage */
 	/** @type {{ error: unknown, stage: FaultStage }[]} */
 	const failures = [];
-	/** @param {FaultStep | undefined} step @param {() => FaultStage} stageOf */
+	let injected = false;
+	/** @param {(() => Promise<void>) | undefined} step @param {() => FaultStage} stageOf */
 	const attempt = async (step, stageOf) => {
 		if (step === undefined) return;
 		try {
-			await step(fault, mark);
+			await step();
 		} catch (error) {
 			failures.push({ error, stage: stageOf() });
 		}
 	};
+	/** @param {FaultStep | undefined} step */
+	const after = (step) => (step === undefined ? undefined : () => step(fault, mark));
 	mark("begin");
-	await attempt(apply, () => (fault.applied ? "observe" : "apply"));
-	if (fault.applied) await attempt(revert, () => "recover");
-	if (failures.length === 0) await attempt(recover, () => "recover");
-	await attempt(cleanup, () => "recover");
+	await attempt(
+		() =>
+			apply(fault, mark, () => {
+				injected = true;
+			}),
+		() => (fault.applied ? "observe" : "apply"),
+	);
+	if (injected || fault.applied) await attempt(after(revert), () => "recover");
+	if (failures.length === 0) await attempt(after(recover), () => "recover");
+	await attempt(after(cleanup), () => "recover");
 	if (failures.length === 0) {
 		mark("end");
 		return fault;
@@ -257,8 +270,7 @@ export async function runSmoke(ctx) {
 		"--token-file",
 		`${SECRETS}/token`,
 	];
-	/** @type {FaultRecord[]} */
-	const faults = [];
+	const faults = ctx.faults;
 	/** @type {FaultRun} */
 	const faultRun = {
 		profiles: ctx.profiles,
@@ -376,8 +388,9 @@ export async function runSmoke(ctx) {
 			profile,
 			target: host.name,
 			parameters: { kind, windowMs: 20_000 },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
 				const gatewayBefore = await gatewayRequests(ctx.primary);
+				injecting();
 				await host.run(rules.apply, { operation: `${profile} apply` });
 				fault.applied = true;
 				mark("applied");
@@ -415,10 +428,11 @@ export async function runSmoke(ctx) {
 			profile,
 			target: host.name,
 			parameters: { netem: parameters, windowMs: 20_000 },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
 				const baselineFrom = Date.now();
 				await sleep(15_000);
 				const baselineTo = Date.now();
+				injecting();
 				await host.run(script.apply, { operation: `${profile} apply` });
 				fault.applied = true;
 				mark("applied");
@@ -533,7 +547,8 @@ export async function runSmoke(ctx) {
 			profile: "sigstop",
 			target: writer.host.name,
 			parameters: { signal: "SIGSTOP", takeover: vmNode.name },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
+				injecting();
 				await writer.host.run(`sudo systemctl kill --signal=SIGSTOP --kill-whom=main ${shellQuote(writer.unit)}`, {
 					operation: "sigstop writer",
 				});
@@ -574,7 +589,8 @@ export async function runSmoke(ctx) {
 		profile: "clock-skew",
 		target: skewHost.name,
 		parameters: { offsetSeconds: 600 },
-		apply: async (fault, mark) => {
+		apply: async (fault, mark, injecting) => {
+			injecting();
 			await skewHost.run(
 				"sudo systemctl stop chrony 2>/dev/null || sudo systemctl stop chronyd 2>/dev/null || true; sudo date -s @$(( $(date +%s) + 600 )) >/dev/null",
 				{ operation: "skew clock" },
@@ -642,7 +658,7 @@ export async function runSmoke(ctx) {
 			profile: "oom",
 			target: first.name,
 			parameters: { memoryMaxMb: 384, hogMb: 2048 },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
 				await stopWriter(current);
 				const command = [
 					`NODE_EXTRA_CA_CERTS=${SECRETS}/ca.pem`,
@@ -671,6 +687,7 @@ export async function runSmoke(ctx) {
 				]
 					.map(shellQuote)
 					.join(" ");
+				injecting();
 				await first.run(
 					`echo +memory | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null; sudo mkdir -p ${cgroup} && echo 384M | sudo tee ${cgroup}/memory.max >/dev/null && echo 0 | sudo tee ${cgroup}/memory.swap.max >/dev/null
 sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${first.user} --regid=${first.user} --init-groups env ${command.replaceAll("'", "")} >> ${REMOTE_ROOT}/logs/${holder}.log 2>&1' </dev/null >/dev/null 2>&1 &`,
@@ -730,16 +747,30 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		});
 	}
 
+	/**
+	 * Starts the VM-fault node unless Azure reports it running, then waits until SSH answers.
+	 * @param {(event: string) => void} mark
+	 */
+	const ensureRunning = async (mark) => {
+		if ((await ctx.azure.vmFacts(vmNode.vmName)).powerState !== "VM running") {
+			await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
+			mark("start requested");
+		}
+		await vmNode.waitForSsh();
+		mark("running");
+	};
+
 	await exerciseProfile(faultRun, {
 		profile: "vm-restart",
 		target: vmNode.vmName,
 		parameters: {},
-		apply: async (fault, mark) => {
+		apply: async (fault, mark, injecting) => {
 			await stopWriter(current);
 			const holder = await startWriter(vmNode, {});
 			current = holder;
 			await waitAcks(holder, 3);
 			const bootBefore = (await vmNode.agent("facts", [])).bootId;
+			injecting();
 			await ctx.azure.vmPower(vmNode.vmName, "restart", { wait: false });
 			fault.applied = true;
 			mark("restart requested");
@@ -760,6 +791,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			fault.observed = { bootBefore, bootAfter, writerUnit: unit };
 			fault.effectObserved = unit.pid === 0;
 		},
+		revert: (_fault, mark) => ensureRunning(mark),
 		recover: async (fault, mark) => {
 			current = await startWriter(first, {});
 			const lease = await waitEvent(current, "lease", 240_000);
@@ -773,8 +805,9 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 		profile: "vm-deallocate",
 		target: vmNode.vmName,
 		parameters: {},
-		apply: async (fault, mark) => {
+		apply: async (fault, mark, injecting) => {
 			const bootBefore = (await vmNode.agent("facts", [])).bootId;
+			injecting();
 			await ctx.azure.vmPower(vmNode.vmName, "deallocate");
 			fault.applied = true;
 			const power = (await ctx.azure.vmFacts(vmNode.vmName)).powerState;
@@ -782,11 +815,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			fault.observed = { powerStateWhileDeallocated: power, bootBefore };
 			fault.effectObserved = power === "VM deallocated";
 		},
-		revert: async (_fault, mark) => {
-			await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
-			await vmNode.waitForSsh();
-			mark("started");
-		},
+		revert: (_fault, mark) => ensureRunning(mark),
 		recover: async (fault, mark) => {
 			const bootAfter = (await vmNode.agent("facts", [])).bootId;
 			fault.observed = { ...fault.observed, bootAfter };
@@ -805,8 +834,10 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			profile: "nic-detach",
 			target: vmNode.vmName,
 			parameters: { nic },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
 				const before = await ctx.azure.vmFacts(vmNode.vmName);
+				fault.observed = { nicsBefore: before.nics };
+				injecting();
 				await ctx.azure.vmPower(vmNode.vmName, "deallocate");
 				await ctx.azure.vmNic(vmNode.vmName, nic, "remove");
 				fault.applied = true;
@@ -822,12 +853,25 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 				fault.observed = { nicsBefore: before.nics, nicsDetached: detached.nics, guestLinksDetached: guestLinks };
 				fault.effectObserved = detached.nics === before.nics - 1;
 			},
-			revert: async (_fault, mark) => {
-				await ctx.azure.vmPower(vmNode.vmName, "deallocate");
-				await ctx.azure.vmNic(vmNode.vmName, nic, "add");
-				await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
-				await vmNode.waitForSsh();
-				mark("NIC restored");
+			revert: async (fault, mark) => {
+				/** @type {unknown} */
+				let failure;
+				try {
+					if ((await ctx.azure.vmFacts(vmNode.vmName)).nics < Number(fault.observed.nicsBefore)) {
+						await ctx.azure.vmPower(vmNode.vmName, "deallocate");
+						await ctx.azure.vmNic(vmNode.vmName, nic, "add");
+						mark("NIC re-added");
+					}
+				} catch (error) {
+					failure = error;
+				}
+				try {
+					await ensureRunning(mark);
+				} catch (error) {
+					if (failure === undefined) throw error;
+					attachCleanupFailure(failure, error);
+				}
+				if (failure !== undefined) throw failure;
 			},
 			recover: async (fault, mark) => {
 				const restored = await ctx.azure.vmFacts(vmNode.vmName);
@@ -940,11 +984,12 @@ async function runDiskProfiles(ctx, host, faultRun) {
 	/**
 	 * @typedef {{ records: () => Promise<import("./invariants.mjs").WriterRecord[]>, acks: () => Promise<number> }} LocalWriter
 	 * @typedef {(volume: ReturnType<typeof dmVolumeScript>, writer: LocalWriter, fault: FaultRecord, mark: (event: string) => void) => Promise<void>} DiskStep
+	 * @typedef {(volume: ReturnType<typeof dmVolumeScript>, writer: LocalWriter, fault: FaultRecord, mark: (event: string) => void, injecting: () => void) => Promise<void>} DiskApply
 	 */
 	/**
 	 * @param {string} profile
 	 * @param {number} sizeMb
-	 * @param {{ apply: DiskStep, revert: DiskStep, recover?: DiskStep }} steps
+	 * @param {{ apply: DiskApply, revert: DiskStep, recover?: DiskStep }} steps
 	 */
 	const local = (profile, sizeMb, steps) => {
 		const name = `adt-${profile}`;
@@ -966,7 +1011,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 			profile,
 			target: host.name,
 			parameters: { sizeMb },
-			apply: async (fault, mark) => {
+			apply: async (fault, mark, injecting) => {
 				await host.run(volume.create, { operation: `create ${name}` });
 				created = true;
 				await startAgentUnit(host, {
@@ -994,7 +1039,7 @@ async function runDiskProfiles(ctx, host, faultRun) {
 					signal: ctx.signal,
 					onTimeout: () => new Error(`${holder} did not start`),
 				});
-				await steps.apply(volume, writer, fault, mark);
+				await steps.apply(volume, writer, fault, mark, injecting);
 			},
 			revert: (fault, mark) => steps.revert(volume, writer, fault, mark),
 			recover: async (fault, mark) => {
@@ -1033,8 +1078,9 @@ async function runDiskProfiles(ctx, host, faultRun) {
 	};
 
 	await local("disk-full", 64, {
-		apply: async (volume, writer, fault, mark) => {
+		apply: async (volume, writer, fault, mark, injecting) => {
 			const before = await writer.acks();
+			injecting();
 			await host.run(
 				"fallocate -l $(( $(df --output=avail -B1 /mnt/adt-disk-full | tail -1) )) /mnt/adt-disk-full/filler || dd if=/dev/zero of=/mnt/adt-disk-full/filler bs=1M 2>/dev/null || true",
 				{ operation: "fill volume" },
@@ -1083,8 +1129,9 @@ async function runDiskProfiles(ctx, host, faultRun) {
 	});
 
 	await local("slow-disk", 256, {
-		apply: async (volume, writer, fault, mark) => {
+		apply: async (volume, writer, fault, mark, injecting) => {
 			const baseline = await host.json(volume.probe, { operation: "baseline probe" });
+			injecting();
 			await host.run(volume.swap("delay", 100), { operation: "swap in dm-delay" });
 			fault.applied = true;
 			mark("delay target active");
@@ -1110,10 +1157,11 @@ async function runDiskProfiles(ctx, host, faultRun) {
 	});
 
 	await local("io-error", 256, {
-		apply: async (volume, writer, fault, mark) => {
+		apply: async (volume, writer, fault, mark, injecting) => {
 			await host.run("sync", { operation: "flush before fault" });
 			const acked = (await writer.records()).filter((record) => record.event === "ack");
 			fault.observed = { acksBeforeFault: (acked.at(-1)?.index ?? -1) + 1 };
+			injecting();
 			await host.run(volume.swap("error"), { operation: "swap in dm-error" });
 			fault.applied = true;
 			mark("error target active");

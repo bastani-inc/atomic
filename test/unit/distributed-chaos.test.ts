@@ -301,6 +301,34 @@ test("a fault is reverted whenever it was injected, even when observing it faile
 	assert.ok(!record?.timeline.some((entry) => entry.event === "end"));
 });
 
+test("a fault is reverted once its injection started, even when the injecting command itself failed (#4331)", async () => {
+	const calls: string[] = [];
+	const faults: FaultRecord[] = [];
+	const record = await exerciseProfile(
+		{ profiles: ["nic-detach"], faults, started: performance.now(), log: () => {} },
+		{
+			profile: "nic-detach",
+			target: "n3",
+			parameters: {},
+			apply: async (fault, _mark, injecting) => {
+				fault.observed = { nicsBefore: 2 };
+				injecting();
+				calls.push("deallocate");
+				throw new Error("nic remove failed");
+			},
+			revert: async (fault) => {
+				calls.push(`revert with ${String(fault.observed.nicsBefore)} NICs`);
+			},
+			recover: async () => void calls.push("recover"),
+			cleanup: async () => void calls.push("cleanup"),
+		},
+	);
+	assert.deepEqual(calls, ["deallocate", "revert with 2 NICs", "cleanup"]);
+	assert.equal(record?.applied, false);
+	assert.equal(Reflect.get(record?.error?.fields ?? {}, "stage"), "apply");
+	assert.equal(record?.error?.cause?.message, "nic remove failed");
+});
+
 test("a fault that was never injected is not reverted, and cleanup still runs (#4331)", async () => {
 	const { record, calls } = await exercised({ apply: new Error("iptables missing") });
 	assert.deepEqual(calls, ["apply", "cleanup"]);
@@ -444,6 +472,15 @@ test("the artifact build fetches exactly the requested commit, builds it and pri
 		"cd /tmp/atomic-distributed-test-build && tar -I 'zstd -T0 -6' -cf atomic.tar.zst atomic",
 		"sha256sum /tmp/atomic-distributed-test-build/atomic.tar.zst | cut -d' ' -f1",
 	]);
+	assert.equal(
+		artifactBuildScript({
+			sha,
+			repository: "https://example.com/a b.git; rm -rf ~",
+			nodeVersion: "v24.22.0",
+			bunVersion: "1.4.4",
+		}).split("\n")[7],
+		"git init -q . && git remote add origin 'https://example.com/a b.git; rm -rf ~'",
+	);
 	for (const ref of ["main", sha.toUpperCase(), sha.slice(1), `${sha}0`, `x${sha}`, `${sha}x`, `${sha};rm -rf /`]) {
 		assert.throws(
 			() => artifactBuildScript({ sha: ref, repository: "r", nodeVersion: "v", bunVersion: "b" }),

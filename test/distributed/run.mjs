@@ -27,16 +27,18 @@ import {
 	parseRunArgs,
 	parseTopology,
 	readJsonInput,
+	remoteRefPatterns,
 	replayValues,
 	resolveRunOptions,
 	SUITES,
+	selectRemoteRef,
 } from "./harness/config.mjs";
 import {
 	attachCleanupFailure,
 	attachConcurrentFailures,
-	DistributedConfigError,
 	DistributedProvisionError,
 	DistributedTimeoutError,
+	isCancellation,
 	isDistributedTestError,
 	serializeDistributedError,
 } from "./harness/errors.mjs";
@@ -59,7 +61,7 @@ import {
 } from "./harness/remote.mjs";
 import { overallStatus, suiteStatus, writeReport } from "./harness/report.mjs";
 import { createRunSecrets, loadRunSecrets } from "./harness/secrets.mjs";
-import { bindViolations, gateVerdict } from "./harness/security.mjs";
+import { bindViolations, gateVerdict, publicAddressChecks } from "./harness/security.mjs";
 import { featureSkip, parseCapabilities, runSmoke, selectedSuites } from "./harness/suites.mjs";
 import { teardownRun } from "./harness/teardown.mjs";
 
@@ -96,24 +98,13 @@ function printError(message, error) {
  * @param {AbortSignal} signal
  */
 async function resolveRef(context, repository, ref, signal) {
-	if (/^[0-9a-f]{40}$/.test(ref)) return ref;
-	const result = await runCommand(
-		context,
-		"git",
-		["ls-remote", repository, ref, `refs/heads/${ref}`, `refs/tags/${ref}`],
-		{ operation: `resolve ${ref}`, timeoutMs: 60_000, signal },
-	);
-	const sha = result.stdout.trim().split("\n")[0]?.split("\t")[0] ?? "";
-	if (!/^[0-9a-f]{40}$/.test(sha)) {
-		throw new DistributedConfigError({
-			source: "cli",
-			field: "--ref",
-			reason: "invalid-value",
-			expected: "a commit SHA or a branch or tag pushed to origin",
-			actual: ref,
-		});
-	}
-	return sha;
+	if (/^[0-9a-f]{40}$/.test(ref)) return { sha: ref, refname: null };
+	const result = await runCommand(context, "git", ["ls-remote", repository, ...remoteRefPatterns(ref)], {
+		operation: `resolve ${ref}`,
+		timeoutMs: 60_000,
+		signal,
+	});
+	return selectRemoteRef(result.stdout, ref);
 }
 
 /**
@@ -318,14 +309,12 @@ async function securityGate(
 	{ azure, nodes, primary, replica, dbHosts, allowedSources, nics, gatewayPort, replicationPort, namespace, nvme },
 	checks,
 ) {
-	const addresses = await azure.publicAddresses();
-	for (const entry of addresses)
-		checks.push({
-			name: "zero-public-ips",
-			subject: entry.vm,
-			passed: entry.publicIps.length === 0,
-			observed: entry.publicIps,
-		});
+	checks.push(
+		...publicAddressChecks(
+			await azure.publicAddresses(),
+			azure.plan.vms.map((vm) => vm.name),
+		),
+	);
 	const publicIps = await azure.publicIpResources();
 	checks.push({
 		name: "no-public-ip-resources",
@@ -673,10 +662,11 @@ async function main() {
 						report.replay.artifactDigest = reused.artifact.digest;
 						return;
 					}
-					const sha = await timed("resolve-ref", () =>
+					const { sha, refname } = await timed("resolve-ref", () =>
 						resolveRef(context, topology.repository, options.ref, signal),
 					);
 					report.replay.sha = sha;
+					report.replay.refname = refname;
 					const runManifest = new Manifest(outDir, {
 						runId: plan.runId,
 						resourceGroup: plan.resourceGroup,
@@ -922,6 +912,8 @@ async function main() {
 			for (const suite of selectedSuites(options.suite)) {
 				const issue = /** @type {Record<string, string>} */ (SUITES)[suite];
 				if (suite === "smoke") {
+					/** @type {import("./harness/suites.mjs").FaultRecord[]} */
+					const faults = [];
 					const smoke = await timed("suite-smoke", () =>
 						runSmoke({
 							runId: plan.runId,
@@ -937,8 +929,19 @@ async function main() {
 							signal,
 							log,
 							started,
+							faults,
 						}),
-					);
+					).catch((error) => {
+						report.suites.push({
+							name: suite,
+							issue,
+							status: isCancellation(error, signal) ? "cancelled" : "failed",
+							reason: serializeDistributedError(error),
+							faults,
+						});
+						report.coverage = profileCoverage(faults, options.chaos);
+						throw error;
+					});
 					report.suites.push({
 						name: suite,
 						issue,

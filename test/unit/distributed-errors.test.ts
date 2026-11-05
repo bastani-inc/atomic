@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { AzureRun, checkPrerequisites, onPath, requiredTools } from "../distributed/harness/azure.mjs";
 import { runCommand } from "../distributed/harness/commands.mjs";
 import { buildPlan, parseRunArgs, parseTopology, resolveRunOptions } from "../distributed/harness/config.mjs";
 import {
+	agentCommandError,
+	agentFatal,
 	attachCleanupFailure,
 	attachConcurrentFailures,
 	DistributedCommandError,
@@ -234,6 +237,85 @@ test("failures of operations that ran beside the primary are kept with it, never
 		Reflect.get(rehydrateDistributedError(serializeDistributedError(alone)), "concurrentFailures"),
 		undefined,
 	);
+});
+
+test("a node agent's printed failure becomes the typed cause of its command error (#4331)", () => {
+	const stdout = [
+		'{"progress":1}',
+		'{"fatal":{"name":"Error","code":"EARLIER","message":"first"}}',
+		'  {"fatal":{"name":"StorageRollbackError","code":null,"message":"Storage rollback failed","cause":{"name":"StorageUnavailableError","code":"SQLITE_FULL","message":"disk is full"}}}  ',
+		"",
+	].join("\n");
+	assert.deepEqual(agentFatal(stdout), {
+		name: "StorageRollbackError",
+		code: "unclassified",
+		message: "Storage rollback failed",
+		retryable: false,
+		fields: {},
+		cause: {
+			name: "StorageUnavailableError",
+			code: "SQLITE_FULL",
+			message: "disk is full",
+			retryable: false,
+			fields: {},
+		},
+	});
+	assert.deepEqual(agentFatal('{"fatal":{"name":7,"code":3,"message":null,"cause":"text"}}'), {
+		name: "Error",
+		code: "unclassified",
+		message: "",
+		retryable: false,
+		fields: {},
+	});
+	assert.deepEqual(agentFatal('{"fatal":null}'), {
+		name: "Error",
+		code: "unclassified",
+		message: "",
+		retryable: false,
+		fields: {},
+	});
+	for (const output of ["", '{"result":[]}', '{"fatal":{"name":"Error"', ' {"fatal" : {}}', "fatal"])
+		assert.equal(agentFatal(output), undefined, output);
+	const error = agentCommandError({ tool: "ssh", operation: "n1: agent read", stdout });
+	assert.ok(isDistributedCommandError(error));
+	assert.deepEqual(error.fields, {
+		tool: "ssh",
+		operation: "n1: agent read",
+		exitCode: 1,
+		signal: null,
+		detail: "StorageRollbackError (unclassified)",
+	});
+	assert.equal(error.retryable, false);
+	const cause = error.cause as Error & { code: string; cause: Error & { code: string } };
+	assert.ok(isDistributedTestError(cause));
+	assert.deepEqual(
+		[cause.name, cause.code, cause.message],
+		["StorageRollbackError", "unclassified", "Storage rollback failed"],
+	);
+	assert.deepEqual([cause.cause.name, cause.cause.code], ["StorageUnavailableError", "SQLITE_FULL"]);
+	const bare = agentCommandError({ tool: "ssh", operation: "n1: agent facts", stdout: "Segmentation fault" });
+	assert.equal(bare.fields.detail, "the agent exited 1 without a fatal record");
+	assert.ok(!Object.hasOwn(bare, "cause"));
+	assert.deepEqual(serializeDistributedError(error).cause?.cause?.code, "SQLITE_FULL");
+});
+
+test("the real node agent's failure crosses the process boundary with its name and code (#4331)", async () => {
+	const agent = fileURLToPath(new URL("../distributed/node/agent.mjs", import.meta.url));
+	const refDir = join(mkdtempSync(join(tmpdir(), "adt-agent-")), "missing-ref");
+	const result = await runCommand(
+		context(),
+		node,
+		[agent, "read", "--ref-dir", refDir, "--journal", "local", "--path", join(refDir, "j.sqlite"), "--run", "r"],
+		{ operation: "agent read", timeoutMs: 20_000, allowExitCodes: [1] },
+	);
+	assert.equal(result.exitCode, 1);
+	const error = agentCommandError({ tool: "node", operation: "agent read", stdout: result.stdout });
+	assert.equal(error.fields.detail, "Error (MODULE_NOT_FOUND)");
+	assert.deepEqual(
+		[(error.cause as Error).name, Reflect.get(error.cause as object, "code")],
+		["Error", "MODULE_NOT_FOUND"],
+	);
+	assert.ok(isDistributedTestError(error.cause));
 });
 
 test("errors round-trip across a process boundary as the same class with fields and causes", () => {
