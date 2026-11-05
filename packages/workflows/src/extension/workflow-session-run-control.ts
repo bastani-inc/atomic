@@ -145,7 +145,7 @@ function controlOutcome(result: WorkflowToolResult): WorkflowRunControlOutcome {
 			result.code,
 			result.message,
 			result.runId,
-			"failure" in result && result.failure !== undefined ? rehydrateJournalStoreError(result.failure) : undefined,
+			"failure" in result ? rehydrateJournalStoreError(result.failure!) : undefined,
 			"failedRuns" in result ? result.failedRuns : undefined,
 		);
 	}

@@ -176,8 +176,8 @@ async function assertUserDatabase(journal: RunJournal, runsTable: string, option
 			code: "user-database-mismatch",
 			source,
 			reason,
-			...(options.userDatabase === undefined ? {} : { userDatabase: options.userDatabase }),
-			...(journal instanceof SqlRunJournal ? { journalPath: journal.path } : {}),
+			userDatabase: options.userDatabase,
+			journalPath: journal instanceof SqlRunJournal ? journal.path : undefined,
 		});
 	if (!(journal instanceof SqlRunJournal) || runsTable !== "wf_runs" || journal.path === ":memory:")
 		throw refused("unsupported-journal");

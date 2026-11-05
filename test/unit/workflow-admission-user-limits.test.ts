@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { WorkflowRunNotFoundError } from "@bastani/atomic";
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -9,6 +10,8 @@ import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
+import type { PiEventContext } from "../../packages/workflows/src/extension/public-types.js";
+import { createSessionRunControl } from "../../packages/workflows/src/extension/workflow-session-run-control.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import {
@@ -113,11 +116,13 @@ test("userDatabase that is not the run's journal file is refused with the reason
 	const backend = await JournalDurableBackend.open(await resolveRunJournal({ journal: { path } }));
 	const database = await openNodeSqliteDatabase(join(directory, "prefixed.sqlite"));
 	const prefixed = await SqlRunJournal.open(database, { prefix: "other_" });
+	const inMemory = await openNodeSqliteDatabase(":memory:");
+	const memory = await SqlRunJournal.open(inMemory);
 	try {
 		const refusal = async (open: () => Promise<unknown>) => {
 			const error = await open().catch((caught: Error) => caught);
 			assert.ok(isWorkflowAdmissionConfigError(error), String(error));
-			return [error.code, error.reason, error.userDatabase, error.journalPath];
+			return [error.code, error.reason, error.userDatabase, error.journalPath, error.source];
 		};
 		const viaRun = (userDatabase: string | undefined) => () =>
 			run(
@@ -130,8 +135,25 @@ test("userDatabase that is not the run's journal file is refused with the reason
 				},
 			);
 		const elsewhere = join(directory, "elsewhere.sqlite");
-		assert.deepEqual(await refusal(viaRun(elsewhere)), ["user-database-mismatch", "other-file", elsewhere, path]);
-		assert.deepEqual(await refusal(viaRun(undefined)), ["user-database-mismatch", "missing", undefined, path]);
+		assert.deepEqual(await refusal(viaRun(elsewhere)), [
+			"user-database-mismatch",
+			"other-file",
+			elsewhere,
+			path,
+			"sdk",
+		]);
+		assert.deepEqual(await refusal(viaRun(undefined)), ["user-database-mismatch", "missing", undefined, path, "sdk"]);
+		assert.deepEqual(
+			await refusal(() =>
+				SqlResourceAdmission.open(memory, {
+					root: "root",
+					holder: "holder",
+					userLimits: { session: 2 },
+					userDatabase: ":memory:",
+				}),
+			),
+			["user-database-mismatch", "unsupported-journal", ":memory:", ":memory:", "sdk"],
+		);
 		assert.deepEqual(
 			await refusal(() =>
 				SqlResourceAdmission.open(prefixed, {
@@ -146,9 +168,12 @@ test("userDatabase that is not the run's journal file is refused with the reason
 				"unsupported-journal",
 				join(directory, "prefixed.sqlite"),
 				join(directory, "prefixed.sqlite"),
+				"sdk",
 			],
 		);
 	} finally {
+		await memory.close();
+		await inMemory.close();
 		await prefixed.close();
 		await database.close();
 		await backend.close();
@@ -193,4 +218,54 @@ test("the refusal message is built from its fields, with the hint last (UX contr
 		}).message,
 		"Cannot enforce workflows.admission.userLimits: workflows.admission.userDatabase is refused: it is not the run's journal file (user-database-mismatch). Set workflows.journal.path to one SQLite file and workflows.admission.userDatabase to the same absolute path, or remove workflows.admission.userLimits.",
 	);
+});
+
+test("the family base and every guard branch are pinned by name, code and code type (#4325)", () => {
+	const base = new WorkflowAdmissionError("user-database-mismatch", "message", "hint");
+	assert.deepEqual([base.name, base.retryable, base.hint], ["WorkflowAdmissionError", false, "hint"]);
+	assert.ok(isWorkflowAdmissionError({ name: "WorkflowAdmissionError", code: "user-database-mismatch" }));
+	assert.equal(isWorkflowAdmissionError({ name: "WorkflowAdmissionError", code: 7 }), false);
+	assert.equal(isWorkflowAdmissionConfigError({ name: "WorkflowAdmissionConfigError", code: 7 }), false);
+	assert.ok(
+		isWorkflowAdmissionConfigError({ name: "WorkflowAdmissionConfigError", code: "user-limits-need-one-journal" }),
+	);
+	assert.equal(findWorkflowAdmissionError(new Error("outer", { cause: null })), undefined);
+	assert.equal(findWorkflowAdmissionError(null), undefined);
+});
+
+test("each refusal reason says what is wrong, and a refusal without a reason says the file is not the run's (#4325)", () => {
+	const message = (reason?: "unsupported-journal" | "missing" | "other-file") =>
+		new WorkflowAdmissionConfigError({ code: "user-database-mismatch", source: "sdk", reason }).message;
+	assert.ok(message("unsupported-journal").includes("the run's journal is not a default-prefix local SQLite file"));
+	assert.ok(message("missing").includes("is refused: it is not set"));
+	assert.ok(message("other-file").includes("is refused: it is not the run's journal file"));
+	assert.ok(message().includes("is refused: it is not the run's journal file"));
+	const refused = new WorkflowAdmissionConfigError({ code: "user-limits-need-one-journal", source: "sdk" });
+	assert.deepEqual(
+		[refused.code, refused.reason, refused.userDatabase, refused.journalPath],
+		["user-limits-need-one-journal", undefined, undefined, undefined],
+	);
+});
+
+test("a run_not_found result without a typed error is rethrown without a cause (#4325)", async () => {
+	const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
+	const control = createSessionRunControl({
+		execute: async () => ({
+			action: "pause",
+			runId: id,
+			status: "noop",
+			message: "not found",
+			code: "run_not_found",
+		}),
+		context: (): PiEventContext => ({
+			sessionManager: { getSessionId: () => "session" },
+			cwd: directory,
+			ui: { notify: () => undefined },
+			hasUI: false,
+		}),
+		store: createStore(),
+	});
+	const rejected = await control.pause(id).catch((error: Error) => error);
+	assert.ok(rejected instanceof WorkflowRunNotFoundError);
+	assert.equal(rejected.cause, undefined);
 });
