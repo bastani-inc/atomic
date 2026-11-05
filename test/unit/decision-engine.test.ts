@@ -8,12 +8,20 @@ import {
 	isDecisionTimeoutError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import { generateStructuredOutput, routeModel } from "../../packages/coding-agent/src/core/structured-output/index.js";
+import {
+	ClassifierDecisionError,
+	generateStructuredOutput,
+	routeModel,
+	runDecision,
+} from "../../packages/coding-agent/src/core/structured-output/index.js";
 import {
 	carriedProviderFailure,
 	withProviderFailure,
 } from "../../packages/coding-agent/src/core/structured-output/provider-failure.js";
-import type { StructuredDecisionQuestion } from "../../packages/coding-agent/src/core/structured-output/types.js";
+import type {
+	DecisionModelRequest,
+	StructuredDecisionQuestion,
+} from "../../packages/coding-agent/src/core/structured-output/types.js";
 import {
 	choiceDecisionSchema,
 	decisionChatModel,
@@ -387,3 +395,90 @@ test("auto routing asks the decision model to choose among the shortlist with th
 		latency_sensitive: false,
 	});
 });
+
+const MIXED_QUESTIONS: Record<string, StructuredDecisionQuestion> = {
+	route: { instructions: "Which route?", criteria: { none: "No route fits", review: "Review the patch" } },
+	yes: { type: "bool", instructions: "Yes?", criteria: { true: "Yes", false: "No" } },
+	grade: { type: "score", instructions: "Grade", criteria: ["low", "high"] },
+};
+
+const MIXED_ANSWERS = {
+	route: { type: "choice", choice: "review", probabilities: { none: 0.1, review: 0.9 }, confidence: 0.9 },
+	yes: { type: "bool", probability: 0.8 },
+	grade: { type: "score", score: 1, confidence: 0.7 },
+} as const;
+
+function classifierOnlyDecision(
+	answers: Record<string, unknown>,
+	decode: DecisionModelRequest<typeof choiceDecisionSchema>["classifier"]["decode"],
+) {
+	return runDecision(
+		{
+			...decisionRequest(),
+			settings: SettingsManager.inMemory({ decisionModel: "decision-test/classifier" }),
+			schema: choiceDecisionSchema,
+			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
+			modelRegistry: {
+				getAll: () => [decisionChatModel],
+				streamSimple: vi.fn(),
+				getClassifierModel: () => decisionClassifier,
+				classify: async () =>
+					({
+						api: decisionClassifier.api,
+						provider: decisionClassifier.provider,
+						model: decisionClassifier.id,
+						answers,
+						stopReason: "stop",
+						timestamp: 1,
+					}) as never,
+			},
+			classifier: { questions: MIXED_QUESTIONS, decode },
+		},
+		undefined,
+		{ chatFallback: false },
+	);
+}
+
+test("a classifier decision hands decode only Choice answers as choices, and every answer with its probabilities", async () => {
+	let choiceKeys: string[] = [];
+	let answers: Readonly<Record<string, unknown>> = {};
+	const result = await classifierOnlyDecision(MIXED_ANSWERS, (choices, received) => {
+		choiceKeys = Object.keys(choices);
+		answers = received;
+		return { route: choices.route as "none" | "review" };
+	});
+	assert.deepEqual(result.value, { route: "review" });
+	assert.deepEqual(choiceKeys, ["route"]);
+	assert.deepEqual(answers, MIXED_ANSWERS);
+});
+
+for (const [label, answer] of [
+	["a score that is not finite", { grade: { type: "score", score: Number.POSITIVE_INFINITY, confidence: 1 } }],
+	["a yes/no answer to a score question", { grade: { type: "bool", probability: 0.9 } }],
+	["a yes/no probability that is not finite", { yes: { type: "bool", probability: Number.NaN } }],
+	[
+		"an option the question does not offer",
+		{ route: { type: "choice", choice: "maybe", probabilities: {}, confidence: 1 } },
+	],
+	[
+		"another type's answer to a Choice question that names an offered option",
+		{ route: { type: "bool", probability: 0.9, choice: "review" } },
+	],
+	[
+		"another type's answer to a yes/no question that carries a probability",
+		{ yes: { type: "score", score: 1, confidence: 1, probability: 0.9 } },
+	],
+	[
+		"another type's answer to a score question that carries a score",
+		{ grade: { type: "bool", probability: 0.9, score: 1 } },
+	],
+] as const) {
+	test(`a classifier answer with ${label} is refused even when decode would ignore it`, async () => {
+		const decode = vi.fn(() => ({ route: "review" as const }));
+		await assert.rejects(
+			classifierOnlyDecision({ ...MIXED_ANSWERS, ...answer }, decode),
+			(error: unknown) => error instanceof ClassifierDecisionError && error.kind === "answer",
+		);
+		assert.equal(decode.mock.calls.length, 0);
+	});
+}

@@ -156,3 +156,31 @@ test("the decision deadline follows the session's httpIdleTimeoutMs (#3806)", as
 	assert.match(result.error.message, /^Decision timed out: no answer within its 120000ms deadline/);
 	assert.ok(elapsedMs >= 120_000 && elapsedMs <= 120_000 + DEADLINE_SLACK_MS, `routing took ${elapsedMs}ms`);
 });
+
+test("a router that hangs on the model choice stops at the caller's deadline, not the decision deadline", async () => {
+	const provider = new RoutingProvider({ kind: "answer", latencyMs: 10 });
+	let inferences = 0;
+	const hangOnModelChoice = <T>(run: () => Promise<T>): Promise<T> => {
+		inferences += 1;
+		if (inferences === 2) provider.behavior = { kind: "hang", honorsAbort: true };
+		return run();
+	};
+	const started = Date.now();
+	const settlement = recordSettlement(
+		routeExecutionModel({
+			ctx: routingContext(provider, true),
+			task: "Review the change",
+			agent: { name: "reviewer", description: "Reviews code" },
+			inference: { deadline: deadlineAfter(CALLER_DEADLINE_MS), limit: hangOnModelChoice },
+		}),
+	);
+	await settleVirtually(settlement);
+	const result = await settlement;
+	assert.ok(!result.ok, "routing unexpectedly produced a route");
+	assert.ok(result.error instanceof AutoRoutingInferenceError);
+	assert.match(result.error.message, /timed out waiting for the routing model/);
+	assert.equal(inferences, 2);
+	assert.equal(provider.aborted, 1);
+	const elapsedMs = result.at - started;
+	assert.ok(elapsedMs <= CALLER_DEADLINE_MS + DEADLINE_SLACK_MS, `routing took ${elapsedMs}ms of virtual time`);
+});

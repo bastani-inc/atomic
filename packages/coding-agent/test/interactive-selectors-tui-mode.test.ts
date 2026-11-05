@@ -191,3 +191,23 @@ test("toggling Debug mode saves it and turns debug mode on for this process at o
 		mode.ui.stop();
 	}
 });
+
+test("settings selector saves the decision model without changing the chat model (#4358)", () => {
+	const { mode, selector, session, settingsManager } = openSettingsSelector();
+	const chatModel = session.model;
+	try {
+		const list = selector.getSettingsList();
+		for (const character of "Decision model") list.handleInput(character);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Decision model\s+Automatic/);
+		list.handleInput("\r");
+		for (const character of "openai/gpt-4.1-mini") list.handleInput(character);
+		list.handleInput("\r");
+		assert.equal(settingsManager.getDecisionModel(), "openai/gpt-4.1-mini");
+		assert.equal(settingsManager.getGlobalSettings().decisionModel, "openai/gpt-4.1-mini");
+		assert.equal(settingsManager.getProjectSettings().decisionModel, undefined);
+		assert.equal(session.model, chatModel);
+		assert.match(stripTerminalSequences(list.render(120).join("\n")), /Decision model\s+openai\/gpt-4\.1-mini/);
+	} finally {
+		mode.ui.stop();
+	}
+});

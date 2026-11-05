@@ -159,6 +159,14 @@ test("the user's message is read from a typed chat answer and from message conte
 	);
 	assert.equal(userMessageText([{ type: "image", data: "x" }]), undefined);
 	assert.equal(userMessageText([null, { type: "text" }]), undefined);
+	assert.equal(
+		userMessageText([
+			{ type: "text", text: "  " },
+			{ type: "text", text: "" },
+		]),
+		undefined,
+	);
+	assert.equal(userMessageText([{ type: "text", text: " Look here " }]), "Look here");
 	assert.equal(userMessageText(undefined), undefined);
 });
 

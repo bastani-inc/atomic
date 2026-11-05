@@ -116,6 +116,32 @@ test("each class renders its message and hint once, as a UX contract (#4358)", (
 	);
 });
 
+test("each invalid-request reason carries its own corrective hint", () => {
+	const hints = Object.fromEntries(
+		(
+			[
+				"invalid-state",
+				"no-questions",
+				"invalid-question",
+				"invalid-instructions",
+				"invalid-deadline",
+				"invalid-model",
+				"credential-in-state",
+			] as const
+		).map((reason) => [reason, new DecisionRequestError({ field: "state", reason }).hint]),
+	);
+	assert.deepEqual(hints, {
+		"invalid-state": "Pass state as a nonempty object of finite, acyclic JSON values.",
+		"no-questions": "Pass at least one question.",
+		"invalid-question":
+			'Give each question a nonempty ID and instructions; a "choice" needs described options, a "bool" describes true and false, a "score" lists its levels.',
+		"invalid-instructions": "Pass instructions as nonempty text, or omit them.",
+		"invalid-deadline": "Pass deadline as a positive integer number of milliseconds, or omit it.",
+		"invalid-model": 'Pass model as an exact provider/model ID other than "auto", or omit it.',
+		"credential-in-state": "Remove credentials from state; a decision never sends them to a model.",
+	});
+});
+
 test("each class carries its code, retry semantics and only the fields that are set", () => {
 	assert.deepEqual(
 		Object.entries(ERRORS).map(([key, error]) => [key, error.code, error.retryable, error.fields()]),
