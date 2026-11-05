@@ -99,7 +99,11 @@ test("each warning of a restore and each later restore of the same snapshot is i
 	const restores = notices.filter((notice) => notice.level === "info");
 	const leftovers = notices.filter((notice) => notice.level === "warning");
 	assert.equal(restores.length, 2);
-	assert.equal(leftovers.length, 4);
+	assert.deepEqual(
+		leftovers.map((notice) => notice.id.split(":").at(-1)),
+		["0", "1", "0", "1"],
+		"warnings are numbered in the order each resume reported them",
+	);
 	for (const notice of notices) assert.equal(store.ackNotice(notice.id), true, notice.id);
 	await fixture.close();
 });
