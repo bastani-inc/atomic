@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, vi } from "vitest";
 
-const reads = vi.hoisted(() => ({ paths: [] as string[] }));
+const reads = vi.hoisted(() => ({ paths: [] as string[], deniedPaths: new Set<string>() }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -12,6 +12,8 @@ vi.mock("node:fs", async (importOriginal) => {
 		...actual,
 		readFileSync: ((path: string, ...rest: unknown[]) => {
 			reads.paths.push(String(path));
+			if (reads.deniedPaths.has(String(path)))
+				throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
 			return (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...rest);
 		}) as typeof actual.readFileSync,
 	};
@@ -105,10 +107,14 @@ describe("git install command (#4322)", () => {
 		try {
 			const unreadable = join(dir, "unreadable");
 			const fallback = join(dir, "fallback");
-			mkdirSync(unreadable);
+			writeFileSync(unreadable, "ID=void\n");
 			writeFileSync(fallback, "ID=arch\n");
+			reads.deniedPaths.add(unreadable);
+			const readsBefore = reads.paths.length;
 			assert.equal(readOsRelease([unreadable, fallback]), undefined);
+			assert.deepEqual(reads.paths.slice(readsBefore), [unreadable]);
 		} finally {
+			reads.deniedPaths.clear();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
