@@ -129,6 +129,7 @@ test("ForkDefinitionMismatchError renders each reason as a stable message and hi
 test("ForkSourceBusyError renders each reason as a stable message and hint (#4321)", () => {
 	const retry = "Retry after the other fork or resume finishes.";
 	const quit = `Pause or quit the run (/workflow quit ${runId}), then fork it.`;
+	const leaseLost = `The fork lost its source claim before writing. Check /workflow status ${runId} and retry once the source is paused or idle.`;
 	assertCases([
 		{
 			error: new ForkSourceBusyError({ runId, reason: "fork-in-progress" }),
@@ -149,12 +150,30 @@ test("ForkSourceBusyError renders each reason as a stable message and hint (#432
 			fields: { runId, reason: "live-execution" },
 		},
 		{
+			error: new ForkSourceBusyError({ runId, reason: "lease-lost" }),
+			message: `Fork source busy: run ${runId} no longer matches this fork's lease claim (source-busy). ${leaseLost}`,
+			hint: leaseLost,
+			fields: { runId, reason: "lease-lost" },
+		},
+		{
 			error: new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: "host-b" }),
 			message: `Fork source busy: run ${runId} is held by another Atomic process (source-busy). ${quit}`,
 			hint: quit,
 			fields: { runId, reason: "foreign-lease", holderId: "host-b" },
 		},
 	]);
+});
+
+test("a ForkSourceBusyError keeps its cause across the wire (#4321)", () => {
+	const cause = Object.assign(new Error("Stale lease for run"), { name: "StaleLeaseError" });
+	const busy = new ForkSourceBusyError({ runId, reason: "lease-lost" }, { cause });
+	assert.equal(busy.cause, cause);
+	const back = rehydrateForkError(JSON.parse(JSON.stringify(busy)) as SerializedForkError);
+	assert.ok(back instanceof ForkSourceBusyError);
+	assert.deepEqual(
+		[back.reason, back.retryable, back.cause instanceof Error && back.cause.name],
+		["lease-lost", true, "StaleLeaseError"],
+	);
 });
 
 test("ForkEntryNotFoundError renders the entry and stage as a stable message and hint (#4321)", () => {

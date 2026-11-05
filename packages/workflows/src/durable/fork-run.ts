@@ -52,6 +52,7 @@ import {
 	type RunEvent,
 	type RunJournal,
 	type RunJournalSeedEvent,
+	StaleLeaseError,
 } from "./journal/types.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
@@ -474,7 +475,20 @@ class ForkCleanup {
 	}
 }
 
+/** How often a fork renews its claim on the source: a quarter of the window after which others may take it over. */
+const SOURCE_CLAIM_RENEW_MS = FOREIGN_LIVE_WORKFLOW_WINDOW_MS / 4;
+
 interface SourceClaim {
+	/**
+	 * Renews the claim and so proves, by the journal's clock and lease epoch, that nobody took the source over
+	 * since it was claimed. A takeover starts a new epoch, so a renewal that succeeds also proves none happened
+	 * earlier. Rejects with `ForkSourceBusyError` (`lease-lost`) once the source was taken over, and with
+	 * `ForkJournalUnavailableError` (`claim`) when the journal cannot answer.
+	 */
+	assertHeld(): Promise<void>;
+	/** Throws the typed failure as soon as a periodic renewal found the source taken over. Never reads the journal. */
+	throwIfLost(): void;
+	/** Stops the periodic renewal, waits for the one in flight, and releases the claim unless it was lost. */
 	release(): Promise<void>;
 }
 
@@ -495,26 +509,144 @@ async function claimSource(
 	try {
 		const claim = { runId, phase: "claim" } as const;
 		const current = await inJournal(backend.journal, claim, () => backend.journal.leaseState(runId));
-		if (current?.holderId === backend.holderId) return { release: async () => releaseLocal() };
+		// This process already holds the source's lease (its run ended here): that lease is kept alive and checked
+		// like one the fork takes, and left to its holder at the end.
+		if (current?.holderId === backend.holderId)
+			return heldSourceClaim(
+				backend,
+				{ runId, holderId: current.holderId, epoch: current.epoch },
+				releaseLocal,
+				false,
+			);
 		const outcome = await inJournal(backend.journal, claim, () =>
 			backend.journal.takeoverExpired(runId, `fork:${randomUUID()}`, FOREIGN_LIVE_WORKFLOW_WINDOW_MS),
 		);
 		if (outcome.status === "held")
 			throw new ForkSourceBusyError({ runId, reason: "foreign-lease", holderId: outcome.holderId ?? undefined });
-		const lease: Lease = outcome.lease;
-		return {
-			release: async () => {
-				try {
-					await backend.journal.release(lease);
-				} finally {
-					releaseLocal();
-				}
-			},
-		};
+		return heldSourceClaim(backend, outcome.lease, releaseLocal, true);
 	} catch (error) {
 		releaseLocal();
 		throw error;
 	}
+}
+
+/** A `StaleLeaseError`, also one that crossed a bundle or realm boundary: by class, then by name, never by message. */
+function isStaleLease(error: unknown): error is Error {
+	return error instanceof StaleLeaseError || (error instanceof Error && error.name === "StaleLeaseError");
+}
+
+/**
+ * The claim on a source whose journal lease the fork holds (`fromFork`) or this process already held. The lease lapses after
+ * {@link FOREIGN_LIVE_WORKFLOW_WINDOW_MS} without a renewal, after which a resume may take the run over, so it is
+ * renewed every {@link SOURCE_CLAIM_RENEW_MS} until released. A renewal that finds the lease taken over is
+ * remembered as a `ForkSourceBusyError` and ends the renewals; a renewal the journal fails is retried on the next
+ * tick, and `assertHeld` reports a failure that persists.
+ *
+ * What this guarantees: the fork materializes everything it reads from the source (journal events, then every
+ * session entry) and calls `assertHeld` after that and before it writes. A takeover starts a new lease epoch and
+ * the renewal checks the epoch, so a renewal that succeeds proves the source was not taken over, and so was not
+ * written by a resume, at any time since the claim; the snapshot is one consistent state of the source. Nothing is
+ * read from the source afterwards, so the write itself needs no fence: a takeover is possible only
+ * {@link FOREIGN_LIVE_WORKFLOW_WINDOW_MS} after the last renewal, and it cannot change a snapshot already read.
+ * A holder that was paused past its own lease and writes after waking is fenced out of the journal by its stale
+ * epoch; its writes to a session store are not.
+ */
+function heldSourceClaim(
+	backend: JournalDurableBackend,
+	lease: Lease,
+	releaseLocal: () => void,
+	fromFork: boolean,
+): SourceClaim {
+	const { runId } = lease;
+	let lost: ForkSourceBusyError | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let inFlight: Promise<void> | undefined;
+	let stopped = false;
+	const renew = async (): Promise<void> => {
+		try {
+			await backend.journal.renew(lease);
+		} catch (error) {
+			if (isStaleLease(error)) {
+				// The epoch changed: the source was taken over. Who holds it now is not known from here.
+				lost = new ForkSourceBusyError({ runId, reason: "lease-lost" }, { cause: error });
+				throw lost;
+			}
+			if (!(error instanceof StorageError)) throw error;
+			throw new ForkJournalUnavailableError(
+				{ runId, phase: "claim", storage: journalStorage(backend.journal) },
+				{ cause: error },
+			);
+		}
+	};
+	let warned = false;
+	let timerFailure: unknown;
+	const tick = async (): Promise<void> => {
+		try {
+			await renew();
+			warned = false;
+		} catch (error) {
+			// A lost lease is thrown by the next `assertHeld`. Any other failure is retried on the next tick, and
+			// logged once per streak of failures, with what failed as the cause, instead of being dropped.
+			if (error === lost) return;
+			const typed =
+				error instanceof ForkJournalUnavailableError
+					? error
+					: new ForkJournalUnavailableError(
+							{ runId, phase: "claim", storage: journalStorage(backend.journal) },
+							{ cause: error as Error },
+						);
+			if (!warned) {
+				warned = true;
+				console.warn(typed);
+			}
+		}
+	};
+	const schedule = () => {
+		if (stopped || lost !== undefined) return;
+		timer = setTimeout(() => {
+			inFlight = tick().then(
+				() => {
+					inFlight = undefined;
+					schedule();
+				},
+				(error) => {
+					// Only the report of a failure can fail here; `release` throws it once the release was attempted.
+					timerFailure = error;
+					inFlight = undefined;
+					schedule();
+				},
+			);
+		}, SOURCE_CLAIM_RENEW_MS);
+		timer.unref?.();
+	};
+	schedule();
+	return {
+		assertHeld: async () => {
+			await inFlight;
+			if (lost !== undefined) throw lost;
+			await renew();
+			// A renewal that finds the source taken over can finish while this one's reply is still on its way.
+			if (lost !== undefined) throw lost;
+		},
+		throwIfLost: () => {
+			if (lost !== undefined) throw lost;
+		},
+		release: async () => {
+			stopped = true;
+			clearTimeout(timer);
+			let failure: unknown = timerFailure;
+			try {
+				await inFlight;
+				if (fromFork && lost === undefined) await backend.journal.release(lease);
+			} catch (error) {
+				failure =
+					failure === undefined ? error : new AggregateError([failure, error], "The claim was not released");
+			} finally {
+				releaseLocal();
+			}
+			if (failure !== undefined) throw failure;
+		},
+	};
 }
 
 async function resolveForkDefinition(
@@ -969,7 +1101,7 @@ export async function forkDurableRun<
 			const sessionId = checkpoint.kind === "stage" ? stageSessionId(checkpoint) : undefined;
 			return sessionId === undefined ? [] : [{ sessionId, checkpoint: checkpoint as DurableStageCheckpoint }];
 		});
-		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup);
+		const copied = await copySessions(source, sessionCheckpoints, ids, request, cleanup, claim);
 		let retainCopies = false;
 		try {
 			request.signal?.throwIfAborted();
@@ -996,6 +1128,8 @@ export async function forkDurableRun<
 					} as RunEvent,
 				},
 			];
+			// Everything read from the source is in memory: if the claim still holds, it is one consistent state.
+			await claim.assertHeld();
 			let created: "created" | "exists" | undefined;
 			let writeFailure: Error | undefined;
 			try {
@@ -1087,6 +1221,7 @@ async function readSessions(
 	sessions: readonly { readonly sessionId: string; readonly checkpoint: DurableStageCheckpoint }[],
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
+	claim: SourceClaim,
 ): Promise<SessionSnapshots> {
 	const sourceStore = await sourceSessionStoreFor(source.handle, request, request.cwd);
 	const snapshots: SessionSnapshots = new Map();
@@ -1097,6 +1232,7 @@ async function readSessions(
 				if (known.checkpoint.topology === undefined) snapshots.set(sessionId, { ...known, checkpoint });
 				continue;
 			}
+			claim.throwIfLost();
 			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
 			snapshots.set(sessionId, { entries: snapshot.entries, checkpoint });
 		}
@@ -1112,10 +1248,13 @@ async function copySessions(
 	ids: ForkIdentities,
 	request: ResolvedForkRequest,
 	cleanup: ForkCleanup,
+	claim: SourceClaim,
 ): Promise<CopiedSessions | undefined> {
 	if (sessions.length === 0) return undefined;
-	const snapshots = await readSessions(source, sessions, request, cleanup);
+	await claim.assertHeld();
+	const snapshots = await readSessions(source, sessions, request, cleanup, claim);
 	request.signal?.throwIfAborted();
+	await claim.assertHeld();
 	const owned = request.sessionStore === undefined;
 	const created: string[] = [];
 	let destination: SessionStore | undefined;
@@ -1124,6 +1263,7 @@ async function copySessions(
 			request.sessionStore ?? (await stageSessionStore({ cwd: forkSessionStoreCwd(source.handle, request.cwd) }));
 		for (const [sessionId, { entries, checkpoint }] of snapshots) {
 			request.signal?.throwIfAborted();
+			claim.throwIfLost();
 			const id = randomUUID();
 			await destination.create(
 				{

@@ -7,9 +7,9 @@ import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/
 /**
  * Forks a run in a SQLite journal file from a separate process, for the fork chaos tests. Prints one JSON line per
  * event: `claimed` once the source claim is taken, `copying` right before the single fork transaction, then one
- * `attempt` line per fork. Usage: fork-chaos-child.ts <path> <sourceRunId> <attempts> [fromStage] [skewMs]
+ * `attempt` line per fork. Usage: fork-chaos-child.ts <path> <sourceRunId> <attempts> [fromStage] [skewMs] [stopAfterClaim]
  */
-const [path, sourceRunId, attemptsText, fromStage, skewText] = process.argv.slice(2);
+const [path, sourceRunId, attemptsText, fromStage, skewText, stopAfterClaim] = process.argv.slice(2);
 const skewMs = Number(skewText ?? "0");
 if (skewMs !== 0) {
 	const now = Date.now.bind(Date);
@@ -18,9 +18,16 @@ if (skewMs !== 0) {
 const definition = workflow({ name: "chaos-source", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
 const journal = await openSqlRunJournal(path!);
 const takeover = journal.takeoverExpired.bind(journal);
+let stoppedAfterClaim = false;
 journal.takeoverExpired = async (runId, holderId, staleAfterMs) => {
 	const outcome = await takeover(runId, holderId, staleAfterMs);
-	if (outcome.status === "acquired" && holderId.startsWith("fork:")) console.log(JSON.stringify({ event: "claimed" }));
+	if (outcome.status === "acquired" && holderId.startsWith("fork:")) {
+		console.log(JSON.stringify({ event: "claimed" }));
+		if (stopAfterClaim === "1" && !stoppedAfterClaim) {
+			stoppedAfterClaim = true;
+			process.kill(process.pid, "SIGSTOP");
+		}
+	}
 	return outcome;
 };
 const create = journal.createRunWithEvents.bind(journal);
@@ -50,7 +57,7 @@ try {
 					process.exitCode = 1;
 					break;
 				}
-				write({ event: "attempt", ok: false, name: error.name, code: error.code, retryable: error.retryable });
+				write({ event: "attempt", ok: false, name: error.name, code: error.code, retryable: error.retryable, reason: error.fields.reason });
 				if (!error.retryable) break;
 				await new Promise((resolve) => setTimeout(resolve, 10 + Math.floor(Math.random() * 40)));
 			}

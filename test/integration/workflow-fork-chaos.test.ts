@@ -139,7 +139,7 @@ interface Forker {
 function spawnForker(
 	journal: ChaosJournal,
 	attempts: number,
-	options: { readonly fromStage?: string; readonly skewMs?: number } = {},
+	options: { readonly fromStage?: string; readonly skewMs?: number; readonly stopAfterClaim?: boolean } = {},
 ): Forker {
 	const spawned = spawnProcess(
 		[
@@ -150,6 +150,7 @@ function spawnForker(
 			String(attempts),
 			options.fromStage ?? "",
 			String(options.skewMs ?? 0),
+			options.stopAfterClaim === true ? "1" : "0",
 		],
 		{ stdout: "pipe", stderr: "pipe" },
 	);
@@ -233,7 +234,7 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const journal = await seededJournal("fork-chaos-stop", 50);
 		const before = await sourceHash(journal.path, journal.sourceId);
-		const stopped = spawnForker(journal, 1, { skewMs: 3_600_000 });
+		const stopped = spawnForker(journal, 1, { skewMs: 3_600_000, stopAfterClaim: true });
 		await until(stopped.lines, "claimed");
 		try {
 			stopped.process.kill("SIGSTOP");
@@ -252,8 +253,13 @@ test.skipIf(process.platform === "win32")(
 		} finally {
 			stopped.process.kill("SIGCONT");
 		}
-		const resumed = await until(stopped.lines, "attempt");
-		assert.equal(resumed.ok, true, JSON.stringify(resumed));
+		const lost = await until(stopped.lines, "attempt");
+		assert.ok(isForkSourceBusyError(lost), JSON.stringify(lost));
+		assert.equal(lost.code, "source-busy");
+		assert.equal(lost.reason, "lease-lost");
+		assert.equal(lost.retryable, true);
+		const recovered = await until(stopped.lines, "attempt");
+		assert.equal(recovered.ok, true, JSON.stringify(recovered));
 		assert.equal(await stopped.process.exited, 0, await stopped.stderr);
 		const forks = await assertOnlyCompleteForks(journal.path, journal.sourceId, journal.checkpoints);
 		assert.equal(forks.length, 2);

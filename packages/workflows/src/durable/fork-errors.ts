@@ -259,13 +259,19 @@ export class ForkDefinitionMismatchError extends ForkError {
 	}
 }
 
-export type ForkSourceBusyReason = "fork-in-progress" | "resume-in-progress" | "live-execution" | "foreign-lease";
+export type ForkSourceBusyReason =
+	| "fork-in-progress"
+	| "resume-in-progress"
+	| "live-execution"
+	| "foreign-lease"
+	| "lease-lost";
 
 const BUSY_SUBJECTS: Record<ForkSourceBusyReason, string> = {
 	"fork-in-progress": "is already being forked",
 	"resume-in-progress": "is being resumed",
 	"live-execution": "is executing in this process",
 	"foreign-lease": "is held by another Atomic process",
+	"lease-lost": "no longer matches this fork's lease claim",
 };
 
 /** Another fork, a resume or a live execution holds the source run. Nothing was written; retry once it settles. */
@@ -278,7 +284,10 @@ export class ForkSourceBusyError extends ForkError {
 	/** Lease holder of another process, when the run is held there. */
 	readonly holderId?: string;
 
-	constructor(input: { readonly runId: string; readonly reason: ForkSourceBusyReason; readonly holderId?: string }) {
+	constructor(
+		input: { readonly runId: string; readonly reason: ForkSourceBusyReason; readonly holderId?: string },
+		options?: { readonly cause?: Error },
+	) {
 		super({
 			name: "ForkSourceBusyError",
 			code: "source-busy",
@@ -287,9 +296,12 @@ export class ForkSourceBusyError extends ForkError {
 			hint:
 				input.reason === "fork-in-progress" || input.reason === "resume-in-progress"
 					? "Retry after the other fork or resume finishes."
-					: `Pause or quit the run (/workflow quit ${input.runId}), then fork it.`,
+					: input.reason === "lease-lost"
+						? `The fork lost its source claim before writing. Check /workflow status ${input.runId} and retry once the source is paused or idle.`
+						: `Pause or quit the run (/workflow quit ${input.runId}), then fork it.`,
 			retryable: true,
 			fields: { runId: input.runId, reason: input.reason, holderId: input.holderId },
+			cause: options?.cause,
 		});
 		this.runId = input.runId;
 		this.reason = input.reason;
@@ -441,7 +453,8 @@ export type ForkConfigField =
 	| "definition"
 	| "registry"
 	| "signal"
-	| "localWorkers";
+	| "localWorkers"
+	| "admission";
 
 /** One invalid fork option: the option and what its value must be. */
 export interface ForkConfigIssue {
@@ -950,12 +963,15 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			},
 			{ cause },
 		),
-	ForkSourceBusyError: (f) =>
-		new ForkSourceBusyError({
-			runId: text(f, "runId"),
-			reason: text(f, "reason") as ForkSourceBusyReason,
-			holderId: optionalText(f, "holderId"),
-		}),
+	ForkSourceBusyError: (f, cause) =>
+		new ForkSourceBusyError(
+			{
+				runId: text(f, "runId"),
+				reason: text(f, "reason") as ForkSourceBusyReason,
+				holderId: optionalText(f, "holderId"),
+			},
+			{ cause },
+		),
 	ForkEntryNotFoundError: (f) =>
 		new ForkEntryNotFoundError({
 			sessionId: text(f, "sessionId"),

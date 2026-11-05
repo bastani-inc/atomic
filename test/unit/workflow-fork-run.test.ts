@@ -36,7 +36,11 @@ import {
 import { durableForkPoints, forkDurableRun } from "../../packages/workflows/src/durable/fork-run.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
-import type { JournalEntry, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	type JournalEntry,
+	type RunJournal,
+	StaleLeaseError,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import { claimsOf, pendingForks, pendingResumes } from "../../packages/workflows/src/durable/run-claims.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/run-inspect.js";
 import { forkRun, listForkPoints } from "../../packages/workflows/src/runs/foreground/sdk-fork.js";
@@ -693,7 +697,7 @@ async function copySource(seed: string) {
 		});
 	const copyKept = async () => (await sessions.readHeader(created.mock.calls[0]![0].id)) !== undefined;
 	const forkRuns = async () => (await backend.journal.listRuns()).filter((entry) => entry.runId !== runId);
-	return { backend, runId, fork, created, copyKept, forkRuns, sharedJournal: () => sharedJournal(backend) };
+	return { backend, sessions, runId, fork, created, copyKept, forkRuns, sharedJournal: () => sharedJournal(backend) };
 }
 
 /** A journal reached over the network: a rejected write there is not proof that nothing was committed. */
@@ -863,6 +867,297 @@ test("a write that returns exists is a ForkCopyFailedError even when a run with 
 	assert.equal((await forkRuns()).length, 1, "the other run is not touched");
 	const afterFork = getRun.mock.calls.filter(([id]) => id === error.forkRunId).length;
 	assert.equal(afterFork, 0, `the fork id is not read back (${lookups} earlier lookups)`);
+});
+
+/** A fork stopped in its first session copy until `open()`, on a controlled journal clock and timers. */
+async function slowCopy(seed: string, options: { readonly ownLease?: boolean } = {}) {
+	const source = await copySource(seed);
+	if (options.ownLease !== true) {
+		// A source this process does not hold: the fork takes its lease. (Registering it left this backend holding it.)
+		const held = (await source.backend.journal.leaseState(source.runId))!;
+		await source.backend.journal.release({ runId: source.runId, holderId: held.holderId, epoch: held.epoch });
+	}
+	// The store's own method: `copySource` already spies on the instance's.
+	const create = MemorySessionStore.prototype.create.bind(source.sessions);
+	let open!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	let enter!: () => void;
+	const entered = new Promise<void>((resolve) => {
+		enter = resolve;
+	});
+	vi.spyOn(source.sessions, "create").mockImplementation(async (...args) => {
+		enter();
+		await gate;
+		return create(...args);
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	const release = vi.spyOn(source.backend.journal, "release");
+	const renew = vi.spyOn(source.backend.journal, "renew");
+	const holder = async () => (await source.backend.journal.leaseState(source.runId))?.holderId;
+	return { ...source, open, entered, release, renew, holder };
+}
+
+const QUARTER_WINDOW_MS = 30_000;
+
+test("a slow copy keeps its claim fresh on the journal clock, so a resume cannot take the source over mid-fork (#4321)", async () => {
+	const { backend, runId, fork, open, entered, release, renew, forkRuns, holder } =
+		await slowCopy("fork-claim-renews");
+	try {
+		const forking = fork();
+		await entered;
+		const forkHolder = await holder();
+		assert.ok(forkHolder?.startsWith("fork:"));
+		await vi.advanceTimersByTimeAsync(3 * 60_000);
+		assert.equal(renew.mock.calls.length, 8, "two checks before the copy, then one renewal every quarter window");
+		const resume = await backend.journal.takeoverExpired(runId, "resumer", 120_000);
+		assert.equal(resume.status, "held", "after 180 s the claim is still the fork's");
+		assert.equal(await holder(), forkHolder);
+		open();
+		const forked = await forking;
+		assert.equal((await forkRuns()).length, 1);
+		assert.ok(forked.runId);
+		assert.equal(release.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		assert.equal(renew.mock.calls.length, 9, "one more check before the write, and none once the claim is released");
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a lease this process already holds is kept alive during the fork and left to its holder afterwards (#4321)", async () => {
+	const { backend, runId, fork, open, entered, release, renew, holder, forkRuns } = await slowCopy("fork-claim-own", {
+		ownLease: true,
+	});
+	try {
+		const own = await holder();
+		assert.equal(own, backend.holderId);
+		const forking = fork();
+		await entered;
+		await vi.advanceTimersByTimeAsync(3 * 60_000);
+		assert.equal(renew.mock.calls.length, 8);
+		assert.equal((await backend.journal.takeoverExpired(runId, "resumer", 120_000)).status, "held");
+		open();
+		await forking;
+		assert.equal((await forkRuns()).length, 1);
+		assert.equal(release.mock.calls.length, 0, "the lease was not the fork's to release");
+		assert.equal(await holder(), own);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a takeover the renewal timer finds stops the fork before it writes, and its copies are removed (#4321)", async () => {
+	const { backend, runId, fork, open, entered, release, copyKept, forkRuns, holder } =
+		await slowCopy("fork-claim-lost");
+	try {
+		const write = vi.spyOn(backend.journal, "createRunWithEvents");
+		const forking = fork();
+		await entered;
+		const forkHolder = (await holder())!;
+		const taken = await backend.journal.takeover(runId, "resumer", forkHolder);
+		assert.equal(taken.status, "acquired");
+		await vi.advanceTimersByTimeAsync(QUARTER_WINDOW_MS);
+		open();
+		const error = await forking.catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkSourceBusyError, String(error));
+		assert.deepEqual([error.reason, error.retryable], ["lease-lost", true]);
+		assert.equal(write.mock.calls.length, 0, "nothing was written");
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+		assert.equal(release.mock.calls.length, 0, "a claim that was lost is not released over its new holder");
+		assert.equal(await holder(), "resumer");
+		assert.equal(claimsOf(pendingForks, backend).has(runId), false);
+		assert.equal(vi.getTimerCount(), 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("the check before the write catches a takeover no renewal saw, and never writes a mixed snapshot (#4321)", async () => {
+	const { backend, runId, fork, open, entered, copyKept, forkRuns, holder } =
+		await slowCopy("fork-claim-stale-holder");
+	try {
+		const write = vi.spyOn(backend.journal, "createRunWithEvents");
+		const forking = fork();
+		await entered;
+		await backend.journal.takeover(runId, "resumer", (await holder())!);
+		open();
+		const error = await forking.catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkSourceBusyError, String(error));
+		assert.equal(error.reason, "lease-lost");
+		assert.ok(error.cause instanceof StaleLeaseError, "the stale lease is the cause");
+		assert.equal(write.mock.calls.length, 0);
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a journal that cannot renew is retried and logged once, and a failed check before the write is a retryable ForkJournalUnavailableError (#4321)", async () => {
+	const { backend, fork, open, entered, renew, copyKept, forkRuns } = await slowCopy("fork-claim-journal");
+	try {
+		const unavailable = new StorageUnavailableError({ adapter: "memory", location: ":memory:" }, new Error("reset"));
+		const real = backend.journal.renew.bind(backend.journal);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const forking = fork();
+		await entered;
+		renew.mockRejectedValueOnce(unavailable).mockRejectedValueOnce(unavailable);
+		await vi.advanceTimersByTimeAsync(2 * QUARTER_WINDOW_MS);
+		assert.equal(warn.mock.calls.length, 1, "two failed renewals in a row are logged once");
+		const [logged] = warn.mock.calls[0]!;
+		assert.ok(logged instanceof ForkJournalUnavailableError);
+		assert.deepEqual([logged.phase, logged.retryable, logged.cause], ["claim", true, unavailable]);
+		await vi.advanceTimersByTimeAsync(QUARTER_WINDOW_MS);
+		assert.equal(warn.mock.calls.length, 1, "the next renewal succeeded");
+		renew.mockImplementation(real);
+		renew.mockRejectedValueOnce(unavailable);
+		open();
+		const error = await forking.catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkJournalUnavailableError, String(error));
+		assert.deepEqual([error.phase, error.retryable, error.cause], ["claim", true, unavailable]);
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a stale lease that crossed a realm boundary is still a lost source, by name and never by message (#4321)", async () => {
+	const { fork, open, entered, renew, copyKept, forkRuns } = await slowCopy("fork-claim-foreign-realm");
+	try {
+		const forking = fork();
+		await entered;
+		const stale = Object.assign(new Error("some other wording"), { name: "StaleLeaseError" });
+		renew.mockRejectedValueOnce(stale);
+		open();
+		const error = await forking.catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkSourceBusyError, String(error));
+		assert.deepEqual([error.reason, error.cause], ["lease-lost", stale]);
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a renewal that fails unexpectedly is logged once with its cause, while the check before the write rethrows it unchanged (#4321)", async () => {
+	const { fork, open, entered, renew, copyKept, forkRuns } = await slowCopy("fork-claim-unexpected");
+	try {
+		const unexpected = new TypeError("renew misbehaved");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const forking = fork();
+		await entered;
+		renew.mockRejectedValueOnce(unexpected).mockRejectedValueOnce(unexpected);
+		await vi.advanceTimersByTimeAsync(2 * QUARTER_WINDOW_MS);
+		assert.equal(warn.mock.calls.length, 1, "a streak of unexpected failures is logged once");
+		const [logged] = warn.mock.calls[0]!;
+		assert.ok(logged instanceof ForkJournalUnavailableError);
+		assert.deepEqual([logged.phase, logged.retryable, logged.cause], ["claim", true, unexpected]);
+		renew.mockRejectedValueOnce(unexpected);
+		open();
+		assert.equal(
+			await forking.catch((problem: unknown) => problem),
+			unexpected,
+			"the foreground failure is not wrapped",
+		);
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a check whose renewal committed but whose reply is late still fails when a periodic renewal found the takeover meanwhile (#4321)", async () => {
+	const { backend, runId, fork, open, entered, renew, holder, copyKept, forkRuns } =
+		await slowCopy("fork-claim-late-reply");
+	try {
+		const write = vi.spyOn(backend.journal, "createRunWithEvents");
+		const real = backend.journal.renew.bind(backend.journal);
+		let committed!: () => void;
+		const renewed = new Promise<void>((resolve) => {
+			committed = resolve;
+		});
+		let reply!: () => void;
+		const late = new Promise<void>((resolve) => {
+			reply = resolve;
+		});
+		const forking = fork();
+		await entered;
+		const forkHolder = (await holder())!;
+		renew.mockImplementationOnce(async (lease) => {
+			await real(lease);
+			committed();
+			await late;
+		});
+		open();
+		await renewed;
+		assert.equal((await backend.journal.takeover(runId, "resumer", forkHolder)).status, "acquired");
+		await vi.advanceTimersByTimeAsync(QUARTER_WINDOW_MS);
+		reply();
+		const error = await forking.catch((problem: Error) => problem);
+		assert.ok(error instanceof ForkSourceBusyError, String(error));
+		assert.equal(error.reason, "lease-lost");
+		assert.equal(write.mock.calls.length, 0, "the write never started");
+		assert.equal(await copyKept(), false);
+		assert.equal((await forkRuns()).length, 0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a failure of the renewal timer's own report does not stop the release, and is reported once it was attempted (#4321)", async () => {
+	const { backend, runId, fork, open, entered, renew, release, forkRuns } = await slowCopy("fork-claim-report-fails");
+	try {
+		const sink = new Error("log sink failed");
+		const warn = vi
+			.spyOn(console, "warn")
+			.mockImplementationOnce(() => {
+				throw sink;
+			})
+			.mockImplementation(() => undefined);
+		const forking = fork();
+		await entered;
+		renew.mockRejectedValueOnce(new Error("journal hiccup"));
+		await vi.advanceTimersByTimeAsync(QUARTER_WINDOW_MS);
+		open();
+		await forking;
+		assert.equal((await forkRuns()).length, 1, "the fork was written");
+		assert.equal(release.mock.calls.length, 1, "the journal release was still attempted");
+		assert.equal(claimsOf(pendingForks, backend).has(runId), false, "and the local claim cleared");
+		assert.equal(vi.getTimerCount(), 0);
+		const reported = warn.mock.calls.at(-1)![0];
+		assert.ok(reported instanceof ForkClaimReleaseError, String(reported));
+		assert.equal(reported.cause, sink);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a cancelled fork rejects with the exact reason, stops its renewals and releases the claim once (#4321)", async () => {
+	const source = await slowCopy("fork-claim-cancelled");
+	try {
+		const reason = new Error("caller cancelled");
+		const controller = new AbortController();
+		const forking = source.fork(controller.signal);
+		await source.entered;
+		await vi.advanceTimersByTimeAsync(QUARTER_WINDOW_MS);
+		controller.abort(reason);
+		source.open();
+		assert.equal(await forking.catch((problem: unknown) => problem), reason);
+		assert.equal(source.release.mock.calls.length, 1);
+		assert.equal(vi.getTimerCount(), 0);
+		const renewals = source.renew.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+		assert.equal(source.renew.mock.calls.length, renewals, "no renewal after the claim was released");
+		assert.equal(await source.copyKept(), false);
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 test("a journal storage failure is a ForkJournalUnavailableError that says whether a retry is safe (#4321)", async () => {
