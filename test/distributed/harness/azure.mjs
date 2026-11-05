@@ -647,9 +647,17 @@ export class AzureRun {
 
 	// VM-level faults.
 
-	/** @param {string} vm @param {"restart" | "deallocate" | "start"} action */
-	async vmPower(vm, action) {
-		await this.az(["vm", action, "--resource-group", this.plan.resourceGroup, "--name", vm], `${action} ${vm}`);
+	/**
+	 * Without `wait`, Azure only accepts the operation and the caller observes the guest instead. A restart or start can
+	 * finish in the guest within seconds while Azure reports the VM as `Updating` for many minutes, for example while a
+	 * policy-installed extension that needs Internet access never completes on a private VM.
+	 * @param {string} vm @param {"restart" | "deallocate" | "start"} action @param {{ wait?: boolean }} [options]
+	 */
+	async vmPower(vm, action, { wait = true } = {}) {
+		await this.az(
+			["vm", action, "--resource-group", this.plan.resourceGroup, "--name", vm, ...(wait ? [] : ["--no-wait"])],
+			`${action} ${vm}`,
+		);
 	}
 
 	/** @param {string} vm @param {string} nic @param {"remove" | "add"} action */

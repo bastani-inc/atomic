@@ -740,14 +740,25 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			current = holder;
 			await waitAcks(holder, 3);
 			const bootBefore = (await vmNode.agent("facts", [])).bootId;
-			await ctx.azure.vmPower(vmNode.vmName, "restart");
+			await ctx.azure.vmPower(vmNode.vmName, "restart", { wait: false });
 			fault.applied = true;
-			mark("restarted");
-			await vmNode.waitForSsh();
-			const bootAfter = (await vmNode.agent("facts", [])).bootId;
+			mark("restart requested");
+			const bootAfter = await waitFor(
+				async () => {
+					const { bootId } = await vmNode.agent("facts", []);
+					return bootId === bootBefore ? undefined : bootId;
+				},
+				{
+					timeoutMs: 600_000,
+					intervalMs: 5000,
+					signal: ctx.signal,
+					onTimeout: () => new Error("the VM did not boot again within 10 minutes"),
+				},
+			);
+			mark("rebooted");
 			const unit = await unitState(vmNode, /** @type {{ unit: string }} */ (writers.get(holder)).unit);
 			fault.observed = { bootBefore, bootAfter, writerUnit: unit };
-			fault.effectObserved = bootBefore !== bootAfter && unit.pid === 0;
+			fault.effectObserved = unit.pid === 0;
 		},
 		recover: async (fault, mark) => {
 			current = await startWriter(first, {});
@@ -772,7 +783,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			fault.effectObserved = power === "VM deallocated";
 		},
 		revert: async (_fault, mark) => {
-			await ctx.azure.vmPower(vmNode.vmName, "start");
+			await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
 			await vmNode.waitForSsh();
 			mark("started");
 		},
@@ -799,7 +810,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 				await ctx.azure.vmPower(vmNode.vmName, "deallocate");
 				await ctx.azure.vmNic(vmNode.vmName, nic, "remove");
 				fault.applied = true;
-				await ctx.azure.vmPower(vmNode.vmName, "start");
+				await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
 				await vmNode.waitForSsh();
 				const detached = await ctx.azure.vmFacts(vmNode.vmName);
 				const guestLinks = Number(
@@ -814,7 +825,7 @@ sudo setsid bash -c 'echo $$ > ${cgroup}/cgroup.procs; exec setpriv --reuid=${fi
 			revert: async (_fault, mark) => {
 				await ctx.azure.vmPower(vmNode.vmName, "deallocate");
 				await ctx.azure.vmNic(vmNode.vmName, nic, "add");
-				await ctx.azure.vmPower(vmNode.vmName, "start");
+				await ctx.azure.vmPower(vmNode.vmName, "start", { wait: false });
 				await vmNode.waitForSsh();
 				mark("NIC restored");
 			},

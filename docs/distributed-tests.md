@@ -171,12 +171,16 @@ runs those.
 | `slow-disk` | `dm-delay` target swapped in under the journal | direct synchronous writes slow down |
 | `io-error` | `dm-error` target swapped in under the journal | direct writes fail with EIO; checkpoints acknowledged before the fault survive |
 | `oom` | writer in a cgroup v2 with `memory.max` and no swap | `memory.events` `oom_kill` ≥ 1 |
-| `vm-restart` | `az vm restart` | boot id changes |
+| `vm-restart` | `az vm restart --no-wait`, then the guest's boot id is polled | boot id changes |
 | `vm-deallocate` | `az vm deallocate`, then `az vm start` | power state `VM deallocated`, new boot id |
 | `nic-detach` | deallocate, `az vm nic remove` of the second NIC, start, then re-add | the VM runs with one NIC fewer, then with it again |
 
 Network faults touch only rules and qdiscs owned by the run; SSH is never affected. NIC detach is a VM-level fault:
 Azure only removes a NIC from a deallocated VM with at least two NICs.
+
+Restarts and starts are requested with `--no-wait`, and the harness waits for the guest instead: a new boot id, or SSH
+answering again. Azure can report a VM as `Updating` for many minutes after the guest is back, for example when a
+policy installs an extension such as Defender for Endpoint that needs Internet access the run's VMs do not have.
 
 ## Replay
 

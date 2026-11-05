@@ -100,7 +100,7 @@ export const PROFILE_SPECS = Object.freeze({
 	},
 	"vm-restart": {
 		layer: "vm",
-		mechanism: "az vm restart",
+		mechanism: "az vm restart --no-wait, then the guest's boot id is polled",
 		effect: "boot id changes and the writer unit is gone",
 		recovery: "SSH returns; a replacement takes the lease over",
 	},
