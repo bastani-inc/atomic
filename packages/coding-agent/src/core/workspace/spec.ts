@@ -49,7 +49,7 @@ const HOST_SHORTHAND = /^([a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?)\/([^/\s]+(?:\/[^
 function pathSegments(path: string): string[] {
 	return path
 		.split("/")
-		.filter((segment) => segment.length > 0)
+		.filter((segment) => segment !== "")
 		.map((segment, index, all) => (index === all.length - 1 ? segment.replace(/\.git$/i, "") : segment));
 }
 
@@ -103,7 +103,7 @@ function optionalString(
 }
 
 function validBranch(value: string): boolean {
-	return value.length > 0 && value.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
+	return value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
 function freeze(spec: Omit<Workspace, "kind" | "readOnly">): Workspace {
@@ -148,14 +148,7 @@ export function workspace(options: WorkspaceOptions): Workspace {
 		SANDBOXES.includes(value as WorkspaceSandbox),
 	) as WorkspaceSandbox | undefined;
 	const label = optionalString(record, "label", "a string", () => true);
-	return freeze({
-		repo,
-		...(base !== undefined ? { base } : {}),
-		...(branch !== undefined ? { branch } : {}),
-		...(worktree !== undefined ? { worktree } : {}),
-		sandbox: sandbox ?? "workspace-write",
-		...(label !== undefined ? { label } : {}),
-	});
+	return freeze({ repo, base, branch, worktree, sandbox: sandbox ?? "workspace-write", label });
 }
 
 /** Reject a value passed as `field` that is not a `workspace({ … })` value, before any git or filesystem work. */
@@ -164,12 +157,8 @@ export function assertWorkspace(value: unknown, field: string): asserts value is
 }
 
 export function isWorkspace(value: unknown): value is Workspace {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		(value as { readonly kind?: unknown }).kind === "workspace" &&
-		typeof (value as { readonly repo?: unknown }).repo === "string"
-	);
+	const candidate = value as Partial<Workspace> | null | undefined;
+	return candidate?.kind === "workspace" && typeof candidate.repo === "string";
 }
 
 /** The `repo` value as recorded and reported: credentials removed, otherwise verbatim. */

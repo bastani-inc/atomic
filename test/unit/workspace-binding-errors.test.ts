@@ -25,6 +25,7 @@ import {
 	WorkspaceTimeoutError,
 	workspace,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
+import { classifyRepository, isWorkspace } from "../../packages/coding-agent/src/core/workspace/spec.ts";
 
 function thrown(body: () => unknown): unknown {
 	try {
@@ -85,7 +86,16 @@ describe("workspace error family (#3109)", () => {
 			assert.ok(error.message.includes(`(${code})`));
 			assert.deepEqual(JSON.parse(JSON.stringify(error.fields)), error.fields);
 			assert.ok(Object.isFrozen(error.fields));
+			assert.equal(error.retryable, key === "timeout", `${name} retryable`);
+			assert.equal(error.cleanupCause, undefined);
 		}
+		assert.deepEqual(samples.sandbox().fields, { tool: "write", worktree: "/wt/api", sandbox: "read-only" });
+		assert.equal(samples.timeout().fields.command, "git clone x");
+		const restoreCleanup = new Error("rm failed");
+		assert.equal(
+			new WorkspaceRestoreError({ reason: "branch-missing", fields: {}, cleanupCause: restoreCleanup }).cleanupCause,
+			restoreCleanup,
+		);
 	});
 
 	test("guards also match structurally, across realms and processes (#3109)", () => {
@@ -203,6 +213,28 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(((rehydrated.cause as Error).cause as Error).message, "innermost");
 	});
 
+	test("serialization keeps non-error causes and the sender's message (#3109)", () => {
+		const wire = serializeWorkspaceError(
+			new WorkspaceBindingError({ code: "git-failed", fields: { phase: "fetch" }, cause: "a string cause" }),
+		);
+		assert.deepEqual(JSON.parse(JSON.stringify(wire.cause)), { name: "Error", message: "a string cause" });
+		const rehydrated = rehydrateWorkspaceError({ ...JSON.parse(JSON.stringify(wire)), message: "older wording" });
+		assert.equal(rehydrated.message, "older wording");
+		assert.equal((rehydrated.cause as Error).message, "a string cause");
+		const gitless = rehydrateWorkspaceError({
+			...JSON.parse(JSON.stringify(wire)),
+			cause: { name: "GitUnavailableError", code: "offline", message: "offline wording" },
+		});
+		const cause = gitless.cause as GitUnavailableError;
+		assert.ok(cause instanceof GitUnavailableError);
+		assert.equal(cause.code, "offline");
+		assert.equal(cause.message, "offline wording");
+		assert.equal(cause.fields.gitPath, "git");
+		assert.equal(cause.retryable, false);
+		assert.equal(cause.platform, process.platform);
+		assert.equal(cause.hint, `Install git (${gitInstallCommand()}) and make sure it is on PATH.`);
+	});
+
 	test("serialization bounds a deep cause chain (#3109)", () => {
 		let cause: unknown = new Error("bottom");
 		for (let depth = 0; depth < 20; depth++) cause = new Error(`level ${depth}`, { cause });
@@ -243,29 +275,80 @@ describe("workspace() validates its options before any work (#3109)", () => {
 	});
 
 	test("rejects malformed options with WorkspaceConfigError naming source and field (#3109)", () => {
-		const cases: readonly [Record<string, unknown>, string, string][] = [
-			[{}, "workspace.repo", "missing"],
-			[{ repo: 7 }, "workspace.repo", "invalid-type"],
-			[{ repo: "relative/path" }, "workspace.repo", "invalid-value"],
-			[{ repo: "https://" }, "workspace.repo", "invalid-value"],
-			[{ repo: "/r", base: "" }, "workspace.base", "invalid-value"],
-			[{ repo: "/r", branch: "a/../b" }, "workspace.branch", "invalid-value"],
-			[{ repo: "/r", branch: "a//b" }, "workspace.branch", "invalid-value"],
-			[{ repo: "/r", worktree: "relative" }, "workspace.worktree", "invalid-value"],
-			[{ repo: "/r", sandbox: "full" }, "workspace.sandbox", "invalid-value"],
-			[{ repo: "/r", label: 3 }, "workspace.label", "invalid-type"],
+		const cases: readonly [Record<string, unknown>, string, string, string][] = [
+			[{}, "workspace.repo", "missing", "undefined"],
+			[{ repo: 7 }, "workspace.repo", "invalid-type", "number"],
+			[{ repo: "relative/path" }, "workspace.repo", "invalid-value", "an unsupported string"],
+			[{ repo: "https://" }, "workspace.repo", "invalid-value", "an unsupported string"],
+			[{ repo: "https://host/" }, "workspace.repo", "invalid-value", "an unsupported string"],
+			[{ repo: "host:/" }, "workspace.repo", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", base: "" }, "workspace.base", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", branch: "a/../b" }, "workspace.branch", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", branch: "a//b" }, "workspace.branch", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", branch: "" }, "workspace.branch", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", branch: "./x" }, "workspace.branch", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", worktree: "relative" }, "workspace.worktree", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", sandbox: "full" }, "workspace.sandbox", "invalid-value", "an unsupported string"],
+			[{ repo: "/r", label: 3 }, "workspace.label", "invalid-type", "number"],
 		];
-		for (const [options, field, reason] of cases) {
+		for (const [options, field, reason, received] of cases) {
 			const error = thrown(() => workspace(options as never));
 			assert.ok(isWorkspaceConfigError(error), JSON.stringify(options));
 			assert.equal(error.source, "sdk");
 			assert.equal(error.field, field);
 			assert.equal(error.reason, reason);
+			assert.equal(error.fields.received, received);
 			assert.equal(error.code, "invalid-setting");
 		}
-		const notObject = thrown(() => workspace(null as never));
-		assert.ok(isWorkspaceConfigError(notObject));
-		assert.equal(notObject.field, "workspace");
+		for (const notObject of [null, "repo", 3]) {
+			const error = thrown(() => workspace(notObject as never));
+			assert.ok(isWorkspaceConfigError(error));
+			assert.equal(error.field, "workspace");
+			assert.equal(error.fields.expected, "an object");
+		}
+		assert.equal(isWorkspace(workspace({ repo: "/r" })), true);
+		for (const value of [null, undefined, "workspace", { kind: "workspace" }, { kind: "other", repo: "/r" }])
+			assert.equal(isWorkspace(value), false);
+		assert.equal(workspace({ repo: "/r", label: "" }).label, "", "an empty label is kept verbatim");
+		assert.equal(workspace({ repo: "/r", branch: "feat/a.b-c" }).branch, "feat/a.b-c");
+	});
+});
+
+describe("repository classification (#3109)", () => {
+	test("tells local paths from every remote form and derives host and path (#3109)", () => {
+		assert.deepEqual(classifyRepository("/srv/repo"), { kind: "local", path: "/srv/repo" });
+		assert.deepEqual(classifyRepository("https://github.com/acme/api.git"), {
+			kind: "remote",
+			url: "https://github.com/acme/api.git",
+			host: "github.com",
+			segments: ["acme", "api"],
+		});
+		assert.deepEqual(classifyRepository("ssh://git@host:2222//srv/git.git/x.git"), {
+			kind: "remote",
+			url: "ssh://git@host:2222//srv/git.git/x.git",
+			host: "host:2222",
+			segments: ["srv", "git.git", "x"],
+		});
+		assert.deepEqual(classifyRepository("file:///tmp/remotes/origin.git"), {
+			kind: "remote",
+			url: "file:///tmp/remotes/origin.git",
+			host: "file",
+			segments: ["tmp", "remotes", "origin"],
+		});
+		assert.deepEqual(classifyRepository("github.com/acme/product-service"), {
+			kind: "remote",
+			url: "https://github.com/acme/product-service",
+			host: "github.com",
+			segments: ["acme", "product-service"],
+		});
+		assert.deepEqual(classifyRepository("git@github.com:acme/x.GIT"), {
+			kind: "remote",
+			url: "git@github.com:acme/x.GIT",
+			host: "github.com",
+			segments: ["acme", "x"],
+		});
+		for (const invalid of ["relative", "https://", "https://host/", "host:/", "http://[::1"])
+			assert.equal(classifyRepository(invalid), undefined, invalid);
 	});
 });
 
@@ -307,7 +390,7 @@ describe("workspace error messages (#3109)", () => {
 		assert.match(gitInstallCommand("linux"), /apt-get install git/);
 	});
 
-	test("describe every binding code from its fields (#3109)", () => {
+	test("describe every code and reason from its fields (#3109)", () => {
 		const fields = {
 			repo: "/r",
 			worktree: "/w",
@@ -322,46 +405,125 @@ describe("workspace error messages (#3109)", () => {
 			status: 128,
 			phase: "fetch",
 			branch: "b",
-			remote: "origin",
 			holder: "run/stage",
 			holderPid: 42,
 			holderHost: "host",
 			lockFile: "/w/.git/lease",
 		};
-		const subjects: Record<string, string> = {
-			"wrong-repository": "/w uses A, expected E",
-			"wrong-branch": "/w is on A, expected E",
-			"conflicting-worktree-input": "git_worktree_dir is set together with workspace",
-			"invalid-repository": "/r is not a git repository",
-			"unknown-base": "origin/x is not a commit in /r",
-			"cwd-outside-worktree": "/elsewhere is outside /w",
-			"git-unavailable": "git could not be started, and workspaces need git to bind repositories",
-			"git-failed": "git fetch exited with status 128 during fetch",
-			drift: "b in /w no longer contains the recorded commit E",
-			"writer-conflict": "/w is held by run/stage (pid 42 on host)",
-		};
-		for (const [code, subject] of Object.entries(subjects)) {
-			const error = new WorkspaceBindingError({ code: code as never, fields });
-			assert.ok(error.message.includes(`: ${subject} (${code}).`), `${code}: ${error.message}`);
-		}
-		const reasons: [string, string, string][] = [
-			["wrong-repository", "not-a-worktree", "/w is not a git worktree"],
-			["wrong-repository", "not-a-worktree-root", "/w is inside the worktree A, not its root"],
-			["invalid-repository", "not-a-repository-root", "/r is inside the repository A, not its root"],
-			["drift", "remote-changed", "/w no longer has the recorded remote E"],
+		const binding: [string, string | null, string][] = [
+			[
+				"wrong-repository",
+				"different-repository",
+				'Workspace worktree belongs to another repository: /w uses A, expected E (wrong-repository). Pass a worktree of /r, or use worktree: "auto".',
+			],
+			[
+				"wrong-repository",
+				"not-a-worktree",
+				'Workspace worktree belongs to another repository: /w is not a git worktree (wrong-repository). Pass a worktree of /r, or use worktree: "auto".',
+			],
+			[
+				"wrong-repository",
+				"not-a-worktree-root",
+				'Workspace worktree belongs to another repository: /w is inside the worktree A, not its root (wrong-repository). Pass a worktree of /r, or use worktree: "auto".',
+			],
+			[
+				"wrong-branch",
+				"different-branch",
+				"Workspace worktree is on the wrong branch: /w is on A, expected E (wrong-branch). Check out E in that worktree, or pass the branch it is on.",
+			],
+			[
+				"conflicting-worktree-input",
+				null,
+				"Workspace conflicts with a worktree input: git_worktree_dir is set together with workspace (conflicting-worktree-input). Remove git_worktree_dir; the workspace already selects the worktree.",
+			],
+			[
+				"invalid-repository",
+				"not-a-repository",
+				"Workspace repository is not usable: /r is not a git repository (invalid-repository). Pass the absolute path of a git repository root, or a remote URL.",
+			],
+			[
+				"invalid-repository",
+				"not-a-repository-root",
+				"Workspace repository is not usable: /r is inside the repository A, not its root (invalid-repository). Pass the repository root A.",
+			],
+			[
+				"unknown-base",
+				null,
+				"Workspace base does not resolve: origin/x is not a commit in /r (unknown-base). Pass a base that exists in the repository, for example origin/main.",
+			],
+			[
+				"cwd-outside-worktree",
+				null,
+				"Working directory escapes the workspace: /elsewhere is outside /w (cwd-outside-worktree). Use a cwd inside the workspace worktree, or a relative path.",
+			],
+			[
+				"git-unavailable",
+				null,
+				"Git is unavailable: git could not be started, and workspaces need git to bind repositories (git-unavailable). Install git (install-git) and make sure it is on PATH.",
+			],
+			[
+				"git-failed",
+				null,
+				"Workspace git command failed: git fetch exited with status 128 during fetch (git-failed). Check the repository, network access and credentials, then retry.",
+			],
+			[
+				"drift",
+				"history-rewritten",
+				"Workspace changed unexpectedly: b in /w no longer contains the recorded commit E (drift). Restore the recorded repository state, or start a new run instead of resuming.",
+			],
+			[
+				"drift",
+				"remote-changed",
+				"Workspace changed unexpectedly: /w no longer has the recorded remote E (drift). Restore the recorded repository state, or start a new run instead of resuming.",
+			],
+			[
+				"writer-conflict",
+				null,
+				"Workspace already has a writer: /w is held by run/stage (pid 42 on host) (writer-conflict). Wait for that writer to finish, use a read-only workspace, or remove /w/.git/lease if its process is gone.",
+			],
 		];
-		for (const [code, reason, subject] of reasons) {
-			const error = new WorkspaceBindingError({ code: code as never, reason: reason as never, fields });
-			assert.ok(error.message.includes(`: ${subject} (${code}).`), error.message);
+		for (const [code, reason, rendered] of binding) {
+			const error = new WorkspaceBindingError({
+				code: code as never,
+				reason: (reason ?? undefined) as never,
+				fields,
+			});
+			assert.equal(error.message, rendered);
+			assert.ok(rendered.endsWith(error.hint));
 		}
-		assert.match(
-			new WorkspaceBindingError({ code: "invalid-repository", reason: "not-a-repository-root", fields }).hint,
-			/Pass the repository root A/,
+		const restoreFields = { repo: "/r", branch: "b", worktree: "/w", repository: "/r" };
+		assert.equal(
+			new WorkspaceRestoreError({ reason: "repository-missing", fields: restoreFields }).message,
+			"Workspace restore failed: repository /r is gone (restore-failed). Restore the repository at /r, or start a new run.",
 		);
-		assert.match(new WorkspaceBindingError({ code: "git-unavailable", fields }).hint, /install-git/);
-		assert.match(
-			new WorkspaceRestoreError({ reason: "repository-missing", fields: { repository: "/gone" } }).message,
-			/repository \/gone is gone \(restore-failed\)\. Restore the repository at \/gone/,
+		const publication: [string, string][] = [
+			["no-remote", "Add an origin remote to the repository before publishing."],
+			["push-failed", "Check push access to the remote, then retry."],
+			["gh-unavailable", "Install the GitHub CLI (https://cli.github.com) and run gh auth login."],
+			["gh-unauthenticated", "Run gh auth login, or set GH_TOKEN, then retry."],
+			["gh-failed", "Check gh auth status and the repository on GitHub, then retry."],
+		];
+		for (const [reason, hint] of publication)
+			assert.equal(
+				new WorkspacePublicationError({ reason: reason as never, fields: { repo: "/r", branch: "b" } }).message,
+				`Pull request publication failed: b of /r (${reason}) (publication-failed). ${hint}`,
+			);
+		const missing = new WorkspaceConfigError({
+			source: "env",
+			field: "workspace.repo",
+			reason: "missing",
+			expected: "a path",
+			received: "undefined",
+		});
+		assert.equal(
+			missing.message,
+			"Invalid workspace option: workspace.repo from env is missing (invalid-setting). Set workspace.repo to a path.",
 		);
+		assert.deepEqual(missing.fields, {
+			source: "env",
+			field: "workspace.repo",
+			expected: "a path",
+			received: "undefined",
+		});
 	});
 });

@@ -18,7 +18,7 @@ export interface RestoreWorkspaceOptions {
 async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefined): Promise<boolean> {
 	const result = await runWorkspaceGit({
 		cwd,
-		args: ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+		args: ["rev-parse", "--verify", `${ref}^{commit}`],
 		phase: "probe",
 		allowFailure: true,
 		signal,
@@ -26,22 +26,17 @@ async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefin
 	return result.status === 0;
 }
 
-async function readd(
-	binding: BoundWorkspace,
-	root: string,
-	fresh: boolean,
-	signal: AbortSignal | undefined,
-): Promise<void> {
+/** Add a deleted worktree back from its branch, or from the remote's copy of the branch. */
+async function readd(binding: BoundWorkspace, root: string, signal: AbortSignal | undefined): Promise<void> {
 	const run = (args: readonly string[]) => runWorkspaceGit({ cwd: root, args, phase: "worktree-add", signal });
-	const remote = classifyRepository(binding.repo)?.kind === "remote";
-	if (remote && !fresh) await run(["fetch", "--quiet", "origin"]);
+	if (classifyRepository(binding.repo)?.kind === "remote") await run(["fetch", "origin"]);
 	await run(["worktree", "prune"]);
 	if (await hasCommit(root, `refs/heads/${binding.branch}`, signal)) {
-		await run(["worktree", "add", "--quiet", binding.worktree, binding.branch]);
+		await run(["worktree", "add", binding.worktree, binding.branch]);
 		return;
 	}
-	if (remote && (await hasCommit(root, `refs/remotes/origin/${binding.branch}`, signal))) {
-		await run(["worktree", "add", "--quiet", "-b", binding.branch, binding.worktree, `origin/${binding.branch}`]);
+	if (await hasCommit(root, `refs/remotes/origin/${binding.branch}`, signal)) {
+		await run(["worktree", "add", "-b", binding.branch, binding.worktree, `origin/${binding.branch}`]);
 		return;
 	}
 	throw new WorkspaceRestoreError({
@@ -115,7 +110,7 @@ export async function restoreWorkspace(
 			},
 		});
 	const repository = await openWorkspaceRepository(local ? binding.repository : binding.repo, signal);
-	if (!existsSync(binding.worktree)) await readd(binding, repository.root, repository.fresh, signal);
+	if (!existsSync(binding.worktree)) await readd(binding, repository.root, signal);
 	await verifyWorktree(repository, binding.repo, binding.worktree, binding.branch, signal);
 	await assertNoDrift(binding, signal);
 	return realpath(binding.worktree);

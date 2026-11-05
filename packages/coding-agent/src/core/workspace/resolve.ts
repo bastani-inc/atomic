@@ -57,8 +57,8 @@ interface OpenRepository {
 	readonly root: string;
 	/** Canonical git common directory: the repository identity worktrees are checked against. */
 	readonly commonDir: string;
-	/** True when this resolution cloned the shared store, so it is already fresh. */
-	readonly fresh: boolean;
+	/** Set when this resolution cloned the shared store, so it is already fresh. */
+	readonly fresh?: true;
 }
 
 const LOCKFILES = [
@@ -134,16 +134,16 @@ async function openLocal(
 			reason: "not-a-repository-root",
 			fields: { repo, actual: top },
 		});
-	return { spec, root, commonDir: await realpath(resolve(root, commonDir)), fresh: false };
+	return { spec, root, commonDir: await realpath(resolve(root, commonDir)) };
 }
 
 async function cloneStore(spec: Extract<WorkspaceRepository, { kind: "remote" }>, store: string): Promise<void> {
 	const staging = `${store}.tmp-${randomUUID()}`;
 	await mkdir(dirname(store), { recursive: true });
 	try {
-		await git(dirname(store), ["clone", "--bare", "--quiet", spec.url, staging], "clone");
+		await git(dirname(store), ["clone", "--bare", spec.url, staging], "clone");
 		await git(staging, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], "clone");
-		await git(staging, ["fetch", "--quiet", "origin"], "fetch");
+		await git(staging, ["fetch", "origin"], "fetch");
 		await rename(staging, store);
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
@@ -189,37 +189,36 @@ async function openRemote(
 	signal?: AbortSignal,
 ): Promise<OpenRepository> {
 	const store = sharedStorePath(spec);
-	let fresh = false;
-	if (!existsSync(join(store, "HEAD"))) {
-		await waitFor(
-			shared(pendingClones, store, () => cloneStore(spec, store)),
-			signal,
-		);
-		fresh = true;
+	if (existsSync(join(store, "HEAD"))) {
+		const root = await realpath(store);
+		return { spec, root, commonDir: root };
 	}
+	await waitFor(
+		shared(pendingClones, store, () => cloneStore(spec, store)),
+		signal,
+	);
 	const root = await realpath(store);
-	return { spec, root, commonDir: root, fresh };
+	return { spec, root, commonDir: root, fresh: true };
 }
 
 function fetchStore(repository: OpenRepository): Promise<void> {
 	return shared(pendingFetches, repository.root, async () => {
-		await git(repository.root, ["fetch", "--quiet", "origin"], "fetch");
+		await git(repository.root, ["fetch", "origin"], "fetch");
 	});
 }
 
 async function commitOf(repository: OpenRepository, ref: string): Promise<string | undefined> {
-	const result = await probe(repository.root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+	const result = await probe(repository.root, ["rev-parse", "--verify", `${ref}^{commit}`]);
 	return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
 async function defaultBase(repository: OpenRepository): Promise<string> {
 	if (repository.spec.kind === "local") return "HEAD";
-	const head = await git(repository.root, ["symbolic-ref", "--short", "HEAD"], "validate");
-	return (await commitOf(repository, `origin/${head}`)) === undefined ? head : `origin/${head}`;
+	return `origin/${await git(repository.root, ["symbolic-ref", "--short", "HEAD"], "validate")}`;
 }
 
 async function currentBranch(worktree: string, signal?: AbortSignal): Promise<string | undefined> {
-	const result = await probe(worktree, ["symbolic-ref", "--quiet", "--short", "HEAD"], signal);
+	const result = await probe(worktree, ["symbolic-ref", "--short", "HEAD"], signal);
 	return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
@@ -296,14 +295,11 @@ async function addWorktree(repository: OpenRepository, path: string, branch: str
 	await mkdir(dirname(path), { recursive: true });
 	await git(repository.root, ["worktree", "prune"], "worktree-add");
 	if ((await commitOf(repository, `refs/heads/${branch}`)) !== undefined) {
-		await git(repository.root, ["worktree", "add", "--quiet", path, branch], "worktree-add");
+		await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
 		return;
 	}
-	const start =
-		repository.spec.kind === "remote"
-			? ((await commitOf(repository, `refs/remotes/origin/${branch}`)) ?? baseTip)
-			: baseTip;
-	await git(repository.root, ["worktree", "add", "--quiet", "-b", branch, path, start], "worktree-add");
+	const start = (await commitOf(repository, `refs/remotes/origin/${branch}`)) ?? baseTip;
+	await git(repository.root, ["worktree", "add", "-b", branch, path, start], "worktree-add");
 }
 
 async function bindWorktree(
@@ -469,12 +465,6 @@ export async function resolveWorkspace(
 }
 
 export function isBoundWorkspace(value: unknown): value is BoundWorkspace {
-	const candidate = value as Partial<BoundWorkspace> | undefined;
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		candidate?.kind === "bound-workspace" &&
-		typeof candidate.worktree === "string" &&
-		typeof candidate.head === "string"
-	);
+	const candidate = value as Partial<BoundWorkspace> | null | undefined;
+	return candidate?.kind === "bound-workspace" && typeof candidate.worktree === "string";
 }

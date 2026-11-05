@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
-import { isWorkspaceBindingError, WorkspacePublicationError } from "./errors.ts";
+import { WorkspacePublicationError } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
 import { redactCredentials } from "./redact.ts";
 import { type BoundWorkspace, openWorkspaceRepository } from "./resolve.ts";
@@ -37,9 +37,9 @@ export async function workspaceChangeSet(
 	let files = 0;
 	let insertions = 0;
 	let deletions = 0;
-	for (const line of numstat.split("\n")) {
-		const [added, removed] = line.split("\t");
-		if (added === undefined || removed === undefined) continue;
+	// One "<added>\t<removed>\t<path>" line per file; a binary file reports "-" for both counts.
+	for (const line of numstat.split("\n").filter((entry) => entry !== "")) {
+		const [added = "", removed = ""] = line.split("\t");
 		files += 1;
 		insertions += Number.parseInt(added, 10) || 0;
 		deletions += Number.parseInt(removed, 10) || 0;
@@ -124,9 +124,13 @@ function runGh(
 	});
 }
 
-function ghFailure(result: ProcessResult, fields: Readonly<Record<string, string>>): WorkspacePublicationError {
+function processFailure(
+	reason: "push-failed" | "gh-failed",
+	result: ProcessResult,
+	fields: Readonly<Record<string, string>>,
+): WorkspacePublicationError {
 	return new WorkspacePublicationError({
-		reason: "gh-failed",
+		reason,
 		fields: { ...fields, detail: redactCredentials(result.stderr.trim() || result.stdout.trim()).slice(0, 400) },
 	});
 }
@@ -179,18 +183,14 @@ export async function publishPullRequest(
 	if (github === undefined) throw new WorkspacePublicationError({ reason: "no-remote", fields });
 	const auth = await runGh(["auth", "status", "--hostname", github.split("/")[0]!], repository.root, signal, fields);
 	if (auth.status !== 0) throw new WorkspacePublicationError({ reason: "gh-unauthenticated", fields });
-	try {
-		await runWorkspaceGit({
-			cwd: repository.root,
-			args: ["push", "--quiet", "origin", `${changeSet.headCommit}:refs/heads/${changeSet.branch}`],
-			phase: "push",
-			signal,
-		});
-	} catch (error) {
-		if (isWorkspaceBindingError(error) && error.code === "git-failed")
-			throw new WorkspacePublicationError({ reason: "push-failed", fields, cause: error });
-		throw error;
-	}
+	const pushed = await runWorkspaceGit({
+		cwd: repository.root,
+		args: ["push", "origin", `${changeSet.headCommit}:refs/heads/${changeSet.branch}`],
+		phase: "push",
+		allowFailure: true,
+		signal,
+	});
+	if (pushed.status !== 0) throw processFailure("push-failed", pushed, fields);
 	const listed = await runGh(
 		[
 			"pr",
@@ -210,7 +210,7 @@ export async function publishPullRequest(
 		signal,
 		fields,
 	);
-	if (listed.status !== 0) throw ghFailure(listed, fields);
+	if (listed.status !== 0) throw processFailure("gh-failed", listed, fields);
 	const existing = parsePullRequests(listed, fields)[0];
 	if (existing !== undefined) return { url: existing.url, draft: existing.isDraft, created: false };
 	const created = await runGh(
@@ -219,7 +219,8 @@ export async function publishPullRequest(
 		signal,
 		fields,
 	);
-	if (created.status !== 0) throw ghFailure(created, fields);
-	const url = created.stdout.trim().split("\n").at(-1) ?? "";
+	if (created.status !== 0) throw processFailure("gh-failed", created, fields);
+	// gh prints progress lines first and the pull request URL last.
+	const url = created.stdout.trim().split("\n").at(-1) as string;
 	return { url, draft, created: true };
 }

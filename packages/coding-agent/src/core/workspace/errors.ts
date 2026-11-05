@@ -95,14 +95,14 @@ export class WorkspaceError extends Error {
 	readonly cleanupCause?: unknown;
 
 	constructor(init: WorkspaceErrorInit) {
-		super(init.message, init.cause === undefined ? undefined : { cause: init.cause });
+		super(init.message, { cause: init.cause });
 		this.name = init.name;
 		this.code = init.code;
-		if (init.reason !== undefined) this.reason = init.reason;
+		this.reason = init.reason;
 		this.hint = init.hint;
 		this.fields = Object.freeze({ ...init.fields });
 		this.retryable = init.retryable;
-		if (init.cleanupCause !== undefined) this.cleanupCause = init.cleanupCause;
+		this.cleanupCause = init.cleanupCause;
 	}
 }
 
@@ -121,8 +121,7 @@ function message(what: string, subject: string, code: string, hint: string): str
 }
 
 function text(fields: WorkspaceErrorFields, key: string): string {
-	const value = fields[key];
-	return typeof value === "string" ? value : String(value);
+	return String(fields[key]);
 }
 
 interface Described {
@@ -458,10 +457,7 @@ export class GitUnavailableError extends Error {
 		const code = init.code ?? "not-installed";
 		const installCommand = gitInstallCommand();
 		const hint = `Install git (${installCommand}) and make sure it is on PATH.`;
-		super(
-			message("Git is unavailable", `${init.gitPath} could not be started`, code, hint),
-			init.cause === undefined ? undefined : { cause: init.cause },
-		);
+		super(message("Git is unavailable", `${init.gitPath} could not be started`, code, hint), { cause: init.cause });
 		this.code = code;
 		this.platform = process.platform;
 		this.hint = hint;
@@ -485,22 +481,16 @@ interface ErrorShape {
 	readonly cause?: unknown;
 }
 
-function shape(value: unknown): ErrorShape | undefined {
-	return typeof value === "object" && value !== null ? (value as ErrorShape) : undefined;
-}
-
 function named(value: unknown, name: string): boolean {
-	const candidate = shape(value);
+	const candidate = value as ErrorShape | null | undefined;
 	return candidate?.name === name && typeof candidate.code === "string";
 }
 
 export function isWorkspaceError(value: unknown): value is WorkspaceError {
-	if (value instanceof WorkspaceError) return true;
-	const candidate = shape(value);
+	const candidate = value as ErrorShape | null | undefined;
 	return (
-		typeof candidate?.name === "string" &&
-		WORKSPACE_ERROR_NAMES.has(candidate.name) &&
-		typeof candidate.code === "string"
+		value instanceof WorkspaceError ||
+		(WORKSPACE_ERROR_NAMES.has(candidate?.name as string) && typeof candidate?.code === "string")
 	);
 }
 
@@ -539,7 +529,7 @@ export function findWorkspaceError(value: unknown, guard: (candidate: unknown) =
 	let current: unknown = value;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
 		if (guard(current)) return current;
-		current = shape(current)?.cause;
+		current = (current as ErrorShape).cause;
 	}
 	return undefined;
 }
@@ -574,29 +564,22 @@ export interface SerializedWorkspaceError extends SerializedWorkspaceErrorCause 
 
 function serializeCause(value: unknown, depth: number): SerializedWorkspaceErrorCause | undefined {
 	if (value === undefined || value === null || depth >= MAX_CAUSE_DEPTH) return undefined;
-	const candidate = value as Partial<WorkspaceError> & ErrorShape;
-	const cause = serializeCause(candidate.cause, depth + 1);
+	const candidate = value as Partial<WorkspaceError>;
+	// Undefined members disappear when the record is sent as JSON.
 	return {
-		name: typeof candidate.name === "string" ? candidate.name : "Error",
-		message: typeof candidate.message === "string" ? candidate.message : String(value),
-		...(typeof candidate.code === "string" ? { code: candidate.code } : {}),
-		...(typeof candidate.hint === "string" ? { hint: candidate.hint } : {}),
-		...(candidate.fields !== undefined ? { fields: { ...candidate.fields } } : {}),
-		...(typeof candidate.retryable === "boolean" ? { retryable: candidate.retryable } : {}),
-		...(typeof candidate.reason === "string" ? { reason: candidate.reason } : {}),
-		...(cause !== undefined ? { cause } : {}),
+		name: candidate.name ?? "Error",
+		message: candidate.message ?? String(value),
+		code: candidate.code,
+		hint: candidate.hint,
+		fields: candidate.fields,
+		retryable: candidate.retryable,
+		reason: candidate.reason,
+		cause: serializeCause(candidate.cause, depth + 1),
 	};
 }
 
 export function serializeWorkspaceError(error: WorkspaceError): SerializedWorkspaceError {
-	const serialized = serializeCause(error, 0)!;
-	return {
-		...serialized,
-		code: error.code,
-		hint: error.hint,
-		fields: { ...error.fields },
-		retryable: error.retryable,
-	};
+	return serializeCause(error, 0) as SerializedWorkspaceError;
 }
 
 function rehydrateCause(record: SerializedWorkspaceErrorCause | undefined): unknown {
@@ -610,12 +593,8 @@ function rehydrateCause(record: SerializedWorkspaceErrorCause | undefined): unkn
 		Object.defineProperty(error, "message", { value: record.message, writable: true, configurable: true });
 		return error;
 	}
-	if (record.code !== undefined && record.hint !== undefined && record.fields !== undefined)
-		return rehydrateWorkspaceError(record as SerializedWorkspaceError);
-	const error = new Error(
-		record.message,
-		record.cause === undefined ? undefined : { cause: rehydrateCause(record.cause) },
-	);
+	if (record.hint !== undefined) return rehydrateWorkspaceError(record as SerializedWorkspaceError);
+	const error = new Error(record.message, { cause: rehydrateCause(record.cause) });
 	error.name = record.name;
 	return error;
 }
@@ -659,7 +638,7 @@ function construct(record: SerializedWorkspaceError, cause: unknown): WorkspaceE
 			return new WorkspaceError({
 				name: record.name,
 				code: record.code,
-				...(record.reason !== undefined ? { reason: record.reason } : {}),
+				reason: record.reason,
 				message: record.message,
 				hint: record.hint,
 				fields,
@@ -672,7 +651,7 @@ function construct(record: SerializedWorkspaceError, cause: unknown): WorkspaceE
 /** Rebuild the original class from its wire form. Unknown names become `WorkspaceError` with name and code kept. */
 export function rehydrateWorkspaceError(record: SerializedWorkspaceError): WorkspaceError {
 	const error = construct(record, rehydrateCause(record.cause));
-	if (error.message !== record.message)
-		Object.defineProperty(error, "message", { value: record.message, writable: true, configurable: true });
+	// The sender's message wins, so a sender on another version renders the same text.
+	Object.defineProperty(error, "message", { value: record.message, writable: true, configurable: true });
 	return error;
 }
