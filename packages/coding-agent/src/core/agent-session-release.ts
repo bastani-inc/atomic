@@ -1,8 +1,8 @@
 import { AgentRehydrateError, AgentReleaseConfigError, type AgentSessionActivity } from "./agent-rehydrate-errors.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { type AgentWakeDispatcher, agentWakeDispatcher } from "./agent-wake-dispatcher.ts";
-import { isPrivateMemorySessionStore } from "./storage/session/memory-session-store.ts";
-import type { SessionStore } from "./storage/session/types.ts";
+import { isPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
+import type { SessionStore } from "./storage/session/types.js";
 
 /** What is left of a released session: plain data that names its stored conversation, and nothing live. */
 export interface ReleasedAgentSession {
