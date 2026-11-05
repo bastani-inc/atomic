@@ -135,7 +135,8 @@ export interface WorkingTreeState {
  * Writes the policy-filtered working tree through a private index seeded from `seedTree` (HEAD by default), leaving
  * the user's index, refs and files untouched. A path the policy, settings or caps leave out keeps HEAD's content, or
  * stays absent when HEAD lacks it, whatever the seed held, so a verification seeded from a recorded tree sees a
- * recorded file that later grew past a cap or became ignored as changed.
+ * recorded file that later grew past a cap or became ignored as changed. A file staged in the user's index despite an
+ * ignore rule (`git add -f`) counts as a new file, like an untracked one.
  */
 export async function writeWorkingTree(
 	checkout: Checkout,
@@ -176,9 +177,17 @@ export async function writeWorkingTree(
 	const changed = nulFields(
 		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
 	);
-	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
-		(path) => !path.endsWith("/"),
-	);
+	const ignoredInIndex = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
+	const seededIgnored = new Set(nulFields((await runGit(ignoredInIndex, git)).stdout));
+	const forceAdded = nulFields(
+		(await runGit(ignoredInIndex, { cwd: root, signal: options.signal, neutral: options.neutral })).stdout,
+	).filter((path) => !seededIgnored.has(path));
+	const untracked = [
+		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
+			(path) => !path.endsWith("/"),
+		),
+		...forceAdded,
+	];
 	const omitted: Extract<WorktreeSnapshotOmission, { readonly path: string }>[] = [];
 	const admitted: string[] = [];
 	let total = 0;

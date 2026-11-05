@@ -4,13 +4,16 @@ import { readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
+	bindingOf,
 	captureWorktreeSnapshot,
 	GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
 	isWorkspaceSnapshotError,
 	MemorySnapshotBlobStore,
+	restoreWorktreeSnapshot,
 	setWorktreeSnapshotGit,
+	verifyWorktree,
 	WorkspaceConfigError,
 	WorkspaceSnapshotError,
 	type WorktreeSnapshot,
@@ -233,6 +236,34 @@ describe("captureWorktreeSnapshot content", () => {
 		]);
 		const patch = Buffer.from((await blobs.getBlob(result.snapshot.chain[0]!.patch!))!).toString("utf8");
 		assert.doesNotMatch(patch, /LEAKED|HEAD-KEY|HEAD_ENV/);
+	});
+
+	test("a file force-added despite .gitignore is captured like any staged file, and restores (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "*.log\n" });
+		sandbox.write(join(clone, "build.log"), "forced\n");
+		await sandbox.git(clone, "add", "-f", "build.log");
+		sandbox.write(join(clone, "other.log"), "still ignored\n");
+		const blobs = new MemorySnapshotBlobStore();
+		const result = captured(await captureWorktreeSnapshot(clone, { blobs }));
+		const tree = result.snapshot.tree;
+		assert.equal(await blobText(clone, tree, "build.log"), "forced");
+		assert.equal(await sandbox.git(clone, "ls-tree", "--name-only", tree, "other.log"), "");
+		assert.deepEqual(result.snapshot.omitted, []);
+		assert.deepEqual(await verifyWorktree(result.snapshot, clone), bindingOf(result.snapshot));
+		const restored = await restoreWorktreeSnapshot(result.snapshot, { blobs, storeDir: sandbox.path("host") });
+		assert.equal(readFileSync(join(restored, "build.log"), "utf8"), "forced\n");
+	});
+
+	test("an ignored file already tracked at HEAD is not counted again as a new file (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "*.log\n" });
+		sandbox.write(join(clone, "big.log"), "x".repeat(100));
+		await sandbox.git(clone, "add", "-f", "big.log");
+		await sandbox.commitAll(clone, "track an ignored file");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		sandbox.write(join(clone, "small.txt"), "small\n");
+		const result = captured(await captureWorktreeSnapshot(clone, { settings: { maxSnapshotBytes: 50 } }));
+		assert.deepEqual(result.snapshot.omitted, []);
+		assert.equal(await blobText(clone, result.snapshot.tree, "small.txt"), "small");
 	});
 
 	test("over-cap files are omitted with their size", async () => {

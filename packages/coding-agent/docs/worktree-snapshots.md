@@ -38,7 +38,7 @@ When a file or directory a capture has to read cannot be read, for example becau
 
 ## What is left out
 
-- Files ignored by `.gitignore`, `.git/info/exclude`, or your global excludes file. Build outputs and dependencies are rebuilt, never captured.
+- Files ignored by `.gitignore`, `.git/info/exclude`, or your global excludes file. Build outputs and dependencies are rebuilt, never captured. A file you staged despite an ignore rule (`git add -f`) is captured like any other staged file.
 - Paths matching `.atomic/snapshot-ignore` at the repository root (`.gitignore` syntax).
 - Paths on the built-in deny list: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, SSH key files: any `id_*` file without an extension, and any file named after an SSH key type (`id_rsa`, `id_ed25519`, `id_ecdsa`, `id_dsa`, `id_mldsa`, `id_xmss`) whatever its suffix, such as `id_rsa.bak`, except `.pub` public keys and certificates. Other `id_*` files with an extension, such as `id_utils.ts`, are kept. The secret extensions apply to every name, so `id_server.pem` or `id_rsa.pub.key` is always left out, `credentials`, `credentials.json`, `.netrc`, `_netrc`, `.git-credentials`, `.pgpass`.
 - Untracked files when `snapshots.includeUntracked` is `false`.
