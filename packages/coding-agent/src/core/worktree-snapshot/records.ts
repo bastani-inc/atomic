@@ -21,8 +21,8 @@ function isBlobHash(value: unknown): boolean {
 }
 
 /** Whether `remote` can be passed to `git fetch` as a repository: never an option, never a control character. */
-function isSafeRemote(remote: unknown): boolean {
-	return typeof remote === "string" && remote.length > 0 && !remote.startsWith("-") && !CONTROL_CHARACTER.test(remote);
+function isSafeRemote(remote: string): boolean {
+	return remote.length > 0 && !remote.startsWith("-") && !CONTROL_CHARACTER.test(remote);
 }
 
 function firstObjectIdProblem(values: unknown, field: string): SnapshotRecordProblem | undefined {

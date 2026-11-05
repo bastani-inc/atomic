@@ -549,6 +549,47 @@ describe("opening a session where it continues", () => {
 		]);
 		assert.equal(existsSync(brokenRecord), true);
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"LFS objects a resume could not fetch are named once, after the snapshot's own notices (#4245)",
+		async () => {
+			const { clone } = await sandbox.remoteWithClone("repo", {
+				".gitattributes": "*.bin filter=lfs -text\n",
+				"data.bin": "base\n",
+			});
+			sandbox.write(join(clone, "data.bin"), "edited\n");
+			const store = await sqlStore();
+			const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
+			assert.equal(capture.status, "captured");
+			if (capture.status !== "captured") return;
+			const manager = await SessionManager.create(store, clone);
+			await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+			writeFileSync(join(clone, "data.bin"), "drift\n");
+			const bin = sandbox.path("lfs-bin");
+			mkdirSync(bin);
+			writeFileSync(join(bin, "git-lfs"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+			const executable = sandbox.executable;
+			setWorktreeSnapshotGit(async () => ({
+				path: "git",
+				env: { ...executable.env, PATH: `${bin}:${process.env.PATH}` },
+			}));
+			const resumed = await openSessionInWorktree(manager, { settings, storeDir: sandbox.path("host") });
+			assert.deepEqual(resumed.notices, [
+				{ type: "info", message: formatWorktreeRestoreNotice(manager.getWorktreeRootMappings()[0]!) },
+				{
+					type: "warning",
+					message: formatWorktreeRestoreWarning({
+						code: "filters",
+						filters: { autocrlf: null, eol: null, drivers: ["lfs"] },
+					}),
+				},
+				{
+					type: "warning",
+					message: formatWorktreeRestoreWarning({ code: "lfs-objects-unavailable", paths: ["data.bin"] }),
+				},
+			]);
+		},
+	);
 });
 
 describe("restore notices", () => {
