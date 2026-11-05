@@ -312,16 +312,16 @@ describe("workspace session helpers (#3109)", () => {
 		assert.equal(workspaceSessionCwd(binding, join(binding.worktree, "pkg")), join(binding.worktree, "pkg"));
 		assert.equal(workspaceSessionCwd(binding, "not/yet/there"), join(binding.worktree, "not", "yet", "there"));
 		symlinkSync(dirs.root, join(binding.worktree, "escape-link"), "junction");
-		for (const escape of ["..", "../other", "escape-link", "escape-link/sub", dirs.root]) {
+		for (const outside of ["..", "../other", "escape-link", "escape-link/sub", dirs.root]) {
 			const error = (() => {
 				try {
-					workspaceSessionCwd(binding, escape);
+					workspaceSessionCwd(binding, outside);
 				} catch (caught) {
 					return caught;
 				}
 				return undefined;
 			})();
-			assert.ok(isWorkspaceBindingError(error), escape);
+			assert.ok(isWorkspaceBindingError(error), outside);
 			assert.equal(error.code, "cwd-outside-worktree");
 			assert.equal(error.fields.worktree, binding.worktree);
 		}
@@ -352,10 +352,11 @@ describe("workspace session helpers (#3109)", () => {
 	test("restore a recorded binding only for the same workspace, keeping or replacing its label (#3109)", async () => {
 		const repo = createRepository(dirs.root, "recorded");
 		const recorded = await resolveWorkspace(workspace({ repo, base: "main", branch: "recorded", label: "first" }));
+		const decoy = { ...recorded, label: "decoy" };
 		const session = fakeSession([
-			{ customType: "something-else", data: recorded },
-			{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: { kind: "not-a-binding" } },
 			{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: recorded },
+			{ customType: "something-else", data: decoy },
+			{ customType: WORKSPACE_BINDING_ENTRY_TYPE, data: { kind: "not-a-binding" } },
 		]);
 		const same = await bindSessionWorkspace(workspace({ repo, branch: "recorded" }), session);
 		assert.equal(same.label, "first");

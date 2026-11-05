@@ -128,7 +128,17 @@ describe("publishPullRequest (#3109)", () => {
 			draft: false,
 			created: true,
 		});
-		assert.equal(ghCalls().at(-1)?.includes("--draft"), false);
+		const remote = classifyRepository(changeSet.repo);
+		assert.ok(remote?.kind === "remote");
+		assert.deepEqual(ghCalls().at(-1), [
+			"pr",
+			"create",
+			"--repo",
+			`file/${remote.segments.slice(-2).join("/")}`,
+			"--head",
+			"feat/publish",
+			"--fill",
+		]);
 	});
 
 	test("returns the open pull request for the branch instead of opening another (#3109)", async () => {
@@ -186,6 +196,7 @@ describe("publishPullRequest (#3109)", () => {
 		process.env.GH_STUB_MODE = "list-fails";
 		const listFailed = await rejection(publishPullRequest(changeSet));
 		assert.ok(isWorkspacePublicationError(listFailed));
+		assert.equal(listFailed.reason, "gh-failed");
 		assert.equal(listFailed.fields.detail, "HTTP 502 from list", "stdout is the detail when stderr is empty");
 		process.env.GH_STUB_MODE = "garbage";
 		const garbage = await rejection(publishPullRequest(changeSet));
@@ -199,7 +210,7 @@ describe("publishPullRequest (#3109)", () => {
 		assert.equal(killed.reason, "gh-failed");
 
 		const calls = ghCalls().length;
-		for (const origin of [null, "https://example.com/only-one-segment", "/srv/local/path"]) {
+		for (const origin of [null, "https://example.com/only-one-segment", "/srv/local/path", "not a url"]) {
 			const local = createRepository(dirs.root, `origin-${calls}-${String(origin).length}`);
 			if (origin !== null) git(local, "remote", "add", "origin", origin);
 			const binding = await resolveWorkspace(workspace({ repo: local }));
@@ -208,6 +219,16 @@ describe("publishPullRequest (#3109)", () => {
 			assert.equal(noRemote.reason, "no-remote");
 		}
 		assert.equal(ghCalls().length, calls, "no gh call without a GitHub-shaped origin");
+		const twoSegments = createRepository(dirs.root, "two-segments");
+		git(twoSegments, "remote", "add", "origin", "file:///atomic-missing-owner/atomic-missing-repo");
+		const twoBinding = await resolveWorkspace(workspace({ repo: twoSegments }));
+		const unreachable = await rejection(publishPullRequest(await workspaceChangeSet(twoBinding)));
+		assert.ok(isWorkspacePublicationError(unreachable));
+		assert.equal(unreachable.reason, "push-failed", "an owner/repo origin is a GitHub-shaped remote");
+		const invalid = await rejection(
+			publishPullRequest({ ...(await workspaceChangeSet(twoBinding)), repo: "not a repo" }),
+		);
+		assert.equal((invalid as { code?: string }).code, "invalid-repository");
 	});
 
 	test("a gh that cannot be executed is gh-failed, and cancellation rejects with the signal's reason (#3109)", async () => {
@@ -219,6 +240,9 @@ describe("publishPullRequest (#3109)", () => {
 		assert.equal(notExecutable.reason, "gh-failed");
 		restoreGh();
 		restoreGh = setWorkspaceGhCommand({ path: process.execPath, args: [GH_STUB] });
+		const undo = setWorkspaceGhCommand({ path: join(dirs.root, "no-gh"), args: [] });
+		undo();
+		assert.equal((await publishPullRequest(changeSet)).created, true, "restoring the command undoes the override");
 		process.env.GH_STUB_MODE = "hang";
 		const controller = new AbortController();
 		const reason = new Error("stop publishing");

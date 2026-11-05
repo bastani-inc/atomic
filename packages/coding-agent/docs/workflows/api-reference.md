@@ -1263,7 +1263,7 @@ Each stage snapshot carries its graph position: `parentIds` lists the stages it 
 
 ## Workspaces
 
-A workspace names the repository, branch and worktree a session, stage or child workflow works in. Import `workspace` from `@bastani/atomic/workflows` (also exported by `@bastani/atomic`) and pass the same value to [`ctx.workflow`](#ctxworkflowdefinition-options), [stage and task options](#workspace), and [`createAgentSession`](/sdk#workspaces).
+A workspace names the repository, branch and worktree a session, stage or child workflow works in. Import `workspace` from `@bastani/atomic/workflows` (also exported by `@bastani/atomic`) and pass the same value to `ctx.workflow`, [stage and task options](#workspace), and [`createAgentSession`](/sdk#workspaces).
 
 ```typescript
 import { workspace } from "@bastani/atomic/workflows";

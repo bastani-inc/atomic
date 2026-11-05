@@ -179,7 +179,8 @@ export async function publishPullRequest(
 		allowFailure: true,
 		signal,
 	});
-	const github = origin.status === 0 ? ghRepository(origin.stdout.trim()) : undefined;
+	// Without an origin git prints nothing on stdout, which classifies as no GitHub repository.
+	const github = ghRepository(origin.stdout.trim());
 	if (github === undefined) throw new WorkspacePublicationError({ reason: "no-remote", fields });
 	const auth = await runGh(["auth", "status", "--hostname", github.split("/")[0]!], repository.root, signal, fields);
 	if (auth.status !== 0) throw new WorkspacePublicationError({ reason: "gh-unauthenticated", fields });

@@ -133,6 +133,19 @@ describe("workspace error family (#3109)", () => {
 		assert.equal(conflict.retryable, true);
 		assert.equal(fetchFailure.retryable, true);
 		assert.equal(localFailure.retryable, false);
+		assert.equal(
+			new WorkspaceBindingError({ code: "unknown-base", fields: { phase: "fetch" } }).retryable,
+			false,
+			"only git-failed looks at the phase",
+		);
+		for (const [reason, retryable] of [
+			["no-remote", false],
+			["push-failed", true],
+			["gh-unavailable", false],
+			["gh-unauthenticated", false],
+			["gh-failed", true],
+		] as const)
+			assert.equal(new WorkspacePublicationError({ reason, fields: {} }).retryable, retryable, reason);
 		assert.equal(samples.timeout().retryable, true);
 		assert.equal(samples.binding().retryable, false);
 		assert.equal(new WorkspacePublicationError({ reason: "push-failed", fields: {} }).retryable, true);
@@ -147,6 +160,12 @@ describe("workspace error family (#3109)", () => {
 		const cleanup = new Error("rm failed");
 		assert.equal(attachCleanupCause(primary, cleanup), primary);
 		assert.equal(primary.cleanupCause, cleanup);
+		const descriptor = Object.getOwnPropertyDescriptor(primary, "cleanupCause");
+		assert.equal(descriptor?.enumerable, true, "a cleanup failure shows up when the error is logged");
+		assert.equal(descriptor?.configurable, true);
+		const plain = new Error("plain primary");
+		attachCleanupCause(plain, cleanup);
+		assert.equal(Object.getOwnPropertyDescriptor(plain, "cleanupCause")?.enumerable, true);
 		const untouched = samples.restore();
 		assert.equal(attachCleanupCause(untouched, undefined), untouched);
 		assert.equal(untouched.cleanupCause, undefined);
@@ -220,7 +239,27 @@ describe("workspace error family (#3109)", () => {
 		assert.deepEqual(JSON.parse(JSON.stringify(wire.cause)), { name: "Error", message: "a string cause" });
 		const rehydrated = rehydrateWorkspaceError({ ...JSON.parse(JSON.stringify(wire)), message: "older wording" });
 		assert.equal(rehydrated.message, "older wording");
+		const messageDescriptor = Object.getOwnPropertyDescriptor(rehydrated, "message");
+		assert.equal(messageDescriptor?.writable, true);
+		assert.equal(messageDescriptor?.configurable, true);
 		assert.equal((rehydrated.cause as Error).message, "a string cause");
+		assert.equal((rehydrated.cause as Error).constructor, Error, "a plain cause stays a plain Error");
+		assert.equal(isWorkspaceError(rehydrated.cause), false);
+		const nested = rehydrateWorkspaceError(
+			JSON.parse(
+				JSON.stringify(
+					serializeWorkspaceError(
+						new WorkspacePublicationError({
+							reason: "push-failed",
+							fields: { repo: "/r", branch: "b" },
+							cause: new WorkspaceBindingError({ code: "git-failed", fields: { phase: "push" } }),
+						}),
+					),
+				),
+			),
+		);
+		assert.ok(nested.cause instanceof WorkspaceBindingError, "a workspace cause rehydrates into its class");
+		assert.equal(nested.cause.fields.phase, "push");
 		const gitless = rehydrateWorkspaceError({
 			...JSON.parse(JSON.stringify(wire)),
 			cause: { name: "GitUnavailableError", code: "offline", message: "offline wording" },

@@ -72,7 +72,8 @@ export type WorkspaceGitPhase =
 	| "lease";
 
 interface WorkspaceErrorInit {
-	readonly name: string;
+	/** Set only for the family base; each subclass declares its own literal name. */
+	readonly name?: string;
 	readonly code: string;
 	readonly message: string;
 	readonly hint: string;
@@ -96,7 +97,7 @@ export class WorkspaceError extends Error {
 
 	constructor(init: WorkspaceErrorInit) {
 		super(init.message, { cause: init.cause });
-		this.name = init.name;
+		this.name = init.name ?? "WorkspaceError";
 		this.code = init.code;
 		this.reason = init.reason;
 		this.hint = init.hint;
@@ -232,7 +233,6 @@ export class WorkspaceBindingError extends WorkspaceError {
 	constructor(init: WorkspaceBindingErrorInit) {
 		const described = describeBinding(init.code, init.reason, init.fields);
 		super({
-			name: "WorkspaceBindingError",
 			code: init.code,
 			reason: init.reason,
 			message: message(described.what, described.subject, init.code, described.hint),
@@ -265,7 +265,6 @@ export class WorkspaceConfigError extends WorkspaceError {
 	constructor(init: WorkspaceConfigErrorInit) {
 		const hint = `Set ${init.field} to ${init.expected}.`;
 		super({
-			name: "WorkspaceConfigError",
 			code: "invalid-setting",
 			reason: init.reason,
 			message: message(
@@ -307,7 +306,6 @@ export class WorkspaceRestoreError extends WorkspaceError {
 				? `Restore the repository at ${text(init.fields, "repository")}, or start a new run.`
 				: `Recreate branch ${text(init.fields, "branch")} or push it to the remote, then resume.`;
 		super({
-			name: "WorkspaceRestoreError",
 			code: "restore-failed",
 			reason: init.reason,
 			message: message(
@@ -350,7 +348,6 @@ export class WorkspacePublicationError extends WorkspaceError {
 	constructor(init: WorkspacePublicationErrorInit) {
 		const hint = PUBLICATION_HINTS[init.reason];
 		super({
-			name: "WorkspacePublicationError",
 			code: "publication-failed",
 			reason: init.reason,
 			message: message(
@@ -385,7 +382,6 @@ export class WorkspaceTimeoutError extends WorkspaceError {
 	constructor(init: WorkspaceTimeoutErrorInit) {
 		const hint = "Check network access to the remote, then retry.";
 		super({
-			name: "WorkspaceTimeoutError",
 			code: "timeout",
 			message: message(
 				"Workspace git command timed out",
@@ -416,7 +412,6 @@ export class WorkspaceSandboxError extends WorkspaceError {
 	constructor(init: WorkspaceSandboxErrorInit) {
 		const hint = "This stage is a read-only reviewer; report the change instead of making it.";
 		super({
-			name: "WorkspaceSandboxError",
 			code: "write-denied",
 			message: message(
 				"Write denied in a read-only workspace",
@@ -475,22 +470,27 @@ const WORKSPACE_ERROR_NAMES: ReadonlySet<string> = new Set([
 	"WorkspaceSandboxError",
 ]);
 
-interface ErrorShape {
-	readonly name?: unknown;
-	readonly code?: unknown;
-	readonly cause?: unknown;
+/**
+ * A data property of `value` or its prototypes. Accessors are never invoked, so guards stay side-effect free and never
+ * throw on hostile or half-built values.
+ */
+function dataProperty(value: unknown, key: string): unknown {
+	for (let owner: unknown = value; typeof owner === "object" && owner !== null; owner = Object.getPrototypeOf(owner)) {
+		const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+		if (descriptor !== undefined) return descriptor.value;
+	}
+	return undefined;
 }
 
 function named(value: unknown, name: string): boolean {
-	const candidate = value as ErrorShape | null | undefined;
-	return candidate?.name === name && typeof candidate.code === "string";
+	return dataProperty(value, "name") === name && typeof dataProperty(value, "code") === "string";
 }
 
 export function isWorkspaceError(value: unknown): value is WorkspaceError {
-	const candidate = value as ErrorShape | null | undefined;
 	return (
 		value instanceof WorkspaceError ||
-		(WORKSPACE_ERROR_NAMES.has(candidate?.name as string) && typeof candidate?.code === "string")
+		(WORKSPACE_ERROR_NAMES.has(dataProperty(value, "name") as string) &&
+			typeof dataProperty(value, "code") === "string")
 	);
 }
 
@@ -527,9 +527,9 @@ export function findWorkspaceError(value: unknown): WorkspaceError | undefined;
 export function findWorkspaceError<T>(value: unknown, guard: (candidate: unknown) => candidate is T): T | undefined;
 export function findWorkspaceError(value: unknown, guard: (candidate: unknown) => boolean = isWorkspaceError): unknown {
 	let current: unknown = value;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && current !== undefined && current !== null; depth++) {
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
 		if (guard(current)) return current;
-		current = (current as ErrorShape).cause;
+		current = dataProperty(current, "cause");
 	}
 	return undefined;
 }
@@ -538,7 +538,7 @@ export function findWorkspaceError(value: unknown, guard: (candidate: unknown) =
 export function isRetryableWorkspaceError(value: unknown): boolean {
 	return (
 		findWorkspaceError(value, (candidate): candidate is WorkspaceError => {
-			return isWorkspaceError(candidate) && candidate.retryable === true;
+			return isWorkspaceError(candidate) && dataProperty(candidate, "retryable") === true;
 		}) !== undefined
 	);
 }

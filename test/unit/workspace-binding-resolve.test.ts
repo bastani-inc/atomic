@@ -109,7 +109,13 @@ describe("workspace resolution (#3109)", () => {
 			"https://example.com/acme/dirty.git",
 			"ssh://git@example.com/acme/dirty.git",
 		]);
-		assert.equal(git(repo, "status", "--porcelain").includes("untracked.txt"), true);
+		assert.deepEqual(
+			git(repo, "status", "--porcelain").split("\n"),
+			["?? package-lock.json", "?? untracked.txt"],
+			"the snapshot never touches the real index",
+		);
+		const lockDigest = createHash("sha256").update("{}\n").digest("hex");
+		assert.equal(binding.envHash, createHash("sha256").update(`package-lock.json\0${lockDigest}\n`).digest("hex"));
 		const clean = await resolveWorkspace(workspace({ repo: createRepository(dirs.root, "clean") }));
 		assert.notEqual(binding.envHash, clean.envHash);
 	});
@@ -214,6 +220,11 @@ describe("workspace resolution (#3109)", () => {
 			),
 		);
 		const clones = commands.filter((args) => args.includes("clone"));
+		assert.equal(
+			commands.filter((args) => args[0] === "fetch").length,
+			1,
+			"only the clone's own fetch: a store cloned by this resolution is fresh",
+		);
 		const adds = commands.filter((args) => args[0] === "worktree" && args[1] === "add");
 		assert.equal(clones.length, 1, "one clone for every concurrent binding of the repository");
 		assert.equal(adds.length, branches.length, "one worktree per branch");
@@ -258,6 +269,22 @@ describe("workspace resolution (#3109)", () => {
 		assert.equal(moved.code, "wrong-branch");
 		assert.equal(api.readOnly(), api.readOnly(), "one read-only value per workspace");
 		assert.equal(api.readOnly().readOnly(), api.readOnly());
+	});
+
+	test("recognizes resolved bindings by shape (#3109)", async () => {
+		const { isBoundWorkspace } = await import("../../packages/coding-agent/src/core/workspace/resolve.ts");
+		assert.equal(
+			isBoundWorkspace(await resolveWorkspace(workspace({ repo: createRepository(dirs.root, "shape") }))),
+			true,
+		);
+		for (const value of [
+			null,
+			undefined,
+			"bound-workspace",
+			{ kind: "bound-workspace" },
+			{ kind: "workspace", worktree: "/w" },
+		])
+			assert.equal(isBoundWorkspace(value), false);
 	});
 
 	test("returns an already resolved binding without running git (#3109)", async () => {
@@ -338,6 +365,16 @@ describe("workspace resolution details (#3109)", () => {
 			expected: "a branch",
 			actual: "detached HEAD",
 		});
+	});
+
+	test("records where the branch forked from base, not base's current tip (#3109)", async () => {
+		const repo = createRepository(dirs.root, "forked");
+		const fork = git(repo, "rev-parse", "HEAD");
+		git(repo, "branch", "feature");
+		commitFile(repo, "main-only.txt", "advanced\n");
+		const binding = await resolveWorkspace(workspace({ repo, base: "main", branch: "feature" }));
+		assert.equal(binding.baseCommit, fork);
+		assert.notEqual(git(repo, "rev-parse", "main"), fork);
 	});
 
 	test("falls back to the base commit when the branch shares no history with it (#3109)", async () => {
@@ -435,6 +472,7 @@ describe("workspace resolution details (#3109)", () => {
 		assert.equal(error.code, "git-failed");
 		assert.equal(error.fields.phase, "clone");
 		assert.equal(error.retryable, true);
+		assert.equal(error.cleanupCause, undefined, "removing the staging clone succeeded");
 		const remote = classifyRepository(url);
 		assert.ok(remote?.kind === "remote");
 		assert.deepEqual(readdirSync(dirname(sharedStorePath(remote))), [], "the staging clone was removed");
@@ -444,9 +482,18 @@ describe("workspace resolution details (#3109)", () => {
 		const remote = createRemote(dirs.root, "shared-clone");
 		const controller = new AbortController();
 		const reason = new Error("caller went away");
-		const cancelled = resolveWorkspace(workspace({ repo: remote.url, branch: "one" }), { signal: controller.signal });
+		const cloning = new Promise<void>((resolve) => {
+			const stop = observeWorkspaceGitCommands((command) => {
+				if (command.args[0] === "clone") {
+					stop();
+					resolve();
+				}
+			});
+		});
 		const kept = resolveWorkspace(workspace({ repo: remote.url, branch: "two" }));
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		await cloning;
+		const cancelled = resolveWorkspace(workspace({ repo: remote.url, branch: "one" }), { signal: controller.signal });
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		controller.abort(reason);
 		assert.equal(await rejection(cancelled), reason);
 		const binding = await kept;

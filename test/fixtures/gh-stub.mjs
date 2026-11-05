@@ -10,13 +10,13 @@ if (args[0] === "auth") {
 } else if (args[0] === "pr" && args[1] === "list") {
 	if (mode === "garbage") process.stdout.write("not json");
 	else if (mode === "list-fails") {
-		process.stdout.write("HTTP 502 from list");
+		process.stdout.write("HTTP 502 from list\n");
 		process.exit(1);
 	} else process.stdout.write(mode === "existing" ? JSON.stringify([{ url: "https://example.test/pr/7", isDraft: true }]) : "[]");
 	process.exit(0);
 } else if (args[0] === "pr" && args[1] === "create") {
 	if (mode === "create-fails") {
-		process.stderr.write("GraphQL: something went wrong");
+		process.stderr.write("GraphQL: something went wrong\n");
 		process.exit(1);
 	}
 	if (mode === "killed") process.kill(process.pid, "SIGKILL");

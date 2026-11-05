@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { getAgentDir } from "../../config.ts";
+import { getAgentDir } from "../../config.js";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
 import { redactCredentials } from "./redact.ts";
@@ -121,11 +121,12 @@ async function openLocal(
 	repo: string,
 	signal?: AbortSignal,
 ): Promise<OpenRepository> {
+	const notARepository = () =>
+		new WorkspaceBindingError({ code: "invalid-repository", reason: "not-a-repository", fields: { repo } });
 	const root = await canonical(spec.path);
-	const located =
-		root === undefined ? undefined : await probe(root, ["rev-parse", "--show-toplevel", "--git-common-dir"], signal);
-	if (root === undefined || located === undefined || located.status !== 0)
-		throw new WorkspaceBindingError({ code: "invalid-repository", reason: "not-a-repository", fields: { repo } });
+	if (root === undefined) throw notARepository();
+	const located = await probe(root, ["rev-parse", "--show-toplevel", "--git-common-dir"], signal);
+	if (located.status !== 0) throw notARepository();
 	const [toplevel = "", commonDir = ""] = located.stdout.trim().split("\n");
 	const top = await realpath(toplevel);
 	if (top !== root)
