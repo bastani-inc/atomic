@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -238,4 +239,41 @@ test("a catalog row created by a reservation takes the root's details when the r
 			"a created root's row is not overwritten",
 		);
 	});
+});
+
+test("a new native shard's file is prepared before the catalog registers it, and a failed preparation registers nothing (#4325)", async () => {
+	const prepared: string[] = [];
+	const catalog = await JournalCatalog.open(join(root, "prepared"), {
+		prepareShard: async (path) => {
+			prepared.push(path);
+			writeFileSync(path, "");
+		},
+	});
+	try {
+		const placed = await catalog.place({ runId: "first", status: "running" });
+		assert.deepEqual(prepared, [placed.shard.path]);
+	} finally {
+		await catalog.close();
+	}
+	const refusing = await JournalCatalog.open(join(root, "refusing"), {
+		prepareShard: async () => {
+			throw new Error("cannot prepare");
+		},
+	});
+	try {
+		const refused = await refusing.place({ runId: "first", status: "running" }).catch((error: Error) => error);
+		assert.ok(isJournalCatalogError(refused));
+		assert.deepEqual([refused.code, refused.fields.phase], ["write-failed", "placing-run"]);
+		assert.deepEqual(await refusing.shards(), []);
+		assert.equal(await refusing.locate("first"), undefined);
+	} finally {
+		await refusing.close();
+	}
+	const plain = await JournalCatalog.open(join(root, "plain"));
+	try {
+		const placed = await plain.place({ runId: "first", status: "running" });
+		assert.equal(statSync(placed.shard.path).size, 0, "by default the file is created empty");
+	} finally {
+		await plain.close();
+	}
 });

@@ -117,6 +117,14 @@ export function isFinishedJournalStatus(status: string | undefined): boolean {
 	return (JOURNAL_FINISHED_STATUSES as readonly (string | undefined)[]).includes(status);
 }
 
+export interface JournalCatalogOptions {
+	/**
+	 * Creates a new native shard's file, ready for use, before the catalog registers the shard, so no other process
+	 * finds the shard before it is ready. By default the file is created empty.
+	 */
+	readonly prepareShard?: (path: string) => Promise<void>;
+}
+
 /**
  * The catalog of a journal store: which shard file holds each root run, and which shard files exist. Its writes are
  * rare (placing a root, recording its status, adopting a journal, moving a finished run), and a run's checkpoints never
@@ -127,15 +135,17 @@ export class JournalCatalog {
 	readonly directory: string;
 	readonly path: string;
 	private readonly database: SqliteDatabase;
+	private readonly prepareShard: (path: string) => Promise<void>;
 	private closing?: Promise<void>;
 
-	private constructor(directory: string, database: SqliteDatabase) {
+	private constructor(directory: string, database: SqliteDatabase, options: JournalCatalogOptions) {
 		this.directory = directory;
 		this.path = join(directory, JOURNAL_CATALOG_FILE);
 		this.database = database;
+		this.prepareShard = options.prepareShard ?? ((path) => appendFile(path, ""));
 	}
 
-	static async open(directory: string): Promise<JournalCatalog> {
+	static async open(directory: string, options: JournalCatalogOptions = {}): Promise<JournalCatalog> {
 		const root = resolve(directory);
 		const path = join(root, JOURNAL_CATALOG_FILE);
 		let database: SqliteDatabase;
@@ -150,7 +160,7 @@ export class JournalCatalog {
 				cause: cause as StorageFailureCause,
 			});
 		}
-		const catalog = new JournalCatalog(root, database);
+		const catalog = new JournalCatalog(root, database, options);
 		try {
 			await catalog.write("opening", (tx) => catalog.createSchema(tx));
 		} catch (error) {
@@ -378,10 +388,10 @@ export class JournalCatalog {
 		return pick(accepting.filter((shard) => load(shard) === least));
 	}
 
-	/** Registers a native shard with its file created first, so a native shard whose file is missing was lost. */
+	/** Registers a native shard with its file prepared first, so a native shard whose file is missing was lost. */
 	private async addNativeShard(tx: SqliteExecutor, id: number): Promise<JournalShardRecord> {
 		const file = nativeShardFile(id);
-		await appendFile(join(this.directory, file), "");
+		await this.prepareShard(join(this.directory, file));
 		await tx.run(
 			`INSERT INTO catalog_shards(id, path, kind, created_at, accepts_new_roots) VALUES (?, ?, 'native', ${STORE_NOW}, 1)`,
 			id,

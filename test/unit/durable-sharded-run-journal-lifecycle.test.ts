@@ -287,9 +287,9 @@ test("close waits for operations in flight, closes every shard and the catalog, 
 	release();
 	assert.equal((await pending)?.holderId, "owner", "the operation in flight completes");
 	await closing;
-	assert.equal(shards.length, 1);
+	assert.equal(shards.length, 2, "the shard was opened to prepare it, then to use it");
 	await assert.rejects(
-		shards[0]!.getRun("slow"),
+		shards[1]!.getRun("slow"),
 		(error: Error) => error instanceof StorageUnavailableError && error.cause instanceof JournalClosedError,
 	);
 	await assert.rejects(
@@ -470,10 +470,13 @@ test("a failed open keeps its error and attaches the catalog's failed close; sev
 		restore();
 	}
 
+	const opens = new Map<string, number>();
 	const failing = await ShardedRunJournal.open({
 		directory: join(root, "other"),
 		openShard: async (path) => {
 			const shard = await openSqlRunJournal(path);
+			opens.set(path, (opens.get(path) ?? 0) + 1);
+			if (opens.get(path) === 1) return shard;
 			const closeShard = shard.close.bind(shard);
 			shard.close = async () => {
 				await closeShard();

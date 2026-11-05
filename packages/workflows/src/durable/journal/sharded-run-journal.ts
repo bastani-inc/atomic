@@ -103,7 +103,9 @@ export class ShardedRunJournal implements RunJournal {
 	}
 
 	static async open(options: ShardedRunJournalOptions): Promise<ShardedRunJournal> {
-		const catalog = await JournalCatalog.open(options.directory);
+		const catalog = await JournalCatalog.open(options.directory, {
+			prepareShard: async (path) => (await options.openShard(path)).close(),
+		});
 		try {
 			if (options.legacyJournal !== undefined && options.legacyJournal !== false)
 				await discoverLegacyJournal(catalog, options.legacyJournal);
