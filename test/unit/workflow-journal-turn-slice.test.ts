@@ -104,7 +104,7 @@ function assertSpendsBudgetPerTurn(operationsPerTurn: readonly number[]): void {
 	);
 }
 
-test("a fan-out's journal work spreads over event-loop turns, checking the budget before every operation", async () => {
+test("a fan-out's journal work spreads over event-loop turns, checking the budget before every operation (#4388)", async () => {
 	const journal = new SynchronousCostJournal();
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: true });
 	try {
