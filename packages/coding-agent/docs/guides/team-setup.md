@@ -69,7 +69,7 @@ A CI runner needs no settings file. Set these variables for the process:
 |---|---|
 | `ATOMIC_PROFILE` | `ci` |
 | `ATOMIC_TEAM_URL` | The team database URL |
-| `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` | The token, or a file holding it. Only an absolute `file:` URL needs neither. Give the file as an absolute path, for example under `$RUNNER_TEMP`: a relative path is resolved against each process's working directory, so agents started in another directory would not find it |
+| `ATOMIC_TEAM_TOKEN` or `ATOMIC_TEAM_TOKEN_FILE` | The token, or a file holding it. Only an absolute `file:` URL needs neither. Give the file as an absolute path, for example under `$RUNNER_TEMP`: a relative path is refused at startup, because each process Atomic starts would resolve it against its own working directory |
 | `ATOMIC_TEAM_PREFIX` | Optional: the prefix the team joined with |
 
 With `ATOMIC_PROFILE=ci`, sessions, workflow runs, and Intercom all use the team database in that process and the processes it starts. Nothing is written to settings. The token is read from the variable or the file when a store opens; it is never copied into settings, logs, or the selection a child process receives.

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { SqliteDatabase } from "./database.js";
 import {
 	StorageConfigError,
@@ -393,10 +393,7 @@ function environmentValue(env: NodeJS.ProcessEnv, name: string): string | undefi
  * Invalid input throws {@link TeamProfileConfigError} with `source: "env"`: a team variable without the profile, or
  * the profile without its URL or token, is `incomplete-profile` naming every missing variable at once.
  */
-export function environmentTeamProfile(
-	env: NodeJS.ProcessEnv = process.env,
-	cwd: string = process.cwd(),
-): TeamStorageSelection | undefined {
+export function environmentTeamProfile(env: NodeJS.ProcessEnv = process.env): TeamStorageSelection | undefined {
 	const profile = environmentValue(env, TEAM_PROFILE_ENV);
 	const url = environmentValue(env, TEAM_URL_ENV);
 	const token = environmentValue(env, TEAM_TOKEN_ENV);
@@ -439,7 +436,15 @@ export function environmentTeamProfile(
 		if (token.trim().length === 0) throw emptyTeamToken("env");
 		secrets = { authToken: { env: TEAM_TOKEN_ENV } };
 	} else if (tokenFile !== undefined) {
-		const path = resolve(cwd, tokenFile);
+		if (!isAbsolute(tokenFile)) {
+			throw invalid(
+				"relative-token-file",
+				"env",
+				TEAM_TOKEN_FILE_ENV,
+				`Set ${TEAM_TOKEN_FILE_ENV} to an absolute path, for example under $RUNNER_TEMP: the processes Atomic starts would resolve a relative path against their own working directory.`,
+			);
+		}
+		const path = resolve(tokenFile);
 		readTeamTokenFile(path, "env");
 		secrets = { authToken: { file: path } };
 	}

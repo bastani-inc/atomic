@@ -605,6 +605,7 @@ export type TeamProfileConfigErrorCode =
 	| "missing-token"
 	| "conflicting-token"
 	| "unreadable-token-file"
+	| "relative-token-file"
 	| "empty-token"
 	| "invalid-prefix"
 	| "unknown-command"
@@ -635,6 +636,7 @@ export const TEAM_PROFILE_CONFIG_ERROR_CODES: ReadonlySet<TeamProfileConfigError
 		"missing-token",
 		"conflicting-token",
 		"unreadable-token-file",
+		"relative-token-file",
 		"empty-token",
 		"invalid-prefix",
 		"unknown-command",

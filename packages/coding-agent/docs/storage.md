@@ -448,6 +448,7 @@ Session listings accept an `AbortSignal`. Cancellation rejects with the original
 | `missing-token` | A non-`file:` URL has no token, or `tokenEnv` names an unset variable. |
 | `conflicting-token` | More than one token source was passed. |
 | `unreadable-token-file` | The token file cannot be read; `path` names it. |
+| `relative-token-file` | `ATOMIC_TEAM_TOKEN_FILE` is a relative path, which the processes Atomic starts would resolve against their own working directory. |
 | `empty-token` | The token, token file, or `tokenEnv` name is empty. |
 | `invalid-prefix` | The prefix does not match the storage prefix rules. |
 | `unknown-command`, `unknown-option`, `missing-value`, `unexpected-argument` | `atomic team` was called with arguments it does not take. |

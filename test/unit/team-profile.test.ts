@@ -158,11 +158,18 @@ describe("ATOMIC_PROFILE=ci (#4320)", () => {
 		assert.equal(existsSync(join(agentDir, "settings.json")), false);
 	});
 
-	test("a token file is referenced by absolute path, and a file: URL needs no token (#4320)", () => {
+	test("a token file is referenced by absolute path, a relative one is refused, and a file: URL needs no token (#4320)", () => {
 		writeFileSync(join(project, "token"), "file-token\n");
 		vi.stubEnv("ATOMIC_TEAM_TOKEN_FILE", "token");
 		ciProfile({ ATOMIC_TEAM_URL: TEAM_URL });
-		assert.deepEqual(environmentTeamProfile(process.env, project), {
+		const relative = rejects(() => environmentTeamProfile(), "env", "ATOMIC_TEAM_TOKEN_FILE", "relative-token-file");
+		assert.equal(relative.path, undefined);
+		assert.equal(
+			relative.message,
+			"Invalid storage configuration: ATOMIC_TEAM_TOKEN_FILE (relative-token-file). Set ATOMIC_TEAM_TOKEN_FILE to an absolute path, for example under $RUNNER_TEMP: the processes Atomic starts would resolve a relative path against their own working directory.",
+		);
+		vi.stubEnv("ATOMIC_TEAM_TOKEN_FILE", join(project, "sub", "..", "token"));
+		assert.deepEqual(environmentTeamProfile(), {
 			adapter: LIBSQL_ADAPTER_PACKAGE,
 			options: { url: TEAM_URL },
 			secrets: { authToken: { file: join(project, "token") } },

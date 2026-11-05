@@ -193,6 +193,7 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 			"missing-token",
 			"conflicting-token",
 			"unreadable-token-file",
+			"relative-token-file",
 			"empty-token",
 			"invalid-prefix",
 			"unknown-command",
