@@ -135,7 +135,7 @@ test("a failure that is not drift, such as missing Git, surfaces as itself and r
 	setWorktreeSnapshotGit(async () => ({ path: sandbox.path("missing-git"), env: {} }));
 	await assert.rejects(
 		resolveWorkflowSnapshotFrontier(fixture.journal, "run", { storeDir: sandbox.path("host") }),
-		(error: unknown) => isGitUnavailableError(error) && error.executable === sandbox.path("missing-git"),
+		(error: unknown) => isGitUnavailableError(error) && error.fields.systemGit?.path === sandbox.path("missing-git"),
 	);
 	assert.deepEqual(worktreesIn(sandbox.path("host")), []);
 });

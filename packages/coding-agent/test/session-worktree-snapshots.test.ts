@@ -305,7 +305,7 @@ describe("resumeSessionWorktree", () => {
 		await assert.rejects(resumeSessionWorktree(manager, { settings }), (error: unknown) => {
 			assert.ok(error instanceof GitUnavailableError);
 			assert.equal(error.code, "not-installed");
-			assert.equal(error.executable, sandbox.path("no-git"));
+			assert.equal(error.fields.systemGit?.path, sandbox.path("no-git"));
 			return true;
 		});
 		assert.equal(lookups, 1);
@@ -415,18 +415,25 @@ describe("cross-machine session resume", () => {
 		assert.deepEqual(filesUnder(mapping.to), expected);
 
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("bash", { command: "pwd && cat untracked/u.txt" })], {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("bash", {
+						command: `${process.platform === "win32" ? "pwd -W" : "pwd"} && cat untracked/u.txt`,
+					}),
+				],
+				{
+					stopReason: "toolUse",
+				},
+			),
 			fauxAssistantMessage("done"),
 		]);
 		await runtime.session.prompt("where are we");
 		const result = runtime.session.messages.findLast((message) => message.role === "toolResult");
 		assert.ok(result);
 		const text = (result.content as Array<{ type: string; text?: string }>).map((part) => part.text ?? "").join("");
-		assert.match(
-			text,
-			new RegExp(`${realpathSync(mapping.to).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+written by the agent`),
+		assert.equal(
+			text.replaceAll("\\", "/").replaceAll("\r\n", "\n"),
+			`${realpathSync(mapping.to).replaceAll("\\", "/")}\nwritten by the agent\n`,
 		);
 	}, 60_000);
 });

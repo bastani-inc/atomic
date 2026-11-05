@@ -255,20 +255,23 @@ describe("mapRestoredPath", () => {
 	});
 
 	test("moves a path under a restored root to the same place under its replacement, through every restore in order", () => {
-		assert.equal(mapRestoredPath("/old/repo/src/a.ts", [mapping("/old/repo", "/new/repo")]), "/new/repo/src/a.ts");
-		assert.equal(mapRestoredPath("/old/repo", [mapping("/old/repo", "/new/repo")]), "/new/repo");
+		assert.equal(
+			mapRestoredPath("/old/repo/src/a.ts", [mapping("/old/repo", "/new/repo")]),
+			resolve("/new/repo/src/a.ts"),
+		);
+		assert.equal(mapRestoredPath("/old/repo", [mapping("/old/repo", "/new/repo")]), resolve("/new/repo"));
 		assert.equal(
 			mapRestoredPath("/old/repo/src", [mapping("/old/repo", "/mid/repo"), mapping("/mid/repo", "/final/repo")]),
-			"/final/repo/src",
+			resolve("/final/repo/src"),
 		);
 	});
 
 	test("a sibling that merely shares a prefix, a parent and an unrelated path stay where they are", () => {
 		const mappings = [mapping("/old/repo", "/new/repo")];
-		assert.equal(mapRestoredPath("/old/repo-two/src", mappings), "/old/repo-two/src");
-		assert.equal(mapRestoredPath("/old", mappings), "/old");
-		assert.equal(mapRestoredPath("/elsewhere/repo", mappings), "/elsewhere/repo");
-		assert.equal(mapRestoredPath("/old/repo/x", []), "/old/repo/x");
+		assert.equal(mapRestoredPath("/old/repo-two/src", mappings), resolve("/old/repo-two/src"));
+		assert.equal(mapRestoredPath("/old", mappings), resolve("/old"));
+		assert.equal(mapRestoredPath("/elsewhere/repo", mappings), resolve("/elsewhere/repo"));
+		assert.equal(mapRestoredPath("/old/repo/x", []), resolve("/old/repo/x"));
 	});
 
 	test("a relative path is resolved against the working directory first", () => {

@@ -12,6 +12,7 @@ import {
 	isGitUnavailableError,
 	isWorkspaceConfigError,
 	isWorkspaceGitError,
+	isWorkspaceSnapshotError,
 	MemorySnapshotBlobStore,
 	setWorktreeSnapshotGit,
 	snapshotBlob,
@@ -49,7 +50,10 @@ describe("which directories can be captured", () => {
 		const onFile = await captureWorktreeSnapshot(file);
 		assert.equal(onFile.status, "unavailable");
 		assert.equal(onFile.status === "unavailable" && onFile.reason.code, "not-a-repository");
-		assert.equal(onFile.status === "unavailable" && onFile.reason.fields.subject, file);
+		assert.equal(
+			onFile.status === "unavailable" && isWorkspaceSnapshotError(onFile.reason) && onFile.reason.subject,
+			file,
+		);
 		assert.equal(onFile.status === "unavailable" && Object.hasOwn(onFile.reason, "cause"), false);
 
 		const below = await captureWorktreeSnapshot(join(file, "child"));

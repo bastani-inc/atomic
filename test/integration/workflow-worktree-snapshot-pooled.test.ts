@@ -26,7 +26,9 @@ export const child = workflow({
 `;
 
 test(
-	"pooled child persists its snapshot and blobs into the root journal (#4245)",
+	process.platform === "win32"
+		? "on Windows, local worker containment is refused, so pooled snapshots can't run (#4245)"
+		: "pooled child persists its snapshot and blobs into the root journal (#4245)",
 	async () => {
 		const sandbox = new GitSandbox();
 		let backend: JournalDurableBackend | undefined;
@@ -49,17 +51,23 @@ test(
 					return {};
 				},
 			});
-			const result = await run(
-				parent,
-				{},
-				{
-					cwd: clone,
-					durableBackend: backend,
-					store: createStore(),
-					localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
-					admission: { limits: { session: 1, process: 1 } },
-				},
-			);
+			const execute = () =>
+				run(
+					parent,
+					{},
+					{
+						cwd: clone,
+						durableBackend: backend,
+						store: createStore(),
+						localWorkers: { count: 1, definitions: [{ path: childPath, exportName: "child" }] },
+						admission: { limits: { session: 1, process: 1 } },
+					},
+				);
+			if (process.platform === "win32") {
+				await assert.rejects(execute(), /Local worker containment is unavailable on Windows/);
+				return;
+			}
+			const result = await execute();
 			assert.equal(result.status, "completed", result.error);
 			const boundaries = await listWorkflowSnapshotBoundaries(journal, result.runId);
 			const worker = boundaries.find(

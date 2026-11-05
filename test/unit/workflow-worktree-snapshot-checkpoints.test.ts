@@ -145,7 +145,7 @@ test("missing Git degrades once without preventing completed tools (#4245)", asy
 	const error = rehydrateWorkspaceError(reason);
 	assert.ok(isGitUnavailableError(error));
 	assert.equal(error.code, "not-installed");
-	assert.equal(error.executable, sandbox.path("missing-git"));
+	assert.equal(error.fields.systemGit?.path, sandbox.path("missing-git"));
 	assert.deepEqual(await listWorkflowSnapshotBoundaries(journal, result.runId), []);
 	await fixture.close();
 });

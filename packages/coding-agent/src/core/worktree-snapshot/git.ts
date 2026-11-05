@@ -1,19 +1,23 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { getBinDir } from "../../config.ts";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
-import { GitUnavailableError, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
+import { GitUnavailableError, gitInstallCommand, WorkspaceGitError, WorkspaceSnapshotError } from "./errors.ts";
 
 /** The Git executable snapshot operations run, with the environment it needs (a provisioned Git may need some). */
 export interface GitExecutable {
 	readonly path: string;
-	readonly env: Readonly<Record<string, string>>;
+	readonly env: Readonly<NodeJS.ProcessEnv>;
 }
 
-export type GitExecutableResolver = () => Promise<GitExecutable>;
+export type GitExecutableResolver = (signal?: AbortSignal) => Promise<GitExecutable>;
 
-const DEFAULT_GIT: GitExecutable = Object.freeze({ path: "git", env: Object.freeze({}) });
-let resolveExecutable: GitExecutableResolver = async () => DEFAULT_GIT;
+let resolveExecutable: GitExecutableResolver = async (signal) => {
+	const { resolveGit } = await import("../../utils/tools-manager.js");
+	return resolveGit({ signal });
+};
 
 /**
  * The single place every worktree snapshot Git invocation gets its executable from. Returns the previous resolver so
@@ -146,13 +150,13 @@ function isDirectory(path: string): boolean {
 /** Runs one Git command through the injected executable. Rejects with the signal's reason when aborted. */
 export async function runGit(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
 	options.signal?.throwIfAborted();
-	const executable = await resolveExecutable();
+	const executable = await resolveExecutable(options.signal);
 	options.signal?.throwIfAborted();
 	const env = createGitEnvironment(
 		{ GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GCM_INTERACTIVE: "never" },
-		createChildProcessEnvironment(),
+		createChildProcessEnvironment(executable.env),
 	);
-	Object.assign(env, executable.env, options.env);
+	Object.assign(env, options.env);
 	if (options.nonInteractive && !env.GIT_SSH_COMMAND && !env.GIT_SSH && !(await configuresSshCommand(options))) {
 		env.GIT_SSH_COMMAND = `ssh -o BatchMode=yes -o ConnectTimeout=${NON_INTERACTIVE_SSH_CONNECT_TIMEOUT_SECONDS}`;
 	}
@@ -162,7 +166,17 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 	const spawnFailure = (error: NodeJS.ErrnoException): Error =>
 		(error.code === "ENOENT" || error.code === "EACCES") && isDirectory(options.cwd)
 			? (unreadableDirectory(options.cwd) ??
-				new GitUnavailableError("not-installed", executable.path, { cause: error }))
+				new GitUnavailableError(
+					{
+						code: "not-installed",
+						platform: process.platform,
+						arch: process.arch,
+						installDir: join(getBinDir(), "git"),
+						installCommand: gitInstallCommand(process.platform),
+						systemGit: { path: executable.path, problem: "probe-failed" },
+					},
+					{ cause: error },
+				))
 			: new WorkspaceGitError(
 					{
 						operation: gitOperation(args),

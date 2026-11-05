@@ -117,7 +117,12 @@ describe("resuming from the TUI", () => {
 	test("a workspace failure and an unavailable Git are shown as messages and keep the current session", async () => {
 		for (const failure of [
 			new WorkspaceSnapshotError("not-a-repository", "/tmp/gone"),
-			new GitUnavailableError("not-installed", "git"),
+			new GitUnavailableError({
+				code: "not-installed",
+				platform: process.platform,
+				arch: process.arch,
+				installDir: "/opt/git",
+			}),
 		]) {
 			const { host, errors, fatal } = resumeHost(failure);
 			assert.deepEqual(await handleResumeSession.call(host, "any-session"), { cancelled: true });

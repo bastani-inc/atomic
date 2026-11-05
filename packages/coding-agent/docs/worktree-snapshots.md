@@ -32,7 +32,7 @@ Patches and bundles are stored once, by content hash, in the same storage as the
 
 A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
 
-When Git is not installed, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
+Snapshot commands use the Git Atomic resolves, including a portable copy it provisions when Git is not installed. If Git cannot be provided, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
 
 When a file or directory a capture has to read cannot be read, for example because of a permission error or a symbolic link that loops, that checkout's capture records nothing and reports `unreadable-path` naming the path. The turn or stage carries on. Make the path readable, or list it in `.atomic/snapshot-ignore`, to snapshot that checkout again.
 
@@ -128,7 +128,7 @@ Every error except `GitUnavailableError` extends `WorkspaceError`; all of them c
 | Class | Code | When | Fields | What to do |
 |-------|------|------|--------|------------|
 | `WorkspaceConfigError` | `invalid-setting` | A snapshot setting or SDK option has the wrong type or range | `source`, `field`, `expected` | Fix the named setting or option |
-| `GitUnavailableError` | `not-installed` | Git could not be started | `executable`, `platform` | Install Git with the command in `hint`, or put it on `PATH` |
+| `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | Git could not be started or provisioned | `platform`, `arch`, `installDir`, `installCommand?`, `systemGit?` | Follow `hint` (for example `await resolveGit()`, or install Git with `installCommand` or put it on `PATH`) |
 | `WorkspaceGitError` | `git-failed` | A Git command failed (`detail` holds its first error line, for example `No space left on device`) | `operation`, `cwd`, `exitCode`, `detail` | Check the repository is readable, its disk has free space, and no other Git process holds its lock, then retry |
 | `WorkspaceSnapshotError` | `not-a-repository` | The directory is outside any Git work tree | `subject` | Work inside a Git checkout |
 | `WorkspaceSnapshotError` | `unborn-head` | The repository has no commits | `subject` | Create a first commit |

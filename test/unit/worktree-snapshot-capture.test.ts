@@ -53,7 +53,7 @@ describe("captureWorktreeSnapshot availability", () => {
 		assert.ok(reason instanceof GitUnavailableError);
 		assert.ok(isGitUnavailableError(reason));
 		assert.equal(reason.code, "not-installed");
-		assert.equal((reason as GitUnavailableError).executable, sandbox.path("missing-git"));
+		assert.equal((reason as GitUnavailableError).fields.systemGit?.path, sandbox.path("missing-git"));
 		assert.equal((reason as GitUnavailableError).platform, process.platform);
 		assert.equal((reason as GitUnavailableError).retryable, false);
 	});

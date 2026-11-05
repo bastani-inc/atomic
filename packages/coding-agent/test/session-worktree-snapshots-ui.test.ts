@@ -220,7 +220,12 @@ describe("resume notices", () => {
 		};
 		assert.deepEqual(await handleResumeSession.call(host, manager.getSessionId()), { cancelled: false });
 		assert.equal(statuses[0], "Resumed session");
-		assert.match(statuses[1] ?? "", new RegExp(`^Restored worktree snapshot [0-9a-f]{12} of ${clone} into `));
+		assert.match(
+			statuses[1] ?? "",
+			new RegExp(
+				`^Restored worktree snapshot [0-9a-f]{12} of ${clone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} into `,
+			),
+		);
 		assert.deepEqual(warnings, ["The restored snapshot left out 1 item(s): .env.local (denied)"]);
 
 		const drift = new WorkspaceDriftError(
