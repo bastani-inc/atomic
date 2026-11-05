@@ -831,6 +831,7 @@ export {
 	findWorkspaceError,
 	GitUnavailableError,
 	type GitUnavailableErrorCode,
+	inheritWorkspace,
 	isBoundWorkspace,
 	isGitUnavailableError,
 	isRetryableWorkspaceError,

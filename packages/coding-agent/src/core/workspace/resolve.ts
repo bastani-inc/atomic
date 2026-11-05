@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../../config.js";
 import { attachCleanupCause, WorkspaceBindingError, type WorkspaceGitPhase } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
-import { withWorktreeLock } from "./lease.ts";
+import { withRepositoryLock } from "./lease.ts";
 import { redactCredentials } from "./redact.ts";
 import {
 	assertWorkspace,
@@ -52,13 +52,14 @@ export interface ResolveWorkspaceOptions {
 	readonly signal?: AbortSignal;
 }
 
-interface OpenRepository {
+/** A repository opened for binding: a local repository root or the shared store of a remote. */
+export interface OpenRepository {
 	readonly spec: WorkspaceRepository;
 	/** Directory git commands run in. */
 	readonly root: string;
 	/** Canonical git common directory: the repository identity worktrees are checked against. */
 	readonly commonDir: string;
-	/** Set when this resolution cloned the shared store, so it is already fresh. */
+	/** Set when this resolution created the shared store, so it is already fetched. */
 	readonly fresh?: true;
 }
 
@@ -80,7 +81,6 @@ const LOCKFILES = [
 ] as const;
 
 const pendingClones = new Map<string, Promise<void>>();
-const pendingFetches = new Map<string, Promise<void>>();
 const pendingWorktrees = new Map<string, Promise<void>>();
 
 /** Atomic's home directory (`~/.atomic`), the parent of the agent directory. */
@@ -92,7 +92,6 @@ function safeSegment(segment: string): string {
 	return segment.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-/** Shared object store for a remote: one bare clone per repository per host. */
 function shortDigest(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 12);
 }
@@ -163,13 +162,18 @@ async function openLocal(
 	return { spec, root, commonDir: await realpath(resolve(root, commonDir)) };
 }
 
-async function cloneStore(spec: Extract<WorkspaceRepository, { kind: "remote" }>, store: string): Promise<void> {
+/**
+ * Create the shared object store of a remote: a bare repository whose only branches are the remote's, tracked as
+ * `origin/*`, so a later fetch updates every branch the store knows. Local branches appear only as worktrees need them.
+ */
+async function createStore(spec: Extract<WorkspaceRepository, { kind: "remote" }>, store: string): Promise<void> {
 	const staging = `${store}.tmp-${randomUUID()}`;
 	await filesystem("create directory", dirname(store), () => mkdir(dirname(store), { recursive: true }));
 	try {
-		await git(dirname(store), ["clone", "--bare", spec.url, staging], "clone");
-		await git(staging, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], "clone");
+		await git(dirname(store), ["init", "--bare", staging], "clone");
+		await git(staging, ["remote", "add", "origin", spec.url], "clone");
 		await git(staging, ["fetch", "origin"], "fetch");
+		await git(staging, ["remote", "set-head", "origin", "--auto"], "fetch");
 		await filesystem("move clone to", store, () => rename(staging, store));
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
@@ -220,27 +224,26 @@ async function openRemote(
 		return { spec, root, commonDir: root };
 	}
 	await waitFor(
-		shared(pendingClones, store, () => cloneStore(spec, store)),
+		shared(pendingClones, store, () => createStore(spec, store)),
 		signal,
 	);
 	const root = await realpath(store);
 	return { spec, root, commonDir: root, fresh: true };
 }
 
-function fetchStore(repository: OpenRepository): Promise<void> {
-	return shared(pendingFetches, repository.root, async () => {
-		await git(repository.root, ["fetch", "origin"], "fetch");
-	});
-}
-
-async function commitOf(repository: OpenRepository, ref: string): Promise<string | undefined> {
+/** The commit `ref` names in `repository`, or undefined when it names none. */
+export async function commitOf(repository: { readonly root: string }, ref: string): Promise<string | undefined> {
 	const result = await probe(repository.root, ["rev-parse", "--verify", `${ref}^{commit}`]);
 	return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
+async function isAncestor(repository: OpenRepository, ancestor: string, descendant: string): Promise<boolean> {
+	return (await probe(repository.root, ["merge-base", "--is-ancestor", ancestor, descendant])).status === 0;
+}
+
 async function defaultBase(repository: OpenRepository): Promise<string> {
 	if (repository.spec.kind === "local") return "HEAD";
-	return `origin/${await git(repository.root, ["symbolic-ref", "--short", "HEAD"], "validate")}`;
+	return git(repository.root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], "validate");
 }
 
 async function currentBranch(worktree: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -317,41 +320,84 @@ async function listWorktrees(repository: OpenRepository): Promise<ListedWorktree
 	return worktrees;
 }
 
-async function addWorktree(repository: OpenRepository, path: string, branch: string, baseTip: string): Promise<void> {
-	await git(repository.root, ["worktree", "prune"], "worktree-add");
-	if ((await commitOf(repository, `refs/heads/${branch}`)) !== undefined) {
-		await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
-		return;
-	}
-	const start = (await commitOf(repository, `refs/remotes/origin/${branch}`)) ?? baseTip;
-	await git(repository.root, ["worktree", "add", "-b", branch, path, start], "worktree-add");
-}
-
-async function bindWorktree(
+/**
+ * Check out `branch` at `path`. A store's local branch follows the remote: it starts from `origin/<branch>`, is
+ * fast-forwarded when the remote is ahead, and is kept when it holds commits the remote lacks; a branch that diverged
+ * from the remote fails closed. A local repository's branches are its own and are used as they are.
+ */
+async function checkoutBranch(
 	repository: OpenRepository,
 	repo: string,
-	requested: string,
+	path: string,
 	branch: string,
-	baseTip: string,
-): Promise<string> {
-	let path = requested;
-	if (requested === "auto") {
-		const existing = (await listWorktrees(repository)).find(
-			(candidate) => candidate.branch === branch && existsSync(candidate.path),
-		);
-		path =
-			existing?.path ?? join(atomicHome(), "worktrees", ...repositoryKey(repository.spec, repository.root), branch);
+	missingBranchStart: () => Promise<string>,
+): Promise<void> {
+	const local = await commitOf(repository, `refs/heads/${branch}`);
+	const remote = await commitOf(repository, `refs/remotes/origin/${branch}`);
+	if (local === undefined) {
+		const start = remote ?? (await missingBranchStart());
+		await git(repository.root, ["worktree", "add", "-b", branch, path, start], "worktree-add");
+		return;
 	}
+	if (repository.spec.kind === "remote" && remote !== undefined && remote !== local) {
+		if (await isAncestor(repository, local, remote))
+			await git(repository.root, ["branch", "--force", branch, remote], "worktree-add");
+		else if (!(await isAncestor(repository, remote, local)))
+			throw new WorkspaceBindingError({
+				code: "drift",
+				reason: "branch-diverged",
+				fields: { repo, repository: repository.root, branch, worktree: path, expected: remote, actual: local },
+			});
+	}
+	await git(repository.root, ["worktree", "add", path, branch], "worktree-add");
+}
+
+export interface EnsureWorktreeSteps {
+	/** Runs before a missing worktree is added, after a store fetch; a failure leaves nothing added. */
+	readonly prepare?: () => Promise<unknown>;
+	/** Commit a branch that exists neither locally nor on the remote starts from. */
+	readonly missingBranchStart: () => Promise<string>;
+}
+
+/**
+ * Make `path` a verified worktree of `repository` on `branch`, adding it when it is missing. One addition per path runs
+ * in this process, and one repository change at a time across processes: the repository lock is held while a shared
+ * store is fetched and the worktree is added, and a path another process added meanwhile is used as it is.
+ */
+export async function ensureWorktree(
+	repository: OpenRepository,
+	repo: string,
+	path: string,
+	branch: string,
+	steps: EnsureWorktreeSteps,
+	signal?: AbortSignal,
+): Promise<string> {
 	const pending = pendingWorktrees.get(path);
 	if (pending !== undefined || !existsSync(path))
-		await (pending ??
-			shared(pendingWorktrees, path, () =>
-				withWorktreeLock(repository.commonDir, async () => {
-					if (!existsSync(path)) await addWorktree(repository, path, branch, baseTip);
-				}),
-			));
-	await verifyWorktree(repository, repo, path, branch);
+		await waitFor(
+			pending ??
+				shared(pendingWorktrees, path, () =>
+					withRepositoryLock(repository.commonDir, async () => {
+						if (existsSync(path)) return;
+						if (repository.spec.kind === "remote" && repository.fresh !== true)
+							await git(repository.root, ["fetch", "origin"], "fetch");
+						await steps.prepare?.();
+						await git(repository.root, ["worktree", "prune"], "worktree-add");
+						await checkoutBranch(repository, repo, path, branch, steps.missingBranchStart);
+					}),
+				),
+			signal,
+		);
+	await verifyWorktree(repository, repo, path, branch, signal);
 	return realpath(path);
+}
+
+async function worktreePath(repository: OpenRepository, requested: string, branch: string): Promise<string> {
+	if (requested !== "auto") return requested;
+	const existing = (await listWorktrees(repository)).find(
+		(candidate) => candidate.branch === branch && existsSync(candidate.path),
+	);
+	return existing?.path ?? join(atomicHome(), "worktrees", ...repositoryKey(repository.spec, repository.root), branch);
 }
 
 /** Snapshot tree of the working state (tracked and untracked, honouring ignores), without touching the real index. */
@@ -402,8 +448,13 @@ async function describeWorktree(
 	return { head, tree, remotes: await remotesOf(worktree), envHash: await environmentHash(worktree) };
 }
 
+/** The commit `base` names. In a shared store, the name of a remote branch means that branch as the remote has it. */
 async function resolveBase(repository: OpenRepository, repo: string, base: string): Promise<string> {
-	const tip = await commitOf(repository, base);
+	const remoteBranch =
+		repository.spec.kind === "remote" && !base.startsWith("origin/")
+			? await commitOf(repository, `refs/remotes/origin/${base}`)
+			: undefined;
+	const tip = remoteBranch ?? (await commitOf(repository, base));
 	if (tip !== undefined) return tip;
 	throw new WorkspaceBindingError({ code: "unknown-base", fields: { repo, base } });
 }
@@ -438,14 +489,16 @@ async function bindNew(input: Workspace): Promise<Resolution> {
 	const repository = await openWorkspaceRepository(input.repo);
 	const base = input.base ?? (await defaultBase(repository));
 	const branch = input.branch ?? (await defaultBranch(repository, repo, base));
-	if (
-		repository.spec.kind === "remote" &&
-		!repository.fresh &&
-		(await commitOf(repository, `refs/heads/${branch}`)) === undefined
-	)
-		await fetchStore(repository);
-	const baseTip = await resolveBase(repository, repo, base);
-	const worktree = await bindWorktree(repository, repo, input.worktree ?? "auto", branch, baseTip);
+	let baseTip: Promise<string> | undefined;
+	const tipOfBase = () => {
+		baseTip ??= resolveBase(repository, repo, base);
+		return baseTip;
+	};
+	const path = await worktreePath(repository, input.worktree ?? "auto", branch);
+	const worktree = await ensureWorktree(repository, repo, path, branch, {
+		prepare: tipOfBase,
+		missingBranchStart: tipOfBase,
+	});
 	const described = await describeWorktree(worktree);
 	const binding: BoundWorkspace = Object.freeze({
 		kind: "bound-workspace",
@@ -455,7 +508,7 @@ async function bindNew(input: Workspace): Promise<Resolution> {
 		branch,
 		worktree,
 		base,
-		baseCommit: await mergeBase(worktree, baseTip),
+		baseCommit: await mergeBase(worktree, await tipOfBase()),
 		sandbox: input.sandbox,
 		...(input.label !== undefined ? { label: input.label } : {}),
 		...described,
@@ -463,10 +516,16 @@ async function bindNew(input: Workspace): Promise<Resolution> {
 	return { binding, commonDir: repository.commonDir };
 }
 
+/** Make later resolutions of `input` return `binding`, a binding restored from a record instead of resolved anew. */
+export function adoptWorkspaceBinding(input: Workspace, binding: BoundWorkspace, commonDir: string): void {
+	resolutions.set(input, Promise.resolve({ binding, commonDir }));
+}
+
 /**
  * Resolve a workspace to a verified worktree. A local repository must be a repository root; a remote is cloned once
- * per host into `<atomic home>/repos/…` and worktrees are added from that store. A missing branch is created from
- * `base`. An existing worktree must belong to the repository and be on the branch. The same workspace value resolves
+ * per host into `<atomic home>/repos/…` and worktrees are added from that store, which is fetched before each addition
+ * so a branch starts from the remote's latest commits. A missing branch is created from `base`. An existing worktree
+ * must belong to the repository and be on the branch. The same workspace value resolves
  * once; later calls re-verify that worktree. A resolved binding is returned as is. Cancelling `signal` stops waiting
  * with `signal.reason`; shared git work started for other callers runs to completion.
  */

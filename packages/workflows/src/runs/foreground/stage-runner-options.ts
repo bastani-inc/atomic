@@ -71,8 +71,10 @@ export async function stripWorkflowOnlyOptions(
 		group: _group,
 		...sessionOptions
 	} = options;
-	if (sessionOptions.workspace !== undefined) {
-		// Resolved once here so the session store, the session and its tools all use the bound worktree.
+	// A resumed session restores the binding it recorded when the session opens; a new one is bound here, so the
+	// session store, the session and its tools all use the bound worktree.
+	const restoresRecordedBinding = sessionOptions.workspace !== undefined && resumeFromSessionId !== undefined;
+	if (sessionOptions.workspace !== undefined && !restoresRecordedBinding) {
 		const binding = await resolveWorkspace(sessionOptions.workspace);
 		sessionOptions.workspace = binding;
 		sessionOptions.cwd = workspaceSessionCwd(binding, sessionOptions.cwd);
@@ -81,7 +83,11 @@ export async function stripWorkflowOnlyOptions(
 	if (resumeFromSessionId !== undefined) {
 		const store = await stageSessionStore(options, defaultSessionDir);
 		await migrateLegacyStageSession(store, resumeFromSessionId, resumeFromLegacySessionFile);
-		sessionOptions.sessionManager = await SessionManager.open(store, resumeFromSessionId, cwd);
+		sessionOptions.sessionManager = await SessionManager.open(
+			store,
+			resumeFromSessionId,
+			restoresRecordedBinding ? undefined : cwd,
+		);
 	} else if (context === "fork" && forkFromSessionId !== undefined) {
 		sessionOptions.sessionManager = await forkStageSession(
 			await stageSessionStore(options, defaultSessionDir),

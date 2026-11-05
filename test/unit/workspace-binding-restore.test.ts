@@ -78,6 +78,32 @@ describe("restoreWorkspace (#3109)", () => {
 		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
 	});
 
+	test("re-adds a remote binding with the commits another machine pushed after this store saw the branch (#3109)", async () => {
+		const remote = createRemote(dirs.root, "pushed-elsewhere");
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/x" }));
+		commitFile(binding.worktree, "x1.txt", "first\n");
+		git(binding.worktree, "push", "-q", "origin", "HEAD:refs/heads/feat/x");
+		const elsewhere = join(dirs.root, "elsewhere");
+		git(dirs.root, "clone", "-q", "--branch", "feat/x", remote.url.replace(/^file:\/\//, ""), elsewhere);
+		git(elsewhere, "config", "user.email", "test@example.com");
+		git(elsewhere, "config", "user.name", "Test User");
+		const x2 = commitFile(elsewhere, "x2.txt", "second\n");
+		git(elsewhere, "push", "-q", "origin", "HEAD:refs/heads/feat/x");
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		assert.equal(await restoreWorkspace(binding), binding.worktree);
+		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), x2, "no pushed work is lost");
+		assert.equal(existsSync(join(binding.worktree, "x2.txt")), true);
+		git(elsewhere, "reset", "-q", "--hard", `${x2}~1`);
+		commitFile(elsewhere, "x3.txt", "rewritten elsewhere\n");
+		git(elsewhere, "push", "-q", "--force", "origin", "HEAD:refs/heads/feat/x");
+		commitFile(binding.worktree, "local.txt", "local\n");
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const diverged = await rejection(restoreWorkspace(binding));
+		assert.ok(isWorkspaceBindingError(diverged));
+		assert.equal(diverged.code, "drift");
+		assert.equal(diverged.reason, "branch-diverged");
+	});
+
 	test("fails closed when the worktree moved to another branch (#3109)", async () => {
 		const { binding } = await boundBranch("switched");
 		git(binding.worktree, "checkout", "-q", "-b", "unexpected");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -101,6 +101,30 @@ describe("workspace writer lease (#3109)", () => {
 		await lease.release();
 	});
 
+	test("takes over a lease an earlier process left with this process's pid, as after a container restart (#3109)", async () => {
+		const worktree = await boundWorktree("same-pid");
+		plantHolder(worktree, { pid: process.pid, host: hostname() });
+		const lease = await acquireWorkspaceWriterLease({ worktree }, { owner: "restarted" });
+		assert.equal(lease.holder.owner, "restarted");
+		const second = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "second" }));
+		assert.ok(isWorkspaceBindingError(second), "a lease this process holds stays held");
+		assert.equal(second.fields.holder, "restarted");
+		await lease.release();
+	});
+
+	test("a lease whose release failed can be taken over by the same process (#3109)", async () => {
+		const worktree = await boundWorktree("failed-release");
+		const lease = await acquireWorkspaceWriterLease({ worktree }, { owner: "first" });
+		renameSync(lease.lockFile, `${lease.lockFile}.aside`);
+		mkdirSync(lease.lockFile);
+		await rejection(lease.release());
+		rmSync(lease.lockFile, { recursive: true, force: true });
+		renameSync(`${lease.lockFile}.aside`, lease.lockFile);
+		const next = await acquireWorkspaceWriterLease({ worktree }, { owner: "next" });
+		assert.equal(next.holder.owner, "next");
+		await next.release();
+	});
+
 	test("keeps a lease held on another host: liveness there cannot be checked (#3109)", async () => {
 		const worktree = await boundWorktree("remote-holder");
 		plantHolder(worktree, { pid: exitedPid(), host: "another-host.example" });
@@ -112,7 +136,7 @@ describe("workspace writer lease (#3109)", () => {
 
 	test("ignores lease timestamps, so clock skew neither expires nor extends a lease (#3109)", async () => {
 		const worktree = await boundWorktree("skew");
-		plantHolder(worktree, { pid: process.pid, host: hostname(), acquiredAt: "1970-01-01T00:00:00.000Z" });
+		plantHolder(worktree, { pid: process.ppid, host: hostname(), acquiredAt: "1970-01-01T00:00:00.000Z" });
 		const ancient = await rejection(acquireWorkspaceWriterLease({ worktree }, { owner: "skewed" }));
 		assert.ok(isWorkspaceBindingError(ancient));
 		assert.equal(ancient.code, "writer-conflict");

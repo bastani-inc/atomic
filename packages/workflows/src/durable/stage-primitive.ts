@@ -455,6 +455,7 @@ function completeTaskResult(
 		...(base.warnings !== undefined || checkpoint.warnings !== undefined
 			? { warnings: [...(base.warnings ?? checkpoint.warnings ?? [])] }
 			: {}),
+		...(base.changeSet !== undefined ? { changeSet: base.changeSet } : {}),
 	};
 }
 

@@ -24,7 +24,9 @@ import {
 	workspaceSessionCwd,
 } from "../../packages/coding-agent/src/core/workspace/session.ts";
 import { AuthStorage, ModelRuntime, SessionManager, SettingsManager } from "../../packages/coding-agent/src/index.ts";
+import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import {
+	commitFile,
 	countGitCommands,
 	createRepository,
 	git,
@@ -155,8 +157,10 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 			assert.equal(unavailable?.isError, true);
 
 			session.setActiveToolsByName([...active, "write", "edit"]);
-			await session.prompt("try again with the tools re-enabled");
-			assert.equal(existsSync(target), false, "a re-enabled write is still refused");
+			for (const name of ["write", "edit"])
+				assert.equal(session.getActiveToolNames().includes(name), false, `${name} stays excluded`);
+			await session.prompt("try again after asking for the tools");
+			assert.equal(existsSync(target), false, "a write is still refused");
 			const refused = toolResults(session.messages).slice(1);
 			assert.deepEqual(
 				refused.map((result) => [result.toolName, result.isError]),
@@ -165,7 +169,6 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 					["write", true],
 				],
 			);
-			for (const result of refused) assert.match(result.content[0]?.text ?? "", /\(write-denied\)/);
 			assert.equal(readFileSync(join(repo, "README.md"), "utf-8"), "review\n");
 		} finally {
 			session.dispose();
@@ -235,6 +238,77 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 			assert.equal(second.workspace?.sandbox, "read-only", "the caller's sandbox applies");
 		} finally {
 			second.session.dispose();
+		}
+	});
+
+	test("a resumed workflow stage session restores its recorded binding and fails closed on drift (#3109)", async () => {
+		const repo = createRepository(dirs.root, "stage-resume");
+		const store = new MemorySessionStore();
+		const meta = { runId: "run-1", stageId: "stage-1", stageName: "work" };
+		const first = await createAgentSession(
+			sessionOptions({
+				workspace: workspace({ repo, branch: "stage-work", label: "first" }),
+				sessionManager: await SessionManager.create(store, dirs.root),
+			}),
+		);
+		const sessionId = first.session.sessionManager.getSessionId();
+		const recorded = first.workspace!;
+		first.session.dispose();
+		commitFile(repo, "base-moved.txt", "main moved on\n");
+
+		const resumedSpec = workspace({ repo, branch: "stage-work" });
+		const options = await stripWorkflowOnlyOptions(
+			{ workspace: resumedSpec, resumeFromSessionId: sessionId, sessionStore: store },
+			undefined,
+			meta,
+		);
+		assert.equal(options.workspace, resumedSpec, "the session binds it when it opens, from its own record");
+		const { result: resumed, commands } = await countGitCommands(() => createAgentSession(sessionOptions(options)));
+		try {
+			assert.equal(resumed.workspace?.baseCommit, recorded.baseCommit);
+			assert.equal(resumed.workspace?.label, "first", "the recorded label survives");
+			assert.ok(
+				commands.some((args) => args[0] === "merge-base" && args[1] === "--is-ancestor"),
+				"the recorded binding was restored and checked for drift",
+			);
+			assert.equal(await resolveWorkspace(resumedSpec), resumed.workspace, "later resolutions reuse it");
+		} finally {
+			resumed.session.dispose();
+		}
+
+		git(recorded.worktree, "commit", "-q", "--allow-empty", "--amend", "-m", "rewritten");
+		const drifted = await rejection(
+			createAgentSession(
+				sessionOptions(
+					await stripWorkflowOnlyOptions(
+						{
+							workspace: workspace({ repo, branch: "stage-work" }),
+							resumeFromSessionId: sessionId,
+							sessionStore: store,
+						},
+						undefined,
+						meta,
+					),
+				),
+			),
+		);
+		assert.ok(isWorkspaceBindingError(drifted));
+		assert.equal(drifted.code, "drift");
+		assert.equal(drifted.reason, "history-rewritten");
+	});
+
+	test("a read-only session leaves file-writing tools out of an explicit tools list (#3109)", async () => {
+		const { session } = await createAgentSession(
+			sessionOptions({
+				workspace: workspace({ repo: createRepository(dirs.root, "listed") }).readOnly(),
+				tools: ["read", "write", "edit", "bash"],
+				sessionManager: SessionManager.inMemory(),
+			}),
+		);
+		try {
+			assert.deepEqual([...session.getActiveToolNames()].sort(), ["bash", "read"]);
+		} finally {
+			session.dispose();
 		}
 	});
 

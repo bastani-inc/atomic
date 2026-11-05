@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
-import { realpath } from "node:fs/promises";
 import { WorkspaceBindingError, WorkspaceRestoreError } from "./errors.ts";
 import { assertWorkspaceGitAvailable, gitOutput, runWorkspaceGit } from "./git.ts";
 import {
 	type BoundWorkspace,
+	commitOf,
+	ensureWorktree,
 	openWorkspaceRepository,
 	remotesOf,
-	verifyWorktree,
 	type WorktreeBinding,
 } from "./resolve.ts";
 import { classifyRepository } from "./spec.ts";
@@ -19,46 +19,6 @@ export interface RestoreWorkspaceOptions {
 	 * child recorded no checkpoint before its node stopped. Default false.
 	 */
 	readonly recreateMissingBranch?: boolean;
-}
-
-async function hasCommit(cwd: string, ref: string, signal: AbortSignal | undefined): Promise<boolean> {
-	const result = await runWorkspaceGit({
-		cwd,
-		args: ["rev-parse", "--verify", `${ref}^{commit}`],
-		phase: "probe",
-		allowFailure: true,
-		signal,
-	});
-	return result.status === 0;
-}
-
-/** Add a deleted worktree back from its branch, or from the remote's copy of the branch. */
-async function readd(
-	binding: BoundWorkspace,
-	root: string,
-	signal: AbortSignal | undefined,
-	recreateMissingBranch: boolean,
-): Promise<void> {
-	const run = (args: readonly string[]) => runWorkspaceGit({ cwd: root, args, phase: "worktree-add", signal });
-	if (classifyRepository(binding.repo)?.kind === "remote")
-		await runWorkspaceGit({ cwd: root, args: ["fetch", "origin"], phase: "fetch", signal });
-	await run(["worktree", "prune"]);
-	if (await hasCommit(root, `refs/heads/${binding.branch}`, signal)) {
-		await run(["worktree", "add", binding.worktree, binding.branch]);
-		return;
-	}
-	if (await hasCommit(root, `refs/remotes/origin/${binding.branch}`, signal)) {
-		await run(["worktree", "add", "-b", binding.branch, binding.worktree, `origin/${binding.branch}`]);
-		return;
-	}
-	if (recreateMissingBranch && (await hasCommit(root, binding.head, signal))) {
-		await run(["worktree", "add", "-b", binding.branch, binding.worktree, binding.head]);
-		return;
-	}
-	throw new WorkspaceRestoreError({
-		reason: "branch-missing",
-		fields: { repo: binding.repo, branch: binding.branch, worktree: binding.worktree, repository: root },
-	});
 }
 
 async function assertNoDrift(binding: WorktreeBinding, signal: AbortSignal | undefined): Promise<void> {
@@ -102,33 +62,54 @@ async function assertNoDrift(binding: WorktreeBinding, signal: AbortSignal | und
 		});
 }
 
+/** A restored binding's verified worktree, and the repository identity it was verified against. */
+export interface RestoredWorkspace {
+	readonly worktree: string;
+	readonly commonDir: string;
+}
+
 /**
- * Restore a recorded binding and return its verified worktree path. The repository must still be the recorded one,
- * the worktree must be on the recorded branch, the recorded HEAD must still be in the branch's history and the recorded
- * remotes unchanged; otherwise the call fails closed. A missing worktree is re-added from its branch, or from the
- * remote's copy of it; new commits and uncommitted changes are expected work, not drift.
+ * Restore a recorded binding. The repository must still be the recorded one, the worktree must be on the recorded
+ * branch, the recorded HEAD must still be in the branch's history and the recorded remotes unchanged; otherwise the
+ * call fails closed. A missing worktree is added again the way resolution adds one, from the branch as the remote has
+ * it now; new commits and uncommitted changes are expected work, not drift.
  */
+export async function restoreRecordedWorkspace(
+	binding: BoundWorkspace,
+	options: RestoreWorkspaceOptions = {},
+): Promise<RestoredWorkspace> {
+	const { signal } = options;
+	await assertWorkspaceGitAvailable(signal);
+	const local = classifyRepository(binding.repo)?.kind !== "remote";
+	const missing = (reason: "repository-missing" | "branch-missing", repository: string) =>
+		new WorkspaceRestoreError({
+			reason,
+			fields: { repo: binding.repo, branch: binding.branch, worktree: binding.worktree, repository },
+		});
+	if (local && !existsSync(binding.repository)) throw missing("repository-missing", binding.repository);
+	const repository = await openWorkspaceRepository(local ? binding.repository : binding.repo, signal);
+	const worktree = await ensureWorktree(
+		repository,
+		binding.repo,
+		binding.worktree,
+		binding.branch,
+		{
+			missingBranchStart: async () => {
+				if (options.recreateMissingBranch === true && (await commitOf(repository, binding.head)) !== undefined)
+					return binding.head;
+				throw missing("branch-missing", repository.root);
+			},
+		},
+		signal,
+	);
+	await assertNoDrift(binding, signal);
+	return { worktree, commonDir: repository.commonDir };
+}
+
+/** Restore a recorded binding and return its verified worktree path; see `restoreRecordedWorkspace`. */
 export async function restoreWorkspace(
 	binding: BoundWorkspace,
 	options: RestoreWorkspaceOptions = {},
 ): Promise<string> {
-	const { signal } = options;
-	await assertWorkspaceGitAvailable(signal);
-	const local = classifyRepository(binding.repo)?.kind !== "remote";
-	if (local && !existsSync(binding.repository))
-		throw new WorkspaceRestoreError({
-			reason: "repository-missing",
-			fields: {
-				repo: binding.repo,
-				branch: binding.branch,
-				worktree: binding.worktree,
-				repository: binding.repository,
-			},
-		});
-	const repository = await openWorkspaceRepository(local ? binding.repository : binding.repo, signal);
-	if (!existsSync(binding.worktree))
-		await readd(binding, repository.root, signal, options.recreateMissingBranch === true);
-	await verifyWorktree(repository, binding.repo, binding.worktree, binding.branch, signal);
-	await assertNoDrift(binding, signal);
-	return realpath(binding.worktree);
+	return (await restoreRecordedWorkspace(binding, options)).worktree;
 }

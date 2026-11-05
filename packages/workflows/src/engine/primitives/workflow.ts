@@ -1,6 +1,7 @@
 import {
 	acquireWorkspaceWriterLease,
 	type BoundWorkspace,
+	isBoundWorkspace,
 	rehydrateWorkspaceError,
 	resolveWorkspace,
 	restoreWorkspace,
@@ -86,10 +87,13 @@ export function createChildWorkflowRunner(input: {
 		if (boundary.replayedChild !== undefined) {
 			durableInvocation?.adoptReplayedChildRunId(boundary.replayedChild.runId);
 		}
+		// A run bound read-only is a ceiling for everything nested in it.
+		const inherited = runtime.inputRuntimeDefaults.workspace;
+		const readOnlyCeiling = isBoundWorkspace(inherited) && inherited.sandbox === "read-only" ? inherited : undefined;
 		if (options.workspace !== undefined && boundary.replayedChild === undefined && durableInvocation !== undefined) {
 			try {
 				await bindChildWorkspace(
-					options.workspace,
+					readOnlyCeiling === undefined ? options.workspace : options.workspace.readOnly(),
 					durableInvocation,
 					runtime.signal,
 					`${runtime.runId}/${boundaryName}`,
@@ -163,7 +167,7 @@ export function createChildWorkflowRunner(input: {
 				...runtime.childRunOptions,
 				runId: childRunId,
 				cwd: workspace?.worktree ?? input.resolveWorkflowCwd(),
-				workspace,
+				workspace: workspace ?? readOnlyCeiling,
 				depth: runtime.depth + 1,
 				parentRun: {
 					runId: runtime.runId,

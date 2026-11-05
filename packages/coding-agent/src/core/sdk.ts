@@ -435,14 +435,18 @@ async function constructAgentSession(
 							: (options.subagentPolicy.mcpDirectTools ?? (allowedToolNames === undefined ? undefined : [])),
 				}
 			: options.subagentPolicy;
-	const isExcludedTool = options.excludedTools ? createToolNameMatcher(options.excludedTools) : undefined;
+	// A read-only workspace excludes the file-writing tools, which wins over any tool selection, also after a reload.
+	const excludedTools =
+		workspace?.sandbox === "read-only"
+			? [...(options.excludedTools ?? []), ...WORKSPACE_WRITE_TOOL_NAMES]
+			: options.excludedTools;
+	const isExcludedTool = excludedTools ? createToolNameMatcher(excludedTools) : undefined;
 	const initialActiveToolNames = (options.noTools === "all" ? [] : (selectedToolNames ?? defaultToolNames)).filter(
-		(name) =>
-			!isExcludedTool?.(name) && !(workspace?.sandbox === "read-only" && WORKSPACE_WRITE_TOOL_NAMES.has(name)),
+		(name) => !isExcludedTool?.(name),
 	);
 	const childBuiltins = { ...options.builtins };
 	const childExcludedTools = [
-		...(options.excludedTools ?? []),
+		...(excludedTools ?? []),
 		...(allowedToolNames === undefined
 			? [...allToolNames].filter((name) => !initialActiveToolNames.includes(name))
 			: []),
@@ -791,7 +795,7 @@ async function constructAgentSession(
 			usesDefaultTools: (options.tools === undefined || toolModifiers !== undefined) && !options.noTools,
 			defaultToolModifiers: toolModifiers,
 			allowedToolNames,
-			excludedToolNames: options.excludedTools,
+			excludedToolNames: excludedTools,
 			extensionRunnerRef,
 			sessionStartEvent: options.sessionStartEvent,
 			orchestrationContext: options.orchestrationContext,

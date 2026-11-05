@@ -35,8 +35,8 @@ export interface AcquireWorkspaceWriterLeaseOptions {
 }
 
 const LEASE_DATABASE = "atomic-writer-lease.sqlite";
-const WORKTREE_LOCK_DATABASE = "atomic-worktree-lock.sqlite";
-const WORKTREE_LOCK_WAIT_MS = 10 * 60_000;
+const REPOSITORY_LOCK_DATABASE = "atomic-repository-lock.sqlite";
+const REPOSITORY_LOCK_WAIT_MS = 10 * 60_000;
 const DEFAULT_LOCK_WAIT_MS = 5_000;
 const SCHEMA =
 	"CREATE TABLE IF NOT EXISTS writer (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, owner TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL, acquired_at TEXT NOT NULL)";
@@ -59,12 +59,18 @@ function processAlive(pid: number): boolean {
 	}
 }
 
+/** Tokens of the leases this process holds and has not released. */
+const heldTokens = new Set<string>();
+
 /**
- * A holder is stale only when it ran on this host and its process is gone. A holder on another host, or a live one
- * (including a stopped one), keeps the lease, so the check fails closed. Wall-clock time is never consulted.
+ * A holder is stale only when it ran on this host and its process is gone. A holder with this process's pid but a
+ * token this process does not hold was an earlier process given the same pid, as after a container restart. A holder
+ * on another host, or a live one (including a stopped one), keeps the lease, so the check fails closed. Wall-clock
+ * time is never consulted.
  */
 function isStale(holder: HolderRow): boolean {
-	return holder.host === hostname() && !processAlive(holder.pid);
+	if (holder.host !== hostname()) return false;
+	return holder.pid === process.pid ? !heldTokens.has(holder.token) : !processAlive(holder.pid);
 }
 
 async function leaseDatabase(worktree: string, signal: AbortSignal | undefined, lockWaitMs: number) {
@@ -113,11 +119,11 @@ export async function closeAfter<T>(database: { close(): Promise<void> }, body: 
 }
 
 /**
- * Run `body` holding the repository's worktree lock: a SQLite write transaction in its git directory, so processes on
- * this host add worktrees to one repository one at a time. A lock whose process dies is released with it.
+ * Run `body` holding the repository's lock: a SQLite write transaction in its git directory, so processes on this host
+ * fetch a shared store and add worktrees to one repository one at a time. A lock whose process dies is released with it.
  */
-export async function withWorktreeLock<T>(commonDir: string, body: () => Promise<T>): Promise<T> {
-	const database = await openLeaseDatabase(join(commonDir, WORKTREE_LOCK_DATABASE), WORKTREE_LOCK_WAIT_MS);
+export async function withRepositoryLock<T>(commonDir: string, body: () => Promise<T>): Promise<T> {
+	const database = await openLeaseDatabase(join(commonDir, REPOSITORY_LOCK_DATABASE), REPOSITORY_LOCK_WAIT_MS);
 	return closeAfter(database, () => database.transaction(body));
 }
 
@@ -164,11 +170,13 @@ export async function acquireWorkspaceWriterLease(
 		}
 	});
 	if (current !== undefined) throw conflict(binding.worktree, lockFile, current);
+	heldTokens.add(holder.token);
 	return {
 		worktree: binding.worktree,
 		lockFile,
 		holder,
 		async release(): Promise<void> {
+			heldTokens.delete(holder.token);
 			if (!existsSync(lockFile)) return;
 			const opened = await openLeaseDatabase(lockFile, lockWaitMs);
 			await closeAfter(opened, async () => {

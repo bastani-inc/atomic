@@ -138,7 +138,7 @@ case "$FAKE_GIT_MODE:$5 $6" in
 	case "$PWD" in *.tmp-*) ;; *) exec "$real" "$@" ;; esac
 	case "$FAKE_GIT_MODE" in
 	unremovable-staging) parent=$(dirname "$PWD"); mv "$parent" "$parent.moved"; : > "$parent" ;;
-	winner-store) "$real" fetch -q origin && cp -R "$PWD" "$store" ;;
+	winner-store) "$real" fetch -q origin && "$real" remote set-head origin --auto >/dev/null && cp -R "$PWD" "$store" ;;
 	empty-store) mkdir "$store" ;;
 	esac
 	echo "injected fetch failure" >&2

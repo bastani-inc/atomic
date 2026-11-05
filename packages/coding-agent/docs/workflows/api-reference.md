@@ -1325,12 +1325,12 @@ Validates the options and returns a frozen value; nothing touches git or the fil
 Binding resolves the workspace, at most once per workspace value; later bindings re-verify its worktree.
 
 - **Local repository:** `repo` must be the root of a git repository. A subdirectory fails with `invalid-repository`.
-- **Remote repository:** cloned once per host into a shared object store at `<atomic home>/repos/<host>/<owner>/<repo>.git` (`<atomic home>/repos/file/<repo>-<hash>.git` for a `file://` remote), and every worktree is added from that store. Later bindings of new branches fetch the store once instead of cloning again.
-- **Branch:** an existing branch is checked out. A missing branch starts from the remote branch of the same name when one exists, otherwise from `base`. A `base` that does not resolve fails with `unknown-base` before anything is created.
+- **Remote repository:** cloned once per host into a shared object store at `<atomic home>/repos/<host>/<owner>/<repo>.git` (`<atomic home>/repos/file/<repo>-<hash>.git` for a `file://` remote), and every worktree is added from that store. The store tracks the remote's branches as `origin/<branch>` and is fetched before each worktree is added, so a new worktree starts from the remote as it is now. Binding an existing worktree does not fetch, so it also works offline. A `base` that names a remote branch, such as `main`, means that branch as the remote has it.
+- **Branch:** a missing branch starts from the remote branch of the same name when one exists, otherwise from `base`. A `base` that does not resolve fails with `unknown-base` before anything is created. When a remote's branch already exists in the store, its worktree starts from the remote's commits if the remote is ahead, keeps the store's commits if only the store is ahead, and fails with `drift` (reason `branch-diverged`) if both have commits the other lacks. A local repository's branches are used as they are.
 - **`worktree: "auto"`:** reuses the worktree already on the branch, wherever it is, or adds one at `<atomic home>/worktrees/<host>/<owner>/<repo>/<branch>` (`<atomic home>/worktrees/file/<repo>-<hash>/<branch>` for a `file://` remote, `<atomic home>/worktrees/local/<name>-<hash>/<branch>` for a local repository). Binding a local repository without a branch binds its own checkout.
 - **Explicit worktree:** an existing path must be the root of a worktree of the same repository, compared by its canonical git common directory after resolving symbolic links, and must be on the branch. Worktrees outside the repository root are allowed. A missing path is added from the branch.
 - **Dirty checkouts:** uncommitted and untracked files are accepted as they are and recorded in the binding's `tree`.
-- **Several processes at once:** processes on one machine that bind the same new branch get its one worktree; adding worktrees to a repository is serialized across processes.
+- **Several processes at once:** processes on one machine that bind or restore the same branch get its one worktree. Fetching a shared store and adding worktrees to a repository take a repository lock, so concurrent processes run them one at a time. The lock is released when its process exits, also when the process is killed.
 
 ### `BoundWorkspace`
 
@@ -1363,7 +1363,7 @@ type BoundWorkspace = WorktreeBinding & {
 
 ### Resume and drift
 
-Resuming a run restores each recorded binding instead of resolving the workspace again, so the base commit and `label` stay as recorded. `restoreWorkspace(binding)` does the same for your own records:
+Resuming a run restores each recorded binding instead of resolving the workspace again, so the base commit and `label` stay as recorded. This holds for `ctx.workflow` children, which record the binding at their boundary, and for resumed `ctx.task` and `ctx.stage` sessions, which record it in the session. A resumed task that completed before the interruption returns its recorded result, `changeSet` included. `restoreWorkspace(binding)` does the same for your own records:
 
 ```typescript
 function restoreWorkspace(
@@ -1375,22 +1375,23 @@ function restoreWorkspace(
 It returns the verified worktree path or rejects with a typed error.
 
 - New commits on the branch and uncommitted changes are the child's own work, not drift.
-- A deleted worktree is added again from its branch, or from the remote's copy of the branch. For a remote, the shared store is cloned again when it is gone.
+- A deleted worktree is added again the way binding adds one. For a remote, the store is fetched first, and the branch is taken from the remote when the remote is ahead, so commits another machine pushed are not lost. The shared store is cloned again when it is gone.
 - When the branch exists nowhere, `recreateMissingBranch: true` creates it again at the recorded `head`. Pass it only when nothing after that head needs keeping. A resumed child does this by itself when its earlier attempt recorded no checkpoint, for example when another machine stopped before the child pushed anything.
 - The resume fails closed when:
   - the path holds another repository (`wrong-repository`);
   - the worktree is on another branch (`wrong-branch`);
   - the branch no longer contains the recorded `head` (`drift`, reason `history-rewritten`);
   - a recorded remote URL is no longer configured (`drift`, reason `remote-changed`);
+  - the store's branch and the remote's diverged (`drift`, reason `branch-diverged`);
   - both the branch and the worktree are gone, unless the branch is created again as described above (`restore-failed`).
 
 ### Writer lease
 
-A child workflow bound to a `"workspace-write"` workspace holds the worktree's writer lease until the child settles. A second writer child on the same worktree, in any process, fails with `writer-conflict`. Read-only children take no lease. The lease is a row in a SQLite database in the worktree's git directory. A lease left by a process that exited on the same host is taken over automatically. A lease held by a live process (including a stopped one) or by another host is kept. Timestamps are never consulted, so clock skew cannot expire a lease. Stage sessions and `ctx.task` do not take leases.
+A child workflow bound to a `"workspace-write"` workspace holds the worktree's writer lease until the child settles. A second writer child on the same worktree, in any process, fails with `writer-conflict`. Read-only children take no lease. The lease is a row in a SQLite database in the worktree's git directory. A lease left by a process that exited on the same host is taken over automatically, including when a restarted process gets the same process id, as in a container. A lease held by a live process (including a stopped one) or by another host is kept. Timestamps are never consulted, so clock skew cannot expire a lease. Stage sessions and `ctx.task` do not take leases.
 
 ### Read-only sandbox
 
-A `"read-only"` session does not offer `write`, `edit` or `todo`, and refuses them with `WorkspaceSandboxError` (`write-denied`) if an extension re-enables them. This is tool-level, not operating-system sandboxing: shell tools such as `bash` still run, and selecting a repository or worktree does not authorize or confine writes. Use a container or VM for untrusted code.
+A `"read-only"` session does not offer `write`, `edit` or `todo`, also when an explicit `tools` list names them, and refuses them with `WorkspaceSandboxError` (`write-denied`) if they are called anyway. A read-only binding caps everything nested in it: stages of a read-only child, stages that pass their own workspace, and child workflows started from it all run read-only. This is tool-level, not operating-system sandboxing: shell tools such as `bash` still run, and selecting a repository or worktree does not authorize or confine writes. Use a container or VM for untrusted code.
 
 ### Change sets and pull requests
 
@@ -1434,7 +1435,7 @@ Every workspace error extends `WorkspaceError` and has a stable `code`, an optio
 | `WorkspaceBindingError` | `git-unavailable` | Git could not be started; `cause` is a `GitUnavailableError` | `gitPath`, `installCommand` | Install git with the command in `hint` |
 | `WorkspaceBindingError` | `git-failed` | A git command exited with an error; the message ends with git's own last output (`detail`, at most 400 characters). Retryable during `clone`, `fetch` and `push` | `command`, `cwd`, `phase`, `status`, `detail` | Check access to the repository and retry |
 | `WorkspaceBindingError` | `filesystem-failed` | Creating the shared store's directory, or moving a finished clone into place, failed; retryable for `ENOSPC`, `EDQUOT`, `EAGAIN`, `EBUSY`, `EMFILE` and `ENFILE` | `operation`, `path`, `errno` | Free disk space, remove what is in the way, or make the path writable, then retry |
-| `WorkspaceBindingError` | `drift` | On resume, the branch lost the recorded head or a recorded remote URL is gone (`reason` `history-rewritten`, `remote-changed`) | `repo`, `worktree`, `branch`, `expected`, `actual` | Restore the repository state, or start a new run |
+| `WorkspaceBindingError` | `drift` | On resume, the branch lost the recorded head or a recorded remote URL is gone (`reason` `history-rewritten`, `remote-changed`); or a shared store's branch and the remote's both have commits the other lacks when its worktree is added (`reason` `branch-diverged`) | `repo`, `worktree`, `branch`, `expected`, `actual`; `repository` for `branch-diverged` | Restore the repository state, or start a new run. For `branch-diverged`, push or rebase the local commits, or take the remote's history with the command in `hint` |
 | `WorkspaceBindingError` | `writer-conflict` | Another writer holds the worktree's lease; retryable | `worktree`, `lockFile`, `holder`, `holderPid`, `holderHost` | Wait for the writer, or bind read-only |
 | `WorkspaceRestoreError` | `restore-failed` | The recorded repository, or both branch and worktree, are gone (`reason` `repository-missing`, `branch-missing`) | `repo`, `branch`, `worktree`, `repository` | Restore the repository or push the branch, then resume |
 | `WorkspacePublicationError` | `publication-failed` | `publishPullRequest` failed (`reason` `no-remote`, `gh-unavailable`, `gh-unauthenticated`, `push-failed`, `gh-failed`); retryable for `push-failed` and `gh-failed` | `repo`, `branch`, `detail` | Follow `hint`: add `origin`, install gh, run `gh auth login`, or check push access |

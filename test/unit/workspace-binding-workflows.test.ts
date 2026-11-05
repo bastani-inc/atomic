@@ -383,6 +383,124 @@ describe("ctx.task(name, { workspace }) (#3109)", () => {
 		});
 	});
 
+	test("a resumed run replays completed bound tasks with their changeSet and no git work (#3109)", async () => {
+		const journalPath = join(dirs.root, "task-replay.sqlite");
+		const repo = createRepository(dirs.root, "task-replay");
+		const api = workspace({ repo, branch: "replayed-task" });
+		let failFirst = true;
+		const seen: unknown[][] = [];
+		const parent = workflow({
+			name: "task-replay-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				const implemented = await ctx.task("implement", { workspace: api, prompt: "implement" });
+				const [chained] = await ctx.chain([{ name: "chained", prompt: "x" }], { workspace: api.readOnly() });
+				const [parallel] = await ctx.parallel([{ name: "parallel", prompt: "x" }], { workspace: api.readOnly() });
+				seen.push([implemented.changeSet, chained?.changeSet, parallel?.changeSet]);
+				await ctx.tool("gate", {}, async () => {
+					if (failFirst) throw new Error("interrupted after the tasks");
+					return "open";
+				});
+				return {};
+			},
+		});
+		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const failed = await run(
+			parent,
+			{},
+			{
+				store: createStore(),
+				durableBackend: firstBackend,
+				adapters: recordingAdapter({ commitIn: (stage) => stage === "implement" }).adapters,
+			},
+		);
+		assert.equal(failed.status, "failed");
+		await firstBackend.close();
+		failFirst = false;
+		const resumedBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
+		const { result: resumed, commands } = await countGitCommands(() =>
+			run(
+				parent,
+				{},
+				{
+					runId: failed.runId,
+					store: createStore(),
+					durableBackend: resumedBackend,
+					adapters: recordingAdapter().adapters,
+				},
+			),
+		);
+		await resumedBackend.close();
+		assert.equal(resumed.status, "completed", resumed.error);
+		const [live, replayed] = seen;
+		assert.equal((live?.[0] as { diffStat: { files: number } } | undefined)?.diffStat.files, 1);
+		assert.deepEqual(replayed, live, "every replayed task keeps the changeSet it reported live");
+		assert.deepEqual(commands, [], "replaying completed tasks runs no git");
+	});
+
+	test("a read-only child caps everything nested in it (#3109)", async () => {
+		const repo = createRepository(dirs.root, "read-only-nesting");
+		const api = workspace({ repo, branch: "reviewed" });
+		const grandchild = workflow({
+			name: "nested-grandchild",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("grandchild-task", { prompt: "x" });
+				return {};
+			},
+		});
+		const child = workflow({
+			name: "read-only-child",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.task("child-task", { prompt: "x" });
+				await ctx.task("writable-override", { prompt: "x", workspace: api });
+				await ctx.workflow(grandchild);
+				return {};
+			},
+		});
+		const { sessions, adapters } = recordingAdapter();
+		const parent = workflow({
+			name: "read-only-parent",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.workflow(child, { workspace: api.readOnly() });
+				return {};
+			},
+		});
+		const backend = await createMemoryTestBackend();
+		const result = await run(parent, {}, { store: createStore(), durableBackend: backend, adapters });
+		assert.equal(result.status, "completed", result.error);
+		const [start] = boundaryStarts(backend.listCheckpoints(result.runId));
+		const recorded = start?.topology?.boundary?.workspace as BoundWorkspace | undefined;
+		assert.ok(recorded !== undefined);
+		const worktree = recorded.worktree;
+		assert.deepEqual(
+			sessions.map((session) => [
+				session.stage,
+				session.cwd,
+				(session.workspace as BoundWorkspace | undefined)?.sandbox,
+			]),
+			[
+				["child-task", worktree, "read-only"],
+				["writable-override", worktree, "read-only"],
+				["grandchild-task", worktree, "read-only"],
+			],
+		);
+		assert.equal(
+			existsSync(join(git(worktree, "rev-parse", "--absolute-git-dir"), "atomic-writer-lease.sqlite")),
+			false,
+		);
+	});
+
 	test("ctx.stage sessions resolve the workspace when they start (#3109)", async () => {
 		const repo = createRepository(dirs.root, "stage-repo");
 		const { sessions, adapters } = recordingAdapter();

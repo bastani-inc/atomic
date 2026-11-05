@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { resolveWorkspace, workspace } from "../../packages/coding-agent/src/core/workspace/index.ts";
 import { bunExecutable, moduleDir } from "../helpers/runtime.js";
 import {
+	commitFile,
 	createRemote,
 	createRepository,
 	git,
@@ -172,40 +174,102 @@ describe.skipIf(process.platform === "win32")("workspace writer lease under proc
 	);
 });
 
+interface BinderOutcome {
+	readonly outcome: string;
+	readonly worktree?: string;
+	readonly head?: string;
+	readonly code?: string;
+	readonly message?: string;
+}
+
+/** Start the binding fixture; `first` resolves with its first JSON line. */
+function binder(args: readonly string[]): {
+	readonly child: ChildProcessWithoutNullStreams;
+	readonly first: Promise<BinderOutcome>;
+} {
+	const child = spawn(bunExecutable(), [RESOLVER, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+	running.add(child);
+	const first = new Promise<BinderOutcome>((resolve, reject) => {
+		let output = "";
+		child.stdout.setEncoding("utf-8");
+		child.stdout.on("data", (chunk: string) => {
+			output += chunk;
+			if (output.includes("\n")) resolve(JSON.parse(output.split("\n")[0]!) as BinderOutcome);
+		});
+		child.once("error", reject);
+		child.once("close", () => resolve(output === "" ? { outcome: "silent" } : JSON.parse(output.split("\n")[0]!)));
+	});
+	return { child, first };
+}
+
+function allBound(outcomes: readonly BinderOutcome[]): void {
+	assert.deepEqual(
+		outcomes.map((outcome) => outcome.outcome),
+		outcomes.map(() => "bound"),
+		JSON.stringify(outcomes.find((outcome) => outcome.outcome !== "bound")),
+	);
+}
+
 describe("workspace binding across processes (#3109)", () => {
 	test(
 		"processes binding one new branch at once all get its one worktree (#3109)",
 		async () => {
 			const remote = createRemote(dirs.root, "shared-branch");
 			const outcomes = await Promise.all(
-				Array.from(
-					{ length: BINDERS },
-					() =>
-						new Promise<{ readonly outcome: string; readonly worktree?: string; readonly message?: string }>(
-							(resolve, reject) => {
-								const child = spawn(bunExecutable(), [RESOLVER, remote.url, "together"], {
-									stdio: ["ignore", "pipe", "pipe"],
-								});
-								let output = "";
-								child.stdout.setEncoding("utf-8");
-								child.stdout.on("data", (chunk: string) => {
-									output += chunk;
-								});
-								child.once("error", reject);
-								child.once("close", () => resolve(JSON.parse(output.split("\n")[0] ?? "{}")));
-							},
-						),
-				),
+				Array.from({ length: BINDERS }, () => binder(["bind", remote.url, "together"]).first),
 			);
-			assert.deepEqual(
-				outcomes.map((outcome) => outcome.outcome),
-				Array.from({ length: BINDERS }, () => "bound"),
-				JSON.stringify(outcomes.find((outcome) => outcome.outcome !== "bound")),
-			);
+			allBound(outcomes);
 			const worktrees = new Set(outcomes.map((outcome) => outcome.worktree));
 			assert.equal(worktrees.size, 1, "one worktree for the branch");
 			const [worktree] = worktrees;
 			assert.equal(git(worktree!, "symbolic-ref", "--short", "HEAD"), "together");
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"processes binding new branches while the remote keeps moving all fetch and bind cleanly (#3109)",
+		async () => {
+			const remote = createRemote(dirs.root, "moving-remote");
+			const bare = remote.url.replace(/^file:\/\//, "");
+			await resolveWorkspace(workspace({ repo: remote.url, branch: "store" }));
+			let pushing = true;
+			const pusher = (async () => {
+				for (let step = 0; pushing; step++) {
+					commitFile(remote.seed, `moving-${step}.txt`, `${step}\n`);
+					git(remote.seed, "push", "-q", bare, "HEAD:refs/heads/main");
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				}
+			})();
+			const outcomes = await Promise.all(
+				Array.from({ length: BINDERS }, (_, index) => binder(["bind", remote.url, `moving-${index}`]).first),
+			);
+			pushing = false;
+			await pusher;
+			allBound(outcomes);
+			assert.equal(new Set(outcomes.map((outcome) => outcome.worktree)).size, BINDERS);
+		},
+		CHAOS_TIMEOUT_MS,
+	);
+
+	test(
+		"processes restoring one deleted worktree all get it, also after the lock holder is SIGKILLed (#3109)",
+		async () => {
+			const remote = createRemote(dirs.root, "restore-race");
+			const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "restored" }));
+			const recorded = join(dirs.root, "binding.json");
+			writeFileSync(recorded, JSON.stringify(binding));
+			rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+			const holder = binder(["hold-lock", binding.repository]);
+			assert.equal((await holder.first).outcome, "locked");
+			const restorers = Array.from({ length: BINDERS }, () => binder(["restore", recorded]));
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			assert.equal(existsSync(binding.worktree), false, "nobody adds the worktree while the lock is held");
+			holder.child.kill("SIGKILL");
+			const outcomes = await Promise.all(restorers.map((restorer) => restorer.first));
+			allBound(outcomes);
+			assert.deepEqual(new Set(outcomes.map((outcome) => outcome.worktree)), new Set([binding.worktree]));
+			assert.equal(git(binding.worktree, "symbolic-ref", "--short", "HEAD"), "restored");
 		},
 		CHAOS_TIMEOUT_MS,
 	);

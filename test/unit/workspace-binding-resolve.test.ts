@@ -33,7 +33,7 @@ import {
 	workspace,
 	workspaceChangeSet,
 } from "../../packages/coding-agent/src/core/workspace/index.ts";
-import { withWorktreeLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
+import { withRepositoryLock } from "../../packages/coding-agent/src/core/workspace/lease.ts";
 import { redactCredentials } from "../../packages/coding-agent/src/core/workspace/redact.ts";
 import { sharedStorePath } from "../../packages/coding-agent/src/core/workspace/resolve.ts";
 import { classifyRepository } from "../../packages/coding-agent/src/core/workspace/spec.ts";
@@ -225,11 +225,11 @@ describe("workspace resolution (#3109)", () => {
 				branches.map((branch) => resolveWorkspace(workspace({ repo: remote.url, base: "origin/main", branch }))),
 			),
 		);
-		const clones = commands.filter((args) => args.includes("clone"));
+		const clones = commands.filter((args) => args[0] === "init" && args[1] === "--bare");
 		assert.equal(
 			commands.filter((args) => args[0] === "fetch").length,
 			1,
-			"only the clone's own fetch: a store cloned by this resolution is fresh",
+			"only the new store's own fetch: a store created by this resolution is fresh",
 		);
 		const adds = commands.filter((args) => args[0] === "worktree" && args[1] === "add");
 		assert.equal(clones.length, 1, "one clone for every concurrent binding of the repository");
@@ -248,7 +248,7 @@ describe("workspace resolution (#3109)", () => {
 		const again = await countGitCommands(() =>
 			resolveWorkspace(workspace({ repo: remote.url, base: "origin/main", branch: "feat/e" })),
 		);
-		assert.equal(again.commands.filter((args) => args.includes("clone")).length, 0, "the store is reused");
+		assert.equal(again.commands.filter((args) => args[0] === "init").length, 0, "the store is reused");
 		assert.equal(again.commands.filter((args) => args[0] === "fetch").length, 1, "a new branch fetches once");
 	});
 
@@ -398,14 +398,14 @@ describe("workspace resolution details (#3109)", () => {
 		assert.equal(binding.head, git(repo, "rev-parse", "unrelated"));
 	});
 
-	test("waits for the repository's worktree lock instead of racing another adder (#3109)", async () => {
+	test("waits for the repository lock instead of racing another adder (#3109)", async () => {
 		const repo = createRepository(dirs.root, "locked");
 		let release: () => void = () => {};
 		let entered: () => void = () => {};
 		const inside = new Promise<void>((resolve) => {
 			entered = resolve;
 		});
-		const holder = withWorktreeLock(realpathSync(join(repo, ".git")), async () => {
+		const holder = withRepositoryLock(realpathSync(join(repo, ".git")), async () => {
 			entered();
 			await new Promise<void>((resolve) => {
 				release = resolve;
@@ -514,7 +514,7 @@ describe("workspace resolution details (#3109)", () => {
 		const error = await rejection(resolveWorkspace(workspace({ repo: url, branch: "x" })));
 		assert.ok(isWorkspaceBindingError(error));
 		assert.equal(error.code, "git-failed");
-		assert.equal(error.fields.phase, "clone");
+		assert.equal(error.fields.phase, "fetch", "the new store's first fetch reaches the remote");
 		assert.equal(error.retryable, true);
 		assert.equal(error.cleanupCause, undefined, "removing the staging clone succeeded");
 		const remote = classifyRepository(url);
@@ -528,7 +528,7 @@ describe("workspace resolution details (#3109)", () => {
 		const reason = new Error("caller went away");
 		const cloning = new Promise<void>((resolve) => {
 			const stop = observeWorkspaceGitCommands((command) => {
-				if (command.args[0] === "clone") {
+				if (command.args[0] === "init") {
 					stop();
 					resolve();
 				}
@@ -846,6 +846,107 @@ function transcriptOf(paths: Readonly<Record<string, string>>) {
 		}));
 }
 
+/** Push a commit that adds `file` to `branch` of the remote, as another machine would. */
+function pushFromElsewhere(remote: { readonly url: string }, root: string, branch: string, file: string): string {
+	const clone = join(root, `elsewhere-${file}`);
+	git(root, "clone", "-q", remote.url.replace(/^file:\/\//, ""), clone);
+	git(clone, "config", "user.email", "test@example.com");
+	git(clone, "config", "user.name", "Test User");
+	if (git(clone, "branch", "-r", "--list", `origin/${branch}`) !== "") git(clone, "checkout", "-q", branch);
+	else git(clone, "checkout", "-q", "-b", branch);
+	const head = commitFile(clone, file, `${file}\n`);
+	git(clone, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+	return head;
+}
+
+describe("shared stores follow the remote (#3109)", () => {
+	test("binds the default branch and an existing remote branch at the remote's current tip (#3109)", async () => {
+		const remote = createRemote(dirs.root, "advancing");
+		await resolveWorkspace(workspace({ repo: remote.url, branch: "warm-up" }));
+		const mainTip = pushFromElsewhere(remote, dirs.root, "main", "later-main.txt");
+		const featureTip = pushFromElsewhere(remote, dirs.root, "feat/existing", "later-feature.txt");
+		const main = await resolveWorkspace(workspace({ repo: remote.url }));
+		assert.equal(main.branch, "main");
+		assert.equal(main.head, mainTip);
+		assert.equal(main.baseCommit, mainTip, "the base is the remote's main as it is now");
+		const feature = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/existing" }));
+		assert.equal(feature.head, featureTip);
+		assert.equal(existsSync(join(feature.worktree, "later-feature.txt")), true);
+	});
+
+	test("fast-forwards a store branch the remote moved ahead of before adding its worktree again (#3109)", async () => {
+		const remote = createRemote(dirs.root, "fast-forward");
+		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/ff" }));
+		commitFile(first.worktree, "mine.txt", "mine\n");
+		git(first.worktree, "push", "-q", "origin", "HEAD:refs/heads/feat/ff");
+		const theirs = pushFromElsewhere(remote, dirs.root, "feat/ff", "theirs.txt");
+		rmSync(first.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const again = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/ff" }));
+		assert.equal(again.worktree, first.worktree);
+		assert.equal(again.head, theirs);
+		assert.equal(existsSync(join(again.worktree, "mine.txt")), true);
+		assert.equal(existsSync(join(again.worktree, "theirs.txt")), true);
+	});
+
+	test("keeps a store branch that holds commits the remote does not have yet (#3109)", async () => {
+		const remote = createRemote(dirs.root, "unpushed");
+		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/local" }));
+		const local = commitFile(first.worktree, "unpushed.txt", "unpushed\n");
+		rmSync(first.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const again = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/local" }));
+		assert.equal(again.head, local, "the unpushed commit survives");
+	});
+
+	test("fails closed with drift when a store branch and the remote diverged, adding nothing (#3109)", async () => {
+		const remote = createRemote(dirs.root, "diverged");
+		const first = await resolveWorkspace(workspace({ repo: remote.url, branch: "feat/split" }));
+		git(first.worktree, "push", "-q", "origin", "HEAD:refs/heads/feat/split");
+		const local = commitFile(first.worktree, "here.txt", "here\n");
+		const theirs = pushFromElsewhere(remote, dirs.root, "feat/split", "there.txt");
+		rmSync(first.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const { result, commands } = await countGitCommands(() =>
+			rejection(resolveWorkspace(workspace({ repo: remote.url, branch: "feat/split" }))),
+		);
+		assert.ok(isWorkspaceBindingError(result));
+		assert.equal(result.code, "drift");
+		assert.equal(result.reason, "branch-diverged");
+		assert.equal(result.fields.branch, "feat/split");
+		assert.equal(result.fields.expected, theirs);
+		assert.equal(result.fields.actual, local);
+		assert.equal(result.fields.repository, first.repository);
+		assert.equal(result.retryable, false);
+		assert.equal(
+			result.hint,
+			`Push or rebase the local commits onto origin/feat/split, or take the remote's history with git -C ${first.repository} branch --force feat/split origin/feat/split, then retry.`,
+		);
+		assert.equal(
+			commands.some((args) => args[0] === "worktree" && args[1] === "add"),
+			false,
+		);
+		assert.equal(existsSync(first.worktree), false);
+	});
+
+	test("a base naming a remote branch means that branch as the remote has it (#3109)", async () => {
+		const remote = createRemote(dirs.root, "base-name");
+		await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
+		const tip = pushFromElsewhere(remote, dirs.root, "main", "newer.txt");
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, base: "main", branch: "from-main" }));
+		assert.equal(binding.baseCommit, tip, "not the store's own main, which is behind");
+	});
+
+	test("concurrent restores of one missing worktree add it once (#3109)", async () => {
+		const remote = createRemote(dirs.root, "restore-once");
+		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "shared" }));
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		const { result, commands } = await countGitCommands(() =>
+			Promise.all(Array.from({ length: 4 }, () => restoreWorkspace(binding))),
+		);
+		assert.deepEqual(new Set(result), new Set([binding.worktree]));
+		assert.equal(commands.filter((args) => args[0] === "worktree" && args[1] === "add").length, 1);
+		assert.equal(commands.filter((args) => args[0] === "fetch").length, 1);
+	});
+});
+
 describe("workspace git phases (#3109)", () => {
 	test("runs every git command of a binding in its phase, network ones as clone or fetch (#3109)", async () => {
 		const remote = createRemote(dirs.root, "phases");
@@ -869,12 +970,13 @@ describe("workspace git phases (#3109)", () => {
 			"probe: merge-base <sha> HEAD",
 		];
 		assert.deepEqual(fresh.transcript, [
-			"clone: clone --bare <url> <store>.tmp-<uuid>",
-			"clone: config remote.origin.fetch +refs/heads/*:refs/remotes/origin/*",
+			"clone: init --bare <store>.tmp-<uuid>",
+			"clone: remote add origin <url>",
 			"fetch: fetch origin",
-			"validate: symbolic-ref --short HEAD",
-			"probe: rev-parse --verify origin/main^{commit}",
+			"fetch: remote set-head origin --auto",
+			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
+			"probe: rev-parse --verify origin/main^{commit}",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/feat/x^{commit}",
 			"probe: rev-parse --verify refs/remotes/origin/feat/x^{commit}",
@@ -883,19 +985,20 @@ describe("workspace git phases (#3109)", () => {
 		]);
 		const existing = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "main" })));
 		assert.deepEqual(existing.transcript, [
-			"validate: symbolic-ref --short HEAD",
-			"probe: rev-parse --verify refs/heads/main^{commit}",
-			"probe: rev-parse --verify origin/main^{commit}",
+			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
 			"validate: worktree list --porcelain",
+			"fetch: fetch origin",
+			"probe: rev-parse --verify origin/main^{commit}",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
-			"worktree-add: worktree add <main> main",
+			"probe: rev-parse --verify refs/remotes/origin/main^{commit}",
+			"worktree-add: worktree add -b main <main> <sha>",
 			...snapshot,
 		]);
 		const fetched = await record(() => resolveWorkspace(workspace({ repo: remote.url, branch: "feat/y" })));
 		assert.deepEqual(fetched.transcript.slice(0, 3), [
-			"validate: symbolic-ref --short HEAD",
-			"probe: rev-parse --verify refs/heads/feat/y^{commit}",
+			"validate: symbolic-ref --short refs/remotes/origin/HEAD",
+			"validate: worktree list --porcelain",
 			"fetch: fetch origin",
 		]);
 		commitFile(existing.result.worktree, "change.txt", "change\n");
@@ -916,6 +1019,7 @@ describe("workspace git phases (#3109)", () => {
 			"fetch: fetch origin",
 			"worktree-add: worktree prune",
 			"probe: rev-parse --verify refs/heads/main^{commit}",
+			"probe: rev-parse --verify refs/remotes/origin/main^{commit}",
 			"worktree-add: worktree add <worktree> main",
 			"probe: rev-parse --show-toplevel --git-common-dir",
 			"probe: symbolic-ref --short HEAD",
@@ -1002,7 +1106,7 @@ describe("workspace git phases (#3109)", () => {
 			resolveWorkspace(workspace({ repo: url, branch: "x" }), { signal: controller.signal }),
 		);
 		assert.ok(isWorkspaceBindingError(failed));
-		assert.equal(failed.fields.phase, "clone");
+		assert.equal(failed.fields.phase, "fetch");
 		assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 	});
 });

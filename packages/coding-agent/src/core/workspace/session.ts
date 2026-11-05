@@ -1,8 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { WorkspaceBindingError, WorkspaceSandboxError } from "./errors.ts";
-import { type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
-import { restoreWorkspace } from "./restore.ts";
+import { adoptWorkspaceBinding, type BoundWorkspace, isBoundWorkspace, resolveWorkspace } from "./resolve.ts";
+import { restoreRecordedWorkspace } from "./restore.ts";
 import { assertWorkspace, isWorkspace, recordedRepo, type Workspace } from "./spec.ts";
 
 /** Built-in tools that write files, removed and refused in a read-only workspace. */
@@ -87,7 +87,8 @@ function sameWorkspace(spec: Workspace, recorded: BoundWorkspace): boolean {
 
 /**
  * Bind a session's workspace. A session that already recorded a binding for the same workspace restores that record
- * (verifying it and re-adding a deleted worktree) instead of resolving it again, so its base commit and label survive.
+ * (verifying it and re-adding a deleted worktree) instead of resolving it again, so its base commit and label survive;
+ * later resolutions of the same workspace value return the restored binding.
  */
 export async function bindSessionWorkspace(
 	input: Workspace | BoundWorkspace,
@@ -98,9 +99,15 @@ export async function bindSessionWorkspace(
 	assertWorkspace(input, "workspace");
 	const recorded = recordedBinding(sessionManager);
 	if (recorded === undefined || !sameWorkspace(input, recorded)) return resolveWorkspace(input, { signal });
-	await restoreWorkspace(recorded, { signal });
+	const { commonDir } = await restoreRecordedWorkspace(recorded, { signal });
 	const label = input.label ?? recorded.label;
-	return Object.freeze({ ...recorded, sandbox: input.sandbox, ...(label !== undefined ? { label } : {}) });
+	const restored: BoundWorkspace = Object.freeze({
+		...recorded,
+		sandbox: input.sandbox,
+		...(label !== undefined ? { label } : {}),
+	});
+	adoptWorkspaceBinding(input, restored, commonDir);
+	return restored;
 }
 
 /** Append the binding to the session unless its latest workspace entry already records it. */

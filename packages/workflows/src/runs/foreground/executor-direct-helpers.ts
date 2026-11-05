@@ -1,5 +1,5 @@
 import { isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, WorkspaceBindingError } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, inheritWorkspace, WorkspaceBindingError } from "@bastani/atomic";
 import type { WorkflowActor } from "../../shared/store-types.js";
 import type { StageOptions, WorkflowArtifact, WorkflowTaskOptions, WorkflowTaskStep } from "../../shared/types.js";
 import { workflowArtifactRunPath } from "../../shared/workflow-artifacts.js";
@@ -155,6 +155,9 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(
 	return {
 		...defaults,
 		...withoutUndefinedProperties(options ?? {}),
+		...(defaults.workspace !== undefined && options?.workspace !== undefined
+			? { workspace: inheritWorkspace(defaults.workspace, options.workspace) }
+			: {}),
 		...(defaults.modelConstraints !== undefined && options?.modelConstraints !== undefined
 			? {
 					inheritedModelConstraints: [

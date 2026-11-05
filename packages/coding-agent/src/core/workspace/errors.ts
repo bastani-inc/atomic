@@ -32,7 +32,8 @@ export type WorkspaceBindingErrorReason =
 	| "not-a-repository"
 	| "not-a-repository-root"
 	| "history-rewritten"
-	| "remote-changed";
+	| "remote-changed"
+	| "branch-diverged";
 
 export type WorkspaceConfigErrorCode = "invalid-setting";
 export type WorkspaceConfigSource = "sdk" | "cli" | "env" | "settings";
@@ -217,6 +218,12 @@ function describeBinding(
 						: `Check that ${text(fields, "path")} is writable by this user, then retry.`,
 			};
 		case "drift":
+			if (reason === "branch-diverged")
+				return {
+					what: "Workspace branch diverged from its remote",
+					subject: `${text(fields, "branch")} in ${text(fields, "repository")} is at ${text(fields, "actual")}, and origin/${text(fields, "branch")} at ${text(fields, "expected")} has commits it lacks`,
+					hint: `Push or rebase the local commits onto origin/${text(fields, "branch")}, or take the remote's history with git -C ${text(fields, "repository")} branch --force ${text(fields, "branch")} origin/${text(fields, "branch")}, then retry.`,
+				};
 			return {
 				what: "Workspace changed unexpectedly",
 				subject:
