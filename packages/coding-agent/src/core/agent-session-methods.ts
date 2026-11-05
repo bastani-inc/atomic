@@ -364,6 +364,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	onCompactionReady(listener: (state: BackgroundCompactionState) => void): () => void;
 	setBackgroundCompactionEnabled(enabled: boolean): void;
 	setBackgroundCompactionThresholdPercent(percent: number): void;
+	_writeBackgroundCompactionSetting(write: () => void): void;
 	_maybeStartBackgroundCompaction(contextTokens: number): void;
 	_commitReadyBackgroundCompaction(options?: CommitReadyOptions): Promise<CommittedBackgroundCompaction | undefined>;
 	_runBackgroundCompactionBoundary(midTurn: boolean, awaitPersistence?: boolean): Promise<boolean>;

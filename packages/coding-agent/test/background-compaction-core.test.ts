@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/pi-ai/
 import { describe, test } from "vitest";
 import { estimateCompactionCacheMiss } from "../src/core/cache-stats.ts";
 import {
+	announcedResultOutcome,
 	BACKGROUND_COMPACTION_RESULT_TYPE,
 	BACKGROUND_COMPACTION_RETRY_BASE_MS,
 	BACKGROUND_COMPACTION_RETRY_MAX_MS,
@@ -12,7 +13,6 @@ import {
 	backgroundCompactionThresholdTokens,
 	coveredThroughIndex,
 	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	discardedBackgroundCompaction,
 	findBackgroundCompactionSafePoint,
 	IDLE_BACKGROUND_COMPACTION_STATE,
 	isBackgroundCompactionResultRecord,
@@ -307,10 +307,11 @@ describe("background compaction positions (#4330)", () => {
 		const branch = [user("u1"), assistant("a1"), result("r1", record("u1")), boundary("b1", "u1"), user("u2")];
 		assert.equal(selectReadyBackgroundCompaction(branch), undefined);
 		assert.equal(backgroundCompactionDiscardReason(branch, 2), "superseded");
-		const discarded = discardedBackgroundCompaction(branch, "r1");
-		assert.ok(discarded instanceof BackgroundCompactionDiscardedError);
-		assert.equal(discarded.reason, "superseded");
-		assert.equal(discarded.upToEntryId, "u1");
+		const outcome = announcedResultOutcome(branch, "r1");
+		assert.equal(outcome.kind, "discarded");
+		assert.ok(outcome.kind === "discarded" && outcome.error instanceof BackgroundCompactionDiscardedError);
+		assert.equal(outcome.error.reason, "superseded");
+		assert.equal(outcome.error.upToEntryId, "u1");
 	});
 
 	test("a foreground boundary after the result supersedes it", () => {
@@ -355,8 +356,14 @@ describe("background compaction positions (#4330)", () => {
 		assert.equal(backgroundCompactionDiscardReason(branch, 1), "malformed");
 		assert.equal(backgroundCompactionDiscardReason(branch, 0), "malformed");
 		assert.equal(selectReadyBackgroundCompaction(branch), undefined);
-		assert.equal(discardedBackgroundCompaction(branch, "r1")?.upToEntryId, "r1");
-		assert.equal(discardedBackgroundCompaction(branch, "missing"), undefined);
+		const malformed = announcedResultOutcome(branch, "r1");
+		assert.equal(malformed.kind === "discarded" && malformed.error.upToEntryId, "r1");
+	});
+
+	test("an announced result is committable on its branch and not discarded when another branch is current", () => {
+		const branch = [user("u1"), assistant("a1"), result("r1", record("a1")), user("u2")];
+		assert.deepEqual(announcedResultOutcome(branch, "r1"), { kind: "committable" });
+		assert.deepEqual(announcedResultOutcome(branch, "missing"), { kind: "not-on-branch" });
 	});
 
 	test("validates every stored field at the storage boundary", () => {

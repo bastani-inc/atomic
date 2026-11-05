@@ -21,13 +21,13 @@ import { authForStream } from "./agent-session-models.ts";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { type CompactionCacheMiss, createCacheMissModelSource, estimateCompactionCacheMiss } from "./cache-stats.ts";
 import {
+	announcedResultOutcome,
 	BACKGROUND_COMPACTION_RESULT_TYPE,
 	type BackgroundCompactionResultRecord,
 	type BackgroundCompactionState,
 	backgroundCompactionRetryDelayMs,
 	type CompactionWakeDispatcher,
 	DEFAULT_BACKGROUND_COMPACTION_THRESHOLD_PERCENT,
-	discardedBackgroundCompaction,
 	findBackgroundCompactionSafePoint,
 	IDLE_BACKGROUND_COMPACTION_STATE,
 	type ReadyBackgroundCompaction,
@@ -152,30 +152,58 @@ function backgroundSettings(session: AgentSession): { enabled: boolean; threshol
 	return { enabled: background && session.settingsManager.getCompactionEnabled(), thresholdPercent };
 }
 
-/** After a settings write, drop a recorded config failure the write fixed, or record the one that remains. */
-function refreshConfigFailure(session: AgentSession): void {
-	const runtime = runtimeOf(session);
-	if (!isBackgroundCompactionConfigError(runtime.failure?.error)) return;
+/** Whether background compaction is on, without recording anything: valid settings, both switches on. */
+function backgroundCompactionOn(session: AgentSession): boolean {
 	const configured = configuredBackgroundSettings(session);
-	if (isBackgroundCompactionConfigError(configured)) {
-		effectiveBackgroundSettings(session);
-		return;
-	}
-	runtime.failure = undefined;
-	emitBackgroundCompactionState(session);
+	return (
+		!isBackgroundCompactionConfigError(configured) &&
+		configured.background &&
+		session.settingsManager.getCompactionEnabled()
+	);
+}
+
+function stateKey(session: AgentSession): string {
+	return JSON.stringify(serializeBackgroundCompactionState(backgroundCompactionState(session)));
 }
 
 /**
- * Current state: a running task; else a stored result that fits the branch, reported as `failed` while
- * applying it keeps failing; else the last task failure.
+ * Write a setting that decides whether background compaction runs, then bring the runtime in line: record or
+ * clear an invalid-setting failure, and while background compaction is off cancel a running task and forget
+ * task failures and their backoff, so turning it on again starts fresh. Reports the state once if it changed.
+ */
+export function _writeBackgroundCompactionSetting(this: AgentSession, write: () => void): void {
+	const before = stateKey(this);
+	settingsWriteOwner.run(this, write);
+	const runtime = runtimeOf(this);
+	const configured = configuredBackgroundSettings(this);
+	if (isBackgroundCompactionConfigError(configured)) runtime.failure = { error: configured };
+	else if (isBackgroundCompactionConfigError(runtime.failure?.error)) runtime.failure = undefined;
+	if (!backgroundCompactionOn(this)) {
+		this._abortBackgroundCompaction();
+		if (!isBackgroundCompactionConfigError(runtime.failure?.error)) runtime.failure = undefined;
+		runtime.consecutiveFailures = 0;
+		runtime.nextAttemptAt = 0;
+	}
+	if (stateKey(this) !== before) emitBackgroundCompactionState(this);
+}
+
+/**
+ * Current state: a running task; else `idle` while background compaction is off (`failed` when an invalid
+ * setting turned it off); else a stored result that fits the branch, reported as `failed` while applying it
+ * keeps failing; else the last task failure.
  */
 export function backgroundCompactionState(session: AgentSession): BackgroundCompactionState {
 	const runtime = runtimeOf(session);
 	if (runtime.task) {
 		return { state: "running", upToEntryId: runtime.task.upToEntryId, startedAt: runtime.task.startedAt };
 	}
-	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
 	const failure = runtime.failure;
+	if (!backgroundCompactionOn(session)) {
+		return isBackgroundCompactionConfigError(failure?.error)
+			? { state: "failed", error: failure.error }
+			: IDLE_BACKGROUND_COMPACTION_STATE;
+	}
+	const ready = selectReadyBackgroundCompaction(session.sessionManager.getBranch());
 	const error = failure?.error;
 	const failedResultEntryId = isBackgroundCompactionCommitError(error) ? error.resultEntryId : undefined;
 	if (ready && failedResultEntryId !== ready.entry.id) {
@@ -364,7 +392,8 @@ function settleTask(session: AgentSession, task: RunningBackgroundCompaction, ou
 			} catch (error) {
 				reportListenerFailure(session, error);
 			}
-			announceReady(session, outcome.resultEntryId, task.upToEntryId);
+			if (backgroundCompactionOn(session)) announceReady(session, outcome.resultEntryId, task.upToEntryId);
+			else emitBackgroundCompactionState(session);
 			return;
 		}
 		case "failed":
@@ -445,6 +474,24 @@ export interface CommitReadyOptions {
 	readonly awaitPersistence?: boolean;
 }
 
+/**
+ * Settle the branch against the runtime before anything waits: forget a commit failure whose result is no
+ * longer the ready one, forget an announced result that left the branch, and report one that was discarded.
+ */
+function settleBranch(session: AgentSession): { branch: SessionEntry[]; ready: ReadyBackgroundCompaction | undefined } {
+	const runtime = runtimeOf(session);
+	const branch = session.sessionManager.getBranch();
+	const ready = selectReadyBackgroundCompaction(branch);
+	releaseStaleCommitFailure(runtime, ready);
+	const announced = runtime.announcedResultEntryId;
+	const outcome = announced === undefined ? undefined : announcedResultOutcome(branch, announced);
+	if (outcome !== undefined && outcome.kind !== "committable") {
+		runtime.announcedResultEntryId = undefined;
+		if (outcome.kind === "discarded") emitBackgroundCompactionState(session, outcome.error);
+	}
+	return { branch, ready };
+}
+
 async function commitReady(
 	session: AgentSession,
 	{ foreground = false, awaitPersistence = false }: CommitReadyOptions,
@@ -453,23 +500,7 @@ async function commitReady(
 	if (!foreground && foregroundCompactionActive(session)) return undefined;
 	if (!backgroundSettings(session).enabled) return undefined;
 	const runtime = runtimeOf(session);
-	if (
-		runtime.announcedResultEntryId === undefined &&
-		selectReadyBackgroundCompaction(session.sessionManager.getBranch()) === undefined
-	)
-		return undefined;
-	if (awaitPersistence) {
-		await session._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
-		if (session._disposed || session._persistenceFailure !== undefined) return undefined;
-	}
-	const branch = session.sessionManager.getBranch();
-	const discarded = discardedBackgroundCompaction(branch, runtime.announcedResultEntryId);
-	const ready = selectReadyBackgroundCompaction(branch);
-	releaseStaleCommitFailure(runtime, ready);
-	if (discarded) {
-		runtime.announcedResultEntryId = undefined;
-		emitBackgroundCompactionState(session, discarded);
-	}
+	let { branch, ready } = settleBranch(session);
 	if (!ready) return undefined;
 	if (
 		!foreground &&
@@ -477,6 +508,12 @@ async function commitReady(
 		performance.now() < runtime.nextAttemptAt
 	)
 		return undefined;
+	if (awaitPersistence) {
+		await session._agentEventQueue.catch(rethrowUnlessReportedPersistenceFailure);
+		if (session._disposed || session._persistenceFailure !== undefined) return undefined;
+		({ branch, ready } = settleBranch(session));
+		if (!ready) return undefined;
+	}
 	const planned = plannedFromRecord(ready.record);
 	let appended: AppendedVerbatimBoundary;
 	try {
@@ -571,7 +608,7 @@ export function _abortBackgroundCompaction(this: AgentSession): void {
 export async function awaitBackgroundCompaction(this: AgentSession): Promise<BackgroundCompactionState> {
 	const task = runtimeOf(this).task;
 	if (task) await task.settled;
-	return backgroundCompactionState(this);
+	return this.compaction;
 }
 
 /** Call `listener` each time a background result is stored and ready to commit. Returns an unsubscribe. */
@@ -587,14 +624,11 @@ export function onCompactionReady(
 }
 
 export function setBackgroundCompactionEnabled(this: AgentSession, enabled: boolean): void {
-	settingsWriteOwner.run(this, () => this.settingsManager.setCompactionBackground(enabled));
-	refreshConfigFailure(this);
-	if (!effectiveBackgroundSettings(this).background) this._abortBackgroundCompaction();
+	this._writeBackgroundCompactionSetting(() => this.settingsManager.setCompactionBackground(enabled));
 }
 
 export function setBackgroundCompactionThresholdPercent(this: AgentSession, percent: number): void {
-	settingsWriteOwner.run(this, () => this.settingsManager.setCompactionBackgroundThresholdPercent(percent));
-	refreshConfigFailure(this);
+	this._writeBackgroundCompactionSetting(() => this.settingsManager.setCompactionBackgroundThresholdPercent(percent));
 }
 
 export function installBackgroundCompactionAccessors(prototype: AgentSession): void {
@@ -619,6 +653,7 @@ export function installBackgroundCompactionAccessors(prototype: AgentSession): v
 }
 
 export const agentSessionBackgroundCompactionMethods = {
+	_writeBackgroundCompactionSetting,
 	_maybeStartBackgroundCompaction,
 	_commitReadyBackgroundCompaction,
 	_runBackgroundCompactionBoundary,

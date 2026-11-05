@@ -25,10 +25,11 @@ import { VERBATIM_COMPACTION_STRATEGY, type VerbatimCompactionDetails } from "./
 /**
  * Background compaction state of one session.
  *
- * - `idle`: nothing is running and no result waits for a commit.
+ * - `idle`: nothing is running and no result waits for a commit, including while background compaction is off.
  * - `running`: a task compacts the prefix through `upToEntryId`.
  * - `ready`: a stored result for `upToEntryId` waits for the next turn boundary.
- * - `failed`: the last task failed with `error`; history is unchanged and a later boundary retries.
+ * - `failed`: the last task, or applying its result, failed with `error`; history is unchanged and a later boundary
+ *   retries. An invalid setting also reports `failed`, with background compaction off until it is fixed.
  */
 export type BackgroundCompactionStatus = "idle" | "running" | "ready" | "failed";
 
@@ -280,19 +281,22 @@ export function staleBackgroundCompactionPrefix(
 	return upToIndex <= coveredThroughIndex(branch) ? "superseded" : undefined;
 }
 
-/** The typed reason a known stored result was dropped, or undefined when it is still committable. */
-export function discardedBackgroundCompaction(
-	branch: readonly SessionEntry[],
-	resultEntryId: string | undefined,
-): BackgroundCompactionDiscardedError | undefined {
+/** What became of the stored result last announced as ready, judged against the current branch. */
+export type AnnouncedResultOutcome =
+	| { readonly kind: "committable" }
+	| { readonly kind: "discarded"; readonly error: BackgroundCompactionDiscardedError }
+	/** The result is not on this branch, for example after `/tree` navigation. It is not discarded. */
+	| { readonly kind: "not-on-branch" };
+
+export function announcedResultOutcome(branch: readonly SessionEntry[], resultEntryId: string): AnnouncedResultOutcome {
 	const indexById = indexBranch(branch);
-	const resultIndex = (indexById as ReadonlyMap<string | undefined, number>).get(resultEntryId);
-	if (resultIndex === undefined) return undefined;
+	const resultIndex = indexById.get(resultEntryId);
+	if (resultIndex === undefined) return { kind: "not-on-branch" };
 	const reason = backgroundCompactionDiscardReason(branch, resultIndex, indexById);
-	if (reason === undefined) return undefined;
+	if (reason === undefined) return { kind: "committable" };
 	const entry = branch[resultIndex] as CustomEntry;
 	const upToEntryId = isBackgroundCompactionResultRecord(entry.data) ? entry.data.upToEntryId : entry.id;
-	return new BackgroundCompactionDiscardedError({ upToEntryId, reason });
+	return { kind: "discarded", error: new BackgroundCompactionDiscardedError({ upToEntryId, reason }) };
 }
 
 /** Token count at which a background task starts for this window and percentage. */

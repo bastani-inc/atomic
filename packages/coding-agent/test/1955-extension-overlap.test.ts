@@ -647,6 +647,9 @@ export default function(pi) {
 			followUpMode: "all",
 			sessionId: "session",
 			autoCompactionEnabled: true,
+			compaction: { state: "idle" },
+			backgroundCompactionEnabled: true,
+			backgroundCompactionThresholdPercent: 75,
 			messageCount: 0,
 			pendingMessageCount: 0,
 		};

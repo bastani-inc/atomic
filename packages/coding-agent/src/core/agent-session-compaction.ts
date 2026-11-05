@@ -31,7 +31,6 @@ import type {
 } from "./extensions/index.js";
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
-import { settingsWriteOwner } from "./settings-write-ownership.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
 
 function frozenCollectionMutation(): never {
@@ -526,7 +525,7 @@ export function abortBranchSummary(this: AgentSession): void {
 	this._branchSummaryAbortController?.abort();
 }
 export function setAutoCompactionEnabled(this: AgentSession, enabled: boolean): void {
-	settingsWriteOwner.run(this, () => this.settingsManager.setCompactionEnabled(enabled));
+	this._writeBackgroundCompactionSetting(() => this.settingsManager.setCompactionEnabled(enabled));
 }
 
 export const agentSessionCompactionMethods = {

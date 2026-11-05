@@ -112,12 +112,12 @@ Resume uses the saved compacted text without rerunning planning. The TUI shows a
 
 | Field | Present | Meaning |
 |---|---|---|
-| `state` | always | `idle`, `running` (a task is compacting), `ready` (a saved result waits for the next turn boundary) or `failed` (the last task failed, or applying the saved result failed and waits for its retry) |
+| `state` | always | `idle`, `running` (a task is compacting), `ready` (a saved result waits for the next turn boundary) or `failed` (the last task failed, or applying the saved result failed and waits for its retry). While background compaction is off it reads `idle`, or `failed` when an invalid setting turned it off; a saved result reads `ready` again once it is turned back on |
 | `upToEntryId` | except `idle` | Last session entry of the history the task compacts |
 | `startedAt` | except `idle` | ISO time the task started |
 | `error` | `failed` | The typed error; serialized as `{ name, code, message, hint, retryable, phase, fields, cause }` over RPC and in workflow status |
 
-`session.onCompactionReady(listener)` runs when a result is saved and returns an unsubscribe function. `session.awaitBackgroundCompaction()` resolves with the state once no task is running, and never rejects. SDK callers can pass `compactionWake: { compactionReady({ sessionId, resultEntryId, upToEntryId }) }` to `createAgentSession` to receive the same "compaction ready" notice. The `background_compaction` event fires on every state change; its `discarded` field names a saved result that was dropped. A committed result emits `compaction_end` with `background: true` and, when the last request used the prompt cache, `cacheMiss: { expectedMissedTokens, expectedMissedCost }`.
+`session.onCompactionReady(listener)` runs when a result is saved and returns an unsubscribe function. `session.awaitBackgroundCompaction()` resolves with the state once no task is running, and never rejects. SDK callers can pass `compactionWake: { compactionReady({ sessionId, resultEntryId, upToEntryId }) }` to `createAgentSession` to receive the same "compaction ready" notice. The `background_compaction` event fires on every state change, including turning background compaction on or off; its `discarded` field names a saved result that was dropped. A settings file reload is the exception: it emits nothing, but `session.compaction` and `get_state` already reflect the reloaded settings. A committed result emits `compaction_end` with `background: true` and, when the last request used the prompt cache, `cacheMiss: { expectedMissedTokens, expectedMissedCost }`.
 
 ### Errors
 

@@ -26,6 +26,9 @@ lines.on("line", (line) => {
 				followUpMode: "all",
 				sessionId: "stalled-control-engine",
 				autoCompactionEnabled: true,
+				compaction: { state: "idle" },
+				backgroundCompactionEnabled: true,
+				backgroundCompactionThresholdPercent: 75,
 				messageCount: 0,
 				pendingMessageCount: 1,
 			};

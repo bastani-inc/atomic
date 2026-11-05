@@ -44,6 +44,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 			respond({
 				thinkingLevel: "off", isStreaming: false, isCompacting: false, steeringMode: "all", followUpMode: "all",
 				sessionLocation: ${JSON.stringify(sessionFile)}, sessionId: ${JSON.stringify(sessionId)}, autoCompactionEnabled: true,
+				compaction: { state: "idle" }, backgroundCompactionEnabled: true, backgroundCompactionThresholdPercent: 75,
 				messageCount: 0, pendingMessageCount: 0, queuedMessagesPaused: false,
 			});
 			break;

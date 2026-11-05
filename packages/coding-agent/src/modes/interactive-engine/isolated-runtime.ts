@@ -294,13 +294,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			session.agent.steeringMode = state.steeringMode;
 			session.agent.followUpMode = state.followUpMode;
 			this.autoCompactionEnabled = state.autoCompactionEnabled;
-			this.backgroundCompaction =
-				state.compaction === undefined
-					? IDLE_BACKGROUND_COMPACTION_STATE
-					: rehydrateBackgroundCompactionState(state.compaction);
-			this.backgroundCompactionEnabled = state.backgroundCompactionEnabled ?? this.backgroundCompactionEnabled;
-			this.backgroundCompactionThresholdPercent =
-				state.backgroundCompactionThresholdPercent ?? this.backgroundCompactionThresholdPercent;
+			this.backgroundCompaction = rehydrateBackgroundCompactionState(state.compaction);
+			this.backgroundCompactionEnabled = state.backgroundCompactionEnabled;
+			this.backgroundCompactionThresholdPercent = state.backgroundCompactionThresholdPercent;
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;

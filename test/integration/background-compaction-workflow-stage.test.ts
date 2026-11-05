@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
@@ -210,6 +212,34 @@ test("a stage whose session already holds a saved result shows it as soon as the
 	assert.equal(text, "stage done");
 	assert.deepEqual(observed, ["ready", "idle"], "the saved result is reported from the start, then applied");
 	assert.deepEqual(finalStageCompaction(store), { stored: { state: "idle" }, summarized: { state: "idle" } });
+});
+
+test("a stage whose session holds a saved result while background compaction is off never shows it as ready (#4330)", async () => {
+	const harness = await stageHarness(
+		[
+			{ text: "earlier work", usage: { input: 760, output: 10 } },
+			{ text: "stage done", usage: { input: 400, output: 10 } },
+		],
+		{},
+		(pi) => {
+			pi.on("session_before_compact", async () => ({ compactedText: "[User]: retained" }));
+		},
+	);
+	await harness.session.prompt("earlier work");
+	assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+	writeFileSync(join(harness.tempDir, "settings.json"), JSON.stringify(SETTINGS));
+	await harness.settingsManager.reload();
+	harness.session.setBackgroundCompactionEnabled(false);
+
+	const { store, observed, text } = await runStage(harness);
+	assert.equal(text, "stage done");
+	assert.deepEqual(observed, [], "an idle stage that never compacted shows nothing");
+	assert.deepEqual(finalStageCompaction(store), { stored: undefined, summarized: undefined });
+	assert.equal(
+		harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction").length,
+		0,
+		"the saved result is not applied while off",
+	);
 });
 
 test("a stage on a custom session runtime without background compaction shows no compaction state (#4330)", async () => {

@@ -8,11 +8,13 @@ import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { committedContextMessages } from "../src/core/agent-session-background-compaction.ts";
+import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import {
 	BACKGROUND_COMPACTION_RESULT_TYPE,
 	BACKGROUND_COMPACTION_RETRY_BASE_MS,
 	type BackgroundCompactionResultRecord,
 	type CompactionReadyWake,
+	serializeBackgroundCompactionState,
 } from "../src/core/compaction/background-compaction.ts";
 import {
 	BackgroundCompactionCommitError,
@@ -33,6 +35,7 @@ import {
 } from "../src/core/session-manager.ts";
 import type { Settings } from "../src/core/settings-manager.ts";
 import { StorageUnavailableError } from "../src/core/storage/errors.ts";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.ts";
 import { createHarnessWithExtensions, type FauxResponseInput, type Harness } from "./test-harness.ts";
 
 const longPrompt = Array.from({ length: 24 }, (_, index) => `context line ${index + 1}`).join("\n");
@@ -767,6 +770,163 @@ describe("background compaction turn latency (counted, #4330)", () => {
 		assert.equal(harness.eventsOfType("compaction_start").length, 0);
 		planner.release();
 		await harness.session.awaitBackgroundCompaction();
+	});
+});
+
+/** Count, per next-turn hook call, the reads of the session event queue: each one is a wait for queued saves. */
+function countHookQueueWaits(harness: Harness): number[] {
+	const session = harness.session as unknown as { _agentEventQueue: Promise<void> };
+	let queue = session._agentEventQueue;
+	const perHook: number[] = [];
+	let inHook = false;
+	Object.defineProperty(session, "_agentEventQueue", {
+		configurable: true,
+		get() {
+			if (inHook) perHook[perHook.length - 1] += 1;
+			return queue;
+		},
+		set(value: Promise<void>) {
+			queue = value;
+		},
+	});
+	const agent = harness.agent as unknown as { prepareNextTurnWithContext: (...args: unknown[]) => Promise<unknown> };
+	const hook = agent.prepareNextTurnWithContext;
+	agent.prepareNextTurnWithContext = async (...args: unknown[]) => {
+		perHook.push(0);
+		inHook = true;
+		try {
+			return await hook.apply(harness.agent, args);
+		} finally {
+			inHook = false;
+		}
+	};
+	return perHook;
+}
+
+const TWO_TOOL_TURNS: FauxResponseInput[] = [
+	{ toolCalls: [{ id: "work-1", name: "echo", args: {} }], usage: { input: 100, output: 10 } },
+	{ toolCalls: [{ id: "work-2", name: "echo", args: {} }], usage: { input: 110, output: 10 } },
+	{ text: "work done", usage: { input: 120, output: 10 } },
+];
+
+describe("background compaction waits in the next-turn hook (counted, #4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		vi.useRealTimers();
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	async function ready(responses: FauxResponseInput[], tools?: AgentTool[]) {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(responses, planner, tools ? { tools } : {});
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		return harness;
+	}
+
+	const discardEvents = (harness: Harness) =>
+		harness.eventsOfType("background_compaction").filter((event) => event.discarded !== undefined);
+
+	test("a result left behind by tree navigation costs tool turns nothing and is applied once on return", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS, "back"]);
+		const leaf = harness.sessionManager.getLeafId() as string;
+		const firstAnswer = harness.sessionManager
+			.getBranch()
+			.find((entry) => entry.type === "message" && entry.message.role === "assistant");
+		assert.ok(firstAnswer);
+		await harness.session.navigateTree(firstAnswer.id);
+		const waits = countHookQueueWaits(harness);
+
+		await harness.session.prompt("work");
+		assert.deepEqual(waits, [0, 0], "no tool turn waits for saves when nothing can be applied");
+		assert.equal(harness.session._backgroundCompaction.announcedResultEntryId, undefined);
+		assert.equal(compactionEntries(harness.sessionManager).length, 0);
+		assert.equal(harness.eventsOfType("compaction_end").filter((event) => event.background).length, 0);
+		assert.deepEqual(discardEvents(harness), [], "a result on another branch is not discarded");
+
+		await harness.session.navigateTree(leaf);
+		assert.equal(harness.session.compaction.state, "ready", "returning to its branch makes it ready again");
+		await harness.session.prompt("back");
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "applied exactly once");
+		assert.equal(harness.session.compaction.state, "idle");
+	});
+
+	test("tool turns inside the commit backoff neither wait for saves nor retry, and the retry waits once", async () => {
+		vi.useFakeTimers({ toFake: ["performance"] });
+		let advanceDuringTurn = false;
+		const tool = echoTool(async () => {
+			if (advanceDuringTurn) vi.advanceTimersByTime(BACKGROUND_COMPACTION_RETRY_BASE_MS);
+		});
+		const harness = await ready([...TRIGGER, "failed apply", ...TWO_TOOL_TURNS, ...TWO_TOOL_TURNS], [tool]);
+		const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+		let attempts = 0;
+		harness.sessionManager.appendCompaction = async (...args) => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("injected storage write failure");
+			return append(...args);
+		};
+		await harness.session.prompt("failed apply");
+		assert.equal(harness.session.compaction.error?.code, "commit-failed");
+		const waits = countHookQueueWaits(harness);
+
+		await harness.session.prompt("inside the backoff");
+		assert.deepEqual(waits, [0, 0]);
+		assert.equal(attempts, 1, "no retry inside the backoff");
+
+		advanceDuringTurn = true;
+		await harness.session.prompt("the backoff ends during this turn");
+		assert.deepEqual(waits.slice(2), [1, 0], "the retry waits for queued saves once, then nothing");
+		assert.equal(attempts, 2);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+	});
+
+	test("an announced result that a newer boundary covers is reported once and costs tool turns nothing", async () => {
+		const harness = await ready([...TRIGGER, ...TWO_TOOL_TURNS]);
+		const [stored] = resultEntries(harness.sessionManager);
+		await harness.sessionManager.appendCompaction(
+			"[User]: newer",
+			null,
+			900,
+			stored.data?.details as never,
+			undefined,
+			stored.data?.upToEntryId,
+		);
+		const waits = countHookQueueWaits(harness);
+		await harness.session.prompt("work");
+		assert.deepEqual(waits, [0, 0]);
+		const discarded = discardEvents(harness);
+		assert.equal(discarded.length, 1);
+		assert.equal(discarded[0].discarded?.fields.reason, "superseded");
+		assert.equal(harness.session._backgroundCompaction.announcedResultEntryId, undefined);
+	});
+
+	test("a result applied by the next-turn hook waits for queued saves exactly once", async () => {
+		const planner = new Planner(true);
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					toolCalls: [{ id: "call-b", name: "echo", args: {} }],
+					usage: { input: 770, output: 10 },
+					beforeEmit: async () => {
+						await harness.session.awaitBackgroundCompaction();
+					},
+				},
+				{ toolCalls: [{ id: "call-c", name: "echo", args: {} }], usage: { input: 300, output: 10 } },
+				{ text: "done", usage: { input: 310, output: 10 } },
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		const waits = countHookQueueWaits(harness);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		assert.deepEqual(waits, [0, 1, 0], "only the hook that applies the result waits");
 	});
 });
 
@@ -1726,5 +1886,148 @@ describe("background compaction settings changed on disk (#4330)", () => {
 		harness.session.setBackgroundCompactionThresholdPercent(60);
 		assert.equal(harness.session.compaction.error?.code, "planner-failed");
 		assert.equal(backgroundStates(harness).length, states, "nothing to report");
+	});
+});
+
+describe("background compaction while it is off (#4330)", () => {
+	const harnesses: Harness[] = [];
+	afterEach(() => {
+		for (const harness of harnesses.splice(0)) harness.cleanup();
+	});
+
+	async function ready(responses: FauxResponseInput[] = [...TRIGGER, ...TWO_TOOL_TURNS, "next"]) {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(responses, planner);
+		harnesses.push(harness);
+		writeFileSync(join(harness.tempDir, "settings.json"), JSON.stringify(BASE_SETTINGS));
+		await harness.settingsManager.reload();
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		return { harness, planner };
+	}
+
+	async function rpcState(harness: Harness) {
+		const runtime = new AgentSessionRuntime(
+			harness.session,
+			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+		);
+		const handle = createRpcCommandHandler({
+			runtimeHost: runtime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			output: vi.fn(),
+		});
+		const response = await handle({ id: "state", type: "get_state" });
+		assert.ok(response?.success === true && response.command === "get_state");
+		return response.data.compaction;
+	}
+
+	/** Every surface reports the same state: the SDK, RPC `get_state` and the last state event. */
+	async function assertSameStateEverywhere(harness: Harness, expected: string) {
+		const sdk = serializeBackgroundCompactionState(harness.session.compaction);
+		assert.equal(sdk.state, expected);
+		assert.deepEqual(await rpcState(harness), sdk);
+		assert.deepEqual(harness.eventsOfType("background_compaction").at(-1)?.compaction, sdk);
+		assert.deepEqual(serializeBackgroundCompactionState(await harness.session.awaitBackgroundCompaction()), sdk);
+	}
+
+	test("a saved result reads idle while background compaction is off and ready again once it is back on", async () => {
+		const { harness } = await ready();
+		await assertSameStateEverywhere(harness, "ready");
+		harness.session.setBackgroundCompactionEnabled(false);
+		await assertSameStateEverywhere(harness, "idle");
+		assert.deepEqual(backgroundStates(harness).slice(-1), ["idle"]);
+		const events = backgroundStates(harness).length;
+		harness.session.setBackgroundCompactionEnabled(false);
+		assert.equal(backgroundStates(harness).length, events, "nothing changed, nothing reported");
+
+		const commits = harness.eventsOfType("compaction_end").length;
+		const waits = countHookQueueWaits(harness);
+		await harness.session.prompt("work");
+		assert.deepEqual(waits, [0, 0], "nothing to apply, nothing to wait for");
+		assert.equal(compactionEntries(harness.sessionManager).length, 0, "the saved result is not applied while off");
+		assert.equal(harness.eventsOfType("compaction_end").length, commits);
+
+		harness.session.setBackgroundCompactionEnabled(true);
+		await assertSameStateEverywhere(harness, "ready");
+		await harness.session.prompt("next");
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "applied exactly once");
+	});
+
+	test("an invalid setting reads failed on every surface", async () => {
+		const { harness } = await ready();
+		writeFileSync(
+			join(harness.tempDir, "settings.json"),
+			JSON.stringify(settingsWith({ backgroundThresholdPercent: 0 })),
+		);
+		await harness.settingsManager.reload();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "failed", "even as the first read");
+		await assertSameStateEverywhere(harness, "failed");
+		assert.equal(harness.session.compaction.error?.code, "invalid-setting");
+	});
+
+	test("the hard threshold compacts in the foreground while background compaction is off, even with a saved result", async () => {
+		const { harness } = await ready([
+			...TRIGGER,
+			{ text: "over the hard threshold", usage: { input: 850, output: 10 } },
+			"after",
+		]);
+		harness.session.setBackgroundCompactionEnabled(false);
+		await harness.session.prompt("push past the hard threshold");
+		await harness.session._awaitPendingPostCompactionContinuation();
+		const [boundary] = compactionEntries(harness.sessionManager);
+		assert.ok(boundary);
+		assert.equal(boundary.coveredThroughEntryId, undefined);
+	});
+
+	test("turning automatic compaction off cancels a running task and reports idle", async () => {
+		const planner = new Planner();
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		harness.session.setAutoCompactionEnabled(false);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		assert.equal(resultEntries(harness.sessionManager).length, 0);
+		assert.equal(backgroundStates(harness).at(-1), "idle");
+	});
+
+	test("turning it off forgets task failures and their backoff, so turning it on starts fresh", async () => {
+		const planner = new Planner(true);
+		planner.failures = 1;
+		const harness = await createBackgroundHarness(TRIGGER, planner);
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "failed");
+		harness.session.setBackgroundCompactionEnabled(false);
+		assert.equal(harness.session.compaction.state, "idle");
+		harness.session.setBackgroundCompactionEnabled(true);
+		assert.equal(harness.session.compaction.state, "idle", "the old failure is gone");
+		harness.session._maybeStartBackgroundCompaction(900);
+		assert.equal(harness.session.compaction.state, "running", "no backoff left over");
+		await harness.session.awaitBackgroundCompaction();
+	});
+
+	test("a task that finishes after background compaction was switched off does not announce its result", async () => {
+		const planner = new Planner();
+		const wakes: CompactionReadyWake[] = [];
+		const harness = await createBackgroundHarness(TRIGGER, planner, {
+			compactionWake: { compactionReady: (wake) => wakes.push(wake) },
+		});
+		harnesses.push(harness);
+		const listened: string[] = [];
+		harness.session.onCompactionReady((state) => listened.push(state.state));
+		await startBackgroundTask(harness, planner);
+		harness.settingsManager.setCompactionBackground(false);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "idle");
+		assert.equal(resultEntries(harness.sessionManager).length, 1, "the result is kept for later");
+		assert.deepEqual(listened, []);
+		assert.deepEqual(wakes, []);
+		assert.equal(backgroundStates(harness).at(-1), "idle");
 	});
 });

@@ -234,10 +234,10 @@ export interface RpcSessionState {
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
-	/** Background compaction state (#4330), the same shape workflow stage status carries; absent on older RPC peers. */
-	compaction?: SerializedBackgroundCompactionState;
-	backgroundCompactionEnabled?: boolean;
-	backgroundCompactionThresholdPercent?: number;
+	/** Background compaction state (#4330), the same shape workflow stage status carries. */
+	compaction: SerializedBackgroundCompactionState;
+	backgroundCompactionEnabled: boolean;
+	backgroundCompactionThresholdPercent: number;
 	messageCount: number;
 	pendingMessageCount: number;
 	queuedMessagesPaused: boolean;
