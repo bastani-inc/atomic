@@ -1,4 +1,10 @@
 import {
+	type DecisionQuestions,
+	isDecisionModelUnavailableError,
+	isDecisionTimeoutError,
+	type JsonObject,
+} from "@bastani/atomic";
+import {
 	closestStagePath,
 	decodeScanAnswers,
 	decodeTargetAnswer,
@@ -15,16 +21,18 @@ import {
 	POSSIBLE_STAGE_PREDICTION_THRESHOLDS,
 	type PossibleStagePredictionError,
 	type PossibleStagePredictionPhase,
+	type StageDecisionAnswer,
 	StageDecisionFailedError,
 	type StageDecisionPort,
 	type StageDecisionQuestion,
 	type StageDecisionResult,
 	StageDecisionTimeoutError,
+	StageDecisionUnavailableError,
 } from "./possible-stage-prediction-errors.js";
 import type { PossibleStagesScanResult } from "./possible-stages.js";
 import type { Store } from "./store.js";
 import type { RunSnapshot, RunStagePrediction, RunStagePredictions } from "./store-types.js";
-import type { WorkflowSerializableObject } from "./types.js";
+import type { WorkflowModelCatalogPort, WorkflowSerializableObject } from "./types.js";
 
 /** How long one decision may take before it falls back with a typed timeout. */
 const DEFAULT_DEADLINE_MS = 60_000;
@@ -32,6 +40,8 @@ const MAX_DEFINITIONS = 128;
 const MAX_TARGETS_PER_DEFINITION = 256;
 const MAX_ROOTS = 512;
 const MAX_STATE_STAGES = 64;
+const PREDICTION_INSTRUCTIONS =
+	"A workflow's static scan could not read some of its stage names. `uncertainCallSites` holds the source around each such call site, `knownStages` the names the scan did read, and `inputsShape` the type of each run input. Judge only from this source; the candidates and paths in the questions are the only names that exist.";
 
 /** How a send outside the static known set relates to the decision model's predictions. */
 export interface StageSendClassification {
@@ -199,7 +209,13 @@ export class StagePredictor {
 		timer.unref?.();
 		const signal = AbortSignal.any([deadline.signal, this.disposed.signal]);
 		try {
-			const decided = decisions.decide({ state, questions, signal });
+			const decided = decisions.decide({
+				state,
+				questions,
+				instructions: PREDICTION_INSTRUCTIONS,
+				deadline: this.deadlineMs,
+				signal,
+			});
 			return await new Promise<StageDecisionResult>((resolve, reject) => {
 				const onAbort = (): void => reject(signal.reason);
 				if (signal.aborted) onAbort();
@@ -210,6 +226,10 @@ export class StagePredictor {
 			if (this.disposed.signal.aborted) throw this.disposed.signal.reason;
 			if (deadline.signal.aborted) throw deadline.signal.reason;
 			if (isPossibleStagePredictionError(error)) throw error;
+			if (isDecisionModelUnavailableError(error)) throw new StageDecisionUnavailableError(phase, { cause: error });
+			if (isDecisionTimeoutError(error)) {
+				throw new StageDecisionTimeoutError(phase, this.deadlineMs, Date.now() - startedAt, { cause: error });
+			}
 			throw new StageDecisionFailedError(phase, error);
 		} finally {
 			clearTimeout(timer);
@@ -275,6 +295,42 @@ export class StagePredictor {
 			fallback: { name: failure.name, code: failure.code, hint: failure.hint },
 		});
 	}
+}
+
+/**
+ * The host's decision service as a stage-prediction port. Every answer must carry probabilities, so a decision model
+ * that cannot give them (a chat model) rejects with `DecisionModelUnavailableError` instead of spending a chat turn.
+ * `undefined` when the host has no decision service.
+ */
+export function stageDecisionPortFromModels(
+	models: WorkflowModelCatalogPort | undefined,
+): StageDecisionPort | undefined {
+	const decide = models?.decide?.bind(models);
+	if (decide === undefined) return undefined;
+	return {
+		async decide(request) {
+			const result = await decide({
+				state: JSON.parse(JSON.stringify(request.state)) as JsonObject,
+				questions: request.questions as DecisionQuestions,
+				instructions: request.instructions,
+				deadline: request.deadline,
+				signal: request.signal,
+				requireProbabilities: true,
+			});
+			const answers: Record<string, StageDecisionAnswer> = {};
+			for (const [key, answer] of Object.entries(result.answers)) {
+				if (answer.type === "choice") {
+					answers[key] = {
+						type: "choice",
+						probabilities: answer.probabilities as Readonly<Record<string, number>>,
+					};
+				} else if (answer.type === "bool") {
+					answers[key] = { type: "bool", probability: answer.probability as number };
+				}
+			}
+			return { answers };
+		},
+	};
 }
 
 function reportUnrecorded(error: unknown): void {

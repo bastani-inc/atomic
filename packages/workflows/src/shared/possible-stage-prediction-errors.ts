@@ -27,6 +27,10 @@ export type StageDecisionQuestion =
 export interface StageDecisionRequest {
 	readonly state: WorkflowSerializableObject;
 	readonly questions: Readonly<Record<string, StageDecisionQuestion>>;
+	/** Context shared by every question. */
+	readonly instructions: string;
+	/** Wall-clock limit in milliseconds for the whole decision. */
+	readonly deadline: number;
 	/** Aborts when the run ends, the extension is disposed, or the prediction deadline passes. */
 	readonly signal: AbortSignal;
 }
@@ -40,7 +44,7 @@ export interface StageDecisionResult {
 	readonly answers: Readonly<Record<string, StageDecisionAnswer | undefined>>;
 }
 
-/** The decision service stage prediction asks; it mirrors `decide({ state, questions, deadline })`. */
+/** The decision service stage prediction asks: the host's `decide()`, which must answer with probabilities. */
 export interface StageDecisionPort {
 	decide(request: StageDecisionRequest): Promise<StageDecisionResult>;
 }
@@ -88,7 +92,8 @@ export class StageDecisionUnavailableError extends PossibleStagePredictionError 
 	declare readonly code: "decision-unavailable";
 	override readonly retryable = false as const;
 	constructor(phase: PossibleStagePredictionPhase, options?: ErrorOptions) {
-		const hint = "Configure a decision model to predict dynamic stage names; the static scan still applies.";
+		const hint =
+			"Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.";
 		super(
 			"decision-unavailable",
 			phase,
@@ -124,13 +129,14 @@ export class StageDecisionTimeoutError extends PossibleStagePredictionError {
 	override readonly retryable = true as const;
 	readonly timeoutMs: number;
 	readonly elapsedMs: number;
-	constructor(phase: PossibleStagePredictionPhase, timeoutMs: number, elapsedMs: number) {
+	constructor(phase: PossibleStagePredictionPhase, timeoutMs: number, elapsedMs: number, options?: ErrorOptions) {
 		const hint = "The decision model was slow; a later run of the same workflow asks again.";
 		super(
 			"decision-timeout",
 			phase,
 			`Stage-name prediction timed out after ${elapsedMs} ms of ${timeoutMs} ms (decision-timeout). ${hint}`,
 			hint,
+			options,
 		);
 		this.timeoutMs = timeoutMs;
 		this.elapsedMs = elapsedMs;

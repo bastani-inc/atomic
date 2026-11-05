@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import {
+	DecisionModelUnavailableError,
+	DecisionOutputError,
+	type DecisionQuestions,
+	type DecisionResult,
+	DecisionTimeoutError,
+} from "@bastani/atomic";
 import { afterEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -9,6 +16,7 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { summarizeRunSnapshot } from "../../packages/workflows/src/extension/workflow-status-summary.js";
 import { renderWorkflowToolContent } from "../../packages/workflows/src/extension/workflow-tool-content.js";
 import * as sdk from "../../packages/workflows/src/sdk-surface.js";
+import type { WorkflowDecisionRequest } from "../../packages/workflows/src/shared/authoring-contract-stage.js";
 import { createWorkflowBoundaryHopsResolver } from "../../packages/workflows/src/shared/pending-stage-status.js";
 import {
 	closestStagePath,
@@ -42,7 +50,10 @@ import {
 	StageDecisionTimeoutError,
 	StageDecisionUnavailableError,
 } from "../../packages/workflows/src/shared/possible-stage-prediction-errors.js";
-import { StagePredictor } from "../../packages/workflows/src/shared/possible-stage-predictor.js";
+import {
+	StagePredictor,
+	stageDecisionPortFromModels,
+} from "../../packages/workflows/src/shared/possible-stage-predictor.js";
 import {
 	PossibleStageRowsIndex,
 	WorkflowTopologyIndex,
@@ -54,7 +65,7 @@ import {
 } from "../../packages/workflows/src/shared/possible-stages.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowDefinition, WorkflowModelCatalogPort } from "../../packages/workflows/src/shared/types.js";
 import { renderStatusList } from "../../packages/workflows/src/tui/status-list.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { moduleDir, sleep } from "../helpers/runtime.js";
@@ -340,10 +351,10 @@ describe("prediction errors (#4359)", () => {
 		assert.equal(unavailable.code, "decision-unavailable");
 		assert.equal(unavailable.retryable, false);
 		assert.equal(unavailable.phase, "scan");
-		assert.match(unavailable.hint, /decision model/);
+		assert.match(unavailable.hint, /decisionModel/);
 		assert.equal(
 			unavailable.message,
-			"Stage-name prediction is unavailable: no decision model answered (decision-unavailable). Configure a decision model to predict dynamic stage names; the static scan still applies.",
+			"Stage-name prediction is unavailable: no decision model answered (decision-unavailable). Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.",
 		);
 
 		const cause = Object.assign(new Error("rate limited"), { retryable: true });
@@ -664,7 +675,7 @@ describe("stage predictor (#4359)", () => {
 			fallback: {
 				name: "StageDecisionUnavailableError",
 				code: "decision-unavailable",
-				hint: "Configure a decision model to predict dynamic stage names; the static scan still applies.",
+				hint: "Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.",
 			},
 		});
 		const failed = await fallbackFor({
@@ -1064,5 +1075,185 @@ describe("launch and delivery never wait for a prediction (#4359)", () => {
 			],
 		);
 		dispose();
+	});
+});
+
+describe("the host decision service as the prediction port (#4359)", () => {
+	function catalog(decide: (request: WorkflowDecisionRequest) => Promise<DecisionResult>): WorkflowModelCatalogPort {
+		return { listModels: async () => [], decide: decide as WorkflowModelCatalogPort["decide"] };
+	}
+
+	test("asks decide() for probabilities within the prediction's deadline and maps its answers", async () => {
+		const requests: WorkflowDecisionRequest[] = [];
+		const port = stageDecisionPortFromModels(
+			catalog(async (request) => {
+				requests.push(request);
+				return {
+					answers: {
+						site0: { type: "choice", choice: "c0", probabilities: { c0: 0.9, none: 0.1 }, confidence: 0.9 },
+						target: { type: "bool", value: true, probability: 0.85 },
+					},
+					source: "classifier",
+					model: "typesafe/jev-latest",
+					responseModel: "jev",
+					usage: { inputTokens: 1, outputTokens: 1 },
+				} as DecisionResult<DecisionQuestions>;
+			}),
+		);
+		assert.ok(port);
+		const signal = new AbortController().signal;
+		const questions = {
+			site0: scanQuestionPlan([uncertainty([["review-1"]])]).questions.site0!,
+			target: targetQuestion("x"),
+		};
+		const result = await port.decide({
+			state: { workflow: "flow", absent: undefined },
+			questions,
+			instructions: "judge",
+			deadline: 1234,
+			signal,
+		});
+		assert.deepEqual(result, {
+			answers: {
+				site0: { type: "choice", probabilities: { c0: 0.9, none: 0.1 } },
+				target: { type: "bool", probability: 0.85 },
+			},
+		});
+		assert.equal(requests.length, 1);
+		assert.deepEqual(requests[0], {
+			state: { workflow: "flow" },
+			questions,
+			instructions: "judge",
+			deadline: 1234,
+			signal,
+			requireProbabilities: true,
+		});
+		assert.equal(stageDecisionPortFromModels(undefined), undefined);
+		assert.equal(stageDecisionPortFromModels({ listModels: async () => [] }), undefined);
+	});
+
+	test("decision errors map to typed prediction fallbacks with the original as cause", async () => {
+		const fallbackOf = async (error: Error) => {
+			const store = createStore();
+			store.recordRunStart(rootRun());
+			new StagePredictor().launch({
+				store,
+				runId: "root",
+				workflowName: "flow",
+				scan: scanOf([uncertainty([["review"]])]),
+				maxDepth: 3,
+				inputs: {},
+				decisions: stageDecisionPortFromModels(catalog(() => Promise.reject(error)))!,
+				admitted: Promise.resolve(true),
+			});
+			await until(() => store.run("root")?.stagePredictions !== undefined);
+			return store.run("root")!.stagePredictions!.fallback;
+		};
+		assert.deepEqual(
+			await fallbackOf(new DecisionModelUnavailableError({ reason: "no-probabilities", model: "openai/gpt" })),
+			{
+				name: "StageDecisionUnavailableError",
+				code: "decision-unavailable",
+				hint: "Set decisionModel to a classifier model to predict dynamic stage names; the static scan still applies.",
+			},
+		);
+		assert.equal(
+			(await fallbackOf(new DecisionTimeoutError({ timeoutMs: 10, elapsedMs: 11, phase: "classifier" })))?.code,
+			"decision-timeout",
+		);
+		assert.equal(
+			(await fallbackOf(new DecisionOutputError({ model: "typesafe/jev-latest", detail: "bad" } as never)))?.code,
+			"decision-failed",
+		);
+	});
+
+	test("the typed fallback keeps the decision error as its cause", async () => {
+		const original = new DecisionModelUnavailableError({ reason: "no-probabilities" });
+		const predictor = new StagePredictor();
+		const store = createStore();
+		store.recordRunStart(rootRun());
+		const seen: unknown[] = [];
+		predictor.launch({
+			store,
+			runId: "root",
+			workflowName: "flow",
+			scan: scanOf([], ["review"]),
+			maxDepth: 3,
+			inputs: {},
+			decisions: {
+				decide: async (request) => {
+					try {
+						return await stageDecisionPortFromModels(catalog(() => Promise.reject(original)))!.decide(request);
+					} catch (error) {
+						seen.push(error);
+						throw error;
+					}
+				},
+			},
+			admitted: Promise.resolve(true),
+		});
+		predictor.classifySend(store.run("root")!, ["deploy"]);
+		await until(() => store.run("root")?.stagePredictions?.fallback !== undefined);
+		assert.equal(seen[0], original);
+		assert.equal(store.run("root")?.stagePredictions?.fallback?.code, "decision-unavailable");
+		assert.equal(store.run("root")?.stagePredictions?.entries.length, 0);
+	});
+
+	test("a chat-only decision model's fallback stays out of the status text", () => {
+		const run = rootRun({
+			stagePredictions: {
+				status: "fallback",
+				entries: [],
+				targets: {},
+				fallback: {
+					name: "StageDecisionUnavailableError",
+					code: "decision-unavailable",
+					hint: "Set decisionModel.",
+				},
+			},
+		});
+		const status = stagePredictionStatus(run, [run]);
+		assert.equal(status?.fallback?.code, "decision-unavailable");
+		assert.deepEqual(formatStagePredictionStatus(status!), []);
+	});
+
+	test("dispatch predicts through the host's decide() when no port is injected", async () => {
+		setDurableBackend(await createMemoryTestBackend());
+		const store = createStore();
+		const definition = await fixtureDefinition("data-driven-loop");
+		const requests: WorkflowDecisionRequest[] = [];
+		const result = await dispatch(
+			{ action: "run", workflow: definition.normalizedName },
+			{
+				registry: createRegistry([definition]),
+				store,
+				adapters: { prompt: { prompt: async () => "ok" } },
+				resolvePossibleStageEntry: () => fixtureEntry("data-driven-loop"),
+				models: catalog(async (request) => {
+					requests.push(request);
+					const question = request.questions.site0!;
+					const group = Object.entries(question.criteria).find(
+						([, text]) => text === "every one of api, ui, docs",
+					)![0];
+					return {
+						answers: { site0: { type: "choice", choice: group, probabilities: { [group]: 0.9 } } },
+						source: "classifier",
+						model: "typesafe/jev-latest",
+						responseModel: "jev",
+						usage: { inputTokens: 1, outputTokens: 1 },
+					} as DecisionResult<DecisionQuestions>;
+				}),
+				stagePredictor: new StagePredictor(),
+			},
+		);
+		if (result.action !== "run") assert.fail("expected a run result");
+		await until(() => store.run(result.runId)?.stagePredictions !== undefined);
+		assert.deepEqual(
+			store.run(result.runId)?.stagePredictions?.entries.map((entry) => entry.path),
+			["api", "ui", "docs"],
+		);
+		assert.equal(requests[0]?.requireProbabilities, true);
+		assert.equal(requests[0]?.deadline, 60_000);
+		assert.match(requests[0]?.instructions ?? "", /static scan could not read/);
 	});
 });

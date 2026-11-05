@@ -302,7 +302,8 @@ const STATUS_PREDICTION_LIMIT = 5;
 
 /**
  * Status lines for a root's predictions, such as `stage predictions: review-1 confirmed 0.95, lint predicted 0.91`,
- * and one `stage predictions unavailable (<code>): <hint>` line when prediction fell back.
+ * and one `stage predictions unavailable (<code>): <hint>` line when prediction failed. `decision-unavailable` stays
+ * in the structured status only.
  */
 export function formatStagePredictionStatus(status: StagePredictionStatus): string[] {
 	const lines: string[] = [];
@@ -313,7 +314,8 @@ export function formatStagePredictionStatus(status: StagePredictionStatus): stri
 		const more = status.entries.length - STATUS_PREDICTION_LIMIT;
 		lines.push(`stage predictions: ${shown.join(", ")}${more > 0 ? `, +${more} more` : ""}`);
 	}
-	if (status.fallback !== undefined) {
+	// A decision model that cannot give probabilities (a chat model) is a setup choice, not a failure worth a line.
+	if (status.fallback !== undefined && status.fallback.code !== "decision-unavailable") {
 		lines.push(`stage predictions unavailable (${status.fallback.code}): ${status.fallback.hint}`);
 	}
 	return lines;

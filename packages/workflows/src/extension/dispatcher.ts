@@ -16,7 +16,11 @@ import { resolveAndValidateInputs } from "../runs/foreground/executor.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolve_budget } from "../shared/budget.js";
 import type { StageDecisionPort } from "../shared/possible-stage-prediction-errors.js";
-import { stagePredictor as defaultStagePredictor, type StagePredictor } from "../shared/possible-stage-predictor.js";
+import {
+	stagePredictor as defaultStagePredictor,
+	type StagePredictor,
+	stageDecisionPortFromModels,
+} from "../shared/possible-stage-predictor.js";
 import { type PossibleStagesScanResult, scanPossibleStagesFromSource } from "../shared/possible-stages.js";
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { deriveInputFields, schemaIsRequired } from "../shared/schema-introspection.js";
@@ -86,8 +90,8 @@ export interface DispatcherOpts {
 	 */
 	resolvePossibleStageEntry?: (normalizedName: string) => string | undefined;
 	/**
-	 * The decision service that predicts stage names the scan could not resolve. When absent, nothing is predicted and
-	 * the scan alone decides the known set.
+	 * The decision service that predicts stage names the scan could not resolve. Defaults to the host's `decide()` from
+	 * `models`; when neither exists, nothing is predicted and the scan alone decides the known set.
 	 */
 	decisions?: StageDecisionPort;
 	/** Defaults to the process-wide predictor that send classification also reads. */
@@ -272,7 +276,8 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				return failedRunResult(def.name, runId, error instanceof Error ? error.message : String(error));
 			}
 			const { accepted } = launch;
-			if (scan !== undefined && opts.decisions !== undefined) {
+			const decisions = opts.decisions ?? stageDecisionPortFromModels(opts.models);
+			if (scan !== undefined && decisions !== undefined) {
 				// Never awaited: the prediction records itself on the root run once it and admission settle.
 				(opts.stagePredictor ?? defaultStagePredictor).launch({
 					store: opts.store ?? defaultStore,
@@ -281,7 +286,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 					scan,
 					maxDepth: opts.config?.maxDepth,
 					inputs,
-					decisions: opts.decisions,
+					decisions,
 					admitted: launch.wait.then(
 						(admission) => admission.started,
 						() => false,
