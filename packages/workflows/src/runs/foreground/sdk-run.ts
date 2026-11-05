@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveWorktreeSnapshotSettings, SettingsManager } from "@bastani/atomic";
 import { initializeDurableBackend } from "../../durable/factory.js";
 import { availableRunDurableBackend } from "../../durable/run-owner-backend.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../../durable/store-backend.js";
@@ -30,7 +31,12 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 ): Promise<RunResult> {
 	// The caller's local worker timing is checked before anything is opened or written for the run.
 	if (callerOpts.localWorkers !== undefined) resolveWorkerTiming(callerOpts.localWorkers, "sdk");
-	let opts = callerOpts;
+	resolveWorktreeSnapshotSettings(callerOpts.snapshots, "sdk", "snapshots");
+	const inheritedSnapshots = SettingsManager.create(callerOpts.cwd ?? process.cwd()).getWorktreeSnapshotSettings();
+	let opts: RunOpts = {
+		...callerOpts,
+		snapshots: resolveWorktreeSnapshotSettings(callerOpts.snapshots, "sdk", "snapshots", inheritedSnapshots),
+	};
 	const store = opts.store === undefined || opts.store === defaultStore ? currentWorkflowStore() : opts.store;
 	const sourceRunId = opts.continuation?.source.id ?? opts.runId;
 	const ownedBackend = sourceRunId === undefined ? undefined : availableRunDurableBackend(store, sourceRunId);

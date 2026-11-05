@@ -9,6 +9,7 @@
  * cross-ref: issue #1498
  */
 
+import type { WorktreeSnapshot } from "@bastani/atomic";
 import type {
 	PendingStageMessage,
 	WorkflowActor,
@@ -45,6 +46,8 @@ export interface DurableWorkflowHandle {
 	/** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
 	readonly invocationCwd?: string;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
+	/** Snapshot exclusion and size policy in effect when the run started. */
+	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 	/** Who launched this workflow, when the launcher was attributable. */
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
@@ -60,6 +63,8 @@ export interface DurableWorkflowHandle {
 	readonly repositoryRoot?: string;
 	/** Resolved reusable git worktree root, when setup happened at workflow start. */
 	readonly gitWorktreeRoot?: string;
+	/** Restored worktree locations, retaining the original roots for later resume and path mapping. */
+	readonly worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
 	/** Session file path that caches this workflow's durable metadata. */
 	readonly sessionFile?: string;
 	/** Number of completed durable checkpoints. */
@@ -148,6 +153,8 @@ export interface DurableToolCheckpoint {
 	/** Inspection-only cancellation, never a replayable tool result. */
 	readonly cancelled?: true;
 	readonly completedAt: number;
+	/** Repository states captured after this live tool completed and before its checkpoint was committed. */
+	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];
 	/** Graph topology; reserved run-level checkpoints have no graph node. */
 	readonly topology?: DurableToolTopology;
 }
@@ -257,6 +264,8 @@ export interface DurableStageCheckpoint {
 	readonly sessionId?: string;
 	readonly sessionFile?: string;
 	readonly completedAt: number;
+	/** Repository states captured after this live stage or task completed. */
+	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];
 	/** Original stage start timestamp, when available. */
 	readonly startedAt?: number;
 	/** Original stage end timestamp, when available. */
@@ -321,11 +330,13 @@ export interface DurableWorkflowMetadata {
 	/** True when the terminal status came from an author-selected ctx.exit(). */
 	readonly exited?: boolean;
 	/** Author-supplied reason from ctx.exit(), when present. */
+	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 	readonly exitReason?: string;
 	readonly invocationCwd?: string;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
+	readonly worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
 	readonly releasedModelOwner?: string;
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;

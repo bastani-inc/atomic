@@ -1,4 +1,5 @@
 import type { StorageDescriptor } from "@bastani/atomic/storage";
+import { MemorySnapshotBlobStore } from "@bastani/atomic/storage";
 import { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import {
@@ -26,6 +27,7 @@ interface MemoryRun {
 }
 
 export class MemoryRunJournal implements RunJournal {
+	readonly snapshotBlobs = new MemorySnapshotBlobStore();
 	private readonly runs = new Map<string, MemoryRun>();
 	private readonly leases = new Map<string, { holderId: string | null; epoch: number; renewedAt: number }>();
 	private closed = false;

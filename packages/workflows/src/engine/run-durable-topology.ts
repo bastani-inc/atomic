@@ -42,6 +42,8 @@ export function createDurableStageDeps(input: {
 	readonly nextReplayKey: (stageName: string) => string;
 	readonly completedReplayKeys: Map<string, string>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
+	readonly recordLiveCheckpoint?: DurableStageDeps["recordLiveCheckpoint"];
+	readonly stageDirectories?: DurableStageDeps["stageDirectories"];
 }): DurableStageDeps {
 	return {
 		workflowId: input.run.id,
@@ -49,6 +51,8 @@ export function createDurableStageDeps(input: {
 		nextCheckpointId: input.nextCheckpointId,
 		nextReplayKey: input.nextReplayKey,
 		beforeCheckpoint: input.beforeCheckpoint,
+		recordLiveCheckpoint: input.recordLiveCheckpoint,
+		stageDirectories: input.stageDirectories,
 		replayKeyForCompletedStage: (stage) => input.completedReplayKeys.get(stage.id),
 		runTopology: durableRunTopology(input.run),
 		sourceOrderForStage: (stage) => {

@@ -29,6 +29,7 @@ import { resolveDurableEntry } from "./resume-runtime.js";
 import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
 import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME } from "./run-timing.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
+import { stageWorktreeSnapshot } from "./worktree-snapshots.js";
 
 /**
  * Reserved run-level tool checkpoints that carry no graph node. They round-trip
@@ -160,6 +161,7 @@ export async function completedWorkflowRunSnapshots(
 			startedAt: handle.createdAt,
 			endedAt: handle.updatedAt,
 			durationMs: rootDuration,
+			...(handle.worktreeRootMappings !== undefined ? { worktreeRootMappings: handle.worktreeRootMappings } : {}),
 			...(handle.error !== undefined ? { error: handle.error } : {}),
 			...(handle.exited !== undefined ? { exited: handle.exited } : {}),
 			...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
@@ -219,6 +221,7 @@ function rootSnapshot(
 		status: handle.status,
 		stages: graph.stages,
 		toolNodes: graph.toolNodes,
+		...(handle.worktreeRootMappings !== undefined ? { worktreeRootMappings: handle.worktreeRootMappings } : {}),
 		startedAt: handle.createdAt,
 		...(terminal
 			? { endedAt: handle.updatedAt, durationMs: terminalDurationMs }
@@ -797,6 +800,7 @@ function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readon
 		...(draft.attemptedModels !== undefined ? { attemptedModels: draft.attemptedModels } : {}),
 		...(draft.modelAttempts !== undefined ? { modelAttempts: draft.modelAttempts } : {}),
 		...(draft.rateLimits !== undefined ? { rateLimits: draft.rateLimits } : {}),
+		...(draft.worktreeSnapshots?.length ? { snapshot: stageWorktreeSnapshot(draft.worktreeSnapshots.at(-1)!) } : {}),
 		...(draft.routerSelection !== undefined ? { routerSelection: draft.routerSelection } : {}),
 	};
 }

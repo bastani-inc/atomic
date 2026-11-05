@@ -2,10 +2,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	assertStorageSchemaVersion,
 	renderStorageIdentifiers,
+	type SnapshotBlobStore,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteStatement,
+	SqlSnapshotBlobStore,
 	type StorageDescriptor,
 	type StorageFailureCause,
 	StorageSchemaVersionError,
@@ -85,12 +87,19 @@ export class SqlRunJournal implements RunJournal {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
+	readonly snapshotBlobs: SnapshotBlobStore;
 	private readonly appendGuard = new AsyncLocalStorage<JournalAppendGuard>();
 
-	private constructor(database: SqliteDatabase, tables: Tables, legacy: LegacyJournalRuns | undefined) {
+	private constructor(
+		database: SqliteDatabase,
+		tables: Tables,
+		legacy: LegacyJournalRuns | undefined,
+		snapshotBlobs: SnapshotBlobStore,
+	) {
 		this.database = database;
 		this.tables = tables;
 		this.legacy = legacy;
+		this.snapshotBlobs = snapshotBlobs;
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.transaction(body)),
 			read: (body) => this.operation(() => body(this.database)),
@@ -137,7 +146,8 @@ export class SqlRunJournal implements RunJournal {
 			`);
 		}, JOURNAL_TRANSACTION);
 		const legacy = options.prefix ? undefined : await LegacyJournalRuns.open(database);
-		return new SqlRunJournal(database, t, legacy);
+		const snapshotBlobs = await SqlSnapshotBlobStore.open(database, options.prefix);
+		return new SqlRunJournal(database, t, legacy, snapshotBlobs);
 	}
 
 	get descriptor(): StorageDescriptor {

@@ -1247,6 +1247,8 @@ export class LocalWorkerPool {
 				depth: options.depth,
 				parentRun: options.parentRun,
 				config: options.config,
+				snapshots: options.snapshots,
+				worktreeRootMappings: options.worktreeRootMappings,
 				executionMode: options.executionMode,
 			}),
 		) as WorkflowSerializableObject;

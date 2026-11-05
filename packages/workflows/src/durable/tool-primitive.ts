@@ -108,6 +108,7 @@ export interface CreateToolPrimitiveInput {
 	readonly beforeToolCall?: () => void | Promise<void>;
 	readonly afterToolCall?: () => void | Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
+	readonly recordLiveCheckpoint?: import("./worktree-snapshot-recorder.js").WorkflowSnapshotRecord;
 	readonly trackExecution?: <T>(execution: Promise<T>) => WorkflowToolExecutionAdmission | undefined;
 	/** Observe a logical throwing-mode failure before graph publication or promise rejection. */
 	readonly onFailureObserved?: (error: unknown, nodeId: string) => void;
@@ -613,7 +614,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 		};
 		await input.beforeCheckpoint?.();
 		throwIfInvocationCancelled(input, toolSignal);
-		await recordCheckpointDurably(input.backend, checkpoint);
+		if (input.recordLiveCheckpoint) await input.recordLiveCheckpoint(checkpoint, toolSignal);
+		else await recordCheckpointDurably(input.backend, checkpoint);
 		input.onNodeEnd?.(node.id, {
 			status: "completed",
 			endedAt: completedAt,
@@ -674,7 +676,8 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 			try {
 				await input.beforeCheckpoint?.();
 				if (!timeoutFailure) throwIfInvocationCancelled(input, toolSignal);
-				await recordCheckpointDurably(input.backend, checkpoint);
+				if (input.recordLiveCheckpoint) await input.recordLiveCheckpoint(checkpoint, toolSignal);
+				else await recordCheckpointDurably(input.backend, checkpoint);
 			} catch (persistenceError) {
 				const cancellation = timeoutFailure ? undefined : invocationCancellation(input, toolSignal);
 				if (cancellation !== undefined) return await cancelInvocation(cancellation);

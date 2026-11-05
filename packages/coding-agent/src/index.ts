@@ -634,6 +634,8 @@ export {
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
 export {
+	formatWorktreeRestoreNotice,
+	formatWorktreeRestoreWarning,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,
 	type SessionWorktreeResume,

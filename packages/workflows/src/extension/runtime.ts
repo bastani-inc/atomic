@@ -1,3 +1,4 @@
+import { resolveWorktreeSnapshotSettings } from "@bastani/atomic";
 import { ensureWorkflowSummaryService, type WorkflowSummaryContext } from "./workflow-summary.js";
 /**
  * ExtensionRuntime — facade that owns the WorkflowRegistry and delegates
@@ -208,8 +209,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 	const presetBackend = opts.journal === undefined ? availableStoreDurableBackendOverride(activeStore) : undefined;
 	const backendRef = { current: presetBackend };
 	let ready: Promise<DurableWorkflowBackend> | undefined;
-	const ensureReady = () =>
-		(ready ??= (
+	const snapshotSettings = () =>
+		resolveWorktreeSnapshotSettings(opts.resolveJournalSettings?.()?.snapshots, "settings", "snapshots");
+	const ensureReady = () => {
+		snapshotSettings();
+		if (ready !== undefined) return ready;
+		ready = (
 			presetBackend === undefined
 				? initializeDurableBackend({
 						cwd: runtimeCwd,
@@ -229,7 +234,9 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			.catch((error: Error) => {
 				ready = undefined;
 				throw error;
-			}));
+			});
+		return ready;
+	};
 
 	/** Options of a resumed run; the local worker settings it takes are validated before it resumes. */
 	function runOptions(policy?: WorkflowExecutionPolicy): RunOpts {
@@ -247,6 +254,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				mcp,
 				config,
 				models,
+				snapshots: snapshotSettings(),
 				...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
 				...(policy !== undefined ? { executionMode: policy.mode } : {}),
 				...(opts.routeConsoleToLog === true ? { routeConsoleToLog: true } : {}),
@@ -432,6 +440,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 				registry,
 				durableBackend: backend,
 				...withWorkerSettings({}, opts.resolveJournalSettings?.()),
+				snapshots: snapshotSettings(),
 				adapters,
 				store: activeStore,
 				cancellation,

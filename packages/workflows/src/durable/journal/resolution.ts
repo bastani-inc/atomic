@@ -22,6 +22,7 @@ export interface RunJournalSettings {
 				admission?: import("../../workers/public-options.js").WorkflowAdmissionOptions;
 		  };
 	storage?: StorageSettingsSelection;
+	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 }
 
 let hostModules: Readonly<Record<string, object>> = {};
