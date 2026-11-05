@@ -94,6 +94,42 @@ function flagValue(args: string[], flag: string): string | undefined {
 	return index === -1 ? undefined : args[index + 1];
 }
 
+async function measureContextWork(events: RgEvent[], input: Omit<GrepToolInput, "pattern">) {
+	let lineNumberReads = 0;
+	let largestBuffer = 0;
+	let copiedContextLines = 0;
+	const originalSlice = Array.prototype.slice;
+	const originalPush = Array.prototype.push;
+	Array.prototype.push = function (this: object[], ...items: Array<{ lineText?: string; lineNumber?: number }>) {
+		for (const item of items) {
+			if (!item?.lineText?.startsWith("retained ") || typeof item.lineNumber !== "number") continue;
+			largestBuffer = Math.max(largestBuffer, this.length + items.length);
+			const lineNumber = item.lineNumber;
+			Object.defineProperty(item, "lineNumber", {
+				get() {
+					lineNumberReads++;
+					return lineNumber;
+				},
+				enumerable: true,
+				configurable: true,
+			});
+		}
+		return originalPush.apply(this, items);
+	};
+	Array.prototype.slice = function (this: Array<{ lineText?: string }>, start?: number, end?: number) {
+		const result = originalSlice.call(this, start, end);
+		if (this[0]?.lineText?.startsWith("retained ")) copiedContextLines += result.length;
+		return result;
+	};
+	try {
+		const result = await runRipgrep(events, input);
+		return { ...result, lineNumberReads, copiedContextLines, largestBuffer };
+	} finally {
+		Array.prototype.push = originalPush;
+		Array.prototype.slice = originalSlice;
+	}
+}
+
 describe("grep ripgrep JSON stream handling", () => {
 	beforeEach(() => {
 		vi.mocked(spawn).mockReset();
@@ -263,6 +299,122 @@ describe("grep ripgrep JSON stream handling", () => {
 
 		assert.equal(output, ["b.txt-2- before two", "b.txt:3: two"].join("\n"));
 	});
+
+	it("keeps skipped adjacent matches as leading context (#4361)", async () => {
+		const { output } = await runRipgrep([matchEvent("a.txt", 1, "needle A"), matchEvent("a.txt", 2, "needle B")], {
+			literal: true,
+			offset: 1,
+			contextBefore: 1,
+		});
+
+		assert.equal(output, "a.txt-1- needle A\na.txt:2: needle B");
+	});
+
+	it("keeps the requested leading window across skipped matches (#4361)", async () => {
+		const { output } = await runRipgrep(
+			[
+				contextEvent("a.txt", 1, "outside"),
+				contextEvent("a.txt", 2, "before"),
+				matchEvent("a.txt", 3, "needle A"),
+				matchEvent("a.txt", 4, "needle B"),
+				matchEvent("a.txt", 5, "needle C"),
+			],
+			{ literal: true, offset: 2, contextBefore: 3 },
+		);
+
+		assert.equal(output, "a.txt-2- before\na.txt-3- needle A\na.txt-4- needle B\na.txt:5: needle C");
+	});
+
+	it("does not show skipped matches without leading context (#4361)", async () => {
+		const { output } = await runRipgrep([matchEvent("a.txt", 1, "needle A"), matchEvent("a.txt", 2, "needle B")], {
+			literal: true,
+			offset: 1,
+		});
+
+		assert.equal(output, "a.txt:2: needle B");
+	});
+
+	it("does not carry skipped matches across a gap in the leading window (#4361)", async () => {
+		const { output } = await runRipgrep(
+			[matchEvent("a.txt", 1, "needle A"), contextEvent("a.txt", 4, "before"), matchEvent("a.txt", 5, "needle B")],
+			{ literal: true, offset: 1, contextBefore: 1 },
+		);
+
+		assert.equal(output, "a.txt-4- before\na.txt:5: needle B");
+	});
+
+	for (const nextFile of ["a.txt", "b.txt"]) {
+		it(`drops stale skipped context when the next match is in ${nextFile} without context events (#4361)`, async () => {
+			const nextLine = nextFile === "a.txt" ? 5 : 2;
+			const { output } = await runRipgrep(
+				[matchEvent("a.txt", 1, "needle A"), matchEvent(nextFile, nextLine, "needle B")],
+				{ literal: true, offset: 1, contextBefore: 1 },
+			);
+
+			assert.equal(output, `${nextFile}:${nextLine}: needle B`);
+		});
+	}
+
+	it("does linear work when a large leading-context window fills before a match (#4361)", async () => {
+		const contextLines = 256;
+		const events = Array.from({ length: contextLines }, (_, index) =>
+			contextEvent("a.txt", index + 1, `retained context ${index}`),
+		);
+		events.push(matchEvent("a.txt", contextLines + 1, "selected needle"));
+		const { output, lineNumberReads, copiedContextLines } = await measureContextWork(events, {
+			literal: true,
+			contextBefore: contextLines,
+		});
+		assert.equal(output.split("\n").length, contextLines + 1);
+		const contextWork = lineNumberReads + copiedContextLines;
+		assert.ok(contextWork <= contextLines * 4, `performed ${contextWork} context operations`);
+	});
+
+	it("does amortized linear work while a large leading-context window rolls forward (#4361)", async () => {
+		const contextLines = 1024;
+		const contextBefore = 128;
+		const events = Array.from({ length: contextLines }, (_, index) =>
+			contextEvent("a.txt", index + 1, `retained context ${index}`),
+		);
+		events.push(matchEvent("a.txt", contextLines + 1, "selected needle"));
+		const { output, lineNumberReads, copiedContextLines, largestBuffer } = await measureContextWork(events, {
+			literal: true,
+			contextBefore,
+		});
+		const lines = output.split("\n");
+		assert.equal(lines.length, contextBefore + 1);
+		assert.equal(lines[0], "a.txt-897- retained context 896");
+		assert.equal(lines.at(-1), "a.txt:1025: selected needle");
+		assert.ok(largestBuffer <= contextBefore * 2, `buffer retained ${largestBuffer} lines`);
+		const contextWork = lineNumberReads + copiedContextLines;
+		assert.ok(contextWork <= contextLines * 4, `performed ${contextWork} context operations`);
+	});
+
+	for (const sameFile of [true, false]) {
+		it(`bounds leading-context work across skipped matches (same file: ${sameFile}) (#4361)`, async () => {
+			const contextBefore = 3;
+			const skippedMatches = 100;
+			const fileAt = (index: number) => (sameFile ? "a.txt" : `file${index}.txt`);
+			const lineAt = (index: number) => (sameFile ? index + 1 : skippedMatches);
+			const events = Array.from({ length: skippedMatches }, (_, index) =>
+				matchEvent(fileAt(index), lineAt(index), `retained needle ${index}`),
+			);
+			const lastFile = fileAt(skippedMatches - 1);
+			events.push(matchEvent(lastFile, skippedMatches + 1, "selected needle"));
+			const { output, lineNumberReads, copiedContextLines, largestBuffer } = await measureContextWork(events, {
+				literal: true,
+				offset: skippedMatches,
+				contextBefore,
+			});
+			const contextIndices = sameFile ? [97, 98, 99] : [99];
+			const expected = contextIndices.map((index) => `${fileAt(index)}-${lineAt(index)}- retained needle ${index}`);
+			expected.push(`${lastFile}:101: selected needle`);
+			assert.equal(output, expected.join("\n"));
+			assert.ok(largestBuffer <= contextBefore * 2, `buffer retained ${largestBuffer} lines`);
+			const contextWork = lineNumberReads + copiedContextLines;
+			assert.ok(contextWork <= skippedMatches * 4, `performed ${contextWork} context operations`);
+		});
+	}
 
 	it("keeps counting lines past the byte cap without handing them to truncation", async () => {
 		const body = "x".repeat(400);

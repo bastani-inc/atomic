@@ -184,11 +184,8 @@ export function markCompletedSteps(text: string, items: TodoItem[]): number {
 	return marked;
 }
 
-// Whole-plan completion phrasing, used as a fallback when the model summarizes
-// without [DONE:n] tags. Only consulted on the run's final message (agent_end).
 export function allStepsComplete(message: string): boolean {
-	return (
-		/(?:all|every)\s+steps?\s+(?:are|is\s+)?(?:done|complete|completed|finished)/i.test(message) ||
-		/\b(?:the\s+)?plan\s+(?:is\s+)?(?:complete|completed|done)\b/i.test(message)
+	return /^\s*(?:(?:all|every)\s+steps?\s+(?:(?:are|is)\s+)?(?:done|completed|complete|finished)|(?:the\s+)?plan\s+(?:is\s+)?(?:completed|complete|done))(?:,\s*wrapping up)?[.!]?\s*$/i.test(
+		message,
 	);
 }

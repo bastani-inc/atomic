@@ -89,6 +89,10 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `bash-spawn-hook.ts` | Adjust bash command, cwd, and env before execution | `createBashTool`, `spawnHook` |
 | `with-deps/` | Extension with npm dependencies | Package structure with `package.json` |
 
+## Plan-mode completion
+
+In `plan-mode/`, use `[DONE:1]` to mark an individual step complete, including in thinking blocks. To finish the whole plan without per-step markers, use a standalone final visible reply such as `All steps are complete.` or `The plan is done.`. Hidden thinking does not count toward that whole-plan reply. Negated summaries, questions, conditional statements, and completion phrases embedded in longer visible prose leave unfinished steps active.
+
 ## Next steps
 
 Use the [Extension API reference](/extensions/api-reference) to check the context properties and method contracts used by these examples.

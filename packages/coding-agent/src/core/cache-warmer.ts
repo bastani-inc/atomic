@@ -376,6 +376,7 @@ export function formatCacheWarmingStatus(status: CacheWarmingStatus, now = Date.
 	];
 	return `${parts.length ? `Decision in ${parts.join(" ")}` : "Decision now"} (${details})`;
 }
-export function formatCacheWarmingUsage(entry: UsageEntry): string {
-	return `Cache warmed${entry.note ? ` (${entry.note})` : ""}: $${entry.usage.cost.total.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1")}`;
+/** One-line transcript text for the total cost of one or more consecutive cache warms. */
+export function formatCacheWarmingUsage(totalCost: number, note?: string): string {
+	return `Cache warmed${note ? ` (${note})` : ""}: $${totalCost.toFixed(6).replace(/(\.\d{3}\d*?)0+$/, "$1")}`;
 }

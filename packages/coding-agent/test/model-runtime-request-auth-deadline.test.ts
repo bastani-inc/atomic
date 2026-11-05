@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
 	type Api,
 	type AssistantMessage,
@@ -122,7 +123,7 @@ describe("ModelRuntime request-auth deadline", () => {
 		controller.abort();
 		const result = await pending;
 
-		expect(result.stopReason).toBe("aborted");
+		assert.equal(result.stopReason, "aborted");
 		expect(providerCalls).toBe(0);
 	});
 
@@ -177,7 +178,7 @@ describe("ModelRuntime request-auth deadline", () => {
 				signal: controller.signal,
 			},
 		);
-		expect(result.stopReason).toBe("aborted");
+		assert.equal(result.stopReason, "aborted");
 		expect(resolveCalls).toBe(0);
 		expect(providerCalls).toBe(0);
 	});
@@ -338,23 +339,23 @@ describe("ModelRuntime deferred responses", () => {
 			},
 		);
 		const model = runtime.getModel("deferred-capable", "deferred-model");
-		expect(model).toBeDefined();
+		assert.ok(model);
 
-		const result = await runtime.fetchDeferred(model!, handleFor("deferred-capable"));
+		const result = await runtime.fetchDeferred(model, handleFor("deferred-capable"));
 
-		expect(result.stopReason).toBe("stop");
-		expect(result.content).toEqual([{ type: "text", text: "resumed" }]);
-		expect(requests).toEqual([{ model: "deferred-model", handleId: "response-1", apiKey: "sk-deferred" }]);
+		assert.equal(result.stopReason, "stop");
+		assert.deepEqual(result.content, [{ type: "text", text: "resumed" }]);
+		assert.deepEqual(requests, [{ model: "deferred-model", handleId: "response-1", apiKey: "sk-deferred" }]);
 	});
 
 	it("reports a provider without deferred responses as an error result", async () => {
 		const runtime = await runtimeWith("deferred-missing");
 		const model = runtime.getModel("deferred-missing", "deferred-model");
-		expect(model).toBeDefined();
+		assert.ok(model);
 
-		const result = await runtime.fetchDeferred(model!, handleFor("deferred-missing"));
+		const result = await runtime.fetchDeferred(model, handleFor("deferred-missing"));
 
-		expect(result.stopReason).toBe("error");
-		expect(result.errorMessage).toBe("Provider deferred-missing does not support deferred responses");
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "Provider deferred-missing does not support deferred responses");
 	});
 });

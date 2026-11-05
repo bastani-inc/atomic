@@ -415,11 +415,26 @@ export function createGrepToolDefinition(
 							outputLineCount++;
 						};
 
-						// Content mode streams match and context lines in rg's order. Context lines that are not in the
-						// trailing window of the last shown match wait for the next match, which shows only those in its
-						// leading window: a match skipped by `offset` drops its context.
 						let lastShown: { filePath: string; lineNumber: number } | undefined;
 						let pendingContext: Array<{ filePath: string; lineNumber: number; lineText: string }> = [];
+						let pendingContextStart = 0;
+						const bufferContext = (filePath: string, lineNumber: number, lineText: string) => {
+							if (pendingContext.at(-1)?.filePath !== filePath) {
+								pendingContext = [];
+								pendingContextStart = 0;
+							}
+							pendingContext.push({ filePath, lineNumber, lineText });
+							while (
+								pendingContextStart < pendingContext.length &&
+								pendingContext[pendingContextStart].lineNumber <= lineNumber - contextBeforeValue
+							) {
+								pendingContextStart++;
+							}
+							if (pendingContextStart * 2 >= pendingContext.length) {
+								pendingContext = pendingContext.slice(pendingContextStart);
+								pendingContextStart = 0;
+							}
+						};
 						// Set at the last allowed match. rg still sends that match's trailing context, which is kept,
 						// and the limit notice waits for proof of one more match.
 						let limitHit = false;
@@ -445,16 +460,22 @@ export function createGrepToolDefinition(
 							}
 							if (!isMatch) {
 								if (inTrailingWindow) pushLine(filePath, lineNumber, lineText, false);
-								else pendingContext.push({ filePath, lineNumber, lineText });
+								else bufferContext(filePath, lineNumber, lineText);
 								return;
 							}
 							seenMatches++;
-							const leading = pendingContext.filter(
-								(entry) => entry.filePath === filePath && entry.lineNumber >= lineNumber - contextBeforeValue,
-							);
+							if (offset !== undefined && seenMatches <= offset) {
+								bufferContext(filePath, lineNumber, lineText);
+								return;
+							}
+							for (let index = pendingContextStart; index < pendingContext.length; index++) {
+								const entry = pendingContext[index];
+								if (entry.filePath === filePath && entry.lineNumber >= lineNumber - contextBeforeValue) {
+									pushLine(entry.filePath, entry.lineNumber, entry.lineText, false);
+								}
+							}
 							pendingContext = [];
-							if (offset !== undefined && seenMatches <= offset) return;
-							for (const entry of leading) pushLine(entry.filePath, entry.lineNumber, entry.lineText, false);
+							pendingContextStart = 0;
 							pushLine(filePath, lineNumber, lineText, true);
 							lastShown = { filePath, lineNumber };
 							matchCount++;

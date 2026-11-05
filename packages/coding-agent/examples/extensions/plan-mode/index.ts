@@ -40,6 +40,10 @@ function getTextContent(message: AssistantMessage): string {
 		.join("\n");
 }
 
+function getVisibleText(message: AssistantMessage): string {
+	return message.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+}
+
 export default function planModeExtension(pi: ExtensionAPI): void {
 	let planModeEnabled = false;
 	let executionMode = false;
@@ -228,7 +232,7 @@ After completing a step, include a [DONE:n] tag in your response.`,
 			// Fallback: the model wrapped up without [DONE:n] tags ("All steps complete").
 			const finalAssistant = [...event.messages].reverse().find(isAssistantMessage);
 			const finished =
-				finalAssistant !== undefined && allStepsComplete(getTextContent(finalAssistant))
+				finalAssistant !== undefined && allStepsComplete(getVisibleText(finalAssistant))
 					? todoItems.map((t) => ({ ...t, completed: true }))
 					: todoItems;
 			if (finished.every((t) => t.completed)) {
