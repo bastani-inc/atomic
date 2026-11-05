@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync as runProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import {
 	chmodSync,
 	existsSync,
@@ -1327,6 +1328,32 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		assert.deepEqual(cancelled, []);
 	});
 
+	it.each([
+		["a verified download", false],
+		["a checksum mismatch", true],
+	])("removes only its own abort listener from the caller's signal after %s", async (_label, tampered) => {
+		const fake = healthy();
+		let release: (response: Response) => void = () => undefined;
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(() => new Promise<Response>((resolveResponse) => (release = resolveResponse)));
+		const controller = new AbortController();
+		const sentinel = () => undefined;
+		controller.signal.addEventListener("abort", sentinel);
+		const pending = provision({ release: fake.release }, { signal: controller.signal });
+		await vi.waitFor(() => assert.equal(fetchMock.mock.calls.length, 1));
+		assert.equal(getEventListeners(controller.signal, "abort").length, 2);
+		release(new Response(new Uint8Array(tampered ? Buffer.from("tampered") : fake.bytes)));
+		if (tampered) {
+			const error = await failure(pending);
+			assert.ok(isGitUnavailableError(error));
+			assert.equal(error.code, "checksum-mismatch");
+		} else {
+			assert.equal((await pending).source, "provisioned");
+		}
+		assert.deepEqual(getEventListeners(controller.signal, "abort"), [sentinel]);
+	});
+
 	it("cancels while waiting for another installer's lock", async () => {
 		const fake = healthy();
 		serveArchive(fake.bytes);
@@ -1554,10 +1581,12 @@ describe.skipIf(isWindows)("git installation details (#4322)", () => {
 		const error = await failure(provision({ release: fake.release, verifyTimeoutMs: 1_000 }));
 		assert.ok(error instanceof GitProvisionTimeoutError);
 		assert.equal(existsSync(marker), true);
+		assert.equal(error.code, "provision-timeout");
 		assert.deepEqual(
 			{ phase: error.fields.phase, timeoutMs: error.fields.timeoutMs },
 			{ phase: "verify", timeoutMs: 1_000 },
 		);
+		assert.ok(error.fields.elapsedMs >= 1_000 - TIMER_EARLY_FIRE_TOLERANCE_MS, String(error.fields.elapsedMs));
 		assert.ok(error.cause instanceof Error);
 		assert.equal(existsSync(installDir), false);
 		assert.deepEqual(leftovers(), []);
