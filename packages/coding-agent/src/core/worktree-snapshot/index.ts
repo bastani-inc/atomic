@@ -1,11 +1,4 @@
-export {
-	type CollectSnapshotGarbageOptions,
-	collectSnapshotGarbage,
-	DEFAULT_BLOB_GRACE_SECONDS,
-	MemorySnapshotBlobStore,
-	SqlSnapshotBlobStore,
-	snapshotBlobHashes,
-} from "./blob-store.ts";
+export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotBlobHashes } from "./blob-store.ts";
 export {
 	bindingOf,
 	type CaptureWorktreeSnapshotOptions,
@@ -49,6 +42,7 @@ export {
 	WorkspaceSnapshotError,
 	type WorkspaceSnapshotErrorCode,
 } from "./errors.ts";
+export { type CollectSnapshotGarbageOptions, collectSnapshotGarbage, DEFAULT_BLOB_GRACE_SECONDS } from "./garbage.ts";
 export { type GitExecutable, type GitExecutableResolver, setWorktreeSnapshotGit } from "./git.ts";
 export { SNAPSHOT_DENY_PATTERNS, SNAPSHOT_IGNORE_FILE } from "./policy.ts";
 export {

@@ -7,8 +7,9 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { listRetainedSessionSnapshots } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { collectSnapshotGarbage, snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.ts";
+import { snapshotBlobHashes } from "../src/core/worktree-snapshot/blob-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+import { collectSnapshotGarbage } from "../src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 
 let sandbox: GitSandbox;
