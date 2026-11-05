@@ -1,9 +1,10 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { isEditMatchError } from "../src/core/tools/file-tool-errors.ts";
-import { createCodingToolDefinitions, type ToolDef } from "../src/core/tools/index.ts";
+import { afterEach, describe, it } from "vitest";
+import { isEditMatchError } from "../src/core/tools/file-tool-errors.js";
+import { createCodingToolDefinitions, type ToolDef } from "../src/core/tools/index.js";
 
 const tempDirs: string[] = [];
 
@@ -29,17 +30,17 @@ describe.skipIf(process.platform === "win32")("edit after a shell changed the fi
 		await writeFile(path, 'name = "alpha"\nretries = 1\ntimeout = 5\n');
 
 		const readText = textOf(await tool("read").execute("read", { path: "config.py" }));
-		expect(readText).toBe('name = "alpha"\nretries = 1\ntimeout = 5');
+		assert.equal(readText, 'name = "alpha"\nretries = 1\ntimeout = 5');
 
 		const python = await tool("bash").execute("python", {
 			command: `python3 -c "import pathlib; p = pathlib.Path('config.py'); p.write_text(p.read_text().replace('retries = 1', 'retries = 3'))"`,
 		});
-		expect(textOf(python)).not.toMatch(/exited with code/);
+		assert.doesNotMatch(textOf(python), /exited with code/);
 		const sed = await tool("bash").execute("sed", {
 			command: "sed -i.bak 's/timeout = 5/timeout = 30/' config.py && rm config.py.bak",
 		});
-		expect(textOf(sed)).not.toMatch(/exited with code/);
-		expect(await readFile(path, "utf8")).toBe('name = "alpha"\nretries = 3\ntimeout = 30\n');
+		assert.doesNotMatch(textOf(sed), /exited with code/);
+		assert.equal(await readFile(path, "utf8"), 'name = "alpha"\nretries = 3\ntimeout = 30\n');
 
 		const edited = await tool("edit").execute("edit", {
 			path: "config.py",
@@ -49,8 +50,8 @@ describe.skipIf(process.platform === "win32")("edit after a shell changed the fi
 			],
 		});
 
-		expect(textOf(edited)).toBe("Successfully replaced 2 block(s) in config.py.");
-		expect(await readFile(path, "utf8")).toBe('name = "beta"\nretries = 3\ntimeout = 60\n');
+		assert.equal(textOf(edited), "Successfully replaced 2 block(s) in config.py.");
+		assert.equal(await readFile(path, "utf8"), 'name = "beta"\nretries = 3\ntimeout = 60\n');
 	});
 
 	it("rejects text the shell removed with a typed no-match error and leaves the file unchanged", async () => {
@@ -69,8 +70,11 @@ describe.skipIf(process.platform === "win32")("edit after a shell changed the fi
 				(error: unknown) => error,
 			);
 
-		expect(isEditMatchError(failure)).toBe(true);
-		expect(failure).toMatchObject({ code: "text-not-found", fields: { path: "notes.txt", editIndex: 0 } });
-		expect(await readFile(path, "utf8")).toBe("keep\nfresh line\n");
+		assert.equal(isEditMatchError(failure), true);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{ code: "text-not-found", fields: { path: "notes.txt", editIndex: 0 } },
+		);
+		assert.equal(await readFile(path, "utf8"), "keep\nfresh line\n");
 	});
 });

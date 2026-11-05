@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
 
 const tempDirs: string[] = [];
 async function tempDir() {

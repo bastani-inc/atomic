@@ -1,9 +1,10 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
+import { afterEach, describe, it } from "vitest";
+import type { ExtensionToolContext } from "../src/core/extensions/types.js";
+import { createEditToolDefinition } from "../src/core/tools/edit.js";
 
 const tempDirs: string[] = [];
 
@@ -20,8 +21,8 @@ afterEach(async () => {
 describe("edit tool prepareArguments", () => {
 	it("keeps legacy fields out of the public schema", () => {
 		const definition = createEditToolDefinition(process.cwd());
-		expect(definition.parameters.properties).not.toHaveProperty("oldText");
-		expect(definition.parameters.properties).not.toHaveProperty("newText");
+		assert.equal(Object.hasOwn(definition.parameters.properties, "oldText"), false);
+		assert.equal(Object.hasOwn(definition.parameters.properties, "newText"), false);
 	});
 
 	it("folds top-level oldText/newText into edits", () => {
@@ -31,7 +32,7 @@ describe("edit tool prepareArguments", () => {
 			oldText: "before",
 			newText: "after",
 		});
-		expect(prepared).toEqual({
+		assert.deepEqual(prepared, {
 			path: "file.txt",
 			edits: [{ oldText: "before", newText: "after" }],
 		});
@@ -45,7 +46,7 @@ describe("edit tool prepareArguments", () => {
 			oldText: "c",
 			newText: "d",
 		});
-		expect(prepared).toEqual({
+		assert.deepEqual(prepared, {
 			path: "file.txt",
 			edits: [
 				{ oldText: "a", newText: "b" },
@@ -61,14 +62,14 @@ describe("edit tool prepareArguments", () => {
 			edits: [{ oldText: "a", newText: "b" }],
 		};
 		const prepared = definition.prepareArguments!(input);
-		expect(prepared).toBe(input);
+		assert.equal(prepared, input);
 	});
 
 	it("passes through non-object input unchanged", () => {
 		const definition = createEditToolDefinition(process.cwd());
-		expect(definition.prepareArguments!(null)).toBe(null);
-		expect(definition.prepareArguments!(undefined)).toBe(undefined);
-		expect(definition.prepareArguments!("garbage")).toBe("garbage");
+		assert.equal(definition.prepareArguments!(null), null);
+		assert.equal(definition.prepareArguments!(undefined), undefined);
+		assert.equal(definition.prepareArguments!("garbage"), "garbage");
 	});
 
 	it("prepared args execute correctly", async () => {
@@ -84,8 +85,8 @@ describe("edit tool prepareArguments", () => {
 		});
 
 		const result = await definition.execute("tool-1", prepared, undefined, undefined, {} as ExtensionToolContext);
-		expect(result.content).toEqual([{ type: "text", text: "Successfully replaced 1 block(s) in legacy.txt." }]);
-		expect(await readFile(filePath, "utf8")).toBe("after\n");
+		assert.deepEqual(result.content, [{ type: "text", text: "Successfully replaced 1 block(s) in legacy.txt." }]);
+		assert.equal(await readFile(filePath, "utf8"), "after\n");
 	});
 });
 
@@ -96,7 +97,7 @@ describe("edit tool stringified edits", () => {
 			path: "file.txt",
 			edits: JSON.stringify([{ oldText: "a", newText: "b" }]),
 		});
-		expect(prepared).toEqual({
+		assert.deepEqual(prepared, {
 			path: "file.txt",
 			edits: [{ oldText: "a", newText: "b" }],
 		});
@@ -108,7 +109,7 @@ describe("edit tool stringified edits", () => {
 			path: "file.txt",
 			edits: "not json",
 		});
-		expect(prepared).toEqual({
+		assert.deepEqual(prepared, {
 			path: "file.txt",
 			edits: "not json",
 		});

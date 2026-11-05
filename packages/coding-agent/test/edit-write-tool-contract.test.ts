@@ -1,11 +1,12 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
-import { createEditToolDefinition, type EditOperations } from "../src/core/tools/edit.ts";
-import { isEditMatchError, isEditTargetError, isFileToolAbortedError } from "../src/core/tools/file-tool-errors.ts";
-import { createWriteToolDefinition, type WriteOperations } from "../src/core/tools/write.ts";
+import { afterEach, describe, it } from "vitest";
+import type { ExtensionToolContext } from "../src/core/extensions/types.js";
+import { createEditToolDefinition, type EditOperations } from "../src/core/tools/edit.js";
+import { isEditMatchError, isEditTargetError, isFileToolAbortedError } from "../src/core/tools/file-tool-errors.js";
+import { createWriteToolDefinition, type WriteOperations } from "../src/core/tools/write.js";
 
 const tempDirs: string[] = [];
 
@@ -69,26 +70,26 @@ describe("edit arguments preparation", () => {
 
 	it("wraps a single edit object, given directly or as a JSON string", () => {
 		const edit = { oldText: "a", newText: "b" };
-		expect(prepare({ path: "f", edits: edit })).toEqual({ path: "f", edits: [edit] });
-		expect(prepare({ path: "f", edits: JSON.stringify(edit) })).toEqual({ path: "f", edits: [edit] });
+		assert.deepEqual(prepare({ path: "f", edits: edit }), { path: "f", edits: [edit] });
+		assert.deepEqual(prepare({ path: "f", edits: JSON.stringify(edit) }), { path: "f", edits: [edit] });
 	});
 
 	it("leaves edits that are not a replacement or an array as given", () => {
-		expect(prepare({ path: "f", edits: JSON.stringify("text") })).toEqual({ path: "f", edits: '"text"' });
+		assert.deepEqual(prepare({ path: "f", edits: JSON.stringify("text") }), { path: "f", edits: '"text"' });
 		const partial = { oldText: "a", newText: 1 };
-		expect(prepare({ path: "f", edits: JSON.stringify(partial) })).toEqual({
+		assert.deepEqual(prepare({ path: "f", edits: JSON.stringify(partial) }), {
 			path: "f",
 			edits: JSON.stringify(partial),
 		});
-		expect(prepare({ path: "f", edits: { newText: "b" } })).toEqual({ path: "f", edits: { newText: "b" } });
-		expect(prepare({ path: "f", edits: null })).toEqual({ path: "f", edits: null });
-		expect(prepare({ path: "f", edits: ["a"] })).toEqual({ path: "f", edits: ["a"] });
+		assert.deepEqual(prepare({ path: "f", edits: { newText: "b" } }), { path: "f", edits: { newText: "b" } });
+		assert.deepEqual(prepare({ path: "f", edits: null }), { path: "f", edits: null });
+		assert.deepEqual(prepare({ path: "f", edits: ["a"] }), { path: "f", edits: ["a"] });
 	});
 
 	it("folds top-level oldText/newText only when both are strings", () => {
-		expect(prepare({ path: "f", oldText: "a" })).toEqual({ path: "f", oldText: "a" });
-		expect(prepare({ path: "f", newText: "b" })).toEqual({ path: "f", newText: "b" });
-		expect(prepare({ path: "f", edits: "not json", oldText: "a", newText: "b" })).toEqual({
+		assert.deepEqual(prepare({ path: "f", oldText: "a" }), { path: "f", oldText: "a" });
+		assert.deepEqual(prepare({ path: "f", newText: "b" }), { path: "f", newText: "b" });
+		assert.deepEqual(prepare({ path: "f", edits: "not json", oldText: "a", newText: "b" }), {
 			path: "f",
 			edits: [{ oldText: "a", newText: "b" }],
 		});
@@ -98,19 +99,21 @@ describe("edit arguments preparation", () => {
 describe("edit and write definitions keep upstream metadata", () => {
 	it("edit", () => {
 		const definition = createEditToolDefinition("/");
-		expect(definition.description).toBe(
+		assert.equal(
+			definition.description,
 			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
 		);
-		expect(definition.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
-		expect(definition.renderShell).toBe("self");
+		assert.deepEqual(definition.constrainedSampling, { type: "json_schema", strict: "prefer" });
+		assert.equal(definition.renderShell, "self");
 	});
 
 	it("write", () => {
 		const definition = createWriteToolDefinition("/");
-		expect(definition.description).toBe(
+		assert.equal(
+			definition.description,
 			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 		);
-		expect(definition.constrainedSampling).toEqual({ type: "json_schema", strict: "prefer" });
+		assert.deepEqual(definition.constrainedSampling, { type: "json_schema", strict: "prefer" });
 	});
 });
 
@@ -120,8 +123,8 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(1), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(calls).toEqual([]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.deepEqual(calls, []);
 	});
 
 	it("reports cancellation rather than an inaccessible file when aborted during the access check", async () => {
@@ -132,9 +135,9 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(2), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(isEditTargetError(failure)).toBe(false);
-		expect(calls).toEqual(["access"]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.equal(isEditTargetError(failure), false);
+		assert.deepEqual(calls, ["access"]);
 	});
 
 	it("does not read after an abort during the access check", async () => {
@@ -142,8 +145,8 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(2), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(calls).toEqual(["access"]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.deepEqual(calls, ["access"]);
 	});
 
 	it("reports cancellation before matching after an abort during the read", async () => {
@@ -151,9 +154,9 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(3), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(isEditMatchError(failure)).toBe(false);
-		expect(calls).toEqual(["access", "readFile"]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.equal(isEditMatchError(failure), false);
+		assert.deepEqual(calls, ["access", "readFile"]);
 	});
 
 	it("does not write after an abort while the edits were applied", async () => {
@@ -161,8 +164,8 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(4), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(calls).toEqual(["access", "readFile"]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.deepEqual(calls, ["access", "readFile"]);
 	});
 
 	it("reports cancellation after a write that completed while aborting", async () => {
@@ -170,9 +173,9 @@ describe("edit stops at each cancellation checkpoint", () => {
 		const failure = await rejection(() =>
 			createEditToolDefinition("/", { operations }).execute("e", replace, signalAbortingAtCheck(5), undefined, ctx),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(calls).toEqual(["access", "readFile", "writeFile"]);
-		expect(writes).toEqual(["new\n"]);
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.deepEqual(calls, ["access", "readFile", "writeFile"]);
+		assert.deepEqual(writes, ["new\n"]);
 	});
 
 	it("reads once and writes once for a successful edit, and never writes a failed one", async () => {
@@ -184,7 +187,7 @@ describe("edit stops at each cancellation checkpoint", () => {
 			undefined,
 			ctx,
 		);
-		expect(success.calls).toEqual(["access", "readFile", "writeFile"]);
+		assert.deepEqual(success.calls, ["access", "readFile", "writeFile"]);
 		const failed = recordingEditOperations("other\n");
 		await rejection(() =>
 			createEditToolDefinition("/", { operations: failed.operations }).execute(
@@ -195,7 +198,7 @@ describe("edit stops at each cancellation checkpoint", () => {
 				ctx,
 			),
 		);
-		expect(failed.calls).toEqual(["access", "readFile"]);
+		assert.deepEqual(failed.calls, ["access", "readFile"]);
 	});
 });
 
@@ -230,8 +233,8 @@ describe("write stops at each cancellation checkpoint", () => {
 					ctx,
 				),
 			);
-			expect(isFileToolAbortedError(failure)).toBe(true);
-			expect(calls).toEqual(expected);
+			assert.equal(isFileToolAbortedError(failure), true);
+			assert.deepEqual(calls, expected);
 		});
 	}
 
@@ -244,7 +247,7 @@ describe("write stops at each cancellation checkpoint", () => {
 			undefined,
 			ctx,
 		);
-		expect(await readFile(join(dir, "a/b/c.txt"), "utf8")).toBe("é\n");
+		assert.equal(await readFile(join(dir, "a/b/c.txt"), "utf8"), "é\n");
 		await writeFile(join(dir, "a/b/c.txt"), "changed");
 		await createWriteToolDefinition(dir).execute(
 			"w",
@@ -253,6 +256,6 @@ describe("write stops at each cancellation checkpoint", () => {
 			undefined,
 			ctx,
 		);
-		expect(await readFile(join(dir, "a/b/c.txt"), "utf8")).toBe("again");
+		assert.equal(await readFile(join(dir, "a/b/c.txt"), "utf8"), "again");
 	});
 });

@@ -2,9 +2,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.ts";
-import { sqlite } from "./helpers/sqlite.ts";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.js";
+import { sqlite } from "./helpers/sqlite.js";
 
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map((item) => item.text ?? "").join("\n");

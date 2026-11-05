@@ -1,9 +1,10 @@
+import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
-import { createBashToolDefinition } from "../src/core/tools/bash.ts";
+import { afterEach, describe, it } from "vitest";
+import type { ExtensionContext } from "../src/core/extensions/types.js";
+import { createBashToolDefinition } from "../src/core/tools/bash.js";
 
 const tempDirs: string[] = [];
 
@@ -35,22 +36,22 @@ describe("bash working directory and internal URLs", () => {
 	it("runs a command after a semicolon-separated leading cd in that directory", async () => {
 		const { dir, seen, run } = await recordingBash();
 		await run({ command: "cd sub; pwd" });
-		expect(seen.command).toBe("pwd");
-		expect(seen.cwd).toBe(join(dir, "sub"));
+		assert.equal(seen.command, "pwd");
+		assert.equal(seen.cwd, join(dir, "sub"));
 	});
 
 	it("leaves a leading cd that needs shell expansion to the shell", async () => {
 		const { dir, seen, run } = await recordingBash();
 		await run({ command: 'cd "$PROJECT" && pwd' });
-		expect(seen.command).toBe('cd "$PROJECT" && pwd');
-		expect(seen.cwd).toBe(dir);
+		assert.equal(seen.command, 'cd "$PROJECT" && pwd');
+		assert.equal(seen.cwd, dir);
 	});
 
 	it("keeps a leading cd when cwd is given explicitly", async () => {
 		const { dir, seen, run } = await recordingBash();
 		await run({ command: "cd sub && pwd", cwd: "other" });
-		expect(seen.command).toBe("cd sub && pwd");
-		expect(seen.cwd).toBe(join(dir, "other"));
+		assert.equal(seen.command, "cd sub && pwd");
+		assert.equal(seen.cwd, join(dir, "other"));
 	});
 
 	it("expands internal URLs in the command, cwd and env before execution", async () => {
@@ -64,8 +65,8 @@ describe("bash working directory and internal URLs", () => {
 						: undefined,
 		};
 		await run({ command: "cat artifact://cmd", cwd: "local://sub", env: { VALUE: "artifact://env" } }, ctx);
-		expect(seen.command).toContain(`'${join(dir, "cmd.txt")}'`);
-		expect(seen.cwd).toBe(join(dir, "sub"));
-		expect(seen.env).toBe(join(dir, "env.txt"));
+		assert.ok(seen.command.includes(`'${join(dir, "cmd.txt")}'`));
+		assert.equal(seen.cwd, join(dir, "sub"));
+		assert.equal(seen.env, join(dir, "env.txt"));
 	});
 });

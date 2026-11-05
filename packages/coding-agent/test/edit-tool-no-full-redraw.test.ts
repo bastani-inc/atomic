@@ -1,12 +1,13 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, type Terminal, Text, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.ts";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { afterEach, beforeAll, describe, it } from "vitest";
+import { createEditToolDefinition } from "../src/core/tools/edit.js";
+import { computeEditsDiff, type Edit } from "../src/core/tools/edit-diff.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 class FakeTerminal implements Terminal {
 	columns = 80;
@@ -125,8 +126,8 @@ describe("edit tool TUI rendering", () => {
 			"line 50 changed",
 			() => tui.requestRender(true),
 		);
-		expect(callOnlyRender).toContain("edit");
-		expect(callOnlyRender).toContain("line 950 changed");
+		assert.ok(callOnlyRender.includes("edit"));
+		assert.ok(callOnlyRender.includes("line 950 changed"));
 
 		const redrawsBeforeResult = tui.fullRedraws;
 		const clearsBeforeResult = terminal.fullClearCount;
@@ -141,13 +142,13 @@ describe("edit tool TUI rendering", () => {
 		tui.requestRender();
 		await waitForRender();
 
-		expect(tui.fullRedraws).toBe(redrawsBeforeResult);
-		expect(terminal.fullClearCount).toBe(clearsBeforeResult);
+		assert.equal(tui.fullRedraws, redrawsBeforeResult);
+		assert.equal(terminal.fullClearCount, clearsBeforeResult);
 
 		const settledRender = component.render(80).join("\n");
-		expect(settledRender).toContain("line 50 changed");
-		expect(settledRender).toContain("line 950 changed");
-		expect(settledRender).not.toContain("Successfully replaced");
+		assert.ok(settledRender.includes("line 50 changed"));
+		assert.ok(settledRender.includes("line 950 changed"));
+		assert.ok(!settledRender.includes("Successfully replaced"));
 	});
 
 	it("reconstructs the boxed preview from a settled result without argsComplete", async () => {
@@ -195,8 +196,8 @@ describe("edit tool TUI rendering", () => {
 		await waitForRender();
 
 		const rendered = component.render(80).join("\n");
-		expect(rendered).toContain("line 50 changed");
-		expect(rendered).toContain("line 150 changed");
+		assert.ok(rendered.includes("line 50 changed"));
+		assert.ok(rendered.includes("line 150 changed"));
 	});
 
 	it("shows a preflight error without rendering a diff when the edits do not apply", async () => {
@@ -230,7 +231,7 @@ describe("edit tool TUI rendering", () => {
 			"Could not find",
 			() => tui.requestRender(true),
 		);
-		expect(rendered).not.toContain("+1 ");
-		expect(rendered).not.toContain("-1 ");
+		assert.ok(!rendered.includes("+1 "));
+		assert.ok(!rendered.includes("-1 "));
 	});
 });

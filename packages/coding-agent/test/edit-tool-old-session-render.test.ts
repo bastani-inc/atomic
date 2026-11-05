@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 import type { TUI } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, test } from "vitest";
-import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { createWriteToolDefinition } from "../src/core/tools/write.ts";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { beforeAll, describe, test } from "vitest";
+import { createEditToolDefinition } from "../src/core/tools/edit.js";
+import { createWriteToolDefinition } from "../src/core/tools/write.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 const ui = { requestRender() {} } as unknown as TUI;
 
@@ -34,8 +35,8 @@ describe("sessions recorded before #4328 still render", () => {
 			isError: false,
 		});
 		const rendered = render(component);
-		expect(rendered).toContain("edit");
-		expect(rendered).toContain("const value = 2;");
+		assert.ok(rendered.includes("edit"));
+		assert.ok(rendered.includes("const value = 2;"));
 	});
 
 	test("a stored failed edit call renders its error text", () => {
@@ -50,7 +51,7 @@ describe("sessions recorded before #4328 still render", () => {
 		);
 		component.setArgsComplete();
 		component.updateResult({ content: [{ type: "text", text: "stale snapshot tag" }], isError: true });
-		expect(render(component)).toContain("stale snapshot tag");
+		assert.ok(render(component).includes("stale snapshot tag"));
 	});
 
 	test("a stored write result with a snapshot header renders without error", () => {
@@ -70,7 +71,7 @@ describe("sessions recorded before #4328 still render", () => {
 			isError: false,
 		});
 		const rendered = render(component);
-		expect(rendered).toContain("write");
-		expect(rendered).toContain("hello");
+		assert.ok(rendered.includes("write"));
+		assert.ok(rendered.includes("hello"));
 	});
 });

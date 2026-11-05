@@ -2,11 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { sqlite } from "./helpers/sqlite.ts";
+import { createFindToolDefinition } from "../src/core/tools/find.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { sqlite } from "./helpers/sqlite.js";
 
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map((item) => item.text ?? "").join("\n");

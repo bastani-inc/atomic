@@ -3,10 +3,10 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
-import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
+import { createFindToolDefinition } from "../src/core/tools/find.js";
+import { createGrepToolDefinition } from "../src/core/tools/grep.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (

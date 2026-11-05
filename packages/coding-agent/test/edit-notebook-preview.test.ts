@@ -1,12 +1,13 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TUI } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { afterEach, beforeAll, describe, it } from "vitest";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 const tempDirs: string[] = [];
 const ui = { requestRender() {} } as unknown as TUI;
@@ -56,13 +57,13 @@ describe("built-in edit previews", () => {
 	it("render a notebook edit without a false no-match preview, then show the result's diff", async () => {
 		const args = { path: "n.ipynb", edits: [{ oldText: "x = 1\nprint(x)", newText: "x = 2\nprint(x)" }] };
 		const { dir, preview, final } = await runBuiltInEdit("n.ipynb", notebook, args);
-		expect(preview).toContain("edit");
-		expect(preview).toContain("n.ipynb");
-		expect(preview).not.toContain("Could not find");
-		expect(preview).not.toContain("x = 2");
-		expect(final).toContain("x = 2");
-		expect(final).not.toContain("Could not find");
-		expect(JSON.parse(await readFile(join(dir, "n.ipynb"), "utf8")).cells[0].source).toEqual([
+		assert.ok(preview.includes("edit"));
+		assert.ok(preview.includes("n.ipynb"));
+		assert.ok(!preview.includes("Could not find"));
+		assert.ok(!preview.includes("x = 2"));
+		assert.ok(final.includes("x = 2"));
+		assert.ok(!final.includes("Could not find"));
+		assert.deepEqual(JSON.parse(await readFile(join(dir, "n.ipynb"), "utf8")).cells[0].source, [
 			"x = 2\n",
 			"print(x)\n",
 		]);
@@ -84,8 +85,8 @@ describe("built-in edit previews", () => {
 		row.setArgsComplete();
 		await settle();
 		const preview = render(row);
-		expect(preview).toContain("n.ipynb");
-		expect(preview).not.toContain("Could not find");
+		assert.ok(preview.includes("n.ipynb"));
+		assert.ok(!preview.includes("Could not find"));
 	});
 
 	it("render a call and a result without arguments", () => {
@@ -104,25 +105,25 @@ describe("built-in edit previews", () => {
 			invalidate: () => {},
 			isError: true,
 		};
-		expect(
+		assert.ok(
 			stripAnsi(
 				definition.renderCall!(undefined as never, theme as never, context as never)
 					.render(80)
 					.join("\n"),
-			),
-		).toContain("edit");
+			).includes("edit"),
+		);
 		const result = definition.renderResult!(
 			{ content: [{ type: "text", text: "boom" }], details: undefined },
 			{ expanded: false, isPartial: false },
 			theme as never,
 			context as never,
 		);
-		expect(stripAnsi(result.render(80).join("\n"))).toContain("boom");
+		assert.ok(stripAnsi(result.render(80).join("\n")).includes("boom"));
 	});
 
 	it("keep the diff preview for other files", async () => {
 		const args = { path: "a.py", edits: [{ oldText: "x = 1", newText: "x = 2" }] };
 		const { preview } = await runBuiltInEdit("a.py", "x = 1\nprint(x)\n", args);
-		expect(preview).toContain("x = 2");
+		assert.ok(preview.includes("x = 2"));
 	});
 });

@@ -1,10 +1,11 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
-import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { applyReplacementsPreservingUnchangedLines } from "../src/core/tools/edit-diff.ts";
+import { afterEach, describe, it } from "vitest";
+import type { ExtensionToolContext } from "../src/core/extensions/types.js";
+import { createEditTool, createEditToolDefinition } from "../src/core/tools/edit.js";
+import { applyReplacementsPreservingUnchangedLines } from "../src/core/tools/edit-diff.js";
 import {
 	EditInputError,
 	EditMatchError,
@@ -23,9 +24,9 @@ import {
 	serializeFileToolError,
 	WriteSelectorError,
 	type WriteSelectorErrorCode,
-} from "../src/core/tools/file-tool-errors.ts";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createWriteTool, createWriteToolDefinition } from "../src/core/tools/write.ts";
+} from "../src/core/tools/file-tool-errors.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createWriteTool, createWriteToolDefinition } from "../src/core/tools/write.js";
 
 const tempDirs: string[] = [];
 
@@ -52,25 +53,29 @@ async function editFailure(content: string, edits: Array<{ oldText: string; newT
 	const dir = await tempDir();
 	await writeFile(join(dir, "file.txt"), content);
 	const failure = await caught(() => createEditTool(dir).execute("edit", { path: "file.txt", edits }));
-	expect(await readFile(join(dir, "file.txt"), "utf8")).toBe(content);
+	assert.equal(await readFile(join(dir, "file.txt"), "utf8"), content);
 	return failure;
 }
 
 describe("edit tool errors by code", () => {
 	it("edits-empty: an empty edits array is an EditInputError", async () => {
 		const failure = await editFailure("a\n", []);
-		expect(isEditInputError(failure)).toBe(true);
-		expect(failure).toBeInstanceOf(EditInputError);
-		expect(failure).toMatchObject({
-			name: "EditInputError",
-			code: "edits-empty",
-			retryable: false,
-			fields: { path: "file.txt", totalEdits: 0 },
-		});
-		expect((failure as EditInputError).message).toBe(
+		assert.equal(isEditInputError(failure), true);
+		assert.ok(failure instanceof EditInputError);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				name: "EditInputError",
+				code: "edits-empty",
+				retryable: false,
+				fields: { path: "file.txt", totalEdits: 0 },
+			},
+		);
+		assert.equal(
+			(failure as EditInputError).message,
 			"Edit tool input is invalid. edits must contain at least one replacement.",
 		);
-		expect((failure as EditInputError).hint).toBe("Pass at least one { oldText, newText } replacement in edits.");
+		assert.equal((failure as EditInputError).hint, "Pass at least one { oldText, newText } replacement in edits.");
 	});
 
 	it("old-text-empty: names the empty edit's index", async () => {
@@ -78,24 +83,31 @@ describe("edit tool errors by code", () => {
 			{ oldText: "a", newText: "A" },
 			{ oldText: "", newText: "B" },
 		]);
-		expect(isEditInputError(failure)).toBe(true);
-		expect(failure).toMatchObject({
-			code: "old-text-empty",
-			fields: { path: "file.txt", editIndex: 1, totalEdits: 2 },
-		});
-		expect((failure as Error).message).toBe("edits[1].oldText must not be empty in file.txt.");
+		assert.equal(isEditInputError(failure), true);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				code: "old-text-empty",
+				fields: { path: "file.txt", editIndex: 1, totalEdits: 2 },
+			},
+		);
+		assert.equal((failure as Error).message, "edits[1].oldText must not be empty in file.txt.");
 	});
 
 	it("text-not-found: a missing oldText is an EditMatchError", async () => {
 		const failure = await editFailure("alpha\n", [{ oldText: "beta", newText: "gamma" }]);
-		expect(isEditMatchError(failure)).toBe(true);
-		expect(failure).toBeInstanceOf(EditMatchError);
-		expect(failure).toMatchObject({
-			name: "EditMatchError",
-			code: "text-not-found",
-			fields: { path: "file.txt", editIndex: 0, totalEdits: 1 },
-		});
-		expect((failure as Error).message).toBe(
+		assert.equal(isEditMatchError(failure), true);
+		assert.ok(failure instanceof EditMatchError);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				name: "EditMatchError",
+				code: "text-not-found",
+				fields: { path: "file.txt", editIndex: 0, totalEdits: 1 },
+			},
+		);
+		assert.equal(
+			(failure as Error).message,
 			"Could not find the exact text in file.txt. The old text must match exactly including all whitespace and newlines.",
 		);
 	});
@@ -105,12 +117,16 @@ describe("edit tool errors by code", () => {
 			{ oldText: "y", newText: "z" },
 			{ oldText: "x", newText: "w" },
 		]);
-		expect(isEditMatchError(failure)).toBe(true);
-		expect(failure).toMatchObject({
-			code: "text-not-unique",
-			fields: { path: "file.txt", editIndex: 1, totalEdits: 2, occurrences: 3 },
-		});
-		expect((failure as Error).message).toBe(
+		assert.equal(isEditMatchError(failure), true);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				code: "text-not-unique",
+				fields: { path: "file.txt", editIndex: 1, totalEdits: 2, occurrences: 3 },
+			},
+		);
+		assert.equal(
+			(failure as Error).message,
 			"Found 3 occurrences of edits[1] in file.txt. Each oldText must be unique. Please provide more context to make it unique.",
 		);
 	});
@@ -120,26 +136,34 @@ describe("edit tool errors by code", () => {
 			{ oldText: "two\nthree", newText: "2\n3" },
 			{ oldText: "one\ntwo", newText: "1\n2" },
 		]);
-		expect(isEditMatchError(failure)).toBe(true);
-		expect(failure).toMatchObject({
-			code: "edits-overlap",
-			fields: { path: "file.txt", editIndex: 0, overlapsEditIndex: 1, totalEdits: 2 },
-		});
-		expect((failure as Error).message).toBe(
+		assert.equal(isEditMatchError(failure), true);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				code: "edits-overlap",
+				fields: { path: "file.txt", editIndex: 0, overlapsEditIndex: 1, totalEdits: 2 },
+			},
+		);
+		assert.equal(
+			(failure as Error).message,
 			"edits[1] and edits[0] overlap in file.txt. Merge them into one edit or target disjoint regions.",
 		);
 	});
 
 	it("no-change: identical replacements are an EditMatchError", async () => {
 		const single = await editFailure("same\n", [{ oldText: "same", newText: "same" }]);
-		expect(isEditMatchError(single)).toBe(true);
-		expect(single).toMatchObject({ code: "no-change", fields: { path: "file.txt", totalEdits: 1 } });
+		assert.equal(isEditMatchError(single), true);
+		assert.partialDeepStrictEqual(
+			{ ...(single as object) },
+			{ code: "no-change", fields: { path: "file.txt", totalEdits: 1 } },
+		);
 		const multiple = await editFailure("a\nb\n", [
 			{ oldText: "a", newText: "a" },
 			{ oldText: "b", newText: "b" },
 		]);
-		expect(multiple).toMatchObject({ code: "no-change", fields: { totalEdits: 2 } });
-		expect((multiple as Error).message).toBe(
+		assert.partialDeepStrictEqual({ ...(multiple as object) }, { code: "no-change", fields: { totalEdits: 2 } });
+		assert.equal(
+			(multiple as Error).message,
 			"No changes made to file.txt. The replacements produced identical content.",
 		);
 	});
@@ -149,15 +173,18 @@ describe("edit tool errors by code", () => {
 		const failure = await caught(() =>
 			createEditTool(dir).execute("edit", { path: "missing.txt", edits: [{ oldText: "a", newText: "b" }] }),
 		);
-		expect(isEditTargetError(failure)).toBe(true);
-		expect(failure).toBeInstanceOf(EditTargetError);
-		expect(failure).toMatchObject({
-			name: "EditTargetError",
-			code: "target-inaccessible",
-			fields: { path: "missing.txt", errnoCode: "ENOENT" },
-		});
-		expect((failure as Error).message).toBe("Could not edit file: missing.txt. Error code: ENOENT.");
-		expect((failure as Error).cause).toMatchObject({ code: "ENOENT" });
+		assert.equal(isEditTargetError(failure), true);
+		assert.ok(failure instanceof EditTargetError);
+		assert.partialDeepStrictEqual(
+			{ ...(failure as object) },
+			{
+				name: "EditTargetError",
+				code: "target-inaccessible",
+				fields: { path: "missing.txt", errnoCode: "ENOENT" },
+			},
+		);
+		assert.equal((failure as Error).message, "Could not edit file: missing.txt. Error code: ENOENT.");
+		assert.partialDeepStrictEqual({ ...((failure as Error).cause as object) }, { code: "ENOENT" });
 	});
 
 	it("target-inaccessible: an access failure without an errno code carries no errnoCode", async () => {
@@ -174,47 +201,58 @@ describe("edit tool errors by code", () => {
 		const failure = await caught(() =>
 			tool.execute("edit", { path: "broken.txt", edits: [{ oldText: "hello", newText: "world" }] }),
 		);
-		expect(isEditTargetError(failure)).toBe(true);
-		expect((failure as EditTargetError).fields).toStrictEqual({ path: "broken.txt" });
-		expect((failure as Error).cause).toBe(offline);
+		assert.equal(isEditTargetError(failure), true);
+		assert.deepEqual((failure as EditTargetError).fields, { path: "broken.txt" });
+		assert.equal((failure as Error).cause, offline);
 	});
 
 	it("every edit error belongs to the EditToolError family", async () => {
 		const failure = await editFailure("a\n", [{ oldText: "missing", newText: "b" }]);
-		expect(failure).toBeInstanceOf(EditToolError);
-		expect(isEditToolError(failure)).toBe(true);
-		expect(isEditInputError(failure)).toBe(false);
-		expect(isEditTargetError(failure)).toBe(false);
-		expect(isWriteSelectorError(failure)).toBe(false);
+		assert.ok(failure instanceof EditToolError);
+		assert.equal(isEditToolError(failure), true);
+		assert.equal(isEditInputError(failure), false);
+		assert.equal(isEditTargetError(failure), false);
+		assert.equal(isWriteSelectorError(failure), false);
 	});
 
 	it("names the code for a single empty oldText, several missing edits and a single duplicate", async () => {
 		const empty = await editFailure("a\n", [{ oldText: "", newText: "b" }]);
-		expect(empty).toMatchObject({ code: "old-text-empty", fields: { editIndex: 0, totalEdits: 1 } });
-		expect((empty as Error).message).toBe("oldText must not be empty in file.txt.");
+		assert.partialDeepStrictEqual(
+			{ ...(empty as object) },
+			{ code: "old-text-empty", fields: { editIndex: 0, totalEdits: 1 } },
+		);
+		assert.equal((empty as Error).message, "oldText must not be empty in file.txt.");
 		const missing = await editFailure("a\nb\n", [
 			{ oldText: "a", newText: "A" },
 			{ oldText: "zzz", newText: "Z" },
 		]);
-		expect(missing).toMatchObject({ code: "text-not-found", fields: { editIndex: 1, totalEdits: 2 } });
-		expect((missing as Error).message).toBe(
+		assert.partialDeepStrictEqual(
+			{ ...(missing as object) },
+			{ code: "text-not-found", fields: { editIndex: 1, totalEdits: 2 } },
+		);
+		assert.equal(
+			(missing as Error).message,
 			"Could not find edits[1] in file.txt. The oldText must match exactly including all whitespace and newlines.",
 		);
 		const duplicate = await editFailure("x x\n", [{ oldText: "x", newText: "y" }]);
-		expect(duplicate).toMatchObject({
-			code: "text-not-unique",
-			fields: { editIndex: 0, totalEdits: 1, occurrences: 2 },
-		});
-		expect((duplicate as Error).message).toBe(
+		assert.partialDeepStrictEqual(
+			{ ...(duplicate as object) },
+			{
+				code: "text-not-unique",
+				fields: { editIndex: 0, totalEdits: 1, occurrences: 2 },
+			},
+		);
+		assert.equal(
+			(duplicate as Error).message,
 			"Found 2 occurrences of the text in file.txt. The text must be unique. Please provide more context to make it unique.",
 		);
 	});
 
 	it("the family base class names itself", () => {
 		const base = new EditToolError("no-change", "m", { path: "a" });
-		expect(base.name).toBe("EditToolError");
-		expect(base.hint).toBe("Make newText differ from oldText, or drop the edit.");
-		expect(isEditToolError(base)).toBe(true);
+		assert.equal(base.name, "EditToolError");
+		assert.equal(base.hint, "Make newText differ from oldText, or drop the edit.");
+		assert.equal(isEditToolError(base), true);
 	});
 });
 
@@ -232,17 +270,15 @@ describe("cancellation", () => {
 				controller.signal,
 			),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect(failure).toBeInstanceOf(FileToolAbortedError);
-		expect(failure).toMatchObject({
-			name: "AbortError",
-			code: "aborted",
-			retryable: false,
-			message: "Operation aborted",
-		});
-		expect((failure as Error).cause).toBe(reason);
-		expect(isEditToolError(failure)).toBe(false);
-		expect(await readFile(join(dir, "file.txt"), "utf8")).toBe("before\n");
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.ok(failure instanceof FileToolAbortedError);
+		assert.equal(failure.name, "AbortError");
+		assert.equal(failure.code, "aborted");
+		assert.equal(failure.retryable, false);
+		assert.equal(failure.message, "Operation aborted");
+		assert.equal(failure.cause, reason);
+		assert.equal(isEditToolError(failure), false);
+		assert.equal(await readFile(join(dir, "file.txt"), "utf8"), "before\n");
 	});
 
 	it("an aborted write throws FileToolAbortedError and creates nothing", async () => {
@@ -252,14 +288,17 @@ describe("cancellation", () => {
 		const failure = await caught(() =>
 			createWriteTool(dir).execute("write", { path: "new.txt", content: "x" }, controller.signal),
 		);
-		expect(isFileToolAbortedError(failure)).toBe(true);
-		expect((failure as Error).cause).toBe(controller.signal.reason);
-		await expect(readFile(join(dir, "new.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+		assert.equal(isFileToolAbortedError(failure), true);
+		assert.equal((failure as Error).cause, controller.signal.reason);
+		await assert.rejects(readFile(join(dir, "new.txt"), "utf8"), (error: unknown) => {
+			assert.partialDeepStrictEqual({ ...(error as object) }, { code: "ENOENT" });
+			return true;
+		});
 	});
 
 	it("an abort without a reason carries no cause", () => {
-		expect(new FileToolAbortedError().cause).toBeUndefined();
-		expect("cause" in new FileToolAbortedError()).toBe(false);
+		assert.equal(new FileToolAbortedError().cause, undefined);
+		assert.equal("cause" in new FileToolAbortedError(), false);
 	});
 });
 
@@ -327,45 +366,48 @@ describe("write selector errors by code", () => {
 	for (const { code, path, message, setup, conflictId } of cases) {
 		it(`${code}`, async () => {
 			const failure = await writeFailure(path, setup);
-			expect(isWriteSelectorError(failure)).toBe(true);
-			expect(failure).toBeInstanceOf(WriteSelectorError);
-			expect(failure).toMatchObject({
-				name: "WriteSelectorError",
-				code,
-				retryable: false,
-				fields: { path, ...(conflictId ? { conflictId } : {}) },
-			});
-			expect((failure as Error).message).toBe(message);
-			expect((failure as WriteSelectorError).hint.length).toBeGreaterThan(0);
-			expect(isEditToolError(failure)).toBe(false);
+			assert.equal(isWriteSelectorError(failure), true);
+			assert.ok(failure instanceof WriteSelectorError);
+			assert.partialDeepStrictEqual(
+				{ ...(failure as object) },
+				{
+					name: "WriteSelectorError",
+					code,
+					retryable: false,
+					fields: { path, ...(conflictId ? { conflictId } : {}) },
+				},
+			);
+			assert.equal((failure as Error).message, message);
+			assert.ok((failure as WriteSelectorError).hint.length > 0);
+			assert.equal(isEditToolError(failure), false);
 		});
 	}
 });
 
 describe("guards across realms", () => {
 	it("recognise structural copies by name and code", () => {
-		expect(isEditInputError({ name: "EditInputError", code: "edits-empty" })).toBe(true);
-		expect(isEditMatchError({ name: "EditMatchError", code: "no-change" })).toBe(true);
-		expect(isEditTargetError({ name: "EditTargetError", code: "target-inaccessible" })).toBe(true);
-		expect(isEditToolError({ name: "EditToolError", code: "text-not-found" })).toBe(true);
-		expect(isEditToolError({ name: "EditMatchError", code: "text-not-unique" })).toBe(true);
-		expect(isWriteSelectorError({ name: "WriteSelectorError", code: "unsupported-scheme" })).toBe(true);
-		expect(isFileToolAbortedError({ name: "AbortError", code: "aborted" })).toBe(true);
+		assert.equal(isEditInputError({ name: "EditInputError", code: "edits-empty" }), true);
+		assert.equal(isEditMatchError({ name: "EditMatchError", code: "no-change" }), true);
+		assert.equal(isEditTargetError({ name: "EditTargetError", code: "target-inaccessible" }), true);
+		assert.equal(isEditToolError({ name: "EditToolError", code: "text-not-found" }), true);
+		assert.equal(isEditToolError({ name: "EditMatchError", code: "text-not-unique" }), true);
+		assert.equal(isWriteSelectorError({ name: "WriteSelectorError", code: "unsupported-scheme" }), true);
+		assert.equal(isFileToolAbortedError({ name: "AbortError", code: "aborted" }), true);
 	});
 
 	it("reject a name with a code from another class, and non-objects", () => {
-		expect(isEditInputError({ name: "EditInputError", code: "no-change" })).toBe(false);
-		expect(isEditMatchError({ name: "EditMatchError", code: "edits-empty" })).toBe(false);
-		expect(isEditTargetError({ name: "EditTargetError", code: 7 })).toBe(false);
-		expect(isEditToolError({ name: "EditToolError", code: "unsupported-scheme" })).toBe(false);
-		expect(isWriteSelectorError({ name: "WriteSelectorError", code: "no-change" })).toBe(false);
-		expect(isFileToolAbortedError({ name: "AbortError" })).toBe(false);
-		expect(isEditMatchError({ name: "SomethingElse", code: "no-change" })).toBe(false);
-		expect(isEditInputError({ name: "EditMatchError", code: "edits-empty" })).toBe(false);
-		expect(isWriteSelectorError({ name: "EditMatchError", code: "unsupported-scheme" })).toBe(false);
-		expect(isFileToolAbortedError({ name: "Error", code: "aborted" })).toBe(false);
-		expect(isEditToolError(null)).toBe(false);
-		expect(isEditToolError("EditMatchError")).toBe(false);
+		assert.equal(isEditInputError({ name: "EditInputError", code: "no-change" }), false);
+		assert.equal(isEditMatchError({ name: "EditMatchError", code: "edits-empty" }), false);
+		assert.equal(isEditTargetError({ name: "EditTargetError", code: 7 }), false);
+		assert.equal(isEditToolError({ name: "EditToolError", code: "unsupported-scheme" }), false);
+		assert.equal(isWriteSelectorError({ name: "WriteSelectorError", code: "no-change" }), false);
+		assert.equal(isFileToolAbortedError({ name: "AbortError" }), false);
+		assert.equal(isEditMatchError({ name: "SomethingElse", code: "no-change" }), false);
+		assert.equal(isEditInputError({ name: "EditMatchError", code: "edits-empty" }), false);
+		assert.equal(isWriteSelectorError({ name: "EditMatchError", code: "unsupported-scheme" }), false);
+		assert.equal(isFileToolAbortedError({ name: "Error", code: "aborted" }), false);
+		assert.equal(isEditToolError(null), false);
+		assert.equal(isEditToolError("EditMatchError"), false);
 	});
 });
 
@@ -392,32 +434,30 @@ describe("serialization round trip", () => {
 		it(`${original.name} keeps its class, code, hint, fields and cause`, () => {
 			const wire = JSON.parse(JSON.stringify(serializeFileToolError(original)));
 			const restored = rehydrateEditToolError(wire);
-			expect(restored).toBeInstanceOf(original.constructor);
-			expect(isEditToolError(restored)).toBe(true);
-			expect(restored).toMatchObject({
-				name: original.name,
-				code: original.code,
-				message: original.message,
-				hint: original.hint,
-				fields: original.fields,
-			});
-			expect(serializeFileToolError(restored)).toEqual(wire);
+			assert.ok(restored instanceof original.constructor);
+			assert.equal(isEditToolError(restored), true);
+			assert.equal(restored.name, original.name);
+			assert.equal(restored.code, original.code);
+			assert.equal(restored.message, original.message);
+			assert.equal(restored.hint, original.hint);
+			assert.deepEqual(restored.fields, original.fields);
+			assert.deepEqual(serializeFileToolError(restored), wire);
 		});
 	}
 
 	it("serializes a cause chain without stacks and rehydrates it as errors", () => {
 		const original = editErrors[2]!();
 		const wire = serializeFileToolError(original);
-		expect(wire.cause).toEqual({
+		assert.deepEqual(wire.cause, {
 			name: "Error",
 			message: "EACCES: permission denied",
 			code: "EACCES",
 			cause: { name: "Error", message: "root" },
 		});
 		const cause = rehydrateEditToolError(wire).cause as Error & { code?: string };
-		expect(cause).toBeInstanceOf(Error);
-		expect(cause.code).toBe("EACCES");
-		expect((cause.cause as Error).message).toBe("root");
+		assert.ok(cause instanceof Error);
+		assert.equal(cause.code, "EACCES");
+		assert.equal((cause.cause as Error).message, "root");
 	});
 
 	it("bounds a self-referential cause chain", () => {
@@ -428,7 +468,7 @@ describe("serialization round trip", () => {
 		);
 		let depth = 0;
 		for (let cause = wire.cause; cause; cause = cause.cause) depth++;
-		expect(depth).toBe(4);
+		assert.equal(depth, 4);
 	});
 
 	it("keeps WriteSelectorError identity", () => {
@@ -437,13 +477,16 @@ describe("serialization round trip", () => {
 			conflictId: "3",
 		});
 		const restored = rehydrateWriteSelectorError(JSON.parse(JSON.stringify(serializeFileToolError(original))));
-		expect(restored).toBeInstanceOf(WriteSelectorError);
-		expect(restored).toMatchObject({
-			name: "WriteSelectorError",
-			code: "conflict-id-not-found",
-			fields: original.fields,
-		});
-		expect(restored.hint).toBe(original.hint);
+		assert.ok(restored instanceof WriteSelectorError);
+		assert.partialDeepStrictEqual(
+			{ ...(restored as object) },
+			{
+				name: "WriteSelectorError",
+				code: "conflict-id-not-found",
+				fields: original.fields,
+			},
+		);
+		assert.equal(restored.hint, original.hint);
 	});
 
 	it("rehydrates an unknown name or code into the family base, keeping name, code and hint", () => {
@@ -454,13 +497,16 @@ describe("serialization round trip", () => {
 			hint: "Split the edit.",
 			fields: { path: "a.txt" },
 		});
-		expect(restored).toBeInstanceOf(EditToolError);
-		expect(restored.constructor).toBe(EditToolError);
-		expect(restored).toMatchObject({
-			name: "EditQuotaError",
-			code: "quota-exceeded" as EditToolErrorCode,
-			hint: "Split the edit.",
-		});
+		assert.ok(restored instanceof EditToolError);
+		assert.equal(restored.constructor, EditToolError);
+		assert.partialDeepStrictEqual(
+			{ ...(restored as object) },
+			{
+				name: "EditQuotaError",
+				code: "quota-exceeded" as EditToolErrorCode,
+				hint: "Split the edit.",
+			},
+		);
 		const mismatched = rehydrateEditToolError({
 			name: "EditMatchError",
 			code: "edits-empty",
@@ -468,8 +514,8 @@ describe("serialization round trip", () => {
 			hint: "h",
 			fields: { path: "a" },
 		});
-		expect(mismatched.constructor).toBe(EditToolError);
-		expect(mismatched.name).toBe("EditMatchError");
+		assert.equal(mismatched.constructor, EditToolError);
+		assert.equal(mismatched.name, "EditMatchError");
 		const foreignSelector = rehydrateWriteSelectorError({
 			name: "WriteRemoteError",
 			code: "remote-offline",
@@ -477,8 +523,11 @@ describe("serialization round trip", () => {
 			hint: "Reconnect.",
 			fields: { path: "x" },
 		});
-		expect(foreignSelector).toMatchObject({ name: "WriteRemoteError", code: "remote-offline", hint: "Reconnect." });
-		expect(isEditToolError(restored)).toBe(true);
+		assert.partialDeepStrictEqual(
+			{ ...(foreignSelector as object) },
+			{ name: "WriteRemoteError", code: "remote-offline", hint: "Reconnect." },
+		);
+		assert.equal(isEditToolError(restored), true);
 	});
 
 	it("only rebuilds a subclass when the name and the code both belong to it", () => {
@@ -491,46 +540,56 @@ describe("serialization round trip", () => {
 			["Unknown", "edits-empty"],
 		] as const) {
 			const restored = rehydrateEditToolError({ name, code, message: "m", hint: "h", fields: { path: "a" } });
-			expect(restored.constructor, `${name}/${code}`).toBe(EditToolError);
-			expect(restored.name).toBe(name);
+			assert.equal(restored.constructor, EditToolError);
+			assert.equal(restored.name, name);
 		}
 	});
 
 	it("keeps a cause without a code free of a code key", () => {
 		const original = new EditTargetError("target-inaccessible", "m", { path: "a" }, { cause: new Error("plain") });
 		const wire = serializeFileToolError(original);
-		expect(wire.cause).toStrictEqual({ name: "Error", message: "plain" });
+		assert.deepEqual(wire.cause, { name: "Error", message: "plain" });
 		const cause = rehydrateEditToolError(wire).cause as Error;
-		expect("code" in cause).toBe(false);
-		expect(cause.cause).toBeUndefined();
+		assert.equal("code" in cause, false);
+		assert.equal(cause.cause, undefined);
 	});
 });
 
 describe("edit-diff invariants", () => {
 	it("refuses to preserve lines when the normalized base has a different line count", () => {
-		expect(() =>
-			applyReplacementsPreservingUnchangedLines("a\nb\n", "a\n", [{ matchIndex: 0, matchLength: 1, newText: "x" }]),
-		).toThrow("Cannot preserve unchanged lines because the base content has a different line count.");
+		assert.throws(
+			() =>
+				applyReplacementsPreservingUnchangedLines("a\nb\n", "a\n", [
+					{ matchIndex: 0, matchLength: 1, newText: "x" },
+				]),
+			{ message: "Cannot preserve unchanged lines because the base content has a different line count." },
+		);
 	});
 
 	it("refuses a replacement outside the base content", () => {
-		expect(() =>
-			applyReplacementsPreservingUnchangedLines("a\n", "a\n", [{ matchIndex: 5, matchLength: 1, newText: "x" }]),
-		).toThrow("Replacement range is outside the base content.");
-		expect(() =>
-			applyReplacementsPreservingUnchangedLines("a\n", "a\n", [{ matchIndex: 0, matchLength: 9, newText: "x" }]),
-		).toThrow("Replacement range is outside the base content.");
-		expect(() =>
-			applyReplacementsPreservingUnchangedLines("a\nb\n", "a\nb\n", [
-				{ matchIndex: -5, matchLength: 1, newText: "x" },
-			]),
-		).toThrow("Replacement range is outside the base content.");
+		assert.throws(
+			() =>
+				applyReplacementsPreservingUnchangedLines("a\n", "a\n", [{ matchIndex: 5, matchLength: 1, newText: "x" }]),
+			{ message: "Replacement range is outside the base content." },
+		);
+		assert.throws(
+			() =>
+				applyReplacementsPreservingUnchangedLines("a\n", "a\n", [{ matchIndex: 0, matchLength: 9, newText: "x" }]),
+			{ message: "Replacement range is outside the base content." },
+		);
+		assert.throws(
+			() =>
+				applyReplacementsPreservingUnchangedLines("a\nb\n", "a\nb\n", [
+					{ matchIndex: -5, matchLength: 1, newText: "x" },
+				]),
+			{ message: "Replacement range is outside the base content." },
+		);
 	});
 });
 
 describe("Atomic adaptations of pi's edit and write", () => {
 	it("keep same-message ordering exclusive", () => {
-		expect(createEditToolDefinition("/").concurrency).toBe("exclusive");
-		expect(createWriteToolDefinition("/").concurrency).toBe("exclusive");
+		assert.equal(createEditToolDefinition("/").concurrency, "exclusive");
+		assert.equal(createWriteToolDefinition("/").concurrency, "exclusive");
 	});
 });

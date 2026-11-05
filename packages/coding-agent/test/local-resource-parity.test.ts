@@ -2,12 +2,12 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createBashToolDefinition } from "../src/core/tools/bash.ts";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
-import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
+import { createBashToolDefinition } from "../src/core/tools/bash.js";
+import { createFindToolDefinition } from "../src/core/tools/find.js";
+import { createGrepToolDefinition } from "../src/core/tools/grep.js";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 const tempDirs: string[] = [];
 const text = (result: { content: Array<{ type: string; text?: string }> }): string =>

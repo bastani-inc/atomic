@@ -1,8 +1,9 @@
+import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
+import { join, sep } from "node:path";
+import { afterEach, describe, it } from "vitest";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
 
 const tempDirs: string[] = [];
 
@@ -29,21 +30,22 @@ describe("search rows name files relative to the working directory (#4328)", () 
 		const cwd = await tempDir();
 		await mkdir(join(cwd, "sub", "deep"), { recursive: true });
 		await writeFile(join(cwd, "sub", "deep", "a.txt"), "needle\n");
-		expect((await search(cwd, "sub")).text).toBe("sub/deep/a.txt:1: needle");
+		assert.equal((await search(cwd, "sub")).text, "sub/deep/a.txt:1: needle");
 	});
 
 	it("in a single-file search below the working directory", async () => {
 		const cwd = await tempDir();
 		await mkdir(join(cwd, "sub"));
 		await writeFile(join(cwd, "sub", "a.txt"), "x\nneedle\n");
-		expect((await search(cwd, "sub/a.txt")).text).toBe("sub/a.txt:2: needle");
+		assert.equal((await search(cwd, "sub/a.txt")).text, "sub/a.txt:2: needle");
 	});
 
 	it("with absolute paths for files outside the working directory", async () => {
 		const cwd = await tempDir();
 		const outside = await tempDir();
 		await writeFile(join(outside, "a.txt"), "needle\n");
-		expect((await search(cwd, outside)).text).toBe(`${join(outside, "a.txt")}:1: needle`);
+		const forwardSlashAbsolutePath = join(outside, "a.txt").split(sep).join("/");
+		assert.equal((await search(cwd, outside)).text, `${forwardSlashAbsolutePath}:1: needle`);
 	});
 
 	it("for every target of a multi-target search", async () => {
@@ -53,8 +55,8 @@ describe("search rows name files relative to the working directory (#4328)", () 
 		await writeFile(join(cwd, "one", "a.txt"), "needle\n");
 		await writeFile(join(cwd, "two", "a.txt"), "needle\n");
 		const { text } = await search(cwd, ["one", "two"]);
-		expect(text).toContain("one/a.txt:1: needle");
-		expect(text).toContain("two/a.txt:1: needle");
+		assert.ok(text.includes("one/a.txt:1: needle"));
+		assert.ok(text.includes("two/a.txt:1: needle"));
 	});
 });
 
@@ -71,11 +73,11 @@ describe("overlapping search scopes", () => {
 			paths: ["src", "src/*.txt"],
 		});
 		const text = result.content.map((item) => (item.type === "text" ? item.text : "")).join("\n");
-		expect(text.match(/src\/data\.txt:1: needle/g)).toHaveLength(1);
-		expect(text.match(/src\/data\.txt:12: needle/g)).toHaveLength(1);
-		expect(text.match(/src\/data\.txt-13- line 12/g)).toHaveLength(1);
-		expect(text.match(/src\/data\.txt-11- line 10/g)).toHaveLength(1);
-		expect(result.details?.matchCount).toBe(2);
-		expect(result.details?.fileMatches).toEqual({ "src/data.txt": 2 });
+		assert.equal(text.match(/src\/data\.txt:1: needle/g)?.length, 1);
+		assert.equal(text.match(/src\/data\.txt:12: needle/g)?.length, 1);
+		assert.equal(text.match(/src\/data\.txt-13- line 12/g)?.length, 1);
+		assert.equal(text.match(/src\/data\.txt-11- line 10/g)?.length, 1);
+		assert.equal(result.details?.matchCount, 2);
+		assert.deepEqual(result.details?.fileMatches, { "src/data.txt": 2 });
 	});
 });

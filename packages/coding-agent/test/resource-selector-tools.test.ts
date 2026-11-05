@@ -4,12 +4,12 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createToolDefinition } from "../src/core/tools/index.ts";
-import { createReadToolDefinition } from "../src/core/tools/read.ts";
-import { isDocumentPath } from "../src/core/tools/read-document-extract.ts";
-import type { InternalResourceContext } from "../src/core/tools/resource-selectors.ts";
-import { createSearchToolDefinition } from "../src/core/tools/search.ts";
-import { TestSqliteDatabase } from "./helpers/sqlite.ts";
+import { createToolDefinition } from "../src/core/tools/index.js";
+import { createReadToolDefinition } from "../src/core/tools/read.js";
+import { isDocumentPath } from "../src/core/tools/read-document-extract.js";
+import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
+import { createSearchToolDefinition } from "../src/core/tools/search.js";
+import { TestSqliteDatabase } from "./helpers/sqlite.js";
 
 function textOutput(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (

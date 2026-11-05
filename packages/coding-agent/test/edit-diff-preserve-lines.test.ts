@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
+import { describe, it } from "vitest";
 import {
 	applyEditsToNormalizedContent,
 	applyReplacementsPreservingUnchangedLines,
-} from "../src/core/tools/edit-diff.ts";
+} from "../src/core/tools/edit-diff.js";
 
 describe("fuzzy edits keep untouched lines byte for byte", () => {
 	it("keeps trailing whitespace on untouched lines before and after the edit", () => {
@@ -12,7 +13,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 			[{ oldText: 'foo "bar"', newText: 'foo "baz"' }],
 			"f",
 		);
-		expect(newContent).toBe('keep  \nalso\t\nfoo "baz"\nafter  \nend');
+		assert.equal(newContent, 'keep  \nalso\t\nfoo "baz"\nafter  \nend');
 	});
 
 	it("keeps a final line without a newline", () => {
@@ -21,7 +22,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 			[{ oldText: 'foo "bar"', newText: "x" }],
 			"f",
 		);
-		expect(newContent).toBe("x\nlast");
+		assert.equal(newContent, "x\nlast");
 	});
 
 	it("merges two edits on the same line into one rewrite", () => {
@@ -33,7 +34,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 			],
 			"f",
 		);
-		expect(newContent).toBe("A B\nkeep  \n");
+		assert.equal(newContent, "A B\nkeep  \n");
 	});
 
 	it("rewrites each touched line once when edits sit on separate lines", () => {
@@ -45,7 +46,7 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 			],
 			"f",
 		);
-		expect(newContent).toBe("1\nmiddle  \n2\n");
+		assert.equal(newContent, "1\nmiddle  \n2\n");
 	});
 
 	it("orders replacements itself when given out of order", () => {
@@ -54,13 +55,30 @@ describe("fuzzy edits keep untouched lines byte for byte", () => {
 			{ matchIndex: 6, matchLength: 2, newText: "CC" },
 			{ matchIndex: 0, matchLength: 2, newText: "AA" },
 		]);
-		expect(result).toBe("AA\nbb \nCC\n");
+		assert.equal(result, "AA\nbb \nCC\n");
 	});
 
 	it("widens a replacement that spans lines to every line it touches", () => {
 		const result = applyReplacementsPreservingUnchangedLines("x \naa \nbb \ny \n", "x\naa\nbb\ny\n", [
 			{ matchIndex: 2, matchLength: 5, newText: "AB" },
 		]);
-		expect(result).toBe("x \nAB\ny \n");
+		assert.equal(result, "x \nAB\ny \n");
+	});
+
+	it("preserves a length-changing Unicode normalization on the final line (#4328)", () => {
+		const { newContent } = applyEditsToNormalizedContent(
+			"keep  \n\ufb00 tail",
+			[{ oldText: "ff", newText: "FF" }],
+			"f",
+		);
+		assert.equal(newContent, "keep  \nFF tail");
+	});
+
+	it("extends a shared rewrite to the end of a later multiline replacement (#4328)", () => {
+		const result = applyReplacementsPreservingUnchangedLines("aa bb \ncc \nkeep \n", "aa bb\ncc\nkeep\n", [
+			{ matchIndex: 0, matchLength: 2, newText: "AA" },
+			{ matchIndex: 3, matchLength: 5, newText: "BC" },
+		]);
+		assert.equal(result, "AA BC\nkeep \n");
 	});
 });

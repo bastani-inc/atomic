@@ -1,4 +1,4 @@
-import type { WriteOperations } from "../../src/index.ts";
+import type { WriteOperations } from "../../src/index.js";
 
 // The public write seam is pi's two-method shape (#4328): remote backends implement only these.
 export const remoteWriter: WriteOperations = {

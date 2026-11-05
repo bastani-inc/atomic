@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
-import { buildSystemPrompt } from "../src/core/system-prompt.ts";
-import { createEditToolDefinition, editToolSystemPromptContribution } from "../src/core/tools/edit.ts";
-import { createWriteToolDefinition, writeToolSystemPromptContribution } from "../src/core/tools/write.ts";
+import { buildSystemPrompt } from "../src/core/system-prompt.js";
+import { createEditToolDefinition, editToolSystemPromptContribution } from "../src/core/tools/edit.js";
+import { createWriteToolDefinition, writeToolSystemPromptContribution } from "../src/core/tools/write.js";
 
 function assembledPrompt(): string {
 	const definitions = [createEditToolDefinition("/workspace"), createWriteToolDefinition("/workspace")];

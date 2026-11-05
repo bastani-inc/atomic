@@ -2,7 +2,7 @@ import { mkdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWriteTool } from "../src/index.ts";
+import { createWriteTool } from "../src/index.js";
 
 const writeTool = createWriteTool(process.cwd());
 
