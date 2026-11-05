@@ -8,6 +8,7 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import "@bastani/atomic";
 import { StorageProvider } from "../../packages/coding-agent/src/core/storage/provider.js";
 import type { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { scheduleSnapshotCollection } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.js";
