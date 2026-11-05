@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import {
-	countHandles,
 	handleTotals,
 	type IdleAgentSample,
 	leastSquaresSlope,
@@ -59,38 +58,29 @@ test("percentiles use the nearest rank (#4326)", () => {
 	assert.equal(percentile([7], 10), 7);
 });
 
-test("handles are counted by kind and summed into timers, sockets and processes (#4326)", () => {
-	const handles = countHandles([
-		"Timeout",
-		"Timeout",
-		"Immediate",
-		"TCPSocketWrap",
-		"PipeWrap",
-		"ProcessWrap",
-		"FSReqCallback",
-	]);
-	assert.deepEqual(handles, {
-		Timeout: 2,
-		Immediate: 1,
-		TCPSocketWrap: 1,
-		PipeWrap: 1,
-		ProcessWrap: 1,
-		FSReqCallback: 1,
-	});
-	assert.deepEqual(handleTotals(handles), { timers: 3, sockets: 2, processes: 1 });
+test("async resource types are summed into timers, sockets and processes (#4326)", () => {
+	const handles = {
+		Timeout: 3,
+		TCPWRAP: 1,
+		PIPEWRAP: 1,
+		TCPSERVERWRAP: 1,
+		PROCESSWRAP: 1,
+		FSEVENTWRAP: 4,
+	};
+	assert.deepEqual(handleTotals(handles), { timers: 3, sockets: 3, processes: 1 });
 	assert.deepEqual(handleTotals({}), { timers: 0, sockets: 0, processes: 0 });
 });
 
 test("per-agent handle and listener counts are slopes, zero when nothing grows with the agents (#4326)", () => {
 	const flat = [
-		sample(0, 1, 1, { handles: { Timeout: 2, PipeWrap: 3 } }),
-		sample(1000, 1, 1, { handles: { Timeout: 2, PipeWrap: 3 } }),
+		sample(0, 1, 1, { handles: { Timeout: 2, PIPEWRAP: 3 } }),
+		sample(1000, 1, 1, { handles: { Timeout: 2, PIPEWRAP: 3 } }),
 	];
 	assert.deepEqual(perAgentHandles(flat), { timers: 0, sockets: 0, processes: 0 });
 	assert.equal(perAgentListeners(flat), 0);
 	const growing = [
 		sample(0, 1, 1, { handles: {}, listeners: 11 }),
-		sample(10, 1, 1, { handles: { TCPSocketWrap: 10, ProcessWrap: 20, Timeout: 5 }, listeners: 121 }),
+		sample(10, 1, 1, { handles: { TCPWRAP: 10, PROCESSWRAP: 20, Timeout: 5 }, listeners: 121 }),
 	];
 	assert.deepEqual(perAgentHandles(growing), { timers: 0.5, sockets: 1, processes: 2 });
 	assert.equal(perAgentListeners(growing), 11);

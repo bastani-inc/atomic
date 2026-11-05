@@ -17,12 +17,22 @@
  * node:sqlite session store in a temporary file (history on disk). `--workers N` creates the agents on N worker
  * threads of this one process, each with its own store, to reach large counts sooner; every sample adds up the heap,
  * handles and listeners of all threads, and RSS is the whole process. Run under Node: Bun reports no active handles.
+ *
+ * `--path subagent` runs background subagents instead of SDK sessions: an owner session launches each as a task
+ * through the real runner and task host, the child runs its turns, waits on the long tool, is released, and is woken
+ * through the real wake binding; the report adds the owner's registries per agent. It needs the source aliases of
+ * `@bastani/atomic`: set JITI_ALIAS to {"@bastani/atomic": "<repo>/packages/coding-agent/src/index.ts",
+ * "@bastani/atomic/storage": "<repo>/packages/coding-agent/src/core/storage/index.ts"}.
+ *
+ * Handles are counted with `async_hooks`, so an unref'd timer or socket, which `process.getActiveResourcesInfo()`
+ * leaves out, is counted too.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
+import { liveAsyncResources, trackAsyncResources } from "./async-resources.js";
 
 interface Options {
 	readonly agents: number;
@@ -35,6 +45,7 @@ interface Options {
 	readonly wakeConcurrency: number;
 	readonly idleWindowMs: number;
 	readonly workers: number;
+	readonly path: "sdk" | "subagent";
 	readonly label: string;
 	readonly out?: string;
 }
@@ -46,6 +57,8 @@ function parseOptions(argv: readonly string[]): Options {
 	};
 	const store = value("store") ?? "sqlite";
 	const mode = value("mode") ?? "release";
+	const path = value("path") ?? "sdk";
+	if (path !== "sdk" && path !== "subagent") throw new Error(`--path must be sdk or subagent, not ${path}`);
 	if (store !== "memory" && store !== "sqlite") throw new Error(`--store must be memory or sqlite, not ${store}`);
 	if (mode !== "release" && mode !== "resident") throw new Error(`--mode must be release or resident, not ${mode}`);
 	const count = (name: string, fallback: number) => {
@@ -65,6 +78,7 @@ function parseOptions(argv: readonly string[]): Options {
 		wakeConcurrency: Math.max(1, count("wake-concurrency", 32)),
 		idleWindowMs: count("idle-window-ms", 2000),
 		workers: count("workers", 0),
+		path,
 		label: value("label") ?? `${mode}-${store}`,
 		...(out === undefined ? {} : { out: resolve(out) }),
 	};
@@ -73,12 +87,16 @@ function parseOptions(argv: readonly string[]): Options {
 type HostModule = typeof import("./agent-host.js");
 type AgentHost = Awaited<ReturnType<HostModule["createAgentHost"]>>;
 type HostOptions = Parameters<HostModule["createAgentHost"]>[0];
+
+async function createHost(hostOptions: HostOptions): Promise<AgentHost> {
+	if (hostOptions.path === "subagent") return (await import("./subagent-host.js")).createSubagentHost(hostOptions);
+	return (await import("./agent-host.js")).createAgentHost(hostOptions);
+}
 type Command = { readonly id: number; readonly method: keyof AgentHost; readonly args: readonly number[] };
 
 /** A worker thread: one agent host, driven by commands from the main thread. */
 async function serveWorker(hostOptions: HostOptions): Promise<void> {
-	const { createAgentHost } = await import("./agent-host.js");
-	const host = await createAgentHost(hostOptions);
+	const host = await createHost(hostOptions);
 	const port = parentPort;
 	if (port === null) throw new Error("serveWorker runs in a worker thread");
 	port.on("message", (command: Command) => {
@@ -138,8 +156,10 @@ async function main(): Promise<void> {
 	mkdirSync(process.env.ATOMIC_CODING_AGENT_DIR, { recursive: true });
 	const gc = (globalThis as { gc?: () => void }).gc;
 	if (gc === undefined) throw new Error("Run with node --expose-gc so samples are taken after a full collection.");
+	trackAsyncResources();
 	const summary = await import("./summary.js");
 	const hostOptions = (index: number): HostOptions => ({
+		path: options.path,
 		root: tempRoot,
 		index,
 		store: options.store,
@@ -150,8 +170,7 @@ async function main(): Promise<void> {
 	const hosts: AgentHost[] = [];
 	const workers: Worker[] = [];
 	if (options.workers === 0) {
-		const { createAgentHost } = await import("./agent-host.js");
-		hosts.push(await createAgentHost(hostOptions(0)));
+		hosts.push(await createHost(hostOptions(0)));
 	} else {
 		for (let index = 0; index < options.workers; index++) {
 			const worker = new Worker(fileURLToPath(import.meta.url), { workerData: hostOptions(index) });
@@ -166,7 +185,7 @@ async function main(): Promise<void> {
 		gc?.();
 		gc?.();
 		const main = process.memoryUsage();
-		const handles = summary.countHandles(process.getActiveResourcesInfo());
+		const handles = liveAsyncResources();
 		for (const thread of options.workers === 0 ? [] : threads)
 			for (const [kind, count] of Object.entries(thread.handles)) handles[kind] = (handles[kind] ?? 0) + count;
 		samples.push({
@@ -180,6 +199,10 @@ async function main(): Promise<void> {
 				threads.reduce((sum, thread) => sum + thread.arrayBuffersBytes, 0),
 			handles: options.workers === 0 ? (threads[0]?.handles ?? handles) : handles,
 			listeners: threads.reduce((sum, thread) => sum + thread.listeners, 0),
+			registries: threads.reduce<Record<string, number>>((total, thread) => {
+				for (const [name, size] of Object.entries(thread.registries ?? {})) total[name] = (total[name] ?? 0) + size;
+				return total;
+			}, {}),
 		});
 	}
 
@@ -210,6 +233,7 @@ async function main(): Promise<void> {
 		maxMs: createDelay.max / 1e6,
 	};
 	const idle = await Promise.all(hosts.map((host) => host.measureIdle(options.idleWindowMs)));
+	if (options.wakeSamples > 0 || options.wakeBurst > 0) await Promise.all(hosts.map((host) => host.wakeSequential(1)));
 	const sequential = options.wakeSamples === 0 ? undefined : await hosts[0]?.wakeSequential(options.wakeSamples);
 	const burstShare = Math.ceil(options.wakeBurst / hosts.length);
 	const burstStarted = performance.now();
@@ -227,6 +251,7 @@ async function main(): Promise<void> {
 	});
 	const report = {
 		label: options.label,
+		path: options.path,
 		store: options.store,
 		mode: options.mode,
 		agents: options.agents,
@@ -235,6 +260,7 @@ async function main(): Promise<void> {
 		workers: options.workers,
 		storedBytesPerAgent: sampled === 0 ? 0 : stored.reduce((sum, part) => sum + part.jsonBytes, 0) / sampled,
 		sqliteFileBytesPerAgent: stored.reduce((sum, part) => sum + part.sqliteFileBytes, 0) / agents,
+		ownerEntryBytesPerAgent: stored.reduce((sum, part) => sum + (part.ownerEntryBytes ?? 0), 0) / agents,
 		samples,
 		wakeLatencyMs: [...(sequential?.latencyMs ?? [])],
 		eventLoopDelayP99Ms: worst(idle).p99Ms,
@@ -268,8 +294,10 @@ async function main(): Promise<void> {
 			heapAndBuffersKbPerAgent: heapAndBuffersKb,
 			storedKbPerAgent: report.storedBytesPerAgent / 1024,
 			sqliteFileKbPerAgent: report.sqliteFileBytesPerAgent / 1024,
+			ownerEntryKbPerAgent: report.ownerEntryBytesPerAgent / 1024,
 			handlesPerAgent: summary.perAgentHandles(samples),
 			listenersPerAgent: summary.perAgentListeners(samples),
+			registriesPerAgent: summary.perAgentRegistries(samples),
 			wakeP50Ms: summary.percentile(report.wakeLatencyMs, 50),
 			wakeP99Ms: summary.percentile(report.wakeLatencyMs, 99),
 			burst: report.burst,

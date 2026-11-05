@@ -7,9 +7,9 @@
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { Type } from "typebox";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentSession } from "../../../packages/coding-agent/src/core/agent-session.js";
+import type { DetachedToolCall } from "../../../packages/coding-agent/src/core/agent-session-detached-tools.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -20,19 +20,35 @@ import {
 	AgentWakeDispatcher,
 	type AgentWakeDispatcherStats,
 } from "../../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
-import { AuthStorage } from "../../../packages/coding-agent/src/core/auth-storage.js";
 import { createEventBus } from "../../../packages/coding-agent/src/core/event-bus.js";
-import type { ToolDefinition } from "../../../packages/coding-agent/src/core/extensions/index.js";
-import { ModelRuntime } from "../../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../../packages/coding-agent/src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { SqlSessionStore } from "../../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../../packages/coding-agent/src/core/storage/session/types.js";
-import { resetSessionTempCleanupScheduleForTesting } from "../../../packages/coding-agent/src/core/tools/session-temp-cleanup.js";
-import { countHandles, percentile } from "./summary.js";
+import { liveAsyncResources, trackAsyncResources } from "./async-resources.js";
+import {
+	agentOf,
+	COMPLETION_TEXT,
+	type DelaySummary,
+	delaySummary,
+	lookupTool,
+	operations,
+	scriptedProvider,
+	settle,
+	type TranscriptMessage,
+	WAIT_TOOL,
+	type WakeResult,
+	waitTool,
+	wakeDriver,
+} from "./scripted-model.js";
+import { percentile } from "./summary.js";
+
+export type { DelaySummary, WakeResult } from "./scripted-model.js";
 
 export interface HostOptions {
+	/** `sdk`: released SDK sessions. `subagent`: background subagents launched as tasks, released while they wait. */
+	readonly path: "sdk" | "subagent";
 	readonly root: string;
 	readonly index: number;
 	readonly store: "memory" | "sqlite";
@@ -47,18 +63,7 @@ export interface HostSnapshot {
 	readonly arrayBuffersBytes: number;
 	readonly handles: Readonly<Record<string, number>>;
 	readonly listeners: number;
-}
-
-export interface DelaySummary {
-	readonly p50Ms: number;
-	readonly p99Ms: number;
-	readonly maxMs: number;
-}
-
-export interface WakeResult {
-	readonly latencyMs: readonly number[];
-	readonly elapsedMs: number;
-	readonly delay: DelaySummary;
+	readonly registries?: Readonly<Record<string, number>>;
 }
 
 export interface StoredBytes {
@@ -66,6 +71,8 @@ export interface StoredBytes {
 	readonly sampled: number;
 	readonly jsonBytes: number;
 	readonly sqliteFileBytes: number;
+	/** The subagent path: bytes of the child records the owner's session holds, in all. */
+	readonly ownerEntryBytes?: number;
 }
 
 export interface AgentHost {
@@ -79,54 +86,21 @@ export interface AgentHost {
 	close(): Promise<void>;
 }
 
-/** ~1.2 KB of completion text: 12 chunks of about 100 characters, as agent_scale streams. */
-const CHUNK = "The scripted model streams this sentence as one chunk of roughly one hundred characters of output. ";
-const COMPLETION_TEXT = CHUNK.repeat(12);
-const TOOL_OUTPUT = "lookup result: ".padEnd(100, "x");
-export const WAIT_TOOL = "wait_for_ci";
-
-const lookupTool: ToolDefinition = {
-	name: "lookup",
-	label: "Lookup",
-	description: "Returns a short fixed result",
-	parameters: Type.Object({ key: Type.String() }),
-	execute: async () => ({ content: [{ type: "text", text: TOOL_OUTPUT }], details: undefined }),
-};
-
-/** The long tool: its work happens elsewhere, and its result comes back through the wake dispatcher. */
-const waitTool: ToolDefinition = {
-	name: WAIT_TOOL,
-	label: "Wait for CI",
-	description: "Waits for a CI run that finishes later",
-	parameters: Type.Object({ run: Type.String() }),
-	detachable: true,
-	execute: () => new Promise(() => {}),
-};
-
-type TranscriptMessage = { readonly role: string; readonly toolName?: string };
-
-function delaySummary(histogram: ReturnType<typeof monitorEventLoopDelay>): DelaySummary {
-	return { p50Ms: histogram.percentile(50) / 1e6, p99Ms: histogram.percentile(99) / 1e6, maxMs: histogram.max / 1e6 };
-}
-
-/** Wait, by event-loop turns, until work still finishing lets go of its timers: the counts must repeat five times. */
-async function settle(): Promise<void> {
-	let previous = "";
-	let repeats = 0;
-	for (let turn = 0; turn < 500 && repeats < 5; turn++) {
-		resetSessionTempCleanupScheduleForTesting();
-		await new Promise((resolve) => setImmediate(resolve));
-		const current = JSON.stringify(countHandles(process.getActiveResourcesInfo()));
-		repeats = current === previous ? repeats + 1 : 0;
-		previous = current;
-	}
+/**
+ * Hand a detached call's result to the dispatcher, once, when its operation finishes. Module-level so the reaction
+ * closes over a session id and the dispatcher, never over the session.
+ */
+function forwardResult(dispatcher: AgentWakeDispatcher, sessionId: string, call: DetachedToolCall): void {
+	void call.result.then((toolResult) =>
+		dispatcher.deliver(`bench:${sessionId}`, { id: `ci:${call.toolCallId}`, kind: "tool-result", toolResult }),
+	);
 }
 
 export async function createAgentHost(options: HostOptions): Promise<AgentHost> {
 	const gc = (globalThis as { gc?: () => void }).gc;
 	if (gc === undefined) throw new Error("Run with node --expose-gc so samples are taken after a full collection.");
-	const faux = registerFauxProvider({ tokenSize: { min: 25, max: 25 } });
-	const model = faux.getModel();
+	trackAsyncResources();
+	const { faux, model, modelRuntime } = await scriptedProvider(options.root, options.index);
 	/** Every request is answered from its transcript, so concurrent agents need no shared script order. */
 	const respond = (context: { readonly messages: readonly TranscriptMessage[] }) => {
 		const last = context.messages.at(-1);
@@ -136,36 +110,14 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 				stopReason: "toolUse",
 			});
 		if (last?.role === "toolResult" && last.toolName === "lookup" && turn >= options.turns)
-			return fauxAssistantMessage([fauxText("Waiting for CI."), fauxToolCall(WAIT_TOOL, { run: `run-${turn}` })], {
-				stopReason: "toolUse",
-			});
+			return fauxAssistantMessage(
+				[fauxText("Waiting for CI."), fauxToolCall(WAIT_TOOL, { run: `agent-${agentOf(context.messages)}` })],
+				{ stopReason: "toolUse" },
+			);
 		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "CI passed; done." : `Turn ${turn} done.`);
 	};
 	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));
 
-	const authStorage = AuthStorage.inMemory();
-	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
-	const modelRuntime = await ModelRuntime.create({
-		credentials: authStorage,
-		modelsPath: join(options.root, `models-${options.index}.json`),
-	});
-	modelRuntime.registerProvider(model.provider, {
-		baseUrl: model.baseUrl,
-		api: model.api,
-		models: [
-			{
-				id: model.id,
-				name: model.name,
-				api: model.api,
-				reasoning: model.reasoning,
-				input: model.input,
-				cost: model.cost,
-				contextWindow: model.contextWindow,
-				maxTokens: model.maxTokens,
-				baseUrl: model.baseUrl,
-			},
-		],
-	});
 	const cwd = join(options.root, "project");
 	mkdirSync(cwd, { recursive: true });
 	const sqlitePath = join(options.root, `journal-${options.index}.sqlite`);
@@ -221,31 +173,40 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 		sessionManager: await SessionManager.create(store, cwd),
 	});
 	const dispatcher = new AgentWakeDispatcher();
+	/** Wakes being timed right now: each is told when its agent has been woken, finished and released again. */
+	const finishedWakes = new Map<string, () => void>();
 	/** A wake: rehydrate the agent from storage, hand back its long tool's result, finish the turn, release it. */
 	dispatcher.handle(
 		"bench",
 		async (wakeKey, wakes) => {
-			const session = await runtime.rehydrate(wakeKey.slice("bench:".length));
+			const sessionId = wakeKey.slice("bench:".length);
+			const session = await runtime.rehydrate(sessionId);
 			await session.resumeDetachedTurn(
 				wakes.flatMap((wake) => (wake.toolResult === undefined ? [] : [wake.toolResult])),
 			);
 			await session.release();
+			finishedWakes.get(sessionId)?.();
+			finishedWakes.delete(sessionId);
 		},
 		{ maxConcurrent: options.wakeConcurrency },
 	);
 	const resident: AgentSession[] = [];
 	const released: string[] = [];
-	let woken = 0;
 
 	async function runAgent(index: number): Promise<void> {
 		const { session } = await factory({ cwd, agentDir, sessionManager: await SessionManager.create(store, cwd) });
 		session.setToolDetachment({ afterMs: 0 });
 		for (let turn = 1; turn <= options.turns; turn++)
 			await session.prompt(`Agent ${index}, turn ${turn}: look up the next item and report what you find.`);
-		// The long tool's own work holds its result; the benchmark delivers it later from outside, by wake key.
-		session.takeDetachedToolCalls();
-		if (options.mode === "resident") resident.push(session);
-		else released.push((await session.release()).sessionId);
+		// The long tool's own work is still running. Its result will reach the dispatcher through the call's reaction,
+		// as a host that took the call would deliver it.
+		const calls = session.takeDetachedToolCalls();
+		if (options.mode === "resident") {
+			resident.push(session);
+			return;
+		}
+		for (const call of calls) forwardResult(dispatcher, session.sessionId, call);
+		released.push((await session.release()).sessionId);
 	}
 
 	/** Deliver the long tool's result to one released agent; resolves with the wake's latency in milliseconds. */
@@ -256,44 +217,22 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 			.flatMap((entry) =>
 				entry.type === "message" && entry.message.role === "assistant" ? entry.message.content : [],
 			)
-			.find((part) => part.type === "toolCall" && part.name === WAIT_TOOL) as { id: string } | undefined;
-		if (call === undefined) throw new Error(`agent ${sessionId} is not waiting on ${WAIT_TOOL}`);
+			.find((part) => part.type === "toolCall" && part.name === WAIT_TOOL) as
+			| { arguments: { run: string } }
+			| undefined;
+		const finish = call === undefined ? undefined : operations.get(call.arguments.run);
+		if (call === undefined || finish === undefined)
+			throw new Error(`agent ${sessionId} is not waiting on a live ${WAIT_TOOL} operation`);
+		operations.delete(call.arguments.run);
+		const finished = new Promise<void>((done) => finishedWakes.set(sessionId, done));
 		const started = performance.now();
-		await dispatcher.deliver(`bench:${sessionId}`, {
-			id: `ci:${call.id}`,
-			kind: "tool-result",
-			toolResult: {
-				toolCallId: call.id,
-				toolName: WAIT_TOOL,
-				result: { content: [{ type: "text", text: "CI passed" }], details: undefined },
-				isError: false,
-			},
-		});
+		// The operation finishing is what wakes the agent: its result goes through the call's reaction to the dispatcher.
+		finish({ content: [{ type: "text", text: "CI passed" }], details: undefined });
+		await finished;
 		return performance.now() - started;
 	}
 
-	/** The next `count` released agents not woken yet, spread over the population. */
-	function nextToWake(count: number): string[] {
-		const stride = Math.max(1, Math.floor(released.length / Math.max(1, count * 2)));
-		const picked: string[] = [];
-		for (let index = woken; index < released.length && picked.length < count; index += stride)
-			picked.push(released[index] as string);
-		woken += 1;
-		return picked;
-	}
-
-	async function timedWakes(targets: readonly string[], concurrent: boolean): Promise<WakeResult> {
-		script(targets.length);
-		const histogram = monitorEventLoopDelay({ resolution: 10 });
-		histogram.enable();
-		const started = performance.now();
-		const latencyMs: number[] = [];
-		if (concurrent) latencyMs.push(...(await Promise.all(targets.map((sessionId) => wake(sessionId)))));
-		else for (const sessionId of targets) latencyMs.push(await wake(sessionId));
-		const elapsedMs = performance.now() - started;
-		histogram.disable();
-		return { latencyMs, elapsedMs, delay: delaySummary(histogram) };
-	}
+	const wakes = wakeDriver({ ids: () => released, wake, script });
 
 	return {
 		async runWave(count, offset) {
@@ -308,7 +247,7 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 			return {
 				heapUsedBytes: memory.heapUsed,
 				arrayBuffersBytes: memory.arrayBuffers,
-				handles: countHandles(process.getActiveResourcesInfo()),
+				handles: liveAsyncResources(),
 				listeners: subscriptions,
 			};
 		},
@@ -319,8 +258,8 @@ export async function createAgentHost(options: HostOptions): Promise<AgentHost> 
 			histogram.disable();
 			return delaySummary(histogram);
 		},
-		wakeSequential: (count) => timedWakes(nextToWake(count), false),
-		wakeBurst: (count) => timedWakes(nextToWake(count), true),
+		wakeSequential: wakes.wakeSequential,
+		wakeBurst: wakes.wakeBurst,
 		async stored(sample) {
 			const ids = (options.mode === "resident" ? resident.map((session) => session.sessionId) : released).slice(
 				0,

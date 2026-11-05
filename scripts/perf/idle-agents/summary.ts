@@ -10,10 +10,12 @@ export interface IdleAgentSample {
 	readonly heapUsedBytes: number;
 	/** Memory held in ArrayBuffers outside the JS heap, such as the in-memory store's UTF-8 history. */
 	readonly arrayBuffersBytes: number;
-	/** Active handles by kind (`Timeout`, `TCPSocketWrap`, `PipeWrap`, `ProcessWrap`, ...). */
+	/** Live async resources by type (`Timeout`, `TCPWRAP`, `PIPEWRAP`, `PROCESSWRAP`, ...), counted with `async_hooks`. */
 	readonly handles: Readonly<Record<string, number>>;
 	/** Subscriptions on the event bus every session shares; extension listeners of a live session are among them. */
 	readonly listeners: number;
+	/** Entries in every per-agent registry the host keeps, by name; the subagent path reports them. */
+	readonly registries?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -56,18 +58,11 @@ export function percentile(values: readonly number[], p: number): number {
 	return sorted[rank - 1] ?? 0;
 }
 
-/** Count `process.getActiveResourcesInfo()` entries by kind. */
-export function countHandles(resources: readonly string[]): Record<string, number> {
-	const counts: Record<string, number> = {};
-	for (const resource of resources) counts[resource] = (counts[resource] ?? 0) + 1;
-	return counts;
-}
-
-/** Handle kinds that stand for a timer, a socket or a child process. */
+/** Async resource types that stand for a timer, a socket or a child process. */
 export const AGENT_HANDLE_KINDS = {
-	timers: ["Timeout", "Immediate"],
-	sockets: ["TCPSocketWrap", "PipeWrap", "TCPServerWrap", "PipeServerWrap", "TLSWrap", "UDPWrap"],
-	processes: ["ProcessWrap"],
+	timers: ["Timeout"],
+	sockets: ["TCPWRAP", "PIPEWRAP", "TCPSERVERWRAP", "TLSWRAP", "UDPWRAP"],
+	processes: ["PROCESSWRAP"],
 } as const;
 
 /** Timers, sockets and processes in a handle count. */
@@ -96,6 +91,22 @@ export function perAgentHandles(samples: readonly IdleAgentSample[]): {
 	const slope = (kind: "timers" | "sockets" | "processes") =>
 		leastSquaresSlope(samples.map((sample) => ({ x: sample.agents, y: handleTotals(sample.handles)[kind] })));
 	return { timers: slope("timers"), sockets: slope("sockets"), processes: slope("processes") };
+}
+
+/**
+ * Entries each idle agent adds to every registry: the slope of each over the samples, only for those that grow. An
+ * agent that costs nothing in a registry does not appear.
+ */
+export function perAgentRegistries(samples: readonly IdleAgentSample[]): Record<string, number> {
+	const names = new Set(samples.flatMap((sample) => Object.keys(sample.registries ?? {})));
+	const slopes: Record<string, number> = {};
+	for (const name of names) {
+		const slope = leastSquaresSlope(
+			samples.map((sample) => ({ x: sample.agents, y: sample.registries?.[name] ?? 0 })),
+		);
+		if (Math.abs(slope) > 1e-6) slopes[name] = slope;
+	}
+	return slopes;
 }
 
 /** Event-bus subscriptions each idle agent adds: the slope over the samples. */
