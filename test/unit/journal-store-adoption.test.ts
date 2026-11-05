@@ -1524,6 +1524,7 @@ test("a move both a resume on the source and a resume on the destination changed
 	const error = result.report.runs[0]?.error;
 	assert.ok(error instanceof JournalCatalogError && error.code === "run-conflict");
 	assert.equal(result.named, result.destination, "the catalog stays on the copy a resume holds");
+	assert.equal(result.moveRuns, 1, "the catalog was not moved off the destination and back");
 	assert.equal(
 		scalar(result.source, "SELECT count(*) FROM wf_events WHERE key = 'p1-new'"),
 		1,
@@ -1625,3 +1626,50 @@ test("an undo never moves the catalog off a destination that holds events the so
 	);
 	assert.equal(result.moveRuns, 1, "the move was not undone");
 });
+
+test("an undo where the destination's lease row is gone keeps the destination and loses no copy (#4325)", async () => {
+	const result = await consolidateWithInterference({
+		before: {
+			1: ({ source, destination }) => {
+				const events = Number(scalar(source, EVENTS));
+				raw(source, "UPDATE wf_leases SET holder_id = 'p1', epoch = epoch + 1 WHERE run_id = 'r'");
+				raw(source, APPEND_EVENT, events + 1, "p1-new");
+				raw(destination, "DELETE FROM wf_leases WHERE run_id = 'r'");
+			},
+		},
+	});
+	assert.equal(result.named, result.destination);
+	assert.deepEqual(
+		result.report.runs.map((run) => [run.runId, run.outcome, run.reason]),
+		[["r", "skipped", "conflict"]],
+	);
+	assert.equal(result.moveRuns, 1);
+});
+
+for (const [label, change] of [
+	["released", "UPDATE wf_leases SET holder_id = NULL, epoch = epoch + 1 WHERE run_id = 'r'"],
+	["gone", "DELETE FROM wf_leases WHERE run_id = 'r'"],
+] as const)
+	test(`a source lease a resume ${label} before the move's last check is not a resume holding it (#4325)`, async () => {
+		const source = await journal(join(root, "old", "journal.sqlite"), [{ runId: "r" }]);
+		await adoptJournals(store, [source]);
+		const events = Number(scalar(source, EVENTS));
+		const report = await withCatalog(async (catalog) => {
+			const homeShard = catalog.homeShard.bind(catalog);
+			Reflect.set(catalog, "homeShard", async (runId: string) => {
+				const home = await homeShard(runId);
+				raw(source, change);
+				if (label === "released") raw(source, APPEND_EVENT, events + 1, "p1-new");
+				return home;
+			});
+			return consolidateJournalStore(catalog);
+		});
+		const outcome = report.runs.map((run) => [run.runId, run.outcome, run.reason ?? null]);
+		assert.deepEqual(outcome, label === "released" ? [["r", "skipped", "leased"]] : [["r", "moved", null]]);
+		if (label === "released")
+			assert.equal(
+				(await withCatalog((catalog) => catalog.locate("r")))?.shard.path,
+				source,
+				"a resume that appended and released left the run on its source",
+			);
+	});

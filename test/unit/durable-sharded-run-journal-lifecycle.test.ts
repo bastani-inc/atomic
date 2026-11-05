@@ -1335,3 +1335,23 @@ test("the reconciliation does not write a saved status over one recorded since i
 	);
 	assert.notEqual(journal.shardOf("next")?.id, (await catalog.locate("z-finished"))?.shard.id);
 });
+
+test("recording a saved status says whether it was recorded, and refuses a stale entry by status or by time (#4325)", async () => {
+	const catalog = await JournalCatalog.open(store);
+	try {
+		await catalog.place({ runId: "x", status: "running" });
+		const read = (await catalog.locate("x"))!.run;
+		assert.equal(await catalog.reconcileStatus({ ...read, status: "failed" }, "completed"), false, "another status");
+		assert.equal(
+			await catalog.reconcileStatus({ ...read, updatedAt: read.updatedAt - 1 }, "completed"),
+			false,
+			"another time",
+		);
+		assert.equal((await catalog.locate("x"))?.run.status, "running");
+		assert.equal(await catalog.reconcileStatus(read, "completed"), true);
+		assert.equal((await catalog.locate("x"))?.run.status, "completed");
+		assert.equal(await catalog.reconcileStatus(read, "failed"), false, "the entry changed since it was read");
+	} finally {
+		await catalog.close();
+	}
+});
