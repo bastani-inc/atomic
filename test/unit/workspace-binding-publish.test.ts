@@ -236,15 +236,18 @@ describe("publishPullRequest (#3109)", () => {
 		assert.deepEqual(invalid.fields, { repo: "not a repo" });
 	});
 
-	test("a gh that cannot be executed is gh-failed, and cancellation rejects with the signal's reason (#3109)", async () => {
+	// POSIX: spawning a directory fails with EACCES there; Windows reports ENOENT, which reads as a missing gh.
+	test.skipIf(process.platform === "win32")("a gh that cannot be executed is gh-failed (#3109)", async () => {
 		const { changeSet } = await committedChangeSet("spawn");
 		restoreGh();
 		restoreGh = setWorkspaceGhCommand({ path: dirs.root, args: [] });
 		const notExecutable = await rejection(publishPullRequest(changeSet));
 		assert.ok(isWorkspacePublicationError(notExecutable));
 		assert.equal(notExecutable.reason, "gh-failed");
-		restoreGh();
-		restoreGh = setWorkspaceGhCommand({ path: process.execPath, args: [GH_STUB] });
+	});
+
+	test("restoring the gh command undoes an override, and cancellation rejects with the signal's reason (#3109)", async () => {
+		const { changeSet } = await committedChangeSet("cancel");
 		const undo = setWorkspaceGhCommand({ path: join(dirs.root, "no-gh"), args: [] });
 		undo();
 		assert.equal((await publishPullRequest(changeSet)).created, true, "restoring the command undoes the override");

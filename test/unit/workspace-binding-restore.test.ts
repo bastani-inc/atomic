@@ -61,7 +61,7 @@ describe("restoreWorkspace (#3109)", () => {
 	test("re-adds a deleted worktree from its branch (#3109)", async () => {
 		const { binding } = await boundBranch("deleted");
 		const head = commitFile(binding.worktree, "kept.txt", "committed before deletion\n");
-		rmSync(binding.worktree, { recursive: true, force: true });
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		assert.equal(await restoreWorkspace(binding), realpathSync(binding.worktree));
 		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
 		assert.equal(git(binding.worktree, "symbolic-ref", "--short", "HEAD"), binding.branch);
@@ -72,8 +72,8 @@ describe("restoreWorkspace (#3109)", () => {
 		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "pushed" }));
 		const head = commitFile(binding.worktree, "pushed.txt", "on the remote\n");
 		git(binding.worktree, "push", "-q", "origin", "pushed");
-		rmSync(binding.worktree, { recursive: true, force: true });
-		rmSync(binding.repository, { recursive: true, force: true });
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		rmSync(binding.repository, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		assert.equal(await restoreWorkspace(binding), binding.worktree);
 		assert.equal(git(binding.worktree, "rev-parse", "HEAD"), head);
 	});
@@ -163,7 +163,7 @@ describe("restoreWorkspace (#3109)", () => {
 
 	test("reports restore-failed when the local repository is gone, before any git work (#3109)", async () => {
 		const { repo, binding } = await boundBranch("vanished");
-		rmSync(repo, { recursive: true, force: true });
+		rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const { result, commands } = await countGitCommands(() => rejection(restoreWorkspace(binding)));
 		assert.ok(isWorkspaceRestoreError(result));
 		assert.equal(result.reason, "repository-missing");

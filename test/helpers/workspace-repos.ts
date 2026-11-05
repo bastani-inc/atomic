@@ -50,7 +50,7 @@ export function workspaceSandbox(prefix: string): WorkspaceSandboxDirs {
 		cleanup() {
 			if (previous === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 			else process.env.ATOMIC_CODING_AGENT_DIR = previous;
-			rmSync(root, { recursive: true, force: true });
+			rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		},
 	};
 }

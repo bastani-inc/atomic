@@ -136,7 +136,7 @@ describe("workspace writer lease (#3109)", () => {
 	test("releasing after the worktree's git directory is gone is a no-op (#3109)", async () => {
 		const worktree = await boundWorktree("removed");
 		const lease = await acquireWorkspaceWriterLease({ worktree }, { owner: "removed" });
-		rmSync(join(lease.lockFile, ".."), { recursive: true, force: true });
+		rmSync(join(lease.lockFile, ".."), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		await lease.release();
 	});
 

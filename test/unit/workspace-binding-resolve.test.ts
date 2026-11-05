@@ -436,7 +436,7 @@ describe("workspace resolution details (#3109)", () => {
 		} finally {
 			if (previous === undefined) delete process.env.TMPDIR;
 			else process.env.TMPDIR = previous;
-			rmSync(scratch, { recursive: true, force: true });
+			rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		}
 	});
 
@@ -448,7 +448,7 @@ describe("workspace resolution details (#3109)", () => {
 		assert.equal(missingBase.code, "unknown-base");
 		git(repo, "branch", "later");
 		const binding = await resolveWorkspace(api);
-		rmSync(binding.worktree, { recursive: true, force: true });
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const again = await resolveWorkspace(api);
 		assert.notEqual(again, binding);
 		assert.equal(existsSync(again.worktree), true);
@@ -880,7 +880,7 @@ describe("workspace git phases (#3109)", () => {
 	test("restores a deleted worktree with a network fetch and local worktree commands (#3109)", async () => {
 		const remote = createRemote(dirs.root, "restore-phases");
 		const binding = await resolveWorkspace(workspace({ repo: remote.url, branch: "main" }));
-		rmSync(binding.worktree, { recursive: true, force: true });
+		rmSync(binding.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		const record = transcriptOf({ worktree: binding.worktree });
 		const { transcript } = await record(() => restoreWorkspace(binding));
 		assert.deepEqual(transcript, [

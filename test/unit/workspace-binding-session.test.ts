@@ -219,7 +219,7 @@ describe("createAgentSession({ workspace }) (#3109)", () => {
 		const sessionFile = first.session.sessionManager.getSessionFile();
 		const recorded = first.workspace!;
 		first.session.dispose();
-		rmSync(recorded.worktree, { recursive: true, force: true });
+		rmSync(recorded.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
 		const reopened = await SessionManager.open(sessionFile!, sessionDir);
 		const second = await createAgentSession(

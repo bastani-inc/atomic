@@ -510,7 +510,7 @@ describe("workspace bindings across resume (#3109)", () => {
 
 		const bindingA = recorded.find((binding) => binding.branch === "feat/a")!;
 		const bindingB = recorded.find((binding) => binding.branch === "feat/b")!;
-		rmSync(bindingA.worktree, { recursive: true, force: true });
+		rmSync(bindingA.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 		commitFile(bindingB.worktree, "between-runs.txt", "expected work, not drift\n");
 
 		failFirst = false;
