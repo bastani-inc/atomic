@@ -45,26 +45,12 @@ export interface WorkflowTaskRunners {
 }
 
 function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
-	return async (
+	const runTask = async (
 		name: string,
 		options: WorkflowTaskOptions,
 		stageFailFastScope?: ParallelFailFastScope,
 	): Promise<WorkflowTaskResult> => {
 		runtime.exit.throwIfWorkflowExitSelected();
-		/** A git failure while this task sets up its own worktree says that the task needs git, and why. */
-		const withGitRequired = <T>(setup: () => T, gitWorktreeDir: string | undefined): T => {
-			try {
-				return setup();
-			} catch (error) {
-				throw wrapGitRequired(error, {
-					workflow: runtime.workflowName,
-					runId: runtime.runId,
-					source: "task-option",
-					field: name,
-					...(gitWorktreeDir === undefined ? {} : { gitWorktreeDir }),
-				});
-			}
-		};
 		const runTaskOnce = async (
 			taskOptions: WorkflowTaskOptions,
 			prepareLiveOptions?: () => WorkflowTaskOptions,
@@ -82,14 +68,10 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				prepareLiveOptions: () => {
 					const preparedOptions = prepareLiveOptions?.() ?? taskOptions;
 					resolvedTaskOptions =
-						withGitRequired(
-							() =>
-								stageOptionsWithGitWorktree(
-									stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
-									runtime.workflowInvocationCwd,
-									runtime.gitWorktreeSetupCache,
-								),
-							taskOptions.gitWorktreeDir,
+						stageOptionsWithGitWorktree(
+							stageOptionsWithInputDefaults(preparedOptions, runtime.inputRuntimeDefaults),
+							runtime.workflowInvocationCwd,
+							runtime.gitWorktreeSetupCache,
 						) ?? preparedOptions;
 					return taskStageOptions(resolvedTaskOptions);
 				},
@@ -143,17 +125,13 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 		};
 		try {
 			const result = await runTaskOnce(options, () => {
-				prepared = withGitRequired(
-					() =>
-						prepareTaskWorktrees(
-							[{ ...options, name }],
-							{ ...options, worktree: true },
-							`${runtime.runId}-${name}-${crypto.randomUUID()}`,
-							name,
-							runtime.workflowInvocationCwd,
-							runtime.worktreeSymlinkDirectories,
-						),
-					undefined,
+				prepared = prepareTaskWorktrees(
+					[{ ...options, name }],
+					{ ...options, worktree: true },
+					`${runtime.runId}-${name}-${crypto.randomUUID()}`,
+					name,
+					runtime.workflowInvocationCwd,
+					runtime.worktreeSymlinkDirectories,
 				);
 				const preparedTask = prepared.tasks[0]!;
 				if (preparedTask.durableReplayKey !== undefined)
@@ -164,6 +142,20 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
 		} finally {
 			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
+		}
+	};
+	/** A git failure while a task sets up its own worktree says that the task needs git, and why. */
+	return async (name, options, stageFailFastScope) => {
+		try {
+			return await runTask(name, options, stageFailFastScope);
+		} catch (error) {
+			throw wrapGitRequired(error, {
+				workflow: runtime.workflowName,
+				runId: runtime.runId,
+				source: "task-option",
+				field: name,
+				...(options.gitWorktreeDir === undefined ? {} : { gitWorktreeDir: options.gitWorktreeDir }),
+			});
 		}
 	};
 }

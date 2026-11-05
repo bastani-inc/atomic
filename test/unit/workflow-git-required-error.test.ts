@@ -127,5 +127,7 @@ describe("WorkflowGitRequiredError (#4322)", () => {
 		assert.equal((nested as WorkflowGitRequiredError).cause, BUSY);
 		const reason = new Error("cancelled");
 		assert.equal(wrapGitRequired(reason, INPUT), reason);
+		const wrapped = new WorkflowGitRequiredError(INPUT, OFFLINE);
+		assert.equal(wrapGitRequired(wrapped, TASK), wrapped);
 	});
 });

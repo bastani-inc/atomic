@@ -2286,6 +2286,21 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(warnings.length, 2);
 		});
 
+		it("reports the offline reason after a failed download of the same release once the network is gone", async () => {
+			const { newer } = await installOlder();
+			failDownloads();
+			const reasons: string[] = [];
+			const onStatus = (status: { type: string; message: string }) => {
+				if (status.type === "warning") reasons.push(status.message);
+			};
+			await provision({ release: newer.release }, { onStatus });
+			vi.stubEnv(ENV_OFFLINE, "1");
+			await provision({ release: newer.release }, { onStatus });
+			assert.equal(reasons.length, 2);
+			assert.match(reasons[0]!, /\(download-failed\)/);
+			assert.match(reasons[1]!, /\(offline\)/);
+		});
+
 		it("shows a pending update without an installed tag when the install recorded none", async () => {
 			const { newer } = await installOlder();
 			rmSync(join(installDir, ".atomic-git-release.json"));

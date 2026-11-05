@@ -94,6 +94,7 @@ export function rehydrateWorkflowGitRequiredError(
 
 /** The git provisioning error behind `error`, wrapped for the workflow that needed it; anything else is returned as is. */
 export function wrapGitRequired(error: unknown, fields: WorkflowGitRequiredFields): unknown {
+	if (isWorkflowGitRequiredError(error)) return error;
 	const gitError = isGitProvisionError(error) ? error : findGitProvisionError(error);
 	return gitError === undefined ? error : new WorkflowGitRequiredError(fields, gitError);
 }
