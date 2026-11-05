@@ -5,6 +5,7 @@ import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-b
 import type { ActivityWatchdogDiagnostic } from "../src/modes/interactive-engine/activity-watchdog.ts";
 import "../src/modes/interactive/interactive-deferred-startup.ts";
 import "../src/modes/interactive/interactive-session-runtime.ts";
+import * as refusedSetting from "../src/modes/interactive/refused-decision-setting.ts";
 
 class ExitCalled extends Error {}
 
@@ -32,8 +33,8 @@ test("a refused decision setting found after startup stops the TUI, prints its m
 	const mode = { stop: vi.fn() };
 	assert.throws(
 		() =>
-			InteractiveModeBase.prototype.exitOnRefusedDecisionSetting.call(
-				mode as never,
+			refusedSetting.exitOnRefusedDecisionSetting(
+				mode,
 				new Error("Interactive engine resource loading failed", { cause: refused }),
 			),
 		ExitCalled,
@@ -48,35 +49,37 @@ test("any other failure leaves the TUI running", () => {
 	const { exit, stderr } = exitSpies();
 	const mode = { stop: vi.fn() };
 	for (const error of [new Error("bad extension"), undefined])
-		InteractiveModeBase.prototype.exitOnRefusedDecisionSetting.call(mode as never, error);
+		refusedSetting.exitOnRefusedDecisionSetting(mode, error);
 	expect(mode.stop).not.toHaveBeenCalled();
 	expect(stderr).not.toHaveBeenCalled();
 	expect(exit).not.toHaveBeenCalled();
 });
 
 test("deferred startup stops on a project setting refused when the project is trusted at the prompt", async () => {
-	const exitOnRefusedDecisionSetting = vi.fn();
-	const showError = vi.fn();
+	const { exit } = exitSpies();
 	const mode = {
 		bindCurrentSessionExtensions: async () => {
 			throw refused;
 		},
-		exitOnRefusedDecisionSetting,
+		stop: vi.fn(),
 		promptTurnWorkingLoaderActive: true,
 		deferredStartupPending: true,
-		showError,
+		showError: vi.fn(),
 		maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
 		chatContainer: undefined,
 	};
-	await InteractiveModeBase.prototype.completeDeferredStartup.call(mode as never);
-	expect(exitOnRefusedDecisionSetting).toHaveBeenCalledWith(refused);
-	expect(showError).toHaveBeenCalledWith(`Extension loading failed: ${refused.message}`);
+	await expect(InteractiveModeBase.prototype.completeDeferredStartup.call(mode as never)).rejects.toBeInstanceOf(
+		ExitCalled,
+	);
+	expect(mode.stop).toHaveBeenCalledWith("transcript");
+	expect(exit).toHaveBeenCalledWith(1);
+	expect(mode.showError).not.toHaveBeenCalled();
 });
 
 test("an engine diagnostic carrying a refused decision setting stops Atomic; others are shown", () => {
-	const exitOnRefusedDecisionSetting = vi.fn();
+	const { exit } = exitSpies();
 	const mode = {
-		exitOnRefusedDecisionSetting,
+		stop: vi.fn(),
 		stopWorkingLoader: vi.fn(),
 		showStatus: vi.fn(),
 		showError: vi.fn(),
@@ -88,8 +91,13 @@ test("an engine diagnostic carrying a refused decision setting stops Atomic; oth
 		message: "Interactive engine resource loading failed: renamed setting",
 		error: new Error("wrapped", { cause: refused }),
 	};
-	InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, failure);
-	expect(exitOnRefusedDecisionSetting).toHaveBeenCalledWith(failure.error);
+	assert.throws(() => InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, failure), ExitCalled);
+	expect(exit).toHaveBeenCalledWith(1);
+	expect(mode.showError).not.toHaveBeenCalled();
+	InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, {
+		...failure,
+		error: new Error("bad extension"),
+	});
 	expect(mode.showError).toHaveBeenCalledWith(failure.message);
 	InteractiveModeBase.prototype.handleEngineDiagnostic.call(mode as never, {
 		activity: undefined,
@@ -100,4 +108,5 @@ test("an engine diagnostic carrying a refused decision setting stops Atomic; oth
 	});
 	expect(mode.stopWorkingLoader).toHaveBeenCalledTimes(1);
 	expect(mode.showStatus).toHaveBeenCalledWith("Engine restarted", undefined);
+	expect(mode.stop).toHaveBeenCalledTimes(1);
 });

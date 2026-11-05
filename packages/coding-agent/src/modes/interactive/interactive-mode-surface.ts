@@ -152,7 +152,6 @@ declare module "./interactive-mode-base.ts" {
 		applyRuntimeSettings(): void;
 		rebindCurrentSession(): Promise<void>;
 		handleFatalRuntimeError(prefix: string, error: unknown): Promise<never>;
-		exitOnRefusedDecisionSetting(error: unknown): void;
 		handleEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void;
 		renderCurrentSessionState(): void;
 		startSessionRecovery(reason: SessionRecoveryReason): void;
