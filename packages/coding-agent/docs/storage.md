@@ -433,7 +433,7 @@ Session listings accept an `AbortSignal`. Cancellation rejects with the original
 
 ### Team setup errors
 
-`joinTeam()`, `leaveTeam()`, `getTeamProfile()`, `teamProfileSelection()`, `atomic storage join`, `atomic team`, and the `ATOMIC_PROFILE=ci` startup check throw two classes from `@bastani/atomic/storage`. Branch on `code`; the guards `isTeamProfileError()` and `isTeamProfileConfigError()` also recognize errors by `name` and `code` across processes, and `isRetryableTeamProfileError()` checks an error and its causes, up to eight levels. Each message ends with its `hint`, which is also a field. Messages and fields name variables, flags, and files, never a token.
+`joinTeam()`, `leaveTeam()`, `getTeamProfile()` (all three return promises), `teamProfileSelection()`, `atomic storage join`, `atomic team`, and the `ATOMIC_PROFILE=ci` startup check throw these classes from `@bastani/atomic/storage`. Branch on `code`; the guards `isTeamProfileError()`, `isTeamProfileTimeoutError()`, and `isTeamProfileConfigError()` also recognize errors by `name` and `code` across processes, and `isRetryableTeamProfileError()` checks an error and its causes, up to eight levels. Each message ends with its `hint`, which is also a field. Messages and fields name variables, flags, and files, never a token.
 
 `TeamProfileConfigError` (a `StorageConfigError`; fields `source` (`"sdk"`, `"cli"`, or `"env"`), `field`, `code`, `reason`, `hint`, optional `path` and `missing`; `retryable: false`). Nothing was changed; fix the named input.
 
@@ -458,9 +458,11 @@ Session listings accept an `AbortSignal`. Cancellation rejects with the original
 |---|---|---|
 | `settings-unreadable` | The settings file cannot be parsed; `subject` names it. Nothing was changed. | Fix the file, then run again. |
 | `adapter-not-installed` | The libSQL adapter cannot be loaded. Nothing was changed. | Run `atomic install npm:@bastani/atomic-storage-libsql`. |
-| `connection-failed` | The database did not answer `SELECT 1`; `retryable: true`. Nothing was changed. | Check the URL, the token, and the network, then retry. |
+| `connection-failed` | The database refused or failed `SELECT 1`; `retryable: true`. Nothing was changed. | Check the URL, the token, and the network, then retry. |
+| `connection-timeout` | The database did not answer within 15 seconds. Thrown as `TeamProfileTimeoutError`, a `TeamProfileError` with `timeoutMs`, `elapsedMs`, and `phase` (`"connect"`); `retryable: true`. Nothing was changed. | Check that the database is reachable from this machine, then retry. |
 | `token-write-failed` | The private token file could not be written. Nothing was changed. | Make the agent directory writable. |
-| `settings-write-failed` | Settings could not be written; the previous selection and its token are kept. | Make the settings file writable. |
+| `settings-write-failed` | Settings could not be written, for example because the disk is full; the previous selection and its token are kept. Settings files are replaced whole, so a failed or interrupted write never leaves a partial file. | Make the settings file writable or free space. |
+| `settings-locked` | Another process held the settings lock; `retryable: true`. Nothing was changed. | Retry in a few seconds; a lock left by a killed process expires after 10 seconds. |
 | `broker-restart-failed` | Returned in `broker`, not thrown: settings were saved but the Intercom broker did not restart; `retryable: true`. | Run `atomic intercom restart`. |
 | `token-delete-failed` | `leaveTeam` removed the settings but could not delete the token file. | Delete the file yourself. |
 

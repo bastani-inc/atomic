@@ -25,7 +25,7 @@ turso db tokens create <db> > ~/team-token
 atomic team join libsql://<db>.turso.io --token-file ~/team-token
 ```
 
-`atomic team join <url> [--token-file <path>] [--prefix <prefix>]` checks everything before it changes anything: the URL, the token, the prefix, your global settings, the installed adapter, and a `SELECT 1` on the database. If any check fails, nothing is written. Then it:
+`atomic team join <url> [--token-file <path>] [--prefix <prefix>]` checks everything before it changes anything: the URL, the token, the prefix, your global settings, the installed adapter, and a `SELECT 1` on the database, which must answer within 15 seconds. If any check fails, nothing is written. Then it:
 
 1. stores the token in a private file in the agent directory (mode 600). Running the command again with the same token reuses that file;
 2. writes two keys of `~/.atomic/agent/settings.json` in one update: `storage`, set to the team database, and `sessions.storage`, set to the local default store (`{ "path": "workflows/journal.sqlite" }`), so your transcripts stay on your machine. Every other setting keeps its value;
@@ -112,7 +112,7 @@ Keep the token in an encrypted secret, give it only to the jobs that need it, an
 
 ### From the SDK
 
-`@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, `getTeamProfile()`, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })` and as `RunOpts.journal`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
+`@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, which return promises, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })` and as `RunOpts.journal`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
 
 Intercom has one broker per agent directory, chosen by the process, so give the CI profile variables to the host process (for Intercom in its own sessions) and to the agent processes it starts:
 

@@ -47,7 +47,7 @@ describe("parseArgs", () => {
 			}
 		});
 
-		test("lists the storage and intercom commands (#3857)", () => {
+		test("lists the storage, team and intercom commands (#3857, #4320)", () => {
 			const output = vi.spyOn(console, "log").mockImplementation(() => {});
 			try {
 				printHelp();
@@ -56,8 +56,13 @@ describe("parseArgs", () => {
 					help,
 					/storage <command>\s+Show storage selections and connectivity, or join a shared database/,
 				);
+				assert.match(
+					help,
+					/team <command>\s+Join or leave a team database \(shared workflow runs and Intercom, private sessions\)/,
+				);
 				assert.match(help, /intercom <command>\s+Show or restart this machine's Intercom broker/);
-				assert.match(help, /<command> --help\s+Show help for .*\/storage\/intercom/);
+				assert.match(help, /<command> --help\s+Show help for .*\/storage\/team\/intercom/);
+				assert.match(help, /ATOMIC_PROFILE\s+- ci: use the team database for sessions, workflow runs and Intercom/);
 			} finally {
 				output.mockRestore();
 			}
