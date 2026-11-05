@@ -93,22 +93,30 @@ jobs:
       - run: atomic -p "Fix the failing test in the checkout"
 ```
 
-For a [GitHub Agentic Workflows](https://github.github.com/gh-aw/) (gh-aw) workflow, put the same variables in the frontmatter `env:` and the install commands in `steps:`, which run before the agent:
+In a [GitHub Agentic Workflows](https://github.github.com/gh-aw/) (gh-aw) workflow, run Atomic in a custom job from the frontmatter `jobs:`. gh-aw runs those as ordinary GitHub Actions jobs before its own agent, outside its sandbox, so the token can stay in a step's `env:`:
 
 ```yaml
 ---
 on: workflow_dispatch
-env:
-  ATOMIC_PROFILE: ci
-  ATOMIC_TEAM_URL: ${{ vars.ATOMIC_TEAM_URL }}
-  ATOMIC_TEAM_TOKEN: ${{ secrets.ATOMIC_TEAM_TOKEN }}
-steps:
-  - run: npm install -g @bastani/atomic
-  - run: atomic install npm:@bastani/atomic-storage-libsql
+jobs:
+  atomic:
+    runs-on: ubuntu-latest
+    env:
+      ATOMIC_PROFILE: ci
+      ATOMIC_TEAM_URL: ${{ vars.ATOMIC_TEAM_URL }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm install -g @bastani/atomic
+      - run: atomic install npm:@bastani/atomic-storage-libsql
+      - run: atomic -p "Fix the failing test in the checkout"
+        env:
+          ATOMIC_TEAM_TOKEN: ${{ secrets.ATOMIC_TEAM_TOKEN }}
 ---
 ```
 
-Keep the token in an encrypted secret, give it only to the jobs that need it, and remember that every tool the agent runs in the job inherits it.
+Do not put the token in the frontmatter `env:` or `steps:`: gh-aw makes those visible to its own agent, and `gh aw compile --strict` refuses secrets there.
+
+Keep the token in an encrypted secret, give it only to the step that needs it, and remember that every tool the agent runs in that step inherits it.
 
 ### From the SDK
 
@@ -140,7 +148,7 @@ A selection with an in-memory token cannot be reopened by [local workflow worker
 
 ## Security
 
-Anyone who can read the database can read everything in it: every session stored there (CI sessions in the CI profile), every workflow run, and Intercom messages until shortly after they are delivered. Treat database access as full read access, give each team its own database or token, and rotate the token when someone leaves. The team layout keeps individual sessions out of the database only because `sessions.storage` points at the local store; share a session deliberately with `/share` or export and import.
+Anyone who can read the database can read everything in it: every session stored there (CI sessions in the CI profile), every workflow run, and Intercom messages until shortly after they are delivered. Treat database access as full read access and give each team its own database. With Turso, create per-database tokens (`turso db tokens create <db>`), give CI tokens an `--expiration`, and when someone leaves, run `turso db tokens invalidate <db>` and hand out new tokens: Turso cannot revoke a single token. The team layout keeps individual sessions out of the database only because `sessions.storage` points at the local store; share a session deliberately with `/share` or export and import.
 
 ## Related
 
