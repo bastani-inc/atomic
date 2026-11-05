@@ -155,7 +155,7 @@ export function createDurableStagePrimitive(input: {
 	readonly workflowId: string;
 	readonly backend: DurableWorkflowBackend;
 	readonly nextReplayKey: (stageName: string) => string;
-	readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
+	readonly stage: (name: string, options: StageOptions, replayKey: string) => StageContext;
 	readonly durableIntercomGroup?: (replayKey: string, stageId: string | undefined) => string | undefined;
 	readonly beforeCall?: () => void | Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
@@ -181,7 +181,7 @@ export function createDurableStagePrimitive(input: {
 		const durableStageId =
 			topology?.stageId ?? pendingStageIdForReplay(input.backend, input.workflowId, replayKey, name);
 		const durableIntercomGroup = topology?.intercomGroup ?? input.durableIntercomGroup?.(replayKey, durableStageId);
-		const liveOptions: StageOptions | undefined = {
+		const liveOptions: StageOptions = {
 			...(options ?? {}),
 			durableReplayKey: replayKey,
 			...(durableStageId !== undefined ? { durableStageId } : {}),

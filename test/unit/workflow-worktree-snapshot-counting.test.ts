@@ -6,10 +6,10 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
-import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -21,7 +21,8 @@ afterEach(() => sandbox.dispose());
 test("eight workflow boundaries share one base fetch and store deltas instead of eight bases (#4245)", async () => {
 	const baseSize = 128 * 1024;
 	const { clone } = await sandbox.remoteWithClone("repo", { "base.bin": Buffer.alloc(baseSize, 42) });
-	const actual = new MemoryRunJournal();
+	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+	const actual = fixture.journal;
 	let ancestryReads = 0;
 	let readsBeforeFirstCheckpoint = 0;
 	const journal = new Proxy(actual, {
@@ -84,4 +85,5 @@ test("eight workflow boundaries share one base fetch and store deltas instead of
 		.filter((event) => event.event === "start" && event.argv?.includes("fetch"));
 	assert.equal(fetches.length, 1);
 	await backend.close();
+	await fixture.database.close();
 });

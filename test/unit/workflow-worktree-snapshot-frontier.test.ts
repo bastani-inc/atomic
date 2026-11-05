@@ -8,12 +8,12 @@ import {
 	restoreWorktreeSnapshot,
 	type WorktreeSnapshot,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
-import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { RUN_EVENT_TYPES, type RunEvent } from "../../packages/workflows/src/durable/journal/types.js";
 import {
 	listWorkflowSnapshotBoundaries,
 	resolveWorkflowSnapshotFrontier,
 } from "../../packages/workflows/src/durable/worktree-snapshots.js";
+import { openSqlSnapshotJournal } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 let sandbox: GitSandbox;
@@ -24,7 +24,8 @@ afterEach(() => sandbox.dispose());
 
 test("resume validates the latest boundary once, fails on drift, and can restore it (#4245)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
-	const journal = new MemoryRunJournal();
+	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+	const { journal } = fixture;
 	await journal.createRun({ runId: "run", name: "run", cwd: clone, status: "running", createdAt: 1 });
 	const acquired = await journal.acquire("run", "holder");
 	assert.equal(acquired.status, "acquired");
@@ -82,13 +83,14 @@ test("resume validates the latest boundary once, fails on drift, and can restore
 		storeDir: sandbox.path("host"),
 	});
 	assert.equal(readFileSync(join(tool2, "state.txt"), "utf8"), "T2\n");
-	await journal.close();
+	await fixture.close();
 });
 
 test("failed multi-root restore removes earlier fresh worktrees and records no mapping (#4245)", async () => {
 	const first = await sandbox.remoteWithClone("one");
 	const second = await sandbox.remoteWithClone("two");
-	const journal = new MemoryRunJournal();
+	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+	const { journal } = fixture;
 	await journal.createRun({ runId: "run", name: "run", cwd: first.clone, status: "running", createdAt: 1 });
 	const acquired = await journal.acquire("run", "holder");
 	assert.equal(acquired.status, "acquired");
@@ -122,5 +124,5 @@ test("failed multi-root restore removes earlier fresh worktrees and records no m
 		entries.every((entry) => entry.event.type === RUN_EVENT_TYPES.checkpointRecorded),
 		true,
 	);
-	await journal.close();
+	await fixture.close();
 });
