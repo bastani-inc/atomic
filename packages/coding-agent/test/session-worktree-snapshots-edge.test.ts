@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, lfsPointer } from "../../../test/helpers/worktree-snapshot.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";
 import type { SessionEntry, WorktreeSnapshotEntry } from "../src/core/session-manager.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -555,9 +555,9 @@ describe("opening a session where it continues", () => {
 		async () => {
 			const { clone } = await sandbox.remoteWithClone("repo", {
 				".gitattributes": "*.bin filter=lfs -text\n",
-				"data.bin": "base\n",
+				"data.bin": lfsPointer("base\n"),
 			});
-			sandbox.write(join(clone, "data.bin"), "edited\n");
+			sandbox.write(join(clone, "data.bin"), lfsPointer("edited\n"));
 			const store = await sqlStore();
 			const capture = await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs });
 			assert.equal(capture.status, "captured");
