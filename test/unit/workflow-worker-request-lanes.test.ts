@@ -112,6 +112,25 @@ test("a worker's exit cleanup waits for every request it sent except its deliver
 	await finish("delivery");
 });
 
+test("a control acknowledgement is answered only after the activity the worker sent before it was published (#4315)", async () => {
+	const { started, settled, send, finish } = heldLanes();
+	void send("activity", WORKER_REQUEST_LANES.activity);
+	void send("controlled", WORKER_REQUEST_LANES.controlled);
+	void send("renew", WORKER_REQUEST_LANES.heartbeat);
+	void send("budget", WORKER_REQUEST_LANES.budget);
+	void send("later activity", WORKER_REQUEST_LANES.activity);
+	await drain();
+	assert.deepEqual(started, ["activity", "budget", "later activity"], "the acknowledgement waits for the activity");
+	await finish("activity");
+	assert.deepEqual(started, ["activity", "budget", "later activity", "controlled"]);
+	assert.ok(!settled.includes("later activity"), "activity sent after it does not hold it back");
+	await finish("controlled");
+	assert.deepEqual(started, ["activity", "budget", "later activity", "controlled", "renew"]);
+	await finish("renew");
+	await finish("budget");
+	await finish("later activity");
+});
+
 test("requests that take or end an attempt are barriers, and commits and heartbeat requests each run in order (#4315)", () => {
 	const lanes = (lane: WorkerRequestLane) =>
 		(Object.keys(WORKER_REQUEST_LANES) as AnsweredWorkerRequest[]).filter(
@@ -119,8 +138,10 @@ test("requests that take or end an attempt are barriers, and commits and heartbe
 		);
 	assert.deepEqual(lanes("barrier"), ["ready", "claim", "fenced", "recycle", "complete"]);
 	assert.deepEqual(lanes("commits"), ["commit"]);
-	assert.deepEqual(lanes("heartbeats"), ["heartbeat", "control", "controlled"]);
-	assert.deepEqual(lanes("free"), ["budget", "activity", "route"]);
+	assert.deepEqual(lanes("heartbeats"), ["heartbeat", "control"]);
+	assert.deepEqual(lanes("acknowledgements"), ["controlled"]);
+	assert.deepEqual(lanes("free"), ["budget", "route"]);
+	assert.deepEqual(lanes("publications"), ["activity"]);
 	assert.deepEqual(lanes("detached"), ["delivery", "delivery-ready"]);
 });
 

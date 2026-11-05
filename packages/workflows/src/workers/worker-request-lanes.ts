@@ -7,12 +7,27 @@ import type { WorkerRequest } from "./protocol.js";
  * - `barrier`: starts once every earlier request has settled, and every later one starts after it settles.
  * - `commits` and `heartbeats`: each a sequence. A request starts once the latest barrier and the previous request of
  *   its sequence have settled, so the requests of one sequence run one at a time in the order the worker sent them.
+ * - `acknowledgements`: in the `heartbeats` sequence, and starts only once every earlier `publications` request has
+ *   settled too.
  * - `free`: starts once the latest barrier has settled, alongside every other request.
+ * - `publications`: a free request that every later `acknowledgements` request waits for.
  * - `detached`: a free request that neither a later barrier nor {@link WorkerRequestLanes.settled} waits for.
  */
-export type WorkerRequestLane = "barrier" | "commits" | "heartbeats" | "free" | "detached";
+export type WorkerRequestLane =
+	| "barrier"
+	| "commits"
+	| "heartbeats"
+	| "acknowledgements"
+	| "free"
+	| "publications"
+	| "detached";
 
-const SEQUENCES: ReadonlySet<WorkerRequestLane> = new Set(["commits", "heartbeats"]);
+/** The sequence each sequenced lane runs in. */
+const SEQUENCES: Readonly<Partial<Record<WorkerRequestLane, "commits" | "heartbeats">>> = {
+	commits: "commits",
+	heartbeats: "heartbeats",
+	acknowledgements: "heartbeats",
+};
 
 type OneWayWorkerMessage =
 	| "delivery-ack"
@@ -30,8 +45,9 @@ export type AnsweredWorkerRequest = Exclude<WorkerRequest["kind"], OneWayWorkerM
  * each after the previous one committed. What the worker's heartbeat repeats (lease renewals, control polls and their
  * acknowledgements, usage reports) is a sequence of its own, which keeps that background traffic at one journal
  * transaction per worker at a time, as before, while the requests of an agent step no longer wait behind it. Admission
- * checks, activity and routes are free. A delivery waits on the worker's own acknowledgements, so it stays detached
- * as it was outside the worker's serial chain before.
+ * checks, activity and routes are free. A control acknowledgement also waits for the activity the worker sent before
+ * it, so a control change is confirmed only once the root shows that activity. A delivery waits on the worker's own
+ * acknowledgements, so it stays detached as it was outside the worker's serial chain before.
  */
 export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, WorkerRequestLane>> = {
 	ready: "barrier",
@@ -42,9 +58,9 @@ export const WORKER_REQUEST_LANES: Readonly<Record<AnsweredWorkerRequest, Worker
 	commit: "commits",
 	heartbeat: "heartbeats",
 	control: "heartbeats",
-	controlled: "heartbeats",
+	controlled: "acknowledgements",
 	budget: "free",
-	activity: "free",
+	activity: "publications",
 	route: "free",
 	delivery: "detached",
 	"delivery-ready": "detached",
@@ -55,17 +71,28 @@ export class WorkerRequestLanes {
 	/** Settles once the latest barrier has. */
 	private barrier: Promise<void> = Promise.resolve();
 	/** Settles, for each sequence, once its latest request has. */
-	private readonly sequences = new Map<WorkerRequestLane, Promise<void>>();
+	private readonly sequences = new Map<"commits" | "heartbeats", Promise<void>>();
+	/** Settles once every publication scheduled so far has. */
+	private publications: Promise<void> = Promise.resolve();
 	/** Settles once every request scheduled so far, except detached ones, has. */
 	private everything: Promise<void> = Promise.resolve();
 
 	run<T>(lane: WorkerRequestLane, request: () => Promise<T>): Promise<T> {
-		const after = lane === "barrier" ? this.everything : Promise.all([this.barrier, this.sequences.get(lane)]);
+		const sequence = SEQUENCES[lane];
+		const after =
+			lane === "barrier"
+				? this.everything
+				: Promise.all([
+						this.barrier,
+						sequence === undefined ? undefined : this.sequences.get(sequence),
+						lane === "acknowledgements" ? this.publications : undefined,
+					]);
 		const result = after.then(request);
 		// Its successors wait for it to settle either way; its outcome, failure included, is the caller's.
 		const settled = Promise.allSettled([result]).then(() => {});
 		if (lane === "barrier") this.barrier = settled;
-		if (SEQUENCES.has(lane)) this.sequences.set(lane, settled);
+		if (sequence !== undefined) this.sequences.set(sequence, settled);
+		if (lane === "publications") this.publications = Promise.all([this.publications, settled]).then(() => {});
 		if (lane !== "detached") this.everything = Promise.all([this.everything, settled]).then(() => {});
 		return result;
 	}
