@@ -77,6 +77,13 @@ import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.js";
 import { renderSubagentToolCall, renderSubagentToolResult } from "./tool-rendering.js";
 
 export {
+	isReleasedChildError,
+	RELEASED_CHILD_ERROR_NAME,
+	ReleasedChildError,
+	type ReleasedChildErrorCode,
+	type ReleasedChildErrorFields,
+} from "../runs/foreground/released-child-errors.js";
+export {
 	findSubagentChildRecord,
 	readSubagentChildRecords,
 	SUBAGENT_CHILD_RECORD_TYPE,

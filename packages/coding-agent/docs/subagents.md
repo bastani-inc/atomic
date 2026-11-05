@@ -289,6 +289,17 @@ A background subagent that waits more than a minute on a tool call marked `detac
 - A shell `wait` without a `budgetMs` waits until its task finishes, so a child that waits on its own background shell this way is released too, and the task's result wakes it. A shell task a released child started that finishes while it is released wakes it with the task's completion notice; while it is paused or quit, the notice waits for its `resume`.
 - An Intercom `ask`, and `contact_supervisor` with `need_decision` or `interview_request`, release a waiting child too: the reply reaches the session that launched it and wakes the child with that reply as the call's result, once. A reply from a session on another machine is not routed to a released child.
 
+When waking or keeping track of a released subagent fails, `status` and the notice show a typed `ReleasedChildError`. Its `code` says why:
+
+| Code | When it happens | What to do |
+| --- | --- | --- |
+| `child-record-missing` | The session waking the child has no record of it. | Wake it from the session that launched it. |
+| `child-unrestorable` | The child's session or agent cannot be restored, for example because its agent is no longer defined. | Fix what the reason names, then `resume` it, or launch a new subagent. |
+| `record-append-failed` | The child's record could not be saved to the session store. Retryable. | Check the session store. Until the record is saved, a restart would not know this state of the child. |
+| `hold-failed` | Sends to the released child could not be held at the Intercom broker. Retryable. | Check that Intercom is connected. Until the reservation exists, sends to the child are answered as not found. |
+| `completion-not-held` | A shell task finished after the child that started it ran again or ended. | Nothing: the session that launched the child receives the completion notice instead. |
+| `wake-failed` | A wake failed for any other reason. Retryable. | The results are kept: `resume` the child to try again. |
+
 The `kill` action was removed, and `interrupt` before it. Calls with either are rejected with an error that names `quit` as the replacement. For `kill` it reads:
 
 ```text
