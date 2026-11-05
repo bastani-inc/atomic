@@ -270,3 +270,52 @@ test("a provider failure signal is carried by the error that wraps it and read f
 	assert.equal(carriedProviderFailure(new DecisionProviderError({ providerStatus: 500 })), undefined);
 	assert.equal(carriedProviderFailure(new DecisionProviderError({})), undefined);
 });
+
+test("a decision trace reports the resolve phase before its first request", async () => {
+	const { DecisionTrace } = await import("../../packages/coding-agent/src/core/structured-output/deadline.js");
+	const trace = new DecisionTrace();
+	assert.equal(trace.phase, "resolve");
+	trace.begin("chat");
+	assert.equal(trace.phase, "chat");
+	trace.begin("classifier");
+	assert.equal(trace.phase, "classifier");
+});
+
+test("an auto-routing inference failure keeps the decision error as its cause (#4358)", async () => {
+	const { routeExecutionModel, AutoRoutingInferenceError } = await import(
+		"../../packages/coding-agent/src/core/execution-model-router.js"
+	);
+	const other = { ...decisionChatModel, id: "other", name: "Other" };
+	const failing = vi.fn(() => {
+		throw new Error("connection refused");
+	});
+	const error = await routeExecutionModel({
+		ctx: {
+			model: decisionChatModel,
+			getDecisionModel: () => "",
+			modelRegistry: {
+				getAll: () => [decisionChatModel, other],
+				getAvailable: () => [decisionChatModel, other],
+				streamSimple: failing as never,
+				containsConfiguredCredential: async () => false,
+			},
+		},
+		task: "Summarize the change.",
+		agent: { name: "worker", description: "test" },
+		taskNeeds: {
+			work: "coding",
+			difficulty: "easy",
+			mistakeCost: "low",
+			needsImages: false,
+			longContext: false,
+			latencySensitive: false,
+		},
+	}).then(
+		() => undefined,
+		(failure: unknown) => failure,
+	);
+	assert.ok(error instanceof AutoRoutingInferenceError);
+	assert.ok(isDecisionProviderError(error.cause));
+	assert.equal((error.cause as DecisionProviderError).model, "decision-test/chat");
+	assert.ok(failing.mock.calls.length > 0);
+});

@@ -506,7 +506,7 @@ function describedText(text: unknown): boolean {
 
 function hasDescribedCriteria(question: StructuredDecisionQuestion): boolean {
 	if (question.type === "bool")
-		return describedText(question.criteria?.true) && describedText(question.criteria?.false);
+		return describedText(question.criteria?.true) && describedText(question.criteria.false);
 	if (question.type === "score")
 		return (
 			Array.isArray(question.criteria) && question.criteria.length >= 2 && question.criteria.every(describedText)

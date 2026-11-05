@@ -210,3 +210,33 @@ test("finding a decision error walks causes, stops at eight, and reports retryab
 	assert.equal(isRetryableDecisionError(ERRORS.output), false);
 	assert.equal(isRetryableDecisionError(undefined), false);
 });
+
+test("a structural decision error is recognized for every family code, and a plain cause stays a plain error", () => {
+	for (const code of [
+		"renamed-setting",
+		"invalid-setting",
+		"invalid-request",
+		"model-unavailable",
+		"timeout",
+		"invalid-output",
+		"provider-failure",
+	]) {
+		assert.equal(isDecisionError({ name: "DecisionError", code }), true, code);
+	}
+	assert.equal(findDecisionError(new Error("a", { cause: null })), undefined);
+	const restored = rehydrateDecisionError(
+		serializeDecisionError(new DecisionOutputError({ model: "a" }, { cause: new RangeError("inner") })),
+	);
+	assert.equal(restored.cause?.constructor, Error);
+	assert.equal(isDecisionError(restored.cause), false);
+	const unknown = rehydrateDecisionError({
+		name: "DecisionFutureError",
+		code: "timeout",
+		message: "m",
+		hint: "h",
+		retryable: false,
+		fields: {},
+	});
+	assert.equal(Object.getOwnPropertyDescriptor(unknown, "name")?.enumerable, false);
+	assert.equal(Object.keys(unknown).includes("name"), false);
+});

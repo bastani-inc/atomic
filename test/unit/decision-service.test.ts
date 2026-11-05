@@ -219,6 +219,7 @@ test("requireProbabilities never falls back to chat: a failed classifier request
 		assert.equal(error.retryable, false);
 		assert.equal(error.providerCode, undefined);
 		assert.match(error.detail ?? "", /HTTP 503/);
+		assert.ok(error.cause instanceof Error);
 		return true;
 	});
 	assert.equal(chat.mock.calls.length, 0);
@@ -262,6 +263,7 @@ test("a chat answer that never satisfies the questions is invalid output after r
 		assert.ok(isDecisionOutputError(error));
 		assert.equal(error.model, "decision-test/chat");
 		assert.match(error.detail ?? "", /repair exhausted after 4 attempts/);
+		assert.ok(error.cause instanceof Error);
 		return true;
 	});
 	assert.equal(chat.mock.calls.length, 4);
@@ -287,7 +289,7 @@ test("the deadline bounds the whole decision and names the phase it stopped", as
 		assert.equal(error.timeoutMs, 30);
 		assert.equal(error.phase, "chat");
 		assert.equal(error.retryable, true);
-		assert.ok(error.elapsedMs >= 25);
+		assert.ok(error.elapsedMs >= 25 && error.elapsedMs < 5_000);
 		return true;
 	});
 	assert.ok(Date.now() - started < 5_000);

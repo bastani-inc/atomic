@@ -12,6 +12,7 @@ function fakeRuntime(input: {
 }) {
 	const state = { latestUserMessage: "earlier message" } as LiveStageRuntime["state"];
 	const seenDuringDelivery: Array<string | undefined> = [];
+	const queuedKinds: string[] = [];
 	const innerCtx = {
 		subscribe: () => () => {},
 		isStreaming: true,
@@ -23,7 +24,8 @@ function fakeRuntime(input: {
 			seenDuringDelivery.push(state.latestUserMessage);
 			return input.action ?? "prompt";
 		},
-		__queueIntoLiveTurn: async () => {
+		__queueIntoLiveTurn: async (_text: string, kind: string) => {
+			queuedKinds.push(kind);
 			const queued = await (input.queue ?? (async () => true))();
 			seenDuringDelivery.push(state.latestUserMessage);
 			return queued;
@@ -39,7 +41,7 @@ function fakeRuntime(input: {
 		throwIfStageMutationBlocked: () => {},
 		captureStageSessionMeta: async () => {},
 	} as unknown as LiveStageRuntime;
-	return { handle: createStageControlHandle(runtime), state, seenDuringDelivery };
+	return { handle: createStageControlHandle(runtime), state, seenDuringDelivery, queuedKinds };
 }
 
 for (const action of ["prompt", "steer", "followUp"] as const) {
@@ -79,6 +81,7 @@ for (const kind of ["steer", "followUp"] as const) {
 		const queued = fakeRuntime({});
 		await queued.handle[kind](`${kind} text`);
 		assert.deepEqual(queued.seenDuringDelivery, [`${kind} text`]);
+		assert.deepEqual(queued.queuedKinds, [kind]);
 		assert.equal(queued.state.latestUserMessage, `${kind} text`);
 		const failure = new Error("queue closed");
 		const failed = fakeRuntime({

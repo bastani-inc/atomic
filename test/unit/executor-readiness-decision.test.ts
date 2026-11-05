@@ -56,7 +56,12 @@ function readinessQuestionShown(): boolean {
 }
 
 /** A stage that asks the user a question, which the user answers by typing `answer` into "Chat about this". */
-function steeredSession(events: string[], answer: string, history: readonly object[] = []): StageSessionRuntime {
+function steeredSession(
+	events: string[],
+	answer: string,
+	history: readonly object[] = [],
+	recordMessages = true,
+): StageSessionRuntime {
 	const listeners = new Set<(event: { type: string; [key: string]: unknown }) => void>();
 	const emit = (event: { type: string; [key: string]: unknown }): void => {
 		for (const listener of [...listeners]) listener(event);
@@ -66,7 +71,7 @@ function steeredSession(events: string[], answer: string, history: readonly obje
 	return {
 		...mockSession(),
 		async prompt(text: string) {
-			messages.push({ role: "user", content: text });
+			if (recordMessages) messages.push({ role: "user", content: text });
 			if (text === "Ask which theme to use, then apply it.") {
 				emit({ type: "tool_execution_start", toolCallId: "ask", toolName: "ask_user_question" });
 				emit({
@@ -85,7 +90,7 @@ function steeredSession(events: string[], answer: string, history: readonly obje
 				events.push(`user-turn:${text}`);
 				lastAssistantText = `Handled: ${text}`;
 			}
-			messages.push({ role: "assistant", content: [{ type: "text", text: lastAssistantText }] });
+			if (recordMessages) messages.push({ role: "assistant", content: [{ type: "text", text: lastAssistantText }] });
 			emit({ type: "agent_end", messages: [] });
 		},
 		subscribe(listener) {
@@ -130,6 +135,7 @@ function launch(input: {
 	answer?: string;
 	history?: readonly object[];
 	withoutDecide?: boolean;
+	recordMessages?: boolean;
 }) {
 	const events: string[] = [];
 	const registry = createStageControlRegistry();
@@ -163,7 +169,8 @@ function launch(input: {
 				agentSession: {
 					async create() {
 						sessions += 1;
-						if (sessions === 1) return steeredSession(events, input.answer ?? STEER, input.history);
+						if (sessions === 1)
+							return steeredSession(events, input.answer ?? STEER, input.history, input.recordMessages);
 						return {
 							...mockSession(),
 							async prompt() {
@@ -385,6 +392,14 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		assert.equal((await result).status, "completed");
 	});
 
+	test("a stage without a recorded prompt is judged with an empty objective", async () => {
+		store.clear();
+		const { result, decide } = launch({ decide: async () => classified(0.93, 0.07, 0.91), recordMessages: false });
+		assert.equal((await result).status, "completed");
+		assert.equal(decide.mock.calls[0]![0].state.stage_objective, "");
+		assert.equal(themeStage().readinessDecision?.outcome, "advanced");
+	});
+
 	test("the stage objective is its first user message, after any earlier context", async () => {
 		store.clear();
 		const { result, decide } = launch({
@@ -416,6 +431,7 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		});
 		const gate = await waitForReadiness();
 		assert.equal(decide.mock.calls.length, 0);
+		assert.equal(themeStage().readinessDecision, undefined);
 		assert.equal(
 			stageUiBroker.answerStagePrompt(gate.runId, gate.stage.id, { text: "Make it green instead." }),
 			true,

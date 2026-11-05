@@ -361,7 +361,7 @@ export async function routeExecutionModel(input: {
 					// A classifier never receives the task: the reader is a chat model.
 					model: reader!,
 					modelRegistry: ctx.modelRegistry,
-					...(ctx.model ? { currentModel: ctx.model } : {}),
+					currentModel: ctx.model,
 					state: {
 						task,
 						agent,
@@ -457,7 +457,7 @@ export async function routeExecutionModel(input: {
 				decide({
 					settings,
 					modelRegistry: ctx.modelRegistry,
-					...(ctx.model ? { currentModel: ctx.model } : {}),
+					currentModel: ctx.model,
 					state: { ...choiceState },
 					instructions: CHOICE_INSTRUCTIONS,
 					questions: {

@@ -52,13 +52,14 @@ function isJsonValue(value: unknown, seen: Set<object>): boolean {
 	return valid;
 }
 
-function validQuestion(question: DecisionQuestion | undefined): boolean {
-	if (question === null || typeof question !== "object" || !described(question.instructions)) return false;
-	if (question.type === "bool") return described(question.criteria?.true) && described(question.criteria?.false);
-	if (question.type === "score")
-		return Array.isArray(question.criteria) && question.criteria.length >= 2 && question.criteria.every(described);
-	if (question.type !== "choice" || question.criteria === null || typeof question.criteria !== "object") return false;
-	const options = Object.entries(question.criteria);
+function validQuestion(question: DecisionQuestion | null): boolean {
+	if (!described(question?.instructions)) return false;
+	const asked = question as DecisionQuestion;
+	if (asked.type === "bool") return described(asked.criteria?.true) && described(asked.criteria.false);
+	if (asked.type === "score")
+		return Array.isArray(asked.criteria) && asked.criteria.length >= 2 && asked.criteria.every(described);
+	if (asked.type !== "choice" || asked.criteria === null || typeof asked.criteria !== "object") return false;
+	const options = Object.entries(asked.criteria);
 	return options.length > 0 && options.every(([option, meaning]) => option.trim().length > 0 && described(meaning));
 }
 
@@ -145,7 +146,7 @@ function structuredQuestion(question: DecisionQuestion): StructuredDecisionQuest
 		};
 	if (question.type === "score")
 		return { type: "score", instructions: question.instructions, criteria: [...question.criteria] };
-	return { type: "choice", instructions: question.instructions, criteria: { ...question.criteria } };
+	return { instructions: question.instructions, criteria: { ...question.criteria } };
 }
 
 /** The chat-shaped value of a classifier's answers, so both kinds of model meet one schema. */
@@ -217,7 +218,7 @@ function decisionFailure(error: unknown, signal: AbortSignal | undefined, model:
 	const provider = carriedProviderFailure(failure);
 	if (
 		failure instanceof OutputRepairExhaustedError ||
-		(failure instanceof ClassifierDecisionError && failure.kind !== "request" && provider === undefined)
+		(failure instanceof ClassifierDecisionError && failure.kind !== "request")
 	)
 		return new DecisionOutputError({ model, detail: engineDetail(failure) }, { cause: failure });
 	return new DecisionProviderError(

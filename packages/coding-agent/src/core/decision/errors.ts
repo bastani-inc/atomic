@@ -431,11 +431,10 @@ function concrete(name: string): (typeof CONCRETE)[string] | undefined {
 
 function hasStructure(value: unknown, name?: string): boolean {
 	if (value === null || typeof value !== "object") return false;
-	const { name: actual, code } = value as { readonly name?: unknown; readonly code?: unknown };
-	if (typeof actual !== "string" || typeof code !== "string") return false;
+	const { name: actual, code } = value as { readonly name?: string; readonly code?: string };
 	if (name !== undefined && actual !== name) return false;
-	const codes = actual === "DecisionError" ? DECISION_ERROR_CODES : concrete(actual)?.codes;
-	return codes?.has(code) === true;
+	const codes = actual === "DecisionError" ? DECISION_ERROR_CODES : concrete(String(actual))?.codes;
+	return codes?.has(String(code)) === true;
 }
 
 /** Whether `value` is a {@link DecisionError}, also one that crossed a realm or process boundary. */

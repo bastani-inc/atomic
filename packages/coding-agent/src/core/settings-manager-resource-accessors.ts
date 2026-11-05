@@ -312,7 +312,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		return value ?? SETTINGS_DEFAULTS.workflows.autoAdvanceAfterSteer;
 	},
 
-	setAutoAdvanceAfterSteer(enabled, scope = "global") {
+	setAutoAdvanceAfterSteer(enabled, scope) {
 		const state = settingsInternals(this);
 		const withSetting = (workflows: Settings["workflows"]): Settings["workflows"] =>
 			Array.isArray(workflows)

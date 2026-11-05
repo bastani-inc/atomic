@@ -290,9 +290,10 @@ export function createWorkflowStageFactory(input: {
 			} else {
 				return;
 			}
-			const toolResult = (event as Record<string, unknown>).result;
-			if (toolResultHasChatAnswer(toolResult)) state.chatAnswerObservedThisTurn = true;
-			state.latestUserMessage = toolResultChatText(toolResult) ?? state.latestUserMessage;
+			if (toolResultHasChatAnswer((event as Record<string, unknown>).result))
+				state.chatAnswerObservedThisTurn = true;
+			state.latestUserMessage =
+				toolResultChatText((event as Record<string, unknown>).result) ?? state.latestUserMessage;
 			if (!hasActiveAskUserQuestion()) {
 				input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
 				input.stageUiBroker.clearStagePrompt(input.runId, stageId);

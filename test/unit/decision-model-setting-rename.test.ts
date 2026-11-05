@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { exitOnDecisionConfigError } from "../../packages/coding-agent/src/cli/settings-startup.js";
 import { DecisionConfigError, isDecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
@@ -121,6 +121,31 @@ test("CLI startup prints the message, which ends with the hint, once and exits 1
 	assert.match(printed[0]!, /Error: Renamed setting: "routerModel" in global settings\.json \(renamed-setting\)\./);
 	assert.match(printed[0]!, /Rename "routerModel" to "decisionModel" in your global settings\.json\./);
 	assert.doesNotMatch(printed[0]!, /\n\s+at /);
+});
+
+test("CLI startup writes to stderr and exits the process by default", () => {
+	const printed: string[] = [];
+	const errorSpy = vi.spyOn(console, "error").mockImplementation((text: string) => {
+		printed.push(text);
+	});
+	const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
+		throw new Error(`process exit ${code}`);
+	});
+	try {
+		assert.throws(
+			() =>
+				exitOnDecisionConfigError(
+					new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }),
+				),
+			/process exit 1/,
+		);
+		assert.equal(printed.length, 1);
+		assert.match(printed[0]!, /Renamed setting/);
+		assert.deepEqual(exitSpy.mock.calls, [[1]]);
+	} finally {
+		errorSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
 });
 
 test("CLI startup rethrows any other failure untouched", () => {

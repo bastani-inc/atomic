@@ -212,9 +212,12 @@ function transcriptEntriesFromToolEvents(
 
 /** Readiness decisions after a steer, as notices in the stage transcript. */
 function decisionNoticeEntries(snapshot: StageSnapshot): WorkflowTranscriptEntry[] {
-	return (snapshot.notices ?? [])
-		.filter((notice) => notice.kind === "decision")
-		.map((notice) => ({ role: "notice", text: notice.meta ?? `decision → ${notice.to}`, timestamp: notice.ts }));
+	return (
+		snapshot.notices
+			?.filter((notice) => notice.kind === "decision")
+			.map((notice) => ({ role: "notice", text: notice.meta ?? `decision → ${notice.to}`, timestamp: notice.ts })) ??
+		[]
+	);
 }
 
 function sortTranscriptEntriesChronologically(entries: readonly WorkflowTranscriptEntry[]): WorkflowTranscriptEntry[] {

@@ -37,13 +37,8 @@ export function withProviderFailure<T extends Error>(error: T, signal: ProviderF
 
 /** The signal an error from this module, or a decision provider error, carries, for an error that wraps it. */
 export function carriedProviderFailure(error: unknown): ProviderFailureSignal | undefined {
-	if (!(error instanceof Error)) return undefined;
-	const signal = carried.get(error);
-	if (signal !== undefined || !isDecisionProviderError(error)) return signal;
-	if (error.providerStatus === undefined || error.providerCode === undefined) return undefined;
-	return {
-		status: error.providerStatus,
-		code: error.providerCode,
-		...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-	};
+	if (!isDecisionProviderError(error)) return carried.get(error as Error);
+	const { providerStatus: status, providerCode: code, retryAfterMs } = error;
+	if (status === undefined || code === undefined) return undefined;
+	return retryAfterMs === undefined ? { status, code } : { status, code, retryAfterMs };
 }

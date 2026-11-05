@@ -368,3 +368,55 @@ test("the host decision port decides with the live context's decision model, reg
 	);
 	assert.equal(catalog!.autoAdvanceAfterSteer?.(), true);
 });
+
+test("the host decision port passes the live classifier to decide()", async () => {
+	const { decisionClassifier } = await import("../helpers/structured-output.js");
+	const classify = vi.fn(async () => ({
+		api: decisionClassifier.api,
+		provider: decisionClassifier.provider,
+		model: decisionClassifier.id,
+		answers: {
+			next_action: {
+				type: "choice" as const,
+				choice: "stay",
+				probabilities: { advance: 0.1, stay: 0.9 },
+				confidence: 0.9,
+			},
+			reply_addresses_message: { type: "bool" as const, probability: 0.2 },
+		},
+		stopReason: "stop" as const,
+		timestamp: 1,
+	}));
+	const catalog = workflowModelCatalogFromContext({
+		model: decisionChatModel,
+		getDecisionModel: () => "decision-test/classifier",
+		modelRegistry: {
+			getAvailable: () => [decisionChatModel],
+			getAll: () => [decisionChatModel],
+			streamSimple: vi.fn(),
+			getClassifierModel: () => decisionClassifier,
+			classify,
+		},
+	});
+	const result = await catalog!.decide!({
+		state: { note: "plain" },
+		questions: READINESS_DECISION_QUESTIONS,
+		requireProbabilities: true,
+	});
+	assert.equal(result.source, "classifier");
+	assert.equal(result.answers.next_action.probabilities?.stay, 0.9);
+	assert.equal(classify.mock.calls.length, 1);
+});
+
+test("stage lists show a skipped reason before the readiness decision, and stages without notices have no transcript notices", () => {
+	const listing = {
+		action: "stages" as const,
+		runId: "r1",
+		filter: "all",
+		stages: [summarizeStage(stage({ status: "skipped", skippedReason: "fail-fast", readinessDecision: ADVANCED }))],
+	};
+	assert.match(renderResult(listing), /theme \(s1\): skipped — fail-fast — Decision model advanced/);
+	assert.match(renderResult({ ...listing, stages: [summarizeStage(stage())] }), /theme \(s1\): completed(?! —)/);
+	assert.deepEqual(snapshotTranscriptEntries(stage(), false), []);
+	assert.equal(snapshotTranscriptEntryCount(stage()), 0);
+});

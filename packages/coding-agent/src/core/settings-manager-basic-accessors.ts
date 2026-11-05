@@ -304,7 +304,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		};
 	},
 
-	setDecisionModel(model, scope = "global") {
+	setDecisionModel(model, scope) {
 		if (typeof model !== "string" || model.trim() !== model) {
 			throw new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" });
 		}

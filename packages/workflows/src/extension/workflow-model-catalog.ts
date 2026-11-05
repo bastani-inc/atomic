@@ -96,24 +96,15 @@ export function workflowModelCatalogFromContext(
 							...request,
 							settings: {
 								getDecisionModel: () => current.getDecisionModel!(),
-								...(current.getHttpIdleTimeoutMs
-									? { getHttpIdleTimeoutMs: () => current.getHttpIdleTimeoutMs!() }
-									: {}),
+								getHttpIdleTimeoutMs: current.getHttpIdleTimeoutMs,
 							},
 							modelRegistry: {
 								getAll: () => registry.getAll!(),
 								streamSimple: (...args) => registry.streamSimple!(...args),
-								...(registry.getClassifierModel
-									? { getClassifierModel: registry.getClassifierModel.bind(registry) }
-									: {}),
-								...(registry.classify ? { classify: registry.classify.bind(registry) } : {}),
-								...(registry.getProviderAuth
-									? { getProviderAuth: registry.getProviderAuth.bind(registry) }
-									: {}),
+								getClassifierModel: registry.getClassifierModel?.bind(registry),
+								classify: registry.classify?.bind(registry),
 							},
-							...(current.model
-								? { currentModel: current.model as NonNullable<CreateAgentSessionOptions["model"]> }
-								: {}),
+							currentModel: current.model as NonNullable<CreateAgentSessionOptions["model"]> | undefined,
 						});
 					},
 					autoAdvanceAfterSteer: () => autoAdvanceAfterSteerSetting(readSettings?.()),
