@@ -85,6 +85,7 @@ export interface DurableResumeRuntime {
 			readonly acceptEntryChanges?: boolean;
 			/** Run this definition instead of resolving the run's name: a fork's, found where its source ran. */
 			readonly definition?: WorkflowDefinition;
+			readonly durableBackend?: DurableWorkflowBackend;
 		},
 	): Promise<ResumeDurableResult>;
 	inspectDurableWorkflow(workflowId: string): Promise<TargetedDurableInspection>;
@@ -190,6 +191,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 				signal: options.signal,
 				onRunAccepted: options.onRunAccepted,
 				definition: fork.definition,
+				durableBackend: backend,
 			});
 			const from = `${fork.forkedFrom.runId}${fork.forkedFrom.stagePath === undefined ? "" : ` from stage "${fork.forkedFrom.stagePath}"`}`;
 			if (!resumed.ok) {
@@ -225,7 +227,10 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 			return raceWorkflowRequestAbort(
 				withWorkflowResumeAdmission(deps.store, async (dormantWrites) => {
 					const backend = await withRecovery(async () => {
-						const backend = availableRunDurableBackend(deps.store, workflowId) ?? (await ensureReady());
+						const backend =
+							options?.durableBackend ??
+							availableRunDurableBackend(deps.store, workflowId) ??
+							(await ensureReady());
 						options?.signal?.throwIfAborted();
 						// A message queued for an interrupted run before resume changed its journal, so a
 						// catalog read before that write would make the resume claim stale (#3760).

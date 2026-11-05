@@ -107,6 +107,39 @@ test("the workflow tool's fork action forks from a stage and runs the fork in th
 	assert.deepEqual(status.summary.forkedFrom, { runId, stagePath: "implement" });
 });
 
+test("the fork action starts in the source run's selected journal instead of the default journal (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const defaultBackend = await createMemoryTestBackend();
+	setDurableBackend(defaultBackend);
+	let executions = 0;
+	const definition = workflow({
+		name: "fork-selected-journal",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("record", {}, async () => ++executions);
+			return {};
+		},
+	});
+	const sourceId = testRunId("fork-selected-journal");
+	await run(definition, {}, { runId: sourceId, durableBackend: backend, store, cwd: process.cwd() });
+	const sourceEvents: string[] = [];
+	for await (const event of backend.journal.read(sourceId)) sourceEvents.push(JSON.stringify(event));
+	const jobs = createJobTracker();
+	const runtime = createExtensionRuntime({ definitions: [definition], store, jobs, cwd: process.cwd() });
+	const result = await runtime.forkDurableWorkflow(sourceId, { source: "sdk" });
+	assert.ok(result.ok, result.message);
+	assert.equal(result.started, true, result.message);
+	await jobs.get(result.runId)?.promise;
+	assert.equal(backend.getWorkflow(result.runId)?.status, "completed");
+	assert.equal(executions, 1, "the fork replays its saved tool in the selected journal");
+	const retainedEvents: string[] = [];
+	for await (const event of backend.journal.read(sourceId)) retainedEvents.push(JSON.stringify(event));
+	assert.deepEqual(retainedEvents, sourceEvents);
+	assert.deepEqual(await defaultBackend.journal.listRuns(), [], "the default journal is never written");
+});
+
 test("the fork action reports a typed failure with its code and hint and creates no run (#4321)", async () => {
 	const { backend, runId, execute } = await forkToolFixture("fork-tool-missing-stage");
 	const runsBefore = await backend.journal.listRuns();
