@@ -674,6 +674,50 @@ export async function sessionContinuesIn(store: SessionStore, sessionId: string,
 	return canonicalizeWorktreePath(mapped) === canonicalizeWorktreePath(cwd);
 }
 
+/** The restores recorded on `branch`, oldest first. */
+function restoreMappings(branch: readonly SessionEntry[]): WorktreeRootMapping[] {
+	return branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : []));
+}
+
+/** The restores and current snapshots of the branch of stored `entries` that ends at `leafId`, as resume finds them. */
+function storedBranchSnapshots(
+	entries: readonly SessionEntry[],
+	leafId: string | undefined,
+): { readonly mappings: WorktreeRootMapping[]; readonly current: Map<string, WorktreeSnapshot> } {
+	const branch = getBranchPath(leafId, new Map(entries.map((entry) => [entry.id, entry])));
+	const records = new Map<string, WorktreeSnapshot>();
+	for (const entry of entries) {
+		if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
+	}
+	const mappings = restoreMappings(branch);
+	const current = currentWorktreeSnapshots({
+		getBranch: () => branch,
+		getWorktreeRootMappings: () => mappings,
+		getWorktreeSnapshotRecords: () => records,
+	});
+	return { mappings, current };
+}
+
+/**
+ * Whether opening a session recorded elsewhere restores its checkout on this host, so it is opened rather than forked
+ * into the current directory: its working directory, followed through the restores it recorded, does not exist here
+ * and lies inside a checkout the branch it reopens on recorded a snapshot of.
+ */
+export async function sessionRestoresOnOpen(store: SessionStore, sessionId: string): Promise<boolean> {
+	const { header, entries } = await store.load(sessionId);
+	const { mappings, current } = storedBranchSnapshots(entries, entries.at(-1)?.id);
+	const cwd = mapRestoredPath(header.cwd, mappings);
+	if (![...current.keys()].some((root) => isInside(root, cwd))) return false;
+	try {
+		await stat(cwd);
+		return false;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return true;
+		throw unreadablePathError(cwd, error);
+	}
+}
+
 /**
  * The snapshots retention keeps for sessions: on every leaf of every session tree in `store`, the latest snapshot of
  * each checkout as resume would find it from that leaf, internal workflow-stage sessions included. Pass them, with the
@@ -686,21 +730,9 @@ export async function listRetainedSessionSnapshots(
 	const retained = new Set<WorktreeSnapshot>();
 	for await (const summary of store.list({ includeInternal: true, signal })) {
 		const { entries } = await store.load(summary.id);
-		const byId = new Map(entries.map((entry) => [entry.id, entry]));
 		const parents = new Set(entries.map((entry) => entry.parentId));
-		const records = new Map<string, WorktreeSnapshot>();
-		for (const entry of entries) {
-			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
-		}
 		for (const leaf of entries.filter((entry) => !parents.has(entry.id))) {
-			const branch = getBranchPath(leaf.id, byId);
-			const current = currentWorktreeSnapshots({
-				getBranch: () => branch,
-				getWorktreeRootMappings: () =>
-					branch.flatMap((entry) => (entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [])),
-				getWorktreeSnapshotRecords: () => records,
-			});
-			for (const snapshot of current.values()) retained.add(snapshot);
+			for (const snapshot of storedBranchSnapshots(entries, leaf.id).current.values()) retained.add(snapshot);
 		}
 	}
 	return [...retained];
