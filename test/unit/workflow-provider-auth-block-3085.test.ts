@@ -18,6 +18,7 @@ import {
 	LIFECYCLE_NOTICE_CUSTOM_TYPE,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
 import { createExtensionRuntime, type ExtensionRuntimeOpts } from "../../packages/workflows/src/extension/runtime.js";
+import { awaitJobSettlement } from "../../packages/workflows/src/runs/background/ended-run-settlement.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { effectiveRunStatus } from "../../packages/workflows/src/shared/returned-run-status.js";
@@ -36,8 +37,17 @@ import { JournalTestBackend } from "../helpers/journal-backend.js";
  */
 const RUN_STATUS_POLL_REAL_MS = 50;
 const RUN_STATUS_POLL_FAKE_MS = 1_000;
-/** Real time all of the test's waits share, inside the 30 s test timeout, leaving room to report and clean up. */
-const WAITS_REAL_BUDGET_MS = 24_000;
+/**
+ * Real time all of the test's waits share. Every wait ends on the state it waits for, so this only bounds a run that
+ * never gets there. It is sized to the scenario's real cost on a loaded Windows runner, not to its cost when idle: the
+ * run does about 2 s of work on an idle Linux machine, but 12-20 s on an 8-vCPU Windows runner sharing its CPUs with a
+ * unit shard, and the previous 24 s budget ran out under that load with the resumed run still running (#4393).
+ */
+const WAITS_REAL_BUDGET_MS = 60_000;
+/** Real time left after the waits to report a failed state and clean up. */
+const REPORT_AND_CLEANUP_REAL_MS = 6_000;
+/** The scenario's cost is structural, so its timeout is its waits' budget plus the time to report and clean up. */
+const SCENARIO_TIMEOUT_MS = WAITS_REAL_BUDGET_MS + REPORT_AND_CLEANUP_REAL_MS;
 
 /**
  * The real `process.hrtime.bigint`, saved when this module loads, before any test installs fake timers: vitest's fake
@@ -145,7 +155,7 @@ test("a wait on a run that never gets there ends at its real-time deadline while
 	}
 });
 
-test("fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix", async () => {
+async function blockedProviderResumesWithoutReplayingPrefix(): Promise<void> {
 	const deadline = realNow() + WAITS_REAL_BUDGET_MS;
 	/** Polls until `done`, advancing fake time a step per real slice, or until the test's shared real budget is spent. */
 	const until = (done: () => boolean, step: () => Promise<void>) => pollUntil(done, step, deadline);
@@ -192,9 +202,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 				return {};
 			},
 		});
+		const jobs = createJobTracker();
 		const runtimeOptions: ExtensionRuntimeOpts = {
 			store,
-			jobs: createJobTracker(),
+			jobs,
 			cwd: dir,
 			registry: createRegistry([definition]),
 			adapters: {
@@ -281,6 +292,8 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		const startedRun = started;
 		assert.equal(startedRun.action, "run");
 		assert.ok(startedRun.runId);
+		const blockedRunJob = jobs.get(startedRun.runId);
+		assert.ok(blockedRunJob, "the detached run must be tracked until it settles");
 
 		await until(
 			() => effectiveRunStatus(store.runs().find((run) => run.id === startedRun.runId)!) === "blocked",
@@ -323,6 +336,21 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 			);
 		assert.equal(parentCards.length, 1, "parent transcript must persist exactly one blocked lifecycle card");
 
+		const blockedRunEnding = awaitJobSettlement(blockedRunJob);
+		let blockedRunSettled = false;
+		const markBlockedRunSettled = () => {
+			blockedRunSettled = true;
+		};
+		blockedRunEnding.then(markBlockedRunSettled, markBlockedRunSettled);
+		await until(
+			() => blockedRunSettled,
+			async () => {
+				await realSleep(RUN_STATUS_POLL_REAL_MS);
+				await vi.advanceTimersByTimeAsync(RUN_STATUS_POLL_FAKE_MS);
+			},
+		);
+		assert.ok(blockedRunSettled, "the blocked run must finish recording its ending in the journal");
+		await blockedRunEnding;
 		const fresh = await backend.reopen();
 		await fresh.hydrateWorkflow(source.id);
 		const hydrated = fresh.getWorkflow(source.id);
@@ -373,4 +401,10 @@ test("fabricated provider exhaustion becomes blocked, durably discoverable, and 
 		vi.useRealTimers();
 		for (const dispose of cleanup.splice(0).reverse()) await dispose();
 	}
-});
+}
+
+test(
+	"fabricated provider exhaustion becomes blocked, durably discoverable, and resumes without replaying prefix",
+	blockedProviderResumesWithoutReplayingPrefix,
+	SCENARIO_TIMEOUT_MS,
+);
