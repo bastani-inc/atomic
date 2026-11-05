@@ -3,7 +3,7 @@ import {
 	rehydrateErrorCause,
 	type SerializedErrorCause,
 	serializeErrorCause,
-} from "../error-contract.js";
+} from "../error-contract.ts";
 
 /**
  * Typed failures of the `edit` and `write` tools.
