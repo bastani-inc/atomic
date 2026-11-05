@@ -504,8 +504,8 @@ export interface ListForkPointsOptions {
 	readonly journal?: RunJournalOption;
 	readonly store?: Store;
 	readonly cwd?: string;
-	/** Session store holding the run's stage sessions, read for each point's `entryId`. */
-	readonly sessionStore?: import("@bastani/atomic").SessionStore;
+	/** Session store holding the run's stage sessions, read for each point's `entryId`. Omitted: the run's project store. */
+	readonly sourceSessionStore?: import("@bastani/atomic").SessionStore;
 }
 
 /**

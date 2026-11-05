@@ -16,7 +16,8 @@ export type ForkErrorCode =
 	| "journal-unsupported"
 	| "journal-unavailable"
 	| "copy-failed"
-	| "claim-release-failed";
+	| "claim-release-failed"
+	| "session-unavailable";
 
 export type ForkErrorName =
 	| "ForkTargetNotFoundError"
@@ -29,7 +30,8 @@ export type ForkErrorName =
 	| "ForkJournalUnsupportedError"
 	| "ForkJournalUnavailableError"
 	| "ForkCopyFailedError"
-	| "ForkClaimReleaseError";
+	| "ForkClaimReleaseError"
+	| "ForkSessionUnavailableError";
 
 export type ForkErrorFieldValue =
 	| string
@@ -90,6 +92,7 @@ const FORK_ERROR_CODE_BY_NAME: Readonly<Record<ForkErrorName, ForkErrorCode>> = 
 	ForkJournalUnavailableError: "journal-unavailable",
 	ForkCopyFailedError: "copy-failed",
 	ForkClaimReleaseError: "claim-release-failed",
+	ForkSessionUnavailableError: "session-unavailable",
 };
 
 interface ForkErrorInit {
@@ -303,6 +306,13 @@ export class ForkEntryNotFoundError extends ForkError {
 }
 
 /** A stage session the fork needs cannot be read. Nothing was written. */
+/** Where a fork read stage sessions: a store the caller passed as `sourceSessionStore`, or the source project's own. */
+export type ForkSessionStoreSource = "supplied" | "project";
+
+const FROM_OWNING_PROJECT =
+	"from the project that ran the run (with forkRun, pass that project's session store as sourceSessionStore)";
+
+/** A stage session the fork copies or lists is not in the session store that was read. Nothing was written. */
 export class ForkSessionNotFoundError extends ForkError {
 	declare readonly name: "ForkSessionNotFoundError";
 	declare readonly code: "session-not-found";
@@ -312,6 +322,61 @@ export class ForkSessionNotFoundError extends ForkError {
 	readonly stagePath?: string;
 	/** Adapter of the session store that was read, and whether it is local to this node. */
 	readonly storage?: ForkStorage;
+	/** Whether the store was passed as `sourceSessionStore` or is the source project's own. */
+	readonly storeSource: ForkSessionStoreSource;
+
+	constructor(
+		input: {
+			readonly sessionId: string;
+			readonly runId?: string;
+			readonly stagePath?: string;
+			readonly storage?: ForkStorage;
+			readonly storeSource: ForkSessionStoreSource;
+		},
+		options?: { readonly cause?: Error },
+	) {
+		const stage = input.stagePath === undefined ? "" : ` of stage "${input.stagePath}"`;
+		const run = input.runId === undefined ? "" : ` in run ${input.runId}`;
+		const hint =
+			input.storeSource === "supplied"
+				? "The store passed as sourceSessionStore does not hold it; pass the session store of the project that ran the run."
+				: input.storage?.scope === "local-only"
+					? `This node reads sessions from local-only ${input.storage.adapter} storage and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND}, or fork ${FROM_OWNING_PROJECT}.`
+					: `Fork ${FROM_OWNING_PROJECT}.`;
+		super({
+			name: "ForkSessionNotFoundError",
+			code: "session-not-found",
+			what: "Fork session not found",
+			subject: `session ${input.sessionId}${stage}${run}`,
+			hint,
+			retryable: false,
+			fields: {
+				sessionId: input.sessionId,
+				runId: input.runId,
+				stagePath: input.stagePath,
+				storage: input.storage === undefined ? undefined : { ...input.storage },
+				storeSource: input.storeSource,
+			},
+			cause: options?.cause,
+		});
+		this.sessionId = input.sessionId;
+		this.runId = input.runId;
+		this.stagePath = input.stagePath;
+		this.storage = input.storage === undefined ? undefined : { ...input.storage };
+		this.storeSource = input.storeSource;
+	}
+}
+
+/** The session store failed while the fork read a stage session. Nothing was written; safe to retry. */
+export class ForkSessionUnavailableError extends ForkError {
+	declare readonly name: "ForkSessionUnavailableError";
+	declare readonly code: "session-unavailable";
+	declare readonly retryable: true;
+	readonly sessionId: string;
+	readonly runId?: string;
+	readonly stagePath?: string;
+	/** Adapter of the session store, and whether it is local to this node. */
+	readonly storage?: ForkStorage;
 
 	constructor(
 		input: {
@@ -320,27 +385,26 @@ export class ForkSessionNotFoundError extends ForkError {
 			readonly stagePath?: string;
 			readonly storage?: ForkStorage;
 		},
-		options?: { readonly cause?: Error },
+		options: { readonly cause: Error },
 	) {
 		const stage = input.stagePath === undefined ? "" : ` of stage "${input.stagePath}"`;
 		const run = input.runId === undefined ? "" : ` in run ${input.runId}`;
+		const store =
+			input.storage === undefined ? "" : ` from the ${input.storage.scope} ${input.storage.adapter} session store`;
 		super({
-			name: "ForkSessionNotFoundError",
-			code: "session-not-found",
-			what: "Fork session not found",
-			subject: `session ${input.sessionId}${stage}${run}`,
-			hint:
-				input.storage?.scope === "local-only"
-					? `This node reads sessions from local-only ${input.storage.adapter} storage and is not joined to the shared storage; run ${FORK_JOIN_SHARED_STORAGE_COMMAND}, or pass the sessionStore option of the project that owns the run.`
-					: "Open the run from the project that owns its sessions, or pass that project's sessionStore option.",
-			retryable: false,
+			name: "ForkSessionUnavailableError",
+			code: "session-unavailable",
+			what: "Fork session unavailable",
+			subject: `reading session ${input.sessionId}${stage}${run}${store}`,
+			hint: "Nothing was written and the source run is unchanged; retry once the session store is reachable. atomic storage status shows the storage in use.",
+			retryable: true,
 			fields: {
 				sessionId: input.sessionId,
 				runId: input.runId,
 				stagePath: input.stagePath,
 				storage: input.storage === undefined ? undefined : { ...input.storage },
 			},
-			cause: options?.cause,
+			cause: options.cause,
 		});
 		this.sessionId = input.sessionId;
 		this.runId = input.runId;
@@ -415,7 +479,7 @@ export class ForkConfigError extends ForkError {
 	}
 }
 
-export type ForkSourceNotFoundReason = "not-found" | "malformed" | "ambiguous";
+export type ForkSourceNotFoundReason = "not-found" | "malformed" | "ambiguous" | "not-root";
 
 /** The run id does not name exactly one durable root run in this node's journal. Nothing was written. */
 export class ForkSourceNotFoundError extends ForkError {
@@ -428,12 +492,15 @@ export class ForkSourceNotFoundError extends ForkError {
 	readonly matches: readonly string[];
 	/** Adapter of the journal that was read, and whether it is local to this node. */
 	readonly storage?: ForkStorage;
+	/** The root run of a nested run (`reason: "not-root"`). */
+	readonly rootRunId?: string;
 
 	constructor(input: {
 		readonly runId: string;
 		readonly reason: ForkSourceNotFoundReason;
 		readonly matches?: readonly string[];
 		readonly storage?: ForkStorage;
+		readonly rootRunId?: string;
 	}) {
 		const all = input.matches ?? [];
 		const matches = all.slice(0, FORK_ERROR_MAX_LISTED_PATHS);
@@ -443,6 +510,7 @@ export class ForkSourceNotFoundError extends ForkError {
 			"not-found": `no durable root run ${input.runId}${journal}`,
 			malformed: `"${input.runId}" is neither a full run id nor an 8-character prefix`,
 			ambiguous: `prefix "${input.runId}" matches ${listedPaths(matches, all.length)}`,
+			"not-root": `run ${input.runId} is a nested run${input.rootRunId === undefined ? "" : ` of root run ${input.rootRunId}`}`,
 		};
 		const hints: Record<ForkSourceNotFoundReason, string> = {
 			"not-found":
@@ -452,6 +520,10 @@ export class ForkSourceNotFoundError extends ForkError {
 			malformed:
 				"Pass a run id from /workflow list, or pass the journal that holds the run with the journal option.",
 			ambiguous: "Pass the full run id.",
+			"not-root":
+				input.rootRunId === undefined
+					? "Fork its root run; listForkPoints on the root lists the nested stage paths."
+					: `Fork the root run ${input.rootRunId}; listForkPoints("${input.rootRunId}") lists the nested stage paths.`,
 		};
 		super({
 			name: "ForkSourceNotFoundError",
@@ -465,12 +537,14 @@ export class ForkSourceNotFoundError extends ForkError {
 				reason: input.reason,
 				matches,
 				storage: input.storage === undefined ? undefined : { ...input.storage },
+				rootRunId: input.rootRunId,
 			},
 		});
 		this.runId = input.runId;
 		this.reason = input.reason;
 		this.matches = matches;
 		this.storage = input.storage === undefined ? undefined : { ...input.storage };
+		this.rootRunId = input.rootRunId;
 	}
 }
 
@@ -630,7 +704,8 @@ export type KnownForkError =
 	| ForkJournalUnsupportedError
 	| ForkJournalUnavailableError
 	| ForkCopyFailedError
-	| ForkClaimReleaseError;
+	| ForkClaimReleaseError
+	| ForkSessionUnavailableError;
 
 interface ForkErrorShape {
 	readonly name?: string;
@@ -672,6 +747,7 @@ export const isForkJournalUnsupportedError = guard(ForkJournalUnsupportedError, 
 export const isForkJournalUnavailableError = guard(ForkJournalUnavailableError, "ForkJournalUnavailableError");
 export const isForkCopyFailedError = guard(ForkCopyFailedError, "ForkCopyFailedError");
 export const isForkClaimReleaseError = guard(ForkClaimReleaseError, "ForkClaimReleaseError");
+export const isForkSessionUnavailableError = guard(ForkSessionUnavailableError, "ForkSessionUnavailableError");
 
 /** The first fork error in `value`'s cause chain, walking at most {@link FORK_ERROR_MAX_CAUSE_DEPTH} links. */
 export function findForkError(value: unknown): ForkError | undefined {
@@ -797,8 +873,19 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 				runId: optionalText(f, "runId"),
 				stagePath: optionalText(f, "stagePath"),
 				storage: storage(f),
+				storeSource: f.storeSource === "supplied" ? "supplied" : "project",
 			},
 			{ cause },
+		),
+	ForkSessionUnavailableError: (f, cause) =>
+		new ForkSessionUnavailableError(
+			{
+				sessionId: text(f, "sessionId"),
+				runId: optionalText(f, "runId"),
+				stagePath: optionalText(f, "stagePath"),
+				storage: storage(f),
+			},
+			{ cause: cause ?? new Error("The session store failure's cause was not serialized.") },
 		),
 	ForkConfigError: (f, cause) => {
 		const issues = (f.issues as readonly ForkConfigIssue[] | undefined) ?? [];
@@ -815,6 +902,7 @@ const REHYDRATE: Record<ForkErrorName, Rehydrate> = {
 			reason: text(f, "reason") as ForkSourceNotFoundReason,
 			matches: texts(f, "matches"),
 			storage: storage(f),
+			rootRunId: optionalText(f, "rootRunId"),
 		}),
 	ForkJournalUnsupportedError: () => new ForkJournalUnsupportedError(),
 	ForkJournalUnavailableError: (f, cause) =>

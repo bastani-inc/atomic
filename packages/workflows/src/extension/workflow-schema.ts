@@ -42,7 +42,7 @@ export const WorkflowParametersSchema = Type.Object(
 			Type.Record(Type.String(), Type.Unknown(), {
 				default: {},
 				description:
-					"Inputs for action 'run', validated with defaults against the named workflow's input contract, or replacement inputs for action 'fork'. Invalid values fail without launching.",
+					"Inputs for action 'run', validated with defaults against the named workflow's input contract, or replacement inputs for action 'fork' (omitted or empty: the source run's inputs). Invalid values fail without launching.",
 			}),
 		),
 		budget: Type.Optional(WorkflowBudgetSchema),

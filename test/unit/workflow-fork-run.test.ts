@@ -17,6 +17,7 @@ import {
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
 	ForkSessionNotFoundError,
+	ForkSessionUnavailableError,
 	ForkSourceBusyError,
 	ForkSourceNotFoundError,
 	ForkTargetNotFoundError,
@@ -26,6 +27,7 @@ import {
 	isForkJournalUnavailableError,
 	isForkJournalUnsupportedError,
 	isForkSessionNotFoundError,
+	isForkSessionUnavailableError,
 	isForkSourceBusyError,
 	isForkSourceNotFoundError,
 	isForkTargetNotFoundError,
@@ -254,7 +256,7 @@ test("forkRun into another cwd records that directory and copies stage sessions 
 			completedAt: 3,
 		});
 		const points = [];
-		for await (const point of listForkPoints(runId, { durableBackend: backend, sessionStore: sourceStore }))
+		for await (const point of listForkPoints(runId, { durableBackend: backend, sourceSessionStore: sourceStore }))
 			points.push(point);
 		const sourceEntries = (await sourceStore.load(session.getSessionId())).entries;
 		assert.deepEqual(points[0], {
@@ -713,7 +715,7 @@ test("a journal storage failure is a ForkJournalUnavailableError that says wheth
 	assert.equal(recovered.forkedFrom.stagePath, "implement");
 });
 
-test("an unreadable source session is a ForkSessionNotFoundError before anything is written (#4321)", async () => {
+test("a session missing from the store the caller passed is a ForkSessionNotFoundError that says so, before anything is written (#4321)", async () => {
 	const backend = await createMemoryTestBackend();
 	const sessions = new MemorySessionStore();
 	const def = workflow({ name: "lost-session", description: "", inputs: {}, outputs: {}, run: async () => ({}) });
@@ -748,10 +750,162 @@ test("an unreadable source session is a ForkSessionNotFoundError before anything
 	assert.ok(error instanceof ForkSessionNotFoundError);
 	assert.equal(error.code, "session-not-found");
 	assert.equal(error.sessionId, "missing-session");
-	assert.deepEqual(error.storage, { adapter: "memory", scope: "local-only" });
-	assert.match(error.hint, /atomic team join/);
+	assert.deepEqual([error.storage, error.storeSource], [{ adapter: "memory", scope: "local-only" }, "supplied"]);
+	assert.equal(
+		error.hint,
+		"The store passed as sourceSessionStore does not hold it; pass the session store of the project that ran the run.",
+	);
 	assert.equal(created.mock.calls.length, 0);
 	assert.equal((await backend.journal.listRuns()).length, 1);
+	const failing = new MemorySessionStore();
+	const outage = Object.assign(new Error("Storage unavailable: sessions"), { name: "StorageUnavailableError" });
+	vi.spyOn(failing, "load").mockRejectedValueOnce(outage);
+	const unavailable = await forkDurableRun(backend, {
+		source: "sdk",
+		runId,
+		carryMessages: "before",
+		definition: def,
+		sessionStore: sessions,
+		sourceSessionStore: failing,
+	}).catch((failure: Error) => failure);
+	assert.ok(isForkSessionUnavailableError(unavailable), String(unavailable));
+	assert.ok(unavailable instanceof ForkSessionUnavailableError);
+	assert.deepEqual(
+		[unavailable.code, unavailable.retryable, unavailable.sessionId, unavailable.runId, unavailable.cause],
+		["session-unavailable", true, "missing-session", runId, outage],
+	);
+	vi.spyOn(failing, "load").mockRejectedValueOnce(
+		new StorageUnavailableError({ adapter: "libsql", location: "sessions" }, new Error("reset")),
+	);
+	const coreOutage = await forkDurableRun(backend, {
+		source: "sdk",
+		runId,
+		carryMessages: "before",
+		definition: def,
+		sessionStore: sessions,
+		sourceSessionStore: failing,
+	}).catch((failure: Error) => failure);
+	assert.ok(coreOutage instanceof ForkSessionUnavailableError, String(coreOutage));
+	const bug = new TypeError("not a session store failure");
+	vi.spyOn(failing, "load").mockRejectedValueOnce(bug);
+	const propagated = await forkDurableRun(backend, {
+		source: "sdk",
+		runId,
+		carryMessages: "before",
+		definition: def,
+		sessionStore: sessions,
+		sourceSessionStore: failing,
+	}).catch((failure: Error) => failure);
+	assert.equal(propagated, bug);
+	assert.equal((await backend.journal.listRuns()).length, 1, "nothing was written by any of them");
+});
+
+test("a session missing from the source project's own store names that project and the join command (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const projects = mkdtempSync(join(tmpdir(), "fork-project-store-"));
+	try {
+		const def = workflow({
+			name: "project-session",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async () => ({}),
+		});
+		const runId = testRunId("fork-project-session");
+		await backend.commitWorkflowRegistration({
+			workflowId: runId,
+			name: def.name,
+			inputs: {},
+			status: "paused",
+			createdAt: 1,
+			invocationCwd: projects,
+		});
+		await backend.commitCheckpoint({
+			kind: "stage",
+			workflowId: runId,
+			checkpointId: "stage:saved",
+			name: "saved",
+			replayKey: "saved",
+			sessionId: "missing-session",
+			output: "saved",
+			completedAt: 2,
+		});
+		const error = await forkDurableRun(backend, {
+			source: "sdk",
+			runId,
+			carryMessages: "before",
+			definition: def,
+			sessionStore: new MemorySessionStore(),
+		}).catch((failure: Error) => failure);
+		assert.ok(error instanceof ForkSessionNotFoundError, String(error));
+		assert.equal(error.storeSource, "project");
+		assert.equal(error.storage?.scope, "local-only");
+		assert.match(
+			error.hint,
+			/not joined to the shared storage; run atomic team join <url> --token-file <path>, or fork from the project that ran the run/,
+		);
+	} finally {
+		rmSync(projects, { recursive: true, force: true });
+	}
+});
+
+test("a nested run id is reported as a nested run of its root, never as storage that is not joined (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	const child = workflow({
+		name: "nested-child",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("step", {}, async () => "done");
+			return {};
+		},
+	});
+	const def = workflow({
+		name: "nested-root",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.workflow(child, { stageName: "child" });
+			return {};
+		},
+	});
+	const runId = testRunId("fork-nested-root");
+	const store = createStore();
+	assert.equal((await run(def, {}, { runId, durableBackend: backend, store })).status, "completed");
+	const childId = store.runs().find((snapshot) => snapshot.parentRunId === runId)!.id;
+	const expectNotRoot = (error: Error) => {
+		assert.ok(isForkSourceNotFoundError(error), String(error));
+		assert.ok(error instanceof ForkSourceNotFoundError);
+		assert.deepEqual([error.reason, error.rootRunId, error.storage], ["not-root", runId, undefined]);
+		assert.equal(error.hint, `Fork the root run ${runId}; listForkPoints("${runId}") lists the nested stage paths.`);
+		assert.doesNotMatch(error.message, /atomic team join/);
+	};
+	const refused = (options: Parameters<typeof forkRun>[1]) =>
+		forkRun(childId, options).then(
+			() => assert.fail("a nested run is not forked"),
+			(error: Error) => error,
+		);
+	expectNotRoot(await refused({ durableBackend: backend, definition: def, store }));
+	expectNotRoot(
+		(await (async () => {
+			for await (const point of listForkPoints(childId, { durableBackend: backend, store })) return point;
+		})().catch((error: Error) => error)) as Error,
+	);
+	const unknown = await refused({ durableBackend: backend, definition: def, store: createStore() });
+	assert.ok(unknown instanceof ForkSourceNotFoundError);
+	assert.equal(unknown.reason, "not-found", "a store that never saw the nested run cannot tell it apart");
+	await backend.commitWorkflowRegistration({
+		workflowId: childId,
+		name: child.name,
+		inputs: {},
+		status: "completed",
+		createdAt: 1,
+		rootWorkflowId: runId,
+	});
+	expectNotRoot(await refused({ durableBackend: backend, definition: child, store: createStore() }));
+	assert.equal((await backend.journal.listRuns()).length, 2, "no fork was written");
 });
 
 test("a failed claim release is attached to the primary fork error, never replacing it (#4321)", async () => {
@@ -889,7 +1043,11 @@ test("listForkPoints reads entry ids from the session store it is given (#4321)"
 		completedAt: 5,
 	});
 	const points = [];
-	for await (const point of listForkPoints(runId, { durableBackend: backend, sessionStore: sessions, cwd: "/x" }))
+	for await (const point of listForkPoints(runId, {
+		durableBackend: backend,
+		sourceSessionStore: sessions,
+		cwd: "/x",
+	}))
 		points.push(point);
 	assert.deepEqual(points, [
 		{

@@ -212,6 +212,21 @@ test("forkStageSession copies every entry without an entryId and the branch to t
 	);
 });
 
+test("a fork at an entry copies the recorded path as it is: labels set after that entry are not carried over (#4321)", async () => {
+	const store = new MemorySessionStore();
+	const writer = await SessionManager.create(store, process.cwd());
+	const first = await writer.appendMessage({ role: "user", content: "first", timestamp: 1 });
+	await writer.appendMessage({ role: "user", content: "second", timestamp: 2 });
+	await writer.appendLabelChange(first, "checkpoint");
+	assert.equal(writer.getLabel(first), "checkpoint");
+	const branch = await forkStageSession(store, writer.getSessionId(), process.cwd(), {}, store, first);
+	assert.deepEqual(
+		branch.getEntries().map((entry) => entry.id),
+		[first],
+	);
+	assert.equal(branch.getLabel(first), undefined);
+});
+
 test("a missing entry names the workflow stage when the session has workflow metadata and no stage otherwise (#4321)", async () => {
 	const store = new MemorySessionStore();
 	const source = await sourceSession(store);

@@ -231,6 +231,40 @@ test("the fork action forwards its options to the runtime unchanged (#4321)", as
 	}
 });
 
+test("the fork action keeps the source run's inputs when given the schema's empty default, and replaces them when given values (#4321)", async () => {
+	const backend = await createMemoryTestBackend();
+	setDurableBackend(backend);
+	const definition = workflow({
+		name: "fork-tool-inputs",
+		description: "",
+		inputs: { objective: Type.String({ default: "default objective" }) },
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("record", { objective: ctx.inputs.objective }, async () => ctx.inputs.objective);
+			return {};
+		},
+	});
+	const runId = testRunId("fork-tool-inputs");
+	await run(definition, { objective: "recorded objective" }, { runId, durableBackend: backend, store: createStore() });
+	const jobs = createJobTracker();
+	const execute = makeExecuteWorkflowTool(
+		createExtensionRuntime({ registry: createRegistry().register(definition), store, jobs, cwd: process.cwd() }),
+		() => undefined,
+		() => undefined,
+	);
+	const kept = (await execute({ action: "fork", runId, inputs: {} }, context())) as ForkResult;
+	assert.equal(kept.status, "running", kept.message);
+	assert.deepEqual(backend.getWorkflow(kept.runId)?.inputs, { objective: "recorded objective" });
+	await jobs.get(kept.runId)?.promise;
+	const replaced = (await execute(
+		{ action: "fork", runId, inputs: { objective: "corrected objective" } },
+		context(),
+	)) as ForkResult;
+	assert.equal(replaced.status, "running", replaced.message);
+	assert.deepEqual(backend.getWorkflow(replaced.runId)?.inputs, { objective: "corrected objective" });
+	await jobs.get(replaced.runId)?.promise;
+});
+
 test("the workflow tool schema accepts the fork action and its options (#4321)", () => {
 	assert.ok(
 		Value.Check(WorkflowParametersSchema, {
@@ -249,7 +283,10 @@ test("the workflow tool schema accepts the fork action and its options (#4321)",
 	>;
 	assert.match(action?.description ?? "", /fork a durable run into a new run \(optionally re-running from fromStage/);
 	assert.match(runId?.description ?? "", /quit\/fork \(for fork, the source run\)/);
-	assert.match(inputs?.description ?? "", /replacement inputs for action 'fork'/);
+	assert.match(
+		inputs?.description ?? "",
+		/replacement inputs for action 'fork' \(omitted or empty: the source run's inputs\)/,
+	);
 	assert.match(fromStage?.description ?? "", /^Fork-only: dot path of the completed stage the fork re-runs from/);
 	assert.match(carryMessages?.description ?? "", /^Fork-only: .*\('before', default\) or all of them \('all'\)/);
 });

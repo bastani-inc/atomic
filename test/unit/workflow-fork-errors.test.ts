@@ -12,6 +12,7 @@ import {
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
 	ForkSessionNotFoundError,
+	ForkSessionUnavailableError,
 	ForkSourceBusyError,
 	ForkSourceNotFoundError,
 	ForkTargetNotFoundError,
@@ -25,6 +26,7 @@ import {
 	isForkJournalUnavailableError,
 	isForkJournalUnsupportedError,
 	isForkSessionNotFoundError,
+	isForkSessionUnavailableError,
 	isForkSourceBusyError,
 	isForkSourceNotFoundError,
 	isForkTargetNotFoundError,
@@ -171,10 +173,13 @@ test("ForkEntryNotFoundError renders the entry and stage as a stable message and
 	]);
 });
 
-test("ForkSessionNotFoundError renders the session, its storage and the join command (#4321)", () => {
-	const local = `This node reads sessions from local-only jsonl storage and is not joined to the shared storage; run ${join}, or pass the sessionStore option of the project that owns the run.`;
-	const elsewhere =
-		"Open the run from the project that owns its sessions, or pass that project's sessionStore option.";
+test("ForkSessionNotFoundError renders the session, where the store came from and the step that fixes it (#4321)", () => {
+	const owningProject =
+		"from the project that ran the run (with forkRun, pass that project's session store as sourceSessionStore)";
+	const local = `This node reads sessions from local-only jsonl storage and is not joined to the shared storage; run ${join}, or fork ${owningProject}.`;
+	const elsewhere = `Fork ${owningProject}.`;
+	const supplied =
+		"The store passed as sourceSessionStore does not hold it; pass the session store of the project that ran the run.";
 	assertCases([
 		{
 			error: new ForkSessionNotFoundError({
@@ -182,22 +187,72 @@ test("ForkSessionNotFoundError renders the session, its storage and the join com
 				runId,
 				stagePath: "plan",
 				storage: { adapter: "jsonl", scope: "local-only" },
+				storeSource: "project",
 			}),
 			message: `Fork session not found: session s-1 of stage "plan" in run ${runId} (session-not-found). ${local}`,
 			hint: local,
-			fields: { sessionId: "s-1", runId, stagePath: "plan", storage: { adapter: "jsonl", scope: "local-only" } },
+			fields: {
+				sessionId: "s-1",
+				runId,
+				stagePath: "plan",
+				storage: { adapter: "jsonl", scope: "local-only" },
+				storeSource: "project",
+			},
 		},
 		{
-			error: new ForkSessionNotFoundError({ sessionId: "s-1", storage: { adapter: "libsql", scope: "shared" } }),
+			error: new ForkSessionNotFoundError({
+				sessionId: "s-1",
+				storage: { adapter: "libsql", scope: "shared" },
+				storeSource: "project",
+			}),
 			message: `Fork session not found: session s-1 (session-not-found). ${elsewhere}`,
 			hint: elsewhere,
-			fields: { sessionId: "s-1", storage: { adapter: "libsql", scope: "shared" } },
+			fields: { sessionId: "s-1", storage: { adapter: "libsql", scope: "shared" }, storeSource: "project" },
 		},
 		{
-			error: new ForkSessionNotFoundError({ sessionId: "s-1", runId }),
+			error: new ForkSessionNotFoundError({ sessionId: "s-1", runId, storeSource: "project" }),
 			message: `Fork session not found: session s-1 in run ${runId} (session-not-found). ${elsewhere}`,
 			hint: elsewhere,
-			fields: { sessionId: "s-1", runId },
+			fields: { sessionId: "s-1", runId, storeSource: "project" },
+		},
+		{
+			error: new ForkSessionNotFoundError({
+				sessionId: "s-1",
+				runId,
+				storage: { adapter: "memory", scope: "local-only" },
+				storeSource: "supplied",
+			}),
+			message: `Fork session not found: session s-1 in run ${runId} (session-not-found). ${supplied}`,
+			hint: supplied,
+			fields: {
+				sessionId: "s-1",
+				runId,
+				storage: { adapter: "memory", scope: "local-only" },
+				storeSource: "supplied",
+			},
+		},
+	]);
+});
+
+test("ForkSessionUnavailableError renders the session, its store and when to retry (#4321)", () => {
+	const retry =
+		"Nothing was written and the source run is unchanged; retry once the session store is reachable. atomic storage status shows the storage in use.";
+	const cause = new Error("Storage unavailable: libsql at libsql://sessions");
+	assertCases([
+		{
+			error: new ForkSessionUnavailableError(
+				{ sessionId: "s-1", runId, stagePath: "plan", storage: { adapter: "libsql", scope: "shared" } },
+				{ cause },
+			),
+			message: `Fork session unavailable: reading session s-1 of stage "plan" in run ${runId} from the shared libsql session store (session-unavailable). ${retry}`,
+			hint: retry,
+			fields: { sessionId: "s-1", runId, stagePath: "plan", storage: { adapter: "libsql", scope: "shared" } },
+		},
+		{
+			error: new ForkSessionUnavailableError({ sessionId: "s-1" }, { cause }),
+			message: `Fork session unavailable: reading session s-1 (session-unavailable). ${retry}`,
+			hint: retry,
+			fields: { sessionId: "s-1" },
 		},
 	]);
 });
@@ -292,6 +347,18 @@ test("ForkSourceNotFoundError renders each reason, its journal and the join comm
 			message: `Fork source not found: prefix "aaaaaaaa" matches ${matches.slice(0, 10).join(", ")} (and 2 more) (source-not-found). Pass the full run id.`,
 			hint: "Pass the full run id.",
 			fields: { runId: "aaaaaaaa", reason: "ambiguous", matches: matches.slice(0, 10) },
+		},
+		{
+			error: new ForkSourceNotFoundError({ runId: forkRunId, reason: "not-root", rootRunId: runId }),
+			message: `Fork source not found: run ${forkRunId} is a nested run of root run ${runId} (source-not-found). Fork the root run ${runId}; listForkPoints("${runId}") lists the nested stage paths.`,
+			hint: `Fork the root run ${runId}; listForkPoints("${runId}") lists the nested stage paths.`,
+			fields: { runId: forkRunId, reason: "not-root", matches: [], rootRunId: runId },
+		},
+		{
+			error: new ForkSourceNotFoundError({ runId: forkRunId, reason: "not-root" }),
+			message: `Fork source not found: run ${forkRunId} is a nested run (source-not-found). Fork its root run; listForkPoints on the root lists the nested stage paths.`,
+			hint: "Fork its root run; listForkPoints on the root lists the nested stage paths.",
+			fields: { runId: forkRunId, reason: "not-root", matches: [] },
 		},
 	]);
 });
@@ -399,7 +466,13 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 	},
 	{
 		error: new ForkSessionNotFoundError(
-			{ sessionId: "s", runId, stagePath: "p", storage: { adapter: "jsonl", scope: "local-only" } },
+			{
+				sessionId: "s",
+				runId,
+				stagePath: "p",
+				storage: { adapter: "jsonl", scope: "local-only" },
+				storeSource: "supplied",
+			},
 			{ cause: new Error("ENOENT") },
 		),
 		guard: isForkSessionNotFoundError,
@@ -436,6 +509,13 @@ const samples: readonly { readonly error: KnownForkError; readonly guard: (value
 		error: new ForkClaimReleaseError({ runId, claimExpiresInMs: 120_000 }, { cause: new Error("lease lost") }),
 		guard: isForkClaimReleaseError,
 	},
+	{
+		error: new ForkSessionUnavailableError(
+			{ sessionId: "s", runId, stagePath: "p", storage: { adapter: "libsql", scope: "shared" } },
+			{ cause: Object.assign(new Error("fetch failed"), { name: "StorageUnavailableError" }) },
+		),
+		guard: isForkSessionUnavailableError,
+	},
 ];
 
 const guards = samples.map((sample) => sample.guard);
@@ -446,7 +526,9 @@ for (const { error, guard } of samples) {
 		assert.ok(error instanceof Error);
 		assert.ok(isForkError(error));
 		assert.equal(error.name, error.constructor.name);
-		const retryable = ["source-busy", "copy-failed", "journal-unavailable"].includes(error.code);
+		const retryable = ["source-busy", "copy-failed", "journal-unavailable", "session-unavailable"].includes(
+			error.code,
+		);
 		assert.equal(isRetryableForkError(error), retryable);
 		assert.equal(error.retryable, retryable);
 		assert.ok(guard({ name: error.name, code: error.code }), "the guard matches across realms by name and code");
@@ -481,7 +563,8 @@ for (const { error, guard } of samples) {
 
 test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	const typed = samples.map(({ error }) => rehydrateForkError(serializeForkError(error)));
-	const [target, mismatch, busy, entry, session, config, source, journal, unavailable, copy, released] = typed;
+	const [target, mismatch, busy, entry, session, config, source, journal, unavailable, copy, released, sessionDown] =
+		typed;
 	assert.ok(target instanceof ForkTargetNotFoundError);
 	assert.deepEqual(
 		[target.runId, target.fromStage, target.validStagePaths, target.totalValidStagePaths],
@@ -498,9 +581,22 @@ test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	assert.deepEqual([entry.sessionId, entry.entryId, entry.stageName], ["s", "e", "x"]);
 	assert.ok(session instanceof ForkSessionNotFoundError);
 	assert.deepEqual(
-		[session.sessionId, session.runId, session.stagePath, session.storage],
-		["s", runId, "p", { adapter: "jsonl", scope: "local-only" }],
+		[session.sessionId, session.runId, session.stagePath, session.storage, session.storeSource],
+		["s", runId, "p", { adapter: "jsonl", scope: "local-only" }, "supplied"],
 	);
+	assert.ok(sessionDown instanceof ForkSessionUnavailableError);
+	assert.deepEqual(
+		[sessionDown.sessionId, sessionDown.runId, sessionDown.stagePath, sessionDown.storage, sessionDown.retryable],
+		["s", runId, "p", { adapter: "libsql", scope: "shared" }, true],
+	);
+	assert.equal((sessionDown.cause as Error).name, "StorageUnavailableError");
+	const sessionDownBare = rehydrateForkError({ ...serializeForkError(sessionDown), cause: undefined });
+	assert.match((sessionDownBare.cause as Error).message, /not serialized/);
+	const notRoot = rehydrateForkError(
+		serializeForkError(new ForkSourceNotFoundError({ runId: forkRunId, reason: "not-root", rootRunId: runId })),
+	);
+	assert.ok(notRoot instanceof ForkSourceNotFoundError);
+	assert.deepEqual([notRoot.reason, notRoot.rootRunId], ["not-root", runId]);
 	assert.ok(config instanceof ForkConfigError);
 	assert.deepEqual(
 		[config.source, config.field, config.expected, config.issues],
@@ -550,10 +646,18 @@ test("rehydrated fork errors keep their typed fields (#4321)", () => {
 	});
 	assert.ok(legacyConfig instanceof ForkConfigError);
 	assert.deepEqual(legacyConfig.issues, [{ field: "cwd", expected: "an existing directory" }]);
-	const noOptionals = rehydrateForkError(serializeForkError(new ForkSessionNotFoundError({ sessionId: "s" })));
+	const noOptionals = rehydrateForkError(
+		serializeForkError(new ForkSessionNotFoundError({ sessionId: "s", storeSource: "project" })),
+	);
 	assert.ok(noOptionals instanceof ForkSessionNotFoundError);
-	assert.deepEqual([noOptionals.runId, noOptionals.stagePath, noOptionals.storage], [undefined, undefined, undefined]);
-	assert.deepEqual(noOptionals.fields, { sessionId: "s" });
+	assert.deepEqual(
+		[noOptionals.runId, noOptionals.stagePath, noOptionals.storage, noOptionals.storeSource],
+		[undefined, undefined, undefined, "project"],
+	);
+	assert.deepEqual(noOptionals.fields, { sessionId: "s", storeSource: "project" });
+	const sourceless = rehydrateForkError({ ...serializeForkError(noOptionals), fields: { sessionId: "s" } });
+	assert.ok(sourceless instanceof ForkSessionNotFoundError);
+	assert.equal(sourceless.storeSource, "project");
 });
 
 test("rehydration keeps every issue, count and cause, and tolerates missing fields (#4321)", () => {
@@ -736,6 +840,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"ForkJournalUnavailableError",
 		"ForkCopyFailedError",
 		"ForkClaimReleaseError",
+		"ForkSessionUnavailableError",
 		"isForkError",
 		"isForkTargetNotFoundError",
 		"isForkDefinitionMismatchError",
@@ -748,6 +853,7 @@ test("the SDK surface exports every fork error class and guard (#4321)", () => {
 		"isForkJournalUnavailableError",
 		"isForkCopyFailedError",
 		"isForkClaimReleaseError",
+		"isForkSessionUnavailableError",
 		"isRetryableForkError",
 		"findForkError",
 		"serializeForkError",

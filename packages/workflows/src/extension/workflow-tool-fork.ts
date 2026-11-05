@@ -30,7 +30,8 @@ function forkFailure(sourceRunId: string, error: ForkError): ForkResult {
 /**
  * The `fork` action of the `workflow` tool and `/workflow fork`: fork a durable run into this
  * session's directory, optionally from a stage with replacement inputs, and run the fork in the
- * background. A failure is the typed fork error's code, message and hint; nothing is written.
+ * background. Empty `inputs`, the schema's default, keep the source run's inputs. A failure is the
+ * typed fork error's code, message and hint; nothing is written.
  */
 export async function workflowForkAction(
 	args: Pick<WorkflowToolArgs, "runId" | "fromStage" | "inputs" | "carryMessages">,
@@ -47,10 +48,11 @@ export async function workflowForkAction(
 		if (isForkError(error)) return forkFailure(sourceRunId, error);
 		throw error;
 	}
+	const replacement = args.inputs === undefined || Object.keys(args.inputs).length === 0 ? undefined : args.inputs;
 	const forked = await deps.getRuntime().forkDurableWorkflow(sourceRunId, {
 		source: deps.source,
 		fromStage: args.fromStage,
-		inputs: args.inputs,
+		inputs: replacement,
 		carryMessages: args.carryMessages,
 		policy: deps.policy,
 		modelOwner: deps.modelOwner,

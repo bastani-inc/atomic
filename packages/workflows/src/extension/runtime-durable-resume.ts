@@ -177,6 +177,7 @@ export function createDurableResumeRuntime(deps: DurableResumeRuntimeDeps): Dura
 					modelOwner: options.modelOwner,
 					signal: options.signal,
 					isLiveRun: (runId) => hasActiveLiveRun(deps.store, runId),
+					rootRunOf: (runId) => deps.store.run(runId)?.rootRunId,
 				});
 			} catch (error) {
 				if (!isForkError(error)) throw error;

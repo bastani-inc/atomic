@@ -36,6 +36,7 @@ import {
 	ForkJournalUnavailableError,
 	ForkJournalUnsupportedError,
 	ForkSessionNotFoundError,
+	ForkSessionUnavailableError,
 	ForkSourceBusyError,
 	ForkSourceNotFoundError,
 	type ForkStorageScope,
@@ -79,6 +80,8 @@ export interface ForkPoint {
 export interface ForkSourceOptions {
 	/** Session store holding the source run's stage sessions; defaults to the source project's store. */
 	readonly sourceSessionStore?: SessionStore;
+	/** The root run of a nested run this process knows, so a nested run id is reported as one. */
+	readonly rootRunOf?: (runId: string) => string | undefined;
 }
 
 export interface DurableForkRequest<TDefinition = WorkflowDefinition> extends ForkSourceOptions {
@@ -239,7 +242,11 @@ async function inJournal<T>(
 	}
 }
 
-async function readForkSource(backend: JournalDurableBackend, target: string): Promise<ForkSource> {
+async function readForkSource(
+	backend: JournalDurableBackend,
+	target: string,
+	rootRunOf: ForkSourceOptions["rootRunOf"],
+): Promise<ForkSource> {
 	const journal = backend.journal;
 	if (!isFullRunId(target) && !isRunIdPrefix(target))
 		throw new ForkSourceNotFoundError({ runId: target, reason: "malformed" });
@@ -252,8 +259,12 @@ async function readForkSource(backend: JournalDurableBackend, target: string): P
 		const resolution = resolveRunIdTarget(target, runIds);
 		if (resolution.kind === "ambiguous")
 			throw new ForkSourceNotFoundError({ runId: target, reason: "ambiguous", matches: resolution.matches });
-		if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix")
-			throw new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) });
+		if (resolution.kind !== "exact" && resolution.kind !== "unique_prefix") {
+			const rootRunId = rootRunOf?.(target);
+			throw rootRunId === undefined || rootRunId === target
+				? new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) })
+				: new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId });
+		}
 		const read: JournalEntry[] = [];
 		for await (const entry of journal.read(resolution.runId)) read.push(entry);
 		return { runId: resolution.runId, entries: read };
@@ -265,8 +276,10 @@ async function readForkSource(backend: JournalDurableBackend, target: string): P
 			checkpoints.push({ seq: entry.seq, checkpoint: entry.event.payload as unknown as DurableCheckpoint });
 		else handle = decodeJournalEventHandle(entry.event, handle) ?? handle;
 	}
-	if (handle === undefined || (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== runId))
+	if (handle === undefined)
 		throw new ForkSourceNotFoundError({ runId: target, reason: "not-found", storage: journalStorage(journal) });
+	if (handle.rootWorkflowId !== undefined && handle.rootWorkflowId !== runId)
+		throw new ForkSourceNotFoundError({ runId: target, reason: "not-root", rootRunId: handle.rootWorkflowId });
 	return { runId, entries, handle, checkpoints };
 }
 
@@ -331,16 +344,30 @@ async function sourceSessionStoreFor(handle: DurableWorkflowHandle, options: For
 		: { store: options.sourceSessionStore, owned: false };
 }
 
+type SourceSessions = Awaited<ReturnType<typeof sourceSessionStoreFor>>;
+
+/** A session store's own errors, told apart by name: they come from `@bastani/atomic`'s session stores. */
+function sessionStoreFailure(error: unknown): "not-found" | "unavailable" | undefined {
+	if (error instanceof StorageError) return "unavailable";
+	if (!(error instanceof Error)) return undefined;
+	if (error.name === "SessionNotFoundError") return "not-found";
+	return error.name === "StorageUnavailableError" ? "unavailable" : undefined;
+}
+
 async function loadSession(
-	store: SessionStore,
+	sessions: SourceSessions,
 	sessionId: string,
 	context: { readonly runId: string; readonly stagePath?: string },
 ) {
 	try {
-		return await store.load(sessionId);
+		return await sessions.store.load(sessionId);
 	} catch (error) {
+		const failure = sessionStoreFailure(error);
+		if (failure === undefined) throw error;
+		const details = { sessionId, ...context, storage: storageScope(sessions.store.descriptor) };
+		if (failure === "unavailable") throw new ForkSessionUnavailableError(details, { cause: error as Error });
 		throw new ForkSessionNotFoundError(
-			{ sessionId, ...context, storage: storageScope(store.descriptor) },
+			{ ...details, storeSource: sessions.owned ? "project" : "supplied" },
 			{ cause: error as Error },
 		);
 	}
@@ -356,8 +383,8 @@ export async function* durableForkPoints(
 	options: ForkSourceOptions & { readonly cwd?: string } = {},
 ): AsyncGenerator<ForkPoint, void, undefined> {
 	const journalBackend = forkJournal(backend);
-	const source = await readForkSource(journalBackend, runId);
-	let sessions: Awaited<ReturnType<typeof sourceSessionStoreFor>> | undefined;
+	const source = await readForkSource(journalBackend, runId, options.rootRunOf);
+	let sessions: SourceSessions | undefined;
 	try {
 		for (const record of forkPointRecords(source.checkpoints)) {
 			if (record.sessionId === undefined) {
@@ -365,7 +392,7 @@ export async function* durableForkPoints(
 				continue;
 			}
 			sessions ??= await sourceSessionStoreFor(source.handle, options, options.cwd ?? process.cwd());
-			const session = await loadSession(sessions.store, record.sessionId, {
+			const session = await loadSession(sessions, record.sessionId, {
 				runId: source.runId,
 				stagePath: record.stagePath,
 			});
@@ -814,12 +841,12 @@ export async function forkDurableRun<
 	let request = forkRequest as ResolvedForkRequest;
 	request.signal?.throwIfAborted();
 	const journalBackend = forkJournal(backend);
-	const preview = await readForkSource(journalBackend, request.runId);
+	const preview = await readForkSource(journalBackend, request.runId, request.rootRunOf);
 	request.signal?.throwIfAborted();
 	const claim = await claimSource(journalBackend, preview.runId, request);
 	let primary: Error | undefined;
 	try {
-		const source = await readForkSource(journalBackend, preview.runId);
+		const source = await readForkSource(journalBackend, preview.runId, request.rootRunOf);
 		request = { ...forkRequest, cwd: forkDestinationCwd(forkRequest.cwd, source.handle) };
 		request.signal?.throwIfAborted();
 		const { definition, inputs } = await resolveForkDefinition(request, source.handle);
@@ -937,7 +964,7 @@ async function copySessions(
 				if (known.checkpoint.topology === undefined) snapshots.set(sessionId, { ...known, checkpoint });
 				continue;
 			}
-			const snapshot = await loadSession(sourceStore.store, sessionId, { runId: source.runId });
+			const snapshot = await loadSession(sourceStore, sessionId, { runId: source.runId });
 			snapshots.set(sessionId, { entries: snapshot.entries, checkpoint });
 		}
 	} finally {

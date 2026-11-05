@@ -385,7 +385,7 @@ test("an unreadable session carries its cause, run and stage in the ForkSessionN
 	await commit(backend, [
 		stage(sourceId, "stage:saved", "saved", "stage:saved:1", { output: "saved", sessionId: "lost" }),
 	]);
-	const failure = new Error("store offline");
+	const failure = Object.assign(new Error("Session not found: lost"), { name: "SessionNotFoundError" });
 	vi.spyOn(sessions, "load").mockRejectedValue(failure);
 	const points = await (async () => {
 		for await (const point of durableForkPoints(backend, sourceId, { sourceSessionStore: sessions })) return point;

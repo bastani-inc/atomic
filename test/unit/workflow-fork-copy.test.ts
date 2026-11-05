@@ -546,7 +546,7 @@ test("forkDurableRun rejects an empty cwd and a child run id before claiming any
 	assert.deepEqual([emptyCwd.field, emptyCwd.expected], ["cwd", "a directory path"]);
 	const child = await forkDurableRun(backend, request(childId)).catch((error: Error) => error);
 	assert.ok(child instanceof ForkSourceNotFoundError);
-	assert.equal(child.reason, "not-found");
+	assert.deepEqual([child.reason, child.rootRunId], ["not-root", sourceId]);
 	await backend.journal.createRun({
 		runId: testRunId("copy-empty"),
 		name: "x",

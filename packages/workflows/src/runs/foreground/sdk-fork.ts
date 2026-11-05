@@ -57,8 +57,8 @@ export interface ListForkPointsOptions {
 	readonly durableBackend?: DurableWorkflowBackend;
 	readonly store?: Store;
 	readonly cwd?: string;
-	/** Session store holding the run's stage sessions, read for each point's `entryId`. */
-	readonly sessionStore?: SessionStore;
+	/** Session store holding the run's stage sessions, read for each point's `entryId`. Omitted: the run's project store. */
+	readonly sourceSessionStore?: SessionStore;
 }
 
 async function sdkDurableBackend(
@@ -138,6 +138,7 @@ export async function forkRun<
 		modelOwner: options.modelOwner,
 		signal: options.signal,
 		isLiveRun: (id) => hasActiveLiveRun(store, id),
+		rootRunOf: (id) => store.run(id)?.rootRunId,
 	});
 	const channel = runEventChannel();
 	const result = run(forked.definition, forked.inputs, {
@@ -191,6 +192,10 @@ export async function* listForkPoints(
 	options: ListForkPointsOptions = {},
 ): AsyncGenerator<ForkPoint, void, undefined> {
 	validateForkOptions("sdk", runId, {});
-	const { backend } = await sdkDurableBackend(runId, options);
-	yield* durableForkPoints(backend, runId, { cwd: options.cwd, sourceSessionStore: options.sessionStore });
+	const { store, backend } = await sdkDurableBackend(runId, options);
+	yield* durableForkPoints(backend, runId, {
+		cwd: options.cwd,
+		sourceSessionStore: options.sourceSessionStore,
+		rootRunOf: (id) => store.run(id)?.rootRunId,
+	});
 }

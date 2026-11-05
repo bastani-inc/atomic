@@ -30,12 +30,15 @@ const forkers: Forker[] = [];
 
 afterEach(async () => {
 	vi.restoreAllMocks();
-	for (const forker of forkers.splice(0)) {
-		if (forker.process.exitCode === null && forker.process.signalCode === null) forker.process.kill("SIGKILL");
-		await forker.process.exited;
-		await forker.stderr;
-	}
+	const reaped = await Promise.allSettled(
+		forkers.splice(0).map(async (forker) => {
+			if (forker.process.exitCode === null && forker.process.signalCode === null) forker.process.kill("SIGKILL");
+			await forker.process.exited;
+			await forker.stderr;
+		}),
+	);
 	for (const directory of directories.splice(0)) removeTempDirectory(directory);
+	for (const outcome of reaped) if (outcome.status === "rejected") throw outcome.reason;
 });
 
 interface ChaosJournal {
