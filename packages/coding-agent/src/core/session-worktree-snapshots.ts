@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
@@ -700,15 +699,16 @@ function storedBranchSnapshots(
 }
 
 /**
- * Whether opening a session recorded elsewhere restores its checkout on this host, so it is opened rather than forked
- * into the current directory: its working directory, followed through the restores it recorded, does not exist here
- * and lies inside a checkout the branch it reopens on recorded a snapshot of.
+ * Whether a session runs in a checkout it recorded snapshots of: its working directory, followed through the restores
+ * it recorded, lies inside a checkout the branch it reopens on recorded a snapshot of. Opening such a session from
+ * another directory resumes it against that checkout, verified in place or restored into a fresh worktree, instead of
+ * forking it into the other directory.
  */
-export async function sessionRestoresOnOpen(store: SessionStore, sessionId: string): Promise<boolean> {
+export async function sessionRunsInRecordedCheckout(store: SessionStore, sessionId: string): Promise<boolean> {
 	const { header, entries } = await store.load(sessionId);
 	const { mappings, current } = storedBranchSnapshots(entries, entries.at(-1)?.id);
 	const cwd = mapRestoredPath(header.cwd, mappings);
-	return [...current.keys()].some((root) => isInside(root, cwd)) && !existsSync(cwd);
+	return [...current.keys()].some((root) => isInside(root, cwd));
 }
 
 /**

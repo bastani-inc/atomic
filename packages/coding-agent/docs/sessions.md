@@ -97,7 +97,7 @@ Each session records the working directory it was created in and never changes i
 | `--resume`, `/resume`, `--session` | The session's working directory, which can differ from the current directory |
 | `--fork`, or a `--session` ID from another directory that you choose to fork | The current directory, in a new session |
 
-`atomic --session <id>` from another directory offers a fork only when the session's working directory exists on this machine. When it does not and lies inside a checkout the session recorded a [worktree snapshot](/worktree-snapshots) of, the session opens as itself and continues in the restored worktree.
+`atomic --session <id>` from another directory opens a session whose working directory lies inside a checkout it recorded a [worktree snapshot](/worktree-snapshots) of as itself, without offering a fork: it continues in that checkout when it still matches the snapshot, and otherwise in a fresh worktree restored from it. Other sessions are offered as a fork into the current directory.
 
 If a session's working directory no longer exists, interactive mode offers to continue in the current directory instead; other modes exit with an error that names both directories.
 
