@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -52,6 +53,24 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).toContain(".hidden-file");
 			expect(output).toContain(".hidden-dir/");
+		});
+
+		it("should treat limits below 1 as 1 and floor fractional limits (pi #11747)", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			for (const limit of [0, -5, 0.5, 1.9]) {
+				const result = await lsTool.execute("test-call-ls-small-limit", { path: testDir, limit });
+				assert.equal(getTextOutput(result), "a.txt\n\n[1 entries limit reached. Use limit=2 for more]");
+				assert.deepEqual(result.details, { entryLimitReached: 1 });
+			}
+		});
+
+		it("should report the entry limit only when more entries exist (pi #11747)", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			const result = await lsTool.execute("test-call-ls-exact-limit", { path: testDir, limit: 3 });
+			assert.equal(getTextOutput(result), "a.txt\nb.txt\nc.txt");
+			assert.equal(result.details, undefined);
 		});
 	});
 });

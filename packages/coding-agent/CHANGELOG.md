@@ -42,6 +42,7 @@
 - Aborting while a tool runs no longer ends the turn with an error when the next request's credential setup sees the aborted signal; the turn ends as aborted (upstream [#8635](https://github.com/earendil-works/pi/pull/8635))
 - `ATOMIC_STARTUP_BENCHMARK=1` now disposes the session runtime after printing its timings, so extensions get `session_shutdown` and a timer or socket they clean up there no longer keeps the process from exiting (upstream [#11736](https://github.com/earendil-works/pi/pull/11736))
 - The grep tool's ripgrep search (literal patterns, custom operations, or when native search is unavailable) no longer reads every matched file into memory when `context`, `contextBefore` or `contextAfter` is set, which ran out of memory on large files. Context lines come from ripgrep, so overlapping context prints once, UTF-16 and non-UTF-8 files show correctly, and the match limit notice no longer appears when exactly `limit` matches exist. A fractional `limit` or a huge context value is clamped to a whole number (upstream [#11705](https://github.com/earendil-works/pi/pull/11705))
+- The ls tool with `limit: 0` no longer lists nothing and reports `(empty directory)`; limits below 1 now mean 1 and fractional limits are rounded down (upstream [#11747](https://github.com/earendil-works/pi/pull/11747))
 
 ## [0.9.71] - 2026-11-03
 
