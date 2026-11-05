@@ -96,6 +96,9 @@ export interface ToolLoadoutChanges {
 /**
  * Tool definition for registerTool().
  */
+/** Decides from one call's arguments whether that call may detach. */
+export type DetachableCallPredicate<TParams> = { decide(params: TParams): boolean }["decide"];
+
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = unknown> {
 	/** Tool name (used in LLM tool calls) */
 	name: string;
@@ -153,9 +156,11 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	 * arguments after a restart is safe. When the host sets a detachment policy (`AgentSession.setToolDetachment`), a
 	 * call still running after the policy's `afterMs` goes on without the run, which ends so the host can release the
 	 * session and hand the result back later. Without a policy the call runs inline like any other. Once a call
-	 * detaches, the progress it reports through `onUpdate` is dropped and its `ctx` answers only `cwd`.
+	 * detaches, the progress it reports through `onUpdate` is dropped and its `ctx` answers only `cwd`. A function
+	 * decides per call from the call's arguments: only the calls it accepts may detach, and only those are started
+	 * again after a restart; every other call runs inline like any other.
 	 */
-	detachable?: boolean;
+	detachable?: boolean | DetachableCallPredicate<Static<TParams>>;
 
 	/** Execute the tool. */
 	execute(
