@@ -476,12 +476,37 @@ for (const [label, code, breakGit] of [
 			const denied = await alpha.status(alphaContext);
 			assert.equal(denied.isError, true, denied.content[0]?.text);
 			assert.equal(denied.details?.code, code, denied.content[0]?.text);
-			assert.match(String(denied.details?.hint), /ATOMIC_INTERCOM_GROUP/);
+			assert.match(
+				String((denied.details as { readonly hint?: unknown } | undefined)?.hint),
+				/ATOMIC_INTERCOM_GROUP/,
+			);
 			assert.equal(await sessionsOnBroker(), 0);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+test(
+	"a session start still fails on an invalid storage profile while it names its home group, instead of starting without one (#4320)",
+	async () => {
+		startBrokerWithStorage(sharedStorage());
+		await brokerRouting("on");
+		vi.stubEnv("ATOMIC_PROFILE", "staging");
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "invalid-profile");
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+
+		await assert.rejects(alpha.start(alphaContext), (error: Error) => {
+			assert.deepEqual(
+				[error.name, (error as Error & { readonly code?: string }).code],
+				["TeamProfileConfigError", "unknown-profile"],
+			);
+			return true;
+		});
+		assert.equal(await sessionsOnBroker(), 0);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"a CI-profile session is refused by a reused broker that has a storage selection but does not route across machines (#4320)",
