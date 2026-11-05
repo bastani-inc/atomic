@@ -6,6 +6,7 @@ import { afterEach, test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
+import { isWorkflowAdmissionConfigError } from "../../packages/workflows/src/workers/admission-errors.js";
 import {
 	closeCoordinationJournals,
 	coordinationPath,
@@ -188,7 +189,12 @@ test.skipIf(process.platform === "win32")(
 						cwd: directory,
 						admission: { userLimits: { session: 2 }, ...(userDatabase ? { userDatabase } : {}) },
 					}),
-					/User admission requires the canonical journal database/,
+					(error: Error) => {
+						// Main's typed admission error for a userDatabase that is not the journal file (#4325).
+						assert.ok(isWorkflowAdmissionConfigError(error), String(error));
+						assert.equal(error.code, "user-database-mismatch");
+						return true;
+					},
 				);
 		});
 	},
