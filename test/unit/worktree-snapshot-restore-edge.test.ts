@@ -414,7 +414,7 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 			{ code: "filters", filters: { autocrlf: null, eol: null, drivers: ["lfs"] } },
 		]);
 		assert.deepEqual(restored.warnings, warnings);
-		assert.match(readFileSync(log, "utf8").trim(), /^pull\|[^\n]+$/);
+		assert.match(readFileSync(log, "utf8").trim(), /^pull -- file:\/\/\S+\|[^\n]+$/);
 	});
 
 	test("objects that are fetched produce no LFS warning", async () => {
@@ -425,7 +425,7 @@ describe.skipIf(process.platform === "win32")("Git LFS content on restore", () =
 			restored.warnings.map((warning) => warning.code),
 			["filters"],
 		);
-		assert.match(readFileSync(log, "utf8").trim(), /^pull\|[^\n]+$/);
+		assert.match(readFileSync(log, "utf8").trim(), /^pull -- file:\/\/\S+\|[^\n]+$/);
 	});
 
 	test("a snapshot whose repository never used LFS never runs it", async () => {
