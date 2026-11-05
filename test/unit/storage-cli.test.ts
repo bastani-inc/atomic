@@ -310,6 +310,16 @@ describe("storage status checks", () => {
 		}
 	});
 
+	test("a database that does not answer fails status with its connection failure (#4325)", async () => {
+		const path = join(root, "garbage.sqlite");
+		writeFileSync(path, "this is not a SQLite database, although it is longer than a database header would be");
+		writeSettings({ storage: { path } });
+		const result = await storage(["status", "--json"]);
+		assert.equal(result.code, 1);
+		const status: StorageStatus = JSON.parse(result.out);
+		assert.equal(domain(status, "sessions").probe?.connection.status, "failed");
+	});
+
 	test("an adapter that cannot load fails status with its cause and the launch check warns (#3856)", async () => {
 		writeSettings({ storage: { adapter: "./missing-adapter.ts" } });
 		const result = await storage(["status", "--json"]);

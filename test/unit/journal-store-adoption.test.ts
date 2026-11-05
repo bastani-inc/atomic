@@ -1355,3 +1355,13 @@ test("a journal an earlier version copied in full has its legacy runs ignored, a
 		await sql.close();
 	}
 });
+
+test("a journal whose migrations hold only other markers still has its legacy runs indexed (#4325)", async () => {
+	const path = legacyJournal(join(root, "other-marker", "journal.sqlite"), ["old"]);
+	raw(path, "CREATE TABLE wf_migrations(name TEXT PRIMARY KEY, applied_at INTEGER)");
+	raw(path, "INSERT INTO wf_migrations VALUES ('another-migration', 0)");
+	assert.deepEqual(
+		(await inspectJournalFile(path)).runs.map((run) => run.runId),
+		["old"],
+	);
+});

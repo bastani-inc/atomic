@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { JournalAdoptError, JournalCatalog, JournalShardUnavailableError } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -375,4 +375,28 @@ test("atomic storage status lists a native shard whose file was deleted or canno
 	assert.ok(lines.includes(`  unavailable: ${first} (native, no longer exists: shard-missing)`));
 	assert.ok(lines.includes(`  unavailable: ${second} (native, cannot be opened: shard-open-failed)`));
 	assert.equal((await storage(["status"])).code, 1);
+});
+
+test("atomic storage status opens shard files read-only and closes every one (#4325)", async () => {
+	const catalog = await JournalCatalog.open(store);
+	const shard = (await catalog.place({ runId: "77777777-7777-4777-8777-777777777777", status: "running" })).shard.path;
+	await catalog.close();
+	await (await openSqlRunJournal(shard)).close();
+	if (process.platform !== "win32") chmodSync(shard, 0o444);
+	const status = await collectStorageStatus({ cwd: project, agentDir, probe: true });
+	const journal = status.domains.find((entry) => entry.domain === "journal")!;
+	if (process.platform !== "win32" && process.getuid?.() !== 0)
+		assert.deepEqual(journal.journalStore?.unavailable, [], "a shard file that is read-only is still usable to read");
+	if (process.platform === "linux")
+		for (const name of readdirSync("/proc/self/fd")) {
+			const target = (() => {
+				try {
+					return readlinkSync(join("/proc/self/fd", name));
+				} catch {
+					return "";
+				}
+			})();
+			assert.equal(target.startsWith(shard), false, `status left ${target} open`);
+		}
+	if (process.platform !== "win32") chmodSync(shard, 0o644);
 });

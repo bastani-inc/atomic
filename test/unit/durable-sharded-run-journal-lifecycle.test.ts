@@ -26,6 +26,7 @@ import {
 	JournalSchemaVersionError,
 	type Lease,
 	type RunJournal,
+	RunNotFoundError,
 	StorageUnavailableError,
 } from "../../packages/workflows/src/durable/journal/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -1044,4 +1045,49 @@ test("a lease taken after a move was undone finds the run where the catalog now 
 	const outcome = await journal.acquire("r", "resumer");
 	assert.equal(outcome.status, "acquired");
 	assert.equal(journal.shardOf("r")?.kind, "adopted");
+});
+
+test("deleting a run that did not move asks the catalog once and removes its entry (#4325)", async () => {
+	await start(await open(), "plain");
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const counts = countCalls(catalog, ["locate", "removeFrom"]);
+	await journal.deleteRun("plain");
+	assert.deepEqual([counts.locate, counts.removeFrom], [1, 1]);
+	assert.equal(await catalog.locate("plain"), undefined);
+});
+
+for (const [moves, outcome] of [
+	[3, "completes"],
+	[4, "fails with run-moved"],
+] as const)
+	test(`deleting a run that moves ${moves} times meanwhile ${outcome}: it follows at most three moves (#4325)`, async () => {
+		await start(await open(), "moving");
+		const journal = await open();
+		const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+		const locate = catalog.locate.bind(catalog);
+		let located = 0;
+		let removals = 0;
+		Reflect.set(catalog, "locate", async (runId: string) => {
+			const found = await locate(runId);
+			const moved = Math.min(located++, moves);
+			return found === undefined || moved === 0 ? found : { ...found, shard: { ...found.shard, id: 100 + moved } };
+		});
+		Reflect.set(catalog, "removeFrom", async () => ++removals > moves);
+		const result = await journal.deleteRun("moving").catch((error: Error) => error);
+		if (outcome === "completes") {
+			assert.equal(result, undefined);
+			return;
+		}
+		assert.ok(isJournalCatalogError(result) && result.code === "run-moved");
+	});
+
+test("a lease operation on a run its shard does not hold, and the catalog does not move, is still run-not-found (#4325)", async () => {
+	const journal = await open();
+	await start(journal, "vanished");
+	const shard = new DatabaseSync(journal.shardOf("vanished")!.path);
+	for (const table of ["wf_events", "wf_leases", "wf_runs"])
+		shard.exec(`DELETE FROM ${table} WHERE run_id = 'vanished'`);
+	shard.close();
+	await assert.rejects(journal.acquire("vanished", "resumer"), (error: Error) => error instanceof RunNotFoundError);
 });
