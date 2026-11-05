@@ -168,16 +168,16 @@ describe("choosing the snapshot a binding names", () => {
 		sandbox.write(join(clone, "x.txt"), "x\n");
 		const blobs = new MemorySnapshotBlobStore();
 		const base = await capture(clone, blobs);
-		const older = { ...base, id: "older-candidate" };
-		const newer = { ...base, id: "newer-candidate" };
-		const sameTreeOtherHead = { ...base, id: "decoy-head", head: "9".repeat(40) };
-		const sameHeadOtherTree = { ...base, id: "decoy-tree", tree: "8".repeat(40) };
+		const older = { ...base, id: "01d" };
+		const newer = { ...base, id: "02e" };
+		const sameTreeOtherHead = { ...base, id: "0dec1", head: "9".repeat(40) };
+		const sameHeadOtherTree = { ...base, id: "0dec2", tree: "8".repeat(40) };
 		const restored = await restoreWorktree(bindingOf(base), {
 			blobs,
 			storeDir: sandbox.path("host"),
 			snapshots: [older, newer, sameTreeOtherHead, sameHeadOtherTree],
 		});
-		assert.equal(restored.snapshot?.id, "newer-candidate");
+		assert.equal(restored.snapshot?.id, "02e");
 		assert.deepEqual(restored.binding, bindingOf(base));
 		assert.equal(readFileSync(join(restored.path, "x.txt"), "utf8"), "x\n");
 		await assert.rejects(
@@ -220,7 +220,7 @@ describe("restoring a chain", () => {
 		const first = await capture(clone, blobs);
 		const forged: WorktreeSnapshot = {
 			...first,
-			id: "forged-chain",
+			id: "f0a1",
 			chain: [...first.chain, { tree: first.tree, patch: null, bytes: 0 }],
 		};
 		const restored = await restoreWorktree(forged, { blobs, storeDir: sandbox.path("host") });
@@ -234,7 +234,7 @@ describe("restoring a chain", () => {
 		const wrong = "6".repeat(40);
 		const forged: WorktreeSnapshot = {
 			...snapshot,
-			id: "forged-wrong",
+			id: "f0a2",
 			tree: wrong,
 			chain: [{ tree: wrong, patch: null, bytes: 0 }],
 		};
@@ -332,7 +332,7 @@ describe("finding the head", () => {
 		const blobs = new MemorySnapshotBlobStore();
 		const snapshot = await capture(clone, blobs);
 		assert.ok(snapshot.bundle);
-		await blobs.deleteBlobs([snapshot.bundle.blob]);
+		await blobs.deleteBlobs([snapshot.bundle.blob], { olderThanSeconds: 0 });
 		await assert.rejects(restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") }), (error: unknown) => {
 			assert.ok(isWorkspaceRestoreError(error));
 			assert.equal(error.code, "blob-missing");

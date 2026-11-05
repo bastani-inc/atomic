@@ -159,6 +159,7 @@ export async function resolveWorkflowSnapshotFrontier(
 						expectedTree: drift.expectedTree,
 						actualTree: drift.actualTree,
 						snapshotId: snapshot.id,
+						reason: "restore-failed",
 					},
 					cause instanceof Error ? cause : undefined,
 				);

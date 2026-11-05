@@ -405,7 +405,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		const aborting: SnapshotBlobStore = {
 			putBlobs: (blobs) => store.snapshotBlobs!.putBlobs(blobs),
 			listBlobHashes: () => store.snapshotBlobs!.listBlobHashes(),
-			deleteBlobs: (hashes) => store.snapshotBlobs!.deleteBlobs(hashes),
+			deleteBlobs: (hashes, options) => store.snapshotBlobs!.deleteBlobs(hashes, options),
 			getBlob: async (hash) => {
 				controller.abort(reason);
 				return store.snapshotBlobs!.getBlob(hash);
@@ -441,6 +441,12 @@ describe("choosing the checkout a resumed session belongs to", () => {
 				assert.equal(error.actualHead, null);
 				assert.equal(error.actualTree, null);
 				assert.ok(isWorkspaceRestoreError(error.cause));
+				assert.equal(error.reason, "restore-failed");
+				assert.equal(error.restoreCode, "commits-unavailable");
+				assert.equal(
+					error.message,
+					`Worktree drifted from its recorded snapshot: ${sandbox.path("gone")} has tree none at no HEAD, expected ${unreachable.tree} at ${"5".repeat(40)}, and the automatic restore failed: Cannot restore snapshot ${unreachable.id}: commit ${"5".repeat(40)} could not be fetched from ${sandbox.path("nowhere.git")} (tree-drift). Check access with \`git ls-remote ${sandbox.path("nowhere.git")}\` and that ${"5".repeat(40)} is pushed, then retry.`,
+				);
 				return true;
 			},
 		);
@@ -778,7 +784,7 @@ describe("snapshot content carried inline by an exported session", () => {
 		const noStore = await inlineSnapshotBlobs([entry("e1", { blobs: { stale: "AA==" } })], records, undefined);
 		assert.deepEqual((noStore[0] as WorktreeSnapshotEntry).snapshot, snapshot);
 		assert.equal(Object.hasOwn(noStore[0]!, "blobs"), false);
-		await store.deleteBlobs([(await store.listBlobHashes())[1]!]);
+		await store.deleteBlobs([(await store.listBlobHashes())[1]!], { olderThanSeconds: 0 });
 		const partial = await inlineSnapshotBlobs([entry("e1", { blobs: { stale: "AA==" } })], records, store);
 		assert.deepEqual(Object.keys((partial[0] as WorktreeSnapshotEntry).blobs ?? {}), [hashA]);
 		const unknown = await inlineSnapshotBlobs([entry("e1")], new Map(), store);
@@ -798,7 +804,7 @@ describe("snapshot content carried inline by an exported session", () => {
 			},
 			getBlob: (hash) => target.getBlob(hash),
 			listBlobHashes: () => target.listBlobHashes(),
-			deleteBlobs: (hashes) => target.deleteBlobs(hashes),
+			deleteBlobs: (hashes, options) => target.deleteBlobs(hashes, options),
 		};
 		const carried = entry("e1", {
 			blobs: { [hashA]: Buffer.from(dataA).toString("base64"), [hashB]: Buffer.from(dataB).toString("base64") },
@@ -877,7 +883,7 @@ describe("snapshot content carried inline by an exported session", () => {
 		assert.deepEqual([...(await view.getBlob(hashB))!], [250, 0, 9]);
 		assert.equal(await view.getBlob("absent"), undefined);
 		assert.deepEqual([...(await view.listBlobHashes())].sort(), [hashA, hashB].sort());
-		for (const write of [() => view.putBlobs([]), () => view.deleteBlobs([])]) {
+		for (const write of [() => view.putBlobs([]), () => view.deleteBlobs([], { olderThanSeconds: 0 })]) {
 			await assert.rejects(write(), (error: unknown) => {
 				assert.ok(isWorkspaceSnapshotError(error));
 				assert.equal(error.code, "blob-store-unsupported");
@@ -900,7 +906,7 @@ describe("snapshot content carried inline by an exported session", () => {
 		await view.putBlobs([{ hash: "written", data: new Uint8Array([9]) }]);
 		assert.deepEqual([...(await primary.listBlobHashes())].sort(), ["only-primary", "written"]);
 		assert.deepEqual([...(await view.listBlobHashes())].sort(), ["only-primary", "written"]);
-		await view.deleteBlobs(["written"]);
+		await view.deleteBlobs(["written"], { olderThanSeconds: 0 });
 		assert.deepEqual(await primary.listBlobHashes(), ["only-primary"]);
 		const inlineOnly = sessionSnapshotBlobs(undefined, [
 			entry("e1", { blobs: { [hashA]: Buffer.from(dataA).toString("base64") } }),

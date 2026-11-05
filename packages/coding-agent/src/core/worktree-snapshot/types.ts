@@ -94,12 +94,13 @@ export interface SnapshotBlob {
 
 /** Content-addressed storage for snapshot patches and bundles, kept in the same storage as sessions or journals. */
 export interface SnapshotBlobStore {
-	/** Stores each blob once; storing a hash that exists is a no-op. */
+	/** Stores each blob once. Storing a hash that exists keeps its bytes and restarts its age, which protects it from collection. */
 	putBlobs(blobs: readonly SnapshotBlob[]): Promise<void>;
 	getBlob(hash: string): Promise<Uint8Array | undefined>;
 	/** Every stored hash, for garbage collection. */
 	listBlobHashes(): Promise<readonly string[]>;
-	deleteBlobs(hashes: readonly string[]): Promise<void>;
+	/** Deletes each of `hashes` stored or re-stored at least `olderThanSeconds` ago, and resolves with those it deleted. */
+	deleteBlobs(hashes: readonly string[], options: { readonly olderThanSeconds: number }): Promise<readonly string[]>;
 }
 
 /** Restore-time notices that never block a verified restore. */

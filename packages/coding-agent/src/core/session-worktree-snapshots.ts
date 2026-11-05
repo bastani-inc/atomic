@@ -247,6 +247,7 @@ export async function resumeSessionWorktree(
 				expectedTree: drift.expectedTree,
 				actualTree: drift.actualTree,
 				snapshotId: drift.snapshotId,
+				reason: "restore-failed",
 			},
 			error,
 		);
@@ -419,7 +420,7 @@ export function sessionSnapshotBlobs(
 		putBlobs: (blobs) => primary.putBlobs(blobs),
 		getBlob: async (hash) => (await primary.getBlob(hash)) ?? (await inline.getBlob(hash)),
 		listBlobHashes: () => primary.listBlobHashes(),
-		deleteBlobs: (hashes) => primary.deleteBlobs(hashes),
+		deleteBlobs: (hashes, options) => primary.deleteBlobs(hashes, options),
 	};
 }
 

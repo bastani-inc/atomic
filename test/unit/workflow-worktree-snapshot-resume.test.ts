@@ -209,7 +209,7 @@ test("resume fails with typed drift and the missing blob as cause before callbac
 	assert.equal(first.status, "failed");
 	const snapshot = (await listWorkflowSnapshotBoundaries(journal, first.runId))[0]!.snapshot;
 	const hash = snapshot.chain[0]!.patch!;
-	await journal.snapshotBlobs.deleteBlobs([hash]);
+	await journal.snapshotBlobs.deleteBlobs([hash], { olderThanSeconds: 0 });
 	sandbox.write(join(clone, "changed.txt"), "drift\n");
 	await assert.rejects(
 		resumeDurableWorkflow(first.runId, {

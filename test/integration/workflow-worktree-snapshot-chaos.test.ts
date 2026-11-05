@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { openNodeSqliteDatabase, SqlSnapshotBlobStore } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { test } from "vitest";
-import { snapshotBlob, snapshotBlobHashes } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
+import {
+	collectSnapshotGarbage,
+	snapshotBlob,
+	snapshotBlobHashes,
+	type WorktreeSnapshot,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -158,6 +163,71 @@ test(
 			assert.equal(hashes.length, blobs.length);
 			assert.equal(new Set(hashes).size, blobs.length);
 			for (const blob of blobs) assert.deepEqual(await stores[0]!.getBlob(blob.hash), blob.data);
+		} finally {
+			await Promise.all(connections.map((database) => database.close()));
+			await rm(directory, { recursive: true, force: true });
+		}
+	},
+	REAL_PROCESS_TIMEOUT_MS,
+);
+
+test(
+	"concurrent captures and garbage collection on one SQLite file never lose a blob that a capture referenced (#4245)",
+	async () => {
+		const GRACE_SECONDS = 2;
+		const WRITERS = 6;
+		const CAPTURES_PER_WRITER = 100;
+		const directory = await mkdtemp(join(tmpdir(), "workflow-snapshot-gc-race-"));
+		const connections = await Promise.all(
+			Array.from({ length: WRITERS + 2 }, () => openNodeSqliteDatabase(join(directory, "shared.sqlite"))),
+		);
+		try {
+			const stores = await Promise.all(connections.map((database) => SqlSnapshotBlobStore.open(database)));
+			const published: WorktreeSnapshot[] = [];
+			const publishedBlobs: string[] = [];
+			const missing: string[] = [];
+			let writing = true;
+			const referencing = (hash: string) =>
+				({ chain: [{ tree: "t", patch: hash, bytes: 1 }], bundle: null }) as unknown as WorktreeSnapshot;
+
+			// Each writer does what a capture does: store the blob, wait a little, then publish the reference that
+			// the retention sets will list. A blob shared by two captures is stored again by the second.
+			const writer = async (writerIndex: number) => {
+				for (let capture = 0; capture < CAPTURES_PER_WRITER; capture++) {
+					const shared = capture % 5 === 0;
+					const entry = snapshotBlob(
+						new TextEncoder().encode(shared ? `shared-${capture}` : `blob-${writerIndex}-${capture}`),
+					);
+					await stores[writerIndex]!.putBlobs([entry]);
+					await new Promise((resolve) => setTimeout(resolve, 20 + ((writerIndex * 7 + capture) % 30)));
+					published.push(referencing(entry.hash));
+					publishedBlobs.push(entry.hash);
+					if ((await stores[writerIndex]!.getBlob(entry.hash)) === undefined) missing.push(entry.hash);
+				}
+			};
+			// Collection runs back to back against whatever has been published so far. Blobs nobody references
+			// (stored, never published) are the garbage it exists to remove.
+			const orphan = snapshotBlob(new TextEncoder().encode("never referenced"));
+			await stores[WRITERS]!.putBlobs([orphan]);
+			const collector = async () => {
+				while (writing) {
+					await collectSnapshotGarbage(stores[WRITERS + 1]!, [...published], { graceSeconds: GRACE_SECONDS });
+					await new Promise((resolve) => setTimeout(resolve, 5));
+				}
+			};
+			const collecting = collector();
+			await Promise.all(Array.from({ length: WRITERS }, (_, index) => writer(index)));
+			writing = false;
+			await collecting;
+
+			assert.deepEqual(missing, [], "a blob was gone right after its capture published its reference");
+			for (const hash of publishedBlobs) {
+				assert.notEqual(await stores[0]!.getBlob(hash), undefined, `published blob ${hash} was collected`);
+			}
+
+			// The orphan outlived the grace window while the writers ran, so collection removed it, and only it.
+			assert.equal(await stores[0]!.getBlob(orphan.hash), undefined, "the unreferenced blob was never collected");
+			assert.equal(new Set(await stores[0]!.listBlobHashes()).size, new Set(publishedBlobs).size);
 		} finally {
 			await Promise.all(connections.map((database) => database.close()));
 			await rm(directory, { recursive: true, force: true });

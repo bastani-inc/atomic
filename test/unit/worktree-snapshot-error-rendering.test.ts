@@ -36,7 +36,7 @@ describe("a restore error built from only its required fields still renders", ()
 		assert.equal(error.code, "commits-unavailable");
 		assert.equal(error.reason, "denied-history");
 		assert.match(error.message, /its unpushed history touches denied paths/);
-		assert.match(error.hint ?? "", /^Push commits .* to a recorded remote, then retry\.$/);
+		assert.equal(error.hint, `Push commit ${HEAD} (with its history) to a recorded remote, then retry.`);
 	});
 
 	test("unpushed history over the size cap renders without the optional commit list", () => {

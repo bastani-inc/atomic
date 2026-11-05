@@ -1,5 +1,6 @@
 import type { SqliteDatabase } from "../storage/database.js";
 import { validateStoragePrefix } from "../storage/prefix.js";
+import { WorkspaceConfigError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
 /** Every blob hash a snapshot needs to be restored: its chain's patches and its bundle. */
@@ -10,20 +11,42 @@ export function snapshotBlobHashes(snapshot: WorktreeSnapshot): string[] {
 }
 
 export class MemorySnapshotBlobStore implements SnapshotBlobStore {
-	private readonly blobs = new Map<string, Uint8Array>();
+	private readonly blobs = new Map<string, { readonly data: Uint8Array; storedAt: number }>();
+	private readonly now: () => number;
+
+	/** `now` returns the current time in whole seconds; tests inject it to age blobs deterministically. */
+	constructor(options: { readonly now?: () => number } = {}) {
+		this.now = options.now ?? (() => Math.floor(Date.now() / 1000));
+	}
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
-		for (const blob of blobs) if (!this.blobs.has(blob.hash)) this.blobs.set(blob.hash, Uint8Array.from(blob.data));
+		const storedAt = this.now();
+		for (const blob of blobs) {
+			const existing = this.blobs.get(blob.hash);
+			if (existing) existing.storedAt = storedAt;
+			else this.blobs.set(blob.hash, { data: Uint8Array.from(blob.data), storedAt });
+		}
 	}
 	async getBlob(hash: string): Promise<Uint8Array | undefined> {
-		const data = this.blobs.get(hash);
-		return data === undefined ? undefined : Uint8Array.from(data);
+		const entry = this.blobs.get(hash);
+		return entry === undefined ? undefined : Uint8Array.from(entry.data);
 	}
 	async listBlobHashes(): Promise<readonly string[]> {
 		return [...this.blobs.keys()];
 	}
-	async deleteBlobs(hashes: readonly string[]): Promise<void> {
-		for (const hash of hashes) this.blobs.delete(hash);
+	async deleteBlobs(
+		hashes: readonly string[],
+		options: { readonly olderThanSeconds: number },
+	): Promise<readonly string[]> {
+		const cutoff = this.now() - options.olderThanSeconds;
+		const deleted: string[] = [];
+		for (const hash of hashes) {
+			const entry = this.blobs.get(hash);
+			if (entry === undefined || entry.storedAt > cutoff) continue;
+			this.blobs.delete(hash);
+			deleted.push(hash);
+		}
+		return deleted;
 	}
 }
 
@@ -43,7 +66,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		if (!exists) {
 			await database.transaction(async (transaction) => {
 				await transaction.exec(
-					`CREATE TABLE IF NOT EXISTS ${table} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL) STRICT`,
+					`CREATE TABLE IF NOT EXISTS ${table} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
 				);
 			});
 		}
@@ -52,7 +75,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data) VALUES (?, ?, ?) ON CONFLICT(hash) DO NOTHING`;
+		const sql = `INSERT INTO ${this.table} (hash, bytes, data) VALUES (?, ?, ?) ON CONFLICT(hash) DO UPDATE SET created_at = unixepoch()`;
 		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
 		if (this.database.batch) {
 			await this.database.batch(statements);
@@ -70,25 +93,65 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const rows = await this.database.all<{ hash: string }>(`SELECT hash FROM ${this.table}`);
 		return rows.map((row) => row.hash);
 	}
-	async deleteBlobs(hashes: readonly string[]): Promise<void> {
-		if (hashes.length === 0) return;
-		await this.database.transaction(async (transaction) => {
-			for (const hash of hashes) await transaction.run(`DELETE FROM ${this.table} WHERE hash = ?`, hash);
+	/**
+	 * Deletes each of `hashes` that was stored or re-stored at least `olderThanSeconds` ago, measured on the database's
+	 * clock so that a skewed client clock can neither expose nor protect a blob. The age test and the delete are one
+	 * statement, so a blob re-stored between a listing and this call is kept. Resolves with the hashes deleted.
+	 */
+	async deleteBlobs(
+		hashes: readonly string[],
+		options: { readonly olderThanSeconds: number },
+	): Promise<readonly string[]> {
+		if (hashes.length === 0) return [];
+		return this.database.transaction(async (transaction) => {
+			const deleted: string[] = [];
+			for (const hash of hashes) {
+				const { changes } = await transaction.run(
+					`DELETE FROM ${this.table} WHERE hash = ? AND created_at <= unixepoch() - ?`,
+					hash,
+					options.olderThanSeconds,
+				);
+				if (changes > 0) deleted.push(hash);
+			}
+			return deleted;
 		});
 	}
 }
 
 /**
- * Deletes every stored blob that none of `retained` needs. Callers pass the snapshots referenced by resumable
- * checkpoints and the latest snapshot of each session; each snapshot names its whole chain, so ancestors survive.
+ * How long an unreferenced blob is kept by default: one hour.
+ *
+ * A capture stores its blobs first and publishes the session entry or checkpoint that references them afterwards, so
+ * for that gap a fresh blob is unreferenced. The gap is one capture plus one journal append, normally well under a
+ * second, but a stopped or starved process can stretch it to minutes. An hour keeps every realistic gap safe, and the
+ * cost of keeping an unreferenced blob that long is a few kilobytes of patch.
+ */
+export const DEFAULT_BLOB_GRACE_SECONDS = 3600;
+
+export interface CollectSnapshotGarbageOptions {
+	/** Blobs stored or re-stored less than this many seconds ago are never deleted. A non-negative integer; 0 disables the protection. Default {@link DEFAULT_BLOB_GRACE_SECONDS}. */
+	readonly graceSeconds?: number;
+}
+
+/**
+ * Deletes every stored blob that none of `retained` needs and that was last stored at least `graceSeconds` ago, and
+ * resolves with the hashes it deleted. Callers pass the snapshots referenced by resumable checkpoints and the latest
+ * snapshot of each session; each snapshot names its whole chain, so ancestors survive. When sessions and runs share
+ * one database they share one blob table, so pass both sets together.
+ *
+ * Throws {@link WorkspaceConfigError} before reading the store when `graceSeconds` is not a non-negative integer.
  */
 export async function collectSnapshotGarbage(
 	store: SnapshotBlobStore,
 	retained: Iterable<WorktreeSnapshot>,
+	options: CollectSnapshotGarbageOptions = {},
 ): Promise<{ readonly deleted: readonly string[] }> {
+	const graceSeconds = options.graceSeconds ?? DEFAULT_BLOB_GRACE_SECONDS;
+	if (!Number.isInteger(graceSeconds) || graceSeconds < 0) {
+		throw new WorkspaceConfigError("sdk", "graceSeconds", "a non-negative integer number of seconds");
+	}
 	const keep = new Set<string>();
 	for (const snapshot of retained) for (const hash of snapshotBlobHashes(snapshot)) keep.add(hash);
-	const deleted = (await store.listBlobHashes()).filter((hash) => !keep.has(hash));
-	await store.deleteBlobs(deleted);
-	return { deleted };
+	const candidates = (await store.listBlobHashes()).filter((hash) => !keep.has(hash));
+	return { deleted: await store.deleteBlobs(candidates, { olderThanSeconds: graceSeconds }) };
 }

@@ -103,9 +103,9 @@ describe("the snapshot blob table", () => {
 		const two = blobs("one", "two");
 		await store.putBlobs(two);
 		const before = counts.transactions;
-		await store.deleteBlobs([]);
+		assert.deepEqual(await store.deleteBlobs([], { olderThanSeconds: 0 }), []);
 		assert.equal(counts.transactions, before);
-		await store.deleteBlobs([two[0]!.hash]);
+		assert.deepEqual(await store.deleteBlobs([two[0]!.hash], { olderThanSeconds: 0 }), [two[0]!.hash]);
 		assert.equal(counts.transactions, before + 1);
 		assert.deepEqual(await store.listBlobHashes(), [two[1]!.hash]);
 	});

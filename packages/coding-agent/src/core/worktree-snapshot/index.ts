@@ -1,5 +1,7 @@
 export {
+	type CollectSnapshotGarbageOptions,
 	collectSnapshotGarbage,
+	DEFAULT_BLOB_GRACE_SECONDS,
 	MemorySnapshotBlobStore,
 	SqlSnapshotBlobStore,
 	snapshotBlobHashes,
@@ -17,6 +19,7 @@ export {
 	GitUnavailableError,
 	type GitUnavailableErrorCode,
 	gitInstallCommand,
+	type InvalidSnapshotReason,
 	isGitUnavailableError,
 	isWorkspaceConfigError,
 	isWorkspaceDriftError,

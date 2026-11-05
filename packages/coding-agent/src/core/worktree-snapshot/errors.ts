@@ -23,7 +23,8 @@ export type WorkspaceRestoreErrorCode =
 	| "delta-failed"
 	| "tree-mismatch"
 	| "unsafe-target"
-	| "unwritable-path";
+	| "unwritable-path"
+	| "invalid-snapshot";
 export type WorkspaceDriftErrorCode = "tree-drift";
 export type WorkspaceErrorCode =
 	| WorkspaceConfigErrorCode
@@ -50,6 +51,8 @@ const MAX_SERIALIZED_CAUSE_DEPTH = 4;
 export class WorkspaceError extends Error {
 	override readonly name: WorkspaceErrorName = "WorkspaceError";
 	readonly code: WorkspaceErrorCode;
+	/** What failed, without the code and the hint: the first part of `message`. */
+	readonly summary: string;
 	readonly hint: string;
 	readonly retryable: boolean = false;
 	readonly fields: WorkspaceErrorFields;
@@ -58,6 +61,7 @@ export class WorkspaceError extends Error {
 	constructor(code: WorkspaceErrorCode, summary: string, hint: string, fields: WorkspaceErrorFields, cause?: Error) {
 		super(`${summary} (${code}). ${hint}`, cause === undefined ? undefined : { cause });
 		this.code = code;
+		this.summary = summary;
 		this.hint = hint;
 		this.fields = Object.freeze({ ...fields });
 		Object.assign(this, fields);
@@ -161,7 +165,9 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 	],
 	"blob-store-unsupported": (subject) => [
 		`Worktree snapshot unavailable: ${subject} storage cannot hold snapshot blobs`,
-		"Use local SQLite, JSONL, memory, or a database-backed storage adapter to record snapshots.",
+		subject === "workflow journal"
+			? 'Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.'
+			: 'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
 	],
 	"unreadable-path": (subject) => [
 		`Worktree snapshot unavailable: ${subject} cannot be read`,
@@ -201,12 +207,29 @@ export interface WorkspaceRestoreErrorFields {
 	readonly actualTree?: string | null;
 	readonly commits?: readonly string[];
 	readonly paths?: readonly string[];
-	readonly reason?: "denied-history" | "bundle-over-cap" | "not-fetched" | "not-empty" | "not-restored";
+	readonly reason?:
+		| "denied-history"
+		| "bundle-over-cap"
+		| "not-fetched"
+		| "not-empty"
+		| "not-restored"
+		| InvalidSnapshotReason;
 	readonly remotes?: readonly string[];
 	readonly target?: string;
 	readonly detail?: string;
+	/** For `invalid-snapshot`: the record field that failed, such as `remotes[0]` or `chain[2].tree`. */
+	readonly field?: string;
 }
 
+/** Why a snapshot or binding record was refused before any Git or filesystem work. */
+export type InvalidSnapshotReason = "unsafe-remote" | "invalid-object-id" | "invalid-snapshot-id" | "invalid-blob-hash";
+
+const INVALID_SNAPSHOT_EXPECTATIONS: Record<InvalidSnapshotReason, string> = {
+	"unsafe-remote": "a remote URL Atomic can safely fetch from",
+	"invalid-object-id": "a Git object id",
+	"invalid-snapshot-id": "a snapshot id",
+	"invalid-blob-hash": "a SHA-256 blob hash",
+};
 function restoreMessage(
 	code: WorkspaceRestoreErrorCode,
 	fields: WorkspaceRestoreErrorFields,
@@ -238,13 +261,16 @@ function restoreMessage(
 						: `Push ${fields.head} to a remote and record it, then retry.`,
 				];
 			}
+			const push = `Push commit ${fields.head} (with its history) to a recorded remote`;
 			return [
 				`Cannot restore snapshot ${snapshot}: commit ${fields.head} is not on ${remotes} and its unpushed history ${
 					fields.reason === "denied-history"
 						? `touches denied paths ${fields.paths?.join(", ")}`
 						: "exceeded the snapshot size cap"
 				}`,
-				`Push commits ${fields.commits?.join(", ")} to a recorded remote, then retry.`,
+				fields.reason === "denied-history"
+					? `${push}, then retry.${fields.commits?.length ? ` Commits ${fields.commits.join(", ")} add or change denied paths ${fields.paths?.join(", ")}, so pushing publishes those files.` : ""}`
+					: `${push}, or raise snapshots.maxSnapshotBytes and record a new snapshot, then retry.`,
 			];
 		}
 		case "delta-failed":
@@ -272,6 +298,11 @@ function restoreMessage(
 				`Cannot write ${fields.target}${fields.snapshotId === null ? "" : ` while restoring snapshot ${fields.snapshotId}`}`,
 				`Free space on the volume that holds ${fields.target}, or make it and its parent directory writable by the current user (for example \`chmod u+rwX\`), then retry.`,
 			];
+		case "invalid-snapshot":
+			return [
+				`Invalid snapshot record${fields.snapshotId === null ? "" : ` ${fields.snapshotId}`}: ${fields.field} is not ${INVALID_SNAPSHOT_EXPECTATIONS[fields.reason as InvalidSnapshotReason]}`,
+				"The record is malformed or was not written by Atomic. Restore only sessions and runs from storage you trust, or export the session again on the machine that recorded it.",
+			];
 	}
 }
 
@@ -293,6 +324,7 @@ export class WorkspaceRestoreError extends WorkspaceError implements WorkspaceRe
 	declare readonly remotes?: readonly string[];
 	declare readonly target?: string;
 	declare readonly detail?: string;
+	declare readonly field?: string;
 
 	constructor(code: WorkspaceRestoreErrorCode, fields: WorkspaceRestoreErrorFields, cause?: Error) {
 		const [summary, hint] = restoreMessage(code, fields);
@@ -316,9 +348,25 @@ export interface WorkspaceDriftErrorFields {
 	readonly expectedTree: string;
 	readonly actualTree: string | null;
 	readonly snapshotId: string | null;
+	/** `restore-failed` when an automatic restore was attempted and failed; the failure is the error's `cause`. */
+	readonly reason?: "restore-failed";
+	/** The `code` of the typed restore failure, when `reason` is `restore-failed`. */
+	readonly restoreCode?: string;
 }
 
-/** A worktree no longer matches the snapshot work would resume from. Nothing ran against it. */
+/** The code, summary and remediation of a typed restore failure, which a drift error shows in place of its own. */
+function restoreFailure(cause: Error): { code: string; summary: string; hint: string } | undefined {
+	if (isGitUnavailableError(cause))
+		return { code: cause.code, summary: `Git is unavailable (${cause.code})`, hint: cause.hint };
+	const typed = findWorkspaceError(cause);
+	if (typed === undefined || typeof typed.summary !== "string") return undefined;
+	return { code: typed.code, summary: typed.summary, hint: typed.hint };
+}
+
+/**
+ * A worktree no longer matches the snapshot work would resume from. Nothing ran against it. When an automatic restore
+ * was attempted (`reason: "restore-failed"`), the message and hint carry the typed restore failure's summary and fix.
+ */
 export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDriftErrorFields {
 	override readonly name = "WorkspaceDriftError" as const;
 	declare readonly code: WorkspaceDriftErrorCode;
@@ -328,13 +376,18 @@ export class WorkspaceDriftError extends WorkspaceError implements WorkspaceDrif
 	declare readonly expectedTree: string;
 	declare readonly actualTree: string | null;
 	declare readonly snapshotId: string | null;
+	declare readonly reason?: "restore-failed";
+	declare readonly restoreCode?: string;
 
 	constructor(fields: WorkspaceDriftErrorFields, cause?: Error) {
+		const failure = fields.reason === "restore-failed" && cause !== undefined ? restoreFailure(cause) : undefined;
 		super(
 			"tree-drift",
-			`Worktree drifted from its recorded snapshot: ${fields.root} has tree ${fields.actualTree ?? "none"} at ${fields.actualHead ?? "no HEAD"}, expected ${fields.expectedTree} at ${fields.expectedHead}`,
-			"Restore the recorded snapshot into a new worktree, or undo the changes, then resume.",
-			compactFields(fields),
+			`Worktree drifted from its recorded snapshot: ${fields.root} has tree ${fields.actualTree ?? "none"} at ${fields.actualHead ?? "no HEAD"}, expected ${fields.expectedTree} at ${fields.expectedHead}${
+				failure ? `, and the automatic restore failed: ${failure.summary}` : ""
+			}`,
+			failure?.hint ?? "Restore the recorded snapshot into a new worktree, or undo the changes, then resume.",
+			compactFields(failure ? { ...fields, restoreCode: failure.code } : fields),
 			cause,
 		);
 	}
@@ -358,6 +411,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"tree-mismatch",
 		"unsafe-target",
 		"unwritable-path",
+		"invalid-snapshot",
 	],
 	WorkspaceDriftError: ["tree-drift"],
 };

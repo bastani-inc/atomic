@@ -329,8 +329,8 @@ export interface DurableWorkflowMetadata {
 	readonly resumable?: boolean;
 	/** True when the terminal status came from an author-selected ctx.exit(). */
 	readonly exited?: boolean;
-	/** Author-supplied reason from ctx.exit(), when present. */
 	readonly snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
+	/** Author-supplied reason from ctx.exit(), when present. */
 	readonly exitReason?: string;
 	readonly invocationCwd?: string;
 	readonly resources?: import("../workers/public-options.js").WorkflowExecutionResources;

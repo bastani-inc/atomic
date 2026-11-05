@@ -56,15 +56,19 @@ test("retention keeps the latest snapshot of each session and collects blobs not
 
 	const retained = await listRetainedSessionSnapshots(store);
 	assert.deepEqual(retained.map((snapshot) => snapshot.id).sort(), [newer.id, shared.id].sort());
-	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, retained);
+	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, retained, { graceSeconds: 0 });
 	assert.deepEqual(deleted, snapshotBlobHashes(older));
 	assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), snapshotBlobHashes(newer));
 
 	await store.delete(first.getSessionId());
-	const afterDelete = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store));
+	const afterDelete = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store), {
+		graceSeconds: 0,
+	});
 	assert.deepEqual(afterDelete.deleted, [], "the other session still needs the shared blob");
 	await store.delete(second.getSessionId());
-	const afterAll = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store));
+	const afterAll = await collectSnapshotGarbage(store.snapshotBlobs, await listRetainedSessionSnapshots(store), {
+		graceSeconds: 0,
+	});
 	assert.deepEqual(afterAll.deleted, snapshotBlobHashes(newer));
 	assert.deepEqual(await store.snapshotBlobs.listBlobHashes(), []);
 });

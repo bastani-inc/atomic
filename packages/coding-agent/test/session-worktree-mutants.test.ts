@@ -244,7 +244,7 @@ describe("resuming a session whose snapshot cannot be restored", () => {
 				throw "blob storage went away";
 			},
 			listBlobHashes: () => real.snapshotBlobs!.listBlobHashes(),
-			deleteBlobs: (hashes) => real.snapshotBlobs!.deleteBlobs(hashes),
+			deleteBlobs: (hashes, options) => real.snapshotBlobs!.deleteBlobs(hashes, options),
 		};
 		const store = new Proxy(real, {
 			get(target, property) {

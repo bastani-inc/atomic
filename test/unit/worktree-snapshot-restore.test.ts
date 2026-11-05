@@ -305,6 +305,34 @@ describe("restoreWorktreeSnapshot", () => {
 		assert.deepEqual(warnings, [{ code: "omitted-content", omitted: snapshot.omitted }]);
 	});
 
+	test("the denied-history hint names the head to push: pushing only the denied commit is not enough (#4245)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		sandbox.write(join(clone, "server.pem"), "PRIVATE\n");
+		const leaking = await sandbox.commitAll(clone, "pem");
+		sandbox.write(join(clone, "notes.txt"), "later\n");
+		const head = await sandbox.commitAll(clone, "later");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = await capture(clone, blobs);
+		const restore = () => restoreWorktreeSnapshot(snapshot, { blobs, storeDir: sandbox.path("host") });
+		const failsNamingHead = (error: unknown) => {
+			assert.ok(error instanceof WorkspaceRestoreError);
+			assert.equal(error.reason, "denied-history");
+			assert.equal(error.head, head);
+			assert.deepEqual(error.commits, [leaking]);
+			assert.equal(
+				error.hint,
+				`Push commit ${head} (with its history) to a recorded remote, then retry. Commits ${leaking} add or change denied paths server.pem, so pushing publishes those files.`,
+			);
+			return true;
+		};
+		await assert.rejects(restore(), failsNamingHead);
+		await sandbox.git(clone, "push", "-q", "origin", `${leaking}:refs/heads/main`);
+		await assert.rejects(restore(), failsNamingHead);
+		await sandbox.git(clone, "push", "-q", "origin", `${head}:refs/heads/main`);
+		const path = await restore();
+		assert.equal(readFileSync(join(path, "notes.txt"), "utf8"), "later\n");
+	});
+
 	test("an unreachable remote reports the commit as not fetched with the Git failure as cause", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const blobs = new MemorySnapshotBlobStore();
@@ -405,7 +433,10 @@ describe("verifyWorktree", () => {
 	test("reports a missing repository with its typed reason", async () => {
 		mkdirSync(sandbox.path("plain"));
 		await assert.rejects(
-			verifyWorktree({ remotes: [], head: "a", tree: "b", envHash: "" }, sandbox.path("plain")),
+			verifyWorktree(
+				{ remotes: [], head: "a".repeat(40), tree: "b".repeat(40), envHash: "" },
+				sandbox.path("plain"),
+			),
 			(error: unknown) => isWorkspaceSnapshotError(error) && error.code === "not-a-repository",
 		);
 	});
