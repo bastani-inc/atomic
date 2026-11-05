@@ -486,7 +486,7 @@ Journal store errors are exported from `@bastani/atomic/storage` with their code
 | | `write-failed` | A catalog write failed; retryable when another process held the lock | `phase`, `runId`, `detail` | Free disk space or wait for the lock; checkpoints already written stay on their shard |
 | | `run-conflict` | `consolidate` found different histories for a run | `runId`, `shardPath` | Compare both preserved copies and check the catalog's current location; a concurrent resume may have kept the run on the destination |
 | | `run-moved` | A consolidation moved a run while it was read and its new shard did not continue the history; retryable | `runId`, `shardId`, `shardPath`, `lastSeq` | Read the run again |
-| | `run-not-found` | No run with this ID is in this machine's storage | `runId`, `selection`, `localOnly` | With local-only storage, join the machine that ran it with `atomic storage join <url> --token-file <path>`, or adopt an older journal file |
+| | `run-not-found` | No run with this ID is in this machine's storage | `runId`, `selection`, `localOnly` | With local-only storage, join the machine that ran it with `atomic team join <url> --token-file <path>`, or adopt an older journal file |
 | `JournalShardUnavailableError` | `shard-missing` | The file holding a run is gone | `shardId`, `shardPath`, `runId` | Restore the file at that path; its runs stay registered there |
 | | `shard-open-failed` | The file cannot be opened; retryable when it was locked | `shardId`, `shardPath`, `detail` | Check permissions and free disk space |
 | `JournalAdoptError` | `path-not-found` | The path does not exist | `path` | Pass a journal file or its directory |

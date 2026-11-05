@@ -267,7 +267,7 @@ test("JournalCatalogError renders what failed, the subject, the code and what to
 		error.hint,
 		`This machine uses local-only storage and is not joined to shared storage. If the run started on another machine, join its storage with \`${SHARED_STORAGE_JOIN_HINT}\`; if it is in an older journal file, adopt it with \`atomic storage adopt <path>\`.`,
 	);
-	assert.equal(SHARED_STORAGE_JOIN_HINT, "atomic storage join <url> --token-file <path>");
+	assert.equal(SHARED_STORAGE_JOIN_HINT, "atomic team join <url> --token-file <path>");
 });
 
 test("JournalAdoptError path-not-found, not-a-journal and schema-version are raised before anything is registered", async () => {

@@ -32,7 +32,6 @@ export {
 	LOCAL_SESSIONS_STORAGE,
 	leaveTeam,
 	REDACTED_SECRET,
-	SHARED_STORAGE_JOIN_HINT,
 	type StorageInputSelection,
 	type StorageSettingsSelection,
 	selectStorage,

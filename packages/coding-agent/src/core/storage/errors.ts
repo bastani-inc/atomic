@@ -492,8 +492,8 @@ export interface JournalCatalogErrorInit {
 	readonly cause?: StorageFailureCause | Error;
 }
 
-/** The command that joins this machine to shared storage, named by errors whose remedy is joining it. */
-export const SHARED_STORAGE_JOIN_HINT = "atomic storage join <url> --token-file <path>";
+/** The command that joins this machine to the team's shared storage; error hints across Atomic name it. */
+export const SHARED_STORAGE_JOIN_HINT = "atomic team join <url> --token-file <path>";
 /** The command that registers an older journal file in the journal store. */
 export const JOURNAL_ADOPT_COMMAND = "atomic storage adopt <path>";
 

@@ -83,7 +83,7 @@ test("JournalCatalogError renders each code's message and hint from its fields (
 				localOnly: true,
 			}),
 			"Workflow run not found: r3 in journal store /s (run-not-found).",
-			"This machine uses local-only storage and is not joined to shared storage. If the run started on another machine, join its storage with `atomic storage join <url> --token-file <path>`; if it is in an older journal file, adopt it with `atomic storage adopt <path>`.",
+			"This machine uses local-only storage and is not joined to shared storage. If the run started on another machine, join its storage with `atomic team join <url> --token-file <path>`; if it is in an older journal file, adopt it with `atomic storage adopt <path>`.",
 		],
 		[
 			new JournalCatalogError({ code: "run-not-found", catalogPath, localOnly: false }),

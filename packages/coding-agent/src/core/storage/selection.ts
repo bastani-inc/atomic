@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { SqliteDatabase } from "./database.js";
 import {
+	SHARED_STORAGE_JOIN_HINT,
 	StorageConfigError,
 	StoragePrefixError,
 	TeamProfileConfigError,
@@ -169,9 +170,6 @@ export const STORAGE_TOKEN_FILE = "storage-token";
 
 /** The `sessions.storage` value `team join` writes: the local default store, named explicitly. */
 export const LOCAL_SESSIONS_STORAGE = { path: "workflows/journal.sqlite" } as const;
-
-/** The command that joins this machine to the team's shared storage; error hints across Atomic name it. */
-export const SHARED_STORAGE_JOIN_HINT = "atomic team join <url> --token-file <path>";
 
 export const TEAM_PROFILE_ENV = "ATOMIC_PROFILE";
 export const TEAM_URL_ENV = "ATOMIC_TEAM_URL";

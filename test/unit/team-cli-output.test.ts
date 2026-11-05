@@ -368,7 +368,7 @@ describe("atomic team output (#4320)", () => {
 		assert.deepEqual(parsed.profile, {
 			profile: "individual",
 			sessions: `SQLite ${join(root, "workflows", "journal.sqlite")}`,
-			journal: `SQLite ${join(root, "workflows", "journal.sqlite")}`,
+			journal: `journal store ${join(root, "workflows", "journal")}`,
 			intercom: "off",
 		});
 		assert.deepEqual(parsed.broker, { state: "unknown", error: "intercom package missing" });

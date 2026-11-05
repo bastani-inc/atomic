@@ -32,6 +32,7 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "./errors.js";
+import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelection } from "./process-selection.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
 import {
@@ -770,6 +771,7 @@ export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResu
 }
 
 function isLocalDefault(selection: StorageSelection, agentDir: string): boolean {
+	if (selection.kind === "sharded") return resolve(selection.dir) === resolve(defaultJournalStoreDirectory(agentDir));
 	return (
 		selection.kind === "sqlite" &&
 		!selection.prefix &&
