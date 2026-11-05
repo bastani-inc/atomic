@@ -581,6 +581,75 @@ test("workflow roster lists pending and running stages only inside its invocatio
 	assert.deepEqual((await member.listDirectory()).workflowStages, []);
 });
 
+test("the broker carries workflow send classifications and prediction rows end to end (#4359)", async () => {
+	const runId = "43590000-3528-413e-84c4-87a43e5037a2";
+	const group = `workflow:${runId}`;
+	const capability = "prediction-roster-capability";
+	const owner = new IntercomClient();
+	const sender = new IntercomClient();
+	for (const client of [owner, sender]) {
+		realClients.add(client);
+		client.on("error", () => {});
+	}
+	await owner.connect(productionRegistration("prediction-owner", group));
+	await sender.connect(productionRegistration("prediction-sender", group));
+	owner.registerPendingStageRoute(
+		runId,
+		group,
+		capability,
+		[],
+		[
+			{ target: `workflow:${runId}/review-1`, queuedCount: 0, prediction: "predicted", probability: 0.93 },
+			{ target: `workflow:${runId}/lint`, queuedCount: 1, prediction: "confirmed", probability: 0.99 },
+			{ target: `workflow:${runId}/**`, queuedCount: 0 },
+		],
+	);
+	await owner.listSessions();
+	assert.deepEqual(
+		(await sender.listDirectory()).workflowFutureStages.map(({ target, prediction, probability }) => ({
+			target,
+			prediction,
+			probability,
+		})),
+		[
+			{ target: `workflow:${runId}/review-1`, prediction: "predicted", probability: 0.93 },
+			{ target: `workflow:${runId}/lint`, prediction: "confirmed", probability: 0.99 },
+			{ target: `workflow:${runId}/**`, prediction: undefined, probability: undefined },
+		],
+	);
+
+	const ownerRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const send = sender.send(`workflow:${runId}/reviwe-1`, { text: "likely a typo" });
+	owner.respondPendingStageMessage((await ownerRequest).requestId, {
+		outcome: "queued",
+		position: 1,
+		prediction: "unknown",
+		unexpected: true,
+		suggestion: "review-1",
+	});
+	const queued = await send;
+	assert.equal(queued.queued, true);
+	assert.equal(queued.prediction, "unknown");
+	assert.equal(queued.unexpected, true);
+	assert.equal(queued.suggestion, "review-1");
+
+	const knownRequest = new Promise<PendingStageMessageRequest>((resolveRequest) => {
+		owner.once("pending_stage_message", resolveRequest);
+	});
+	const knownSend = sender.send(`workflow:${runId}/review-1`, { text: "expected" });
+	owner.respondPendingStageMessage((await knownRequest).requestId, {
+		outcome: "queued",
+		position: 1,
+		prediction: "predicted",
+	});
+	const known = await knownSend;
+	assert.equal(known.prediction, "predicted");
+	assert.equal(known.unexpected, undefined);
+	assert.equal(known.suggestion, undefined);
+});
+
 test("invocation roster control is directional across owned subgroups", async () => {
 	// Regression: #2784
 	const runId = "27840001-3528-413e-84c4-87a43e5037a2";

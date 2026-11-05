@@ -827,6 +827,19 @@ try {
 
 For a dynamic parallel step array that cannot be scanned, set `possibleStageNames: ["review-*"]` in the call's options. Supply a literal array covering every possible step name; `*` matches a varying name component. This metadata only controls advance stage discovery, not execution or concurrency. Named helpers can forward `options.possibleStageNames` directly to their parallel calls when every direct caller supplies a literal array, including through named relative imports. Use plain data properties in those caller options; options methods/getters, mutation, and side-effecting parameter defaults are not supported for discovery. Opaque forwarding and unannotated dynamic calls still produce discovery warnings.
 
+#### Predicted stage names
+
+Where discovery is uncertain (a name built by a helper, a step factory imported from another module, a loop over a list, or a child workflow chosen at run time), the decision model ranks candidate names taken from the workflow's source in the background. It never invents names, and launch and delivery never wait for it. `POSSIBLE_STAGE_PREDICTION_THRESHOLDS`, exported from `@bastani/atomic/workflows`, holds the policy: a candidate at or above `predicted` (0.8) joins the run's predicted stages, a send whose yes-probability is at or above `known` (0.8) counts as expected, and one at or below `unlikely` (0.2) gets a `did you mean` line. These are policy values, not calibrated accuracy. A root run's `RunSnapshot.stagePredictions` holds the accepted paths with their probabilities, the judged send targets, and the fallback reason when prediction failed.
+
+Prediction failures never fail a run: the scan alone then decides the known set, and the first failure is recorded once as `stagePredictions.fallback` (`name`, `code`, `hint`). `PossibleStagePredictionError` is the family; branch on `code`. `isPossibleStagePredictionError(error)` and the per-class guards also match an error by `name` and `code` after it crossed a realm boundary, and `findPossibleStagePredictionError(error)` searches a `cause` chain at most eight deep. A cancelled prediction (the extension shut down) is not recorded.
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `StageDecisionUnavailableError` | `decision-unavailable` | No decision model can answer. | `phase` (`scan` or `target`), `hint`, `retryable: false` | Configure a decision model. |
+| `StageDecisionFailedError` | `decision-failed` | The decision model failed; the provider error is the `cause`. | `phase`, `hint`, `retryable` (true when the cause is retryable) | Check the provider; a later run asks again. |
+| `StageDecisionTimeoutError` | `decision-timeout` | No answer within the prediction deadline. | `phase`, `timeoutMs`, `elapsedMs`, `retryable: true` | None; a later run asks again. |
+| `StageDecisionAnswerError` | `invalid-answer` | The answer named an option that was not offered, was missing, or was not a probability. Nothing from it is used. | `phase`, `question`, `reason` (`missing`, `wrong-type`, `unknown-option`, `not-a-probability`), `retryable: false` | None. |
+
 ### Stage prompt options (`StagePromptOptions`)
 
 ```typescript

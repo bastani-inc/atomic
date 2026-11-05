@@ -90,6 +90,25 @@ export type { AgentSessionAdapter, StageAdapters } from "./runs/foreground/stage
 export type { GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./runs/shared/worktree.js";
 export { setupGitWorktree } from "./runs/shared/worktree.js";
 export type { WorkflowDecisionRequest } from "./shared/authoring-contract-stage.js";
+export type {
+	PossibleStagePredictionErrorCode,
+	PossibleStagePredictionPhase,
+	StageDecisionAnswerErrorReason,
+} from "./shared/possible-stage-prediction-errors.js";
+export {
+	findPossibleStagePredictionError,
+	isPossibleStagePredictionError,
+	isStageDecisionAnswerError,
+	isStageDecisionFailedError,
+	isStageDecisionTimeoutError,
+	isStageDecisionUnavailableError,
+	POSSIBLE_STAGE_PREDICTION_THRESHOLDS,
+	PossibleStagePredictionError,
+	StageDecisionAnswerError,
+	StageDecisionFailedError,
+	StageDecisionTimeoutError,
+	StageDecisionUnavailableError,
+} from "./shared/possible-stage-prediction-errors.js";
 export { createStore, store } from "./shared/store.js";
 export type {
 	CustomPromptIdentitySource,

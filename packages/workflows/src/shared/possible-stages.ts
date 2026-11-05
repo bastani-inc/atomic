@@ -34,8 +34,9 @@
  * fidelity.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeWorkflowName } from "../workflows/identity.js";
 
@@ -59,6 +60,47 @@ export interface PossibleStagesScanOptions {
 	readonly maxDepth?: number;
 }
 
+export type PossibleStageUncertaintyCode =
+	| "unresolved-name"
+	| "unresolved-steps"
+	| "unresolved-step"
+	| "unresolved-child"
+	| "unreadable-file"
+	| "zero-stages";
+
+export type PossibleStageCandidateSource = "literal" | "template" | "enum-array" | "factory" | "child-definition";
+
+export interface PossibleStageCandidate {
+	/**
+	 * Stage target paths this candidate adds when accepted, in the same form as `stages`
+	 * (boundary prefix joined with "/"): one name, every name of an enum-array expansion,
+	 * or a child boundary followed by that child's own scanned stages.
+	 */
+	readonly stages: readonly string[];
+	readonly source: PossibleStageCandidateSource;
+}
+
+export interface PossibleStageUncertainty {
+	readonly code: PossibleStageUncertaintyCode;
+	/** Scanned file, relative to the entry file's directory, with "/" separators (e.g. "workflow.mjs", "../shared/x.ts"). */
+	readonly file: string;
+	/** 1-based line of the call site; 1 for file-level codes (unreadable-file, zero-stages). */
+	readonly line: number;
+	/** Source lines around the call site (the call line plus up to 3 lines before and 3 after), at most 1200 characters; "" for unreadable-file. */
+	readonly excerpt: string;
+	/** Boundary prefix the call site's names nest under ("" at the root, e.g. "workflow:child-a" inside a scanned child). */
+	readonly boundary: string;
+	/** Deterministic (first-seen source order), de-duplicated by `stages` content, at most 24 per uncertainty. */
+	readonly candidates: readonly PossibleStageCandidate[];
+}
+
+export interface PossibleStageSourceDigest {
+	/** Same relative form as `PossibleStageUncertainty.file`. */
+	readonly file: string;
+	/** Lowercase hex sha256 of the file's UTF-8 content as read. */
+	readonly sha256: string;
+}
+
 export interface PossibleStagesScanResult {
 	/** Sorted, de-duplicated possible stage target paths (literals, globs, nested paths). */
 	readonly stages: readonly string[];
@@ -66,7 +108,16 @@ export interface PossibleStagesScanResult {
 	readonly hasTrackedNodes: boolean;
 	/** Non-fatal scan warnings in deterministic traversal order. */
 	readonly warnings: readonly string[];
+	/** Typed uncertainty records in deterministic traversal order (one per uncertain call site). */
+	readonly uncertainties: readonly PossibleStageUncertainty[];
+	/** Every file the scan read, sorted by `file`. */
+	readonly sources: readonly PossibleStageSourceDigest[];
 }
+
+const MAX_CANDIDATES_PER_UNCERTAINTY = 24;
+const MAX_CANDIDATE_NAME_LENGTH = 128;
+const MAX_EXCERPT_LENGTH = 1200;
+const NAME_LIKE_LITERAL = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -83,12 +134,16 @@ export function scanPossibleStagesFromSource(
 	options: PossibleStagesScanOptions = {},
 ): PossibleStagesScanResult {
 	const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-	const scanner = new PossibleStagesScanner(maxDepth);
-	scanner.scanSubtree(resolve(entrySourcePath), "", 0, [resolve(entrySourcePath)]);
+	const scanner = new PossibleStagesScanner(maxDepth, resolve(entrySourcePath));
+	const entryPath = resolve(entrySourcePath);
+	scanner.scanSubtree(entryPath, "", 0, [entryPath]);
+	scanner.noteZeroStages(entryPath);
 	return {
 		hasTrackedNodes: scanner.hasTrackedNodes,
 		stages: [...scanner.stages].sort(),
 		warnings: scanner.warnings,
+		uncertainties: scanner.uncertainties,
+		sources: scanner.sourceDigests(),
 	};
 }
 
@@ -131,6 +186,8 @@ interface Token {
 	readonly kind: TokenKind;
 	/** Identifier text, punctuation, unquoted string value, or raw template text. */
 	readonly value: string;
+	/** Offset of the token's first character in the source text. */
+	readonly start: number;
 }
 
 /**
@@ -164,6 +221,7 @@ function tokenize(source: string): Token[] {
 			tokens.push({
 				kind: "string",
 				value: unquoteString(source.slice(index + 1, Math.max(index + 1, end - 1))),
+				start: index,
 			});
 			lastSignificant = "value";
 			index = end;
@@ -171,7 +229,7 @@ function tokenize(source: string): Token[] {
 		}
 		if (char === "`") {
 			const end = skipTemplate(source, index);
-			tokens.push({ kind: "template", value: source.slice(index, end) });
+			tokens.push({ kind: "template", value: source.slice(index, end), start: index });
 			lastSignificant = "value";
 			index = end;
 			continue;
@@ -187,23 +245,23 @@ function tokenize(source: string): Token[] {
 		if (isIdentChar(char)) {
 			const start = index;
 			while (index < source.length && isIdentChar(source[index]!)) index += 1;
-			tokens.push({ kind: "ident", value: source.slice(start, index) });
+			tokens.push({ kind: "ident", value: source.slice(start, index), start });
 			lastSignificant = "ident";
 			continue;
 		}
 		if (char === "?" && source[index + 1] === ".") {
-			tokens.push({ kind: "punct", value: "?." });
+			tokens.push({ kind: "punct", value: "?.", start: index });
 			lastSignificant = "other";
 			index += 2;
 			continue;
 		}
 		if (char === "=" && source[index + 1] === ">") {
-			tokens.push({ kind: "punct", value: "=>" });
+			tokens.push({ kind: "punct", value: "=>", start: index });
 			lastSignificant = "other";
 			index += 2;
 			continue;
 		}
-		tokens.push({ kind: "punct", value: char });
+		tokens.push({ kind: "punct", value: char, start: index });
 		lastSignificant = ")[]}".includes(char) ? "close" : "other";
 		index += 1;
 	}
@@ -371,7 +429,22 @@ interface ImportBinding {
 	readonly importedName?: string;
 }
 
+interface TemplateHelper {
+	readonly params: readonly string[];
+	/** String or template token the helper returns. */
+	readonly returned: Token;
+}
+
 interface FileUnit {
+	readonly source: string;
+	/** Offsets of each line's first character. */
+	readonly lineStarts: readonly number[];
+	readonly sha256: string;
+	readonly templateHelpers: ReadonlyMap<string, TemplateHelper>;
+	/** `const X = ["a", "b"]` arrays whose every element is a string literal. */
+	readonly enumArrays: ReadonlyMap<string, readonly string[]>;
+	/** Body tokens of `function f(...) {...}` declarations and `const f = (...) => ...` initializers. */
+	readonly functionBodies: ReadonlyMap<string, readonly Token[]>;
 	readonly tokens: readonly Token[];
 	readonly imports: ReadonlyMap<string, ImportBinding>;
 	readonly ctxLike: ReadonlySet<string>;
@@ -404,7 +477,17 @@ function buildFileUnit(path: string, warnings: string[]): FileUnit | undefined {
 	for (const [local, binding] of imports) {
 		if (binding.importedName === "workflow") workflowNames.add(local);
 	}
+	const lineStarts = [0];
+	for (let offset = source.indexOf("\n"); offset >= 0; offset = source.indexOf("\n", offset + 1)) {
+		lineStarts.push(offset + 1);
+	}
 	return {
+		source,
+		lineStarts,
+		sha256: createHash("sha256").update(source, "utf8").digest("hex"),
+		templateHelpers: collectTemplateHelpers(tokens),
+		enumArrays: collectEnumArrays(tokens),
+		functionBodies: collectFunctionBodies(tokens),
 		tokens,
 		imports,
 		ctxLike: collectCtxLikeIdentifiers(tokens),
@@ -907,19 +990,283 @@ function discoveryCalls(tokens: readonly Token[], name: string, declaration?: nu
 // Scanner
 // ---------------------------------------------------------------------------
 
+/** A call site whose uncertainty is being recorded. */
+interface UncertaintySite {
+	readonly unit: FileUnit;
+	readonly path: string;
+	/** Source offset of the call site. */
+	readonly offset: number;
+	readonly boundary: string;
+}
+
 class PossibleStagesScanner {
-	readonly stages = new Set<string>();
+	stages = new Set<string>();
 	hasTrackedNodes = false;
-	readonly warnings: string[] = [];
+	warnings: string[] = [];
+	uncertainties: PossibleStageUncertainty[] = [];
 	private readonly maxDepth: number;
+	private readonly entryDirectory: string;
 	private readonly units = new Map<string, FileUnit | undefined>();
+	private readonly digests = new Map<string, string>();
+	/** True during a throwaway child sub-scan, whose results never reach the parent's output. */
+	private quiet = false;
+	private activeBoundary = "";
+	private rootClosure: readonly string[] = [];
 	/** Context-like aliases (e.g. `designContext`) seen anywhere in this scan, so helper
 	 * modules that receive the context under another name still resolve its stage calls. */
 	private readonly aliasPool = new Set<string>();
 	private closure: readonly string[] = [];
 
-	constructor(maxDepth: number) {
+	constructor(maxDepth: number, entryPath: string) {
 		this.maxDepth = maxDepth;
+		this.entryDirectory = dirname(entryPath);
+	}
+
+	sourceDigests(): PossibleStageSourceDigest[] {
+		return [...this.digests]
+			.map(([path, sha256]) => ({ file: this.relativeFile(path), sha256 }))
+			.sort((left, right) => (left.file < right.file ? -1 : left.file > right.file ? 1 : 0));
+	}
+
+	/** Record a `zero-stages` uncertainty when the whole scan found no tracked call site and no stage. */
+	noteZeroStages(entryPath: string): void {
+		if (this.hasTrackedNodes || this.stages.size > 0) return;
+		const entryUnit = this.units.get(entryPath);
+		const literals: PossibleStageCandidate[] = [];
+		for (const path of new Set([entryPath, ...this.rootClosure])) {
+			for (const token of this.units.get(path)?.tokens ?? []) {
+				if (token.kind !== "string" || !NAME_LIKE_LITERAL.test(token.value)) continue;
+				const candidate = namesCandidate("", [token.value], "literal");
+				if (candidate !== undefined) literals.push(candidate);
+			}
+		}
+		this.uncertainties.push({
+			code: "zero-stages",
+			file: this.relativeFile(entryPath),
+			line: 1,
+			excerpt: entryUnit === undefined ? "" : linesText(entryUnit, 1, 7).slice(0, MAX_EXCERPT_LENGTH),
+			boundary: "",
+			candidates: capCandidates(literals),
+		});
+	}
+
+	private relativeFile(path: string): string {
+		return relative(this.entryDirectory, path).split(sep).join("/");
+	}
+
+	private note(
+		code: PossibleStageUncertaintyCode,
+		site: UncertaintySite,
+		candidates?: () => readonly PossibleStageCandidate[],
+	): void {
+		if (this.quiet) return;
+		const line = lineOf(site.unit.lineStarts, site.offset);
+		this.uncertainties.push({
+			code,
+			file: this.relativeFile(site.path),
+			line,
+			excerpt: excerptAround(site.unit, line),
+			boundary: site.boundary,
+			candidates: capCandidates(candidates?.() ?? []),
+		});
+	}
+
+	private noteName(tokens: readonly Token[], site: UncertaintySite): void {
+		this.note("unresolved-name", site, () => this.nameCandidates(tokens, site));
+	}
+
+	/** Candidates for an unresolved name expression, drawn only from source tokens. */
+	private nameCandidates(tokens: readonly Token[], site: UncertaintySite): PossibleStageCandidate[] {
+		const out: PossibleStageCandidate[] = [];
+		const add = (names: readonly string[], source: PossibleStageCandidateSource): void => {
+			const candidate = namesCandidate(site.boundary, names, source);
+			if (candidate !== undefined) out.push(candidate);
+		};
+		for (const token of tokens) {
+			if (token.kind === "string") add([token.value], "literal");
+		}
+		const head = tokens[0];
+		if (
+			head?.kind === "ident" &&
+			isPunct(tokens[1], "(") &&
+			matchBracket(tokens, 1, "(", ")") === tokens.length - 1
+		) {
+			const helper = this.findTemplateHelper(head.value, site);
+			const composed = helper === undefined ? undefined : substituteHelperCall(helper, splitCallArguments(tokens));
+			if (composed !== undefined) add([composed], "template");
+		}
+		if (tokens.length === 1 && head?.kind === "ident") {
+			for (const elements of this.selectEnumArrays(head, site)) {
+				if (elements.length > 1) add(elements, "enum-array");
+				for (const element of elements) add([element], "enum-array");
+			}
+		}
+		return out;
+	}
+
+	private findTemplateHelper(name: string, site: UncertaintySite): TemplateHelper | undefined {
+		const local = site.unit.templateHelpers.get(name);
+		if (local !== undefined) return local;
+		const imported = this.importedUnit(name, site);
+		return imported === undefined ? undefined : imported.unit.templateHelpers.get(imported.exportName);
+	}
+
+	/** The relative module a named import of `localName` resolves to. */
+	private importedUnit(
+		localName: string,
+		site: UncertaintySite,
+	): { readonly unit: FileUnit; readonly exportName: string; readonly path: string } | undefined {
+		const binding = site.unit.imports.get(localName);
+		if (binding?.importedName === undefined) return undefined;
+		const target = resolveRelativeSpecifier(binding.specifier, site.path);
+		const unit = target === undefined ? undefined : this.unitFor(target);
+		return target === undefined || unit === undefined
+			? undefined
+			: { unit, exportName: binding.importedName, path: target };
+	}
+
+	/** Enum-like arrays in scope of the unit, in source order, then named imports in import order. */
+	private visibleEnumArrays(site: UncertaintySite): Map<string, readonly string[]> {
+		const arrays = new Map<string, readonly string[]>(site.unit.enumArrays);
+		for (const local of site.unit.imports.keys()) {
+			const imported = this.importedUnit(local, site);
+			const elements = imported?.unit.enumArrays.get(imported.exportName);
+			if (elements !== undefined && !arrays.has(local)) arrays.set(local, elements);
+		}
+		return arrays;
+	}
+
+	/** Arrays a bare identifier may range over: its loop/callback source's arrays, else every visible array. */
+	private selectEnumArrays(identifier: Token, site: UncertaintySite): (readonly string[])[] {
+		const arrays = this.visibleEnumArrays(site);
+		if (arrays.size === 0) return [];
+		const mentioned = (tokens: readonly Token[]): (readonly string[])[] => {
+			const names = new Set<string>();
+			for (const token of tokens) {
+				if (token.kind === "ident" && arrays.has(token.value)) names.add(token.value);
+			}
+			return [...names].map((name) => arrays.get(name)!);
+		};
+		const iterated = findIterationSource(site.unit.tokens, identifier.value, identifier.start);
+		if (iterated !== undefined) {
+			const direct = mentioned(iterated);
+			if (direct.length > 0) return direct;
+			const aliased: (readonly string[])[] = [];
+			for (const token of iterated) {
+				const init = token.kind === "ident" ? site.unit.localInits.get(token.value) : undefined;
+				if (init !== undefined) aliased.push(...mentioned(init));
+			}
+			if (aliased.length > 0) return aliased;
+		}
+		return [...arrays.values()];
+	}
+
+	/** Factory candidates for a chain/parallel element that calls a function declared elsewhere. */
+	private factoryCandidates(element: readonly Token[], site: UncertaintySite): PossibleStageCandidate[] {
+		const head = element[0];
+		if (head?.kind !== "ident" || !isPunct(element[1], "(")) return [];
+		const imported = this.importedUnit(head.value, site);
+		const body = site.unit.functionBodies.get(head.value) ?? imported?.unit.functionBodies.get(imported.exportName);
+		if (body === undefined) return [];
+		const out: PossibleStageCandidate[] = [];
+		for (const name of nameLiteralsIn(body)) {
+			const candidate = namesCandidate(site.boundary, [name], "factory");
+			if (candidate !== undefined) out.push(candidate);
+		}
+		return out;
+	}
+
+	private stepsLiteralCandidates(site: UncertaintySite): PossibleStageCandidate[] {
+		const out: PossibleStageCandidate[] = [];
+		for (const name of nameLiteralsIn(site.unit.tokens)) {
+			const candidate = namesCandidate(site.boundary, [name], "literal");
+			if (candidate !== undefined) out.push(candidate);
+		}
+		return out;
+	}
+
+	/**
+	 * Child definitions among the unit's relative imports, each with its own
+	 * scanned stages, found by a throwaway sub-scan that leaves the parent's
+	 * stages, warnings, and uncertainties untouched.
+	 */
+	private childCandidates(
+		site: UncertaintySite,
+		depth: number,
+		ancestorStack: readonly string[],
+		explicitSegment: string | undefined,
+	): PossibleStageCandidate[] {
+		const out: PossibleStageCandidate[] = [];
+		const seenTargets = new Set<string>([site.path]);
+		for (const binding of site.unit.imports.values()) {
+			const target = resolveRelativeSpecifier(binding.specifier, site.path);
+			if (target === undefined || seenTargets.has(target)) continue;
+			seenTargets.add(target);
+			const child = this.unitFor(target);
+			if (child === undefined || !child.hasWorkflowCall || child.definitionName === undefined) continue;
+			const segment = explicitSegment ?? `workflow:${safeNormalize(child.definitionName)}`;
+			if (segment === "workflow:" || !isCandidateName(segment)) continue;
+			const boundaryPath = joinBoundary(site.boundary, segment);
+			const childDepth = depth + 1;
+			const nested =
+				childDepth < this.maxDepth && !ancestorStack.includes(target)
+					? this.scanChildQuietly(target, boundaryPath, childDepth, [...ancestorStack, target])
+					: [];
+			const stages = [
+				boundaryPath,
+				...nested.filter(
+					(stage) =>
+						stage.startsWith(`${boundaryPath}/`) &&
+						stage
+							.slice(boundaryPath.length + 1)
+							.split("/")
+							.every(isCandidateName),
+				),
+			];
+			out.push({ stages, source: "child-definition" });
+		}
+		return out;
+	}
+
+	private scanChildQuietly(
+		entryPath: string,
+		boundaryPrefix: string,
+		depth: number,
+		ancestorStack: readonly string[],
+	): string[] {
+		const saved = {
+			stages: this.stages,
+			warnings: this.warnings,
+			uncertainties: this.uncertainties,
+			hasTrackedNodes: this.hasTrackedNodes,
+			aliasPool: new Set(this.aliasPool),
+			quiet: this.quiet,
+		};
+		this.stages = new Set();
+		this.warnings = [];
+		this.uncertainties = [];
+		this.quiet = true;
+		let childStages: string[];
+		let unreadableWarnings: string[];
+		let unreadable: PossibleStageUncertainty[];
+		try {
+			this.scanSubtree(entryPath, boundaryPrefix, depth, ancestorStack);
+			childStages = [...this.stages].sort();
+			// A file first read here stays cached, so its read failure must still reach the real output.
+			unreadableWarnings = this.warnings.filter((warning) => warning.startsWith("possible-stages: failed to read"));
+			unreadable = this.uncertainties.filter((uncertainty) => uncertainty.code === "unreadable-file");
+		} finally {
+			this.stages = saved.stages;
+			this.warnings = saved.warnings;
+			this.uncertainties = saved.uncertainties;
+			this.hasTrackedNodes = saved.hasTrackedNodes;
+			this.quiet = saved.quiet;
+			this.aliasPool.clear();
+			for (const alias of saved.aliasPool) this.aliasPool.add(alias);
+		}
+		this.warnings.push(...unreadableWarnings);
+		this.uncertainties.push(...unreadable);
+		return childStages;
 	}
 
 	/**
@@ -968,7 +1315,10 @@ class PossibleStagesScanner {
 			}
 		}
 		const previousClosure = this.closure;
+		const previousBoundary = this.activeBoundary;
 		this.closure = ordered;
+		this.activeBoundary = boundaryPrefix;
+		if (depth === 0) this.rootClosure = ordered;
 		try {
 			for (const path of ordered) {
 				const unit = this.units.get(path);
@@ -977,6 +1327,7 @@ class PossibleStagesScanner {
 			}
 		} finally {
 			this.closure = previousClosure;
+			this.activeBoundary = previousBoundary;
 		}
 	}
 
@@ -984,6 +1335,18 @@ class PossibleStagesScanner {
 		if (this.units.has(path)) return this.units.get(path);
 		const unit = buildFileUnit(path, this.warnings);
 		this.units.set(path, unit);
+		if (unit === undefined) {
+			this.uncertainties.push({
+				code: "unreadable-file",
+				file: this.relativeFile(path),
+				line: 1,
+				excerpt: "",
+				boundary: this.activeBoundary,
+				candidates: [],
+			});
+		} else {
+			this.digests.set(path, unit.sha256);
+		}
 		return unit;
 	}
 
@@ -1022,15 +1385,23 @@ class PossibleStagesScanner {
 			this.handleWorkflowCall(call, unit, path, boundaryPrefix, depth, ancestorStack);
 			return;
 		}
+		const site: UncertaintySite = {
+			unit,
+			path,
+			offset: unit.tokens[call.argsOpen]!.start,
+			boundary: boundaryPrefix,
+		};
 		if (call.method === "chain" || call.method === "parallel") {
-			for (const name of this.stepNamesForStepsCall(call, unit, path)) {
+			for (const name of this.stepNamesForStepsCall(call, unit, path, site)) {
 				this.stages.add(joinBoundary(boundaryPrefix, name));
 			}
 			return;
 		}
 		const nameArgument = firstArgumentTokens(call, unit.tokens);
 		if (nameArgument === undefined || nameArgument.length === 0) return;
-		this.stages.add(joinBoundary(boundaryPrefix, argumentNamePattern(nameArgument, unit)));
+		const pattern = argumentNamePattern(nameArgument, unit);
+		this.stages.add(joinBoundary(boundaryPrefix, pattern));
+		if (pattern === "*") this.noteName(nameArgument, site);
 	}
 
 	private handleWorkflowCall(
@@ -1057,7 +1428,16 @@ class PossibleStagesScanner {
 			childReference.length === 1 && childReference[0]!.kind === "ident"
 				? (binding?.importedName ?? childReference[0]!.value)
 				: "*";
+		const site: UncertaintySite = {
+			unit,
+			path,
+			offset: unit.tokens[call.argsOpen]!.start,
+			boundary: boundaryPrefix,
+		};
+		let childUncertain = false;
+		const warningsBeforeResolve = this.warnings.length;
 		const childPath = this.resolveChildPath(binding, path);
+		if (this.warnings.length > warningsBeforeResolve) childUncertain = true;
 		// Bundled wrapper chunk (e.g. `export { x_default as default }`): the
 		// definition itself lives in the module the wrapper re-exports, so the
 		// boundary name and the subtree follow that chain instead of the empty
@@ -1075,6 +1455,7 @@ class PossibleStagesScanner {
 		let boundaryName: string;
 		if (explicitStage !== undefined) {
 			boundaryName = argumentNamePattern(explicitStage, unit);
+			if (boundaryName === "*") this.noteName(explicitStage, site);
 		} else {
 			const authoredName = subtreeEntry === undefined ? undefined : this.unitFor(subtreeEntry)?.definitionName;
 			// The engine normalizes the authored name verbatim; only the binding
@@ -1087,6 +1468,7 @@ class PossibleStagesScanner {
 						? "*"
 						: safeNormalize(kebabCase(fallbackName));
 			if (authoredName === undefined) {
+				childUncertain = true;
 				this.warnings.push(
 					`possible-stages: child definition name for ctx.workflow at ${path} was not statically visible; using "${normalized}" as the boundary segment`,
 				);
@@ -1094,6 +1476,12 @@ class PossibleStagesScanner {
 			boundaryName = `workflow:${normalized}`;
 		}
 		this.stages.add(joinBoundary(boundaryPrefix, boundaryName));
+		if (childPath === undefined) childUncertain = true;
+		if (childUncertain) {
+			this.note("unresolved-child", site, () =>
+				this.childCandidates(site, depth, ancestorStack, explicitStage === undefined ? undefined : boundaryName),
+			);
+		}
 		if (childPath === undefined) {
 			this.warnings.push(
 				`possible-stages: ctx.workflow child at ${path} could not be resolved to a source file; its stages were not scanned`,
@@ -1291,16 +1679,22 @@ class PossibleStagesScanner {
 	}
 
 	/** Step `name:` patterns for a `chain`/`parallel` call's first argument. */
-	private stepNamesForStepsCall(call: CtxCall, unit: FileUnit, path: string): readonly string[] {
+	private stepNamesForStepsCall(
+		call: CtxCall,
+		unit: FileUnit,
+		path: string,
+		site: UncertaintySite,
+	): readonly string[] {
 		const declared = this.discoveryNames(call, unit, path);
 		if (declared !== undefined) return declared;
 		const first = firstArgumentTokens(call, unit.tokens);
 		if (first === undefined || first.length === 0) return [];
 		const head = first[0]!;
+		const onStar = (tokens: readonly Token[]): void => this.noteName(tokens, site);
 		if (head.kind === "punct" && head.value === "[") {
 			const names: string[] = [];
 			for (const element of arrayElements(first)) {
-				names.push(...this.stepNameFromElement(element, unit));
+				names.push(...this.stepNameFromElement(element, unit, site));
 			}
 			return names;
 		}
@@ -1308,12 +1702,12 @@ class PossibleStagesScanner {
 			const localArray = unit.localArrays.get(head.value);
 			if (localArray !== undefined) {
 				const names: string[] = [];
-				for (const element of localArray) names.push(...this.stepNameFromElement(element, unit));
+				for (const element of localArray) names.push(...this.stepNameFromElement(element, unit, site));
 				return names;
 			}
 			const localInit = unit.localInits.get(head.value);
 			if (localInit !== undefined) {
-				const mapped = stepNamesThroughMapCall(localInit, unit);
+				const mapped = stepNamesThroughMapCall(localInit, unit, onStar);
 				if (mapped !== undefined) return mapped;
 			}
 			const localValue = unit.localValues.get(head.value);
@@ -1322,37 +1716,46 @@ class PossibleStagesScanner {
 			this.warnings.push(
 				`possible-stages: ${call.method} steps argument "${head.value}" at ${path} is not statically visible; its step names were not extracted`,
 			);
+			this.note("unresolved-steps", site, () => this.stepsLiteralCandidates(site));
 			return [];
 		}
-		const mapped = stepNamesThroughMapCall(first, unit);
+		const mapped = stepNamesThroughMapCall(first, unit, onStar);
 		if (mapped !== undefined) return mapped;
 		this.warnings.push(
 			`possible-stages: ${call.method} steps argument at ${path} is not statically visible; its step names were not extracted`,
 		);
+		this.note("unresolved-steps", site, () => this.stepsLiteralCandidates(site));
 		return [];
 	}
 
 	/** Step name from one array element: object literal or local factory call. */
-	private stepNameFromElement(element: readonly Token[], unit: FileUnit): readonly string[] {
+	private stepNameFromElement(element: readonly Token[], unit: FileUnit, site: UncertaintySite): readonly string[] {
 		if (element.length === 0) return [];
 		const head = element[0]!;
+		const onStar = (tokens: readonly Token[]): void => this.noteName(tokens, site);
 		if (head.kind === "punct" && head.value === "{") {
 			const name = directObjectFieldValue(element, "name");
-			if (name !== undefined) return [patternFromValueToken(name, [], unit)];
+			if (name !== undefined) {
+				const pattern = patternFromValueToken(name, [], unit);
+				if (pattern === "*") onStar([name]);
+				return [pattern];
+			}
+			this.note("unresolved-step", site);
 			return [];
 		}
 		if (head.kind === "ident") {
 			const factory = unit.localStepFactories.get(head.value);
 			if (factory !== undefined) {
-				return [patternFromFactory(factory, splitCallArguments(element), unit)];
+				return [patternFromFactory(factory, splitCallArguments(element), unit, onStar)];
 			}
 			const nested = unit.localArrays.get(head.value);
 			if (nested !== undefined) {
 				const names: string[] = [];
-				for (const entry of nested) names.push(...this.stepNameFromElement(entry, unit));
+				for (const entry of nested) names.push(...this.stepNameFromElement(entry, unit, site));
 				return names;
 			}
 		}
+		this.note("unresolved-step", site, () => this.factoryCandidates(element, site));
 		return [];
 	}
 
@@ -1515,7 +1918,11 @@ function argumentNamePattern(tokens: readonly Token[], unit: FileUnit): string {
  * — expression body, block body with `return`, or a local factory call in
  * the callback body.
  */
-function stepNamesThroughMapCall(tokens: readonly Token[], unit: FileUnit): readonly string[] | undefined {
+function stepNamesThroughMapCall(
+	tokens: readonly Token[],
+	unit: FileUnit,
+	onStar: (tokens: readonly Token[]) => void,
+): readonly string[] | undefined {
 	for (let index = 0; index < tokens.length - 1; index += 1) {
 		const token = tokens[index]!;
 		if (token.kind !== "ident" || token.value !== "map") continue;
@@ -1523,12 +1930,16 @@ function stepNamesThroughMapCall(tokens: readonly Token[], unit: FileUnit): read
 		if (open?.kind !== "punct" || open.value !== "(") continue;
 		const close = matchBracket(tokens, index + 1, "(", ")");
 		if (close === undefined) return undefined;
-		return stepNamesFromMapCallback(tokens.slice(index + 2, close), unit);
+		return stepNamesFromMapCallback(tokens.slice(index + 2, close), unit, onStar);
 	}
 	return undefined;
 }
 
-function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): readonly string[] | undefined {
+function stepNamesFromMapCallback(
+	inner: readonly Token[],
+	unit: FileUnit,
+	onStar: (tokens: readonly Token[]) => void,
+): readonly string[] | undefined {
 	const params: string[] = [];
 	let cursor = 0;
 	if (inner[0]?.kind === "punct" && inner[0]!.value === "(") {
@@ -1557,7 +1968,7 @@ function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): read
 		const object = wrapped.slice(1, -1);
 		if (object[0]?.kind === "punct" && object[0]!.value === "{") {
 			const name = directObjectFieldValue(object, "name");
-			if (name !== undefined) return [patternFromValueToken(name, params, unit)];
+			if (name !== undefined) return [mapNamePattern(name, params, unit, onStar)];
 		}
 		// Recognized steps-object without a name field: contributes nothing.
 		return [];
@@ -1573,7 +1984,7 @@ function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): read
 					const object = balancedRange(block, scan + 1, "{", "}");
 					if (object === undefined) return undefined;
 					const name = directObjectFieldValue(object, "name");
-					if (name !== undefined) return [patternFromValueToken(name, params, unit)];
+					if (name !== undefined) return [mapNamePattern(name, params, unit, onStar)];
 				}
 			}
 		}
@@ -1583,27 +1994,49 @@ function stepNamesFromMapCallback(inner: readonly Token[], unit: FileUnit): read
 	if (body.kind === "ident") {
 		const factory = unit.localStepFactories.get(body.value);
 		if (factory !== undefined) {
-			return [patternFromFactory(factory, splitCallArguments(inner.slice(cursor)), unit)];
+			return [patternFromFactory(factory, splitCallArguments(inner.slice(cursor)), unit, onStar)];
 		}
 	}
 	// Unrecognized callback body (e.g. `steps[index]`): signal the caller to warn.
 	return undefined;
 }
 
+function mapNamePattern(
+	name: Token,
+	params: readonly string[],
+	unit: FileUnit,
+	onStar: (tokens: readonly Token[]) => void,
+): string {
+	const pattern = patternFromValueToken(name, params, unit);
+	if (pattern === "*") onStar([name]);
+	return pattern;
+}
+
 function patternFromFactory(
 	factory: LocalStepFactory,
 	callArguments: readonly (readonly Token[])[],
 	unit: FileUnit,
+	onStar: (tokens: readonly Token[]) => void,
 ): string {
 	const name = directObjectFieldValue(factory.object, "name");
-	if (name === undefined) return "*";
+	if (name === undefined) {
+		onStar([]);
+		return "*";
+	}
 	if (name.kind === "ident") {
 		const parameterIndex = factory.params.indexOf(name.value);
 		const argument = parameterIndex >= 0 ? callArguments[parameterIndex] : undefined;
-		if (argument !== undefined && argument.length > 0) return argumentNamePattern(argument, unit);
+		if (argument !== undefined && argument.length > 0) {
+			const pattern = argumentNamePattern(argument, unit);
+			if (pattern === "*") onStar(argument);
+			return pattern;
+		}
+		onStar([name]);
 		return "*";
 	}
-	return patternFromValueToken(name, factory.params, unit);
+	const pattern = patternFromValueToken(name, factory.params, unit);
+	if (pattern === "*") onStar([name]);
+	return pattern;
 }
 
 function patternFromValueToken(token: Token, params: readonly string[], unit: FileUnit): string {
@@ -1616,6 +2049,324 @@ function patternFromValueToken(token: Token, params: readonly string[], unit: Fi
 		if (local?.kind === "template") return templateToPattern(local.value);
 	}
 	return "*";
+}
+
+// ---------------------------------------------------------------------------
+// Uncertainty candidate extraction (source tokens only)
+// ---------------------------------------------------------------------------
+
+function isPunct(token: Token | undefined, value: string): boolean {
+	return token?.kind === "punct" && token.value === value;
+}
+
+function isIdent(token: Token | undefined, value: string): boolean {
+	return token?.kind === "ident" && token.value === value;
+}
+
+/** A candidate path segment must be a plain, trimmed, bounded name that cannot widen or split a path. */
+function isCandidateName(name: string): boolean {
+	return (
+		name.trim().length > 0 &&
+		name === name.trim() &&
+		name.length <= MAX_CANDIDATE_NAME_LENGTH &&
+		!name.includes("/") &&
+		!name.includes("*")
+	);
+}
+
+function namesCandidate(
+	boundary: string,
+	names: readonly string[],
+	source: PossibleStageCandidateSource,
+): PossibleStageCandidate | undefined {
+	const valid = names.filter(isCandidateName);
+	if (valid.length === 0) return undefined;
+	return { stages: valid.map((name) => joinBoundary(boundary, name)), source };
+}
+
+function capCandidates(candidates: readonly PossibleStageCandidate[]): readonly PossibleStageCandidate[] {
+	const seen = new Set<string>();
+	const kept: PossibleStageCandidate[] = [];
+	for (const candidate of candidates) {
+		const key = candidate.stages.join("\0");
+		if (seen.has(key)) continue;
+		seen.add(key);
+		kept.push(candidate);
+		if (kept.length >= MAX_CANDIDATES_PER_UNCERTAINTY) break;
+	}
+	return kept;
+}
+
+function lineOf(lineStarts: readonly number[], offset: number): number {
+	let low = 0;
+	let high = lineStarts.length - 1;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (lineStarts[middle]! <= offset) low = middle;
+		else high = middle - 1;
+	}
+	return low + 1;
+}
+
+/** Lines `first..last` (1-based, inclusive) of a unit's source without trailing newline or CR. */
+function linesText(unit: FileUnit, first: number, last: number): string {
+	const lineCount = unit.lineStarts.length;
+	const lastLine = Math.min(lineCount, last);
+	const start = unit.lineStarts[first - 1] ?? 0;
+	const end = lastLine < lineCount ? unit.lineStarts[lastLine]! - 1 : unit.source.length;
+	return unit.source.slice(start, end).replace(/\r/g, "").replace(/\n$/, "");
+}
+
+function excerptAround(unit: FileUnit, line: number): string {
+	const wide = linesText(unit, Math.max(1, line - 3), line + 3);
+	if (wide.length <= MAX_EXCERPT_LENGTH) return wide;
+	return linesText(unit, line, line + 3).slice(0, MAX_EXCERPT_LENGTH);
+}
+
+/** `name: "literal"` values of object literals in a token slice, in source order. */
+function nameLiteralsIn(tokens: readonly Token[]): string[] {
+	const names: string[] = [];
+	for (let index = 1; index + 2 < tokens.length; index += 1) {
+		if (!isIdent(tokens[index], "name") || !isPunct(tokens[index + 1], ":") || tokens[index + 2]!.kind !== "string") {
+			continue;
+		}
+		const previous = tokens[index - 1];
+		if (isPunct(previous, "{") || isPunct(previous, ",")) names.push(tokens[index + 2]!.value);
+	}
+	return names;
+}
+
+function parameterNames(tokens: readonly Token[]): string[] {
+	const names: string[] = [];
+	let depth = 0;
+	let atStart = true;
+	for (const token of tokens) {
+		if (token.kind === "punct") {
+			if ("([{<".includes(token.value)) depth += 1;
+			else if (")]}>".includes(token.value)) depth -= 1;
+			else if (token.value === "," && depth === 0) {
+				atStart = true;
+				continue;
+			}
+		}
+		if (atStart && depth === 0 && token.kind === "ident") names.push(token.value);
+		atStart = false;
+	}
+	return names;
+}
+
+/** The string or template token of the first `return <literal>;` in a `{ ... }` token slice. */
+function returnedLiteral(block: readonly Token[]): Token | undefined {
+	for (let index = 0; index + 2 < block.length; index += 1) {
+		if (!isIdent(block[index], "return")) continue;
+		const value = block[index + 1]!;
+		if (value.kind !== "string" && value.kind !== "template") continue;
+		if (isPunct(block[index + 2], ";") || isPunct(block[index + 2], "}")) return value;
+	}
+	return undefined;
+}
+
+/** Local `function f(a) { return `${a}`; }` / `const f = (a) => `${a}`` helpers that return one literal. */
+function collectTemplateHelpers(tokens: readonly Token[]): Map<string, TemplateHelper> {
+	const helpers = new Map<string, TemplateHelper>();
+	for (const declaration of functionDeclarations(tokens)) {
+		const returned = returnedLiteral(declaration.body);
+		if (returned !== undefined) helpers.set(declaration.name, { params: declaration.params, returned });
+	}
+	for (let index = 0; index < tokens.length; index += 1) {
+		const declaration = matchVariableDeclaration(tokens, index);
+		if (declaration === undefined) continue;
+		index = declaration.end - 1;
+		const arrow = arrowFunction(declaration.init);
+		if (arrow === undefined) continue;
+		const only = arrow.body.length === 1 ? arrow.body[0] : undefined;
+		const returned =
+			only?.kind === "string" || only?.kind === "template"
+				? only
+				: isPunct(arrow.body[0], "{")
+					? returnedLiteral(arrow.body)
+					: undefined;
+		if (returned !== undefined) helpers.set(declaration.name, { params: arrow.params, returned });
+	}
+	return helpers;
+}
+
+/** Split an arrow-function initializer into parameter names and body tokens. */
+function arrowFunction(init: readonly Token[]): { params: string[]; body: readonly Token[] } | undefined {
+	let cursor = 0;
+	if (isIdent(init[cursor], "async")) cursor += 1;
+	let params: string[];
+	if (isPunct(init[cursor], "(")) {
+		const close = matchBracket(init, cursor, "(", ")");
+		if (close === undefined) return undefined;
+		params = parameterNames(init.slice(cursor + 1, close));
+		cursor = close + 1;
+	} else if (init[cursor]?.kind === "ident") {
+		params = [init[cursor]!.value];
+		cursor += 1;
+	} else {
+		return undefined;
+	}
+	if (!isPunct(init[cursor], "=>")) return undefined;
+	return { params, body: init.slice(cursor + 1) };
+}
+
+interface FunctionDeclaration {
+	readonly name: string;
+	readonly params: string[];
+	/** Body tokens, braces inclusive. */
+	readonly body: readonly Token[];
+}
+
+function functionDeclarations(tokens: readonly Token[]): FunctionDeclaration[] {
+	const declarations: FunctionDeclaration[] = [];
+	for (let index = 0; index < tokens.length; index += 1) {
+		if (!isIdent(tokens[index], "function") || tokens[index + 1]?.kind !== "ident") continue;
+		const open = index + 2;
+		if (!isPunct(tokens[open], "(")) continue;
+		const close = matchBracket(tokens, open, "(", ")");
+		if (close === undefined) continue;
+		let bodyOpen = close + 1;
+		while (bodyOpen < tokens.length && !isPunct(tokens[bodyOpen], "{")) bodyOpen += 1;
+		const body = balancedRange(tokens, bodyOpen, "{", "}");
+		if (body === undefined) continue;
+		declarations.push({
+			name: tokens[index + 1]!.value,
+			params: parameterNames(tokens.slice(open + 1, close)),
+			body,
+		});
+	}
+	return declarations;
+}
+
+function collectFunctionBodies(tokens: readonly Token[]): Map<string, readonly Token[]> {
+	const bodies = new Map<string, readonly Token[]>();
+	for (const declaration of functionDeclarations(tokens)) bodies.set(declaration.name, declaration.body);
+	for (let index = 0; index < tokens.length; index += 1) {
+		const declaration = matchVariableDeclaration(tokens, index);
+		if (declaration === undefined) continue;
+		index = declaration.end - 1;
+		const arrow = arrowFunction(declaration.init);
+		if (arrow !== undefined) bodies.set(declaration.name, arrow.body);
+	}
+	return bodies;
+}
+
+/** `const X = ["a", "b"]` (optionally `as const`) arrays whose every element is a string literal. */
+function collectEnumArrays(tokens: readonly Token[]): Map<string, readonly string[]> {
+	const arrays = new Map<string, readonly string[]>();
+	for (let index = 0; index < tokens.length; index += 1) {
+		const declaration = matchVariableDeclaration(tokens, index);
+		if (declaration === undefined) continue;
+		index = declaration.end - 1;
+		if (!isPunct(declaration.init[0], "[")) continue;
+		const array = balancedRange(declaration.init, 0, "[", "]");
+		if (array === undefined) continue;
+		const rest = declaration.init.slice(array.length);
+		if (rest.length > 0 && !(rest.length === 2 && isIdent(rest[0], "as") && isIdent(rest[1], "const"))) continue;
+		const elements = arrayElements(array);
+		if (
+			elements.length === 0 ||
+			!elements.every((element) => element.length === 1 && element[0]!.kind === "string")
+		) {
+			continue;
+		}
+		arrays.set(
+			declaration.name,
+			elements.map((element) => element[0]!.value),
+		);
+	}
+	return arrays;
+}
+
+/** Tokens before the `.` at `dot` that form the receiver expression of a method call. */
+function receiverBefore(tokens: readonly Token[], dot: number): readonly Token[] {
+	const stopIdents = new Set(["return", "await", "of", "in", "const", "let", "var", "yield", "typeof"]);
+	let depth = 0;
+	let cursor = dot - 1;
+	for (; cursor >= 0; cursor -= 1) {
+		const token = tokens[cursor]!;
+		if (token.kind === "punct") {
+			if (")]}".includes(token.value)) {
+				depth += 1;
+				continue;
+			}
+			if ("([{".includes(token.value)) {
+				if (depth === 0) break;
+				depth -= 1;
+				continue;
+			}
+			if (depth === 0 && [";", ",", "=", "=>", ":"].includes(token.value)) break;
+		} else if (depth === 0 && token.kind === "ident" && stopIdents.has(token.value)) {
+			break;
+		}
+	}
+	return tokens.slice(cursor + 1, dot);
+}
+
+/**
+ * The expression a loop or callback variable iterates: the nearest preceding
+ * `for (const id of <expr>)` or `<expr>.map|forEach((id) => ...)`.
+ */
+function findIterationSource(tokens: readonly Token[], id: string, offset: number): readonly Token[] | undefined {
+	let source: readonly Token[] | undefined;
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token.start > offset) break;
+		if (isIdent(token, "for") && isPunct(tokens[index + 1], "(")) {
+			let cursor = index + 2;
+			if (["const", "let", "var"].includes(tokens[cursor]?.value ?? "")) cursor += 1;
+			if (isIdent(tokens[cursor], id) && isIdent(tokens[cursor + 1], "of")) {
+				const close = matchBracket(tokens, index + 1, "(", ")");
+				if (close !== undefined) source = tokens.slice(cursor + 2, close);
+			}
+			continue;
+		}
+		if (token.kind !== "punct" || (token.value !== "." && token.value !== "?.")) continue;
+		const method = tokens[index + 1];
+		if (method?.kind !== "ident" || (method.value !== "map" && method.value !== "forEach")) continue;
+		if (!isPunct(tokens[index + 2], "(")) continue;
+		let cursor = index + 3;
+		if (isIdent(tokens[cursor], "async")) cursor += 1;
+		const matches = isPunct(tokens[cursor], "(")
+			? isIdent(tokens[cursor + 1], id)
+			: isIdent(tokens[cursor], id) && isPunct(tokens[cursor + 1], "=>");
+		if (matches) source = receiverBefore(tokens, index);
+	}
+	return source;
+}
+
+/** Compose a helper's returned literal from a call's literal arguments, or `undefined` when a hole is not a plain parameter. */
+function substituteHelperCall(helper: TemplateHelper, args: readonly (readonly Token[])[]): string | undefined {
+	if (helper.returned.kind === "string") return helper.returned.value;
+	const body = helper.returned.value.slice(1, -1);
+	let composed = "";
+	let cursor = 0;
+	while (cursor < body.length) {
+		const hole = body.indexOf("${", cursor);
+		if (hole < 0) {
+			composed += body.slice(cursor).replace(/\\([$`\\])/g, "$1");
+			break;
+		}
+		composed += body.slice(cursor, hole).replace(/\\([$`\\])/g, "$1");
+		let depth = 1;
+		let scan = hole + 2;
+		while (scan < body.length && depth > 0) {
+			const char = body[scan]!;
+			if (char === "{") depth += 1;
+			else if (char === "}") depth -= 1;
+			scan += 1;
+		}
+		const parameter = helper.params.indexOf(body.slice(hole + 2, scan - 1).trim());
+		const argument = parameter >= 0 ? args[parameter] : undefined;
+		if (argument?.length !== 1) return undefined;
+		const only = argument[0]!;
+		if (only.kind === "string") composed += only.value;
+		else if (only.kind === "ident" && /^[0-9]+$/.test(only.value)) composed += only.value;
+		else return undefined;
+		cursor = scan;
+	}
+	return composed;
 }
 
 // ---------------------------------------------------------------------------

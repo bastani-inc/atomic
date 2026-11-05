@@ -290,8 +290,8 @@ export interface PendingStageMessage {
 	readonly sticky?: true;
 	/** Verbatim target string as sent (path or pattern form, `workflow:<rootRunId>/...`). */
 	readonly targetPath?: string;
-	/** D4 speculative accept: target was not present in the persisted possible-stage set. */
-	readonly notInKnownSet?: true;
+	/** How the target related to the run's known stages when it was queued; omitted when it was known. */
+	readonly prediction?: "predicted" | "unknown";
 	/** One immutable record per (entry, materialized stage) delivery; the exactly-once ledger (D3). */
 	readonly deliveries?: readonly PendingStageMessageDelivery[];
 	/** Total recorded deliveries; observable on the entry. */
@@ -327,7 +327,7 @@ export type PendingStageMessageInput = Omit<
 /** Input for a sticky (D3) pending-stage entry: the target is a path/pattern, not one exact stage. */
 export type PendingStickyStageMessageInput = PendingStageMessageInput & {
 	readonly targetPath: string;
-	readonly notInKnownSet?: true;
+	readonly prediction?: "predicted" | "unknown";
 };
 
 export type PendingStageQueueResult =
@@ -627,6 +627,33 @@ export interface RunSnapshot extends RunExecutionState {
 	possibleStages?: readonly string[];
 	/** The local worker pool of a root that runs one: what its coordinator has handled so far. */
 	pool?: RunPoolSnapshot;
+	/** Decision-model stage-name predictions of a root run; in memory only, never journaled. */
+	stagePredictions?: RunStagePredictions;
+}
+
+/** One stage path the decision model predicted for a root run, relative to the root (no `workflow:<id>/`). */
+export interface RunStagePrediction {
+	readonly path: string;
+	readonly probability: number;
+	/** `scan`: a candidate of an uncertain call site; `send`: a send target the model expects. */
+	readonly source: "scan" | "send";
+}
+
+/** The typed reason a prediction fell back to the static known set. */
+export interface RunStagePredictionFallback {
+	readonly name: string;
+	readonly code: import("./possible-stage-prediction-errors.js").PossibleStagePredictionErrorCode;
+	readonly hint: string;
+}
+
+export interface RunStagePredictions {
+	/** `pending` while the launch-time question is open. */
+	readonly status: "pending" | "ready" | "fallback";
+	readonly entries: readonly RunStagePrediction[];
+	/** The yes-probability of every judged send target, by stage path. */
+	readonly targets: Readonly<Record<string, number>>;
+	/** Recorded once, from the first failure. */
+	readonly fallback?: RunStagePredictionFallback;
 }
 
 /** One kind of coordinator traffic since the coordinator started. */

@@ -203,11 +203,12 @@ test("a message for a stage that has not started, and a broadcast, queue and for
 		[future.handled, future.outcome, broadcast.handled, broadcast.outcome],
 		[
 			true,
-			{ outcome: "queued", position: 1, notInKnownSet: true },
+			{ outcome: "queued", position: 1, prediction: "unknown" },
 			true,
 			{
 				outcome: "queued",
 				position: 1,
+				prediction: "known",
 				forwardTargets: [
 					`${GROUP}/live`,
 					`${GROUP}/child/nested-live`,

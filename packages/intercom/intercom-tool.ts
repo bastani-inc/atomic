@@ -1,7 +1,7 @@
 import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError, isRetryableIntercomRoutingError } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
-import type { IntercomClient } from "./broker/client.js";
+import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -184,11 +184,40 @@ function formatWorkflowStageRow(stage: WorkflowStageRosterEntry): string {
 	}`;
 }
 
+/**
+ * A queued send's result text. A workflow target the decision model judged unlikely gets one line naming the closest
+ * known stage; a target outside the known set gets the longer note only when `intercom.showUnknownTargetWarnings` is on.
+ */
+export function queuedSendText(
+  to: string,
+  result: Pick<SendResult, "prediction" | "unexpected" | "suggestion">,
+  showUnknownTargetWarnings: boolean,
+): string {
+  const queued = `Message queued for ${to}`;
+  if (result.unexpected === true) {
+    const stagePath = parseWorkflowStageTarget(to)?.segments.join("/") ?? to;
+    const suggestion = result.suggestion === undefined ? "." : `; did you mean ${result.suggestion}?`;
+    return `${queued}\nNo stage named ${stagePath} is expected${suggestion}`;
+  }
+  if (showUnknownTargetWarnings && result.prediction === "unknown") {
+    return `${queued} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`;
+  }
+  return queued;
+}
+
 /** D7 (slice 4): one possible-future row from the run's persisted scan (or the `**` broadcast row). */
 function formatWorkflowFutureStageRow(stage: WorkflowFutureStageRosterEntry): string {
-	return `- \`${stage.target}\` [${stage.deliveryOnly === true ? "delivery" : "future"}] ${stage.queuedCount} queued message${
+	return `- \`${stage.target}\` [${stage.deliveryOnly === true ? "delivery" : "future"}${formatPredictionLabel(stage)}] ${stage.queuedCount} queued message${
 		stage.queuedCount === 1 ? "" : "s"
 	}${(stage.deliveryStates ?? []).map((delivery) => `\n  delivery ${delivery.messageId} stage ${delivery.runId}/${delivery.stageId}${delivery.sessionId === undefined ? "" : ` session ${delivery.sessionId}`} ${delivery.state} — ${delivery.reason}`).join("")}${formatDeliveryStateSummary(stage)}`;
+}
+
+/** `, predicted 0.92`, `, confirmed` or `, unused` on rows the decision model predicted. */
+function formatPredictionLabel(stage: WorkflowFutureStageRosterEntry): string {
+	if (stage.prediction === undefined) return "";
+	return stage.prediction === "predicted" && stage.probability !== undefined
+		? `, predicted ${stage.probability.toFixed(2)}`
+		: `, ${stage.prediction}`;
 }
 
 /** Per-state totals of a row whose delivery states were bounded, and how many the row omits. */
@@ -248,8 +277,9 @@ remain supported. Workflow-stage targets use
 inside the invocation group to see live, pending, and possible future targets with queued counts.
 \`workflow:<rootRunId>/**\` reaches every live stage immediately and remains sticky for every future
 stage until the root run terminates; narrower name or pattern sends likewise reach every future match.
-A valid target outside the known set queues speculatively with a \`notInKnownSet\` warning and settles
-undeliverable at terminal only if never delivered. Use \`ask\` only for a live, reply-capable target.
+A valid target outside the known set still queues and settles undeliverable at terminal only if never
+delivered; the result carries \`prediction\` (\`known\`, \`predicted\` or \`unknown\`) and shows a note only
+when the target looks like a typo of a known stage. Use \`ask\` only for a live, reply-capable target.
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
 Choose \`delivery\` per send/ask by urgency. The default "steer" arrives after the recipient's current
@@ -660,13 +690,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 messageId: result.id,
                 timestamp: Date.now(),
               });
-              const notInKnownSet = result.notInKnownSet === true;
               return {
                 content: [{
                   type: "text",
-                  text: notInKnownSet
-                    ? `Message queued for ${to} (not in the workflow's known stage set; it will be delivered to every matching stage that starts before the run terminates)`
-                    : `Message queued for ${to}`,
+                  text: queuedSendText(to, result, pi.getSettings?.().intercom?.showUnknownTargetWarnings === true),
                 }],
                 isError: false,
                 details: {
@@ -675,7 +702,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                   queued: true,
                   target: result.target,
                   position: result.position,
-                  ...(notInKnownSet ? { notInKnownSet: true } : {}),
+                  ...(result.prediction === undefined ? {} : { prediction: result.prediction }),
+                  ...(result.unexpected === true ? { unexpected: true } : {}),
+                  ...(result.suggestion === undefined ? {} : { suggestion: result.suggestion }),
                 },
               };
             }

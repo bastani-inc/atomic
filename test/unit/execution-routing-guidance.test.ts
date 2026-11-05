@@ -788,7 +788,10 @@ describe("agent-decided workflow execution guidance", () => {
 		expect(registered?.description).toContain("`intercom list` inside the invocation group");
 		expect(registered?.description).toContain("Name and pattern sends remain sticky for every future matching stage");
 		expect(registered?.description).toContain("broadcast one authoritative update to `workflow:<rootRunId>/**`");
-		expect(registered?.description).toContain("`notInKnownSet` warning");
+		expect(registered?.description).toContain(
+			"a note appears only when the target looks like a typo of a known stage",
+		);
+		expect(registered?.description).not.toContain("notInKnownSet");
 		expect(registered?.description).toContain("settles undeliverable at terminal only if never delivered");
 		expect(registered?.description).toContain("answer pending prompts");
 		expect(registered?.description).toContain("pause/resume/quit runs");
@@ -798,7 +801,7 @@ describe("agent-decided workflow execution guidance", () => {
 		for (const sharedGuidance of [
 			"`workflow:<rootRunId>/<segment>[/<segment>...]`",
 			"broadcast one authoritative update to `workflow:<rootRunId>/**`",
-			"`notInKnownSet` warning",
+			"a note appears only when the target looks like a typo of a known stage",
 			"use `ask` only on live targets",
 		]) {
 			expect(readme).toContain(sharedGuidance);

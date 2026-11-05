@@ -242,6 +242,25 @@ export {
 	WorkflowGitRequiredError,
 } from "./shared/workflow-git-required-error.js";
 export type {
+	PossibleStagePredictionErrorCode,
+	PossibleStagePredictionPhase,
+	StageDecisionAnswerErrorReason,
+} from "./shared/possible-stage-prediction-errors.js";
+export {
+	findPossibleStagePredictionError,
+	isPossibleStagePredictionError,
+	isStageDecisionAnswerError,
+	isStageDecisionFailedError,
+	isStageDecisionTimeoutError,
+	isStageDecisionUnavailableError,
+	POSSIBLE_STAGE_PREDICTION_THRESHOLDS,
+	PossibleStagePredictionError,
+	StageDecisionAnswerError,
+	StageDecisionFailedError,
+	StageDecisionTimeoutError,
+	StageDecisionUnavailableError,
+} from "./shared/possible-stage-prediction-errors.js";
+export type {
 	ProcessCleanupResource,
 	SerializedWorkflowInfrastructureError,
 	WorkflowInfrastructureFault,

@@ -1,5 +1,6 @@
 import type net from "node:net";
 import type { BrokerMessage } from "../types.js";
+import type { WorkflowSendPredictionFields } from "../workflow-prediction-fields.js";
 import { writeMessage } from "./framing.js";
 
 /**
@@ -36,7 +37,7 @@ export function isSocketOpenForWrite(socket: net.Socket): boolean {
  *
  * `BrokerMessage` is the client-validated union. Two frames the broker already
  * emits are absent from it — `sticky_live_delivered`, and `queued` carrying
- * `notInKnownSet` — because `writeMessage` accepts `unknown` and never checked
+ * a workflow send's prediction — because `writeMessage` accepts `unknown` and never checked
  * them. Widening the shared union is a separate change, so they are named here
  * rather than typed away with a cast.
  */
@@ -49,14 +50,13 @@ export type BrokerOutboundFrame =
 			target: string;
 			deliveredTargets: string[];
 	  }
-	| {
+	| ({
 			type: "queued";
 			messageId: string;
 			attemptId?: string;
 			target: string;
 			position: number;
-			notInKnownSet?: true;
-	  };
+	  } & WorkflowSendPredictionFields);
 
 /** A frame written while its socket's writes were held, with the outcome callback of a confirmed write. */
 export interface HeldWrite {

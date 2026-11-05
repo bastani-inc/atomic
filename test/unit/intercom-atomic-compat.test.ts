@@ -446,7 +446,8 @@ describe("lazy intercom registration", () => {
 		assert.ok(guidance.includes("`workflow:<rootRunId>/<segment>[/<segment>...]`"));
 		assert.match(guidance, /sticky for every future\s+stage/i);
 		assert.ok(guidance.includes("`workflow:<rootRunId>/**`"));
-		assert.match(guidance, /notInKnownSet/);
+		assert.match(guidance, /looks like a typo of a known stage/);
+		assert.doesNotMatch(guidance, /notInKnownSet/);
 		assert.match(guidance, /live session/i);
 		assert.match(guidance, /retries recoverable disconnects internally up to three times/);
 	});

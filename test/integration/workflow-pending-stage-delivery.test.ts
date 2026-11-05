@@ -91,7 +91,9 @@ interface ToolResult {
 		delivered?: boolean;
 		position?: number;
 		queued?: boolean;
-		notInKnownSet?: true;
+		prediction?: "known" | "predicted" | "unknown";
+		unexpected?: true;
+		suggestion?: string;
 		group?: string;
 		runId?: string;
 		stageKey?: string;
@@ -2637,17 +2639,17 @@ test("one composite workflow-stage target transitions atomically from durable qu
 		await sender.start();
 
 		// Slice 3 (D3/D4): an unresolved path target is accepted speculatively as a sticky
-		// entry in the root run's durable bucket and acknowledged with notInKnownSet.
+		// entry in the root run's durable bucket and classified as unknown, with no warning text (#4359).
 		const unknown = await executeIntercom(sender, {
 			action: "send",
 			to: `workflow:${RUN_ID}/unknown-stage`,
 			message: "This target does not exist.",
 		});
-		assert.match(unknown.content[0]?.text ?? "", /queued/i);
-		assert.match(unknown.content[0]?.text ?? "", /not in the workflow's known stage set/);
+		assert.equal(unknown.content[0]?.text, `Message queued for workflow:${RUN_ID}/unknown-stage`);
 		assert.equal(unknown.details.delivered, false);
 		assert.equal(unknown.details.queued, true);
-		assert.equal(unknown.details.notInKnownSet, true);
+		assert.equal(unknown.details.prediction, "unknown");
+		assert.equal(unknown.details.unexpected, undefined);
 		assert.deepEqual(store.pendingStageMessagesFor(RUN_ID, "unknown-stage"), []);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.sticky, true);
 		assert.equal(store.runs()[0]?.pendingStageMessages?.[0]?.targetPath, `workflow:${RUN_ID}/unknown-stage`);
@@ -4272,7 +4274,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		assert.equal(broadcast.isError, false);
 		assert.equal(broadcast.details.queued, true);
 		assert.equal(broadcast.details.position, 1);
-		assert.equal(broadcast.details.notInKnownSet, undefined);
+		assert.equal(broadcast.details.prediction, "known");
 		await liveStage.waitForInjectedCount(1);
 		assert.match(liveStage.injectedMessages[0]?.content ?? "", /Broadcast to the whole invocation\./);
 		assert.match(liveStage.injectedMessages[0]?.content ?? "", /\*\*📨 From stage-a\*\*/);
@@ -4292,6 +4294,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 			messageId: rawBroadcastId,
 			target: `workflow:${RUN_ID}/**`,
 			position: 2,
+			prediction: "known",
 		});
 		await liveStage.waitForInjectedCount(2);
 		assert.equal(
@@ -4305,6 +4308,7 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 			messageId: rawBroadcastId,
 			target: `workflow:${RUN_ID}/**`,
 			position: 2,
+			prediction: "known",
 		});
 		await new Promise<void>((resolve) => setTimeout(resolve, 100));
 		assert.equal(
@@ -4322,9 +4326,9 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		assert.equal(pattern.isError, false);
 		assert.equal(pattern.details.queued, true);
 		assert.equal(pattern.details.position, 1);
-		assert.equal(pattern.details.notInKnownSet, undefined);
+		assert.equal(pattern.details.prediction, "known");
 
-		// D4: a target outside the persisted scan is accepted speculatively with the warning.
+		// D4: a target outside the persisted scan is accepted speculatively, classified unknown, without warning text.
 		const speculative = await executeIntercom(sender, {
 			action: "send",
 			to: `workflow:${RUN_ID}/slice-9/writer`,
@@ -4332,7 +4336,8 @@ test("a sticky pattern preludes every materializing iteration and ** broadcasts 
 		});
 		assert.equal(speculative.isError, false);
 		assert.equal(speculative.details.queued, true);
-		assert.equal(speculative.details.notInKnownSet, true);
+		assert.equal(speculative.details.prediction, "unknown");
+		assert.equal(speculative.content[0]?.text, `Message queued for workflow:${RUN_ID}/slice-9/writer`);
 
 		// Asks to pattern targets stay refused.
 		const patternAsk = await executeIntercom(sender, {

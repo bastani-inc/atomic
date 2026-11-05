@@ -720,7 +720,7 @@ test("pending pattern sends and status changes append O(change) journal bytes as
 		runId: "run",
 		stageKey: index % 20 === 0 ? "workflow:run/**" : `workflow:run/child-c${index % 160}/**`,
 		targetPath: index % 20 === 0 ? "workflow:run/**" : `workflow:run/child-c${index % 160}/**`,
-		notInKnownSet: true,
+		prediction: "unknown",
 		from: { id: `sender-${index}`, name: `subagent-chat-${index}`, cwd: "/repo", groups: ["workflow:run"] },
 		message: { id: `message-${index}`, timestamp: index, content: { text: `hello from child ${index}` } },
 		queuedAt: "2026-10-24T23:26:06.916Z",
@@ -779,7 +779,7 @@ test("pending entries that drop optional fields write unset patches that replay 
 		runId: "run",
 		stageKey: "workflow:run/**",
 		targetPath: "workflow:run/**",
-		notInKnownSet: true,
+		prediction: "unknown",
 		from: { id: `sender-${index}`, name: `sender-${index}`, cwd: "/repo", groups: ["workflow:run"] },
 		message: { id: `message-${index}`, timestamp: index, content: { text: `a long enough message body ${index}` } },
 		queuedAt: "2026-10-24T23:26:06.916Z",
@@ -791,7 +791,7 @@ test("pending entries that drop optional fields write unset patches that replay 
 	});
 	const initial = [entry(0), entry(1), entry(2)];
 	assert.equal(await backend.persistPendingStageMessages("run", initial), true);
-	const { deliveries: _deliveries, notInKnownSet: _known, ...cleared } = initial[1]!;
+	const { deliveries: _deliveries, prediction: _known, ...cleared } = initial[1]!;
 	const messages = [initial[0]!, { ...cleared, deliveryCount: 0 }, initial[2]!];
 	assert.equal(await backend.persistPendingStageMessages("run", messages), true);
 	const latest = (await entries(backend.journal)).at(-1)!;
@@ -800,7 +800,7 @@ test("pending entries that drop optional fields write unset patches that replay 
 		.pendingStageMessageChange;
 	assert.deepEqual(change, [
 		[0, 1],
-		{ patch: 1, set: { deliveryCount: 0 }, unset: ["notInKnownSet", "deliveries"] },
+		{ patch: 1, set: { deliveryCount: 0 }, unset: ["prediction", "deliveries"] },
 		[2, 1],
 	]);
 	assert.deepEqual(backend.getWorkflow("run")?.pendingStageMessages, messages);
@@ -820,7 +820,7 @@ function stickyPatternMessage(index: number): PendingStageMessage {
 		runId: "run",
 		stageKey: `workflow:run/child-c${index}/**`,
 		targetPath: `workflow:run/child-c${index}/**`,
-		notInKnownSet: true,
+		prediction: "unknown",
 		from: { id: `sender-${index}`, name: `subagent-chat-${index}`, cwd: "/repo", groups: ["workflow:run"] },
 		message: { id: `message-${index}`, timestamp: index, content: { text: `hello from child ${index}` } },
 		queuedAt: "2026-10-24T23:26:06.916Z",

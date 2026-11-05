@@ -42,7 +42,8 @@ describe("workflow-stage path guidance", () => {
 			assert.match(content, /workflow:<rootRunId>\/\*\*/, `${path} must teach the recursive broadcast`);
 			assert.match(content, /intercom list/, `${path} must teach future-target discovery`);
 			assert.match(content, /sticky/, `${path} must teach repeated future delivery`);
-			assert.match(content, /notInKnownSet/, `${path} must teach speculative acceptance`);
+			assert.match(content, /typo|did you mean/, `${path} must teach that only a likely typo gets a note`);
+			assert.doesNotMatch(content, /notInKnownSet/, `${path} must not teach the removed warning (#4359)`);
 			assert.match(content, /undeliverable/, `${path} must teach terminal settlement`);
 			assert.match(content, /ask.*live/is, `${path} must reserve ask for live targets`);
 		}
@@ -63,7 +64,8 @@ describe("workflow-stage path guidance", () => {
 			assert.match(guidance, /rather than enumerating stages/);
 			assert.match(guidance, /intercom list/);
 			assert.match(guidance, /sticky/);
-			assert.match(guidance, /notInKnownSet/);
+			assert.match(guidance, /a note appears only when the target looks like a typo of a known stage/);
+			assert.doesNotMatch(guidance, /notInKnownSet|not in the workflow's known stage set/);
 			assert.match(guidance, /undeliverable/);
 			assert.match(guidance, /ask.*live/is);
 		}

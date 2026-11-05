@@ -14,6 +14,7 @@ import type {
 	RunPoolSnapshot,
 	RunResumeSource,
 	RunSnapshot,
+	RunStagePredictions,
 	RunStatus,
 	StageInputRequest,
 	StageNotice,
@@ -150,6 +151,8 @@ export interface Store {
 	recordRunExecutionState(runId: string, update: RunExecutionState): void;
 	/** Replaces the run's local worker pool snapshot, as its pool's coordinator reports it. */
 	recordRunPool?(runId: string, pool: RunPoolSnapshot): void;
+	/** Replaces a root run's decision-model stage-name predictions (in memory only). */
+	recordRunStagePredictions?(runId: string, predictions: RunStagePredictions): void;
 	/** Persist, then queue, an ordinary intercom message for an exact future-stage key. */
 	queueStageMessage(
 		input: PendingStageMessageInput,

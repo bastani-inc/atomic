@@ -19,6 +19,8 @@ import {
 	type WorkflowBoundarySegmentsResolver,
 	workflowBoundarySegments,
 } from "../shared/pending-stage-status.js";
+import { knownScanEntries } from "../shared/possible-stage-prediction.js";
+import { type StagePredictor, stagePredictor } from "../shared/possible-stage-predictor.js";
 import { type PossibleStageRow, PossibleStageRowsIndex, WorkflowTopologyIndex } from "../shared/possible-stage-rows.js";
 import type { Store } from "../shared/store.js";
 import { isTerminalRunStatus } from "../shared/store-internal.js";
@@ -82,12 +84,11 @@ interface WorkflowEventSurface {
 interface PendingStageMessageEvent {
 	handled: boolean;
 	completion?: Promise<
-		| {
+		| ({
 				readonly outcome: "queued";
 				readonly position: number;
-				readonly notInKnownSet?: true;
 				readonly forwardTargets?: readonly string[];
-		  }
+		  } & Partial<StickySendPrediction>)
 		| { readonly outcome: "delivered" }
 		| { readonly outcome: "forward"; readonly target: string }
 		| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" }
@@ -128,6 +129,7 @@ export function registerPendingStageIntercomBridge(
 	pi: WorkflowEventSurface,
 	activeStore: Store,
 	ownsRun: (runId: string) => boolean = () => true,
+	predictor: StagePredictor = stagePredictor,
 ): (() => void) & { flush(): Promise<void>; refresh(): void } {
 	let disposed = false;
 	let sweepPromise: Promise<void> = Promise.resolve();
@@ -536,7 +538,7 @@ export function registerPendingStageIntercomBridge(
 			const rootRun = activeStore.run(parsedTarget.rootRunId);
 			if (rootRun === undefined) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, rootRun, payload, parsedTarget).then(
+			payload.completion = deliverStickyTarget(activeStore, rootRun, payload, parsedTarget, predictor).then(
 				(value) => {
 					return value;
 				},
@@ -584,7 +586,7 @@ export function registerPendingStageIntercomBridge(
 			const stickyRoot = activeStore.run(parsedTarget.rootRunId);
 			if (stickyRoot === undefined || isTerminalRunStatus(stickyRoot.status)) return;
 			payload.handled = true;
-			payload.completion = deliverStickyTarget(activeStore, stickyRoot, payload, parsedTarget);
+			payload.completion = deliverStickyTarget(activeStore, stickyRoot, payload, parsedTarget, predictor);
 			return;
 		}
 		payload.handled = true;
@@ -889,9 +891,19 @@ async function queueAndPersist(
 	return { outcome: "queued", position: result.position };
 }
 
+/** How a sticky send's target relates to the run's stages: the structured classification every queued result carries. */
+export interface StickySendPrediction {
+	/** `known`: the scan or a materialized stage covers it; `predicted`: the decision model expects it. */
+	readonly prediction: "known" | "predicted" | "unknown";
+	/** The decision model judged the target unlikely: probably a typo. */
+	readonly unexpected?: true;
+	/** The closest known stage path for an unexpected target, when one is close enough. */
+	readonly suggestion?: string;
+}
+
 /**
  * Slice 3 sticky delivery (D3/D4/D5/D6): persist one entry in the ROOT run's durable
- * bucket and answer `queued` (with `notInKnownSet` for speculative accepts). Matching
+ * bucket and answer `queued` with the target's {@link StickySendPrediction}. Matching
  * live stages are recorded as delivered immediately; the broker forwards the message to
  * them through the ordinary inbound admission path with the sender identity (D9).
  */
@@ -904,13 +916,13 @@ async function deliverStickyTarget(
 		readonly message: PendingStageMessageInput["message"];
 	},
 	parsedTarget: WorkflowStageTarget,
+	predictor: StagePredictor,
 ): Promise<
-	| {
+	| ({
 			readonly outcome: "queued";
 			readonly position: number;
-			readonly notInKnownSet?: true;
 			readonly forwardTargets?: readonly string[];
-	  }
+	  } & StickySendPrediction)
 	| { readonly outcome: "refused"; readonly reason: string }
 > {
 	const rootRunId = rootRun.id;
@@ -927,12 +939,13 @@ async function deliverStickyTarget(
 	const liveMatches = matchingLiveStages(activeStore, rootRunId, parsedTarget.segments);
 	// The static scan cannot see inside dynamically loaded (pooled) children, so a target that
 	// matches a materialized live or pending stage is known even when the scan misses it.
-	const notInKnownSet =
-		targetSegmentsInPossibleStages(parsedTarget.segments, rootRun.possibleStages ?? []) ||
+	// Anything else asks the decision model in the background and never waits for it.
+	const classification: StickySendPrediction =
+		targetSegmentsInPossibleStages(parsedTarget.segments, knownScanEntries(rootRun)) ||
 		liveMatches.length > 0 ||
 		matchingLiveStages(activeStore, rootRunId, parsedTarget.segments, { includePending: true }).length > 0
-			? undefined
-			: true;
+			? { prediction: "known" }
+			: predictor.classifySend(rootRun, parsedTarget.segments);
 	const backend = durableBackendForRun(requireStoreDurableBackend(activeStore, rootRunId), activeStore, rootRunId);
 	if (backend === undefined) return { outcome: "refused", reason: "Session not found" };
 	const senderGroup = pendingStageSenderGroup(event, runGroup);
@@ -945,7 +958,7 @@ async function deliverStickyTarget(
 		message: event.message,
 		queuedAt: new Date().toISOString(),
 		targetPath: event.target,
-		...(notInKnownSet === undefined ? {} : { notInKnownSet }),
+		...(classification.prediction === "known" ? {} : { prediction: classification.prediction }),
 	};
 	const result = await activeStore.queueStickyStageMessage(request, senderGroup, runGroup, backend);
 	if (result === undefined) return { outcome: "refused", reason: "Session not found" };
@@ -1000,7 +1013,7 @@ async function deliverStickyTarget(
 	return {
 		outcome: "queued",
 		position: result.position ?? 1,
-		...(notInKnownSet === undefined ? {} : { notInKnownSet }),
+		...classification,
 		...(forwardTargets.length === 0 ? {} : { forwardTargets }),
 	};
 }

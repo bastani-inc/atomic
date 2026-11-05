@@ -301,6 +301,20 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 }
 ```
 
+### Intercom
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `intercom.showUnknownTargetWarnings` | boolean | `false` | Add a note to a queued workflow Intercom send whose target is outside the run's known and predicted stages. Delivery is the same either way |
+
+```json
+{
+  "intercom": {
+    "showUnknownTargetWarnings": true
+  }
+}
+```
+
 ### Compaction
 
 | Setting | Type | Default | Description |

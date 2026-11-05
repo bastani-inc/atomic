@@ -268,11 +268,24 @@ class History {
 			return "lineage";
 		}
 		if (roll < 0.9) {
-			this.root.possibleStages = Array.from({ length: Math.floor(this.next() * 4) }, () =>
+			const path = () =>
 				Array.from({ length: 1 + Math.floor(this.next() * 2) }, () =>
 					this.next() < 0.3 ? this.pick(GLOBS) : this.pick(NAMES),
-				).join("/"),
-			);
+				).join("/");
+			this.root.possibleStages = Array.from({ length: Math.floor(this.next() * 4) }, path);
+			// Decision-model predictions (#4359): sometimes a scan entry, sometimes a path of their own.
+			this.root.stagePredictions =
+				this.next() < 0.5
+					? undefined
+					: {
+							status: "ready",
+							targets: {},
+							entries: Array.from({ length: Math.floor(this.next() * 3) }, () => ({
+								path: this.next() < 0.2 && this.root.possibleStages?.[0] ? this.root.possibleStages[0] : path(),
+								probability: Math.round((0.8 + this.next() * 0.2) * 100) / 100,
+								source: "scan" as const,
+							})),
+						};
 			return "scan";
 		}
 		if (roll < 0.92) {

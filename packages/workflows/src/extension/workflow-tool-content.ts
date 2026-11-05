@@ -1,5 +1,6 @@
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
+import { formatStagePredictionStatus } from "../shared/possible-stage-prediction.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import { pooledStageStartingText, stageDisplayStatus } from "../shared/stage-display-status.js";
@@ -135,6 +136,9 @@ function renderStatusToolContent(result: Extract<WorkflowToolResult, { action: "
 		lines.push(`    runId: ${run.runId}`);
 		const poolLine = poolCoordinationLine(run.pool);
 		if (poolLine !== undefined) lines.push(`    ${poolLine}`);
+		if (run.stagePredictions !== undefined) {
+			for (const line of formatStagePredictionStatus(run.stagePredictions)) lines.push(`    ${line}`);
+		}
 		if (run.phase !== undefined) {
 			lines.push(`    phase: ${run.phase}, age: ${run.phaseAgeMs ?? 0}ms, last progress: ${run.lastProgressAt}`);
 		}

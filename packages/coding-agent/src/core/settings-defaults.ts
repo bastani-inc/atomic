@@ -83,6 +83,9 @@ export const SETTINGS_DEFAULTS = {
 	warnings: {
 		anthropicExtraUsage: true,
 	},
+	intercom: {
+		showUnknownTargetWarnings: false,
+	},
 	httpIdleTimeoutMs: 600_000,
 	cacheWarming: "streaming",
 	tasks: {
