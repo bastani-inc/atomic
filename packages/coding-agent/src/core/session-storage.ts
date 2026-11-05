@@ -139,24 +139,36 @@ export function selectSessionStorage(
 	const value = settings.sessions?.storage !== undefined ? settings.sessions.storage : settings.storage;
 	if (value === undefined) return { kind: "sqlite", path: defaultPath };
 	const field = settings.sessions?.storage !== undefined ? "sessions.storage" : "storage";
+	const selection = selectSessionSetting(value, field, agentDir);
+	sources.set(selection, { source: "settings", field });
+	return selection;
+}
+
+/**
+ * The selection a settings value for sessions names: a `{ dir }` JSONL directory or a storage selection, with relative
+ * paths resolved against the Atomic home. `field` is the setting it came from, `sessions.storage` or `storage`; a value
+ * that is not a valid selection for it throws {@link StorageConfigError}.
+ */
+export function selectSessionSetting(
+	value: NonNullable<NonNullable<Settings["sessions"]>["storage"]>,
+	field: "sessions.storage" | "storage",
+	agentDir: string,
+): StorageSelection {
 	if (!Value.Check(SessionStorageSelectionSchema, value) || (field === "storage" && "dir" in value)) {
 		throw new StorageConfigError("settings", field, "invalid-selection");
 	}
-	let selection: StorageSelection;
 	if ("dir" in value)
-		selection = { kind: "jsonl", dir: resolveStoragePath(value.dir, dirname(agentDir), "settings", field) };
-	else {
-		selection = selectStorage(
-			value,
-			"settings",
-			field,
-			field === "storage" ? join(dirname(agentDir), "storage.sqlite") : defaultPath,
-		);
-		if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
-			selection = { ...selection, path: resolveStoragePath(selection.path, dirname(agentDir), "settings", field) };
-		}
+		return { kind: "jsonl", dir: resolveStoragePath(value.dir, dirname(agentDir), "settings", field) };
+	const defaultPath = join(dirname(agentDir), "workflows", "journal.sqlite");
+	const selection = selectStorage(
+		value,
+		"settings",
+		field,
+		field === "storage" ? join(dirname(agentDir), "storage.sqlite") : defaultPath,
+	);
+	if (selection.kind === "sqlite" && !isAbsolute(selection.path)) {
+		return { ...selection, path: resolveStoragePath(selection.path, dirname(agentDir), "settings", field) };
 	}
-	sources.set(selection, { source: "settings", field });
 	return selection;
 }
 

@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { getAgentDir } from "../../config.js";
 import type { IntercomBrokerControl, RestartOutcome } from "../intercom-broker-control.js";
 import { resolvePackageStorageAdapter } from "../package-manager-storage-adapters.js";
-import { selectSessionStorage } from "../session-storage.js";
+import { selectSessionSetting, selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import {
@@ -80,6 +80,8 @@ export interface SharedDatabaseJoin {
 	readonly token: "new" | "reused" | "none";
 	/** The previous `storage` selection it replaced, described without its options or secrets. */
 	readonly replaced?: string;
+	/** The previous global `sessions.storage` the local pin replaced, when it was not already the local default store. */
+	readonly replacedSessionsStorage?: string;
 }
 
 /** The Intercom broker restart after a team settings change; a failed restart does not undo the change. */
@@ -92,12 +94,21 @@ export interface TeamJoinResult extends SharedDatabaseJoin {
 
 export type TeamSettingKey = "storage" | "sessions.storage";
 
+/**
+ * A key `team leave` left in place. `changed`: it holds something other than what `team join` writes.
+ * `storage-remains`: it is the local sessions pin, kept because `storage` stays set and sessions would follow it.
+ */
+export interface TeamKeptSetting {
+	readonly key: TeamSettingKey;
+	readonly reason: "changed" | "storage-remains";
+}
+
 export interface TeamLeaveResult {
 	readonly settingsPath: string;
 	/** Keys removed because they held exactly what `team join` writes. */
 	readonly removed: readonly TeamSettingKey[];
-	/** Keys that are set but hold something else, left in place. */
-	readonly kept: readonly TeamSettingKey[];
+	/** Keys left in place, and why. */
+	readonly kept: readonly TeamKeptSetting[];
 	/** The token file of the removed selection, deleted because no remaining setting references it. */
 	readonly deletedTokenFiles: readonly string[];
 	/** The token file of the removed selection, kept because another setting still references it. */
@@ -321,6 +332,7 @@ export async function joinSharedDatabase(
 	await checkConnectionWithin(url, token, agentDir, connectionTimeoutMs);
 
 	const previous: StorageSettingsSelection | undefined = manager.getGlobalSettings().storage;
+	const previousPin = manager.getGlobalSettings().sessions?.storage;
 	const reused = token === undefined ? undefined : reusableTokenFile(previous, token, agentDir);
 	const tokenPath =
 		token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
@@ -367,13 +379,20 @@ export async function joinSharedDatabase(
 		token: tokenPath === undefined ? "none" : reused === undefined ? "new" : "reused",
 		...(previous === undefined || JSON.stringify(previous) === JSON.stringify(storage)
 			? {}
-			: { replaced: describePrevious(previous) }),
+			: { replaced: describePrevious(() => selectStorage(previous, "settings", "storage", "")) }),
+		...(options.pinLocalSessions && previousPin !== undefined && !isLocalSessionsPin(previousPin)
+			? {
+					replacedSessionsStorage: describePrevious(() =>
+						selectSessionSetting(previousPin, "sessions.storage", agentDir),
+					),
+				}
+			: {}),
 	};
 }
 
-function describePrevious(previous: StorageSettingsSelection): string {
+function describePrevious(select: () => StorageSelection): string {
 	try {
-		return describeStorageSelection(selectStorage(previous, "settings", "storage", ""));
+		return describeStorageSelection(select());
 	} catch (error) {
 		if (error instanceof StorageError) return "an invalid selection";
 		throw error;
@@ -520,12 +539,15 @@ export async function leaveTeamWith(
 	const global = manager.getGlobalSettings();
 	const storage: StorageSettingsSelection | undefined = global.storage;
 	const removed: TeamSettingKey[] = [];
-	const kept: TeamSettingKey[] = [];
+	const kept: TeamKeptSetting[] = [];
 	if (isJoinedStorage(storage, agentDir)) removed.push("storage");
-	else if (storage !== undefined) kept.push("storage");
+	else if (storage !== undefined) kept.push({ key: "storage", reason: "changed" });
 	const pin = global.sessions?.storage;
-	if (isLocalSessionsPin(pin)) removed.push("sessions.storage");
-	else if (pin !== undefined) kept.push("sessions.storage");
+	const storageRemains = storage !== undefined && !removed.includes("storage");
+	if (isLocalSessionsPin(pin)) {
+		if (storageRemains) kept.push({ key: "sessions.storage", reason: "storage-remains" });
+		else removed.push("sessions.storage");
+	} else if (pin !== undefined) kept.push({ key: "sessions.storage", reason: "changed" });
 	if (removed.length === 0) return { settingsPath, removed, kept, deletedTokenFiles: [], keptTokenFiles: [] };
 
 	const tokenPath = removed.includes("storage") ? secretFilePath(storage?.secrets?.authToken, agentDir) : undefined;
@@ -573,8 +595,8 @@ export async function leaveTeamWith(
 /**
  * Restore the individual layout: remove the global `storage` setting and the `sessions.storage` pin when they hold
  * exactly what `joinTeam` writes, leave every other value in place, delete the removed selection's token file unless
- * another setting references it, and restart the Intercom broker when `storage` was removed. Running it again
- * changes nothing.
+ * another setting references it, and restart the Intercom broker when `storage` was removed. The pin is kept while
+ * another `storage` remains, because sessions would otherwise move to it. Running it again changes nothing.
  */
 export function leaveTeam(options: LeaveTeamOptions = {}): Promise<TeamLeaveResult> {
 	return leaveTeamWith(options);

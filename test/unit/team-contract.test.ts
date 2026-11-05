@@ -496,19 +496,36 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 			writeFileSync(tokenPath, "t");
 			writeSettings({ theme: "dark", ...(storage === undefined ? {} : { storage }) });
 			const left = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
-			assert.deepEqual([left.removed, left.kept], [removed, kept], JSON.stringify(storage));
+			assert.deepEqual(
+				[left.removed, left.kept],
+				[removed, kept.map((key) => ({ key, reason: "changed" }))],
+				JSON.stringify(storage),
+			);
 			assert.equal(left.broker === undefined, removed.length === 0, JSON.stringify(storage));
 			assert.deepEqual(Object.keys(saved()), removed.length === 0 ? ["theme", "storage"] : ["theme"]);
 		}
 		writeFileSync(tokenPath, "t");
 		writeSettings({ storage: joined, sessions: { storage: { path: "mine.sqlite" } } });
 		const pinKept = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
-		assert.deepEqual([pinKept.removed, pinKept.kept], [["storage"], ["sessions.storage"]]);
+		assert.deepEqual(
+			[pinKept.removed, pinKept.kept],
+			[["storage"], [{ key: "sessions.storage", reason: "changed" }]],
+		);
 		assert.deepEqual(saved(), { sessions: { storage: { path: "mine.sqlite" } } });
-		writeSettings({ storage: { path: "theirs.sqlite" }, sessions: { storage: LOCAL_SESSIONS_STORAGE } });
+		const storageKeptSettings = { storage: { path: "theirs.sqlite" }, sessions: { storage: LOCAL_SESSIONS_STORAGE } };
+		writeSettings(storageKeptSettings);
 		const storageKept = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
-		assert.deepEqual([storageKept.removed, storageKept.kept], [["sessions.storage"], ["storage"]]);
-		assert.deepEqual(saved(), { storage: { path: "theirs.sqlite" } });
+		assert.deepEqual(
+			[storageKept.removed, storageKept.kept],
+			[
+				[],
+				[
+					{ key: "storage", reason: "changed" },
+					{ key: "sessions.storage", reason: "storage-remains" },
+				],
+			],
+		);
+		assert.deepEqual(saved(), storageKeptSettings);
 		const pins: [object, boolean][] = [
 			[LOCAL_SESSIONS_STORAGE, true],
 			[{ path: "workflows/journal.sqlite", prefix: "x" }, false],
@@ -519,7 +536,10 @@ describe("joining and leaving at the SDK level (#4320)", () => {
 		for (const [pin, removes] of pins) {
 			writeSettings({ sessions: { storage: pin } });
 			const left = await leaveTeamWith({ agentDir, cwd: project }, noBroker as never);
-			assert.deepEqual([left.removed, left.kept], removes ? [["sessions.storage"], []] : [[], ["sessions.storage"]]);
+			assert.deepEqual(
+				[left.removed, left.kept],
+				removes ? [["sessions.storage"], []] : [[], [{ key: "sessions.storage", reason: "changed" }]],
+			);
 			assert.equal(left.broker, undefined);
 			assert.deepEqual(saved(), removes ? {} : { sessions: { storage: pin } });
 		}

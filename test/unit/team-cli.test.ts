@@ -267,9 +267,67 @@ describe("atomic team join, status and leave (#4320)", () => {
 			writeSettings(custom);
 			const kept = await leaveTeam({ agentDir, cwd: project });
 			assert.deepEqual(kept.removed, []);
-			assert.deepEqual(kept.kept, ["storage", "sessions.storage"]);
+			assert.deepEqual(kept.kept, [
+				{ key: "storage", reason: "changed" },
+				{ key: "sessions.storage", reason: "changed" },
+			]);
 			assert.equal(kept.broker, undefined);
 			assert.deepEqual(savedSettings(), custom);
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"leave keeps the local sessions pin while an edited storage remains, so private sessions never move (#4320)",
+		async () => {
+			vi.stubEnv("TEAM_TOKEN", "team-secret-token");
+			const localSessions = { kind: "sqlite", path: join(root, "workflows", "journal.sqlite") };
+			for (const edit of [
+				(storage: { secrets?: object }) => ({ ...storage, secrets: { authToken: { env: "TEAM_TOKEN" } } }),
+				() => ({ path: "shared.sqlite" }),
+			]) {
+				writeSettings({ packages: [packageRoot] });
+				const joined = await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project });
+				assert.ok(joined.tokenPath);
+				const settings = savedSettings();
+				writeSettings({ ...settings, storage: edit(settings.storage as { secrets?: object }) });
+				const before = settingsText();
+				const profile = (await getTeamProfile({ agentDir, cwd: project })).profile;
+				const left = await leaveTeam({ agentDir, cwd: project });
+				assert.deepEqual(left.removed, []);
+				assert.deepEqual(left.kept, [
+					{ key: "storage", reason: "changed" },
+					{ key: "sessions.storage", reason: "storage-remains" },
+				]);
+				assert.equal(left.broker, undefined);
+				assert.equal(settingsText(), before);
+				assert.deepEqual(selectSessionStorage(project, { agentDir }), localSessions);
+				assert.equal(existsSync(joined.tokenPath), true);
+				assert.equal((await getTeamProfile({ agentDir, cwd: project })).profile, profile);
+			}
+		},
+		LIBSQL_SCENARIO_TIMEOUT_MS,
+	);
+
+	test(
+		"join reports a sessions.storage it replaces with the local pin (#4320)",
+		async () => {
+			const cases: [object, string | undefined][] = [
+				[LOCAL_SESSIONS_STORAGE, undefined],
+				[{ dir: "sessions" }, `JSONL directory ${join(root, "sessions")}`],
+				[{ path: "mine.sqlite", prefix: "me_" }, `SQLite ${join(root, "mine.sqlite")} (prefix me_)`],
+				[{ adapter: "@example/sessions", options: { url: "x" } }, "adapter @example/sessions"],
+				[{ path: 7 }, "an invalid selection"],
+			];
+			for (const [pin, replaced] of cases) {
+				writeSettings({ packages: [packageRoot], sessions: { storage: pin } });
+				const joined = await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project });
+				assert.equal(joined.replacedSessionsStorage, replaced, JSON.stringify(pin));
+				assert.deepEqual(savedSettings().sessions, { storage: LOCAL_SESSIONS_STORAGE });
+			}
+			writeSettings({ packages: [packageRoot] });
+			const fresh = await joinTeam({ url: databaseUrl, tokenFile, agentDir, cwd: project });
+			assert.equal(Object.hasOwn(fresh, "replacedSessionsStorage"), false);
 		},
 		LIBSQL_SCENARIO_TIMEOUT_MS,
 	);

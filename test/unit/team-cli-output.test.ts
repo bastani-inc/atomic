@@ -165,9 +165,13 @@ describe("atomic team output (#4320)", () => {
 	});
 
 	test(
-		"join prints what it wrote, the replaced selection, the restarted broker and the full status (#4320)",
+		"join prints what it wrote, the replaced selections, the restarted broker and the full status (#4320)",
 		async () => {
-			writeSettings({ packages: [packageRoot], storage: { path: "old.sqlite" } });
+			writeSettings({
+				packages: [packageRoot],
+				storage: { path: "old.sqlite" },
+				sessions: { storage: { dir: "sessions" } },
+			});
 			const restarted: RestartOutcome = {
 				status: "restarted",
 				previous: { pid: 101, sessions: 2 },
@@ -184,12 +188,13 @@ describe("atomic team output (#4320)", () => {
 			assert.equal(result.code, 0);
 			const url = databaseUrl.replaceAll(root, "<root>");
 			const lines = result.out.split("\n");
-			assert.deepEqual(lines.slice(0, 12), [
+			assert.deepEqual(lines.slice(0, 13), [
 				"Stopping the Intercom broker (pid 101)",
 				`Connected to ${url}.`,
 				"Stored the token in <root>/agent/storage-token.<id> (mode 600).",
 				"Set `storage` to the team database and `sessions.storage` to the local store in <root>/agent/settings.json; other settings are unchanged.",
 				"It replaces the previous selection: SQLite old.sqlite.",
+				"It replaces the previous `sessions.storage`: JSONL directory <root>/sessions.",
 				"Restarted the Intercom broker: pid 101 → 202.",
 				"",
 				"Profile: team (sessions on this machine; workflow runs and Intercom on the team database)",
@@ -279,12 +284,17 @@ describe("atomic team output (#4320)", () => {
 			const partial = await team(["leave"], control(new Error("never called")));
 			assert.equal(partial.code, 0, partial.err);
 			assert.deepEqual(partial.out.split("\n"), [
-				"Removed `sessions.storage` from <root>/agent/settings.json; other settings are unchanged.",
+				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
 				"Left `storage` in place: it holds something other than what team join writes.",
-				"Profile: ci (sessions, workflow runs and Intercom on the team database)",
+				"Left `sessions.storage` in place: `storage` is still set, and without it new sessions would move to that store.",
+				"Profile: team (sessions on this machine; workflow runs and Intercom on the team database)",
 			]);
 			assert.deepEqual(restarts, [agentDir, agentDir]);
 
+			writeSettings({
+				packages: [packageRoot],
+				storage: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url: databaseUrl, tls: false } },
+			});
 			const none = await team(["leave"], undefined);
 			assert.deepEqual(none.out.split("\n"), [
 				"Nothing to remove: <root>/agent/settings.json holds no settings that `atomic team join` wrote.",
@@ -517,7 +527,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		const left = await team(["leave"], control({ status: "not-running" }));
 		assert.match(
 			left.out,
-			/^Removed `sessions\.storage` from <root>\/agent\/settings\.json; other settings are unchanged\.$/m,
+			/^Left `sessions\.storage` in place: `storage` is still set, and without it new sessions would move to that store\.$/m,
 		);
 		assert.match(left.out, /^Profile: custom /m);
 		const usage = (() => {

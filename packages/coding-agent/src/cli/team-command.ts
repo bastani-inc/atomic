@@ -259,6 +259,8 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 				`Set \`storage\` to the team database and \`sessions.storage\` to the local store in ${joined.settingsPath}; other settings are unchanged.`,
 			);
 			if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
+			if (joined.replacedSessionsStorage !== undefined)
+				log(`It replaces the previous \`sessions.storage\`: ${joined.replacedSessionsStorage}.`);
 			const restarted = describeRestart(joined.broker, log, error);
 			log("");
 			const status = await report(options, false, log);
@@ -272,8 +274,13 @@ export async function runTeamCommand(args: readonly string[], options: TeamComma
 				`Removed ${left.removed.map((key) => `\`${key}\``).join(" and ")} from ${left.settingsPath}; other settings are unchanged.`,
 			);
 		}
-		for (const key of left.kept)
-			log(`Left \`${key}\` in place: it holds something other than what team join writes.`);
+		for (const { key, reason } of left.kept) {
+			log(
+				reason === "changed"
+					? `Left \`${key}\` in place: it holds something other than what team join writes.`
+					: `Left \`${key}\` in place: \`storage\` is still set, and without it new sessions would move to that store.`,
+			);
+		}
 		for (const path of left.deletedTokenFiles) log(`Deleted the token file ${path}.`);
 		for (const path of left.keptTokenFiles) log(`Kept the token file ${path}: another setting still references it.`);
 		const restarted = left.broker === undefined || describeRestart(left.broker, log, error);

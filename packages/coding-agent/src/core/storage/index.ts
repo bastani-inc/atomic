@@ -50,6 +50,7 @@ export type {
 	LeaveTeamOptions,
 	TeamBrokerRestart,
 	TeamJoinResult,
+	TeamKeptSetting,
 	TeamLeaveResult,
 	TeamProfile,
 	TeamProfileName,
