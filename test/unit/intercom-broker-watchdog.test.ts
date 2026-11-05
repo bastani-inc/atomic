@@ -159,10 +159,14 @@ setInterval(() => {
 			earlyExit = code;
 		});
 		try {
-			await waitUntil(() => fileExistsSync(getBrokerPidPath()) || earlyExit !== undefined, STARTUP_BUDGET_MS);
+			// It writes its pid file before it listens (#4409); the start-up log line comes once it does.
+			await waitUntil(
+				() => output().includes("Intercom broker started") || earlyExit !== undefined,
+				STARTUP_BUDGET_MS,
+			);
 		} catch (error) {
 			throw new Error(
-				`${runtime.name} broker did not write its pid file within ${STARTUP_BUDGET_MS}ms (exit: ${earlyExit ?? "still running"}); output:\n${output()}`,
+				`${runtime.name} broker did not start listening within ${STARTUP_BUDGET_MS}ms (exit: ${earlyExit ?? "still running"}); output:\n${output()}`,
 				{ cause: error },
 			);
 		}

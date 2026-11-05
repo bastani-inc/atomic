@@ -21,6 +21,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 - A queued workflow send to a path outside the run's known stages no longer shows the "not in the workflow's known stage set" warning; the result is a plain `Message queued for <target>`. A path the decision model judged unlikely gets one `No stage named <x> is expected; did you mean <closest>?` line, and the `intercom.showUnknownTargetWarnings` setting restores the old warning. Delivery is unchanged ([#4359](https://github.com/bastani-inc/atomic/issues/4359))
 
+### Fixed
+
+- The intercom broker writes `broker.pid` before its socket accepts connections, so a client that has connected, including one that waited for the broker to answer, always finds the pid file naming the running broker. Brokers that start at the same time take turns, and one that finds a live broker leaves its pid file alone ([#4409](https://github.com/bastani-inc/atomic/issues/4409))
+
 ## [0.9.59] - 2026-11-01
 
 ### Fixed
