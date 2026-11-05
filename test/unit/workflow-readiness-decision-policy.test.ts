@@ -8,6 +8,7 @@ import {
 import type { DecisionResult } from "../../packages/coding-agent/src/core/decision/types.js";
 import {
 	describeReadinessDecision,
+	READINESS_DECISION_INSTRUCTIONS,
 	READINESS_DECISION_QUESTIONS,
 	READINESS_DECISION_THRESHOLDS,
 	READINESS_STATE_MAX_CHARS,
@@ -145,4 +146,18 @@ test("the decision state holds the objective, the user's message and the stage's
 	const exact = "y".repeat(READINESS_STATE_MAX_CHARS);
 	assert.equal(readinessState({ objective: undefined, userMessage: exact, reply: exact }).stage_reply, exact);
 	assert.equal(readinessState({ objective: undefined, userMessage: "m", reply: "r" }).stage_objective, "");
+});
+
+test("a decision missing one option's probability asks, and the instructions describe the state", () => {
+	const partial = {
+		answers: {
+			next_action: { type: "choice" as const, choice: "advance" as const, probabilities: { advance: 0.99 } },
+			reply_addresses_message: { type: "bool" as const, value: true, probability: 0.99 },
+		},
+	};
+	assert.deepEqual(readinessVerdict(partial), { outcome: "ask" });
+	assert.equal(
+		READINESS_DECISION_INSTRUCTIONS,
+		"A workflow stage asked the user a question. The user then sent `user_message`, and the stage answered with `stage_reply`. `stage_objective` is what the stage was asked to do. Decide whether the stage can complete now or should stay open for the user.",
+	);
 });

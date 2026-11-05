@@ -139,14 +139,8 @@ export class SettingsManager {
 
 	/** A removed key fails fast: `routerModel` was renamed to `decisionModel`, and nothing reads it any more. */
 	private static refuseRenamedSettings(settings: object, source: DecisionConfigSource, scope?: SettingsScope): void {
-		if (settings !== null && typeof settings === "object" && Object.hasOwn(settings, "routerModel")) {
-			throw new DecisionConfigError({
-				code: "renamed-setting",
-				source,
-				field: "routerModel",
-				...(scope === undefined ? {} : { scope }),
-			});
-		}
+		if (Object.hasOwn(Object(settings), "routerModel"))
+			throw new DecisionConfigError({ code: "renamed-setting", source, field: "routerModel", scope });
 	}
 
 	private static tryLoadFromStorage(

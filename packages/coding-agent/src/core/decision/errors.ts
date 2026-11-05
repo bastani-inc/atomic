@@ -47,15 +47,6 @@ export type DecisionProviderFailureCode = "rate_limit_exceeded" | "insufficient_
 /** JSON-safe structured context of a decision error. */
 export type DecisionErrorFieldValue = string | number | boolean;
 
-const DECISION_ERROR_NAMES = new Set<string>([
-	"DecisionError",
-	"DecisionConfigError",
-	"DecisionRequestError",
-	"DecisionModelUnavailableError",
-	"DecisionTimeoutError",
-	"DecisionOutputError",
-	"DecisionProviderError",
-]);
 const DECISION_ERROR_CODES = new Set<string>([
 	"renamed-setting",
 	"invalid-setting",
@@ -66,6 +57,16 @@ const DECISION_ERROR_CODES = new Set<string>([
 	"provider-failure",
 ]);
 const MAX_CAUSE_DEPTH = 8;
+
+/** The fields that are set, so absent optional facts never appear as `undefined`. */
+function presentFields(
+	fields: Readonly<Record<string, DecisionErrorFieldValue | undefined>>,
+): Readonly<Record<string, DecisionErrorFieldValue>> {
+	return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as Record<
+		string,
+		DecisionErrorFieldValue
+	>;
+}
 
 function message(what: string, subject: string, code: DecisionErrorCode, hint: string): string {
 	return `${what}: ${subject} (${code}). ${hint}`;
@@ -99,18 +100,13 @@ export interface DecisionConfigErrorFields {
 	readonly scope?: DecisionSettingsScope;
 }
 
-function configSubject(fields: DecisionConfigErrorFields): string {
-	if (fields.scope !== undefined) return `"${fields.field}" in ${fields.scope} settings.json`;
-	return `"${fields.field}" in ${fields.source === "sdk" ? "the SDK settings" : "settings.json"}`;
-}
+const CONFIG_PLACES: Readonly<Record<DecisionConfigSource, { readonly subject: string; readonly hint: string }>> = {
+	settings: { subject: "settings.json", hint: "settings.json" },
+	sdk: { subject: "the SDK settings", hint: "the settings you pass" },
+};
 
 function configHint(fields: DecisionConfigErrorFields): string {
-	const where =
-		fields.scope !== undefined
-			? `your ${fields.scope} settings.json`
-			: fields.source === "sdk"
-				? "the settings you pass"
-				: "settings.json";
+	const where = fields.scope ? `your ${fields.scope} settings.json` : CONFIG_PLACES[fields.source].hint;
 	return fields.code === "renamed-setting"
 		? `Rename "routerModel" to "decisionModel" in ${where}.`
 		: `Set "decisionModel" in ${where} to an exact provider/model ID, "auto", or an empty string.`;
@@ -126,14 +122,15 @@ export class DecisionConfigError extends DecisionError {
 	override readonly retryable = false as const;
 	readonly source: DecisionConfigSource;
 	readonly field: string;
-	readonly scope?: DecisionSettingsScope;
+	readonly scope: DecisionSettingsScope | undefined;
 	constructor(fields: DecisionConfigErrorFields, options?: ErrorOptions) {
 		const hint = configHint(fields);
+		const where = fields.scope ? `${fields.scope} settings.json` : CONFIG_PLACES[fields.source].subject;
 		super(
 			fields.code,
 			message(
 				fields.code === "renamed-setting" ? "Renamed setting" : "Invalid decision model setting",
-				configSubject(fields),
+				`"${fields.field}" in ${where}`,
 				fields.code,
 				hint,
 			),
@@ -142,11 +139,11 @@ export class DecisionConfigError extends DecisionError {
 		);
 		this.source = fields.source;
 		this.field = fields.field;
-		if (fields.scope !== undefined) this.scope = fields.scope;
+		this.scope = fields.scope;
 	}
 
 	override fields(): Readonly<Record<string, DecisionErrorFieldValue>> {
-		return { source: this.source, field: this.field, ...(this.scope === undefined ? {} : { scope: this.scope }) };
+		return presentFields({ source: this.source, field: this.field, scope: this.scope });
 	}
 }
 
@@ -210,14 +207,14 @@ export class DecisionModelUnavailableError extends DecisionError {
 	declare readonly code: "model-unavailable";
 	override readonly retryable = false as const;
 	readonly reason: DecisionModelUnavailableReason;
-	readonly model?: string;
+	readonly model: string | undefined;
 	constructor(fields: DecisionModelUnavailableErrorFields, options?: ErrorOptions) {
 		const hint = UNAVAILABLE_HINTS[fields.reason];
 		super(
 			"model-unavailable",
 			message(
 				"Decision model unavailable",
-				fields.model === undefined ? fields.reason : `${fields.model} is ${fields.reason}`,
+				fields.model ? `${fields.model} is ${fields.reason}` : fields.reason,
 				"model-unavailable",
 				hint,
 			),
@@ -225,11 +222,11 @@ export class DecisionModelUnavailableError extends DecisionError {
 			options,
 		);
 		this.reason = fields.reason;
-		if (fields.model !== undefined) this.model = fields.model;
+		this.model = fields.model;
 	}
 
 	override fields(): Readonly<Record<string, DecisionErrorFieldValue>> {
-		return { reason: this.reason, ...(this.model === undefined ? {} : { model: this.model }) };
+		return presentFields({ reason: this.reason, model: this.model });
 	}
 }
 
@@ -243,6 +240,12 @@ export interface DecisionTimeoutErrorFields {
 	readonly attempts?: string;
 }
 
+const PHASE_SUBJECTS: Readonly<Record<DecisionPhase, string>> = {
+	resolve: "decision model",
+	classifier: "classifier model",
+	chat: "chat model",
+};
+
 /**
  * The decision did not finish within its deadline; no decision was accepted. Retryable: the model may answer in time
  * on another attempt, or a longer `deadline` (or `httpIdleTimeoutMs`) gives it room.
@@ -254,28 +257,29 @@ export class DecisionTimeoutError extends DecisionError {
 	readonly timeoutMs: number;
 	readonly elapsedMs: number;
 	readonly phase: DecisionPhase;
-	readonly attempts?: string;
+	readonly attempts: string | undefined;
 	constructor(fields: DecisionTimeoutErrorFields, options?: ErrorOptions) {
 		const hint = "Retry, or allow a longer deadline (httpIdleTimeoutMs).";
-		super(
+		const text = message(
+			"Decision timed out",
+			`no answer within its ${fields.timeoutMs}ms deadline while waiting for the ${PHASE_SUBJECTS[fields.phase]}`,
 			"timeout",
-			`${message("Decision timed out", `no answer within its ${fields.timeoutMs}ms deadline while waiting for the ${fields.phase === "resolve" ? "decision model" : `${fields.phase} model`}`, "timeout", hint)}${fields.attempts ? ` ${fields.attempts}` : ""}`,
 			hint,
-			options,
 		);
+		super("timeout", fields.attempts ? `${text} ${fields.attempts}` : text, hint, options);
 		this.timeoutMs = fields.timeoutMs;
 		this.elapsedMs = fields.elapsedMs;
 		this.phase = fields.phase;
-		if (fields.attempts) this.attempts = fields.attempts;
+		this.attempts = fields.attempts || undefined;
 	}
 
 	override fields(): Readonly<Record<string, DecisionErrorFieldValue>> {
-		return {
+		return presentFields({
 			timeoutMs: this.timeoutMs,
 			elapsedMs: this.elapsedMs,
 			phase: this.phase,
-			...(this.attempts === undefined ? {} : { attempts: this.attempts }),
-		};
+			attempts: this.attempts,
+		});
 	}
 }
 
@@ -292,14 +296,16 @@ export class DecisionOutputError extends DecisionError {
 	declare readonly code: "invalid-output";
 	override readonly retryable = false as const;
 	readonly model: string;
-	readonly detail?: string;
+	readonly detail: string | undefined;
 	constructor(fields: DecisionOutputErrorFields, options?: ErrorOptions) {
 		const hint = "Make the questions and their options unambiguous, or choose another decision model.";
 		super(
 			"invalid-output",
 			message(
 				"Decision output invalid",
-				`${fields.model} gave no valid answer${fields.detail ? `: ${fields.detail}` : ""}`,
+				fields.detail
+					? `${fields.model} gave no valid answer: ${fields.detail}`
+					: `${fields.model} gave no valid answer`,
 				"invalid-output",
 				hint,
 			),
@@ -307,11 +313,11 @@ export class DecisionOutputError extends DecisionError {
 			options,
 		);
 		this.model = fields.model;
-		if (fields.detail) this.detail = fields.detail;
+		this.detail = fields.detail || undefined;
 	}
 
 	override fields(): Readonly<Record<string, DecisionErrorFieldValue>> {
-		return { model: this.model, ...(this.detail === undefined ? {} : { detail: this.detail }) };
+		return presentFields({ model: this.model, detail: this.detail });
 	}
 }
 
@@ -327,6 +333,18 @@ export interface DecisionProviderErrorFields {
 	readonly detail?: string;
 }
 
+function providerHint(fields: DecisionProviderErrorFields): string {
+	if (!fields.providerCode) return "Check the decision model's provider configuration and connectivity.";
+	const after = fields.retryAfterMs === undefined ? "a moment" : `${fields.retryAfterMs}ms`;
+	return `Retry after ${after}; the provider reported ${fields.providerCode}.`;
+}
+
+function providerSubject(fields: DecisionProviderErrorFields): string {
+	const status = fields.providerStatus === undefined ? "" : ` returned HTTP ${fields.providerStatus}`;
+	const detail = fields.detail ? `: ${fields.detail}` : "";
+	return `${fields.model ?? "the decision model"}${status}${detail}`;
+}
+
 /**
  * The decision model's request failed. Retryable when the provider reported a rate limit or an exhausted quota
  * (`providerCode`); otherwise check the provider's configuration and connectivity.
@@ -335,103 +353,132 @@ export class DecisionProviderError extends DecisionError {
 	override readonly name = "DecisionProviderError" as const;
 	declare readonly code: "provider-failure";
 	override readonly retryable: boolean;
-	readonly model?: string;
-	readonly providerStatus?: number;
-	readonly providerCode?: DecisionProviderFailureCode;
-	readonly retryAfterMs?: number;
-	readonly detail?: string;
+	readonly model: string | undefined;
+	readonly providerStatus: number | undefined;
+	readonly providerCode: DecisionProviderFailureCode | undefined;
+	readonly retryAfterMs: number | undefined;
+	readonly detail: string | undefined;
 	constructor(fields: DecisionProviderErrorFields, options?: ErrorOptions) {
-		const hint =
-			fields.providerCode === undefined
-				? "Check the decision model's provider configuration and connectivity."
-				: `Retry after ${fields.retryAfterMs === undefined ? "a moment" : `${fields.retryAfterMs}ms`}; the provider reported ${fields.providerCode}.`;
+		const hint = providerHint(fields);
 		super(
 			"provider-failure",
-			message(
-				"Decision model request failed",
-				`${fields.model ?? "the decision model"}${fields.providerStatus === undefined ? "" : ` returned HTTP ${fields.providerStatus}`}${fields.detail ? `: ${fields.detail}` : ""}`,
-				"provider-failure",
-				hint,
-			),
+			message("Decision model request failed", providerSubject(fields), "provider-failure", hint),
 			hint,
 			options,
 		);
 		this.retryable = fields.providerCode !== undefined;
-		if (fields.model !== undefined) this.model = fields.model;
-		if (fields.providerStatus !== undefined) this.providerStatus = fields.providerStatus;
-		if (fields.providerCode !== undefined) this.providerCode = fields.providerCode;
-		if (fields.retryAfterMs !== undefined) this.retryAfterMs = fields.retryAfterMs;
-		if (fields.detail) this.detail = fields.detail;
+		this.model = fields.model;
+		this.providerStatus = fields.providerStatus;
+		this.providerCode = fields.providerCode;
+		this.retryAfterMs = fields.retryAfterMs;
+		this.detail = fields.detail || undefined;
 	}
 
 	override fields(): Readonly<Record<string, DecisionErrorFieldValue>> {
-		return {
-			...(this.model === undefined ? {} : { model: this.model }),
-			...(this.providerStatus === undefined ? {} : { providerStatus: this.providerStatus }),
-			...(this.providerCode === undefined ? {} : { providerCode: this.providerCode }),
-			...(this.retryAfterMs === undefined ? {} : { retryAfterMs: this.retryAfterMs }),
-			...(this.detail === undefined ? {} : { detail: this.detail }),
-		};
+		return presentFields({
+			model: this.model,
+			providerStatus: this.providerStatus,
+			providerCode: this.providerCode,
+			retryAfterMs: this.retryAfterMs,
+			detail: this.detail,
+		});
 	}
 }
 
-type Structured = { readonly name?: string; readonly code?: string };
+type Rebuild = (
+	code: string,
+	fields: Readonly<Record<string, DecisionErrorFieldValue>>,
+	options: ErrorOptions,
+) => DecisionError;
 
-function hasStructure(value: unknown, name: string | undefined, code?: string): boolean {
+/** Each concrete class's name, the codes it can carry, and how to rebuild it from serialized fields. */
+const CONCRETE: Readonly<Record<string, { readonly codes: ReadonlySet<string>; readonly rebuild: Rebuild }>> = {
+	DecisionConfigError: {
+		codes: new Set(["renamed-setting", "invalid-setting"]),
+		rebuild: (code, fields, options) =>
+			new DecisionConfigError({ ...(fields as never as DecisionConfigErrorFields), code: code as never }, options),
+	},
+	DecisionRequestError: {
+		codes: new Set(["invalid-request"]),
+		rebuild: (_code, fields, options) =>
+			new DecisionRequestError(fields as never as DecisionRequestErrorFields, options),
+	},
+	DecisionModelUnavailableError: {
+		codes: new Set(["model-unavailable"]),
+		rebuild: (_code, fields, options) =>
+			new DecisionModelUnavailableError(fields as never as DecisionModelUnavailableErrorFields, options),
+	},
+	DecisionTimeoutError: {
+		codes: new Set(["timeout"]),
+		rebuild: (_code, fields, options) =>
+			new DecisionTimeoutError(fields as never as DecisionTimeoutErrorFields, options),
+	},
+	DecisionOutputError: {
+		codes: new Set(["invalid-output"]),
+		rebuild: (_code, fields, options) =>
+			new DecisionOutputError(fields as never as DecisionOutputErrorFields, options),
+	},
+	DecisionProviderError: {
+		codes: new Set(["provider-failure"]),
+		rebuild: (_code, fields, options) =>
+			new DecisionProviderError(fields as never as DecisionProviderErrorFields, options),
+	},
+};
+
+function concrete(name: string): (typeof CONCRETE)[string] | undefined {
+	return Object.hasOwn(CONCRETE, name) ? CONCRETE[name] : undefined;
+}
+
+function hasStructure(value: unknown, name?: string): boolean {
 	if (value === null || typeof value !== "object") return false;
-	const candidate = value as Structured;
-	if (typeof candidate.name !== "string" || typeof candidate.code !== "string") return false;
-	if (name === undefined ? !DECISION_ERROR_NAMES.has(candidate.name) : candidate.name !== name) return false;
-	return code === undefined ? DECISION_ERROR_CODES.has(candidate.code) : candidate.code === code;
+	const { name: actual, code } = value as { readonly name?: unknown; readonly code?: unknown };
+	if (typeof actual !== "string" || typeof code !== "string") return false;
+	if (name !== undefined && actual !== name) return false;
+	const codes = actual === "DecisionError" ? DECISION_ERROR_CODES : concrete(actual)?.codes;
+	return codes?.has(code) === true;
 }
 
 /** Whether `value` is a {@link DecisionError}, also one that crossed a realm or process boundary. */
 export function isDecisionError(value: unknown): value is DecisionError {
-	return value instanceof DecisionError || hasStructure(value, undefined);
+	return value instanceof DecisionError || hasStructure(value);
 }
 
 /** Whether `value` is a {@link DecisionConfigError}, also one that crossed a realm or process boundary. */
 export function isDecisionConfigError(value: unknown): value is DecisionConfigError {
-	return (
-		value instanceof DecisionConfigError ||
-		hasStructure(value, "DecisionConfigError", "renamed-setting") ||
-		hasStructure(value, "DecisionConfigError", "invalid-setting")
-	);
+	return value instanceof DecisionConfigError || hasStructure(value, "DecisionConfigError");
 }
 
 /** Whether `value` is a {@link DecisionRequestError}, also one that crossed a realm or process boundary. */
 export function isDecisionRequestError(value: unknown): value is DecisionRequestError {
-	return value instanceof DecisionRequestError || hasStructure(value, "DecisionRequestError", "invalid-request");
+	return value instanceof DecisionRequestError || hasStructure(value, "DecisionRequestError");
 }
 
 /** Whether `value` is a {@link DecisionModelUnavailableError}, also one that crossed a realm or process boundary. */
 export function isDecisionModelUnavailableError(value: unknown): value is DecisionModelUnavailableError {
-	return (
-		value instanceof DecisionModelUnavailableError ||
-		hasStructure(value, "DecisionModelUnavailableError", "model-unavailable")
-	);
+	return value instanceof DecisionModelUnavailableError || hasStructure(value, "DecisionModelUnavailableError");
 }
 
 /** Whether `value` is a {@link DecisionTimeoutError}, also one that crossed a realm or process boundary. */
 export function isDecisionTimeoutError(value: unknown): value is DecisionTimeoutError {
-	return value instanceof DecisionTimeoutError || hasStructure(value, "DecisionTimeoutError", "timeout");
+	return value instanceof DecisionTimeoutError || hasStructure(value, "DecisionTimeoutError");
 }
 
 /** Whether `value` is a {@link DecisionOutputError}, also one that crossed a realm or process boundary. */
 export function isDecisionOutputError(value: unknown): value is DecisionOutputError {
-	return value instanceof DecisionOutputError || hasStructure(value, "DecisionOutputError", "invalid-output");
+	return value instanceof DecisionOutputError || hasStructure(value, "DecisionOutputError");
 }
 
 /** Whether `value` is a {@link DecisionProviderError}, also one that crossed a realm or process boundary. */
 export function isDecisionProviderError(value: unknown): value is DecisionProviderError {
-	return value instanceof DecisionProviderError || hasStructure(value, "DecisionProviderError", "provider-failure");
+	return value instanceof DecisionProviderError || hasStructure(value, "DecisionProviderError");
 }
 
 /** The first {@link DecisionError} in `error`'s cause chain, looking at most eight errors deep. */
 export function findDecisionError(error: unknown): DecisionError | undefined {
 	let current = error;
-	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
 		if (isDecisionError(current)) return current;
+		if (current === null || typeof current !== "object") return undefined;
 		current = (current as { readonly cause?: unknown }).cause;
 	}
 	return undefined;
@@ -453,35 +500,24 @@ export interface SerializedDecisionError {
 	readonly cause?: SerializedDecisionError | { readonly name: string; readonly message: string };
 }
 
-/** Serialize `error` and up to eight causes into JSON-safe data that {@link rehydrateDecisionError} restores. */
+function serializedCause(cause: unknown, depth: number): Pick<SerializedDecisionError, "cause"> {
+	if (depth >= MAX_CAUSE_DEPTH) return {};
+	if (isDecisionError(cause)) return { cause: serializeDecisionError(cause, depth) };
+	if (cause instanceof Error) return { cause: { name: cause.name, message: cause.message } };
+	return {};
+}
+
+/** Serialize `error` and up to seven causes into JSON-safe data that {@link rehydrateDecisionError} restores. */
 export function serializeDecisionError(error: DecisionError, depth = 0): SerializedDecisionError {
-	const cause = error.cause;
-	const fields = typeof error.fields === "function" ? error.fields() : {};
 	return {
 		name: error.name,
 		code: error.code,
 		message: error.message,
 		hint: error.hint,
 		retryable: error.retryable,
-		fields,
-		...(depth + 1 >= MAX_CAUSE_DEPTH || cause === undefined
-			? {}
-			: isDecisionError(cause)
-				? { cause: serializeDecisionError(cause, depth + 1) }
-				: cause instanceof Error
-					? { cause: { name: cause.name, message: cause.message } }
-					: {}),
+		fields: error.fields(),
+		...serializedCause(error.cause, depth + 1),
 	};
-}
-
-function stringField(fields: SerializedDecisionError["fields"], key: string): string | undefined {
-	const value = fields[key];
-	return typeof value === "string" ? value : undefined;
-}
-
-function numberField(fields: SerializedDecisionError["fields"], key: string): number | undefined {
-	const value = fields[key];
-	return typeof value === "number" ? value : undefined;
 }
 
 function rehydrateCause(cause: SerializedDecisionError["cause"]): Error | undefined {
@@ -495,80 +531,9 @@ function rehydrateCause(cause: SerializedDecisionError["cause"]): Error | undefi
 /** Restore a serialized decision error as the same class, with its fields and cause chain; unknown names become the family base. */
 export function rehydrateDecisionError(serialized: SerializedDecisionError): DecisionError {
 	const options = { cause: rehydrateCause(serialized.cause) };
-	const { fields } = serialized;
-	switch (serialized.name) {
-		case "DecisionConfigError":
-			return new DecisionConfigError(
-				{
-					code: serialized.code as DecisionConfigErrorCode,
-					source: stringField(fields, "source") as DecisionConfigSource,
-					field: stringField(fields, "field") ?? "",
-					...(stringField(fields, "scope") === undefined
-						? {}
-						: { scope: stringField(fields, "scope") as DecisionSettingsScope }),
-				},
-				options,
-			);
-		case "DecisionRequestError":
-			return new DecisionRequestError(
-				{
-					field: stringField(fields, "field") ?? "",
-					reason: stringField(fields, "reason") as DecisionRequestErrorReason,
-				},
-				options,
-			);
-		case "DecisionModelUnavailableError":
-			return new DecisionModelUnavailableError(
-				{
-					reason: stringField(fields, "reason") as DecisionModelUnavailableReason,
-					...(stringField(fields, "model") === undefined ? {} : { model: stringField(fields, "model") }),
-				},
-				options,
-			);
-		case "DecisionTimeoutError":
-			return new DecisionTimeoutError(
-				{
-					timeoutMs: numberField(fields, "timeoutMs") ?? 0,
-					elapsedMs: numberField(fields, "elapsedMs") ?? 0,
-					phase: stringField(fields, "phase") as DecisionPhase,
-					...(stringField(fields, "attempts") === undefined ? {} : { attempts: stringField(fields, "attempts") }),
-				},
-				options,
-			);
-		case "DecisionOutputError":
-			return new DecisionOutputError(
-				{
-					model: stringField(fields, "model") ?? "",
-					...(stringField(fields, "detail") === undefined ? {} : { detail: stringField(fields, "detail") }),
-				},
-				options,
-			);
-		case "DecisionProviderError":
-			return new DecisionProviderError(
-				{
-					...(stringField(fields, "model") === undefined ? {} : { model: stringField(fields, "model") }),
-					...(numberField(fields, "providerStatus") === undefined
-						? {}
-						: { providerStatus: numberField(fields, "providerStatus") }),
-					...(stringField(fields, "providerCode") === undefined
-						? {}
-						: { providerCode: stringField(fields, "providerCode") as DecisionProviderFailureCode }),
-					...(numberField(fields, "retryAfterMs") === undefined
-						? {}
-						: { retryAfterMs: numberField(fields, "retryAfterMs") }),
-					...(stringField(fields, "detail") === undefined ? {} : { detail: stringField(fields, "detail") }),
-				},
-				options,
-			);
-		default: {
-			const error = new DecisionError(
-				serialized.code as DecisionErrorCode,
-				serialized.message,
-				serialized.hint,
-				options,
-			);
-			Object.defineProperty(error, "name", { value: serialized.name, enumerable: false });
-			return error;
-		}
-	}
+	const member = concrete(serialized.name);
+	if (member) return member.rebuild(serialized.code, serialized.fields, options);
+	const error = new DecisionError(serialized.code as DecisionErrorCode, serialized.message, serialized.hint, options);
+	Object.defineProperty(error, "name", { value: serialized.name, enumerable: false });
+	return error;
 }

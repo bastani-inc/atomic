@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@bastani/pi-ai";
 import { afterEach, test, vi } from "vitest";
 import { decide } from "../../packages/coding-agent/src/core/decision/decide.js";
 import {
@@ -29,6 +29,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import {
 	decisionChatModel,
 	decisionMessage,
+	inferenceRequestTools,
 	messageStream,
 	parseInferenceUserPayload,
 	registeredDecisionRuntime,
@@ -115,6 +116,10 @@ test("a recorded classifier response answers Choice and yes/no questions with th
 	assert.equal(requests[0]!.body.model, "jev-latest");
 	assert.deepEqual(requests[0]!.body.state, STATE);
 	assert.deepEqual(Object.keys(requests[0]!.body.questions), ["next_action", "reply_addresses_message"]);
+	assert.deepEqual(
+		(requests[0]!.body.questions.reply_addresses_message as { type: string; criteria: object }).criteria,
+		{ true: "It does.", false: "It does not." },
+	);
 	assert.equal((requests[0]!.body.questions.reply_addresses_message as { type: string }).type, "noul");
 	assert.deepEqual((requests[0]!.body.questions.next_action as { criteria: object }).criteria, {
 		advance: "Move on to the next stage.",
@@ -302,6 +307,11 @@ test("cancellation rejects with the caller's reason, never a decision error", as
 	await assert.rejects(decide({ ...decision, signal: aborted.signal }), (error: unknown) => error === reason);
 });
 
+const cyclic: Record<string, unknown> = { a: 1 };
+cyclic.self = cyclic;
+const asQuestions = (value: unknown) => value as DecisionQuestions;
+const asState = (value: unknown) => value as DecisionRequest["state"];
+
 const INVALID_REQUESTS: ReadonlyArray<
 	readonly [string, Partial<DecisionRequest<DecisionQuestions>>, string, DecisionRequestErrorReason]
 > = [
@@ -339,6 +349,85 @@ const INVALID_REQUESTS: ReadonlyArray<
 	["fractional deadline", { deadline: 1.5 }, "deadline", "invalid-deadline"],
 	["auto model", { model: "auto" }, "model", "invalid-model"],
 	["untrimmed model", { model: " decision-test/chat" }, "model", "invalid-model"],
+	["empty model", { model: "" }, "model", "invalid-model"],
+	["non-string model", { model: 7 as unknown as string }, "model", "invalid-model"],
+	["null state", { state: asState(null) }, "state", "invalid-state"],
+	["text state", { state: asState("state") }, "state", "invalid-state"],
+	["cyclic state", { state: asState(cyclic) }, "state", "invalid-state"],
+	["infinite number", { state: { value: Number.POSITIVE_INFINITY } }, "state", "invalid-state"],
+	["undefined value", { state: asState({ value: undefined }) }, "state", "invalid-state"],
+	["function value", { state: asState({ value: () => 1 }) }, "state", "invalid-state"],
+	["class instance", { state: asState({ when: new Date(0) }) }, "state", "invalid-state"],
+	["one invalid value among valid ones", { state: { ok: "yes", bad: Number.NaN } }, "state", "invalid-state"],
+	["two-space bearer token", { state: { header: "Bearer  abcdefgh" } }, "state", "credential-in-state"],
+	["private key", { state: { key: "-----BEGIN PRIVATE KEY-----" } }, "state", "credential-in-state"],
+	["RSA private key", { state: { key: "-----BEGIN RSA PRIVATE KEY-----" } }, "state", "credential-in-state"],
+	["GitHub token", { state: { token: "ghp_abcdefghijklmnop" } }, "state", "credential-in-state"],
+	["fine-grained token", { state: { token: "github_pat_abcdefghijklmnop" } }, "state", "credential-in-state"],
+	["secret key", { state: { token: "sk-abcdefghijklmnop" } }, "state", "credential-in-state"],
+	["null questions", { questions: asQuestions(null) }, "questions", "no-questions"],
+	["text questions", { questions: asQuestions("questions") }, "questions", "no-questions"],
+	[
+		"a blank question ID",
+		{ questions: { " ": { type: "choice", instructions: "Pick", criteria: { a: "A" } } } },
+		"questions. ",
+		"invalid-question",
+	],
+	["a null question", { questions: asQuestions({ pick: null }) }, "questions.pick", "invalid-question"],
+	[
+		"an unknown question type",
+		{ questions: asQuestions({ pick: { type: "multi", instructions: "Pick", criteria: { a: "A" } } }) },
+		"questions.pick",
+		"invalid-question",
+	],
+	[
+		"choice with null criteria",
+		{ questions: asQuestions({ pick: { type: "choice", instructions: "Pick", criteria: null } }) },
+		"questions.pick",
+		"invalid-question",
+	],
+	[
+		"choice with text criteria",
+		{ questions: asQuestions({ pick: { type: "choice", instructions: "Pick", criteria: "a" } }) },
+		"questions.pick",
+		"invalid-question",
+	],
+	[
+		"choice with a blank option key",
+		{ questions: { pick: { type: "choice", instructions: "Pick", criteria: { a: "A", " ": "Blank" } } } },
+		"questions.pick",
+		"invalid-question",
+	],
+	[
+		"choice with an undescribed option",
+		{ questions: { pick: { type: "choice", instructions: "Pick", criteria: { a: "A", b: " " } } } },
+		"questions.pick",
+		"invalid-question",
+	],
+	[
+		"bool without criteria",
+		{ questions: asQuestions({ yes: { type: "bool", instructions: "Yes?" } }) },
+		"questions.yes",
+		"invalid-question",
+	],
+	[
+		"bool without a meaning for true",
+		{ questions: { yes: { type: "bool", instructions: "Yes?", criteria: { true: "", false: "no" } } } },
+		"questions.yes",
+		"invalid-question",
+	],
+	[
+		"score without a level list",
+		{ questions: asQuestions({ grade: { type: "score", instructions: "Grade", criteria: "low" } }) },
+		"questions.grade",
+		"invalid-question",
+	],
+	[
+		"score with a blank level",
+		{ questions: { grade: { type: "score", instructions: "Grade", criteria: ["low", " ", "high"] } } },
+		"questions.grade",
+		"invalid-question",
+	],
 ];
 
 for (const [label, overrides, field, reason] of INVALID_REQUESTS) {
@@ -358,6 +447,192 @@ for (const [label, overrides, field, reason] of INVALID_REQUESTS) {
 		assert.equal(transport.mock.calls.length, 0);
 	});
 }
+
+test("valid unusual state is accepted: shared references, null prototypes, nested arrays and short bearer text", async () => {
+	const shared = { label: "same" };
+	const bare = Object.assign(Object.create(null) as Record<string, string>, { key: "value" });
+	const chat = vi.fn(() => messageStream(decisionMessage({ next_action: "stay", reply_addresses_message: true })));
+	const { request: decision } = await request({ questions: READINESS_QUESTIONS }, chat, "");
+	for (const state of [
+		{ first: shared, second: shared },
+		{ bare },
+		{
+			rows: [
+				[1, 2],
+				[null, true],
+			],
+		},
+		{ header: "Bearer abc" },
+	]) {
+		const result = await decide({ ...decision, state: state as unknown as DecisionRequest["state"] });
+		assert.equal(result.answers.next_action.choice, "stay");
+	}
+	assert.equal(chat.mock.calls.length, 4);
+});
+
+test("the chat model receives one described schema property per question", async () => {
+	const chat = vi.fn(() =>
+		messageStream(decisionMessage({ next_action: "advance", reply_addresses_message: true, severity: 2 })),
+	);
+	const { request: decision } = await request(
+		{
+			questions: {
+				...READINESS_QUESTIONS,
+				severity: { type: "score", instructions: "How severe?", criteria: ["none", "minor", "major"] },
+			},
+			instructions: "Judge the reply.",
+		},
+		chat,
+		"",
+	);
+	const result = await decide(decision);
+	assert.deepEqual(result.usage, { inputTokens: 20, outputTokens: 10 });
+	const [, context] = chat.mock.calls[0] as unknown as [unknown, Parameters<typeof inferenceRequestTools>[0]];
+	const parameters = (
+		inferenceRequestTools(context)[0] as unknown as {
+			parameters: { properties: Record<string, object>; additionalProperties?: boolean };
+		}
+	).parameters;
+	assert.equal(parameters.additionalProperties, false);
+	assert.deepEqual(parameters?.properties, {
+		next_action: {
+			type: "string",
+			enum: ["advance", "stay"],
+			description: "Move on or stay? advance: Move on to the next stage.; stay: Keep this stage open..",
+		},
+		reply_addresses_message: {
+			type: "boolean",
+			description: "Does the reply fully address the user's message? true: It does.; false: It does not..",
+		},
+		severity: {
+			type: "integer",
+			minimum: 0,
+			maximum: 2,
+			description: "How severe? 0: none; 1: minor; 2: major.",
+		},
+	});
+	assert.match(String(getCurrentSystemPrompt(context.messages as never)), /Judge the reply\./);
+	const defaults = await decide({ ...decision, instructions: undefined });
+	assert.equal(defaults.source, "chat");
+	const [, defaultContext] = chat.mock.calls[1] as unknown as [unknown, Parameters<typeof inferenceRequestTools>[0]];
+	assert.match(
+		String(getCurrentSystemPrompt(defaultContext.messages as never)),
+		/Answer each question about `state`\./,
+	);
+});
+
+test("a yes probability of exactly one half answers yes, and the classifier's own answers are kept", async () => {
+	recordedClassifier(
+		JSON.stringify({
+			model: "jev-latest",
+			answers: {
+				next_action: {
+					type: "choice",
+					choice: "stay",
+					probabilities: { advance: 0.4, stay: 0.6 },
+					confidence: 0.6,
+				},
+				reply_addresses_message: { type: "noul", noul: 0.5 },
+			},
+		}),
+	);
+	const result = await decide((await request({ questions: READINESS_QUESTIONS })).request);
+	assert.deepEqual(result.answers.reply_addresses_message, { type: "bool", value: true, probability: 0.5 });
+});
+
+test("a classifier answer of the wrong type is invalid output when only a classifier may answer", async () => {
+	const { registry } = await registeredDecisionRuntime(vi.fn());
+	const classifier = registry.getClassifierModel("typesafe", "jev-latest");
+	assert.ok(classifier);
+	vi.stubEnv("TYPESAFE_API_KEY", "mock-key");
+	for (const answers of [
+		{ next_action: { type: "bool", probability: 0.9 }, reply_addresses_message: { type: "bool", probability: 0.9 } },
+		{
+			next_action: { type: "choice", choice: "advance", probabilities: {}, confidence: 1 },
+			reply_addresses_message: { type: "choice", choice: "true", probabilities: {}, confidence: 1 },
+		},
+		{
+			next_action: { type: "choice", choice: "advance", probabilities: {}, confidence: 1 },
+			reply_addresses_message: { type: "bool", probability: Number.NaN },
+		},
+	]) {
+		const classify = vi.fn(async () => ({
+			api: classifier.api,
+			provider: classifier.provider,
+			model: "jev-latest",
+			answers,
+			stopReason: "stop" as const,
+			timestamp: 1,
+		}));
+		await assert.rejects(
+			decide({
+				state: STATE,
+				questions: READINESS_QUESTIONS,
+				requireProbabilities: true,
+				settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }),
+				modelRegistry: {
+					getAll: () => [decisionChatModel],
+					streamSimple: vi.fn(),
+					getClassifierModel: () => classifier,
+					classify: classify as never,
+				},
+				currentModel: decisionChatModel,
+				retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
+			}),
+			(error: unknown) =>
+				isDecisionOutputError(error) &&
+				error.model === "typesafe/jev-latest" &&
+				error.detail === "Classifier returned no valid decision.",
+		);
+	}
+	const scored = vi.fn(async () => ({
+		api: classifier.api,
+		provider: classifier.provider,
+		model: "jev-latest",
+		answers: { severity: { type: "score", score: Number.POSITIVE_INFINITY, confidence: 1 } },
+		stopReason: "stop" as const,
+		timestamp: 1,
+	}));
+	await assert.rejects(
+		decide({
+			state: STATE,
+			questions: { severity: { type: "score", instructions: "How severe?", criteria: ["low", "high"] } },
+			requireProbabilities: true,
+			settings: SettingsManager.inMemory({ decisionModel: "typesafe/jev-latest" }),
+			modelRegistry: {
+				getAll: () => [decisionChatModel],
+				streamSimple: vi.fn(),
+				getClassifierModel: () => classifier,
+				classify: scored as never,
+			},
+			retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 },
+		}),
+		(error: unknown) => isDecisionOutputError(error),
+	);
+});
+
+test("the deadline defaults to the httpIdleTimeoutMs setting, and retry settings reach the request", async () => {
+	const chat = vi.fn(() => createAssistantMessageEventStream());
+	const { request: decision } = await request({ questions: READINESS_QUESTIONS }, chat, "");
+	const settings = SettingsManager.inMemory({ decisionModel: "" });
+	settings.getHttpIdleTimeoutMs = () => 25;
+	await assert.rejects(
+		decide({ ...decision, settings }),
+		(error: unknown) => isDecisionTimeoutError(error) && error.timeoutMs === 25,
+	);
+	const failing = vi.fn(() => {
+		throw new Error("connection refused");
+	});
+	const { request: retried } = await request({ questions: READINESS_QUESTIONS }, failing as never, "");
+	const retrySettings = SettingsManager.inMemory({
+		decisionModel: "",
+		retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 },
+	});
+	await assert.rejects(decide({ ...retried, settings: retrySettings, retry: undefined }), (error: unknown) =>
+		isDecisionProviderError(error),
+	);
+	assert.equal(failing.mock.calls.length, 2);
+});
 
 test("an unknown decisionModel and a missing chat model are unavailable, and an invalid one is a config error", async () => {
 	const { request: decision } = await request({ questions: READINESS_QUESTIONS }, undefined, "missing/model");

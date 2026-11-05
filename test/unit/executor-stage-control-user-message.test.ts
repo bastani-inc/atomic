@@ -68,6 +68,10 @@ test("a prompt is remembered at admission, and a command the host handled is for
 	const notAdmittedPrompt = fakeRuntime({ admit: false });
 	await notAdmittedPrompt.handle.prompt("never admitted");
 	assert.equal(notAdmittedPrompt.state.latestUserMessage, "earlier message");
+	const handledUnadmitted = fakeRuntime({ admit: false, action: "handled" });
+	await handledUnadmitted.handle.prompt("/compact");
+	await handledUnadmitted.handle.sendUserMessage!("/compact");
+	assert.equal(handledUnadmitted.state.latestUserMessage, "earlier message");
 });
 
 for (const kind of ["steer", "followUp"] as const) {

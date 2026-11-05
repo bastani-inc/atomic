@@ -415,7 +415,11 @@ export function createWorkflowExtensionRuntimeState(
 
 	function runtimeForContext(ctx?: DurabilityWarningContext): ExtensionRuntime {
 		const contextTrusted = ctx?.isProjectTrusted?.();
-		const models = workflowModelCatalogFromContext(ctx, resolveLiveModelContext, () => pi.getSettings?.());
+		const models = workflowModelCatalogFromContext(
+			ctx,
+			resolveLiveModelContext,
+			scopedRunOptions.resolveJournalSettings,
+		);
 		// A terminal-UI context always gets its own runtime: its runs decide to route their console output (#4175).
 		if (models === undefined && !ctx?.generateWorkflowSummary && contextTrusted === undefined && ctx?.mode !== "tui")
 			return runtimeProxy;

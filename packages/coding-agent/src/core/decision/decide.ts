@@ -203,35 +203,32 @@ function typedAnswers<Q extends DecisionQuestions>(
 }
 
 /** The engine's own message, which names no provider text, state or answer; a classifier's status and error type. */
-function engineDetail(error: unknown): string {
-	if (error instanceof ClassifierDecisionError)
-		return error.detail ? `${error.message} (${error.detail})` : error.message;
-	return error instanceof Error ? error.message : "The decision failed.";
+function engineDetail(error: Error): string {
+	return error instanceof ClassifierDecisionError && error.detail
+		? `${error.message} (${error.detail})`
+		: error.message;
 }
 
 /** Translate an engine failure into the {@link DecisionError} family; a cancellation keeps its own reason. */
 function decisionFailure(error: unknown, signal: AbortSignal | undefined, model: string): unknown {
 	if (signal?.aborted) return signal.reason;
 	if (isDecisionError(error)) return error;
-	const provider = carriedProviderFailure(error);
+	const failure = error instanceof Error ? error : new Error(String(error));
+	const provider = carriedProviderFailure(failure);
 	if (
-		error instanceof OutputRepairExhaustedError ||
-		(error instanceof ClassifierDecisionError && error.kind === "answer" && provider === undefined)
+		failure instanceof OutputRepairExhaustedError ||
+		(failure instanceof ClassifierDecisionError && failure.kind !== "request" && provider === undefined)
 	)
-		return new DecisionOutputError({ model, detail: engineDetail(error) }, { cause: error });
+		return new DecisionOutputError({ model, detail: engineDetail(failure) }, { cause: failure });
 	return new DecisionProviderError(
 		{
 			model,
-			detail: engineDetail(error),
-			...(provider === undefined
-				? {}
-				: {
-						providerStatus: provider.status,
-						providerCode: provider.code,
-						...(provider.retryAfterMs === undefined ? {} : { retryAfterMs: provider.retryAfterMs }),
-					}),
+			detail: engineDetail(failure),
+			providerStatus: provider?.status,
+			providerCode: provider?.code,
+			retryAfterMs: provider?.retryAfterMs,
 		},
-		{ cause: error },
+		{ cause: failure },
 	);
 }
 
@@ -250,13 +247,13 @@ export async function decide<const Q extends DecisionQuestions>(
 	const source = request.settings;
 	const settings: DecisionModelSelectionOptions["settings"] = {
 		getDecisionModel: () => request.model ?? source.getDecisionModel(),
-		...(source.getRetrySettings ? { getRetrySettings: () => source.getRetrySettings!() } : {}),
-		...(source.getHttpIdleTimeoutMs ? { getHttpIdleTimeoutMs: () => source.getHttpIdleTimeoutMs!() } : {}),
+		getRetrySettings: source.getRetrySettings?.bind(source),
+		getHttpIdleTimeoutMs: source.getHttpIdleTimeoutMs?.bind(source),
 	};
 	const model = resolveDecisionModel({
 		settings,
 		modelRegistry: request.modelRegistry,
-		...(request.currentModel ? { currentModel: request.currentModel } : {}),
+		currentModel: request.currentModel,
 	});
 	if (request.requireProbabilities === true && model.kind !== "classifier")
 		throw new DecisionModelUnavailableError({ reason: "no-probabilities", model: model.fullId });
@@ -266,7 +263,7 @@ export async function decide<const Q extends DecisionQuestions>(
 			{
 				settings,
 				modelRegistry: request.modelRegistry,
-				...(request.currentModel ? { currentModel: request.currentModel } : {}),
+				currentModel: request.currentModel,
 				state: request.state,
 				instructions: request.instructions ?? DEFAULT_INSTRUCTIONS,
 				schema: chatSchema(questions),
@@ -276,9 +273,9 @@ export async function decide<const Q extends DecisionQuestions>(
 					),
 					decode: (_choices, answers) => chatValue(questions, answers),
 				},
-				...(request.signal ? { signal: request.signal } : {}),
-				...(request.deadline === undefined ? {} : { timeoutMs: request.deadline }),
-				...(request.retry ? { retry: request.retry } : {}),
+				signal: request.signal,
+				timeoutMs: request.deadline,
+				retry: request.retry,
 			},
 			undefined,
 			{ model, chatFallback: request.requireProbabilities !== true },

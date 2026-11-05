@@ -608,4 +608,58 @@ test("/settings shows Auto-advance after steer with its scope and saves through 
 	change("auto-advance-after-steer", "false");
 	change("auto-advance-after-steer", "true");
 	expect(onAutoAdvanceAfterSteerChange.mock.calls).toEqual([[false], [true]]);
+	expect(() => createSettingsChangeHandler({} as SettingsCallbacks)("auto-advance-after-steer", "true")).not.toThrow();
+});
+
+test("/settings shows the decision model, its scope and what Automatic means (#4358)", () => {
+	const item = (config: SettingsConfig) =>
+		buildSettingsItems(config, {} as SettingsCallbacks).find(({ id }) => id === "decision-model");
+	expect(item(settingsConfig({ decisionModel: "" }))?.currentValue).toBe("Automatic");
+	expect(item(settingsConfig({ decisionModel: "auto" }))?.currentValue).toBe("Automatic");
+	expect(item(settingsConfig({ decisionModel: "judge/custom" }))?.currentValue).toBe("judge/custom");
+	expect(item(settingsConfig({}))?.description).toBe(
+		'Saves to global settings; decides model "auto" selection, structured output and readiness after a steer, not the chat model',
+	);
+	const projectConfig = settingsConfig({
+		decisionModel: "auto",
+		decisionModelScope: "project",
+		availableDefaultModels: [],
+	});
+	const projectItem = item(projectConfig);
+	expect(projectItem?.description).toContain("Saves to project settings;");
+	const done = vi.fn();
+	const submenu = projectItem!.submenu!(projectItem!.currentValue, done) as Container;
+	const shown = render(submenu);
+	expect(shown).toContain("Decision model");
+	expect(shown).toContain("Saves to project settings. Choose a provider permitted to receive decision context.");
+	expect(shown).toContain("Automatic saves an empty decisionModel.");
+	expect(shown).toContain("→ ✓ Automatic");
+	submenu.handleInput?.("\r");
+	expect(done).toHaveBeenCalledWith("Automatic");
+	expect(projectConfig.decisionModel).toBe("");
+	expect(item(settingsConfig({}))?.submenu).toBeTypeOf("function");
+	const noScope = buildSettingsItems(settingsConfig({ decisionModel: "" }), {} as SettingsCallbacks).find(
+		({ id }) => id === "auto-advance-after-steer",
+	);
+	expect(noScope?.description).toContain("Saves to global settings;");
+});
+
+test("the decision model accessors refuse malformed values with a typed config error naming their source", () => {
+	const settings = SettingsManager.inMemory({ decisionModel: " padded" as string });
+	expect(() => settings.getDecisionModel()).toThrow(
+		expect.objectContaining({
+			name: "DecisionConfigError",
+			code: "invalid-setting",
+			source: "settings",
+			field: "decisionModel",
+		}),
+	);
+	expect(() => SettingsManager.inMemory().setDecisionModel(" x")).toThrow(
+		expect.objectContaining({
+			name: "DecisionConfigError",
+			code: "invalid-setting",
+			source: "sdk",
+			field: "decisionModel",
+		}),
+	);
 });

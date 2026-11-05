@@ -2,6 +2,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
 	type Component,
 	configureHttpDispatcher,
+	decisionSettingScopes,
 	getAvailableThemes,
 	SettingsSelectorComponent,
 	setDebugSetting,
@@ -46,17 +47,11 @@ InteractiveModeBase.prototype.showSelector = function (
 
 InteractiveModeBase.prototype.showSettingsSelector = function (this: InteractiveModeBase): void {
 	this.showSelector((done) => {
-		const decisionModelScope =
-			this.settingsManager.getProjectSettings().decisionModel !== undefined ? "project" : "global";
+		const { decisionModelScope, autoAdvanceAfterSteerScope } = decisionSettingScopes(
+			this.settingsManager.getProjectSettings(),
+		);
 		const compactionModelScope =
 			this.settingsManager.getProjectSettings().compactionModel !== undefined ? "project" : "global";
-		const projectWorkflows = this.settingsManager.getProjectSettings().workflows;
-		const autoAdvanceAfterSteerScope =
-			projectWorkflows !== undefined &&
-			!Array.isArray(projectWorkflows) &&
-			projectWorkflows.autoAdvanceAfterSteer !== undefined
-				? "project"
-				: "global";
 		const component = new SettingsSelectorComponent(
 			{
 				autoCompact: this.session.autoCompactionEnabled,

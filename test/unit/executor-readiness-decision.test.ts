@@ -56,13 +56,13 @@ function readinessQuestionShown(): boolean {
 }
 
 /** A stage that asks the user a question, which the user answers by typing `answer` into "Chat about this". */
-function steeredSession(events: string[], answer: string): StageSessionRuntime {
+function steeredSession(events: string[], answer: string, history: readonly object[] = []): StageSessionRuntime {
 	const listeners = new Set<(event: { type: string; [key: string]: unknown }) => void>();
 	const emit = (event: { type: string; [key: string]: unknown }): void => {
 		for (const listener of [...listeners]) listener(event);
 	};
 	let lastAssistantText = "";
-	const messages: object[] = [];
+	const messages: object[] = [...history];
 	return {
 		...mockSession(),
 		async prompt(text: string) {
@@ -124,14 +124,20 @@ type Decide = (
 	request: WorkflowDecisionRequest<ReadinessDecisionQuestions>,
 ) => Promise<DecisionResult<ReadinessDecisionQuestions>>;
 
-function launch(input: { decide: Decide; enabled?: boolean | "unset"; answer?: string }) {
+function launch(input: {
+	decide: Decide;
+	enabled?: boolean | "unset";
+	answer?: string;
+	history?: readonly object[];
+	withoutDecide?: boolean;
+}) {
 	const events: string[] = [];
 	const registry = createStageControlRegistry();
 	let sessions = 0;
 	const decide = vi.fn(input.decide);
 	const models = {
 		listModels: async () => [],
-		decide: decide as unknown as NonNullable<WorkflowModelCatalogPort["decide"]>,
+		...(input.withoutDecide ? {} : { decide: decide as unknown as NonNullable<WorkflowModelCatalogPort["decide"]> }),
 		...(input.enabled === "unset" ? {} : { autoAdvanceAfterSteer: () => input.enabled !== false }),
 	} satisfies WorkflowModelCatalogPort;
 	const definition = workflow({
@@ -157,7 +163,7 @@ function launch(input: { decide: Decide; enabled?: boolean | "unset"; answer?: s
 				agentSession: {
 					async create() {
 						sessions += 1;
-						if (sessions === 1) return steeredSession(events, input.answer ?? STEER);
+						if (sessions === 1) return steeredSession(events, input.answer ?? STEER, input.history);
 						return {
 							...mockSession(),
 							async prompt() {
@@ -341,6 +347,52 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		assert.equal((await result).status, "completed");
 		assert.equal(decide.mock.calls.length, 1);
 		assert.equal(readinessQuestionShown(), false);
+	});
+
+	test("without a host decision service the question is asked and nothing is recorded", async () => {
+		store.clear();
+		const { result } = launch({ decide: async () => classified(0.99, 0.01, 0.99), withoutDecide: true });
+		const gate = await waitForReadiness();
+		assert.equal(themeStage().readinessDecision, undefined);
+		assert.equal(themeStage().notices?.some((notice) => notice.kind === "decision") ?? false, false);
+		assert.equal(
+			stageUiBroker.answerStagePrompt(gate.runId, gate.stage.id, { optionLabels: [READINESS_GATE_ADVANCE_LABEL] }),
+			true,
+		);
+		assert.equal((await result).status, "completed");
+	});
+
+	test("a failed decision is recorded without a model, and asking to chat more is not the user's message", async () => {
+		store.clear();
+		const { result, decide } = launch({
+			decide: async () => {
+				throw new DecisionTimeoutError({ timeoutMs: 10, elapsedMs: 10, phase: "classifier" });
+			},
+		});
+		const first = await waitForReadiness();
+		const notice = themeStage().notices?.find((candidate) => candidate.kind === "decision");
+		assert.equal(notice?.to, "asked");
+		assert.equal(notice !== undefined && Object.hasOwn(notice, "from"), false);
+		assert.equal(stageUiBroker.answerStagePrompt(first.runId, first.stage.id, { text: "Chat about this" }), true);
+		const second = await waitForReadiness(first.request.id);
+		assert.equal(decide.mock.calls.length, 1);
+		assert.equal(
+			stageUiBroker.answerStagePrompt(second.runId, second.stage.id, {
+				optionLabels: [READINESS_GATE_ADVANCE_LABEL],
+			}),
+			true,
+		);
+		assert.equal((await result).status, "completed");
+	});
+
+	test("the stage objective is its first user message, after any earlier context", async () => {
+		store.clear();
+		const { result, decide } = launch({
+			decide: async () => classified(0.93, 0.07, 0.91),
+			history: [{ role: "custom", content: "Extension context." }],
+		});
+		assert.equal((await result).status, "completed");
+		assert.equal(decide.mock.calls[0]![0].state.stage_objective, "Ask which theme to use, then apply it.");
 	});
 
 	test("with autoAdvanceAfterSteer off the readiness question is asked and the decision model is not", async () => {

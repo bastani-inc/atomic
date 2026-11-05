@@ -287,10 +287,10 @@ function classifierQuestion(question: StructuredDecisionQuestion, instructions: 
 	return { type: "choice", instructions, criteria: { ...question.criteria } };
 }
 
-function answersQuestion(question: ClassifierQuestion, answer: ClassifierAnswer | undefined): boolean {
-	if (question.type === "choice") return answer?.type === "choice" && Object.hasOwn(question.criteria, answer.choice);
-	if (question.type === "bool") return answer?.type === "bool" && Number.isFinite(answer.probability);
-	return answer?.type === "score" && Number.isFinite(answer.score);
+function answersQuestion(question: ClassifierQuestion, answer: ClassifierAnswer): boolean {
+	if (question.type === "choice") return answer.type === "choice" && Object.hasOwn(question.criteria, answer.choice);
+	if (question.type === "bool") return answer.type === "bool" && Number.isFinite(answer.probability);
+	return answer.type === "score" && Number.isFinite(answer.score);
 }
 
 /** A decision's result, with the classifier's answers and their probabilities when a classifier decided. */

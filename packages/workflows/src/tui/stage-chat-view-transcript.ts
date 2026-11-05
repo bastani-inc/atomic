@@ -147,7 +147,7 @@ function extractToolResultText(result: unknown): string {
 	return extractMessageText(content);
 }
 
-function stageNoticeCard(entry: NoticeEntry): {
+export function stageNoticeCard(entry: NoticeEntry): {
 	title: string;
 	glyph: string;
 	headline: string;

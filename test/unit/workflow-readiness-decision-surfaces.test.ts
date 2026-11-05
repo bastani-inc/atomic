@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { DecisionRequestError } from "../../packages/coding-agent/src/core/decision/errors.js";
-import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import { decisionSettingScopes } from "../../packages/coding-agent/src/modes/interactive/components/settings-selector-items.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import {
 	autoAdvanceAfterSteerSetting,
@@ -21,7 +22,11 @@ import {
 } from "../../packages/workflows/src/runs/foreground/readiness-decision.js";
 import type { StageNotice, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
-import { noticeRow, noticeSummary } from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
+import {
+	noticeRow,
+	noticeSummary,
+	stageNoticeCard,
+} from "../../packages/workflows/src/tui/stage-chat-view-transcript.js";
 import { decisionChatModel } from "../helpers/structured-output.js";
 
 const ADVANCED: StageReadinessDecision = {
@@ -167,7 +172,8 @@ test("stage status lists the readiness decision, and the transcript shows it as 
 	const summary = summarizeStage(snapshot);
 	assert.deepEqual(summary.readinessDecision, ADVANCED);
 	assert.notEqual(summary.readinessDecision, ADVANCED);
-	assert.equal(summarizeStage(stage()).readinessDecision, undefined);
+	assert.equal(Object.hasOwn(summarizeStage(stage()), "readinessDecision"), false);
+	assert.equal(snapshotTranscriptEntryCount(undefined), 0);
 	const entries = snapshotTranscriptEntries(snapshot, false);
 	assert.deepEqual(entries, [
 		{ role: "notice", text: "Decision model advanced the stage (p=0.93, addressed p=0.91)", timestamp: 20 },
@@ -233,4 +239,132 @@ test("the connect view renders each readiness outcome as a stage readiness card"
 	);
 	assert.equal(noticeSummary({ id: "d", ts: 1, kind: "decision", to: "asked" }), "~ decision → asked");
 	assert.equal(noticeSummary({ id: "m", ts: 1, kind: "model", from: "a", to: "b" }), "~ model → b (was a)");
+});
+
+test("the setting is saved to the settings file of the scope it was set in", async () => {
+	const storage = new InMemorySettingsStorage();
+	storage.withLock("global", () => JSON.stringify({ workflows: ["./flows"], theme: "dark" }));
+	storage.withLock("project", () => JSON.stringify({ workflows: { paths: ["p"] } }));
+	const manager = SettingsManager.fromStorage(storage, { projectTrusted: true });
+	manager.setAutoAdvanceAfterSteer(false);
+	manager.setAutoAdvanceAfterSteer(true, "project");
+	await manager.flush();
+	const read = (scope: "global" | "project") => {
+		let content: string | undefined;
+		storage.withLock(scope, (current) => {
+			content = current;
+			return undefined;
+		});
+		return JSON.parse(content ?? "{}") as { workflows?: unknown };
+	};
+	assert.deepEqual(read("global").workflows, { paths: ["./flows"], autoAdvanceAfterSteer: false });
+	assert.deepEqual(read("project").workflows, { paths: ["p"], autoAdvanceAfterSteer: true });
+	assert.equal(manager.getAutoAdvanceAfterSteer(), true);
+});
+
+test("/settings saves each decision setting where the project already sets it, otherwise globally", () => {
+	assert.deepEqual(decisionSettingScopes({}), { decisionModelScope: "global", autoAdvanceAfterSteerScope: "global" });
+	assert.deepEqual(decisionSettingScopes({ decisionModel: "", workflows: { autoAdvanceAfterSteer: false } }), {
+		decisionModelScope: "project",
+		autoAdvanceAfterSteerScope: "project",
+	});
+	assert.deepEqual(decisionSettingScopes({ workflows: ["./flows"] }), {
+		decisionModelScope: "global",
+		autoAdvanceAfterSteerScope: "global",
+	});
+	assert.deepEqual(decisionSettingScopes({ workflows: { paths: [] } }).autoAdvanceAfterSteerScope, "global");
+});
+
+test("each readiness outcome gets its own card in the connect view", () => {
+	const card = (value: string, meta?: string, from?: string) =>
+		stageNoticeCard({
+			role: "notice",
+			noticeId: "n",
+			kind: "decision",
+			value,
+			text: "",
+			...(meta === undefined ? {} : { meta }),
+			...(from === undefined ? {} : { from }),
+		});
+	assert.deepEqual(card("advanced", "Decision model advanced the stage (p=0.93)", "typesafe/jev-latest"), {
+		title: "STAGE READINESS",
+		glyph: "✓",
+		headline: "Decision model advanced the stage (p=0.93)",
+		tone: "success",
+		fields: [
+			{ label: "outcome", value: "advanced", tone: "text" },
+			{ label: "model", value: "typesafe/jev-latest", tone: "muted" },
+		],
+	});
+	assert.deepEqual(
+		[card("stayed").glyph, card("stayed").tone, card("asked").glyph, card("asked").tone],
+		["◆", "info", "?", "warning"],
+	);
+	assert.equal(card("asked").headline, "Decision model judged the stage's readiness");
+});
+
+test("a record without probabilities still describes itself", () => {
+	assert.equal(
+		describeReadinessDecision({ outcome: "advanced", at: 1 }),
+		"Decision model advanced the stage (p=0.00, addressed p=0.00)",
+	);
+	assert.equal(describeReadinessDecision({ outcome: "stayed", at: 1 }), "Decision model kept the stage open (p=0.00)");
+});
+
+test("the user's message reader ignores missing results, details and answers", () => {
+	assert.equal(toolResultChatText(undefined), undefined);
+	assert.equal(toolResultChatText({}), undefined);
+	assert.equal(toolResultChatText({ details: {} }), undefined);
+	assert.equal(
+		toolResultChatText({ details: { answers: [undefined, "text", { kind: "chat", answer: "Hi." }] } }),
+		"Hi.",
+	);
+	assert.equal(userMessageText([undefined, "text", { type: "text", text: "Hi" }]), "Hi");
+	assert.equal(userMessageText(7), undefined);
+});
+
+test("the host decision port decides with the live context's decision model, registry and chat model", async () => {
+	const { decisionMessage, messageStream } = await import("../helpers/structured-output.js");
+	const streamSimple = vi.fn(() =>
+		messageStream(decisionMessage({ next_action: "advance", reply_addresses_message: true })),
+	);
+	const launch = {
+		model: decisionChatModel,
+		getDecisionModel: () => "missing/model",
+		modelRegistry: { getAvailable: () => [decisionChatModel] },
+	};
+	const live = {
+		model: decisionChatModel,
+		getDecisionModel: () => "",
+		getHttpIdleTimeoutMs: () => 60_000,
+		modelRegistry: {
+			getAvailable: () => [decisionChatModel],
+			getAll: () => [decisionChatModel],
+			streamSimple,
+			getClassifierModel: () => undefined,
+		},
+	};
+	const catalog = workflowModelCatalogFromContext(launch, () => live);
+	const result = await catalog!.decide!({ state: { note: "plain" }, questions: READINESS_DECISION_QUESTIONS });
+	assert.equal(result.model, "decision-test/chat");
+	assert.equal(result.source, "chat");
+	assert.equal(result.answers.next_action.choice, "advance");
+	assert.equal(streamSimple.mock.calls.length, 1);
+	const withoutStream = workflowModelCatalogFromContext(launch, () => ({
+		...live,
+		modelRegistry: { getAvailable: () => [decisionChatModel], getAll: () => [decisionChatModel] },
+	}));
+	await assert.rejects(
+		withoutStream!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
+		/require host decision model and model registry support/,
+	);
+	const withoutLiveSetting = workflowModelCatalogFromContext(launch, () => ({
+		...live,
+		getDecisionModel: undefined,
+	}));
+	await assert.rejects(
+		withoutLiveSetting!.decide!({ state: { a: "b" }, questions: READINESS_DECISION_QUESTIONS }),
+		/require host decision model and model registry support/,
+	);
+	assert.equal(catalog!.autoAdvanceAfterSteer?.(), true);
 });

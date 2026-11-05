@@ -516,3 +516,26 @@ test("the run card shows a stage's readiness decision under the stage, plain and
 		assert.equal(lines.filter((line) => line.includes("ready  ")).length, 1);
 	}
 });
+
+test("a long readiness line is cut to the card's width with an ellipsis (#4358)", () => {
+	const decided = makeStage("s1", "pick-color", "completed", {
+		startedAt: 1000,
+		endedAt: 2000,
+		readinessDecision: {
+			outcome: "asked",
+			at: 1500,
+			probabilities: { advance: 0.6, stay: 0.4, addressed: 0.5 },
+		},
+	});
+	const detail = detailFromRun(makeRun({ status: "completed", endedAt: 2100, stages: [decided] }));
+	for (const [rendered, budget] of [
+		[stripAnsi(renderRunDetail(detail, { now: 3000, width: 60 })), 46],
+		[stripAnsi(renderRunDetail(detail, { now: 3000, width: 60, theme: deriveGraphTheme({}) })), 44],
+	] as const) {
+		const line = rendered.split("\n").find((candidate) => candidate.includes("ready  "));
+		assert.ok(line);
+		const text = line.slice(line.indexOf("ready  ") + "ready  ".length).replace(/\s*│?\s*$/, "");
+		assert.ok(text.endsWith("…"), text);
+		assert.equal(visibleWidth(text), budget);
+	}
+});
