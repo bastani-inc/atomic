@@ -270,6 +270,76 @@ describe("workflow runs without git (#4322)", () => {
 	});
 
 	test.each([
+		[
+			"worktree: true",
+			{ prompt: "x", worktree: true },
+			/creates a worktree, but git is unavailable \(offline\)/,
+			{ workflow: "taskneedsworktree", source: "task-option", field: "edit" },
+		],
+		[
+			"a gitWorktreeDir option",
+			{ prompt: "x", gitWorktreeDir: "../named" },
+			/creates a worktree \(\.\.\/named\), but git is unavailable \(offline\)/,
+			{ workflow: "taskneedsworktree", source: "task-option", field: "edit", gitWorktreeDir: "../named" },
+		],
+	])(
+		"a task with %s fails with a git-required error naming the task",
+		async (_label, taskOptions, creates, fields) => {
+			const fetchMock = vi.spyOn(globalThis, "fetch");
+			let thrown: unknown;
+			const def = workflow({
+				name: "taskneedsworktree",
+				description: "",
+				inputs: {},
+				outputs: { ok: Type.Optional(Type.Boolean()) },
+				run: async (ctx) => {
+					try {
+						await ctx.task("edit", taskOptions);
+					} catch (error) {
+						thrown = error;
+						throw error;
+					}
+					return { ok: true };
+				},
+			}) as unknown as WorkflowDefinition;
+			const { run } = await finish(def, {});
+			assert.equal(run.status, "failed");
+			assert.match(run.error ?? "", /Workflow needs git: task "edit" of "taskneedsworktree"/);
+			assert.match(run.error ?? "", creates);
+			assert.match(run.error ?? "", /\(git-required\)$/);
+			assert.equal(fetchMock.mock.calls.length, 0);
+			assert.ok(isWorkflowGitRequiredError(thrown));
+			assert.deepEqual({ ...thrown.fields, runId: undefined }, { ...fields, runId: undefined });
+			assert.equal(thrown.fields.runId, run.id);
+			assert.equal(thrown.cause.code, "offline");
+		},
+	);
+
+	test("prepareTaskGit attempts a download when git is missing and downloadable, and again after a retryable failure", async () => {
+		const fetchMock = failingFetch();
+		const controller = new AbortController();
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 0);
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 3);
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 6);
+	});
+
+	test("prepareTaskGit does not retry a failure that retrying cannot fix", async () => {
+		vi.stubEnv("ATOMIC_OFFLINE", "");
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response("gone", { status: 404 }));
+		const controller = new AbortController();
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 1);
+		await prepareTaskGit(controller.signal);
+		assert.equal(fetchMock.mock.calls.length, 1);
+	});
+
+	test.each([
 		["worktree: true", { prompt: "x", worktree: true }, /creates a worktree, but git is unavailable \(offline\)/],
 		[
 			"a gitWorktreeDir option",

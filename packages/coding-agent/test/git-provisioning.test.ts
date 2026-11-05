@@ -2270,6 +2270,32 @@ describe("git install command on this machine (#4322)", () => {
 			assert.equal(online.mock.calls.length, 1);
 		});
 
+		it("warns again for a different pinned release while offline, but not twice for the same one", async () => {
+			const { newer } = await installOlder();
+			vi.stubEnv(ENV_OFFLINE, "1");
+			const warnings: string[] = [];
+			const onStatus = (status: { type: string; message: string }) => {
+				if (status.type === "warning") warnings.push(status.message);
+			};
+			const later = releaseFor(newer.bytes, undefined, "v2.56.0-4");
+			await provision({ release: newer.release }, { onStatus });
+			await provision({ release: newer.release }, { onStatus });
+			assert.equal(warnings.length, 1);
+			await provision({ release: later.release }, { onStatus });
+			await provision({ release: later.release }, { onStatus });
+			assert.equal(warnings.length, 2);
+		});
+
+		it("shows a pending update without an installed tag when the install recorded none", async () => {
+			const { newer } = await installOlder();
+			rmSync(join(installDir, ".atomic-git-release.json"));
+			const status = await tools.withGitProvisionSettingsForTest({ release: newer.release }, async () =>
+				tools.getGitStatus(),
+			);
+			assert.ok(status.source !== "unavailable");
+			assert.deepEqual(status.update, { pinnedTag: "v2.56.0-3" });
+		});
+
 		it("never takes the install lock to resolve an install of the pinned release", async () => {
 			const first = releaseFor(archiveOf(gitScript('echo "git version 2.56.0"')), undefined, "v2.56.0-2");
 			serveArchive(first.bytes);
