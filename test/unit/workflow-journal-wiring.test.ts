@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readdirSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { openNodeSqliteDatabase, StorageConfigError } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
@@ -483,6 +483,9 @@ test("SDK adapter journals persist checkpoints across reopen and cache the full 
 		journal,
 		runId: "adapter-replay",
 		store: createStore(),
+		// The run works in the journal's temporary directory: replaying it in the repository checkout, which other tests
+		// change meanwhile, would verify that checkout against its worktree snapshot (#4245) and find it drifted.
+		cwd: dirname(path),
 		adapters: {
 			prompt: {
 				prompt: async () => {
