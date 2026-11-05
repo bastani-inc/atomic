@@ -3,6 +3,7 @@ import { makeFakeKeybindings as s5aKeybindings } from "../support/fake-keybindin
 // @ts-nocheck -- intentional white-box GraphView input coverage
 
 import assert from "node:assert/strict";
+import { isJournalCatalogError, rehydrateJournalStoreError } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -634,6 +635,9 @@ describe("non-attachable tool interactions", () => {
 
 		assert.equal(resumeCalls, 0);
 		assert.equal(result.status, "noop");
-		assert.match(result.message, /Run not found/);
+		assert.equal("code" in result ? result.code : undefined, "run_not_found");
+		const typed = rehydrateJournalStoreError(("failure" in result ? result.failure : undefined)!);
+		assert.ok(isJournalCatalogError(typed) && typed.code === "run-not-found");
+		assert.equal(result.message, `${typed.message}\n${typed.hint}`);
 	});
 });
