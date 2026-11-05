@@ -142,7 +142,8 @@ export async function stripWorkflowOnlyOptions(
 
 /**
  * The messages of the stage session `sessionId`, read from the store the stage would reopen it from, as the session
- * starts with them. Opens no session (#4309).
+ * starts with them. Opens no session, and closes the store when this read opened it: a caller's `sessionStore` or
+ * `sessionManager` stays open (#4309).
  */
 export async function readStoredStageMessages(
 	options: StageOptions,
@@ -150,8 +151,26 @@ export async function readStoredStageMessages(
 	sessionId: string,
 ): Promise<ReturnType<SessionManager["buildSessionContext"]>["messages"]> {
 	const store = await stageSessionStore(options, defaultSessionDir);
-	const manager = await SessionManager.open(store, sessionId, options.cwd);
-	return manager.buildSessionContext().messages;
+	const owned = options.sessionStore === undefined && options.sessionManager === undefined;
+	let messages: ReturnType<SessionManager["buildSessionContext"]>["messages"];
+	try {
+		messages = (await SessionManager.open(store, sessionId, options.cwd)).buildSessionContext().messages;
+	} catch (error) {
+		if (owned) await closeAfterFailure(store, error);
+		throw error;
+	}
+	if (owned) await store.close();
+	return messages;
+}
+
+/** Close `store` after `primary` failed: a failure to close is attached to `primary` as `cleanupCause`, never thrown. */
+async function closeAfterFailure(store: SessionStore, primary: unknown): Promise<void> {
+	try {
+		await store.close();
+	} catch (cleanupCause) {
+		if (primary instanceof Error)
+			Object.defineProperty(primary, "cleanupCause", { value: cleanupCause, configurable: true });
+	}
 }
 
 export function missingAdapter(consumer: AgentSessionConsumer): never {
