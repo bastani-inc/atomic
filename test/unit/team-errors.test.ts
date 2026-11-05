@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "vitest";
 import {
 	isRetryableTeamProfileError,
@@ -16,6 +18,8 @@ import {
 	TeamProfileError,
 	TeamProfileTimeoutError,
 } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { getTeamProfile, leaveTeam } from "../../packages/coding-agent/src/core/storage/index.js";
+import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 test("team errors carry an explicit name, a stable code, safe fields and a hint (#4320)", () => {
 	const cause = new Error("EACCES: permission denied");
@@ -257,9 +261,9 @@ test("a team error crosses a process boundary as the same class with its code, f
 		},
 		cause: {
 			name: "Error",
-			message: "connect ECONNREFUSED 10.0.0.5:8443",
+			message: "ECONNREFUSED",
 			code: "ECONNREFUSED",
-			cause: { name: "Error", message: "socket closed" },
+			cause: { name: "Error", message: "Error" },
 		},
 	});
 	assert.ok(received instanceof TeamProfileError);
@@ -278,11 +282,8 @@ test("a team error crosses a process boundary as the same class with its code, f
 	);
 	assert.ok(isRetryableTeamProfileError(new Error("worker failed", { cause: received })));
 	const cause = received.cause as Error & { code?: string };
-	assert.deepEqual(
-		[cause.name, cause.message, cause.code],
-		["Error", "connect ECONNREFUSED 10.0.0.5:8443", "ECONNREFUSED"],
-	);
-	assert.equal((cause.cause as Error).message, "socket closed");
+	assert.deepEqual([cause.name, cause.message, cause.code], ["Error", "ECONNREFUSED", "ECONNREFUSED"]);
+	assert.equal((cause.cause as Error).name, "Error");
 
 	const timeout = new TeamProfileTimeoutError({
 		subject: "libsql://team.example.turso.io",
@@ -323,7 +324,7 @@ test("a team error crosses a process boundary as the same class with its code, f
 			cause: new Error("ENOENT"),
 		}),
 	).received as TeamProfileConfigError;
-	assert.deepEqual([unreadable.path, (unreadable.cause as Error).message], ["/tmp/token", "ENOENT"]);
+	assert.deepEqual([unreadable.path, (unreadable.cause as Error).name], ["/tmp/token", "Error"]);
 });
 
 test("an unknown team error name keeps its name, code and retryable, and causes stay bounded (#4320)", () => {
@@ -379,7 +380,7 @@ test("serialized team errors carry only the fields that are set, and causes keep
 			cause: new Error("outer", { cause: null }),
 		}),
 	);
-	assert.deepEqual(chained.cause, { name: "Error", message: "outer" });
+	assert.deepEqual(chained.cause, { name: "Error", message: "Error" });
 
 	const received = rehydrateTeamError({
 		name: "TeamProfileError",
@@ -399,6 +400,99 @@ test("serialized team errors carry only the fields that are set, and causes keep
 		enumerable: false,
 		configurable: true,
 	});
+});
+
+test("a serialized cause keeps its name and code but never its own message, which can quote a settings file (#4320)", () => {
+	let parserError: unknown;
+	try {
+		JSON.parse('{"token": sk-synthetic-value}');
+	} catch (error) {
+		parserError = error;
+	}
+	assert.ok(parserError instanceof SyntaxError);
+	assert.match(parserError.message, /sk-synthet/);
+	const denied = Object.assign(new Error("EACCES: permission denied, open '/x/sk-synthetic-value'"), {
+		code: "EACCES",
+		cause: "sk-synthetic-value",
+	});
+	const wrapped = new TeamProfileError("settings-write-failed", {
+		subject: "/settings.json",
+		hint: "Fix it.",
+		cause: denied,
+	});
+	const unreadable = new TeamProfileError("settings-unreadable", {
+		subject: "/settings.json",
+		detail: "not valid JSON",
+		hint: "Fix it.",
+		cause: new Error("outer", { cause: parserError }),
+	});
+	const { sent, received } = acrossProcesses(unreadable);
+	assert.doesNotMatch(JSON.stringify(sent), /sk-synthet|outer/);
+	assert.deepEqual(sent.cause, {
+		name: "Error",
+		message: "Error",
+		cause: { name: "SyntaxError", message: "SyntaxError" },
+	});
+	assert.equal(((received.cause as Error).cause as Error).name, "SyntaxError");
+
+	const chained = acrossProcesses(
+		new TeamProfileError("broker-restart-failed", { subject: "/agent", hint: "Restart.", cause: wrapped }),
+	);
+	assert.doesNotMatch(JSON.stringify(chained.sent), /sk-synthet/);
+	assert.deepEqual(chained.sent.cause, {
+		name: "TeamProfileError",
+		message: wrapped.message,
+		code: "settings-write-failed",
+		cause: { name: "Error", message: "EACCES", code: "EACCES", cause: { name: "Error", message: "Error" } },
+	});
+	assert.ok(isTeamProfileError(chained.received.cause));
+
+	const disguised = Object.assign(new Error("m"), { name: "token sk-synthetic-value", code: "bad code sk-synthetic" });
+	const quoted = serializeTeamError(
+		new TeamProfileError("token-delete-failed", { subject: "/t", hint: "h", cause: disguised }),
+	);
+	assert.deepEqual(quoted.cause, { name: "Error", message: "Error" });
+});
+
+test("a malformed settings file reaches getTeamProfile and leaveTeam callers, serialized, without its content (#4320)", async () => {
+	const credential = "sk-synthetic-team-credential";
+	const root = makeTempDirectory("team-errors-");
+	try {
+		const agentDir = join(root, "agent");
+		const cwd = join(root, "project");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		const settingsPath = join(agentDir, "settings.json");
+		const malformed = `{"storage": {"adapter": "libsql", "token": ${credential}}}`;
+		writeFileSync(settingsPath, malformed);
+
+		const thrown = [
+			await getTeamProfile({ agentDir, cwd }).then(
+				() => assert.fail("read malformed settings"),
+				(error: unknown) => error,
+			),
+			await leaveTeam({ agentDir, cwd }).then(
+				() => assert.fail("left with malformed settings"),
+				(error: unknown) => error,
+			),
+		];
+		assert.equal(readFileSync(settingsPath, "utf8"), malformed);
+		for (const error of thrown) {
+			assert.ok(error instanceof TeamProfileError);
+			assert.equal(error.code, "settings-unreadable");
+			assert.ok(error.cause instanceof Error, "the parser failure stays attached as the cause");
+			const { sent, received } = acrossProcesses(error);
+			assert.doesNotMatch(JSON.stringify(sent), /sk-syn/);
+			assert.ok(sent.cause !== undefined, "the cause chain is serialized");
+			let deepest: SerializedTeamError["cause"] = sent.cause;
+			while (deepest?.cause !== undefined) deepest = deepest.cause;
+			assert.equal(deepest?.name, "SyntaxError");
+			assert.ok(isTeamProfileError(received));
+			assert.equal(received.code, "settings-unreadable");
+		}
+	} finally {
+		removeTempDirectory(root);
+	}
 });
 
 test("a rehydrated timeout keeps its subject and cause, and malformed fields fall back to safe defaults (#4320)", () => {

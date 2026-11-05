@@ -469,7 +469,7 @@ Session listings accept an `AbortSignal`. Cancellation rejects with the original
 
 `SHARED_STORAGE_JOIN_HINT` holds the command that joins a machine to the team's database, `atomic team join <url> --token-file <path>`, for hints that point there.
 
-To pass a team error between processes, `serializeTeamError(error)` returns its JSON form (`name`, `code`, `message`, `hint`, `fields`, and up to eight levels of `cause`, never a token), and `rehydrateTeamError(json)` turns it back into an instance of the same class, so `instanceof` and the guards still work. An unknown `name` becomes a `TeamProfileError` that keeps that `name`, `code`, and `retryable`.
+To pass a team error between processes, `serializeTeamError(error)` returns its JSON form (`name`, `code`, `message`, `hint`, `fields`, and up to eight levels of `cause`, never a token), and `rehydrateTeamError(json)` turns it back into an instance of the same class, so `instanceof` and the guards still work. Causes outside the team error family retain only their name and code, not their original message, which might quote settings or credentials. An unknown `name` becomes a `TeamProfileError` that keeps that `name`, `code`, and `retryable`.
 
 ## Adapter conformance
 

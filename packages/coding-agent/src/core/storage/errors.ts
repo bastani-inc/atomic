@@ -816,7 +816,12 @@ export function isRetryableTeamProfileError(error: unknown): boolean {
 	return false;
 }
 
-/** A cause of a serialized team error: its name, the first line of its message and its `code`, at most eight deep. */
+/**
+ * A cause of a serialized team error, at most eight deep. A team error cause keeps the first line of its message,
+ * which names files and settings but never their content or a token. Any other cause keeps only its `name` and
+ * `code`, and its `message` is that code, or else its name: a parser, driver or file-system message can quote the
+ * settings file or the server's answer, so it never crosses a process boundary.
+ */
 export interface SerializedTeamErrorCause {
 	readonly name: string;
 	readonly message: string;
@@ -835,15 +840,24 @@ export interface SerializedTeamError {
 	readonly cause?: SerializedTeamErrorCause;
 }
 
+const SAFE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+
+function safeIdentifier(value: unknown): string | undefined {
+	return typeof value === "string" && SAFE_IDENTIFIER.test(value) ? value : undefined;
+}
+
 function serializeCause(cause: unknown, depth: number): SerializedTeamErrorCause | undefined {
 	if (depth >= MAX_CAUSE_DEPTH || cause === undefined || cause === null) return undefined;
 	const error = cause instanceof Error ? cause : undefined;
-	const code = (cause as { readonly code?: unknown }).code;
+	const name = safeIdentifier(error?.name) ?? "Error";
+	const code = safeIdentifier(typeof cause === "object" ? (cause as { readonly code?: unknown }).code : undefined);
+	const teamError = isTeamProfileError(cause) || isTeamProfileConfigError(cause);
+	const message = teamError && error !== undefined ? error.message.split("\n", 1)[0]! : (code ?? name);
 	const next = serializeCause(error?.cause, depth + 1);
 	return {
-		name: error?.name ?? "Error",
-		message: (error?.message ?? String(cause)).split("\n", 1)[0]!,
-		...(typeof code === "string" ? { code } : {}),
+		name,
+		message,
+		...(code === undefined ? {} : { code }),
 		...(next === undefined ? {} : { cause: next }),
 	};
 }
