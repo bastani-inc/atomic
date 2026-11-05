@@ -657,6 +657,25 @@ describe("git resolution (#4322)", () => {
 		tools.getGitStatus();
 		assert.equal(mocks.spawnSyncCommands.filter((command) => command === systemGit).length, 1);
 	});
+	it.each([
+		["below-minimum", "2.20.0", 0],
+		["probe-failed", undefined, 1],
+	] as const)(
+		"probes an unchanged %s system git once while reusing portable git",
+		async (_problem, version, status) => {
+			const systemGit = makeSystemGit(version, status);
+			usePath(join(systemGit, ".."));
+			const portable = makeProvisionedGit();
+			const fetchMock = vi.spyOn(globalThis, "fetch");
+			for (let index = 0; index < 5; index++) {
+				assert.equal(tools.resolveGitSync().path, portable);
+				assert.equal((await tools.resolveGit()).path, portable);
+				assert.equal(tools.getGitStatus().source, "provisioned");
+			}
+			assert.equal(mocks.spawnSyncCommands.filter((command) => command === systemGit).length, 1);
+			assert.equal(fetchMock.mock.calls.length, 0);
+		},
+	);
 
 	it.each(["EACCES", "EPERM"])("skips a PATH directory that fails with %s and reaches a later git", (code) => {
 		const denied = join(tempDir, "no-search");

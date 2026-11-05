@@ -722,12 +722,29 @@ function isWithin(child: string, parent: string): boolean {
 	return fromParent !== ".." && !fromParent.startsWith(`..${sep}`) && !isAbsolute(fromParent);
 }
 
-function isExecutableFile(candidate: string, plat: string): boolean {
+interface SystemGitCandidate {
+	readonly path: string;
+	readonly signature: string;
+}
+
+function inspectSystemGitCandidate(candidate: string, plat: string): SystemGitCandidate | undefined {
 	try {
 		const stats = statSync(candidate, { throwIfNoEntry: false });
-		return stats?.isFile() === true && (plat === "win32" || (stats.mode & 0o111) !== 0);
+		if (stats?.isFile() !== true || (plat !== "win32" && (stats.mode & 0o111) === 0)) return undefined;
+		return {
+			path: candidate,
+			signature: JSON.stringify([
+				candidate,
+				stats.dev,
+				stats.ino,
+				stats.size,
+				stats.mtimeMs,
+				stats.ctimeMs,
+				stats.mode,
+			]),
+		};
 	} catch (error) {
-		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return false;
+		if (errnoCode(error) === "EACCES" || errnoCode(error) === "EPERM") return undefined;
 		throw error;
 	}
 }
@@ -736,14 +753,14 @@ function isExecutableFile(candidate: string, plat: string): boolean {
  * The first git in an absolute PATH directory, ignoring Atomic's own portable copy. Empty and relative entries name
  * the working directory, which may be an untrusted repository, so they are never searched.
  */
-function findSystemGit(pathValue: string, portableRoot: string, plat: string): string | undefined {
+function findSystemGit(pathValue: string, portableRoot: string, plat: string): SystemGitCandidate | undefined {
 	const executable = plat === "win32" ? "git.exe" : "git";
 	for (const entry of pathValue.split(delimiter)) {
 		if (!isAbsolute(entry)) continue;
 		const directory = resolve(entry);
 		if (isWithin(directory, portableRoot)) continue;
-		const candidate = join(directory, executable);
-		if (isExecutableFile(candidate, plat)) return candidate;
+		const candidate = inspectSystemGitCandidate(join(directory, executable), plat);
+		if (candidate !== undefined) return candidate;
 	}
 	return undefined;
 }
@@ -762,7 +779,12 @@ type SystemGitProbe =
 	| { readonly kind: "usable"; readonly path: string; readonly version: string }
 	| { readonly kind: "rejected"; readonly rejected: GitRejectedSystemGit };
 
-const systemGitProbes = new Map<string, SystemGitProbe>();
+interface CachedSystemGitProbe {
+	readonly probe: Exclude<SystemGitProbe, undefined>;
+	readonly signature: string;
+}
+
+const systemGitProbes = new Map<string, CachedSystemGitProbe>();
 const provisionedGitVersions = new Map<string, string>();
 let lastProvisionFailure: GitProvisionError | undefined;
 
@@ -779,18 +801,19 @@ function probeSystemGit(): SystemGitProbe {
 	const pathValue = pathValueOf(process.env);
 	const root = getGitInstallDir();
 	const key = `${root}\0${pathValue}`;
-	if (systemGitProbes.has(key)) return systemGitProbes.get(key);
-	const path = findSystemGit(pathValue, root, platform());
-	const version = path === undefined ? undefined : probeGitVersion(path, undefined);
-	const probe: SystemGitProbe =
-		path === undefined
-			? undefined
-			: version === undefined
-				? { kind: "rejected", rejected: { path, problem: "probe-failed" } }
-				: compareVersions(version, GIT_MINIMUM_VERSION) < 0
-					? { kind: "rejected", rejected: { path, problem: "below-minimum", version } }
-					: { kind: "usable", path, version };
-	if (probe?.kind === "usable") systemGitProbes.set(key, probe);
+	const cached = systemGitProbes.get(key);
+	const candidate = findSystemGit(pathValue, root, platform());
+	if (candidate === undefined) return undefined;
+	if (cached?.signature === candidate.signature) return cached.probe;
+	const { path, signature } = candidate;
+	const version = probeGitVersion(path, undefined);
+	const probe: Exclude<SystemGitProbe, undefined> =
+		version === undefined
+			? { kind: "rejected", rejected: { path, problem: "probe-failed" } }
+			: compareVersions(version, GIT_MINIMUM_VERSION) < 0
+				? { kind: "rejected", rejected: { path, problem: "below-minimum", version } }
+				: { kind: "usable", path, version };
+	systemGitProbes.set(key, { probe, signature });
 	return probe;
 }
 
